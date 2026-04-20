@@ -1,0 +1,25 @@
+{
+  "name": "little-goblin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram-native personal AI goblin. Single user, single process, homelab.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.67.68",
+    "grammy": "^1.30.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

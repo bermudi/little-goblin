@@ -1,49 +1,15 @@
-import { existsSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Load env from the first file that exists, in priority order:
- *   1. $GOBLIN_ENV_FILE            (explicit override)
- *   2. $XDG_CONFIG_HOME/goblin/.env  (prod install)
- *   3. ~/.config/goblin/.env         (prod install, fallback)
- *   4. ./.env                        (dev, run from repo)
+ * Env loading strategy:
+ *   - Bun auto-loads `.env` from cwd (dev workflow)
+ *   - For prod installs (XDG paths), use: bun --env-file=$GOBLIN_ENV_FILE ...
+ *     or set GOBLIN_ENV_FILE and run from that directory
  *
- * Bun auto-loads `.env` from cwd, so (4) is already handled. We handle (1)-(3).
+ * Bun's built-in parser handles exports, quotes, and multi-line values correctly.
  */
-export function loadEnvFile(): void {
-  const home = homedir();
-  const xdg = process.env.XDG_CONFIG_HOME;
-  const candidates = [
-    process.env.GOBLIN_ENV_FILE,
-    xdg ? join(xdg, "goblin", ".env") : undefined,
-    join(home, ".config", "goblin", ".env"),
-  ].filter((p): p is string => typeof p === "string" && p.length > 0);
-
-  for (const path of candidates) {
-    if (existsSync(path)) {
-      // Minimal .env parser, synchronous. KEY=VALUE per line, # comments, blanks ignored.
-      // Not overriding existing env vars (they win).
-      const contents = readFileSync(path, "utf8");
-      for (const raw of contents.split("\n")) {
-        const line = raw.trim();
-        if (!line || line.startsWith("#")) continue;
-        const eq = line.indexOf("=");
-        if (eq < 0) continue;
-        const key = line.slice(0, eq).trim();
-        let value = line.slice(eq + 1).trim();
-        if (
-          (value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'"))
-        ) {
-          value = value.slice(1, -1);
-        }
-        if (process.env[key] === undefined) process.env[key] = value;
-      }
-      return;
-    }
-  }
-}
 
 function required(name: string): string {
   const v = process.env[name];
@@ -90,4 +56,15 @@ export function loadConfig(): Config {
     modelName: required("MODEL_NAME"),
     goblinHome,
   };
+}
+
+/**
+ * Ensure GOBLIN_HOME directory exists with required subdirectories.
+ * Call once at startup before any consumer tries to use the paths.
+ */
+export function ensureGoblinHome(cfg: Config): void {
+  const dirs = [cfg.goblinHome, join(cfg.goblinHome, "sessions"), join(cfg.goblinHome, "skills")];
+  for (const dir of dirs) {
+    mkdirSync(dir, { recursive: true });
+  }
 }

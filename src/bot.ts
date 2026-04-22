@@ -1,4 +1,4 @@
-import { Bot, type Context } from "grammy";
+import { Bot } from "grammy";
 import type { Config } from "./config.ts";
 import { log } from "./log.ts";
 import { buildAllowlistMiddleware } from "./tg/mod.ts";
@@ -17,19 +17,9 @@ export function buildBot(cfg: Config): Bot {
   // Command handlers
   registerCommands(bot);
 
-  // Fallback: echo all other text until the agent runner is wired
-  bot.on("message:text", async (ctx: Context) => {
-    const topicId = ctx.msg && "message_thread_id" in ctx.msg ? ctx.msg.message_thread_id : undefined;
-    log.info("message received", {
-      chatId: ctx.chat!.id,
-      topicId,
-      text: ctx.msg!.text!.slice(0, 80),
-    });
-    await ctx.reply(
-      `🐲 I hear you, but my brain isn't wired yet. Soon.`,
-      topicId !== undefined ? { message_thread_id: topicId } : {},
-    );
-  });
+  // TODO: Wire agent runner here. Until then, messages are silently dropped
+  // to avoid shipping a confusing echo-scaffold as "fallback" behavior.
+  // bot.on("message:text", agentRunner.handler);
 
   bot.catch((err) => {
     log.error("bot error", {

@@ -1,10 +1,10 @@
-import { loadEnvFile, loadConfig } from "./config.ts";
+import { loadConfig, ensureGoblinHome } from "./config.ts";
 import { buildBot } from "./bot.ts";
 import { log } from "./log.ts";
 
 async function main(): Promise<void> {
-  loadEnvFile();
   const cfg = loadConfig();
+  ensureGoblinHome(cfg);
   const bot = buildBot(cfg);
 
   // Graceful shutdown. grammy's start() resolves when stop() is called.

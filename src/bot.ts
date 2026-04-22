@@ -1,37 +1,32 @@
 import { Bot, type Context } from "grammy";
 import type { Config } from "./config.ts";
 import { log } from "./log.ts";
+import { buildAllowlistMiddleware } from "./tg/mod.ts";
+import { registerCommands } from "./commands/mod.ts";
 
 /**
- * Build the grammy Bot with allowlist middleware wired up.
- * Exported so main can attach handlers/commands incrementally.
+ * Build the grammy Bot with middleware and handlers wired up.
+ * Exported so main can start the bot.
  */
 export function buildBot(cfg: Config): Bot {
   const bot = new Bot(cfg.botToken);
 
-  // Allowlist middleware. Anything from a non-allowed user is silently dropped.
-  // This is intentionally silent: we don't want to confirm the bot's existence
-  // to strangers who poke at it.
-  bot.use(async (ctx, next) => {
-    const userId = ctx.from?.id;
-    if (userId === undefined || !cfg.allowedTgUserIds.has(userId)) {
-      log.debug("dropping message from non-allowed user", {
-        userId,
-        username: ctx.from?.username,
-        chatId: ctx.chat?.id,
-      });
-      return;
-    }
-    await next();
-  });
+  // Security layer: drop messages from non-allowed users
+  bot.use(buildAllowlistMiddleware(cfg));
 
-  // Smoke-test command. Will be removed / replaced once the agent runner is wired.
-  bot.command("ping", async (ctx: Context) => {
-    const userId = ctx.from?.id;
-    const chatType = ctx.chat?.type;
+  // Command handlers
+  registerCommands(bot);
+
+  // Fallback: echo all other text until the agent runner is wired
+  bot.on("message:text", async (ctx: Context) => {
     const topicId = ctx.msg && "message_thread_id" in ctx.msg ? ctx.msg.message_thread_id : undefined;
+    log.info("message received", {
+      chatId: ctx.chat!.id,
+      topicId,
+      text: ctx.msg!.text!.slice(0, 80),
+    });
     await ctx.reply(
-      `pong 🐲\nuser: ${userId}\nchat: ${chatType}${topicId ? `\ntopic: ${topicId}` : ""}`,
+      `🐲 I hear you, but my brain isn't wired yet. Soon.`,
       topicId !== undefined ? { message_thread_id: topicId } : {},
     );
   });

@@ -3,4 +3,5 @@
  * Responsible for persisting and retrieving conversation state.
  */
 
-// TODO: Implement session storage when agent runner is wired
+export { SessionManager } from "./manager.ts";
+export type { ChatLocator, SessionState } from "./types.ts";

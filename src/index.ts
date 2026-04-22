@@ -5,7 +5,8 @@ import { log } from "./log.ts";
 async function main(): Promise<void> {
   const cfg = loadConfig();
   ensureGoblinHome(cfg);
-  const bot = buildBot(cfg);
+  const { bot, manager } = buildBot(cfg);
+  manager.init();
 
   // Graceful shutdown. grammy's start() resolves when stop() is called.
   const shutdown = async (signal: string): Promise<void> => {

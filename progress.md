@@ -110,7 +110,7 @@ Plus `src/commands/` for `/`-commands and `src/config/` for env + `AGENTS.md` lo
 - [x] `bun init`, scaffold `src/`, install `grammy` + `pi-coding-agent`.
 - [x] Env loader (`MODEL_*`, `BOT_TOKEN`, `ALLOWED_TG_USER_IDS`, `GOBLIN_HOME`).
 - [x] Long-polling bot with user-id allowlist middleware. Non-allowed users → silent drop.
-- [ ] Session manager: `/new`, resolve chat→session, create workdir + state.json.
+- [x] Session manager: `/new`, resolve chat→session, create workdir + state.json.
 - [ ] Agent runner: embed pi, load AGENTS.md, run turn, stream events.
 - [ ] `MessageBuffer` with 1 edit/sec throttle, 4096-char rollover, file-attachment escape.
 - [ ] Hybrid streaming wired: status-line message (tools) + response message (model stream).

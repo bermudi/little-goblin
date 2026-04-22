@@ -1,8 +1,9 @@
-import { loadConfig } from "./config.ts";
+import { loadEnvFile, loadConfig } from "./config.ts";
 import { buildBot } from "./bot.ts";
 import { log } from "./log.ts";
 
 async function main(): Promise<void> {
+  loadEnvFile();
   const cfg = loadConfig();
   const bot = buildBot(cfg);
 

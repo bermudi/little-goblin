@@ -11,7 +11,7 @@ import { join } from "node:path";
  *
  * Bun auto-loads `.env` from cwd, so (4) is already handled. We handle (1)-(3).
  */
-function loadEnvFile(): void {
+export function loadEnvFile(): void {
   const home = homedir();
   const xdg = process.env.XDG_CONFIG_HOME;
   const candidates = [
@@ -44,8 +44,6 @@ function loadEnvFile(): void {
     }
   }
 }
-
-loadEnvFile();
 
 function required(name: string): string {
   const v = process.env[name];

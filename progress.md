@@ -40,9 +40,15 @@ A **goblin** that lives on the homelab, reachable over Telegram, with pi-coding-
 - **Rejected:** vector stores. Grep > embeddings at this scale.
 
 ### Model (Q9)
-- **Poe or OpenRouter** via OpenAI-compatible API.
-- Three env vars: `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`.
-- Single provider for v1. `selectModel(task)` router is a v1.x one-file change when cost/latency demand it.
+- **Poe primary, OpenRouter secondary.** Both supported in v1 via an explicit model table in `src/agent/models.ts`.
+- Env: `POE_API_KEY` and/or `OPENROUTER_API_KEY` (at least one required) + `MODEL_NAME` (a key in the table). No `MODEL_BASE_URL` — baseUrl is a property of each model entry.
+- **Per-family API routing** (Poe exposes all three endpoints; pick the richest that fits):
+  - Claude models        → `anthropic` / Messages API (`https://api.poe.com`) — prompt caching, thinking blocks
+  - GPT + o-series       → `openai-responses` (`https://api.poe.com/v1`) — reasoning summaries
+  - Everything else (Gemini/Llama/…) → `openai-completions` (`https://api.poe.com/v1`)
+  - All OpenRouter models → `openai-completions` (OR only speaks chat completions)
+- Poe's Responses API has documented gaps (`instructions` ignored, `previous_response_id` 500s) but pi-ai's `openai-responses` provider is stateless and doesn't use either, so we're unaffected.
+- `selectModel(task)` router stays a v1.x one-file change; v1 uses a single model per session.
 
 ### Safety posture (Q10)
 - **YOLO.** No approval prompts. Goblin acts.

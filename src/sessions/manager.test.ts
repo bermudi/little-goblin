@@ -10,9 +10,8 @@ function makeTestConfig(home: string): Config {
   return {
     botToken: "test-token",
     allowedTgUserIds: new Set([123]),
-    modelBaseUrl: "https://example.com",
-    modelApiKey: "test-key",
-    modelName: "test-model",
+    modelName: "Claude-Sonnet-4.6",
+    poeApiKey: "test-key",
     goblinHome: home,
   };
 }

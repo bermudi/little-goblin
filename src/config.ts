@@ -40,20 +40,28 @@ function parseIdList(raw: string): Set<number> {
 export interface Config {
   botToken: string;
   allowedTgUserIds: Set<number>;
-  modelBaseUrl: string;
-  modelApiKey: string;
+  /** Model id — must be a key in `MODELS` (see src/agent/models.ts). */
   modelName: string;
+  /** Poe API key. Required iff selected model's provider is "poe". */
+  poeApiKey?: string;
+  /** OpenRouter API key. Required iff selected model's provider is "openrouter". */
+  openrouterApiKey?: string;
   goblinHome: string;
 }
 
 export function loadConfig(): Config {
   const goblinHome = optional("GOBLIN_HOME", join(homedir(), "goblin"));
+  const poeApiKey = process.env.POE_API_KEY || undefined;
+  const openrouterApiKey = process.env.OPENROUTER_API_KEY || undefined;
+  if (!poeApiKey && !openrouterApiKey) {
+    throw new Error("Set at least one of POE_API_KEY or OPENROUTER_API_KEY");
+  }
   return {
     botToken: required("BOT_TOKEN"),
     allowedTgUserIds: parseIdList(required("ALLOWED_TG_USER_IDS")),
-    modelBaseUrl: required("MODEL_BASE_URL"),
-    modelApiKey: required("MODEL_API_KEY"),
     modelName: required("MODEL_NAME"),
+    poeApiKey,
+    openrouterApiKey,
     goblinHome,
   };
 }

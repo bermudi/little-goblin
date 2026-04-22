@@ -42,10 +42,14 @@ export interface Config {
   allowedTgUserIds: Set<number>;
   /** Model id — must be a key in `MODELS` (see src/agent/models.ts). */
   modelName: string;
-  /** Poe API key. Required iff selected model's provider is "poe". */
+  /** Poe API key. Required iff selected model uses it. */
   poeApiKey?: string;
-  /** OpenRouter API key. Required iff selected model's provider is "openrouter". */
+  /** OpenRouter API key. Required iff selected model uses it. */
   openrouterApiKey?: string;
+  /** OpenAI API key. Required iff selected model uses it. */
+  openaiApiKey?: string;
+  /** Anthropic API key. Required iff selected model uses it. */
+  anthropicApiKey?: string;
   goblinHome: string;
 }
 
@@ -53,15 +57,16 @@ export function loadConfig(): Config {
   const goblinHome = optional("GOBLIN_HOME", join(homedir(), "goblin"));
   const poeApiKey = process.env.POE_API_KEY || undefined;
   const openrouterApiKey = process.env.OPENROUTER_API_KEY || undefined;
-  if (!poeApiKey && !openrouterApiKey) {
-    throw new Error("Set at least one of POE_API_KEY or OPENROUTER_API_KEY");
-  }
+  const openaiApiKey = process.env.OPENAI_API_KEY || undefined;
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || undefined;
   return {
     botToken: required("BOT_TOKEN"),
     allowedTgUserIds: parseIdList(required("ALLOWED_TG_USER_IDS")),
     modelName: required("MODEL_NAME"),
     poeApiKey,
     openrouterApiKey,
+    openaiApiKey,
+    anthropicApiKey,
     goblinHome,
   };
 }

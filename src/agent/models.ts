@@ -1,35 +1,44 @@
 /**
  * Model registry.
  *
- * Keyed by the provider's own model id (what MODEL_NAME must equal).
+ * Model IDs are prefixed with their provider namespace:
+ *   poe/<id>        → Poe API (choose best endpoint per model family)
+ *   or/<slug>       → OpenRouter (chat completions)
+ *   openai/<id>     → Direct OpenAI API
+ *   anthropic/<id>  → Direct Anthropic API
+ *
  * Each entry picks the best pi-ai `api` dialect for that model family:
+ *   - Claude models  → "anthropic" (Messages API, prompt caching)
+ *   - GPT/o-series   → "openai-responses" (reasoning summaries)
+ *   - Everything else → "openai-completions" (universal fallback)
  *
- *   - Claude on Poe       → "anthropic"          (Messages API, prompt caching)
- *   - GPT/o-series on Poe → "openai-responses"   (reasoning summaries)
- *   - Everything else     → "openai-completions" (universal fallback)
- *
- * OpenRouter only speaks Chat Completions, so every OR entry is "openai-completions".
- *
- * Extend by adding entries. No pattern-matching magic — explicit is honest.
+ * Extend by adding entries. The registry is explicit — no runtime synthesis.
  */
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { Config } from "../config.ts";
 
-export type ApiKeyEnv = "POE_API_KEY" | "OPENROUTER_API_KEY";
+export type ApiKeyEnv =
+  | "POE_API_KEY"
+  | "OPENROUTER_API_KEY"
+  | "OPENAI_API_KEY"
+  | "ANTHROPIC_API_KEY";
 
 export interface ModelEntry {
   model: Model<Api>;
   apiKeyEnv: ApiKeyEnv;
 }
 
-// Poe endpoints. Anthropic-compatible lives at the root; OpenAI-compatible under /v1.
+// Provider endpoints
 const POE_ANTHROPIC = "https://api.poe.com";
 const POE_OPENAI = "https://api.poe.com/v1";
 const OPENROUTER = "https://openrouter.ai/api/v1";
+const OPENAI = "https://api.openai.com/v1";
+const ANTHROPIC = "https://api.anthropic.com";
 
-// Cost fields are placeholders — Poe bills in compute points, not tokens.
-// Don't trust pi-ai's cost math against these values; we don't use it yet.
+// Cost fields are placeholders — actual billing varies by provider
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+// --- Poe ---
 
 function poeAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
   return {
@@ -41,7 +50,7 @@ function poeAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
       provider: "poe",
       baseUrl: POE_ANTHROPIC,
       reasoning: true,
-      input: ["text", "image"],
+      input: ["text", "image"] as ("text" | "image")[],
       cost: ZERO_COST,
       contextWindow: ctx,
       maxTokens: 8_192,
@@ -59,7 +68,7 @@ function poeResponses(id: string, name: string, ctx = 200_000): ModelEntry {
       provider: "poe",
       baseUrl: POE_OPENAI,
       reasoning: true,
-      input: ["text", "image"],
+      input: ["text", "image"] as ("text" | "image")[],
       cost: ZERO_COST,
       contextWindow: ctx,
       maxTokens: 8_192,
@@ -77,13 +86,15 @@ function poeCompletions(id: string, name: string, ctx = 128_000): ModelEntry {
       provider: "poe",
       baseUrl: POE_OPENAI,
       reasoning: false,
-      input: ["text", "image"],
+      input: ["text", "image"] as ("text" | "image")[],
       cost: ZERO_COST,
       contextWindow: ctx,
       maxTokens: 8_192,
     } satisfies Model<"openai-completions">,
   };
 }
+
+// --- OpenRouter ---
 
 function openrouter(id: string, name: string, ctx = 200_000): ModelEntry {
   return {
@@ -95,7 +106,7 @@ function openrouter(id: string, name: string, ctx = 200_000): ModelEntry {
       provider: "openrouter",
       baseUrl: OPENROUTER,
       reasoning: false,
-      input: ["text", "image"],
+      input: ["text", "image"] as ("text" | "image")[],
       cost: ZERO_COST,
       contextWindow: ctx,
       maxTokens: 8_192,
@@ -103,26 +114,88 @@ function openrouter(id: string, name: string, ctx = 200_000): ModelEntry {
   };
 }
 
+// --- Direct providers ---
+
+function directOpenAI(id: string, name: string, ctx = 128_000): ModelEntry {
+  return {
+    apiKeyEnv: "OPENAI_API_KEY",
+    model: {
+      id,
+      name,
+      api: "openai-responses",
+      provider: "openai",
+      baseUrl: OPENAI,
+      reasoning: true,
+      input: ["text", "image"] as ("text" | "image")[],
+      cost: ZERO_COST,
+      contextWindow: ctx,
+      maxTokens: 8_192,
+    } satisfies Model<"openai-responses">,
+  };
+}
+
+function directAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
+  return {
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+    model: {
+      id,
+      name,
+      api: "anthropic",
+      provider: "anthropic",
+      baseUrl: ANTHROPIC,
+      reasoning: true,
+      input: ["text", "image"] as ("text" | "image")[],
+      cost: ZERO_COST,
+      contextWindow: ctx,
+      maxTokens: 8_192,
+    } satisfies Model<"anthropic">,
+  };
+}
+
 export const MODELS: Record<string, ModelEntry> = {
   // --- Poe: Claude family → Messages (cache_control, thinking blocks) ---
-  "Claude-Sonnet-4.6": poeAnthropic("Claude-Sonnet-4.6", "Claude Sonnet 4.6 (Poe)"),
-  "Claude-Haiku-4.5": poeAnthropic("Claude-Haiku-4.5", "Claude Haiku 4.5 (Poe)"),
+  "poe/Claude-Sonnet-4.6": poeAnthropic("Claude-Sonnet-4.6", "Claude Sonnet 4.6 (Poe)"),
+  "poe/Claude-Haiku-4.5": poeAnthropic("Claude-Haiku-4.5", "Claude Haiku 4.5 (Poe)"),
 
   // --- Poe: OpenAI family → Responses (reasoning summaries) ---
-  "GPT-5": poeResponses("GPT-5", "GPT-5 (Poe)"),
-  "GPT-5-mini": poeResponses("GPT-5-mini", "GPT-5 mini (Poe)"),
+  "poe/GPT-5": poeResponses("GPT-5", "GPT-5 (Poe)"),
+  "poe/GPT-5-mini": poeResponses("GPT-5-mini", "GPT-5 mini (Poe)"),
 
   // --- Poe: everything else → Chat Completions ---
-  "Gemini-2.5-Pro": poeCompletions("Gemini-2.5-Pro", "Gemini 2.5 Pro (Poe)", 1_000_000),
+  "poe/Gemini-2.5-Pro": poeCompletions("Gemini-2.5-Pro", "Gemini 2.5 Pro (Poe)", 1_000_000),
 
-  // --- OpenRouter: slash-slugs, always chat completions ---
-  "anthropic/claude-sonnet-4.5": openrouter("anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5 (OR)"),
-  "openai/gpt-5": openrouter("openai/gpt-5", "GPT-5 (OR)"),
+  // --- OpenRouter: always chat completions ---
+  "or/anthropic/claude-sonnet-4.5": openrouter("anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5 (OR)"),
+  "or/openai/gpt-5": openrouter("openai/gpt-5", "GPT-5 (OR)"),
+
+  // --- Direct OpenAI ---
+  "openai/gpt-5.4": directOpenAI("gpt-5.4", "GPT-5.4 (OpenAI)"),
+  "openai/gpt-5.4-mini": directOpenAI("gpt-5.4-mini", "GPT-5.4 mini (OpenAI)"),
+  "openai/o4": directOpenAI("o4", "o4 (OpenAI)"),
+
+  // --- Direct Anthropic ---
+  "anthropic/claude-opus-4": directAnthropic("claude-opus-4-20251001", "Claude Opus 4 (Anthropic)"),
+  "anthropic/claude-sonnet-4.6": directAnthropic("claude-sonnet-4-6-20251022", "Claude Sonnet 4.6 (Anthropic)"),
 };
 
 export interface ResolvedModel {
   model: Model<Api>;
   apiKey: string;
+}
+
+function getApiKey(cfg: Config, env: ApiKeyEnv): string | undefined {
+  switch (env) {
+    case "POE_API_KEY":
+      return cfg.poeApiKey;
+    case "OPENROUTER_API_KEY":
+      return cfg.openrouterApiKey;
+    case "OPENAI_API_KEY":
+      return cfg.openaiApiKey;
+    case "ANTHROPIC_API_KEY":
+      return cfg.anthropicApiKey;
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -136,7 +209,7 @@ export function resolveModel(cfg: Config): ResolvedModel {
     const known = Object.keys(MODELS).sort().join(", ");
     throw new Error(`Unknown MODEL_NAME "${cfg.modelName}". Known: ${known}`);
   }
-  const apiKey = entry.apiKeyEnv === "POE_API_KEY" ? cfg.poeApiKey : cfg.openrouterApiKey;
+  const apiKey = getApiKey(cfg, entry.apiKeyEnv);
   if (!apiKey) {
     throw new Error(`MODEL_NAME "${cfg.modelName}" requires ${entry.apiKeyEnv} to be set`);
   }

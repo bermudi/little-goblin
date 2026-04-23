@@ -1,41 +1,9 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
-/**
- * Env loading strategy:
- *   - Bun auto-loads `.env` from cwd (dev workflow)
- *   - For prod installs (XDG paths), use: bun --env-file=$GOBLIN_ENV_FILE ...
- *     or set GOBLIN_ENV_FILE and run from that directory
- *
- * Bun's built-in parser handles exports, quotes, and multi-line values correctly.
- */
-
-function required(name: string): string {
-  const v = process.env[name];
-  if (!v) {
-    throw new Error(`Missing required env var: ${name}`);
-  }
-  return v;
-}
-
-function optional(name: string, fallback: string): string {
-  return process.env[name] ?? fallback;
-}
-
-function parseIdList(raw: string): Set<number> {
-  const ids = raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => {
-      const n = Number(s);
-      if (!Number.isInteger(n)) throw new Error(`ALLOWED_TG_USER_IDS: "${s}" is not an integer`);
-      return n;
-    });
-  if (ids.length === 0) throw new Error("ALLOWED_TG_USER_IDS must contain at least one id");
-  return new Set(ids);
-}
+import JSON5 from "json5";
+import { ConfigFileSchema } from "./schema.ts";
+import { resolveConfigValue } from "./resolve-value.ts";
 
 export interface Config {
   botToken: string;
@@ -51,24 +19,86 @@ export interface Config {
   /** Anthropic API key. Required iff selected model uses it. */
   anthropicApiKey?: string;
   goblinHome: string;
+  logLevel: "debug" | "info" | "warn" | "error";
 }
 
+/**
+ * Load and validate configuration from goblin.json5.
+ * Resolution order:
+ *   1. GOBLIN_HOME env var -> use as directory
+ *   2. Default: ~/goblin
+ *
+ * Config file is read from $GOBLIN_HOME/goblin.json5.
+ * All string values are resolved via resolveConfigValue() before validation.
+ */
 export function loadConfig(): Config {
-  const goblinHome = optional("GOBLIN_HOME", join(homedir(), "goblin"));
-  const poeApiKey = process.env.POE_API_KEY || undefined;
-  const openrouterApiKey = process.env.OPENROUTER_API_KEY || undefined;
-  const openaiApiKey = process.env.OPENAI_API_KEY || undefined;
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || undefined;
-  return {
-    botToken: required("BOT_TOKEN"),
-    allowedTgUserIds: parseIdList(required("ALLOWED_TG_USER_IDS")),
-    modelName: required("MODEL_NAME"),
-    poeApiKey,
-    openrouterApiKey,
-    openaiApiKey,
-    anthropicApiKey,
+  // Resolve goblinHome first (not from config file, but from env/default)
+  const goblinHome = process.env.GOBLIN_HOME ?? join(homedir(), "goblin");
+  const configPath = join(goblinHome, "goblin.json5");
+
+  // Read and parse config file
+  let raw: unknown;
+  try {
+    const content = readFileSync(configPath, "utf-8");
+    raw = JSON5.parse(content);
+  } catch (err) {
+    if (err instanceof Error && "code" in err && err.code === "ENOENT") {
+      throw new Error(`Config file not found: ${configPath}`);
+    }
+    throw new Error(`Failed to parse config file: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Resolve all string values in the raw config object
+  const resolved = resolveAllStrings(raw as Record<string, unknown>);
+
+  // Validate with Zod
+  const parsed = ConfigFileSchema.safeParse(resolved);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    throw new Error(`Config validation failed: ${issues}`);
+  }
+  const cfg = parsed.data;
+
+  // Build frozen Config object
+  const config: Config = Object.freeze({
+    botToken: cfg.botToken,
+    allowedTgUserIds: new Set(cfg.allowedUsers),
+    modelName: cfg.model,
+    poeApiKey: cfg.poeApiKey,
+    openrouterApiKey: cfg.openrouterApiKey,
+    openaiApiKey: cfg.openaiApiKey,
+    anthropicApiKey: cfg.anthropicApiKey,
     goblinHome,
-  };
+    logLevel: cfg.logLevel,
+  });
+
+  return config;
+}
+
+/**
+ * Recursively resolve all string values in an object using resolveConfigValue().
+ * Handles arrays and nested objects, but ConfigFileSchema has a flat shape.
+ */
+function resolveAllStrings(obj: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    result[key] = resolveValue(value);
+  }
+  return result;
+}
+
+/**
+ * Resolve a single value: strings get resolved, arrays get their strings resolved,
+ * other values pass through.
+ */
+function resolveValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return resolveConfigValue(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => (typeof v === "string" ? resolveConfigValue(v) : v));
+  }
+  return value;
 }
 
 /**

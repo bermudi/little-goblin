@@ -1,15 +1,20 @@
-type Level = "debug" | "info" | "warn" | "error";
+export type Level = "debug" | "info" | "warn" | "error";
 
 const order: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 3 };
-const rawLevel = process.env.LOG_LEVEL ?? "info";
-const envLevel = rawLevel as Level;
-const threshold = order[envLevel] ?? order.info;
 
-// Validate at startup to catch misconfigurations early
-if (order[envLevel] === undefined && process.env.LOG_LEVEL !== undefined) {
-  process.stderr.write(
-    `[log] Warning: Invalid LOG_LEVEL="${rawLevel}". Valid: debug, info, warn, error. Falling back to "info".\n`,
-  );
+// Default threshold until initLog() is called
+let threshold = order.info;
+
+/** Initialize the log level from config. Call after loadConfig(). */
+export function initLog(level: Level): void {
+  if (order[level] === undefined) {
+    process.stderr.write(
+      `[log] Warning: Invalid LOG_LEVEL="${level}". Valid: debug, info, warn, error. Falling back to "info".\n`,
+    );
+    threshold = order.info;
+  } else {
+    threshold = order[level];
+  }
 }
 
 function emit(level: Level, msg: string, extra?: unknown): void {

@@ -1,9 +1,10 @@
 import { loadConfig, ensureGoblinHome } from "./config.ts";
 import { buildBot } from "./bot.ts";
-import { log } from "./log.ts";
+import { log, initLog } from "./log.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
+  initLog(cfg.logLevel);
   ensureGoblinHome(cfg);
   const { bot, manager } = buildBot(cfg);
   manager.init();

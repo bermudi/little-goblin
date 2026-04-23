@@ -13,6 +13,7 @@ function makeTestConfig(home: string): Config {
     modelName: "poe/Claude-Sonnet-4.6",
     poeApiKey: "test-key",
     goblinHome: home,
+    logLevel: "info",
   };
 }
 

@@ -37,7 +37,7 @@ export function buildNewHandler(manager: SessionManager) {
     // Private chat (DM): create a new session
     const state = manager.createForChat(loc);
     await ctx.reply(
-      `Created new session \`${state.id}\`\nWorkdir: \`sessions/${state.id}/workdir\``,
+      `Created new session \`${state.id}\``,
       { parse_mode: "MarkdownV2", ...replyOpts },
     );
   };

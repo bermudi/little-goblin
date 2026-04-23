@@ -76,7 +76,7 @@ export function loadConfig(): Config {
  * Call once at startup before any consumer tries to use the paths.
  */
 export function ensureGoblinHome(cfg: Config): void {
-  const dirs = [cfg.goblinHome, join(cfg.goblinHome, "sessions"), join(cfg.goblinHome, "skills")];
+  const dirs = [cfg.goblinHome, join(cfg.goblinHome, "sessions"), join(cfg.goblinHome, "skills"), join(cfg.goblinHome, "workdir"), join(cfg.goblinHome, "pi-agent")];
   for (const dir of dirs) {
     mkdirSync(dir, { recursive: true });
   }

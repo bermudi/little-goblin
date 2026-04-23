@@ -1,0 +1,24 @@
+{
+  "generated": "2026-04-22T18:10:00Z",
+  "source": "subagent(action: 'list')",
+  "agents": [
+    { "name": "context-builder", "scope": "builtin", "purpose": "Analyzes requirements and codebase, generates context and meta-prompt" },
+    { "name": "delegate", "scope": "builtin", "purpose": "Lightweight subagent that inherits the parent model with no default reads" },
+    { "name": "planner", "scope": "builtin", "purpose": "Creates implementation plans from context and requirements" },
+    { "name": "researcher", "scope": "builtin", "purpose": "Autonomous web researcher — searches, evaluates, and synthesizes a focused research brief" },
+    { "name": "reviewer", "scope": "builtin", "purpose": "Code review specialist that validates implementation and fixes issues" },
+    { "name": "scout", "scope": "builtin", "purpose": "Fast codebase recon that returns compressed context for handoff" },
+    { "name": "worker", "scope": "builtin", "purpose": "General-purpose subagent with full capabilities" },
+    { "name": "researcher", "scope": "user", "purpose": "Autonomous web researcher — searches, evaluates, and synthesizes a focused research brief" },
+    { "name": "reviewer", "scope": "user", "purpose": "General code review — parent specifies what to review and what to look for" },
+    { "name": "scout", "scope": "user", "purpose": "Fast codebase recon that returns compressed context for handoff" },
+    { "name": "workhorse", "scope": "user", "purpose": "Repetitive execution agent — bulk edits, boilerplate, mechanical refactors, apply-this-everywhere tasks" }
+  ],
+  "chains": [],
+  "models": [],
+  "notes": [
+    "User-defined agents override built-in agents of the same name.",
+    "Do not guess agent names. Only names in this manifest are valid.",
+    "Do not guess model overrides. Use the default model unless the user explicitly requests one."
+  ]
+}

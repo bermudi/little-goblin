@@ -2,21 +2,21 @@
 
 ## Phase 1: Goblin home layout for pi
 
-- [ ] Update `src/config.ts` `ensureGoblinHome()` to also create `$GOBLIN_HOME/workdir/` and `$GOBLIN_HOME/pi-agent/`.
-- [ ] Add `src/agent/paths.ts` with pure functions: `workdirPath(home)`, `piAgentDir(home)`, `agentsMdPath(home)`.
-- [ ] Unit tests for `src/agent/paths.ts` verifying path composition against a fixture home.
-- [ ] Update `AGENTS.md` at the repo root if any conventions change (likely none).
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Update `src/config.ts` `ensureGoblinHome()` to also create `$GOBLIN_HOME/workdir/` and `$GOBLIN_HOME/pi-agent/`.
+- [x] Add `src/agent/paths.ts` with pure functions: `workdirPath(home)`, `piAgentDir(home)`, `agentsMdPath(home)`.
+- [x] Unit tests for `src/agent/paths.ts` verifying path composition against a fixture home.
+- [x] Update `AGENTS.md` at the repo root if any conventions change (none needed).
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 1: prepare $GOBLIN_HOME layout for the agent runner`
 
 ## Phase 2: Events log helper
 
-- [ ] Add `src/agent/events.ts` exporting `appendEvent(sessionId: string, home: string, event: object): void`.
+- [x] Add `src/agent/events.ts` exporting `appendEvent(sessionId: string, home: string, event: object): void`.
   - Opens `$GOBLIN_HOME/sessions/<id>/events.jsonl` with `O_APPEND`, writes one line (`JSON.stringify(event) + "\n"`) with a single `writeSync` call, closes. Single write ensures atomic per-line append.
   - Stamps every event with `ts: <ISO-8601>` if not already present.
-- [ ] Unit test: write 1000 events concurrently (Promise.all of async calls), assert every line parses as valid JSON and count matches.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Unit test: write 1000 events concurrently (Promise.all of async calls), assert every line parses as valid JSON and count matches.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 2: add events.jsonl append helper`
 

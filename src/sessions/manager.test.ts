@@ -110,10 +110,9 @@ describe("SessionManager", () => {
       expect(state.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     });
 
-    it("creates workdir and empty jsonl files", () => {
+    it("creates empty jsonl files", () => {
       const loc: ChatLocator = { chatId: 123456 };
       const state = manager.createForChat(loc);
-      expect(existsSync(join(tmpDir, "sessions", state.id, "workdir"))).toBe(true);
       expect(existsSync(join(tmpDir, "sessions", state.id, "events.jsonl"))).toBe(true);
       expect(existsSync(join(tmpDir, "sessions", state.id, "transcript.jsonl"))).toBe(true);
     });

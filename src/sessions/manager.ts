@@ -5,7 +5,7 @@ import { log } from "../log.ts";
 import type { ChatLocator, SessionState } from "./types.ts";
 import { loadBindings, saveBindings } from "./bindings.ts";
 import { loadState, saveState } from "./state.ts";
-import { eventsPath, sessionsDir, sessionDir, transcriptPath, workdir } from "./paths.ts";
+import { eventsPath, sessionsDir, sessionDir, transcriptPath } from "./paths.ts";
 
 /**
  * Generate a short URL-safe session ID from a UUID.
@@ -19,8 +19,6 @@ function makeSessionId(): string {
 function ensureSessionFiles(home: string, id: string): void {
   const dir = sessionDir(home, id);
   mkdirSync(dir, { recursive: true });
-  mkdirSync(workdir(home, id), { recursive: true });
-
   // Create empty JSONL files if missing
   const eventsFile = eventsPath(home, id);
   const transcriptFile = transcriptPath(home, id);

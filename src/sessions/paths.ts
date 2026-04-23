@@ -12,10 +12,6 @@ export function sessionDir(home: string, id: string): string {
   return join(sessionsDir(home), id);
 }
 
-export function workdir(home: string, id: string): string {
-  return join(sessionDir(home, id), "workdir");
-}
-
 export function statePath(home: string, id: string): string {
   return join(sessionDir(home, id), "state.json");
 }

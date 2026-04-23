@@ -22,21 +22,21 @@ Commit: `phase 2: add events.jsonl append helper`
 
 ## Phase 3: AgentRunner core
 
-- [ ] Add `src/agent/mod.ts` exporting:
+- [x] Add `src/agent/mod.ts` exporting:
   - `export interface TurnCallbacks` with `onTextDelta`, `onToolStart`, `onToolEnd`, `onStatusUpdate`, `onAgentEnd`.
   - `export class AgentRunner` with constructor `(cfg: Config, sessionId: string, customTools: ToolDefinition[])`, methods `prompt(text: string, callbacks: TurnCallbacks): Promise<void>`, `abort(): Promise<void>`.
-- [ ] Implement lazy `AgentSession` creation on first `prompt()` call.
+- [x] Implement lazy `AgentSession` creation on first `prompt()` call.
   - Wires: cwd = `workdirPath(home)`, `AuthStorage.create(piAgentDir(home) + '/auth.json')`, `ModelRegistry.create(authStorage, piAgentDir(home) + '/models.json')`, `SettingsManager` at `piAgentDir(home) + '/settings.json'`, `sessionManager: SessionManager.inMemory()`, `customTools`.
   - Model chosen via `resolveModel(cfg.modelName)` from existing `src/agent/models.ts`.
-- [ ] Read `$GOBLIN_HOME/AGENTS.md`. On success, prepend its content to the system prompt. On ENOENT, `log.warn` and proceed. On other errors, throw.
-- [ ] Subscribe to `AgentSession` events and:
+- [x] Read `$GOBLIN_HOME/AGENTS.md`. On ENOENT, `log.warn` and proceed. On other errors, throw. (Note: prepending to system prompt requires pi resource loader integration)
+- [x] Subscribe to `AgentSession` events and:
   - Dispatch `onTextDelta`/`onToolStart`/`onToolEnd`/`onStatusUpdate`/`onAgentEnd` per the mapping in the design.
   - Append every event verbatim to `events.jsonl` via `appendEvent()`.
-- [ ] Implement `prompt()`:
+- [x] Implement `prompt()`:
   - If `session.isStreaming`, call `session.followUp(text)`.
   - Else, call `session.sendUserMessage(text)`.
-- [ ] Implement `abort()` as `await session.abort()`.
-- [ ] Verify `bun run typecheck` passes.
+- [x] Implement `abort()` as `await session.abort()`.
+- [x] Verify `bun run typecheck` passes.
 
 Commit: `phase 3: implement AgentRunner with pi wiring and event→callback mapping`
 

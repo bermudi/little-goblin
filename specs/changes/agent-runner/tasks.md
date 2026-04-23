@@ -42,15 +42,15 @@ Commit: `phase 3: implement AgentRunner with pi wiring and event→callback mapp
 
 ## Phase 4: Tests and lint guards
 
-- [ ] Add `src/agent/mod.test.ts` covering:
+- [x] Add `src/agent/mod.test.ts` covering:
   - Lazy pi creation (no session until first `prompt`).
   - Cwd and shared services paths are passed to pi correctly (inspect the `AgentSession` constructor arguments via a spy, or via the resulting file layout).
   - Custom tool callback fires `onToolStart`/`onToolEnd` with the right args.
   - `events.jsonl` contains one line per pi event across a complete turn.
   - `followUp` is used when `isStreaming === true`.
   - `abort()` resolves after idle.
-- [ ] Add a lint/test check that walks `src/agent/**/*.ts` imports and asserts none match `^grammy` or `\.\./tg/`. Implement as a `bun test` that runs `grep -r` or a small AST walk.
-- [ ] Verify `bun run typecheck` + `bun test` pass green.
+- [x] Add a lint/test check that walks `src/agent/**/*.ts` imports and asserts none match `^grammy` or `\.\./tg/`. Implement as a `bun test` that runs `grep -r` or a small AST walk.
+- [x] Verify `bun run typecheck` + `bun test` pass green.
 
 Commit: `phase 4: test AgentRunner behavior and enforce telegram-agnostic boundary`
 

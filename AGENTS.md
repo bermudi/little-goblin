@@ -1,0 +1,38 @@
+# little-goblin
+
+Telegram-native personal AI agent. Single user (bermudi), single process, homelab.
+
+Goblin lives in Telegram. You message it, it thinks, it responds. It can spawn subagents for focused work, persist conversation history, and evolve its own skills. Deep use of Telegram as UI — reactions, voice, topics, files — not just a chat wrapper.
+
+## Run
+
+```sh
+bun install
+cp .env.example .env   # BOT_TOKEN, ALLOWED_TG_USER_IDS, MODEL_NAME + API key
+bun run src/index.ts    # or: bun run dev
+```
+
+## Shape
+
+Single bun process. Three layers:
+
+1. **Telegram layer** — grammy client, message normalization, β-tools (reactions, voice, files). Turns Telegram events into goblin's world.
+2. **Session layer** — maps `(chat, topic)` to persistent session. Owns events.jsonl, state, bindings. Topics auto-create; DMs require `/new`.
+3. **Agent layer** — wraps pi-coding-agent. Manages LLM context, tool registry, subagent spawning.
+
+Entry at `src/index.ts` → `src/bot.ts` wires layers, mounts middleware, starts polling.
+
+Architecture lives in `specs/` (litespec). This file is just guardrails.
+
+## Guardrails
+
+- **TypeScript strict.** No `any`. Use `unknown` and narrow. Validate at boundaries.
+- **Atomic writes.** tmp + `renameSync`. JSON for state, JSONL for logs. No database.
+- **Fail loud.** `ENOENT` is expected — return null. Everything else propagates.
+- **No `console.log`.** Use `log` from `src/log.ts`.
+- **One module, one job.** Flat modules with `mod.ts` barrels. Colocate tests.
+
+## Things not to do
+
+- No web UI, no multi-channel, no plugin SDK, no Docker
+- Don't touch `$GOBLIN_HOME` from the code tree except through `SessionManager` and `paths.ts`

@@ -56,15 +56,15 @@ Commit: `phase 4: test AgentRunner behavior and enforce telegram-agnostic bounda
 
 ## Phase 5: Wire bot.ts to the runner (minimal)
 
-- [ ] In `src/bot.ts`, add a `Map<string, AgentRunner>` keyed by `sessionId`.
-- [ ] On message receive (after allowlist + session resolve), look up or lazily construct the runner for that session. For this change only, pass `customTools = []`.
-- [ ] Build a minimal `TurnCallbacks` implementation that:
+- [x] In `src/bot.ts`, add a `Map<string, AgentRunner>` keyed by `sessionId`.
+- [x] On message receive (after allowlist + session resolve), look up or lazily construct the runner for that session. For this change only, pass `customTools = []`.
+- [x] Build a minimal `TurnCallbacks` implementation that:
   - Accumulates `onTextDelta` into a string.
   - On `onAgentEnd`, sends one `ctx.reply(text)` with the accumulated content.
   - Logs tool starts/ends at debug level.
   - This is intentionally crude — real behavior arrives in the `message-buffer-streaming` change.
-- [ ] Smoke test end-to-end: run `bun run dev`, send a "hello" to the bot, confirm a reply arrives and `events.jsonl` contains events.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [~] Smoke test end-to-end: run `bun run dev`, send a "hello" to the bot, confirm a reply arrives and `events.jsonl` contains events.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 5: wire AgentRunner into bot.ts with a minimal reply callback`
 

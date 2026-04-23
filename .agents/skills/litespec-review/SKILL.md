@@ -181,4 +181,6 @@ Use the scorecard table from the applicable mode section.
 
 The report is the output. No follow-up actions from you. The user reads it and decides what to do next. If the user asks you to fix things, tell them to use apply.
 
+**Backlog deferral:** If the change explicitly defers scope that is not already in `specs/backlog.md`, suggest adding the deferred items to the backlog.
+
 **Cross-cutting rules:** When reviewing design.md, flag imperative language that reads like a standing architectural ruling ("all subagents must...", "we will never...", "every change shall..."). Recommend promoting such rules to a decision via `litespec decide <slug>`.

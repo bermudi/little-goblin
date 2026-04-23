@@ -34,5 +34,8 @@ Architecture lives in `specs/` (litespec). This file is just guardrails.
 
 ## Things not to do
 
-- No web UI, no multi-channel, no plugin SDK, no Docker
+- No web UI, no multi-channel, no plugin SDK, no Docker, no k8s, no database
+- No security audit system
+- No vector stores (grep > embeddings at this scale)
+- No multi-agent gateway
 - Don't touch `$GOBLIN_HOME` from the code tree except through `SessionManager` and `paths.ts`

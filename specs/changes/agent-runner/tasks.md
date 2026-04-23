@@ -68,9 +68,4 @@ Commit: `phase 4: test AgentRunner behavior and enforce telegram-agnostic bounda
 
 Commit: `phase 5: wire AgentRunner into bot.ts with a minimal reply callback`
 
-## Phase 6: Validate and archive
 
-- [ ] `litespec validate agent-runner` (strict).
-- [ ] Manual review of the spec deltas vs the implementation.
-- [ ] `litespec preview agent-runner` to see the canonical spec diff.
-- [ ] `litespec archive agent-runner` when satisfied.

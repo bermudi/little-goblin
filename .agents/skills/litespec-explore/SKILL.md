@@ -58,6 +58,8 @@ litespec list --json
 
 This tells you if there are active changes and what the user might be working on.
 
+**Backlog awareness:** If `specs/backlog.md` exists, read it for context on parked items and open questions before diving in.
+
 ### When no change exists
 Think freely. When insights crystallize, offer to proceed to grill or create a proposal. No pressure.
 

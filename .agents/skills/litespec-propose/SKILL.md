@@ -106,6 +106,8 @@ Rules:
 
 **Standing rules check:** During design.md authoring, check whether any language sounds like a cross-cutting rule ("all changes must...", "we will never..."). If so, suggest citing an existing decision from `specs/decisions/` or creating one via `litespec decide <slug>`.
 
+**Backlog graduation:** If `specs/backlog.md` exists, check whether this proposal materializes a backlog item. If so, suggest removing it from the backlog.
+
 ---
 
 ## What You Are Doing

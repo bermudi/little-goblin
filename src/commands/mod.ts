@@ -2,6 +2,7 @@ import type { Bot } from "grammy";
 import type { SessionManager } from "../sessions/mod.ts";
 import { pingHandler } from "./ping.ts";
 import { buildNewHandler } from "./new.ts";
+import { buildStartHandler } from "./start.ts";
 
 /**
  * Register all command handlers on the bot.
@@ -10,4 +11,5 @@ import { buildNewHandler } from "./new.ts";
 export function registerCommands(bot: Bot, manager: SessionManager): void {
   bot.command("ping", pingHandler);
   bot.command("new", buildNewHandler(manager));
+  bot.command("start", buildStartHandler(manager));
 }

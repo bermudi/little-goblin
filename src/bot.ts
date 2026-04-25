@@ -32,7 +32,12 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager } {
 
     const session = manager.resolve(locator);
     if (!session) {
-      // DM without active session - silently drop (user needs /new)
+      // DM without active session - prompt user to create one
+      if (locator.topicId === undefined) {
+        ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
+          log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
+        });
+      }
       log.debug("dropping message: no session", { chatId: locator.chatId, topicId: locator.topicId });
       return;
     }

@@ -22,23 +22,30 @@ export function buildStartHandler(manager: SessionManager) {
     const replyOpts = replyThreadId !== undefined ? { message_thread_id: replyThreadId } : {};
 
     // Reject non-private, non-topic chats (plain groups have no session isolation)
+    // Check for message_thread_id to handle forum General topics (is_topic_message=false but still a forum)
     const chatType = ctx.chat?.type;
-    if (chatType !== "private" && loc.topicId === undefined) {
+    const hasThreadId = ctx.msg && "message_thread_id" in ctx.msg && typeof ctx.msg.message_thread_id === "number";
+    if (chatType !== "private" && loc.topicId === undefined && !hasThreadId) {
       await ctx.reply("Use /start in a private chat or a forum topic.", replyOpts);
       return;
     }
 
-    if (loc.topicId !== undefined) {
-      // In a real forum topic - already has a session (auto-created on first message)
+    if (loc.topicId !== undefined || hasThreadId) {
+      // In a forum topic (including General) - already has a session (auto-created on first message)
       await ctx.reply("This topic is already its own session. Just start typing!", replyOpts);
       return;
     }
 
     // Private chat (DM): create a new session
-    const state = manager.createForChat(loc);
-    await ctx.reply(
-      `Session \`${state.id}\` ready\. Just start typing\!`,
-      { parse_mode: "MarkdownV2", ...replyOpts },
-    );
+    try {
+      const state = manager.createForChat(loc);
+      await ctx.reply(
+        `Session \`${state.id}\` ready\. Just start typing\!`,
+        { parse_mode: "MarkdownV2", ...replyOpts },
+      );
+    } catch (e) {
+      await ctx.reply("Failed to create session. Please try again.");
+      throw e;
+    }
   };
 }

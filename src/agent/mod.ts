@@ -20,6 +20,7 @@ import { agentsMdPath, piAgentDir, workdirPath } from "./paths.ts";
 import { resolveModel } from "./models.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { MemoryStore, createMemoryTool } from "../memory/mod.ts";
 
 /** Callbacks for turn events */
 export interface TurnCallbacks {
@@ -42,11 +43,14 @@ export class AgentRunner {
   private unsubscribe: (() => void) | null = null;
   private accumulatedText: string = "";
   private callbacks: TurnCallbacks | null = null;
+  private memoryStore: MemoryStore;
 
   constructor(cfg: Config, sessionId: string, customTools: ToolDefinition[]) {
     this.cfg = cfg;
     this.sessionId = sessionId;
     this.customTools = customTools;
+    // Construction is cheap (no I/O); the directory is created lazily on first write.
+    this.memoryStore = new MemoryStore(cfg.goblinHome);
   }
 
   /**
@@ -87,6 +91,12 @@ export class AgentRunner {
       }
     }
 
+    // Caller-supplied tools first; the memory tool is appended.
+    const tools: ToolDefinition[] = [
+      ...this.customTools,
+      createMemoryTool(this.memoryStore),
+    ];
+
     const { session } = await createAgentSession({
       cwd: workdirPath(home),
       authStorage,
@@ -94,7 +104,7 @@ export class AgentRunner {
       settingsManager,
       sessionManager,
       model: resolved.model,
-      customTools: this.customTools,
+      customTools: tools,
     });
 
     this.session = session;

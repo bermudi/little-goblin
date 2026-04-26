@@ -71,15 +71,15 @@ Commit: `phase 3: memory tool and snapshot formatter`
 
 ## Phase 4: AgentRunner memory tool registration
 
-- [ ] In `src/agent/mod.ts`:
+- [x] In `src/agent/mod.ts`:
   - Add private field `private memoryStore: MemoryStore`.
-  - In `init()`, instantiate `this.memoryStore = new MemoryStore(this.cfg.goblinHome)` once (cheap; constructor does no I/O).
+  - Instantiate `this.memoryStore = new MemoryStore(this.cfg.goblinHome)` in the constructor (cheap; no I/O). _Deviation:_ initialized in constructor instead of `init()` so the field has a non-null type without a definite-assignment assertion.
   - Build a local copy of customTools as `[...this.customTools, createMemoryTool(this.memoryStore)]` and pass it to `createAgentSession`. Caller-supplied tools come first; the memory tool is appended.
-- [ ] `src/bot.ts` requires no changes; the existing `new AgentRunner(cfg, session.id, [])` site continues to work and the runner adds the memory tool internally.
-- [ ] Extend `src/agent/mod.test.ts` using the existing `mock.module("@mariozechner/pi-coding-agent", ...)` pattern at lines 66–86 and the `capturedCreateArgs` capture at line 60:
+- [x] `src/bot.ts` requires no changes; the existing `new AgentRunner(cfg, session.id, [])` site continues to work and the runner adds the memory tool internally.
+- [x] Extend `src/agent/mod.test.ts` using the existing `mock.module("@mariozechner/pi-coding-agent", ...)` pattern at lines 66–86 and the `capturedCreateArgs` capture at line 60:
   - Assert `customTools` passed to `createAgentSession` includes a tool definition named `memory` (read it off the captured args).
   - Assert that when the runner is constructed with `customTools = [t1, t2]`, the captured `customTools` includes `t1`, `t2`, and `memory`.
-- [ ] Verify `bun run typecheck` and `bun test` pass.
+- [x] Verify `bun run typecheck` and `bun test` pass.
 
 Commit: `phase 4: AgentRunner registers memory tool`
 

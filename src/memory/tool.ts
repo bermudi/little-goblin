@@ -1,5 +1,5 @@
 import { Type, type Static } from "@sinclair/typebox";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { MemoryTarget } from "./paths.ts";
 import type { MemoryStore, StoreResult } from "./store.ts";
 
@@ -66,8 +66,8 @@ function summarize(action: "add" | "replace" | "remove", target: MemoryTarget): 
  * errors into `isError: true` tool results that the model can read and
  * recover from.
  */
-export function createMemoryTool(store: MemoryStore): ToolDefinition<typeof memorySchema, undefined> {
-  return {
+export function createMemoryTool(store: MemoryStore): ToolDefinition {
+  return defineTool({
     name: "memory",
     label: "Memory",
     description: DESCRIPTION,
@@ -108,5 +108,5 @@ export function createMemoryTool(store: MemoryStore): ToolDefinition<typeof memo
       }
       return textResult(summarize(action, target));
     },
-  };
+  });
 }

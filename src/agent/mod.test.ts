@@ -149,6 +149,31 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("AgentRunner", () => {
+  describe("memory tool registration", () => {
+    it("appends a `memory` tool to customTools when none are supplied", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      expect(Array.isArray(tools)).toBe(true);
+      const names = tools.map((t) => t.name);
+      expect(names).toContain("memory");
+    });
+
+    it("preserves caller-supplied tools and appends memory after them", async () => {
+      const t1 = { name: "t1" };
+      const t2 = { name: "t2" };
+      const runner = makeRunner(tmpDir, [t1, t2]);
+      await runner.prompt("hello", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).toEqual(["t1", "t2", "memory"]);
+    });
+  });
+
   describe("lazy pi creation", () => {
     it("does not call createAgentSession before prompt()", async () => {
       makeRunner(tmpDir);

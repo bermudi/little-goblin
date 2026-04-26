@@ -56,12 +56,12 @@ Commit: `phase 5: 4096 character rollover for response messages`
 
 ## Phase 6: Big output file escape (>20KB)
 
-- [ ] Implement big output detection: `accumulatedText.length > 20000`.
-- [ ] When triggered: write text to temp file, send as `InputFile` via `bot.api.sendDocument`, send summary text via `bot.api.sendMessage`.
-- [ ] Summary format: first 500 chars + "... [truncated, see attached reply.md]".
-- [ ] Clean up temp file after send (or use tmpdir with cleanup).
-- [ ] Unit test with mocked file system and bot API.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Implement big output detection: `accumulatedText.length > 20000`.
+- [x] When triggered: write text to temp file, send as `InputFile` via `bot.api.sendDocument`, send summary text via `bot.api.sendMessage`.
+- [x] Summary format: first 500 chars + "... [truncated, see attached reply.md]".
+- [x] Clean up temp file after send (or use tmpdir with cleanup).
+- [x] Unit test with mocked file system and bot API.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 6: big output escapes to file attachment`
 

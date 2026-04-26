@@ -1,6 +1,13 @@
 import { describe, it, expect } from "bun:test";
+import { InputFile } from "grammy";
 import type { Bot } from "grammy";
-import { MessageBuffer, MAX_MESSAGE_LEN, findSafeSplit } from "./buffer.ts";
+import {
+  MessageBuffer,
+  MAX_MESSAGE_LEN,
+  BIG_OUTPUT_THRESHOLD,
+  SUMMARY_PREFIX_LEN,
+  findSafeSplit,
+} from "./buffer.ts";
 
 interface SendCall {
   chatId: number | string;
@@ -11,23 +18,31 @@ interface EditCall {
   messageId: number;
   text: string;
 }
+interface DocumentCall {
+  chatId: number | string;
+  filename: string | undefined;
+  document: InputFile;
+}
 
 interface MockBot {
   bot: Bot;
   send: SendCall[];
   edit: EditCall[];
-  /** Set to throw the next sendMessage / editMessageText. */
-  failNext: { send?: unknown; edit?: unknown };
+  documents: DocumentCall[];
+  /** Set to throw the next sendMessage / editMessageText / sendDocument. */
+  failNext: { send?: unknown; edit?: unknown; document?: unknown };
   nextMessageId: number;
 }
 
 function makeBot(): MockBot {
   const send: SendCall[] = [];
   const edit: EditCall[] = [];
+  const documents: DocumentCall[] = [];
   const state: MockBot = {
     bot: undefined as unknown as Bot,
     send,
     edit,
+    documents,
     failNext: {},
     nextMessageId: 100,
   };
@@ -54,6 +69,15 @@ function makeBot(): MockBot {
         }
         edit.push({ chatId, messageId, text });
         return true;
+      },
+      sendDocument: async (chatId: number | string, document: InputFile) => {
+        if (state.failNext.document !== undefined) {
+          const err = state.failNext.document;
+          state.failNext.document = undefined;
+          throw err;
+        }
+        documents.push({ chatId, filename: document.filename, document });
+        return { message_id: ++state.nextMessageId };
       },
     },
   } as unknown as Bot;
@@ -631,6 +655,87 @@ describe("MessageBuffer", () => {
       await buffer.flushResponse(true);
       const lastEdit = m.edit[m.edit.length - 1];
       expect(lastEdit?.messageId).toBe(102);
+    });
+  });
+
+  describe("big output file escape (>20KB)", () => {
+    /** Disable both auto-flushes; drive via explicit `flushResponse(true)`. */
+    const ALL_OFF = {
+      statusThrottleMs: Number.MAX_SAFE_INTEGER,
+      responseThrottleMs: Number.MAX_SAFE_INTEGER,
+    };
+
+    it("does not escape when text is at or below threshold", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      buffer.onTextDelta("a".repeat(BIG_OUTPUT_THRESHOLD));
+      await buffer.flushResponse(true);
+      expect(m.documents.length).toBe(0);
+    });
+
+    it("escapes >20KB text to reply.md attachment with summary", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 42, ALL_OFF);
+      const big = "X".repeat(BIG_OUTPUT_THRESHOLD + 1000);
+      buffer.onTextDelta(big);
+      await buffer.flushResponse(true);
+
+      // Document upload: filename is "reply.md", chatId matches.
+      expect(m.documents.length).toBe(1);
+      expect(m.documents[0]?.chatId).toBe(42);
+      expect(m.documents[0]?.filename).toBe("reply.md");
+
+      // Summary message: first 500 chars of the response + truncation suffix.
+      expect(m.send.length).toBe(1);
+      const expectedSummary =
+        "X".repeat(SUMMARY_PREFIX_LEN) +
+        "... [truncated, see attached reply.md]";
+      expect(m.send[0]?.text).toBe(expectedSummary);
+
+      // No rollover messages should fire.
+      expect(m.edit.length).toBe(0);
+    });
+
+    it("clears state after file escape so future deltas start fresh", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      buffer.onTextDelta("Y".repeat(BIG_OUTPUT_THRESHOLD + 100));
+      await buffer.flushResponse(true);
+
+      const s = buffer._state();
+      expect(s.accumulatedText).toBe("");
+      expect(s.responseMessageId).toBeUndefined();
+
+      // New deltas should land in a new message, not edit anything stale.
+      buffer.onTextDelta("after");
+      await buffer.flushResponse(true);
+      const lastSend = m.send[m.send.length - 1];
+      expect(lastSend?.text).toBe("after");
+    });
+
+    it("clears state even if sendDocument fails", async () => {
+      const m = makeBot();
+      m.failNext.document = new Error("network");
+      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      buffer.onTextDelta("Z".repeat(BIG_OUTPUT_THRESHOLD + 5));
+      await buffer.flushResponse(true);
+
+      const s = buffer._state();
+      expect(s.accumulatedText).toBe("");
+      expect(s.responseMessageId).toBeUndefined();
+      expect(m.documents.length).toBe(0);
+    });
+
+    it("file escape pre-empts rollover (no 4096-message spam)", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      // 50KB would otherwise produce ~12 rollover messages.
+      buffer.onTextDelta("Q".repeat(50_000));
+      await buffer.flushResponse(true);
+
+      expect(m.documents.length).toBe(1);
+      expect(m.send.length).toBe(1); // just the summary
+      expect(m.edit.length).toBe(0);
     });
   });
 });

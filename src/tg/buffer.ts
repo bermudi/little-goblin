@@ -1,4 +1,8 @@
+import { InputFile } from "grammy";
 import type { Bot } from "grammy";
+import { writeFile, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { TurnCallbacks } from "../agent/mod.ts";
 import { log } from "../log.ts";
 
@@ -32,6 +36,16 @@ const TOOL_STATE_EMOJI: Record<ToolState, string> = {
 
 /** Telegram's hard message length limit. */
 export const MAX_MESSAGE_LEN = 4096;
+
+/**
+ * Threshold above which response text is escaped to a `reply.md` attachment
+ * instead of being split across multiple Telegram messages. Past ~5 messages
+ * (5 * 4096 = 20480) readability suffers; files are friendlier.
+ */
+export const BIG_OUTPUT_THRESHOLD = 20000;
+
+/** Number of characters from the head of the response shown alongside the file. */
+export const SUMMARY_PREFIX_LEN = 500;
 
 /**
  * Pick a split index <= `maxLen` that does not cut a UTF-16 surrogate pair.
@@ -174,6 +188,10 @@ export class MessageBuffer implements TurnCallbacks {
 
     this.lastResponseEditTime = now;
 
+    // Big output? Escape to file before doing anything else; we do not want
+    // to spam many rollover messages for a 50KB code dump.
+    if (await this.maybeFileEscape()) return;
+
     // Drain any overflow first; this may send/edit several messages.
     await this.maybeRollover();
 
@@ -196,6 +214,46 @@ export class MessageBuffer implements TurnCallbacks {
     } catch (err) {
       this.handleResponseError(err);
     }
+  }
+
+  /**
+   * If `accumulatedText` exceeds `BIG_OUTPUT_THRESHOLD`, write it to a temp
+   * file, upload it as `reply.md`, and send a short summary text. Resets
+   * the response state in either success or failure so the buffer does not
+   * keep retrying with the same huge payload.
+   *
+   * Returns true if the escape was triggered (regardless of API success).
+   */
+  private async maybeFileEscape(): Promise<boolean> {
+    if (this.accumulatedText.length <= BIG_OUTPUT_THRESHOLD) return false;
+
+    const text = this.accumulatedText;
+    const summary =
+      text.slice(0, SUMMARY_PREFIX_LEN) +
+      "... [truncated, see attached reply.md]";
+    const tmpName = `goblin-reply-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.md`;
+    const tmpPath = join(tmpdir(), tmpName);
+
+    let wrote = false;
+    try {
+      await writeFile(tmpPath, text, "utf-8");
+      wrote = true;
+      await this.bot.api.sendDocument(
+        this.chatId,
+        new InputFile(tmpPath, "reply.md"),
+      );
+      await this.bot.api.sendMessage(this.chatId, summary);
+    } catch (err) {
+      this.handleResponseError(err);
+    } finally {
+      if (wrote) await unlink(tmpPath).catch(() => {});
+    }
+
+    // The active in-memory text has been "spent" — clear regardless of
+    // outcome so we do not loop trying to upload it again.
+    this.accumulatedText = "";
+    this.responseMessageId = undefined;
+    return true;
   }
 
   /**

@@ -2,12 +2,12 @@
 
 ## Phase 1: MessageBuffer skeleton and TurnCallbacks
 
-- [ ] Create `src/tg/buffer.ts` with `MessageBuffer` class implementing `TurnCallbacks`:
+- [x] Create `src/tg/buffer.ts` with `MessageBuffer` class implementing `TurnCallbacks`:
   - Constructor accepts `bot: Bot`, `chatId: number`, `options?: {visibility?: string}`
   - All callback methods stubbed (empty)
   - Internal state tracking: `statusMessageId`, `responseMessageId`, `accumulatedText`, `toolStates: Map<string, string>`, `lastEditTime`, `isStreaming`
-- [ ] Add `src/tg/buffer.test.ts` with basic instantiation test.
-- [ ] Verify `bun run typecheck` passes.
+- [x] Add `src/tg/buffer.test.ts` with basic instantiation test.
+- [x] Verify `bun run typecheck` passes.
 
 Commit: `phase 1: MessageBuffer skeleton with TurnCallbacks interface`
 

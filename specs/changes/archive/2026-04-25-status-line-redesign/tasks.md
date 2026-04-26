@@ -55,8 +55,8 @@ Commit: `phase 3: test suite for phase machine and coalescing`
 
 ## Phase 4: Validate and archive
 
-- [ ] `litespec validate status-line-redesign` (strict).
-- [ ] Manual review of spec deltas vs implementation.
-- [ ] Smoke test in real Telegram: trigger a multi-tool turn, verify exactly one placeholder + working + done sequence appears in chat with no churn.
-- [ ] `litespec preview status-line-redesign`.
-- [ ] `litespec archive status-line-redesign` once satisfied.
+- [x] `litespec validate status-line-redesign` (strict).
+- [x] Manual review of spec deltas vs implementation. _(Surfaced two real-world bugs during smoke test — sequential-tool premature Done transition and concurrent-edit response truncation. Both fixed; spec scenarios updated to reflect the actual Working↔Done transition timing.)_
+- [x] Smoke test in real Telegram: trigger a multi-tool turn, verify exactly one placeholder + working + done sequence appears in chat with no churn. _(Verified by user.)_
+- [x] `litespec preview status-line-redesign`.
+- [x] `litespec archive status-line-redesign` once satisfied.

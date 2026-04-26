@@ -2,8 +2,9 @@
  * Type definitions for the subagent runtime.
  *
  * See specs/changes/subagent-runtime/specs/subagents/spec.md for behavior.
- * Phase 1: skeleton — implementations land in subsequent phases.
  */
+
+import type { SessionManager } from "@mariozechner/pi-coding-agent";
 
 /** Status of a subagent instance. */
 export type SubagentStatus = "running" | "idle" | "completed" | "cancelled" | "error";
@@ -23,10 +24,14 @@ export interface SpawnOptions {
    */
   name?: string;
   /**
-   * Current depth in the spawn tree. Goblin (root) = 0, its subagents = 1, etc.
-   * Defaults to 0 when omitted (i.e. spawned by goblin).
+   * Depth of the *spawner* in the subagent tree. Goblin (root) is 0,
+   * a subagent goblin spawned is at depth 1, and so on. The runner
+   * computes the new subagent's depth as `spawner.depth + 1`.
+   * Defaults to 0 (i.e. spawned directly by goblin).
    */
   depth?: number;
+  /** Identifier of the spawning agent (goblin session id or parent subagent id). */
+  spawnedBy?: string;
   /**
    * Optional callback for streaming subagent activity back to the caller.
    * The runner prefixes status messages with the subagent name/id.
@@ -56,18 +61,41 @@ export interface SubagentInfo {
 
 /**
  * Internal in-memory representation of an active subagent.
- * Concrete shape (session ref, callbacks, abort handles) is filled in
- * during phases 2+; kept open here so tests can assert basic identity.
+ * The pi `AgentSession` reference is attached in phase 4 when execution lands.
  */
 export interface SubagentInstance {
   id: string;
   name: string | null;
   role: SubagentRole;
   status: SubagentStatus;
+  /** Depth of *this* subagent (spawner.depth + 1). */
   depth: number;
   spawnedAt: string;
+  spawnedBy: string | null;
   /** Absolute path to the directory holding `session.jsonl` and `meta.json`. */
   dir: string;
+  /** The pi SessionManager owning the persisted session for this subagent. */
+  sessionManager: SessionManager;
+  /** Initial prompt — kept around so phase 4 can hand it to AgentSession. */
+  initialPrompt: string;
+  /** Optional status callback registered by the spawner. */
+  onStatusUpdate?: (message: string) => void;
+}
+
+/**
+ * On-disk metadata for a subagent (`meta.json`).
+ */
+export interface SubagentMeta {
+  id: string;
+  role: SubagentRole;
+  name: string | null;
+  spawnedBy: string | null;
+  depth: number;
+  createdAt: string;
+  /** Set in phase 4 once execution finishes. */
+  completedAt?: string;
+  /** Set in phase 4/6 to track lifecycle. */
+  status?: SubagentStatus;
 }
 
 /**

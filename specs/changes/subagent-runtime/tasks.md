@@ -15,18 +15,18 @@ Commit: `phase 1: SubagentRunner skeleton and types`
 
 ## Phase 2: Generic subagent spawning
 
-- [ ] Implement `spawn(options: SpawnOptions)`:
+- [x] Implement `spawn(options: SpawnOptions)`:
   - Check depth limit (≤3).
   - Generate UUID for subagent ID.
   - Create directory `~/goblin/subagents/<id>/`.
   - Create `meta.json` with `{spawnedBy, role: 'generic', createdAt}`.
   - Create pi `SessionManager` at that path (persisted session).
-  - Build system prompt from `options.prompt`.
-  - Load skills from parent (inherit `~/goblin/skills/` via pi's resource loader).
-  - Start session with prompt, return `{id, status: 'running'}`.
-- [ ] Track subagent in `activeSubagents` map.
-- [ ] Unit test: verify spawn creates directory, session file, meta.json.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+  - Build system prompt from `options.prompt`. _(deferred to phase 4 — needs `createAgentSession`)_
+  - Load skills from parent (inherit `~/goblin/skills/` via pi's resource loader). _(deferred to phase 4)_
+  - Start session with prompt, return `{id, status: 'running'}`. _(handle returned; LLM kick-off lands in phase 4)_
+- [x] Track subagent in `activeSubagents` map.
+- [x] Unit test: verify spawn creates directory, session file, meta.json.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 2: generic subagent spawning with depth check`
 

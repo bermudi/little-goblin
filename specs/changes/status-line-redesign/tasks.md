@@ -28,15 +28,15 @@ Commit: `phase 2: wire callbacks to phase transitions and freeze on agent_end`
 
 ## Phase 3: Test rewrite — phase machine & coalescing
 
-- [ ] Remove obsolete tests from `src/tg/buffer.test.ts`:
+- [x] Remove obsolete tests from `src/tg/buffer.test.ts`:
   - `"renders empty string when no tool activity"` (replaced by phase tests).
   - `"marks a tool as running on onToolStart"` (per-tool assertion).
   - `"transitions running → success on onToolEnd(false)"`, `"transitions running → error on onToolEnd(true)"`.
   - `"preserves insertion order for multiple tools"` (replaced by phase tool-list test).
   - `"appends ✍️ composing when streaming with no running tool"`.
   - `"hides ✍️ composing while a tool is still running"`.
-  - `"clears isStreaming on onAgentEnd"` — adapt: `statusFrozen` instead of `isStreaming`.
-- [ ] Add tests:
+  - `"clears isStreaming on onAgentEnd"` — retained, adapted to also assert `statusFrozen`.
+- [x] Add tests:
   - `"onStatusUpdate sends eager placeholder before any response message"` — verify `sendMessage` for status fires before any response send.
   - `"thinking phase renders 🤔 thinking…"`.
   - `"working phase renders 🔧 working: <names>"` with multiple tools.
@@ -48,8 +48,8 @@ Commit: `phase 2: wire callbacks to phase transitions and freeze on agent_end`
   - `"zero-tool turn leaves placeholder or empty resting state"` — agent_start → agent_end with no tools; verify final state is acceptable.
   - `"visibility=minimal filters tool names from phase rendering"` — `read` does not appear in working/done lists.
   - `"visibility=none suppresses placeholder entirely"`.
-- [ ] Adapt remaining throttle / error-recovery / chat-action tests to the new phase-driven flow.
-- [ ] Verify `bun run typecheck` + `bun test` all pass.
+- [x] Adapt remaining throttle / error-recovery / chat-action tests to the new phase-driven flow. _(Replaced `STATUS_OFF`/`ALL_OFF` test fixtures with `visibility: "none"` since `force=true` flushes bypass any throttle setting.)_
+- [x] Verify `bun run typecheck` + `bun test` all pass. _(162/162 across 10 files.)_
 
 Commit: `phase 3: test suite for phase machine and coalescing`
 

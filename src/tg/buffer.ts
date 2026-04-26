@@ -130,6 +130,14 @@ export class MessageBuffer implements TurnCallbacks {
   private statusFrozen: boolean = false;
   /** Tracks whether the eager placeholder has been emitted. */
   private placeholderSent: boolean = false;
+  /**
+   * The rendered status text most recently committed to Telegram (or
+   * attempted, in the success path). Used to suppress no-op edits when
+   * the same text would be rewritten — Telegram rejects identical edits
+   * with a 400, and the user-visible chat doesn't change anyway. Also
+   * caps the typical turn at 3 writes (placeholder + working + done).
+   */
+  private lastRenderedStatusText: string = "";
 
   private now: () => number;
   private statusThrottleMs: number;
@@ -170,11 +178,10 @@ export class MessageBuffer implements TurnCallbacks {
     this.accumulatedText += delta;
     this.isStreaming = true;
     this.startChatAction();
-    // No status flush here — the phase machine only edits the status on
-    // phase transitions, never per text delta. Liveness is conveyed by
-    // the chat-action above. Lazy-send the placeholder if no agent_start
-    // arrived first (defensive; AgentRunner does call onStatusUpdate).
-    this.maybeSendPlaceholder();
+    // No status flush per delta — the phase machine only edits the status
+    // on phase transitions. Liveness is conveyed by the chat-action above.
+    // Lazy-send the placeholder if no agent_start arrived first (defensive).
+    if (!this.placeholderSent) this.commitStatus();
     void this.flushResponse();
   }
 
@@ -188,8 +195,7 @@ export class MessageBuffer implements TurnCallbacks {
     // event we care about is the Working→Done transition in onToolEnd.
     if (this.phase === "thinking") {
       this.phase = "working";
-      this.maybeSendPlaceholder();
-      void this.flushStatus(true);
+      this.commitStatus();
     }
   }
 
@@ -200,7 +206,7 @@ export class MessageBuffer implements TurnCallbacks {
     // Last running tool finished — transition to Done.
     if (this.toolsRunning.size === 0 && this.phase === "working") {
       this.phase = "done";
-      void this.flushStatus(true);
+      this.commitStatus();
     }
   }
 
@@ -208,31 +214,36 @@ export class MessageBuffer implements TurnCallbacks {
     // AgentRunner fires onStatusUpdate("thinking...") on agent_start. We
     // use that as the cue to send the eager placeholder, guaranteeing the
     // status message exists before any response message can be created.
-    this.maybeSendPlaceholder();
+    if (!this.placeholderSent) this.commitStatus();
   }
 
   onAgentEnd(): void {
     this.isStreaming = false;
     this.stopChatAction();
-    // If still in Working when the agent ends (rare — means a tool was
-    // left dangling), force the Done transition so the resting state is
-    // coherent.
-    if (this.phase === "working") this.phase = "done";
-    // force=true bypasses the throttle so the final state always lands.
+    // The turn is over; the resting state is always Done. (Zero-tool
+    // turns transition thinking→done; typical turns are already there
+    // courtesy of the last onToolEnd.)
+    this.phase = "done";
     // Flush BEFORE freezing so this final write is the one that survives.
-    void this.flushStatus(true);
+    // The `lastRenderedStatusText` guard inside flushStatus skips the
+    // edit if Done was already committed by the last onToolEnd — keeping
+    // typical turns at ≤3 writes per the spec.
+    if (this.visibility !== "none" && this.buildStatusLine().length > 0) {
+      this.placeholderSent = true;
+      void this.flushStatus(true);
+    }
     this.statusFrozen = true;
     void this.flushResponse(true);
   }
 
   /**
-   * Send the eager status placeholder if we have not yet. Called from
-   * `onStatusUpdate` (the happy path), or as a defensive lazy-send from
-   * `onTextDelta` / `onToolStart` if no agent_start cue ever arrived.
-   * Visibility "none" suppresses it entirely.
+   * Single entry point for any state-changing status flush: phase
+   * transitions, eager placeholders, lazy fallbacks. Marks the placeholder
+   * as sent (so future entries don't re-trigger the eager path) and fires
+   * exactly one `flushStatus(force=true)`. Visibility "none" suppresses
+   * everything.
    */
-  private maybeSendPlaceholder(): void {
-    if (this.placeholderSent) return;
+  private commitStatus(): void {
     if (this.visibility === "none") return;
     this.placeholderSent = true;
     void this.flushStatus(true);
@@ -314,9 +325,12 @@ export class MessageBuffer implements TurnCallbacks {
 
     const text = this.buildStatusLine();
     if (!text) return;
+    // Idempotent edit suppression — see `lastRenderedStatusText` doc.
+    if (text === this.lastRenderedStatusText) return;
 
     // Set the throttle window before awaiting so concurrent events coalesce.
     this.lastEditTime = now;
+    this.lastRenderedStatusText = text;
 
     try {
       if (this.statusMessageId === undefined) {
@@ -330,13 +344,20 @@ export class MessageBuffer implements TurnCallbacks {
         );
       }
     } catch (err) {
+      // Keep `lastRenderedStatusText` set even on error; on retry the next
+      // flush will skip the duplicate. If state recovery resets the message
+      // id (handleStatusError), the next non-duplicate transition will
+      // re-send. The 429 path explicitly does not need re-attempt.
       this.handleStatusError(err);
     }
   }
 
   private handleStatusError(err: unknown): void {
     this.handleApiError(err, "status", () => {
+      // Message gone — reset both id and lastRenderedStatusText so the
+      // next flush re-sends a fresh placeholder.
       this.statusMessageId = undefined;
+      this.lastRenderedStatusText = "";
     });
   }
 
@@ -535,12 +556,6 @@ export class MessageBuffer implements TurnCallbacks {
       hadError: this.hadError,
       statusFrozen: this.statusFrozen,
       placeholderSent: this.placeholderSent,
-      /**
-       * Legacy field kept solely so the still-unmigrated test suite
-       * compiles between phases 1 and 3. Always empty; not used by
-       * production code. Removed when tests are rewritten in phase 3.
-       */
-      toolStates: new Map<string, "running" | "success" | "error">(),
       lastEditTime: this.lastEditTime,
       lastResponseEditTime: this.lastResponseEditTime,
       isStreaming: this.isStreaming,

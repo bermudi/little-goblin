@@ -2,8 +2,8 @@
 
 ## Phase 1: Memory paths and store
 
-- [ ] Create `src/memory/paths.ts` exporting `memoryDir(home)` and `memoryFilePath(home, target)`.
-- [ ] Create `src/memory/store.ts` with `class MemoryStore`:
+- [x] Create `src/memory/paths.ts` exporting `memoryDir(home)` and `memoryFilePath(home, target)`.
+- [x] Create `src/memory/store.ts` with `class MemoryStore`:
   - Constructor takes `goblinHome: string`.
   - `read(target: "memory" | "user"): string` — returns file contents or `""` on `ENOENT`.
   - Private constants: `MEMORY_CAP = 4000`, `USER_CAP = 2000`, `DELIMITER = "\n§\n"`.
@@ -11,13 +11,13 @@
   - Atomic writes via tmp file + `fs.renameSync` (mirror existing `src/sessions/manager.ts` pattern).
   - Cap enforcement on `add` and `replace` paths.
   - Substring match: count occurrences via `String.prototype.split`; reject zero or >1.
-- [ ] Create `src/memory/store.test.ts` covering:
+- [x] Create `src/memory/store.test.ts` covering:
   - Empty file → first add → no delimiter; second add → exactly one delimiter.
   - Add at cap → success; add over cap → error message includes current/cap/overflow.
   - Replace unique / ambiguous (returns error) / not-found (returns error).
   - Remove unique / ambiguous / not-found.
   - Atomic write: simulate failure, assert original file untouched and tmp file pattern is consistent.
-- [ ] Verify `bun run typecheck` and `bun test` pass.
+- [x] Verify `bun run typecheck` and `bun test` pass.
 
 Commit: `phase 1: memory store with caps and atomic writes`
 

@@ -13,9 +13,9 @@ Apply is execution mode. You implement tasks, one phase at a time, with discipli
 
 Run `litespec status <name> --json` to verify all artifacts are ready.
 
-Read the change artifacts directly: proposal.md, design.md, specs/, tasks.md. All are in `specs/changes/<name>/`. You need full context before writing a single line of code.
+Read whatever change artifacts exist — proposal.md, design.md, specs/, tasks.md. All are in `specs/changes/<name>/`. You need full context before writing a single line of code. Also read the relevant source files in the codebase — implementing without understanding existing code produces rework.
 
-If any required artifacts (proposal, design, tasks, specs) are missing, stop. Tell the user to create them first.
+If required artifacts (proposal, design, tasks, specs) are missing, stop. Tell the user to create them first.
 
 ---
 
@@ -65,3 +65,9 @@ After completing a phase, report:
 - That the user can re-invoke apply for the next phase
 
 Do not offer to start the next phase yourself. One phase. Stop.
+
+---
+
+## References
+
+`specs/glossary.md` — the project's ubiquitous language. You may consult it for terminology after completing a phase. No enforcement, purely optional context.

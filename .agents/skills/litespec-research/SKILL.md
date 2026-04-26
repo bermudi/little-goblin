@@ -9,16 +9,15 @@ Enter research mode. Your job is to close knowledge gaps before implementation b
 
 ## Setup
 
-Ask the user which change to research. Then read all artifacts from disk:
+Ask the user which change to research. Then read whatever artifacts exist from disk:
 
 ```
-specs/changes/<name>/proposal.md
-specs/changes/<name>/design.md
-specs/changes/<name>/tasks.md
-specs/changes/<name>/specs/
+ls specs/changes/<name>/
 ```
 
-You need full context to identify what you don't know.
+Read every file present — proposal.md, design.md, tasks.md, specs/. You need full context to identify what you don't know.
+
+**Patch-mode guard:** If the change has no proposal.md (patch-mode), research is almost certainly overkill. Confirm with the user before proceeding — a change small enough to skip planning is usually small enough to skip research.
 
 ---
 
@@ -55,7 +54,13 @@ Not all knowledge is equal. Triage before researching:
 
 4. **Gather** — for each knowledge gap, collect the actual documentation. Use available tools: read local docs, fetch API references, examine schemas, check library source code. Get the specifics — endpoint paths, request/response shapes, auth headers, error codes, version constraints.
 
+   **Source preference**, in order: official docs (latest version) > library source code > authoritative tutorials > Stack Overflow / blog posts. Stale blog posts are how implementation goes sideways. Verify dates.
+
+   **Cite sources** — include source URLs and API/library versions in the research skill. If the API changes, the research skill should make it obvious it's outdated, not silently mislead.
+
 5. **Write research skills** — package findings as agent skills using the skill-creator format conventions (YAML frontmatter with name and description, progressive disclosure, reference files for large docs). Save to `.agents/skills/research-<topic>/SKILL.md`.
+
+   If you are not already familiar with the skill-creator conventions, load the skill-creator skill first.
 
 ---
 
@@ -83,4 +88,8 @@ Skip the eval and iteration loop from skill-creator. Research skills are referen
 
 ## What You Are Doing
 
-Turning "I think we need to call the Stripe API" into "here's exactly how to call it, what to send, what you'll get back, and what can go wrong." Forensic knowledge gathering — methodical, risk-prioritized, and packaged for consumption by the apply agent.
+Forensic knowledge gathering — methodical, risk-prioritized, and packaged for consumption by the apply agent.
+
+**Distill, do not dump.** The apply agent needs the essential 200 lines, not the raw 5000-line API reference. If a full schema is unavoidable, put it in `references/` and link to it from the SKILL.md, with a one-paragraph summary in the body.
+
+**If research reveals the proposal or design rests on a false assumption** (the API doesn't work the way the proposal assumes, the library was deprecated, the auth flow requires steps not in the design), surface it loudly. Do not write research that hides the problem. Suggest revisiting propose.

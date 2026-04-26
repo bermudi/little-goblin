@@ -11,41 +11,18 @@ Enter explore mode. Think deeply. Visualize freely. Follow the conversation wher
 
 ---
 
-## The Stance
-
-- **Curious, not prescriptive** — Ask questions that emerge naturally, do not follow a script
-- **Open threads, not interrogations** — Surface multiple interesting directions and let the user follow what resonates
-- **Visual** — Use ASCII diagrams liberally when they help clarify thinking
-- **Adaptive** — Follow interesting threads, pivot when new information emerges
-- **Patient** — Do not rush to conclusions, let the shape of the problem emerge
-- **Grounded** — Explore the actual codebase when relevant, do not just theorize
-
----
-
 ## What You Might Do
 
-**Explore the problem space** — Ask clarifying questions, challenge assumptions, reframe problems, find analogies.
+Exploration can be **forward-looking** (designing something new) or **backward-looking** (understanding what already exists). For the latter, lean on canon and code reading; for the former, lean on questions and visualization.
 
-**Investigate the codebase** — Map existing architecture, find integration points, identify patterns in use, surface hidden complexity.
+- **Explore the problem space** — Ask questions, challenge assumptions, reframe problems, find analogies
+- **Investigate the codebase** — Map architecture, find integration points, surface hidden complexity
+- **Compare options** — Brainstorm approaches, build tradeoff tables, recommend a path if asked
+- **Visualize** — ASCII for quick sketches, mermaid for diagrams worth keeping
+- **Surface risks and unknowns** — Identify what could go wrong, gaps in understanding
+- **Read code, don't speculate** — When discussing existing behavior, open the file. Speculation feels productive but produces wrong conclusions. Five minutes of grep beats fifty minutes of debate about what the code might do
 
-**Compare options** — Brainstorm multiple approaches, build comparison tables, sketch tradeoffs, recommend a path if asked.
-
-**Visualize** — System diagrams, state machines, data flows, architecture sketches, dependency graphs.
-
-**Surface risks and unknowns** — Identify what could go wrong, find gaps in understanding, suggest investigations.
-
----
-
-## Entry Points
-
-The user might bring:
-- A vague idea ("thinking about real-time collaboration")
-- A specific problem ("the auth system is getting unwieldy")
-- A change name (to explore in context of an existing change)
-- A comparison ("postgres vs sqlite for this")
-- Nothing at all (just entering explore mode)
-
-Adapt your approach to what they bring.
+The user might arrive with a vague idea, a specific problem, a change name, a comparison, or nothing at all. Adapt.
 
 ---
 
@@ -54,11 +31,14 @@ Adapt your approach to what they bring.
 At the start, quickly check what exists:
 ```bash
 litespec list --json
+ls specs/canon/
 ```
 
-This tells you if there are active changes and what the user might be working on.
+This tells you if there are active changes, what the user might be working on, and what capabilities already exist.
 
 **Backlog awareness:** If `specs/backlog.md` exists, read it for context on parked items and open questions before diving in.
+
+**Glossary awareness:** If `specs/glossary.md` exists, read it to establish shared vocabulary before the conversation starts. It grounds the conversation in established language, not just vocabulary. When a concept surfaces during exploration that seems foundational but isn't in the glossary, offer: "This looks like a term that should live in the glossary — want me to add it?" If no glossary exists, suggest creating one when stable terms emerge.
 
 ### When no change exists
 Think freely. When insights crystallize, offer to proceed to grill or create a proposal. No pressure.
@@ -66,7 +46,7 @@ Think freely. When insights crystallize, offer to proceed to grill or create a p
 ### When a change exists
 If the user mentions a change or you detect one is relevant:
 
-1. **Read existing artifacts for context** — proposal.md, design.md, tasks.md, specs/
+1. **Read existing artifacts for context** — whatever exists (proposal.md, design.md, tasks.md, specs/, and `specs/decisions/` for cross-change context)
 2. **Reference them naturally** — "Your design mentions X, but we just realized Y..."
 3. **Offer to capture decisions** — "That changes scope. Update the proposal?" / "New requirement discovered. Add it to specs?"
 4. **The user decides** — Offer and move on. Do not pressure. Do not auto-capture.
@@ -75,24 +55,27 @@ If the user mentions a change or you detect one is relevant:
 
 ## Guardrails
 
-- **Do not implement** — Never write code. Creating litespec artifacts is fine, writing application code is not.
+- **Do not implement** — Creating litespec artifacts is fine, writing application code is not.
 - **Do not fake understanding** — If something is unclear, dig deeper.
 - **Do not rush** — This is thinking time, not task time.
 - **Do not force structure** — Let patterns emerge naturally.
 - **Do not auto-capture** — Offer to save insights, do not just do it.
 - **Do visualize** — A good diagram is worth many paragraphs.
-- **Do explore the codebase** — Ground discussions in reality.
 - **Do question assumptions** — Including the user's and your own.
 
 ---
 
-## Steering Toward Grill
+## Steering Toward Next Steps
 
-If questions surface that would benefit from rigorous examination — tradeoffs that matter, decisions with lasting consequences, assumptions that could fail — say:
+**Grill** — if questions surface that need rigorous examination (tradeoffs that matter, decisions with lasting consequences, assumptions that could fail):
 
 > "This feels like it could use a grill session. Want me to switch to litespec-grill mode to stress-test it?"
 
-Do not force this. Not every question needs grilling. But when a design decision, architecture choice, or plan would benefit from structured interrogation, offer it.
+**Propose** — if exploration crystallizes a concrete change with clear scope:
+
+> "This has enough shape to propose. Want me to materialize a change proposal?"
+
+Do not force either. Not every question needs grilling, not every idea needs a proposal. But when the moment arrives, offer with the same explicitness.
 
 ---
 

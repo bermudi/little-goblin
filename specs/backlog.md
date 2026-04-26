@@ -6,8 +6,8 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 
 - v1.1: approval-required tool mode (allowlist + inline-keyboard approvals)
 - v1.1: user-facing named subagent invocation (slash command `/researcher` or topic-to-agent binding)
-- v1.5: `remember()` tool writing to `memory/YYYY-MM.md`
 - v1.x: mixed-provider routing (`selectModel(task)`), per-subagent model override
+- v1.x: subagent memory access — wire memory read (and decide on write) into SubagentRunner once curated-memory and subagent-runtime are both in canon.
 - v1.x: auto-archive / auto-prune daemons
 - v2: voice-note-first workflow (STT + TTS)
 - v2: skills for common homelab services shipped in repo

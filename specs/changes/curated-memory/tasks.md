@@ -104,9 +104,9 @@ Commit: `phase 5: per-turn memory aside injection`
 
 ## Phase 6: Documentation and backlog cleanup
 
-- [ ] Add a short "Memory" section to `AGENTS.md` describing where memory lives (`$GOBLIN_HOME/memory/`), how to read it (`cat`, `git log`), and the cap-driven defrag contract. _Documentation only — this change does not inject `AGENTS.md` into the system prompt; that's a separate concern owned by a future change._
-- [ ] Remove the `v1.5: remember() tool writing to memory/YYYY-MM.md` line from `specs/backlog.md` (this change supersedes it; the per-month layout was rejected in favor of two capped files).
-- [ ] Add a single-line note to `specs/backlog.md` under "Deferred": `v1.x: subagent memory access — wire memory read (and decide on write) into SubagentRunner once curated-memory and subagent-runtime are both in canon.`
-- [ ] Verify `bun run typecheck` and `bun test` pass.
+- [x] Add a short "Memory" section to `AGENTS.md` describing where memory lives (`$GOBLIN_HOME/memory/`), how to read it (`cat`, `git log`), and the cap-driven defrag contract. _Documentation only — this change does not inject `AGENTS.md` into the system prompt; that's a separate concern owned by a future change._
+- [x] Remove the `v1.5: remember() tool writing to memory/YYYY-MM.md` line from `specs/backlog.md` (this change supersedes it; the per-month layout was rejected in favor of two capped files).
+- [x] Add a single-line note to `specs/backlog.md` under "Deferred": `v1.x: subagent memory access — wire memory read (and decide on write) into SubagentRunner once curated-memory and subagent-runtime are both in canon.`
+- [x] Verify `bun run typecheck` and `bun test` pass.
 
 Commit: `phase 6: document memory and graduate from backlog`

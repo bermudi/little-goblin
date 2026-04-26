@@ -22,6 +22,7 @@ import {
   createAgentSession,
   type AgentSessionEvent,
   type ResourceLoader,
+  type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { piAgentDir, workdirPath } from "../agent/paths.ts";
@@ -55,6 +56,14 @@ interface SharedServices {
   settingsManager: SettingsManager;
 }
 
+/** Factory that produces tools to inject into spawned subagents. */
+export type SubagentToolFactory = (
+  runner: SubagentRunner,
+  depth: number,
+  sessionId: string,
+  onStatusUpdate?: (message: string) => void,
+) => ToolDefinition[];
+
 /**
  * Manages all subagents spawned within a goblin process.
  *
@@ -66,9 +75,12 @@ export class SubagentRunner {
   private readonly cfg: Config;
   private readonly activeSubagents: Map<string, SubagentInstance> = new Map();
   private services: SharedServices | null = null;
+  /** Produces tools (e.g. spawn_subagent) injected into each spawned subagent. */
+  private readonly toolFactory: SubagentToolFactory | null;
 
-  constructor(cfg: Config) {
+  constructor(cfg: Config, toolFactory?: SubagentToolFactory) {
     this.cfg = cfg;
+    this.toolFactory = toolFactory ?? null;
   }
 
   /**
@@ -236,7 +248,9 @@ export class SubagentRunner {
       model: resolved.model,
       // Subagents have no β tools — all UI flows through the parent's status
       // callback. See specs/.../subagents/spec.md "No beta tools for subagents".
-      customTools: [],
+      customTools: this.toolFactory
+        ? this.toolFactory(this, instance.depth, instance.id, instance.onStatusUpdate)
+        : [],
       ...(resourceLoader ? { resourceLoader } : {}),
     });
     instance.session = session;

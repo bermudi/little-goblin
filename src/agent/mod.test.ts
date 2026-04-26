@@ -105,6 +105,7 @@ mock.module("@mariozechner/pi-coding-agent", () => {
 
 import { AgentRunner, type TurnCallbacks } from "./mod.ts";
 import type { Config } from "../config.ts";
+import { SubagentRunner } from "../subagents/mod.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -133,7 +134,7 @@ function nopCallbacks(): TurnCallbacks {
 }
 
 function makeRunner(home: string, customTools: unknown[] = []) {
-  return new AgentRunner(makeConfig(home), "sess-001", customTools as never);
+  return new AgentRunner({ cfg: makeConfig(home), sessionId: "sess-001", customTools: customTools as never });
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +416,36 @@ describe("AgentRunner", () => {
       await runner.prompt("hi", nopCallbacks());
       await runner.abort();
       expect(sessionHolder.abort).toHaveBeenCalled();
+    });
+  });
+
+  describe("spawn_subagent tool registration", () => {
+    it("includes spawn_subagent tool when subagentRunner is provided", async () => {
+      const subRunner = new SubagentRunner(makeConfig(tmpDir));
+      const runner = new AgentRunner({
+        cfg: makeConfig(tmpDir),
+        sessionId: "sess-001",
+        customTools: [],
+        subagentRunner: subRunner,
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).toContain("spawn_subagent");
+      expect(names).toContain("memory");
+    });
+
+    it("does not include spawn_subagent tool when subagentRunner is absent", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).not.toContain("spawn_subagent");
+      expect(names).toContain("memory");
     });
   });
 });

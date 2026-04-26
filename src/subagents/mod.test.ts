@@ -1002,3 +1002,154 @@ describe("SubagentRunner — status prefix propagation", () => {
     expect(events).toEqual([`${prefix}tool error: bash`]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8: spawn_subagent tool
+// ---------------------------------------------------------------------------
+
+describe("spawn_subagent tool", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-subagent-tool-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("has the correct name and description", async () => {
+    const { createSpawnSubagentTool } = await import("./tool.ts");
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1");
+    expect(tool.name).toBe("spawn_subagent");
+    expect(tool.label).toBe("Spawn Subagent");
+    expect(tool.description).toBeTruthy();
+    expect(tool.description.length).toBeGreaterThan(0);
+  });
+
+  it("execute returns the subagent response text", async () => {
+    const { createSpawnSubagentTool } = await import("./tool.ts");
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1");
+
+    // Start the tool execute — it calls spawn() under the hood.
+    const execPromise = tool.execute(
+      "tc-1",
+      { prompt: "Analyze the logs" },
+      undefined, // signal
+      undefined, // onUpdate
+    );
+    await flush();
+
+    // Simulate the subagent completing.
+    sessionHolder.emit({ type: "agent_start" });
+    sessionHolder.emit({
+      type: "message_update",
+      message: {},
+      assistantMessageEvent: { type: "text_delta", delta: "Analysis complete." },
+    });
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+
+    const result = await execPromise;
+    expect(result.content).toEqual([
+      { type: "text", text: "Analysis complete." },
+    ]);
+    expect((result.details as { subagentId: string }).subagentId).toMatch(
+      /^[0-9a-f-]{36}$/,
+    );
+  });
+
+  it("passes name parameter through to spawn", async () => {
+    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
+    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# R");
+
+    const { createSpawnSubagentTool } = await import("./tool.ts");
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1");
+
+    const execPromise = tool.execute(
+      "tc-1",
+      { prompt: "go", name: "researcher" },
+      undefined,
+      undefined,
+    );
+    await flush();
+
+    // Verify the subagent was created as named.
+    const list = runner.list();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.name).toBe("researcher");
+    expect(list[0]?.role).toBe("named");
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await execPromise;
+  });
+
+  it("propagates spawn errors as tool errors", async () => {
+    // Spawning at depth 3 should fail.
+    const { createSpawnSubagentTool } = await import("./tool.ts");
+    const tool = createSpawnSubagentTool(runner, 3, "sess-1");
+
+    await expect(
+      tool.execute("tc-1", { prompt: "deep" }, undefined, undefined),
+    ).rejects.toThrow(/Maximum subagent depth reached/);
+  });
+});
+
+describe("SubagentRunner — recursive tool injection", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-subagent-recursion-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("passes subagent tools to spawned subagents via toolFactory", async () => {
+    // Create a runner with a tool factory that injects spawn_subagent.
+    const { createSpawnSubagentTool } = await import("./tool.ts");
+    const config = makeConfig(tmp);
+    runner = new SubagentRunner(config, (r, depth, sessionId, onStatus) => [
+      createSpawnSubagentTool(r, depth, sessionId, onStatus),
+    ]);
+
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+
+    // The createAgentSession call for the subagent should have spawn_subagent
+    // in its customTools.
+    expect(capturedCreateArgs).toHaveLength(1);
+    const opts = capturedCreateArgs[0] as Record<string, unknown>;
+    const tools = opts.customTools as Array<{ name: string }>;
+    const names = tools.map((t) => t.name);
+    expect(names).toContain("spawn_subagent");
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+  });
+
+  it("uses empty customTools when no toolFactory is provided", async () => {
+    runner = new SubagentRunner(makeConfig(tmp));
+
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+
+    expect(capturedCreateArgs).toHaveLength(1);
+    const opts = capturedCreateArgs[0] as Record<string, unknown>;
+    expect((opts.customTools as unknown[]).length).toBe(0);
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+  });
+});

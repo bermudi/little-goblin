@@ -21,6 +21,7 @@ import { resolveModel } from "./models.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore, createMemoryTool, formatSnapshot } from "../memory/mod.ts";
+import { type SubagentRunner } from "../subagents/mod.ts";
 
 /** Callbacks for turn events */
 export interface TurnCallbacks {
@@ -31,6 +32,14 @@ export interface TurnCallbacks {
   onAgentEnd: () => void;
 }
 
+/** Options for constructing an AgentRunner. */
+export interface AgentRunnerOptions {
+  cfg: Config;
+  sessionId: string;
+  customTools: ToolDefinition[];
+  subagentRunner?: SubagentRunner;
+}
+
 /**
  * AgentRunner wraps a pi AgentSession for a single goblin session.
  * Manages lazy initialization and event dispatch.
@@ -39,18 +48,20 @@ export class AgentRunner {
   private cfg: Config;
   private sessionId: string;
   private customTools: ToolDefinition[];
+  private subagentRunner: SubagentRunner | null;
   private session: AgentSession | null = null;
   private unsubscribe: (() => void) | null = null;
   private accumulatedText: string = "";
   private callbacks: TurnCallbacks | null = null;
   private memoryStore: MemoryStore;
 
-  constructor(cfg: Config, sessionId: string, customTools: ToolDefinition[]) {
-    this.cfg = cfg;
-    this.sessionId = sessionId;
-    this.customTools = customTools;
+  constructor(opts: AgentRunnerOptions) {
+    this.cfg = opts.cfg;
+    this.sessionId = opts.sessionId;
+    this.customTools = opts.customTools;
+    this.subagentRunner = opts.subagentRunner ?? null;
     // Construction is cheap (no I/O); the directory is created lazily on first write.
-    this.memoryStore = new MemoryStore(cfg.goblinHome);
+    this.memoryStore = new MemoryStore(opts.cfg.goblinHome);
   }
 
   /**
@@ -91,11 +102,18 @@ export class AgentRunner {
       }
     }
 
-    // Caller-supplied tools first; the memory tool is appended.
+    // Caller-supplied tools first; then memory; then spawn_subagent if wired.
     const tools: ToolDefinition[] = [
       ...this.customTools,
       createMemoryTool(this.memoryStore),
     ];
+
+    if (this.subagentRunner) {
+      const { createSpawnSubagentTool } = await import("../subagents/tool.ts");
+      tools.push(
+        createSpawnSubagentTool(this.subagentRunner, 0, this.sessionId),
+      );
+    }
 
     const { session } = await createAgentSession({
       cwd: workdirPath(home),

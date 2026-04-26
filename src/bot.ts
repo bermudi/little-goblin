@@ -45,7 +45,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager } {
     // Look up or lazily construct the runner for this session
     let runner = runners.get(session.id);
     if (!runner) {
-      runner = new AgentRunner(cfg, session.id, []);
+      runner = new AgentRunner({ cfg, sessionId: session.id, customTools: [] });
       runners.set(session.id, runner);
       log.debug("created runner for session", { sessionId: session.id });
     }

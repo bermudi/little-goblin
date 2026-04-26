@@ -102,15 +102,15 @@ Commit: `phase 7: subagent status callback propagation`
 
 ## Phase 8: spawn_subagent tool registration
 
-- [ ] In `src/agent/mod.ts`, register `spawn_subagent` tool with pi:
+- [x] In `src/agent/mod.ts`, register `spawn_subagent` tool with pi:
   - Tool name: `spawn_subagent`.
   - Parameters: `{prompt: string, name?: string}` (name for named agents).
   - Handler: delegate to `SubagentRunner.spawn()`.
   - Return subagent ID to LLM.
-- [ ] Pass depth tracking: goblin depth = 0, subagent spawns at depth + 1.
-- [ ] Ensure subagents also get `spawn_subagent` tool (recursion).
-- [ ] Unit test: verify tool registration, verify spawn returns ID.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Pass depth tracking: goblin depth = 0, subagent spawns at depth + 1.
+- [x] Ensure subagents also get `spawn_subagent` tool (recursion).
+- [x] Unit test: verify tool registration, verify spawn returns ID.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 8: spawn_subagent tool wired to SubagentRunner`
 

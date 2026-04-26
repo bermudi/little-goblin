@@ -10,10 +10,12 @@ import { log } from "../log.ts";
  * MessageBuffer turns AgentSession events (via TurnCallbacks) into Telegram
  * UI: a coalesced status line message and a streamed response message.
  *
- * Phase 2: status line state machine. Tool activity accumulates in
- * `toolStates` (insertion order preserved) and renders to a single status
- * string. Real Telegram edits, throttling, response streaming, rollover,
- * and file escape land in later phases.
+ * Status line uses a three-phase state machine:
+ *   thinking → working → done
+ *
+ * Each phase transition triggers at most one Telegram edit, regardless of
+ * how many tools fired. The `✅` / `❌` decision in the Done phase is
+ * driven by the cumulative `hadError` flag.
  */
 
 export interface MessageBufferOptions {
@@ -32,13 +34,8 @@ export interface MessageBufferOptions {
   clearIntervalFn?: (handle: unknown) => void;
 }
 
-export type ToolState = "running" | "success" | "error";
-
-const TOOL_STATE_EMOJI: Record<ToolState, string> = {
-  running: "🔧",
-  success: "✅",
-  error: "❌",
-};
+/** Coarse phase the status message reflects. */
+export type StatusPhase = "thinking" | "working" | "done";
 
 /** Telegram's hard message length limit. */
 export const MAX_MESSAGE_LEN = 4096;
@@ -114,13 +111,25 @@ export class MessageBuffer implements TurnCallbacks {
   private chatId: number;
   private visibility: string;
 
-  // Internal state — populated in later phases.
+  // Telegram message tracking.
   private statusMessageId: number | undefined = undefined;
   private responseMessageId: number | undefined = undefined;
   private accumulatedText: string = "";
-  private toolStates: Map<string, ToolState> = new Map();
   private lastEditTime: number = 0;
   private isStreaming: boolean = false;
+
+  // Status phase state machine.
+  private phase: StatusPhase = "thinking";
+  /** Visible tool names in the order they were first observed this turn. */
+  private toolsObserved: string[] = [];
+  /** Visible tools currently running (not yet ended). */
+  private toolsRunning: Set<string> = new Set();
+  /** Set true if any tool ended with `isError === true`. */
+  private hadError: boolean = false;
+  /** Once true, `flushStatus` becomes a no-op (set on `onAgentEnd`). */
+  private statusFrozen: boolean = false;
+  /** Tracks whether the eager placeholder has been emitted. */
+  private placeholderSent: boolean = false;
 
   private now: () => number;
   private statusThrottleMs: number;
@@ -167,14 +176,16 @@ export class MessageBuffer implements TurnCallbacks {
 
   onToolStart(name: string, _input: unknown): void {
     if (!shouldShowTool(name, this.visibility)) return;
-    this.toolStates.set(name, "running");
-    void this.flushStatus();
+    if (!this.toolsObserved.includes(name)) this.toolsObserved.push(name);
+    this.toolsRunning.add(name);
+    // Phase transition + flush wiring lands in phase 2.
   }
 
   onToolEnd(name: string, isError: boolean): void {
     if (!shouldShowTool(name, this.visibility)) return;
-    this.toolStates.set(name, isError ? "error" : "success");
-    void this.flushStatus();
+    this.toolsRunning.delete(name);
+    if (isError) this.hadError = true;
+    // Phase transition + flush wiring lands in phase 2.
   }
 
   onStatusUpdate(_message: string): void {
@@ -220,19 +231,27 @@ export class MessageBuffer implements TurnCallbacks {
     );
   }
 
-  /** Build the rendered status line, e.g. "✅ read 🔧 bash ✍️ composing". */
+  /**
+   * Build the rendered status line based on the current phase.
+   *
+   *   thinking  → "🤔 thinking…"
+   *   working   → "🔧 working: <comma-joined visible tools>"
+   *   done      → "✅ <names>"  or  "❌ <names>"  (per `hadError`)
+   *
+   * Visibility "none" suppresses the line entirely. The `✍️ composing`
+   * indicator was removed: liveness is conveyed by `chat_action("typing")`.
+   */
   buildStatusLine(): string {
-    // "none" suppresses the status line entirely — not even ✍️ composing.
     if (this.visibility === "none") return "";
-    const parts: string[] = [];
-    for (const [name, state] of this.toolStates) {
-      parts.push(`${TOOL_STATE_EMOJI[state]} ${name}`);
+    if (this.phase === "thinking") return "🤔 thinking…";
+    if (this.phase === "working") {
+      const names = this.toolsObserved.join(", ");
+      return names.length > 0 ? `🔧 working: ${names}` : "🔧 working…";
     }
-    const hasRunning = [...this.toolStates.values()].includes("running");
-    if (this.isStreaming && !hasRunning) {
-      parts.push("✍️ composing");
-    }
-    return parts.join(" ");
+    // done
+    const names = this.toolsObserved.join(", ");
+    if (names.length === 0) return "";
+    return `${this.hadError ? "❌" : "✅"} ${names}`;
   }
 
   /**
@@ -469,7 +488,18 @@ export class MessageBuffer implements TurnCallbacks {
       statusMessageId: this.statusMessageId,
       responseMessageId: this.responseMessageId,
       accumulatedText: this.accumulatedText,
-      toolStates: this.toolStates,
+      phase: this.phase,
+      toolsObserved: this.toolsObserved,
+      toolsRunning: this.toolsRunning,
+      hadError: this.hadError,
+      statusFrozen: this.statusFrozen,
+      placeholderSent: this.placeholderSent,
+      /**
+       * Legacy field kept solely so the still-unmigrated test suite
+       * compiles between phases 1 and 3. Always empty; not used by
+       * production code. Removed when tests are rewritten in phase 3.
+       */
+      toolStates: new Map<string, "running" | "success" | "error">(),
       lastEditTime: this.lastEditTime,
       lastResponseEditTime: this.lastResponseEditTime,
       isStreaming: this.isStreaming,

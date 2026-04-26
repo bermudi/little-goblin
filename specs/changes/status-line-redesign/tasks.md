@@ -2,15 +2,15 @@
 
 ## Phase 1: Phase state machine in MessageBuffer
 
-- [ ] In `src/tg/buffer.ts`, remove `toolStates: Map<string, ToolState>` and the `TOOL_STATE_EMOJI` table.
-- [ ] Add new state fields: `phase`, `toolsObserved` (string[]), `toolsRunning` (Set<string>), `hadError`, `statusFrozen`, `placeholderSent`.
-- [ ] Rewrite `buildStatusLine()` to render the current phase:
+- [x] In `src/tg/buffer.ts`, remove `toolStates: Map<string, ToolState>` and the `TOOL_STATE_EMOJI` table.
+- [x] Add new state fields: `phase`, `toolsObserved` (string[]), `toolsRunning` (Set<string>), `hadError`, `statusFrozen`, `placeholderSent`.
+- [x] Rewrite `buildStatusLine()` to render the current phase:
   - `"none"` visibility → empty string.
   - `"thinking"` → `"🤔 thinking…"`.
   - `"working"` → `"🔧 working: " + toolsObserved.join(", ")`.
   - `"done"` → (`hadError` ? `"❌ "` : `"✅ "`) + `toolsObserved.join(", ")`. If `toolsObserved` is empty, render an empty/minimal final string.
-- [ ] Update `_state()` debug accessor to expose the new fields (drop `toolStates` from the shape).
-- [ ] Verify `bun run typecheck` passes.
+- [x] Update `_state()` debug accessor to expose the new fields. _(Kept an empty `toolStates: Map` stub for typecheck-compat with the not-yet-rewritten tests; removed when tests land in phase 3.)_
+- [x] Verify `bun run typecheck` passes.
 
 Commit: `phase 1: phase state machine replaces per-tool emoji map`
 

@@ -80,7 +80,7 @@ Commit: `phase 6: big output escapes to file attachment`
 - [x] Implement `shouldShowTool(name, visibility)`: check if tool is in list.
 - [x] Modify `onToolStart`/`onToolEnd`: only update state if `shouldShowTool`.
 - [x] Default visibility: "standard".
-- [ ] Load visibility from `~/goblin/config.json` (create if missing). _(deferred to phase 9 wiring)_
+- [x] Load visibility from `~/goblin/config.json` (create if missing). _(landed in phase 9: `toolVisibility` flows through `goblin.json5` → `ConfigFileSchema` → `Config.toolVisibility` → `MessageBuffer`.)_
 - [x] Unit test: verify filtering at each level.
 - [x] Verify `bun run typecheck` + `bun test` pass.
 
@@ -111,7 +111,7 @@ Commit: `phase 9: integrate MessageBuffer into bot.ts`
 
 ## Phase 10: Validate and archive
 
-- [ ] `litespec validate message-buffer-streaming` (strict).
-- [ ] Manual review of spec deltas vs implementation.
-- [ ] `litespec preview message-buffer-streaming`.
-- [ ] `litespec archive message-buffer-streaming` when satisfied.
+- [x] `litespec validate message-buffer-streaming` (strict).
+- [x] Manual review of spec deltas vs implementation. _(Surfaced `onStatusUpdate` rendering gap; requirement removed from this change and parked in `specs/backlog.md` for a future subagent-aware proposal.)_
+- [x] `litespec preview message-buffer-streaming`.
+- [x] `litespec archive message-buffer-streaming` when satisfied.

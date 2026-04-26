@@ -12,6 +12,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 - v2: voice-note-first workflow (STT + TTS)
 - v2: skills for common homelab services shipped in repo
 - v2: live subagent cross-talk / swarms — `message_sibling`, `ask_sibling`, spawn_swarm DAG (ref: `~/build/pi-messenger-swarm`)
+- v1.x: render `onStatusUpdate` events in the MessageBuffer status line (e.g. "🧠 Researcher analyzing…"). Hook is already implemented as a no-op stub in `src/tg/buffer.ts`; rendering deferred until subagents land. Split out of `message-buffer-streaming`.
 
 ## Open Questions
 

@@ -20,7 +20,7 @@ import { agentsMdPath, piAgentDir, workdirPath } from "./paths.ts";
 import { resolveModel } from "./models.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryStore, createMemoryTool } from "../memory/mod.ts";
+import { MemoryStore, createMemoryTool, formatSnapshot } from "../memory/mod.ts";
 
 /** Callbacks for turn events */
 export interface TurnCallbacks {
@@ -168,6 +168,14 @@ export class AgentRunner {
 
     this.callbacks = callbacks;
     this.accumulatedText = "";
+
+    // Inject the curated memory snapshot as a per-turn aside.
+    // Pi queues it and flushes alongside the next user message; the system
+    // prompt stays frozen, preserving the provider prefix cache.
+    const aside = formatSnapshot(this.memoryStore);
+    if (aside !== null) {
+      await this.session.sendCustomMessage(aside, { deliverAs: "nextTurn" });
+    }
 
     if (this.session.isStreaming) {
       await this.session.followUp(text);

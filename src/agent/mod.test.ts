@@ -19,14 +19,25 @@ const sessionHolder = {
   streaming: false,
   sendUserMessage: mock(async (_text: string) => {}),
   followUp: mock(async (_text: string) => {}),
+  sendCustomMessage: mock(async (_msg: unknown, _opts?: unknown) => {}),
   abort: mock(async () => {}),
   dispose: mock(() => {}),
+  /** Sequenced call log for asserting ordering across mocks. */
+  callOrder: [] as string[],
 
   reset() {
     this.listeners = [];
     this.streaming = false;
-    this.sendUserMessage = mock(async (_text: string) => {});
-    this.followUp = mock(async (_text: string) => {});
+    this.callOrder = [];
+    this.sendUserMessage = mock(async (_text: string) => {
+      sessionHolder.callOrder.push("sendUserMessage");
+    });
+    this.followUp = mock(async (_text: string) => {
+      sessionHolder.callOrder.push("followUp");
+    });
+    this.sendCustomMessage = mock(async (_msg: unknown, _opts?: unknown) => {
+      sessionHolder.callOrder.push("sendCustomMessage");
+    });
     this.abort = mock(async () => {});
     this.dispose = mock(() => {});
   },
@@ -51,6 +62,8 @@ const sessionHolder = {
       },
       sendUserMessage: (text: string) => holder.sendUserMessage(text),
       followUp: (text: string) => holder.followUp(text),
+      sendCustomMessage: (msg: unknown, opts?: unknown) =>
+        holder.sendCustomMessage(msg, opts),
       abort: () => holder.abort(),
       dispose: () => holder.dispose(),
     };
@@ -171,6 +184,72 @@ describe("AgentRunner", () => {
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
       expect(names).toEqual(["t1", "t2", "memory"]);
+    });
+  });
+
+  describe("per-turn memory aside", () => {
+    function seedMemory(home: string, files: { memory?: string; user?: string }): void {
+      mkdirSync(join(home, "memory"), { recursive: true });
+      if (files.memory !== undefined) {
+        writeFileSync(join(home, "memory", "memory.md"), files.memory, "utf-8");
+      }
+      if (files.user !== undefined) {
+        writeFileSync(join(home, "memory", "user.md"), files.user, "utf-8");
+      }
+    }
+
+    it("does NOT call sendCustomMessage when both memory files are empty/absent", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+      expect(sessionHolder.sendCustomMessage).not.toHaveBeenCalled();
+    });
+
+    it("calls sendCustomMessage with deliverAs:nextTurn and a snapshot payload when memory is non-empty", async () => {
+      seedMemory(tmpDir, { memory: "fact-A" });
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
+      const [payload, opts] = sessionHolder.sendCustomMessage.mock.calls[0]!;
+      expect((opts as { deliverAs?: string }).deliverAs).toBe("nextTurn");
+      const p = payload as { customType: string; content: string };
+      expect(p.customType).toBe("goblin.memory.snapshot");
+      expect(typeof p.content).toBe("string");
+      expect(p.content.startsWith("[goblin memory snapshot]")).toBe(true);
+    });
+
+    it("renders `(empty)` for the absent file when only one is populated", async () => {
+      seedMemory(tmpDir, { memory: "fact-A" });
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
+      const text = (payload as { content: string }).content;
+      expect(text).toContain("## memory.md\nfact-A");
+      expect(text).toContain("## user.md\n(empty)");
+    });
+
+    it("dispatches the aside before sendUserMessage on a non-streaming turn", async () => {
+      seedMemory(tmpDir, { user: "pref-1" });
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      expect(sessionHolder.callOrder).toEqual([
+        "sendCustomMessage",
+        "sendUserMessage",
+      ]);
+    });
+
+    it("dispatches the aside before followUp on a streaming turn", async () => {
+      seedMemory(tmpDir, { user: "pref-1" });
+      sessionHolder.streaming = true;
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("interrupt", nopCallbacks());
+
+      expect(sessionHolder.callOrder).toEqual([
+        "sendCustomMessage",
+        "followUp",
+      ]);
     });
   });
 

@@ -85,20 +85,20 @@ Commit: `phase 4: AgentRunner registers memory tool`
 
 ## Phase 5: Per-turn aside injection
 
-- [ ] In `src/agent/mod.ts::prompt(text, callbacks)`, before the existing `isStreaming` branch:
+- [x] In `src/agent/mod.ts::prompt(text, callbacks)`, before the existing `isStreaming` branch:
   - Compute `const aside = formatSnapshot(this.memoryStore)`.
   - If `aside !== null`, call `await this.session.sendCustomMessage(aside, { deliverAs: "nextTurn" })`.
   - On every turn, regardless of streaming state. Pi will queue the aside and flush it alongside the user message on the next prompt.
-- [ ] Extend `sessionHolder` in `src/agent/mod.test.ts` with a `sendCustomMessage` mock alongside `sendUserMessage` / `followUp` (mirror the existing pattern at lines 17–32). Then assert:
+- [x] Extend `sessionHolder` in `src/agent/mod.test.ts` with a `sendCustomMessage` mock alongside `sendUserMessage` / `followUp` (mirror the existing pattern at lines 17–32). Then assert:
   - When at least one memory file is non-empty, `sendCustomMessage` is invoked with `{ deliverAs: "nextTurn" }` and the captured payload's `content` text starts with `[goblin memory snapshot]`.
   - When both memory files are empty, `sendCustomMessage` is NOT called.
   - The `sendCustomMessage` call happens before `sendUserMessage` / `followUp`.
   - When `memory.md` has content but `user.md` is empty, the captured payload includes `## user.md` followed by `(empty)`.
-- [ ] Manual verification (write up the steps in the commit body, do not block on running):
+- [x] Manual verification (write up the steps in the commit body, do not block on running):
   - Start bot, send a message asking goblin to remember a fact, then in a new turn ask about that fact.
   - Inspect `$GOBLIN_HOME/memory/memory.md` to confirm the entry persisted.
   - Inspect `git log` in `$GOBLIN_HOME/memory/` to confirm the commit landed.
-- [ ] Verify `bun run typecheck` and `bun test` pass.
+- [x] Verify `bun run typecheck` and `bun test` pass.
 
 Commit: `phase 5: per-turn memory aside injection`
 

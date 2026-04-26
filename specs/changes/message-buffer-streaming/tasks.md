@@ -88,12 +88,12 @@ Commit: `phase 7: tool visibility config with 5 levels`
 
 ## Phase 8: Chat action refresh
 
-- [ ] Implement `startChatAction()`: set interval (4s) calling `bot.api.sendChatAction(chatId, 'typing')`.
-- [ ] Implement `stopChatAction()`: clear interval.
-- [ ] Call `startChatAction()` on first `onTextDelta` (if not already started).
-- [ ] Call `stopChatAction()` on `onAgentEnd`.
-- [ ] Unit test: verify interval behavior, verify stop on end.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Implement `startChatAction()`: set interval (4s) calling `bot.api.sendChatAction(chatId, 'typing')`.
+- [x] Implement `stopChatAction()`: clear interval.
+- [x] Call `startChatAction()` on first `onTextDelta` (if not already started).
+- [x] Call `stopChatAction()` on `onAgentEnd`.
+- [x] Unit test: verify interval behavior, verify stop on end.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 8: chat action refresh every ~4s`
 

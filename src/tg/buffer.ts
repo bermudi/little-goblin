@@ -24,6 +24,12 @@ export interface MessageBufferOptions {
   statusThrottleMs?: number;
   /** Approximate min ms between response edits (~5/sec). Defaults to 200. */
   responseThrottleMs?: number;
+  /** Chat-action ("typing") refresh interval in ms. Defaults to 4000. */
+  chatActionMs?: number;
+  /** Scheduler injection for tests. Defaults to global `setInterval`. */
+  setIntervalFn?: (fn: () => void, ms: number) => unknown;
+  /** Scheduler injection for tests. Defaults to global `clearInterval`. */
+  clearIntervalFn?: (handle: unknown) => void;
 }
 
 export type ToolState = "running" | "success" | "error";
@@ -121,6 +127,11 @@ export class MessageBuffer implements TurnCallbacks {
   private responseThrottleMs: number;
   private lastResponseEditTime: number = 0;
 
+  private chatActionMs: number;
+  private setIntervalFn: (fn: () => void, ms: number) => unknown;
+  private clearIntervalFn: (handle: unknown) => void;
+  private chatActionHandle: unknown = undefined;
+
   constructor(bot: Bot, chatId: number, options: MessageBufferOptions = {}) {
     this.bot = bot;
     this.chatId = chatId;
@@ -128,11 +139,19 @@ export class MessageBuffer implements TurnCallbacks {
     this.now = options.now ?? Date.now;
     this.statusThrottleMs = options.statusThrottleMs ?? 1000;
     this.responseThrottleMs = options.responseThrottleMs ?? 200;
+    this.chatActionMs = options.chatActionMs ?? 4000;
+    this.setIntervalFn =
+      options.setIntervalFn ??
+      ((fn, ms) => setInterval(fn, ms) as unknown);
+    this.clearIntervalFn =
+      options.clearIntervalFn ??
+      ((handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]));
   }
 
   onTextDelta(delta: string): void {
     this.accumulatedText += delta;
     this.isStreaming = true;
+    this.startChatAction();
     void this.flushStatus();
     void this.flushResponse();
   }
@@ -155,9 +174,41 @@ export class MessageBuffer implements TurnCallbacks {
 
   onAgentEnd(): void {
     this.isStreaming = false;
+    this.stopChatAction();
     // force=true bypasses the throttle so the final state always lands.
     void this.flushStatus(true);
     void this.flushResponse(true);
+  }
+
+  /**
+   * Begin (or no-op if already running) the periodic "typing" chat-action
+   * refresh. Telegram shows the indicator for ~5s after each call, so we
+   * refresh every 4s while the agent is producing text. The first call
+   * fires immediately so the indicator appears without waiting one tick.
+   */
+  private startChatAction(): void {
+    if (this.chatActionHandle !== undefined) return;
+    this.sendChatActionSafe();
+    this.chatActionHandle = this.setIntervalFn(
+      () => this.sendChatActionSafe(),
+      this.chatActionMs,
+    );
+  }
+
+  /** Stop the periodic chat-action refresh. Idempotent. */
+  private stopChatAction(): void {
+    if (this.chatActionHandle === undefined) return;
+    this.clearIntervalFn(this.chatActionHandle);
+    this.chatActionHandle = undefined;
+  }
+
+  /** Best-effort `sendChatAction("typing")`; never throws out. */
+  private sendChatActionSafe(): void {
+    Promise.resolve(this.bot.api.sendChatAction(this.chatId, "typing")).catch(
+      (err: unknown) => {
+        log.warn("sendChatAction failed", { error: String(err) });
+      },
+    );
   }
 
   /** Build the rendered status line, e.g. "✅ read 🔧 bash ✍️ composing". */
@@ -384,6 +435,7 @@ export class MessageBuffer implements TurnCallbacks {
       lastEditTime: this.lastEditTime,
       lastResponseEditTime: this.lastResponseEditTime,
       isStreaming: this.isStreaming,
+      chatActionHandle: this.chatActionHandle,
     };
   }
 }

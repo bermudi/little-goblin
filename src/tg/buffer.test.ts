@@ -25,14 +25,24 @@ interface DocumentCall {
   filename: string | undefined;
   document: InputFile;
 }
+interface ChatActionCall {
+  chatId: number | string;
+  action: string;
+}
 
 interface MockBot {
   bot: Bot;
   send: SendCall[];
   edit: EditCall[];
   documents: DocumentCall[];
+  chatActions: ChatActionCall[];
   /** Set to throw the next sendMessage / editMessageText / sendDocument. */
-  failNext: { send?: unknown; edit?: unknown; document?: unknown };
+  failNext: {
+    send?: unknown;
+    edit?: unknown;
+    document?: unknown;
+    chatAction?: unknown;
+  };
   nextMessageId: number;
 }
 
@@ -40,11 +50,13 @@ function makeBot(): MockBot {
   const send: SendCall[] = [];
   const edit: EditCall[] = [];
   const documents: DocumentCall[] = [];
+  const chatActions: ChatActionCall[] = [];
   const state: MockBot = {
     bot: undefined as unknown as Bot,
     send,
     edit,
     documents,
+    chatActions,
     failNext: {},
     nextMessageId: 100,
   };
@@ -80,6 +92,15 @@ function makeBot(): MockBot {
         }
         documents.push({ chatId, filename: document.filename, document });
         return { message_id: ++state.nextMessageId };
+      },
+      sendChatAction: async (chatId: number | string, action: string) => {
+        if (state.failNext.chatAction !== undefined) {
+          const err = state.failNext.chatAction;
+          state.failNext.chatAction = undefined;
+          throw err;
+        }
+        chatActions.push({ chatId, action });
+        return true;
       },
     },
   } as unknown as Bot;
@@ -875,6 +896,157 @@ describe("MessageBuffer", () => {
         buffer.onToolEnd("read", false);
         expect(buffer._state().toolStates.has("read")).toBe(false);
       });
+    });
+  });
+
+  describe("chat action refresh", () => {
+    interface FakeScheduler {
+      setIntervalFn: (fn: () => void, ms: number) => unknown;
+      clearIntervalFn: (handle: unknown) => void;
+      scheduled: { fn: () => void; ms: number; handle: number }[];
+      cleared: number[];
+      fire(i: number): void;
+    }
+
+    function fakeScheduler(): FakeScheduler {
+      const scheduled: { fn: () => void; ms: number; handle: number }[] = [];
+      const cleared: number[] = [];
+      let nextHandle = 1;
+      return {
+        scheduled,
+        cleared,
+        setIntervalFn: (fn, ms) => {
+          const handle = nextHandle++;
+          scheduled.push({ fn, ms, handle });
+          return handle;
+        },
+        clearIntervalFn: (handle) => {
+          cleared.push(handle as number);
+        },
+        fire(i: number) {
+          scheduled[i]!.fn();
+        },
+      };
+    }
+
+    function makeBufferWithScheduler(
+      m: ReturnType<typeof makeBot>,
+      sched: FakeScheduler,
+      extra: Partial<{ chatActionMs: number; visibility: string }> = {},
+    ) {
+      return new MessageBuffer(m.bot, 1, {
+        statusThrottleMs: Number.MAX_SAFE_INTEGER,
+        responseThrottleMs: Number.MAX_SAFE_INTEGER,
+        setIntervalFn: sched.setIntervalFn,
+        clearIntervalFn: sched.clearIntervalFn,
+        ...extra,
+      });
+    }
+
+    it("first onTextDelta sends an immediate 'typing' chat action", async () => {
+      const m = makeBot();
+      const sched = fakeScheduler();
+      const buffer = makeBufferWithScheduler(m, sched);
+      buffer.onTextDelta("hi");
+      await tick();
+      expect(m.chatActions.length).toBe(1);
+      expect(m.chatActions[0]).toEqual({ chatId: 1, action: "typing" });
+      expect(buffer._state().chatActionHandle).toBeDefined();
+    });
+
+    it("schedules the refresh interval at chatActionMs (default 4000)", () => {
+      const m = makeBot();
+      const sched = fakeScheduler();
+      const buffer = makeBufferWithScheduler(m, sched);
+      buffer.onTextDelta("hi");
+      expect(sched.scheduled.length).toBe(1);
+      expect(sched.scheduled[0]?.ms).toBe(4000);
+      expect(buffer._state().chatActionHandle).toBe(
+        sched.scheduled[0]?.handle,
+      );
+    });
+
+    it("respects custom chatActionMs option", () => {
+      const m = makeBot();
+      const sched = fakeScheduler();
+      const buffer = makeBufferWithScheduler(m, sched, { chatActionMs: 1500 });
+      buffer.onTextDelta("x");
+      expect(sched.scheduled[0]?.ms).toBe(1500);
+    });
+
+    it("subsequent onTextDelta is idempotent (no second interval)", async () => {
+      const m = makeBot();
+      const sched = fakeScheduler();
+      const buffer = makeBufferWithScheduler(m, sched);
+      buffer.onTextDelta("a");
+      buffer.onTextDelta("b");
+      buffer.onTextDelta("c");
+      await tick();
+      expect(sched.scheduled.length).toBe(1);
+      expect(m.chatActions.length).toBe(1);
+    });
+
+    it("firing the interval triggers another sendChatAction", async () => {
+      const m = makeBot();
+      const sched = fakeScheduler();
+      const buffer = makeBufferWithScheduler(m, sched);
+      buffer.onTextDelta("hi");
+      await tick();
+      expect(m.chatActions.length).toBe(1);
+
+      sched.fire(0);
+      await tick();
+      expect(m.chatActions.length).toBe(2);
+      expect(m.chatActions[1]?.action).toBe("typing");
+      expect(buffer._state().chatActionHandle).toBeDefined();
+    });
+
+    it("onAgentEnd clears the interval", async () => {
+      const m = makeBot();
+      const sched = fakeScheduler();
+      const buffer = makeBufferWithScheduler(m, sched);
+      buffer.onTextDelta("hi");
+      await tick();
+      const handle = buffer._state().chatActionHandle;
+      expect(handle).toBeDefined();
+
+      buffer.onAgentEnd();
+      expect(sched.cleared).toContain(handle as number);
+      expect(buffer._state().chatActionHandle).toBeUndefined();
+    });
+
+    it("onAgentEnd is idempotent when no interval is running", () => {
+      const m = makeBot();
+      const sched = fakeScheduler();
+      const buffer = makeBufferWithScheduler(m, sched);
+      buffer.onAgentEnd();
+      expect(sched.cleared.length).toBe(0);
+      expect(buffer._state().chatActionHandle).toBeUndefined();
+    });
+
+    it("after onAgentEnd, a new onTextDelta starts a fresh interval", async () => {
+      const m = makeBot();
+      const sched = fakeScheduler();
+      const buffer = makeBufferWithScheduler(m, sched);
+      buffer.onTextDelta("first");
+      buffer.onAgentEnd();
+      buffer.onTextDelta("second");
+      await tick();
+      expect(sched.scheduled.length).toBe(2);
+      expect(m.chatActions.length).toBe(2);
+      expect(buffer._state().chatActionHandle).toBe(
+        sched.scheduled[1]?.handle,
+      );
+    });
+
+    it("does not throw if sendChatAction rejects", async () => {
+      const m = makeBot();
+      m.failNext.chatAction = new Error("network");
+      const sched = fakeScheduler();
+      const buffer = makeBufferWithScheduler(m, sched);
+      expect(() => buffer.onTextDelta("hi")).not.toThrow();
+      await tick();
+      expect(buffer._state().chatActionHandle).toBeDefined();
     });
   });
 });

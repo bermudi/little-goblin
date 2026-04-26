@@ -170,7 +170,11 @@ export class MessageBuffer implements TurnCallbacks {
     this.accumulatedText += delta;
     this.isStreaming = true;
     this.startChatAction();
-    void this.flushStatus();
+    // No status flush here — the phase machine only edits the status on
+    // phase transitions, never per text delta. Liveness is conveyed by
+    // the chat-action above. Lazy-send the placeholder if no agent_start
+    // arrived first (defensive; AgentRunner does call onStatusUpdate).
+    this.maybeSendPlaceholder();
     void this.flushResponse();
   }
 
@@ -178,26 +182,60 @@ export class MessageBuffer implements TurnCallbacks {
     if (!shouldShowTool(name, this.visibility)) return;
     if (!this.toolsObserved.includes(name)) this.toolsObserved.push(name);
     this.toolsRunning.add(name);
-    // Phase transition + flush wiring lands in phase 2.
+    // First tool of the turn flips us into the Working phase. Subsequent
+    // tools just append to `toolsObserved` without scheduling a flush —
+    // the visible status text already says "🔧 working: ..." and the next
+    // event we care about is the Working→Done transition in onToolEnd.
+    if (this.phase === "thinking") {
+      this.phase = "working";
+      this.maybeSendPlaceholder();
+      void this.flushStatus(true);
+    }
   }
 
   onToolEnd(name: string, isError: boolean): void {
     if (!shouldShowTool(name, this.visibility)) return;
     this.toolsRunning.delete(name);
     if (isError) this.hadError = true;
-    // Phase transition + flush wiring lands in phase 2.
+    // Last running tool finished — transition to Done.
+    if (this.toolsRunning.size === 0 && this.phase === "working") {
+      this.phase = "done";
+      void this.flushStatus(true);
+    }
   }
 
   onStatusUpdate(_message: string): void {
-    // Reserved for agent status hints (e.g. "thinking...").
+    // AgentRunner fires onStatusUpdate("thinking...") on agent_start. We
+    // use that as the cue to send the eager placeholder, guaranteeing the
+    // status message exists before any response message can be created.
+    this.maybeSendPlaceholder();
   }
 
   onAgentEnd(): void {
     this.isStreaming = false;
     this.stopChatAction();
+    // If still in Working when the agent ends (rare — means a tool was
+    // left dangling), force the Done transition so the resting state is
+    // coherent.
+    if (this.phase === "working") this.phase = "done";
     // force=true bypasses the throttle so the final state always lands.
+    // Flush BEFORE freezing so this final write is the one that survives.
     void this.flushStatus(true);
+    this.statusFrozen = true;
     void this.flushResponse(true);
+  }
+
+  /**
+   * Send the eager status placeholder if we have not yet. Called from
+   * `onStatusUpdate` (the happy path), or as a defensive lazy-send from
+   * `onTextDelta` / `onToolStart` if no agent_start cue ever arrived.
+   * Visibility "none" suppresses it entirely.
+   */
+  private maybeSendPlaceholder(): void {
+    if (this.placeholderSent) return;
+    if (this.visibility === "none") return;
+    this.placeholderSent = true;
+    void this.flushStatus(true);
   }
 
   /**
@@ -268,6 +306,9 @@ export class MessageBuffer implements TurnCallbacks {
    *   - All errors are swallowed; we never throw out of this method.
    */
   async flushStatus(force: boolean = false): Promise<void> {
+    // Once the turn is finished, the status text is the resting summary.
+    // Refuse any further edits — stray async events SHALL NOT mutate it.
+    if (this.statusFrozen) return;
     const now = this.now();
     if (!force && now - this.lastEditTime < this.statusThrottleMs) return;
 

@@ -16,13 +16,13 @@ Commit: `phase 1: phase state machine replaces per-tool emoji map`
 
 ## Phase 2: Wire callbacks to phase transitions
 
-- [ ] `onStatusUpdate(_msg)` — if `!placeholderSent && visibility !== "none"`, set `placeholderSent = true` and `void flushStatus(true)`. Otherwise no-op.
-- [ ] `onToolStart(name, _)` — apply `shouldShowTool` filter; if visible, push to `toolsObserved` (only if not already present), add to `toolsRunning`. If `phase === "thinking"`, set `phase = "working"` and `void flushStatus(true)`. If already `"working"`, no flush.
-- [ ] `onToolEnd(name, isError)` — apply `shouldShowTool` filter; if visible, remove from `toolsRunning`, OR `isError` into `hadError`. If `toolsRunning.size === 0 && phase === "working"`, set `phase = "done"` and `void flushStatus(true)`.
-- [ ] `onTextDelta` — keep response-side logic identical (chat action, response flush). Remove any code that mutated `toolStates` or scheduled status edits as a side-effect of text streaming.
-- [ ] `onAgentEnd` — set `statusFrozen = true`, transition `phase` to `"done"` if currently `"working"`, `void flushStatus(true)` once, then preserve existing chat-action stop and response force-flush.
-- [ ] `flushStatus` — early-return when `statusFrozen` is set.
-- [ ] Verify `bun run typecheck` passes.
+- [x] `onStatusUpdate(_msg)` — if `!placeholderSent && visibility !== "none"`, set `placeholderSent = true` and `void flushStatus(true)`. Otherwise no-op. _(Implemented via `maybeSendPlaceholder()`.)_
+- [x] `onToolStart(name, _)` — apply `shouldShowTool` filter; if visible, push to `toolsObserved` (only if not already present), add to `toolsRunning`. If `phase === "thinking"`, set `phase = "working"` and `void flushStatus(true)`. If already `"working"`, no flush.
+- [x] `onToolEnd(name, isError)` — apply `shouldShowTool` filter; if visible, remove from `toolsRunning`, OR `isError` into `hadError`. If `toolsRunning.size === 0 && phase === "working"`, set `phase = "done"` and `void flushStatus(true)`.
+- [x] `onTextDelta` — keep response-side logic identical (chat action, response flush). Remove any code that mutated `toolStates` or scheduled status edits as a side-effect of text streaming. _(Removed the per-delta `flushStatus()`; lazy `maybeSendPlaceholder()` retained as a defensive fallback.)_
+- [x] `onAgentEnd` — set `statusFrozen = true`, transition `phase` to `"done"` if currently `"working"`, `void flushStatus(true)` once, then preserve existing chat-action stop and response force-flush.
+- [x] `flushStatus` — early-return when `statusFrozen` is set.
+- [x] Verify `bun run typecheck` passes.
 
 Commit: `phase 2: wire callbacks to phase transitions and freeze on agent_end`
 

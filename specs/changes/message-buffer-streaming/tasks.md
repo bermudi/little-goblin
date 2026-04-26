@@ -67,7 +67,7 @@ Commit: `phase 6: big output escapes to file attachment`
 
 ## Phase 7: Tool visibility filtering
 
-- [ ] Define visibility levels and tool lists:
+- [x] Define visibility levels and tool lists:
   ```typescript
   const visibilityTools: Record<string, string[]> = {
     none: [],
@@ -77,12 +77,12 @@ Commit: `phase 6: big output escapes to file attachment`
     debug: ['*'] // everything
   };
   ```
-- [ ] Implement `shouldShowTool(name, visibility)`: check if tool is in list.
-- [ ] Modify `onToolStart`/`onToolEnd`: only update state if `shouldShowTool`.
-- [ ] Default visibility: "standard".
-- [ ] Load visibility from `~/goblin/config.json` (create if missing).
-- [ ] Unit test: verify filtering at each level.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Implement `shouldShowTool(name, visibility)`: check if tool is in list.
+- [x] Modify `onToolStart`/`onToolEnd`: only update state if `shouldShowTool`.
+- [x] Default visibility: "standard".
+- [ ] Load visibility from `~/goblin/config.json` (create if missing). _(deferred to phase 9 wiring)_
+- [x] Unit test: verify filtering at each level.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 7: tool visibility config with 5 levels`
 

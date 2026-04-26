@@ -48,6 +48,48 @@ export const BIG_OUTPUT_THRESHOLD = 20000;
 export const SUMMARY_PREFIX_LEN = 500;
 
 /**
+ * Tool visibility levels and the tool names each level surfaces in the
+ * status line. Unknown levels fall back to `standard`. The string "*"
+ * means "every tool" (debug).
+ *
+ *   none     no status line at all
+ *   minimal  destructive / state-changing tools only
+ *   standard all α tools (default)
+ *   verbose  α + γ (subagent management)
+ *   debug    every tool ever observed
+ */
+export const VISIBILITY_TOOLS: Record<string, readonly string[] | "*"> = {
+  none: [],
+  minimal: ["bash", "write", "edit", "spawn_subagent"],
+  standard: ["bash", "write", "edit", "read", "grep", "spawn_subagent"],
+  verbose: [
+    "bash",
+    "write",
+    "edit",
+    "read",
+    "grep",
+    "spawn_subagent",
+    "revive_subagent",
+    "list_subagents",
+  ],
+  debug: "*",
+};
+
+/** Default visibility when no level is configured or an unknown level is given. */
+export const DEFAULT_VISIBILITY = "standard";
+
+/**
+ * Returns true if the given tool should appear in the status line for the
+ * given visibility level. Unknown levels fall back to `DEFAULT_VISIBILITY`.
+ */
+export function shouldShowTool(name: string, visibility: string): boolean {
+  const list =
+    VISIBILITY_TOOLS[visibility] ?? VISIBILITY_TOOLS[DEFAULT_VISIBILITY]!;
+  if (list === "*") return true;
+  return list.includes(name);
+}
+
+/**
  * Pick a split index <= `maxLen` that does not cut a UTF-16 surrogate pair.
  * If the character at `maxLen - 1` is a high surrogate, the matching low
  * surrogate sits at `maxLen`; backing up by one keeps the pair intact.
@@ -82,7 +124,7 @@ export class MessageBuffer implements TurnCallbacks {
   constructor(bot: Bot, chatId: number, options: MessageBufferOptions = {}) {
     this.bot = bot;
     this.chatId = chatId;
-    this.visibility = options.visibility ?? "standard";
+    this.visibility = options.visibility ?? DEFAULT_VISIBILITY;
     this.now = options.now ?? Date.now;
     this.statusThrottleMs = options.statusThrottleMs ?? 1000;
     this.responseThrottleMs = options.responseThrottleMs ?? 200;
@@ -96,11 +138,13 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   onToolStart(name: string, _input: unknown): void {
+    if (!shouldShowTool(name, this.visibility)) return;
     this.toolStates.set(name, "running");
     void this.flushStatus();
   }
 
   onToolEnd(name: string, isError: boolean): void {
+    if (!shouldShowTool(name, this.visibility)) return;
     this.toolStates.set(name, isError ? "error" : "success");
     void this.flushStatus();
   }
@@ -118,6 +162,8 @@ export class MessageBuffer implements TurnCallbacks {
 
   /** Build the rendered status line, e.g. "✅ read 🔧 bash ✍️ composing". */
   buildStatusLine(): string {
+    // "none" suppresses the status line entirely — not even ✍️ composing.
+    if (this.visibility === "none") return "";
     const parts: string[] = [];
     for (const [name, state] of this.toolStates) {
       parts.push(`${TOOL_STATE_EMOJI[state]} ${name}`);

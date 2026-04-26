@@ -7,6 +7,8 @@ import {
   BIG_OUTPUT_THRESHOLD,
   SUMMARY_PREFIX_LEN,
   findSafeSplit,
+  shouldShowTool,
+  VISIBILITY_TOOLS,
 } from "./buffer.ts";
 
 interface SendCall {
@@ -736,6 +738,143 @@ describe("MessageBuffer", () => {
       expect(m.documents.length).toBe(1);
       expect(m.send.length).toBe(1); // just the summary
       expect(m.edit.length).toBe(0);
+    });
+  });
+
+  describe("tool visibility filtering", () => {
+    describe("shouldShowTool", () => {
+      it("none: hides every tool", () => {
+        expect(shouldShowTool("bash", "none")).toBe(false);
+        expect(shouldShowTool("read", "none")).toBe(false);
+        expect(shouldShowTool("anything", "none")).toBe(false);
+      });
+
+      it("minimal: shows only state-changing α tools", () => {
+        expect(shouldShowTool("bash", "minimal")).toBe(true);
+        expect(shouldShowTool("write", "minimal")).toBe(true);
+        expect(shouldShowTool("edit", "minimal")).toBe(true);
+        expect(shouldShowTool("spawn_subagent", "minimal")).toBe(true);
+        expect(shouldShowTool("read", "minimal")).toBe(false);
+        expect(shouldShowTool("grep", "minimal")).toBe(false);
+        expect(shouldShowTool("revive_subagent", "minimal")).toBe(false);
+      });
+
+      it("standard: shows all α tools (default)", () => {
+        expect(shouldShowTool("bash", "standard")).toBe(true);
+        expect(shouldShowTool("read", "standard")).toBe(true);
+        expect(shouldShowTool("grep", "standard")).toBe(true);
+        expect(shouldShowTool("revive_subagent", "standard")).toBe(false);
+        expect(shouldShowTool("list_subagents", "standard")).toBe(false);
+      });
+
+      it("verbose: shows α + γ (subagent management) tools", () => {
+        expect(shouldShowTool("bash", "verbose")).toBe(true);
+        expect(shouldShowTool("read", "verbose")).toBe(true);
+        expect(shouldShowTool("revive_subagent", "verbose")).toBe(true);
+        expect(shouldShowTool("list_subagents", "verbose")).toBe(true);
+        expect(shouldShowTool("some_internal_event", "verbose")).toBe(false);
+      });
+
+      it("debug: shows every tool, including unknown ones", () => {
+        expect(shouldShowTool("bash", "debug")).toBe(true);
+        expect(shouldShowTool("brand_new_tool", "debug")).toBe(true);
+        expect(shouldShowTool("", "debug")).toBe(true);
+      });
+
+      it("unknown level falls back to standard", () => {
+        expect(shouldShowTool("bash", "wat")).toBe(true);
+        expect(shouldShowTool("revive_subagent", "wat")).toBe(false);
+      });
+
+      it("VISIBILITY_TOOLS table contains all five expected levels", () => {
+        expect(Object.keys(VISIBILITY_TOOLS).sort()).toEqual([
+          "debug",
+          "minimal",
+          "none",
+          "standard",
+          "verbose",
+        ]);
+      });
+    });
+
+    describe("MessageBuffer integration", () => {
+      it("none visibility: no tool state, no status line, no flush", async () => {
+        const m = makeBot();
+        const buffer = new MessageBuffer(m.bot, 1, { visibility: "none" });
+        buffer.onToolStart("bash", {});
+        buffer.onToolEnd("bash", false);
+        await tick();
+        expect(buffer._state().toolStates.size).toBe(0);
+        expect(buffer.buildStatusLine()).toBe("");
+        expect(m.send.length).toBe(0);
+        expect(m.edit.length).toBe(0);
+      });
+
+      it("none visibility: suppresses ✍️ composing too", () => {
+        const m = makeBot();
+        const buffer = new MessageBuffer(m.bot, 1, { visibility: "none" });
+        buffer.onTextDelta("hello");
+        expect(buffer.buildStatusLine()).toBe("");
+      });
+
+      it("minimal visibility: bash visible, read filtered", () => {
+        const m = makeBot();
+        const buffer = new MessageBuffer(m.bot, 1, {
+          visibility: "minimal",
+          statusThrottleMs: Number.MAX_SAFE_INTEGER,
+        });
+        buffer.onToolStart("read", {});
+        buffer.onToolStart("bash", {});
+        expect(buffer._state().toolStates.has("read")).toBe(false);
+        expect(buffer._state().toolStates.has("bash")).toBe(true);
+        expect(buffer.buildStatusLine()).toBe("🔧 bash");
+      });
+
+      it("standard visibility (default): read + bash both visible", () => {
+        const m = makeBot();
+        const buffer = new MessageBuffer(m.bot, 1, {
+          statusThrottleMs: Number.MAX_SAFE_INTEGER,
+        });
+        buffer.onToolStart("read", {});
+        buffer.onToolStart("bash", {});
+        buffer.onToolStart("revive_subagent", {});
+        expect(buffer._state().toolStates.has("read")).toBe(true);
+        expect(buffer._state().toolStates.has("bash")).toBe(true);
+        expect(buffer._state().toolStates.has("revive_subagent")).toBe(false);
+      });
+
+      it("verbose visibility: revive_subagent now visible", () => {
+        const m = makeBot();
+        const buffer = new MessageBuffer(m.bot, 1, {
+          visibility: "verbose",
+          statusThrottleMs: Number.MAX_SAFE_INTEGER,
+        });
+        buffer.onToolStart("revive_subagent", {});
+        expect(buffer._state().toolStates.has("revive_subagent")).toBe(true);
+      });
+
+      it("debug visibility: even unknown tools are shown", () => {
+        const m = makeBot();
+        const buffer = new MessageBuffer(m.bot, 1, {
+          visibility: "debug",
+          statusThrottleMs: Number.MAX_SAFE_INTEGER,
+        });
+        buffer.onToolStart("brand_new_tool", {});
+        expect(buffer._state().toolStates.has("brand_new_tool")).toBe(true);
+        expect(buffer.buildStatusLine()).toBe("🔧 brand_new_tool");
+      });
+
+      it("filtering applies to onToolEnd as well", () => {
+        const m = makeBot();
+        const buffer = new MessageBuffer(m.bot, 1, {
+          visibility: "minimal",
+          statusThrottleMs: Number.MAX_SAFE_INTEGER,
+        });
+        // read is filtered at start; ending it should not retroactively add it.
+        buffer.onToolStart("read", {});
+        buffer.onToolEnd("read", false);
+        expect(buffer._state().toolStates.has("read")).toBe(false);
+      });
     });
   });
 });

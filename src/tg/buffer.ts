@@ -18,6 +18,8 @@ export interface MessageBufferOptions {
   now?: () => number;
   /** Approximate min ms between status edits. Defaults to 1000. */
   statusThrottleMs?: number;
+  /** Approximate min ms between response edits (~5/sec). Defaults to 200. */
+  responseThrottleMs?: number;
 }
 
 export type ToolState = "running" | "success" | "error";
@@ -43,6 +45,8 @@ export class MessageBuffer implements TurnCallbacks {
 
   private now: () => number;
   private statusThrottleMs: number;
+  private responseThrottleMs: number;
+  private lastResponseEditTime: number = 0;
 
   constructor(bot: Bot, chatId: number, options: MessageBufferOptions = {}) {
     this.bot = bot;
@@ -50,13 +54,14 @@ export class MessageBuffer implements TurnCallbacks {
     this.visibility = options.visibility ?? "standard";
     this.now = options.now ?? Date.now;
     this.statusThrottleMs = options.statusThrottleMs ?? 1000;
+    this.responseThrottleMs = options.responseThrottleMs ?? 200;
   }
 
-  onTextDelta(_text: string): void {
-    // Phase 4 wires response streaming. Phase 2 sets the streaming flag so
-    // the status line can show "✍️ composing" between tool calls.
+  onTextDelta(delta: string): void {
+    this.accumulatedText += delta;
     this.isStreaming = true;
     void this.flushStatus();
+    void this.flushResponse();
   }
 
   onToolStart(name: string, _input: unknown): void {
@@ -77,6 +82,7 @@ export class MessageBuffer implements TurnCallbacks {
     this.isStreaming = false;
     // force=true bypasses the throttle so the final state always lands.
     void this.flushStatus(true);
+    void this.flushResponse(true);
   }
 
   /** Build the rendered status line, e.g. "✅ read 🔧 bash ✍️ composing". */
@@ -132,24 +138,75 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   private handleStatusError(err: unknown): void {
+    this.handleApiError(err, "status", () => {
+      this.statusMessageId = undefined;
+    });
+  }
+
+  /**
+   * Flush accumulated response text to Telegram. Phase 4 implements basic
+   * streaming with a ~5/sec throttle. Phase 5 will add 4096 rollover; phase
+   * 6 will add 20KB file escape.
+   */
+  async flushResponse(force: boolean = false): Promise<void> {
+    const now = this.now();
+    if (!force && now - this.lastResponseEditTime < this.responseThrottleMs)
+      return;
+
+    if (this.accumulatedText.length === 0) return;
+
+    this.lastResponseEditTime = now;
+
+    try {
+      if (this.responseMessageId === undefined) {
+        const msg = await this.bot.api.sendMessage(
+          this.chatId,
+          this.accumulatedText,
+        );
+        this.responseMessageId = msg.message_id;
+      } else {
+        await this.bot.api.editMessageText(
+          this.chatId,
+          this.responseMessageId,
+          this.accumulatedText,
+        );
+      }
+    } catch (err) {
+      this.handleResponseError(err);
+    }
+  }
+
+  private handleResponseError(err: unknown): void {
+    this.handleApiError(err, "response", () => {
+      this.responseMessageId = undefined;
+    });
+  }
+
+  /**
+   * Shared error policy for status and response flushes. 429 → log + skip;
+   * 400 message-gone → reset id via `onMessageGone`; otherwise log.
+   */
+  private handleApiError(
+    err: unknown,
+    kind: "status" | "response",
+    onMessageGone: () => void,
+  ): void {
     const e = err as { error_code?: number; description?: string };
     const code = e?.error_code;
     const description = e?.description ?? String(err);
 
     if (code === 429) {
-      log.warn("status edit rate-limited, skipping", { description });
+      log.warn(`${kind} edit rate-limited, skipping`, { description });
       return;
     }
-    // Telegram returns 400 with descriptions like "message to edit not found"
-    // or "message can't be edited" when the user deletes the status message.
     if (code === 400 && /not found|can't be edited|to edit/i.test(description)) {
-      log.warn("status message gone, will re-create on next flush", {
+      log.warn(`${kind} message gone, will re-create on next flush`, {
         description,
       });
-      this.statusMessageId = undefined;
+      onMessageGone();
       return;
     }
-    log.warn("status flush failed", { description });
+    log.warn(`${kind} flush failed`, { description });
   }
 
   /** Internal accessors for tests — not part of the public API. */
@@ -163,6 +220,7 @@ export class MessageBuffer implements TurnCallbacks {
       accumulatedText: this.accumulatedText,
       toolStates: this.toolStates,
       lastEditTime: this.lastEditTime,
+      lastResponseEditTime: this.lastResponseEditTime,
       isStreaming: this.isStreaming,
     };
   }

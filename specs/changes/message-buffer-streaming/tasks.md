@@ -35,12 +35,12 @@ Commit: `phase 3: status line editing with ~1/sec throttle and error recovery`
 
 ## Phase 4: Response text accumulation and streaming
 
-- [ ] Implement `onTextDelta(delta)`: append to `accumulatedText`.
-- [ ] Implement `flushResponse()`: edit `responseMessageId` with current `accumulatedText`.
-- [ ] On first `onTextDelta`: call `bot.api.sendMessage` to create response message, track ID.
-- [ ] Add simple throttle for response edits (e.g., max 5 edits/sec) to avoid spam.
-- [ ] Unit test: verify text accumulation, message creation, edits.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Implement `onTextDelta(delta)`: append to `accumulatedText`.
+- [x] Implement `flushResponse()`: edit `responseMessageId` with current `accumulatedText`.
+- [x] On first `onTextDelta`: call `bot.api.sendMessage` to create response message, track ID.
+- [x] Add simple throttle for response edits (e.g., max 5 edits/sec) to avoid spam.
+- [x] Unit test: verify text accumulation, message creation, edits.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 4: response text streaming with edits`
 

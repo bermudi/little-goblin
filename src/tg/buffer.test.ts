@@ -297,4 +297,179 @@ describe("MessageBuffer", () => {
       expect(m.send.length).toBe(1);
     });
   });
+
+  describe("response streaming via flushResponse", () => {
+    /**
+     * These tests focus on response streaming behavior; we suppress the
+     * status-line auto-flush by setting `statusThrottleMs` to a huge value,
+     * so any sendMessage we observe is the response message.
+     */
+    const STATUS_OFF = Number.MAX_SAFE_INTEGER;
+
+    it("accumulates text deltas in accumulatedText", () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, {
+        responseThrottleMs: 1_000_000,
+        statusThrottleMs: STATUS_OFF,
+      });
+      buffer.onTextDelta("Hello, ");
+      buffer.onTextDelta("world!");
+      expect(buffer._state().accumulatedText).toBe("Hello, world!");
+    });
+
+    it("first flush sends a new response message and tracks responseMessageId", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 99, {
+        now: () => 1000,
+        statusThrottleMs: STATUS_OFF,
+      });
+      buffer.onTextDelta("Hello");
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]).toEqual({ chatId: 99, text: "Hello" });
+      expect(buffer._state().responseMessageId).toBe(101);
+    });
+
+    it("subsequent flushes edit the response message with full accumulated text", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, {
+        now: () => t,
+        statusThrottleMs: STATUS_OFF,
+      });
+
+      buffer.onTextDelta("Hello");
+      await tick();
+      expect(m.send.length).toBe(1);
+
+      t = 1500; // beyond 200ms throttle
+      buffer.onTextDelta(", world!");
+      await tick();
+      expect(m.edit.length).toBe(1);
+      expect(m.edit[0]).toEqual({
+        chatId: 1,
+        messageId: 101,
+        text: "Hello, world!",
+      });
+    });
+
+    it("throttles response edits within ~200ms window", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, {
+        now: () => t,
+        statusThrottleMs: STATUS_OFF,
+      });
+
+      buffer.onTextDelta("a");
+      await tick();
+      expect(m.send.length).toBe(1);
+
+      t = 1100; // inside 200ms window
+      buffer.onTextDelta("b");
+      await tick();
+      expect(m.edit.length).toBe(0);
+
+      t = 1300; // window elapsed
+      await buffer.flushResponse();
+      expect(m.edit.length).toBe(1);
+      expect(m.edit[0]?.text).toBe("ab");
+    });
+
+    it("force=true bypasses response throttle (used by onAgentEnd)", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, {
+        now: () => t,
+        statusThrottleMs: STATUS_OFF,
+      });
+
+      buffer.onTextDelta("a");
+      await tick();
+      expect(m.send.length).toBe(1);
+
+      t = 1050; // well inside 200ms window
+      buffer.onTextDelta("b");
+      await buffer.flushResponse(true);
+      expect(m.edit.length).toBe(1);
+      expect(m.edit[0]?.text).toBe("ab");
+    });
+
+    it("skips when accumulatedText is empty", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, {
+        statusThrottleMs: STATUS_OFF,
+      });
+      await buffer.flushResponse(true);
+      expect(m.send.length).toBe(0);
+      expect(m.edit.length).toBe(0);
+    });
+
+    it("handles deleted response message by resetting responseMessageId", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, {
+        now: () => t,
+        statusThrottleMs: STATUS_OFF,
+      });
+
+      buffer.onTextDelta("hi");
+      await tick();
+      expect(buffer._state().responseMessageId).toBe(101);
+
+      t = 1500;
+      m.failNext.edit = {
+        error_code: 400,
+        description: "Bad Request: message to edit not found",
+      };
+      buffer.onTextDelta("!");
+      await tick();
+      expect(buffer._state().responseMessageId).toBeUndefined();
+
+      t = 2000;
+      await buffer.flushResponse(true);
+      expect(m.send.length).toBe(2);
+      expect(m.send[1]?.text).toBe("hi!");
+    });
+
+    it("does not throw out of flushResponse on unknown errors", async () => {
+      const m = makeBot();
+      m.failNext.send = new Error("boom");
+      const buffer = new MessageBuffer(m.bot, 1, {
+        statusThrottleMs: STATUS_OFF,
+      });
+      buffer.onTextDelta("x");
+      await expect(buffer.flushResponse()).resolves.toBeUndefined();
+    });
+
+    it("auto-flushes response from onTextDelta", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, {
+        statusThrottleMs: STATUS_OFF,
+      });
+      buffer.onTextDelta("auto");
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]?.text).toBe("auto");
+    });
+
+    it("onAgentEnd force-flushes the final response despite throttle", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, {
+        now: () => t,
+        statusThrottleMs: STATUS_OFF,
+      });
+      buffer.onTextDelta("draft");
+      await tick();
+      expect(m.send.length).toBe(1);
+
+      t = 1050; // well inside throttle
+      buffer.onTextDelta(" more");
+      buffer.onAgentEnd();
+      await tick();
+      const lastEdit = m.edit[m.edit.length - 1];
+      expect(lastEdit?.text).toBe("draft more");
+    });
+  });
 });

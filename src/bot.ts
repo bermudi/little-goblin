@@ -68,6 +68,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager } {
       onAgentEnd: () => {
         const text = accumulated.join("");
         if (text) {
+          log.debug("sending reply", { sessionId: session.id, length: text.length });
           ctx.reply(text).catch((err: unknown) => {
             log.error("failed to send reply", { error: String(err), sessionId: session.id });
           });

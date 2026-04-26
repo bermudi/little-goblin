@@ -153,16 +153,13 @@ function directAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
 }
 
 export const MODELS: Record<string, ModelEntry> = {
-  // --- Poe: Claude family → Messages (cache_control, thinking blocks) ---
-  "poe/Claude-Sonnet-4.6": poeAnthropic("Claude-Sonnet-4.6", "Claude Sonnet 4.6 (Poe)"),
-  "poe/Claude-Haiku-4.5": poeAnthropic("Claude-Haiku-4.5", "Claude Haiku 4.5 (Poe)"),
+  // Poe API ids are lowercase (verified against /v1/models). The TitleCase
+  // names on poe.com URLs and in Poe's marketing docs are *not* API ids.
+  // Most Poe models can be used without registration via pattern-match;
+  // entries here exist to override context windows or pin dialects.
 
-  // --- Poe: OpenAI family → Responses (reasoning summaries) ---
-  "poe/GPT-5": poeResponses("GPT-5", "GPT-5 (Poe)"),
-  "poe/GPT-5-mini": poeResponses("GPT-5-mini", "GPT-5 mini (Poe)"),
-
-  // --- Poe: everything else → Chat Completions ---
-  "poe/Gemini-2.5-Pro": poeCompletions("Gemini-2.5-Pro", "Gemini 2.5 Pro (Poe)", 1_000_000),
+  // --- Poe: Gemini gets a bigger context window than the default ---
+  "poe/gemini-2.5-pro": poeCompletions("gemini-2.5-pro", "Gemini 2.5 Pro (Poe)", 1_000_000),
 
   // --- OpenRouter: always chat completions ---
   "or/anthropic/claude-sonnet-4.5": openrouter("anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5 (OR)"),
@@ -181,6 +178,25 @@ export const MODELS: Record<string, ModelEntry> = {
 export interface ResolvedModel {
   model: Model<Api>;
   apiKey: string;
+}
+
+/**
+ * Derive a ModelEntry for an unregistered `poe/<id>` by matching the id family.
+ * Poe API ids are lowercase (verified against /v1/models).
+ * - claude-*       → anthropic dialect (cache_control, thinking blocks)
+ * - gpt-*, o[0-9]* → openai-responses (reasoning summaries)
+ * - everything else → openai-completions (universal fallback)
+ *
+ * Returns null for non-`poe/` keys.
+ */
+function poePatternMatch(modelName: string): ModelEntry | null {
+  if (!modelName.startsWith("poe/")) return null;
+  const id = modelName.slice("poe/".length);
+  if (!id) return null;
+  const fam = id.toLowerCase();
+  if (fam.startsWith("claude-")) return poeAnthropic(id, `${id} (Poe)`);
+  if (fam.startsWith("gpt-") || /^o\d/.test(fam)) return poeResponses(id, `${id} (Poe)`);
+  return poeCompletions(id, `${id} (Poe)`);
 }
 
 function getApiKey(cfg: Config, env: ApiKeyEnv): string | undefined {
@@ -204,14 +220,69 @@ function getApiKey(cfg: Config, env: ApiKeyEnv): string | undefined {
  * key is missing.
  */
 export function resolveModel(cfg: Config): ResolvedModel {
-  const entry = MODELS[cfg.modelName];
+  const entry = MODELS[cfg.modelName] ?? poePatternMatch(cfg.modelName);
   if (!entry) {
     const known = Object.keys(MODELS).sort().join(", ");
-    throw new Error(`Unknown MODEL_NAME "${cfg.modelName}". Known: ${known}`);
+    throw new Error(
+      `Unknown MODEL_NAME "${cfg.modelName}". Known: ${known}. ` +
+        `For Poe models not in this list, use the prefix \`poe/<bot-id>\` (validated at startup).`,
+    );
   }
   const apiKey = getApiKey(cfg, entry.apiKeyEnv);
   if (!apiKey) {
     throw new Error(`MODEL_NAME "${cfg.modelName}" requires ${entry.apiKeyEnv} to be set`);
   }
   return { model: entry.model, apiKey };
+}
+
+/**
+ * Validate `cfg.modelName` against Poe's `/v1/models` catalog at startup.
+ *
+ * - Non-poe model names: no-op (registry / direct provider failures surface elsewhere).
+ * - Unknown poe id: throws with up to 5 close-match suggestions.
+ * - Poe unreachable / non-2xx: logs a warning and returns (don't brick on flakes).
+ *
+ * The endpoint is auth-free per Poe docs, but we send the key when present.
+ */
+export async function validateModelAtStartup(
+  cfg: Config,
+  logger: { warn: (msg: string, ctx?: Record<string, unknown>) => void },
+): Promise<void> {
+  if (!cfg.modelName.startsWith("poe/")) return;
+  const id = cfg.modelName.slice("poe/".length);
+
+  let res: Response;
+  try {
+    res = await fetch("https://api.poe.com/v1/models", {
+      headers: cfg.poeApiKey ? { Authorization: `Bearer ${cfg.poeApiKey}` } : {},
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch (e) {
+    logger.warn("could not reach Poe to validate model; skipping", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return;
+  }
+  if (!res.ok) {
+    logger.warn("Poe model list returned non-2xx; skipping validation", { status: res.status });
+    return;
+  }
+
+  const body = (await res.json()) as { data?: Array<{ id?: string }> };
+  const ids = (body.data ?? []).map((m) => m.id).filter((x): x is string => typeof x === "string");
+  if (ids.length === 0) {
+    logger.warn("Poe model list was empty; skipping validation");
+    return;
+  }
+  if (ids.includes(id)) return;
+
+  const lower = id.toLowerCase();
+  const suggestions = ids
+    .filter((x) => x.toLowerCase().includes(lower) || lower.includes(x.toLowerCase()))
+    .slice(0, 5);
+  const hint =
+    suggestions.length > 0
+      ? ` Did you mean: ${suggestions.map((s) => `poe/${s}`).join(", ")}?`
+      : ` See https://api.poe.com/v1/models for the full list.`;
+  throw new Error(`Unknown Poe model "${id}" (MODEL_NAME=${cfg.modelName}).${hint}`);
 }

@@ -37,15 +37,16 @@ export function buildStartHandler(manager: SessionManager) {
     }
 
     // Private chat (DM): create a new session
+    let state;
     try {
-      const state = manager.createForChat(loc);
-      await ctx.reply(
-        `Session \`${state.id}\` ready\. Just start typing\!`,
-        { parse_mode: "MarkdownV2", ...replyOpts },
-      );
+      state = manager.createForChat(loc);
     } catch (e) {
       await ctx.reply("Failed to create session. Please try again.");
       throw e;
     }
+    await ctx.reply(
+      `Session \`${state.id}\` ready\\. Just start typing\\!`,
+      { parse_mode: "MarkdownV2", ...replyOpts },
+    );
   };
 }

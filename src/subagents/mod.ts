@@ -2,18 +2,30 @@
  * Subagent runtime.
  *
  * `SubagentRunner` owns the lifecycle of subagent instances spawned by goblin
- * (or by another subagent). Phase 2 lands generic spawning: artifacts on disk,
- * persisted pi session, depth cap. Real LLM execution arrives in phase 4.
+ * (or by another subagent). Phase 4 wires real LLM execution: each spawn
+ * creates a pi `AgentSession`, sends the initial prompt, streams events back
+ * to the spawner, captures the final assistant text, and persists lifecycle
+ * transitions to `meta.json`.
  *
  * See specs/changes/subagent-runtime/ for the full design and tasks.
  */
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
+import {
+  AuthStorage,
+  DefaultResourceLoader,
+  ModelRegistry,
+  SessionManager,
+  SettingsManager,
+  createAgentSession,
+  type AgentSessionEvent,
+  type ResourceLoader,
+} from "@mariozechner/pi-coding-agent";
 import type { Config } from "../config.ts";
-import { workdirPath } from "../agent/paths.ts";
+import { piAgentDir, workdirPath } from "../agent/paths.ts";
+import { resolveModel } from "../agent/models.ts";
 import { log } from "../log.ts";
 import {
   genericSubagentDir,
@@ -35,6 +47,13 @@ import {
   type SubagentRole,
 } from "./types.ts";
 
+/** Lazily-initialised pi services shared across all subagents in this runner. */
+interface SharedServices {
+  authStorage: AuthStorage;
+  modelRegistry: ModelRegistry;
+  settingsManager: SettingsManager;
+}
+
 /**
  * Manages all subagents spawned within a goblin process.
  *
@@ -45,21 +64,26 @@ import {
 export class SubagentRunner {
   private readonly cfg: Config;
   private readonly activeSubagents: Map<string, SubagentInstance> = new Map();
+  private services: SharedServices | null = null;
 
   constructor(cfg: Config) {
     this.cfg = cfg;
   }
 
   /**
-   * Spawn a new subagent.
+   * Spawn a new subagent and kick off its first turn.
    *
    * Generic (no `name`): creates `~/goblin/subagents/<id>/`, persisted pi
-   * session, tracks the instance. Skills are inherited from goblin in phase 4.
+   * session, inherits goblin's project context (cwd = workdir).
    *
    * Named (`name` provided): loads `~/goblin/agents/<name>/AGENTS.md` (must
    * exist), creates `~/goblin/agents/<name>/instances/<id>/` for persistence,
-   * carries a `NamedAgentDefinition` on the instance so phase 4 can override
-   * the system prompt and resource loader for strict skill isolation.
+   * builds a `DefaultResourceLoader` that uses the AGENTS.md content as the
+   * system prompt and pins skill discovery to the agent's own `skills/`
+   * directory — strictly isolated from goblin.
+   *
+   * Returns immediately with a handle; `handle.result` resolves when the
+   * subagent's `agent_end` event fires (or rejects on error).
    */
   async spawn(options: SpawnOptions): Promise<SubagentHandle> {
     const spawnerDepth = options.depth ?? 0;
@@ -109,16 +133,22 @@ export class SubagentRunner {
 
     // Persisted session lives in the subagent's own directory.
     // cwd: generic → goblin's workdir (inherits goblin's project context);
-    //      named   → the named agent's root dir (so pi's resource loader, if
-    //                used as-is later, would scope discovery to the agent's
-    //                own tree). Phase 4 will likely override the loader for
-    //                strict isolation, but the cwd choice here is the right
-    //                default.
+    //      named   → the named agent's root dir (so the resource loader
+    //                discovers nothing outside the agent's tree).
     const cwd =
       role === "named"
         ? namedAgentDir(this.cfg.goblinHome, options.name as string)
         : workdirPath(this.cfg.goblinHome);
     const sessionManager = SessionManager.create(cwd, dir);
+
+    // The result promise is wired during runAgent; capture the resolver
+    // pair here so the instance carries it before execution kicks off.
+    let resolveResult: (text: string) => void;
+    let rejectResult: (err: unknown) => void;
+    const result = new Promise<string>((res, rej) => {
+      resolveResult = res;
+      rejectResult = rej;
+    });
 
     const instance: SubagentInstance = {
       id,
@@ -129,10 +159,14 @@ export class SubagentRunner {
       spawnedAt,
       spawnedBy,
       dir,
+      metaPath,
       sessionManager,
       initialPrompt: options.prompt,
       onStatusUpdate: options.onStatusUpdate,
       definition,
+      session: null,
+      unsubscribe: null,
+      result,
     };
     this.activeSubagents.set(id, instance);
 
@@ -144,7 +178,224 @@ export class SubagentRunner {
       spawnedBy,
     });
 
-    return { id, status: "running" };
+    // Kick off LLM execution. We don't await here — spawn returns the handle
+    // immediately so callers can choose between awaiting `handle.result` and
+    // tracking via `list()`. Errors during startup land on `result` (the
+    // tool handler awaits it and surfaces failures as tool errors).
+    this.runAgent(instance, cwd).then(
+      (text) => resolveResult(text),
+      (err) => rejectResult(err),
+    );
+
+    // Attach a noop catch to prevent unhandled-rejection noise when callers
+    // delay observing `result` (e.g. polling via `list()` first). The
+    // rejection is still observable by any later `.catch` / `await`.
+    result.catch(() => {});
+
+    return { id, status: "running", result };
+  }
+
+  /**
+   * Execute the subagent's first turn end-to-end.
+   *
+   * Constructs the AgentSession with goblin's shared pi services + the
+   * subagent's own session manager, subscribes to events, sends the initial
+   * prompt, and resolves with the accumulated assistant text on `agent_end`.
+   */
+  private async runAgent(instance: SubagentInstance, cwd: string): Promise<string> {
+    const services = this.getSharedServices();
+    const resolved = resolveModel(this.cfg);
+    services.authStorage.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
+
+    // Named subagents get a custom resource loader with strict isolation:
+    // - noContextFiles: don't auto-discover project AGENTS.md from cwd.
+    // - systemPrompt: use the named agent's AGENTS.md verbatim.
+    // - noSkills + additionalSkillPaths: load only the agent's own skills/.
+    // Generic subagents use pi's defaults (loader auto-discovers from cwd).
+    let resourceLoader: ResourceLoader | undefined;
+    if (instance.role === "named" && instance.definition !== null) {
+      resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir: piAgentDir(this.cfg.goblinHome),
+        settingsManager: services.settingsManager,
+        noContextFiles: true,
+        noSkills: true,
+        additionalSkillPaths: [instance.definition.skillsDir],
+        systemPrompt: instance.definition.agentsMd,
+      });
+      await resourceLoader.reload();
+    }
+
+    const { session } = await createAgentSession({
+      cwd,
+      authStorage: services.authStorage,
+      modelRegistry: services.modelRegistry,
+      settingsManager: services.settingsManager,
+      sessionManager: instance.sessionManager,
+      model: resolved.model,
+      // Subagents have no β tools — all UI flows through the parent's status
+      // callback. See specs/.../subagents/spec.md "No beta tools for subagents".
+      customTools: [],
+      ...(resourceLoader ? { resourceLoader } : {}),
+    });
+    instance.session = session;
+
+    // Resolve on agent_end, reject on errors during the run.
+    let finalText = "";
+    let resolved_text: ((s: string) => void) | null = null;
+    let rejected_err: ((e: unknown) => void) | null = null;
+    const completion = new Promise<string>((res, rej) => {
+      resolved_text = res;
+      rejected_err = rej;
+    });
+
+    instance.unsubscribe = session.subscribe((event) => {
+      try {
+        this.handleEvent(instance, event, {
+          onText: (delta) => {
+            finalText += delta;
+          },
+          onEnd: () => {
+            this.markCompleted(instance, finalText);
+            resolved_text?.(finalText);
+          },
+          onError: (err) => {
+            this.markErrored(instance, err);
+            rejected_err?.(err);
+          },
+        });
+      } catch (err) {
+        log.error("subagent event handler threw", {
+          id: instance.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+
+    // Fire the initial prompt. If this throws (e.g. provider auth error
+    // before any events stream), the outer .then in spawn() turns it into
+    // a rejected `handle.result`.
+    try {
+      await session.sendUserMessage(instance.initialPrompt);
+    } catch (err) {
+      this.markErrored(instance, err);
+      throw err;
+    }
+
+    return completion;
+  }
+
+  /**
+   * Translate a single AgentSession event into status-callback updates
+   * and lifecycle hooks. Centralised so the run loop stays linear.
+   */
+  private handleEvent(
+    instance: SubagentInstance,
+    event: AgentSessionEvent,
+    hooks: {
+      onText: (delta: string) => void;
+      onEnd: () => void;
+      onError: (err: unknown) => void;
+    },
+  ): void {
+    switch (event.type) {
+      case "agent_start":
+        instance.onStatusUpdate?.("thinking...");
+        break;
+
+      case "message_update": {
+        const ame = event.assistantMessageEvent;
+        if (ame.type === "text_delta") {
+          hooks.onText(ame.delta);
+        }
+        break;
+      }
+
+      case "tool_execution_start":
+        instance.onStatusUpdate?.(`tool: ${event.toolName}`);
+        break;
+
+      case "tool_execution_end":
+        instance.onStatusUpdate?.(
+          event.isError ? `tool error: ${event.toolName}` : `tool ok: ${event.toolName}`,
+        );
+        break;
+
+      case "agent_end":
+        hooks.onEnd();
+        break;
+
+      // Other event types (turn_start/end, message_start/end, etc.) are
+      // ignored at this layer; the persisted session.jsonl carries the
+      // full record for revival.
+    }
+  }
+
+  /**
+   * Mark the subagent as completed and persist `meta.json`.
+   */
+  private markCompleted(instance: SubagentInstance, _finalText: string): void {
+    instance.status = "completed";
+    this.persistMeta(instance, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+    });
+    log.debug("subagent completed", { id: instance.id });
+  }
+
+  /**
+   * Mark the subagent as errored and persist `meta.json`.
+   */
+  private markErrored(instance: SubagentInstance, err: unknown): void {
+    instance.status = "error";
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    this.persistMeta(instance, {
+      status: "error",
+      completedAt: new Date().toISOString(),
+      errorMessage,
+    });
+    log.warn("subagent errored", { id: instance.id, errorMessage });
+  }
+
+  /**
+   * Read the existing `meta.json`, merge `patch`, and atomically replace.
+   * Best-effort: if the read fails, we fall back to a synthetic meta from
+   * the in-memory instance state so we never lose the lifecycle write.
+   */
+  private persistMeta(instance: SubagentInstance, patch: Partial<SubagentMeta>): void {
+    let current: SubagentMeta;
+    try {
+      current = JSON.parse(readFileSync(instance.metaPath, "utf-8")) as SubagentMeta;
+    } catch {
+      current = {
+        id: instance.id,
+        role: instance.role,
+        name: instance.name,
+        spawnedBy: instance.spawnedBy,
+        depth: instance.depth,
+        createdAt: instance.spawnedAt,
+        status: instance.status,
+      };
+    }
+    writeMetaAtomic(instance.metaPath, { ...current, ...patch });
+  }
+
+  /**
+   * Lazily create the shared pi services (auth, model registry, settings).
+   * All subagents within a `SubagentRunner` share these — only the
+   * `SessionManager` is per-subagent so each has its own conversation file.
+   */
+  private getSharedServices(): SharedServices {
+    if (this.services) return this.services;
+    const home = this.cfg.goblinHome;
+    const authStorage = AuthStorage.create(join(piAgentDir(home), "auth.json"));
+    const modelRegistry = ModelRegistry.create(
+      authStorage,
+      join(piAgentDir(home), "models.json"),
+    );
+    const settingsManager = SettingsManager.inMemory({});
+    this.services = { authStorage, modelRegistry, settingsManager };
+    return this.services;
   }
 
   /**
@@ -218,6 +469,7 @@ function writeMetaAtomic(path: string, meta: SubagentMeta): void {
   renameSync(tmp, path);
 }
 
+// Convenience re-export so callers can pull everything from one entry point.
 export type {
   NamedAgentDefinition,
   SpawnOptions,
@@ -225,4 +477,5 @@ export type {
   SubagentInfo,
   SubagentInstance,
   SubagentMeta,
+  SubagentStatus,
 } from "./types.ts";

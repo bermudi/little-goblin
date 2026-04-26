@@ -45,16 +45,17 @@ Commit: `phase 3: named subagents with strict skill isolation`
 
 ## Phase 4: Subagent execution and result return
 
-- [ ] Implement subagent turn execution:
+- [x] Implement subagent turn execution:
   - Subagent processes prompt using pi's `AgentSession` with `customTools: []` (no β tools).
-  - Stream events (status updates) to parent via callback.
+  - Stream events (status updates) to parent via callback. _(agent_start + tool start/end propagate via `onStatusUpdate`; rich prefixing lands in phase 7)_
   - On completion, capture final response.
-- [ ] Implement result return:
-  - When subagent finishes, return result to spawner.
+- [x] Implement result return:
+  - When subagent finishes, return result to spawner via `handle.result: Promise<string>`.
   - Update `meta.json` with `completedAt`, `status: 'completed'`.
-- [ ] Handle subagent errors: return error to spawner, update status.
-- [ ] Unit test: verify execution flow, verify result return, verify status updates.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Handle subagent errors: `handle.result` rejects, `meta.json` records `status: 'error'` + `completedAt` + `errorMessage`.
+- [x] System-prompt construction for named subagents: `DefaultResourceLoader` with `systemPrompt = AGENTS.md`, `noContextFiles`, `noSkills`, and `additionalSkillPaths` pinned to the agent's `skills/` (carried over from phase 3 deferral).
+- [x] Unit tests in `mod.test.ts` (24 total): verify execution wiring (createAgentSession options, customTools=[], cwd), prompt dispatch, text-delta accumulation + result resolution, status callbacks, completed-meta persistence, error propagation + error-meta persistence, named-agent resource-loader isolation.
+- [x] Verify `bun run typecheck` + `bun test` pass (only pre-existing `onboard > exits when config already exists` fails — unrelated).
 
 Commit: `phase 4: subagent execution and result propagation`
 

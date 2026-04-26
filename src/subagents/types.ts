@@ -4,7 +4,7 @@
  * See specs/changes/subagent-runtime/specs/subagents/spec.md for behavior.
  */
 
-import type { SessionManager } from "@mariozechner/pi-coding-agent";
+import type { AgentSession, SessionManager } from "@mariozechner/pi-coding-agent";
 
 /** Status of a subagent instance. */
 export type SubagentStatus = "running" | "idle" | "completed" | "cancelled" | "error";
@@ -41,11 +41,20 @@ export interface SpawnOptions {
 
 /**
  * Handle returned by `spawn()` while the subagent is running or queued.
- * The result string is filled in once the subagent completes.
+ *
+ * `status` reflects the subagent's state at the moment `spawn()` returned —
+ * always `"running"` for a fresh spawn. The terminal state is observable
+ * via `result`: it resolves with the subagent's final assistant text on
+ * `agent_end`, or rejects with the underlying error on failure / abort.
+ *
+ * Callers (the `spawn_subagent` tool, future revival flows) should
+ * `await handle.result` to obtain the response and let exceptions
+ * propagate as tool errors.
  */
 export interface SubagentHandle {
   id: string;
   status: SubagentStatus;
+  result: Promise<string>;
 }
 
 /**
@@ -61,7 +70,12 @@ export interface SubagentInfo {
 
 /**
  * Internal in-memory representation of an active subagent.
- * The pi `AgentSession` reference is attached in phase 4 when execution lands.
+ *
+ * `status` is mutated as the lifecycle advances:
+ *   running → completed | error | cancelled
+ *
+ * `session`, `unsubscribe`, and `result` are populated by phase 4's
+ * execution wiring once the AgentSession kicks off.
  */
 export interface SubagentInstance {
   id: string;
@@ -74,9 +88,11 @@ export interface SubagentInstance {
   spawnedBy: string | null;
   /** Absolute path to the directory holding `session.jsonl` and `meta.json`. */
   dir: string;
+  /** Absolute path to `meta.json` for this subagent. */
+  metaPath: string;
   /** The pi SessionManager owning the persisted session for this subagent. */
   sessionManager: SessionManager;
-  /** Initial prompt — kept around so phase 4 can hand it to AgentSession. */
+  /** Initial prompt — handed to the AgentSession on the first turn. */
   initialPrompt: string;
   /** Optional status callback registered by the spawner. */
   onStatusUpdate?: (message: string) => void;
@@ -86,6 +102,12 @@ export interface SubagentInstance {
    * `skillsDir` to override pi's resource loader for strict isolation.
    */
   definition: NamedAgentDefinition | null;
+  /** AgentSession created when execution starts. */
+  session: AgentSession | null;
+  /** Tear-down for the AgentSession event subscription. */
+  unsubscribe: (() => void) | null;
+  /** Resolves with the subagent's final assistant text on `agent_end`. */
+  result: Promise<string>;
 }
 
 /**
@@ -98,10 +120,12 @@ export interface SubagentMeta {
   spawnedBy: string | null;
   depth: number;
   createdAt: string;
-  /** Set in phase 4 once execution finishes. */
+  /** Set when execution finishes (success, error, or cancellation). */
   completedAt?: string;
-  /** Set in phase 4/6 to track lifecycle. */
+  /** Lifecycle status — mutated as the subagent transitions states. */
   status?: SubagentStatus;
+  /** Populated when status is `"error"`. */
+  errorMessage?: string;
 }
 
 /**

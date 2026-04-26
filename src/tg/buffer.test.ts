@@ -500,6 +500,136 @@ describe("MessageBuffer", () => {
       expect(m.send[0]?.text).toBe("auto");
     });
 
+    it("does not duplicate-send when sendMessage is slower than the throttle window", async () => {
+      // Regression: in production, Telegram's sendMessage often takes 100-300ms,
+      // which is longer than the 200ms response-edit throttle. Without an
+      // in-flight lock, a second flushResponse fires before the first
+      // sendMessage has resolved, sees responseMessageId still undefined, and
+      // sends a SECOND message — leaving an orphaned first message in chat.
+      //
+      // Repro from real session 2f03b2fe9e: the agent emitted "I'll" then a
+      // long preamble; the user saw two response messages instead of one.
+      const sends: { text: string }[] = [];
+      const edits: { messageId: number; text: string }[] = [];
+      let nextMessageId = 100;
+      let releaseSend!: (msgId: number) => void;
+      const sendPending: Promise<{ message_id: number }>[] = [];
+
+      const bot = {
+        api: {
+          sendMessage: (_chatId: number, text: string) => {
+            sends.push({ text });
+            const p = new Promise<{ message_id: number }>((resolve) => {
+              releaseSend = (id) => resolve({ message_id: id });
+            });
+            sendPending.push(p);
+            return p;
+          },
+          editMessageText: async (
+            _chatId: number,
+            messageId: number,
+            text: string,
+          ) => {
+            edits.push({ messageId, text });
+            return true;
+          },
+          sendChatAction: async () => true,
+        },
+      } as unknown as Bot;
+
+      let t = 1000;
+      const buffer = new MessageBuffer(bot, 1, {
+        now: () => t,
+        statusThrottleMs: Number.MAX_SAFE_INTEGER,
+      });
+
+      // First delta: triggers sendMessage, which is "in flight" (not resolved).
+      buffer.onTextDelta("I'll");
+      await tick();
+      expect(sends.length).toBe(1);
+      expect(sends[0]?.text).toBe("I'll");
+
+      // Time advances past the 200ms response throttle. More deltas arrive.
+      // Without the in-flight guard, this would issue a second sendMessage.
+      t = 1300;
+      buffer.onTextDelta(" run a quick test");
+      await tick();
+      expect(sends.length).toBe(1); // <-- the bug would make this 2
+
+      // Now release the first send. The buffer learns its responseMessageId.
+      releaseSend(++nextMessageId);
+      await tick();
+      expect(buffer._state().responseMessageId).toBe(101);
+
+      // Subsequent deltas should EDIT, not send.
+      t = 1600;
+      buffer.onTextDelta(".");
+      await tick();
+      expect(sends.length).toBe(1);
+      expect(edits.length).toBeGreaterThanOrEqual(1);
+      const lastEdit = edits[edits.length - 1];
+      expect(lastEdit?.messageId).toBe(101);
+      expect(lastEdit?.text).toBe("I'll run a quick test.");
+    });
+
+    it("force-flush during in-flight send awaits and edits, never duplicates", async () => {
+      // onAgentEnd uses force=true. If the initial sendMessage is still in
+      // flight when agent_end fires, the force-flush must NOT race a second
+      // sendMessage; it must wait for the first to resolve, then edit.
+      const sends: string[] = [];
+      const edits: { messageId: number; text: string }[] = [];
+      let releaseSend!: (id: number) => void;
+
+      const bot = {
+        api: {
+          sendMessage: (_chatId: number, text: string) => {
+            sends.push(text);
+            return new Promise<{ message_id: number }>((resolve) => {
+              releaseSend = (id) => resolve({ message_id: id });
+            });
+          },
+          editMessageText: async (
+            _chatId: number,
+            messageId: number,
+            text: string,
+          ) => {
+            edits.push({ messageId, text });
+            return true;
+          },
+          sendChatAction: async () => true,
+        },
+      } as unknown as Bot;
+
+      const buffer = new MessageBuffer(bot, 1, {
+        statusThrottleMs: Number.MAX_SAFE_INTEGER,
+      });
+
+      buffer.onTextDelta("hello");
+      await tick();
+      expect(sends.length).toBe(1);
+
+      // Agent ends while send is in flight. Append more text first so the
+      // force-flush has something to edit.
+      buffer.onTextDelta(" world");
+      const endPromise = (async () => {
+        buffer.onAgentEnd();
+        await tick();
+      })();
+
+      // Release the initial send. The force-flush should now be unblocked
+      // and edit the message instead of sending a second one.
+      releaseSend(101);
+      await endPromise;
+      await tick();
+      await tick();
+
+      expect(sends.length).toBe(1);
+      expect(edits.length).toBeGreaterThanOrEqual(1);
+      const lastEdit = edits[edits.length - 1];
+      expect(lastEdit?.messageId).toBe(101);
+      expect(lastEdit?.text).toBe("hello world");
+    });
+
     it("onAgentEnd force-flushes the final response despite throttle", async () => {
       let t = 1000;
       const m = makeBot();

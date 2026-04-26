@@ -132,6 +132,15 @@ export class MessageBuffer implements TurnCallbacks {
   private clearIntervalFn: (handle: unknown) => void;
   private chatActionHandle: unknown = undefined;
 
+  /**
+   * Promise tracking an in-flight `sendMessage` that is creating the response
+   * message. Any concurrent flush whose throttle window opens before the send
+   * resolves would otherwise see `responseMessageId === undefined` and call
+   * `sendMessage` a second time — producing duplicate Telegram messages.
+   * Non-force flushes skip when this is set; force flushes await it.
+   */
+  private creatingResponse: Promise<void> | null = null;
+
   constructor(bot: Bot, chatId: number, options: MessageBufferOptions = {}) {
     this.bot = bot;
     this.chatId = chatId;
@@ -283,6 +292,18 @@ export class MessageBuffer implements TurnCallbacks {
 
     if (this.accumulatedText.length === 0) return;
 
+    // Coalesce concurrent sends. If the response message is being created by
+    // an earlier flush, a non-force flush skips (the next throttle tick will
+    // edit, by which time `responseMessageId` is set). A force flush — used
+    // by `onAgentEnd` to land the final state — must wait, otherwise it
+    // would see `responseMessageId === undefined` and issue a duplicate
+    // `sendMessage`. See test "does not duplicate-send when sendMessage is
+    // slower than the throttle window".
+    if (this.responseMessageId === undefined && this.creatingResponse) {
+      if (!force) return;
+      await this.creatingResponse;
+    }
+
     this.lastResponseEditTime = now;
 
     // Big output? Escape to file before doing anything else; we do not want
@@ -296,11 +317,28 @@ export class MessageBuffer implements TurnCallbacks {
 
     try {
       if (this.responseMessageId === undefined) {
-        const msg = await this.bot.api.sendMessage(
-          this.chatId,
-          this.accumulatedText,
-        );
-        this.responseMessageId = msg.message_id;
+        // Publish the in-flight promise BEFORE awaiting so concurrent flushes
+        // can observe it and skip/wait. Clear it after the send resolves
+        // (success or failure), regardless of which branch handled the error.
+        const inFlight = (async () => {
+          try {
+            const msg = await this.bot.api.sendMessage(
+              this.chatId,
+              this.accumulatedText,
+            );
+            this.responseMessageId = msg.message_id;
+          } catch (err) {
+            this.handleResponseError(err);
+          }
+        })();
+        this.creatingResponse = inFlight;
+        try {
+          await inFlight;
+        } finally {
+          if (this.creatingResponse === inFlight) {
+            this.creatingResponse = null;
+          }
+        }
       } else {
         await this.bot.api.editMessageText(
           this.chatId,

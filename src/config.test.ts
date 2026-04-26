@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { writeFileSync, rmSync } from "node:fs";
+import { writeFileSync, rmSync, existsSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -167,7 +167,13 @@ describe("ensureGoblinHome", () => {
 
     ensureGoblinHome(cfg);
 
-    // Just verify it doesn't throw - directories are created
+    const expectedDirs = [
+      "sessions", "skills", "workdir", "pi-agent", "agents", "subagents",
+    ];
+    for (const sub of expectedDirs) {
+      expect(existsSync(join(tempDir, sub))).toBe(true);
+    }
+
     // Cleanup
     rmSync(tempDir, { recursive: true });
   });

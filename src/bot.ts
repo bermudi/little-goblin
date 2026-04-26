@@ -6,6 +6,19 @@ import { buildAllowlistMiddleware, locatorFromCtx, MessageBuffer } from "./tg/mo
 import { registerCommands } from "./commands/mod.ts";
 import { SessionManager } from "./sessions/mod.ts";
 import { AgentRunner } from "./agent/mod.ts";
+import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
+import { createSpawnSubagentTool } from "./subagents/tool.ts";
+
+/**
+ * Tool factory that equips spawned subagents with spawn_subagent,
+ * enabling recursive spawning up to the depth cap.
+ */
+const subagentToolFactory: SubagentToolFactory = (
+  runner,
+  depth,
+  sessionId,
+  onStatusUpdate,
+) => [createSpawnSubagentTool(runner, depth, sessionId, onStatusUpdate)];
 
 /**
  * Build the grammy Bot with middleware and handlers wired up.
@@ -15,6 +28,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager } {
   const bot = new Bot(cfg.botToken);
   const manager = new SessionManager(cfg);
   const runners = new Map<string, AgentRunner>();
+  const subagentRunner = new SubagentRunner(cfg, subagentToolFactory);
 
   // Security layer: drop messages from non-allowed users
   bot.use(buildAllowlistMiddleware(cfg));
@@ -45,7 +59,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager } {
     // Look up or lazily construct the runner for this session
     let runner = runners.get(session.id);
     if (!runner) {
-      runner = new AgentRunner({ cfg, sessionId: session.id, customTools: [] });
+      runner = new AgentRunner({ cfg, sessionId: session.id, customTools: [], subagentRunner });
       runners.set(session.id, runner);
       log.debug("created runner for session", { sessionId: session.id });
     }

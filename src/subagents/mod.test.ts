@@ -1043,6 +1043,7 @@ describe("spawn_subagent tool", () => {
       { prompt: "Analyze the logs" },
       undefined, // signal
       undefined, // onUpdate
+      {} as never, // ctx
     );
     await flush();
 
@@ -1076,6 +1077,7 @@ describe("spawn_subagent tool", () => {
       { prompt: "go", name: "researcher" },
       undefined,
       undefined,
+      {} as never,
     );
     await flush();
 
@@ -1095,7 +1097,7 @@ describe("spawn_subagent tool", () => {
     const tool = createSpawnSubagentTool(runner, 3, "sess-1");
 
     await expect(
-      tool.execute("tc-1", { prompt: "deep" }, undefined, undefined),
+      tool.execute("tc-1", { prompt: "deep" }, undefined, undefined, {} as never),
     ).rejects.toThrow(/Maximum subagent depth reached/);
   });
 });

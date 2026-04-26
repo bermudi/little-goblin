@@ -116,11 +116,11 @@ Commit: `phase 8: spawn_subagent tool wired to SubagentRunner`
 
 ## Phase 9: Wire into bot.ts and config
 
-- [ ] In `src/bot.ts`, instantiate `SubagentRunner` alongside `AgentRunner`.
-- [ ] Pass `SubagentRunner` to `AgentRunner` so spawn tool can use it.
-- [ ] In `src/config.ts`, ensure `~/goblin/agents/` and `~/goblin/subagents/` directories exist.
-- [ ] Smoke test: verify spawn_subagent tool appears in LLM context.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] In `src/bot.ts`, instantiate `SubagentRunner` alongside `AgentRunner`.
+- [x] Pass `SubagentRunner` to `AgentRunner` so spawn tool can use it.
+- [x] In `src/config.ts`, ensure `~/goblin/agents/` and `~/goblin/subagents/` directories exist.
+- [x] Smoke test: verify spawn_subagent tool appears in LLM context.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 9: integrate SubagentRunner into bot.ts`
 

@@ -109,7 +109,7 @@ function resolveValue(value: unknown): unknown {
  * Call once at startup before any consumer tries to use the paths.
  */
 export function ensureGoblinHome(cfg: Config): void {
-  const dirs = [cfg.goblinHome, join(cfg.goblinHome, "sessions"), join(cfg.goblinHome, "skills"), join(cfg.goblinHome, "workdir"), join(cfg.goblinHome, "pi-agent")];
+  const dirs = [cfg.goblinHome, join(cfg.goblinHome, "sessions"), join(cfg.goblinHome, "skills"), join(cfg.goblinHome, "workdir"), join(cfg.goblinHome, "pi-agent"), join(cfg.goblinHome, "agents"), join(cfg.goblinHome, "subagents")];
   for (const dir of dirs) {
     mkdirSync(dir, { recursive: true });
   }

@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { memoryDir, memoryFilePath, type MemoryTarget } from "./paths.ts";
 
@@ -52,6 +53,7 @@ export class MemoryStore {
     const overflow = this.checkCap(target, next);
     if (overflow) return overflow;
     this.write(target, next);
+    this.commit("add", target);
     return { ok: true };
   }
 
@@ -70,6 +72,7 @@ export class MemoryStore {
     const overflow = this.checkCap(target, next);
     if (overflow) return overflow;
     this.write(target, next);
+    this.commit("replace", target);
     return { ok: true };
   }
 
@@ -84,6 +87,7 @@ export class MemoryStore {
     if (!match.ok) return match;
     const next = removeEnclosingEntry(current, match.index, oldText.length);
     this.write(target, next);
+    this.commit("remove", target);
     return { ok: true };
   }
 
@@ -133,6 +137,68 @@ export class MemoryStore {
     writeFileSync(tmpPath, contents, "utf-8");
     renameSync(tmpPath, finalPath);
   }
+
+  /**
+   * Commit the just-written file to the memory git repo.
+   * Lazy-inits the repo on first commit. Swallows "nothing to commit".
+   */
+  private commit(
+    action: "add" | "replace" | "remove",
+    target: MemoryTarget,
+  ): void {
+    const dir = memoryDir(this.home);
+    this.ensureGitRepo(dir);
+    const fileName = target === "memory" ? "memory.md" : "user.md";
+    const message = `memory: ${action} in ${target}`;
+    runGit(dir, ["add", "--", fileName]);
+    const result = runGit(dir, ["commit", "-q", "-m", message], {
+      allowFailure: true,
+    });
+    if (result.status !== 0) {
+      const out = (result.stdout + result.stderr).toLowerCase();
+      // Tolerate the "nothing to commit" path (idempotent rewrite).
+      if (out.includes("nothing to commit") || out.includes("no changes added")) {
+        return;
+      }
+      throw new Error(
+        `git commit failed (status ${result.status}): ${result.stderr || result.stdout}`,
+      );
+    }
+  }
+
+  private ensureGitRepo(dir: string): void {
+    if (existsSync(join(dir, ".git"))) return;
+    runGit(dir, ["init", "-q"]);
+    runGit(dir, ["config", "user.name", "goblin"]);
+    runGit(dir, ["config", "user.email", "goblin@localhost"]);
+    // Avoid surprises from globally configured commit.gpgSign etc.
+    runGit(dir, ["config", "commit.gpgSign", "false"]);
+  }
+}
+
+interface RunResult {
+  status: number;
+  stdout: string;
+  stderr: string;
+}
+
+function runGit(
+  cwd: string,
+  args: string[],
+  opts: { allowFailure?: boolean } = {},
+): RunResult {
+  const r = spawnSync("git", args, { cwd, encoding: "utf-8" });
+  const result: RunResult = {
+    status: r.status ?? -1,
+    stdout: r.stdout ?? "",
+    stderr: r.stderr ?? "",
+  };
+  if (!opts.allowFailure && result.status !== 0) {
+    throw new Error(
+      `git ${args.join(" ")} failed (status ${result.status}): ${result.stderr || result.stdout}`,
+    );
+  }
+  return result;
 }
 
 /**

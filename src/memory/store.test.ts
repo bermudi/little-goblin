@@ -1,11 +1,25 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
 import { memoryDir, memoryFilePath } from "./paths.ts";
 
 const DELIMITER = "\n§\n";
+
+function gitOut(cwd: string, args: string[]): string {
+  const r = spawnSync("git", args, { cwd, encoding: "utf-8" });
+  if (r.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
+  }
+  return (r.stdout ?? "").trim();
+}
+
+function commitCount(cwd: string): number {
+  const out = gitOut(cwd, ["rev-list", "--count", "HEAD"]);
+  return Number.parseInt(out, 10);
+}
 
 describe("MemoryStore", () => {
   let tmp: string;
@@ -210,6 +224,70 @@ describe("MemoryStore", () => {
       const entries = readdirSync(memoryDir(tmp));
       const tmpLeftovers = entries.filter((n) => n.endsWith(".tmp"));
       expect(tmpLeftovers).toEqual([]);
+    });
+  });
+
+  describe("git versioning", () => {
+    it("first successful write initializes .git", () => {
+      const dir = memoryDir(tmp);
+      expect(existsSync(join(dir, ".git"))).toBe(false);
+      const r = store.add("memory", "first");
+      expect(r.ok).toBe(true);
+      expect(existsSync(join(dir, ".git"))).toBe(true);
+      expect(commitCount(dir)).toBe(1);
+    });
+
+    it("each successful write produces exactly one commit", () => {
+      const dir = memoryDir(tmp);
+      store.add("memory", "alpha");
+      expect(commitCount(dir)).toBe(1);
+      store.add("user", "u-pref");
+      expect(commitCount(dir)).toBe(2);
+      store.replace("memory", "alpha", "ALPHA");
+      expect(commitCount(dir)).toBe(3);
+      store.remove("memory", "ALPHA");
+      expect(commitCount(dir)).toBe(4);
+    });
+
+    it("commit subjects match `memory: <action> in <target>` exactly", () => {
+      const dir = memoryDir(tmp);
+      store.add("user", "x");
+      expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
+        "memory: add in user",
+      );
+      store.replace("user", "x", "y");
+      expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
+        "memory: replace in user",
+      );
+      store.remove("user", "y");
+      expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
+        "memory: remove in user",
+      );
+      store.add("memory", "m1");
+      expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
+        "memory: add in memory",
+      );
+    });
+
+    it("failed writes do not produce commits", () => {
+      const dir = memoryDir(tmp);
+      // Seed one commit so HEAD exists.
+      store.add("memory", "seed");
+      const before = commitCount(dir);
+
+      // Overflow: pre-fill user.md and try a too-large add.
+      writeFileSync(memoryFilePath(tmp, "user"), "a".repeat(1999), "utf-8");
+      const r1 = store.add("user", "bb");
+      expect(r1.ok).toBe(false);
+
+      // Ambiguous match.
+      store.add("memory", "seed");
+      const r2 = store.replace("memory", "seed", "X");
+      expect(r2.ok).toBe(false);
+
+      // After the second `add("memory", "seed")` succeeded once, count went
+      // up by exactly 1; failed ops added nothing.
+      expect(commitCount(dir)).toBe(before + 1);
     });
   });
 });

@@ -23,17 +23,17 @@ Commit: `phase 1: memory store with caps and atomic writes`
 
 ## Phase 2: Git-backed versioning
 
-- [ ] Add `private commit(action: "add" | "replace" | "remove", target: "memory" | "user")` to `MemoryStore` shelling out to `git` via `Bun.spawnSync` (or `node:child_process.spawnSync`).
+- [x] Add `private commit(action: "add" | "replace" | "remove", target: "memory" | "user")` to `MemoryStore` shelling out to `git` via `Bun.spawnSync` (or `node:child_process.spawnSync`).
   - Lazy-init: if `<memoryDir>/.git` is absent, run `git init -q`, `git config user.name goblin`, `git config user.email goblin@localhost`.
   - On every successful mutation, run `git add <file>` then `git commit -q -m "memory: <action> in <target>"`. Swallow "nothing to commit".
-- [ ] Commit message format MUST be exactly `memory: <action> in <target>` (e.g., `memory: add in user`, `memory: replace in memory`). Matches spec scenario `Successful add commits`.
-- [ ] Wire `commit()` into the success paths of `add`, `replace`, `remove`. Failed writes MUST NOT commit.
-- [ ] Extend `src/memory/store.test.ts`:
+- [x] Commit message format MUST be exactly `memory: <action> in <target>` (e.g., `memory: add in user`, `memory: replace in memory`). Matches spec scenario `Successful add commits`.
+- [x] Wire `commit()` into the success paths of `add`, `replace`, `remove`. Failed writes MUST NOT commit.
+- [x] Extend `src/memory/store.test.ts`:
   - First successful write initializes `.git` directory.
   - Each successful write produces exactly one new commit; assert via `git rev-list --count HEAD`.
   - Each commit's subject matches `memory: <action> in <target>` exactly; assert via `git log -1 --format=%s`.
   - Failed writes (overflow, ambiguous match) produce no new commits.
-- [ ] Verify `bun run typecheck` and `bun test` pass.
+- [x] Verify `bun run typecheck` and `bun test` pass.
 
 Commit: `phase 2: git versioning for memory mutations`
 

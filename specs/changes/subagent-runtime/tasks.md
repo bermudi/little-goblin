@@ -2,14 +2,14 @@
 
 ## Phase 1: SubagentRunner skeleton
 
-- [ ] Create `src/subagents/mod.ts` with `SubagentRunner` class:
+- [x] Create `src/subagents/mod.ts` with `SubagentRunner` class:
   - Constructor accepts `cfg: Config`.
   - Internal state: `activeSubagents: Map<string, SubagentInstance>`.
   - Methods stubbed: `spawn()`, `revive()`, `list()`, `cancel()`.
-- [ ] Create `src/subagents/types.ts` with interfaces:
+- [x] Create `src/subagents/types.ts` with interfaces:
   - `SpawnOptions`, `SubagentHandle`, `SubagentInstance`, `SubagentInfo`, `NamedAgentDefinition`.
-- [ ] Add `src/subagents/mod.test.ts` with basic instantiation test.
-- [ ] Verify `bun run typecheck` passes.
+- [x] Add `src/subagents/mod.test.ts` with basic instantiation test.
+- [x] Verify `bun run typecheck` passes.
 
 Commit: `phase 1: SubagentRunner skeleton and types`
 

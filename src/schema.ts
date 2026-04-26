@@ -13,6 +13,7 @@ export const ConfigFileSchema = z.object({
   openaiApiKey: z.string().optional(),
   anthropicApiKey: z.string().optional(),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  toolVisibility: z.enum(["none", "minimal", "standard", "verbose", "debug"]).default("standard"),
 });
 
 export type ConfigFile = z.infer<typeof ConfigFileSchema>;

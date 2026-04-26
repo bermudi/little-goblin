@@ -37,4 +37,13 @@
   // --- Logging ---
   // debug | info | warn | error
   logLevel: "info",
+
+  // --- UI ---
+  // Tool-call visibility in the status line:
+  //   none     no status line
+  //   minimal  state-changing tools only (bash, write, edit, spawn_subagent)
+  //   standard all α tools (default)
+  //   verbose  α + γ tools (revive_subagent, list_subagents)
+  //   debug    everything
+  toolVisibility: "standard",
 }

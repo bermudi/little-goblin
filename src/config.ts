@@ -20,6 +20,8 @@ export interface Config {
   anthropicApiKey?: string;
   goblinHome: string;
   logLevel: "debug" | "info" | "warn" | "error";
+  /** Status-line tool visibility level. See `src/tg/buffer.ts`. */
+  toolVisibility: "none" | "minimal" | "standard" | "verbose" | "debug";
 }
 
 /**
@@ -70,6 +72,7 @@ export function loadConfig(): Config {
     anthropicApiKey: cfg.anthropicApiKey,
     goblinHome,
     logLevel: cfg.logLevel,
+    toolVisibility: cfg.toolVisibility,
   });
 
   return config;

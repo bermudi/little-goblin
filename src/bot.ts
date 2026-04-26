@@ -2,10 +2,10 @@ import { Bot } from "grammy";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
 import { log } from "./log.ts";
-import { buildAllowlistMiddleware, locatorFromCtx } from "./tg/mod.ts";
+import { buildAllowlistMiddleware, locatorFromCtx, MessageBuffer } from "./tg/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
 import { SessionManager } from "./sessions/mod.ts";
-import { AgentRunner, type TurnCallbacks } from "./agent/mod.ts";
+import { AgentRunner } from "./agent/mod.ts";
 
 /**
  * Build the grammy Bot with middleware and handlers wired up.
@@ -50,37 +50,17 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager } {
       log.debug("created runner for session", { sessionId: session.id });
     }
 
-    // Build minimal TurnCallbacks
-    const accumulated: string[] = [];
-    const callbacks: TurnCallbacks = {
-      onTextDelta: (text: string) => {
-        accumulated.push(text);
-      },
-      onToolStart: (name: string, input: unknown) => {
-        log.debug("tool start", { name, input });
-      },
-      onToolEnd: (name: string, result: unknown) => {
-        log.debug("tool end", { name, result });
-      },
-      onStatusUpdate: (message: string) => {
-        log.debug("status update", { message });
-      },
-      onAgentEnd: () => {
-        const text = accumulated.join("");
-        if (text) {
-          log.debug("sending reply", { sessionId: session.id, length: text.length });
-          ctx.reply(text).catch((err: unknown) => {
-            log.error("failed to send reply", { error: String(err), sessionId: session.id });
-          });
-        }
-      },
-    };
-
     const text = ctx.msg?.text;
     if (!text) return;
 
+    // MessageBuffer turns agent events into Telegram UI (status line + streamed
+    // response). One buffer per turn so message IDs are scoped to this prompt.
+    const buffer = new MessageBuffer(bot, locator.chatId, {
+      visibility: cfg.toolVisibility,
+    });
+
     try {
-      await runner.prompt(text, callbacks);
+      await runner.prompt(text, buffer);
     } catch (err) {
       log.error("runner prompt failed", { error: String(err), sessionId: session.id });
     }

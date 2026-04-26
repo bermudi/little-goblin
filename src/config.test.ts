@@ -162,6 +162,7 @@ describe("ensureGoblinHome", () => {
       allowedTgUserIds: new Set([123]),
       modelName: "test",
       logLevel: "info" as const,
+      toolVisibility: "standard" as const,
     };
 
     ensureGoblinHome(cfg);

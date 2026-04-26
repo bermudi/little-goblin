@@ -99,13 +99,13 @@ Commit: `phase 8: chat action refresh every ~4s`
 
 ## Phase 9: Wire into bot.ts and config
 
-- [ ] In `src/tg/mod.ts`, export `MessageBuffer` from `./buffer.ts` (barrel export).
-- [ ] In `src/bot.ts`, import `MessageBuffer` from `./tg/mod.ts`.
-- [ ] After session resolution, create buffer: `const buffer = new MessageBuffer(bot, ctx.chat.id, {visibility: config.toolVisibility})`.
-- [ ] Pass buffer as `TurnCallbacks` to `runner.prompt()`.
-- [ ] Add `toolVisibility` to config loader and default config.
-- [ ] Smoke test end-to-end: run bot, verify status line appears during tool calls, verify response streams.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] In `src/tg/mod.ts`, export `MessageBuffer` from `./buffer.ts` (barrel export).
+- [x] In `src/bot.ts`, import `MessageBuffer` from `./tg/mod.ts`.
+- [x] After session resolution, create buffer: `const buffer = new MessageBuffer(bot, ctx.chat.id, {visibility: config.toolVisibility})`.
+- [x] Pass buffer as `TurnCallbacks` to `runner.prompt()`.
+- [x] Add `toolVisibility` to config loader and default config.
+- [ ] Smoke test end-to-end: run bot, verify status line appears during tool calls, verify response streams. _(deferred — requires running bot against Telegram)_
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 9: integrate MessageBuffer into bot.ts`
 

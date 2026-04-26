@@ -14,6 +14,7 @@ function makeTestConfig(home: string): Config {
     poeApiKey: "test-key",
     goblinHome: home,
     logLevel: "info",
+    toolVisibility: "standard",
   };
 }
 

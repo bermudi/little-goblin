@@ -168,8 +168,8 @@ describe("SubagentRunner — skeleton", () => {
     ).rejects.toThrow("Subagent not found");
   });
 
-  it("cancel() is stubbed until phase 6", async () => {
-    await expect(runner.cancel("missing")).rejects.toThrow(/not implemented/);
+  it("cancel() throws 'Subagent not found' for unknown id", async () => {
+    await expect(runner.cancel("missing")).rejects.toThrow("Subagent not found");
   });
 });
 
@@ -759,5 +759,136 @@ describe("SubagentRunner.revive", () => {
     });
 
     await expect(runner.revive(id, "bad")).rejects.toThrow("revive-fail");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6: List and cancel operations
+// ---------------------------------------------------------------------------
+
+describe("SubagentRunner.cancel", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-subagents-cancel-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("throws 'Subagent not found' for unknown id", async () => {
+    await expect(runner.cancel("nonexistent")).rejects.toThrow("Subagent not found");
+  });
+
+  it("calls session.abort() and updates status to cancelled", async () => {
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+
+    expect(sessionHolder.abort).not.toHaveBeenCalled();
+    await runner.cancel(handle.id);
+
+    expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+    const list = runner.list();
+    const entry = list.find((i) => i.id === handle.id);
+    expect(entry?.status).toBe("cancelled");
+  });
+
+  it("persists status=cancelled to meta.json with completedAt", async () => {
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+
+    await runner.cancel(handle.id);
+
+    const meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("cancelled");
+    expect(meta.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("cleans up the event subscription on cancel", async () => {
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+
+    // There should be one listener from subscribe().
+    expect(sessionHolder.listeners.length).toBeGreaterThanOrEqual(1);
+    const listenerCountBefore = sessionHolder.listeners.length;
+
+    await runner.cancel(handle.id);
+
+    // After cancel, unsubscribe should have removed the listener.
+    expect(sessionHolder.listeners.length).toBeLessThan(listenerCountBefore);
+  });
+});
+
+describe("SubagentRunner.list", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-subagents-list-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("returns empty array when no subagents are active", () => {
+    expect(runner.list()).toEqual([]);
+  });
+
+  it("returns multiple subagents with correct shape", async () => {
+    const h1 = await runner.spawn({ prompt: "a" });
+    h1.result.catch(() => {});
+    const h2 = await runner.spawn({ prompt: "b" });
+    h2.result.catch(() => {});
+    await flush();
+
+    const list = runner.list();
+    expect(list).toHaveLength(2);
+
+    const ids = list.map((i) => i.id).sort();
+    expect(ids).toEqual([h1.id, h2.id].sort());
+
+    for (const entry of list) {
+      expect(entry).toMatchObject({
+        role: "generic",
+        status: "running",
+      });
+      expect(entry.spawnedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(entry.name).toBeNull();
+    }
+  });
+
+  it("reflects cancelled status after cancel()", async () => {
+    const handle = await runner.spawn({ prompt: "x" });
+    await flush();
+    await runner.cancel(handle.id);
+
+    const list = runner.list();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.status).toBe("cancelled");
+  });
+
+  it("reflects completed status after agent_end", async () => {
+    const handle = await runner.spawn({ prompt: "x" });
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+
+    const list = runner.list();
+    expect(list[0]?.status).toBe("completed");
   });
 });

@@ -76,16 +76,16 @@ Commit: `phase 5: subagent revival from persisted sessions`
 
 ## Phase 6: List and cancel operations
 
-- [ ] Implement `list(): SubagentInfo[]`:
+- [x] Implement `list(): SubagentInfo[]`:
   - Return all entries from `activeSubagents`.
   - Include: id, name/type, status (running/idle/completed), spawnedAt.
-- [ ] Implement `cancel(id: string)`:
+- [x] Implement `cancel(id: string)`:
   - Find subagent in `activeSubagents`.
   - Call `subagent.session.abort()`.
   - Update status to 'cancelled'.
-- [ ] Handle not found: throw error "Subagent not found".
-- [ ] Unit test: verify list returns correct info, verify cancel aborts session.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Handle not found: throw error "Subagent not found".
+- [x] Unit test: verify list returns correct info, verify cancel aborts session.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 6: list and cancel subagent operations`
 

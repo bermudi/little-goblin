@@ -496,10 +496,33 @@ export class SubagentRunner {
   }
 
   /**
-   * Cancel an active subagent. Implemented in phase 6.
+   * Cancel an active subagent.
+   *
+   * Calls `session.abort()` on the underlying `AgentSession` and marks the
+   * subagent as cancelled in both in-memory state and `meta.json`.
+   *
+   * Throws "Subagent not found" if the id is not in the active map.
    */
-  async cancel(_id: string): Promise<void> {
-    throw new Error("SubagentRunner.cancel() not implemented yet (phase 6)");
+  async cancel(id: string): Promise<void> {
+    const instance = this.activeSubagents.get(id);
+    if (instance === undefined) {
+      throw new Error("Subagent not found");
+    }
+
+    if (instance.session !== null) {
+      await instance.session.abort();
+    }
+
+    instance.status = "cancelled";
+    this.persistMeta(instance, {
+      status: "cancelled",
+      completedAt: new Date().toISOString(),
+    });
+
+    instance.unsubscribe?.();
+    instance.unsubscribe = null;
+
+    log.debug("subagent cancelled", { id });
   }
 }
 

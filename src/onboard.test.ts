@@ -36,10 +36,6 @@ describe("onboard", () => {
       throw new Error("exit called");
     }) as typeof process.exit;
 
-    // Mock stdin to prevent hanging
-    const originalStdin = process.stdin.isTTY;
-    Object.defineProperty(process.stdin, "isTTY", { value: false });
-
     try {
       await main();
     } catch (err) {
@@ -49,7 +45,6 @@ describe("onboard", () => {
         throw err;
       }
     } finally {
-      Object.defineProperty(process.stdin, "isTTY", { value: originalStdin });
       (process as { exit: typeof originalExit }).exit = originalExit;
     }
 

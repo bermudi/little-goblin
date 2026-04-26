@@ -27,7 +27,7 @@ If required artifacts (proposal, design, tasks, specs) are missing, stop. Tell t
 2. **Read the phase tasks** — understand every task before starting any of them
 3. **Implement each task sequentially** — one at a time, in order
 4. **Mark tasks done immediately** — edit `tasks.md` and set `[x]` the moment a task is complete
-5. **Commit after the phase** — message: `phase N: <phase name>`
+5. **Commit your work after the phase** — message: `phase N: <phase name>`
 6. **Stop** — tell the user the phase is done and they can re-invoke apply for the next one
 
 ---

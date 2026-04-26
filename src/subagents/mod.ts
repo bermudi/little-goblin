@@ -8,21 +8,31 @@
  * See specs/changes/subagent-runtime/ for the full design and tasks.
  */
 
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { workdirPath } from "../agent/paths.ts";
 import { log } from "../log.ts";
-import { genericSubagentDir, genericSubagentMetaPath } from "./paths.ts";
+import {
+  genericSubagentDir,
+  genericSubagentMetaPath,
+  namedAgentAgentsMdPath,
+  namedAgentDir,
+  namedAgentInstanceDir,
+  namedAgentInstanceMetaPath,
+  namedAgentSkillsDir,
+} from "./paths.ts";
 import {
   MAX_SUBAGENT_DEPTH,
+  type NamedAgentDefinition,
   type SpawnOptions,
   type SubagentHandle,
   type SubagentInfo,
   type SubagentInstance,
   type SubagentMeta,
+  type SubagentRole,
 } from "./types.ts";
 
 /**
@@ -43,17 +53,15 @@ export class SubagentRunner {
   /**
    * Spawn a new subagent.
    *
-   * Phase 2: generic only. Creates `~/goblin/subagents/<id>/` with `meta.json`,
-   * provisions a persisted pi `SessionManager`, and tracks the instance.
-   * Phase 3 adds named subagents; phase 4 adds actual LLM execution.
+   * Generic (no `name`): creates `~/goblin/subagents/<id>/`, persisted pi
+   * session, tracks the instance. Skills are inherited from goblin in phase 4.
+   *
+   * Named (`name` provided): loads `~/goblin/agents/<name>/AGENTS.md` (must
+   * exist), creates `~/goblin/agents/<name>/instances/<id>/` for persistence,
+   * carries a `NamedAgentDefinition` on the instance so phase 4 can override
+   * the system prompt and resource loader for strict skill isolation.
    */
   async spawn(options: SpawnOptions): Promise<SubagentHandle> {
-    if (options.name !== undefined) {
-      throw new Error(
-        "Named subagents not implemented yet (phase 3); pass only { prompt } for now",
-      );
-    }
-
     const spawnerDepth = options.depth ?? 0;
     const newDepth = spawnerDepth + 1;
     if (newDepth > MAX_SUBAGENT_DEPTH) {
@@ -63,32 +71,59 @@ export class SubagentRunner {
     const id = randomUUID();
     const spawnedAt = new Date().toISOString();
     const spawnedBy = options.spawnedBy ?? null;
-    const dir = genericSubagentDir(this.cfg.goblinHome, id);
 
-    // Create the subagent's directory up-front so meta.json + pi's session
+    let role: SubagentRole;
+    let dir: string;
+    let metaPath: string;
+    let definition: NamedAgentDefinition | null;
+    let displayName: string | null;
+
+    if (options.name !== undefined) {
+      role = "named";
+      definition = loadNamedAgent(this.cfg.goblinHome, options.name);
+      displayName = options.name;
+      dir = namedAgentInstanceDir(this.cfg.goblinHome, options.name, id);
+      metaPath = namedAgentInstanceMetaPath(this.cfg.goblinHome, options.name, id);
+    } else {
+      role = "generic";
+      definition = null;
+      displayName = null;
+      dir = genericSubagentDir(this.cfg.goblinHome, id);
+      metaPath = genericSubagentMetaPath(this.cfg.goblinHome, id);
+    }
+
+    // Create the instance directory up-front so meta.json + pi's session
     // file land side-by-side.
     mkdirSync(dir, { recursive: true });
 
     const meta: SubagentMeta = {
       id,
-      role: "generic",
-      name: null,
+      role,
+      name: displayName,
       spawnedBy,
       depth: newDepth,
       createdAt: spawnedAt,
       status: "running",
     };
-    writeMetaAtomic(genericSubagentMetaPath(this.cfg.goblinHome, id), meta);
+    writeMetaAtomic(metaPath, meta);
 
-    // Persisted session lives in the subagent's own directory. cwd points at
-    // goblin's workdir so generic subagents inherit goblin's project context
-    // (skill discovery happens through pi's resource loader in phase 4).
-    const sessionManager = SessionManager.create(workdirPath(this.cfg.goblinHome), dir);
+    // Persisted session lives in the subagent's own directory.
+    // cwd: generic → goblin's workdir (inherits goblin's project context);
+    //      named   → the named agent's root dir (so pi's resource loader, if
+    //                used as-is later, would scope discovery to the agent's
+    //                own tree). Phase 4 will likely override the loader for
+    //                strict isolation, but the cwd choice here is the right
+    //                default.
+    const cwd =
+      role === "named"
+        ? namedAgentDir(this.cfg.goblinHome, options.name as string)
+        : workdirPath(this.cfg.goblinHome);
+    const sessionManager = SessionManager.create(cwd, dir);
 
     const instance: SubagentInstance = {
       id,
-      name: null,
-      role: "generic",
+      name: displayName,
+      role,
       status: "running",
       depth: newDepth,
       spawnedAt,
@@ -97,10 +132,17 @@ export class SubagentRunner {
       sessionManager,
       initialPrompt: options.prompt,
       onStatusUpdate: options.onStatusUpdate,
+      definition,
     };
     this.activeSubagents.set(id, instance);
 
-    log.debug("subagent spawned", { id, depth: newDepth, spawnedBy });
+    log.debug("subagent spawned", {
+      id,
+      role,
+      name: displayName,
+      depth: newDepth,
+      spawnedBy,
+    });
 
     return { id, status: "running" };
   }
@@ -139,6 +181,32 @@ export class SubagentRunner {
 }
 
 /**
+ * Load a named agent definition from `~/goblin/agents/<name>/`.
+ *
+ * `AGENTS.md` is required. The `skills/` directory is optional — its path
+ * is recorded so phase 4 can pin pi's resource loader to it for strict
+ * isolation, regardless of whether the agent has any skills yet.
+ */
+function loadNamedAgent(home: string, name: string): NamedAgentDefinition {
+  const agentsMdPath = namedAgentAgentsMdPath(home, name);
+  let agentsMd: string;
+  try {
+    agentsMd = readFileSync(agentsMdPath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`Named agent '${name}' not found`);
+    }
+    throw err;
+  }
+  return {
+    name,
+    dir: namedAgentDir(home, name),
+    agentsMd,
+    skillsDir: namedAgentSkillsDir(home, name),
+  };
+}
+
+/**
  * Write JSON to disk via tmp + rename so a crash mid-write doesn't leave
  * a partial meta.json behind.
  */
@@ -151,6 +219,7 @@ function writeMetaAtomic(path: string, meta: SubagentMeta): void {
 }
 
 export type {
+  NamedAgentDefinition,
   SpawnOptions,
   SubagentHandle,
   SubagentInfo,

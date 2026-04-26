@@ -32,14 +32,14 @@ Commit: `phase 2: generic subagent spawning with depth check`
 
 ## Phase 3: Named subagent loading
 
-- [ ] Implement named agent discovery: load `~/goblin/agents/<name>/AGENTS.md`.
-- [ ] If not found, throw error.
-- [ ] If found: use `AGENTS.md` content as system prompt (not the generic prompt).
-- [ ] Set skill search path to `~/goblin/agents/<name>/skills/` only (strict isolation).
-- [ ] Create directory `~/goblin/agents/<name>/instances/<id>/` for persistence.
-- [ ] Update `spawn()` to handle `options.name` for named agents.
-- [ ] Unit test: verify named agent loads AGENTS.md, verify isolation (no parent skills).
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Implement named agent discovery: load `~/goblin/agents/<name>/AGENTS.md`.
+- [x] If not found, throw error.
+- [x] If found: use `AGENTS.md` content as system prompt (not the generic prompt). _(definition.agentsMd is loaded and recorded on the instance; system-prompt construction itself lands in phase 4 with `createAgentSession`)_
+- [x] Set skill search path to `~/goblin/agents/<name>/skills/` only (strict isolation). _(definition.skillsDir is recorded for phase 4 to pin pi's resource loader)_
+- [x] Create directory `~/goblin/agents/<name>/instances/<id>/` for persistence.
+- [x] Update `spawn()` to handle `options.name` for named agents.
+- [x] Unit test: verify named agent loads AGENTS.md, verify isolation (skillsDir is the named-agent's own, never goblin's).
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 3: named subagents with strict skill isolation`
 

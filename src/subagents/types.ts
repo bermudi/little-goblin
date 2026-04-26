@@ -80,6 +80,12 @@ export interface SubagentInstance {
   initialPrompt: string;
   /** Optional status callback registered by the spawner. */
   onStatusUpdate?: (message: string) => void;
+  /**
+   * Loaded definition for named agents. `null` for generic subagents.
+   * Phase 4 reads `agentsMd` to build the system prompt and uses
+   * `skillsDir` to override pi's resource loader for strict isolation.
+   */
+  definition: NamedAgentDefinition | null;
 }
 
 /**

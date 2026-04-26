@@ -25,7 +25,7 @@ import { join } from "node:path";
 export interface TurnCallbacks {
   onTextDelta: (text: string) => void;
   onToolStart: (name: string, input: unknown) => void;
-  onToolEnd: (name: string, result: unknown) => void;
+  onToolEnd: (name: string, isError: boolean) => void;
   onStatusUpdate: (message: string) => void;
   onAgentEnd: () => void;
 }
@@ -139,7 +139,7 @@ export class AgentRunner {
         break;
 
       case "tool_execution_end":
-        this.callbacks.onToolEnd(event.toolName, event.result);
+        this.callbacks.onToolEnd(event.toolName, event.isError === true);
         break;
 
       // Ignore other event types for now

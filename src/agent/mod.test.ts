@@ -259,9 +259,10 @@ describe("AgentRunner", () => {
         toolCallId: "tc-1",
         toolName: "bash",
         result: { stdout: "file1\n" },
+        isError: false,
       });
 
-      expect(cb.onToolEnd).toHaveBeenCalledWith("bash", { stdout: "file1\n" });
+      expect(cb.onToolEnd).toHaveBeenCalledWith("bash", false);
     });
   });
 

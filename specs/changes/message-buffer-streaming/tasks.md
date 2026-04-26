@@ -13,12 +13,12 @@ Commit: `phase 1: MessageBuffer skeleton with TurnCallbacks interface`
 
 ## Phase 2: Status line accumulation and state machine
 
-- [ ] Implement `onToolStart(name, args)`: add to `toolStates` with state "running" (🔧).
-- [ ] Implement `onToolEnd(name, isError)`: update state to "success" (✅) or "error" (❌).
-- [ ] Implement `onAgentEnd()`: clear `isStreaming`, flush final status.
-- [ ] Build status line string from `toolStates`: format "✅ read 🔧 bash ✍️ composing".
-- [ ] Unit test: verify state machine transitions and string formatting.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Implement `onToolStart(name, args)`: add to `toolStates` with state "running" (🔧).
+- [x] Implement `onToolEnd(name, isError)`: update state to "success" (✅) or "error" (❌).
+- [x] Implement `onAgentEnd()`: clear `isStreaming`, flush final status.
+- [x] Build status line string from `toolStates`: format "✅ read 🔧 bash ✍️ composing".
+- [x] Unit test: verify state machine transitions and string formatting.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 2: status line state machine with emoji indicators`
 

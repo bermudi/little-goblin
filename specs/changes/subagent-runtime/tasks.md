@@ -61,16 +61,16 @@ Commit: `phase 4: subagent execution and result propagation`
 
 ## Phase 5: Subagent revival
 
-- [ ] Implement `revive(id: string, prompt: string): Promise<string>`:
+- [x] Implement `revive(id: string, prompt: string): Promise<string>`:
   - Load `meta.json` to find session path.
   - Call pi `SessionManager.open()` on the existing session.jsonl.
   - Resume conversation history.
   - Send new prompt to subagent.
   - Return the subagent's response as a string.
-- [ ] Handle missing session: throw error "Subagent not found".
-- [ ] Update `activeSubagents` map with revived subagent.
-- [ ] Unit test: verify revival loads history, verify new prompt processes.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Handle missing session: throw error "Subagent not found".
+- [x] Update `activeSubagents` map with revived subagent.
+- [x] Unit test: verify revival loads history, verify new prompt processes.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 5: subagent revival from persisted sessions`
 

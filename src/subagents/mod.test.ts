@@ -70,6 +70,10 @@ mock.module("@mariozechner/pi-coding-agent", () => ({
       mkdirSync(dir, { recursive: true });
       return { __stub: true } as unknown;
     },
+    open: (path: string, _sessionDir?: string, _cwdOverride?: string) => {
+      // Return a stub that looks like a SessionManager for revive flows.
+      return { __stub: true, __openedFrom: path } as unknown;
+    },
   },
   DefaultResourceLoader: class {
     public readonly options: Record<string, unknown>;
@@ -158,10 +162,10 @@ describe("SubagentRunner — skeleton", () => {
     expect(MAX_SUBAGENT_DEPTH).toBe(3);
   });
 
-  it("revive() is stubbed until phase 5", async () => {
+  it("revive() throws 'Subagent not found' for unknown id", async () => {
     await expect(
       runner.revive("missing", "ping"),
-    ).rejects.toThrow(/not implemented/);
+    ).rejects.toThrow("Subagent not found");
   });
 
   it("cancel() is stubbed until phase 6", async () => {
@@ -542,5 +546,218 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     expect(meta.status).toBe("error");
     expect(meta.errorMessage).toBe("boom");
     expect(meta.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5: Subagent revival
+// ---------------------------------------------------------------------------
+
+describe("SubagentRunner.revive", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-subagents-revive-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  /**
+   * Helper: simulate a completed generic spawn so there's a persisted
+   * session.jsonl + meta.json on disk for revival.
+   */
+  async function spawnGeneric(): Promise<string> {
+    const handle = await runner.spawn({ prompt: "first turn" });
+    await flush();
+
+    sessionHolder.emit({ type: "agent_start" });
+    sessionHolder.emit({
+      type: "message_update",
+      message: {},
+      assistantMessageEvent: { type: "text_delta", delta: "first response" },
+    });
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+
+    // The mock SessionManager.create() doesn't create a .jsonl file.
+    // Write a fake one so findSessionFile() can discover it.
+    const dir = genericSubagentDir(tmp, handle.id);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "2026-01-01T00-00-00_fake-session.jsonl"), "");
+
+    return handle.id;
+  }
+
+  it("throws 'Subagent not found' when id does not exist on disk", async () => {
+    await expect(runner.revive("nonexistent-id", "ping")).rejects.toThrow(
+      "Subagent not found",
+    );
+  });
+
+  it("throws 'Subagent not found' when dir exists but has no session file", async () => {
+    // Create a meta.json but no .jsonl — simulates corrupted/incomplete state.
+    const id = "abc123-no-session";
+    const dir = genericSubagentDir(tmp, id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "meta.json"),
+      JSON.stringify({
+        id,
+        role: "generic",
+        name: null,
+        spawnedBy: null,
+        depth: 1,
+        createdAt: new Date().toISOString(),
+        status: "completed",
+      }),
+    );
+    await expect(runner.revive(id, "ping")).rejects.toThrow("Subagent not found");
+  });
+
+  it("revives a generic subagent and sends the new prompt", async () => {
+    const id = await spawnGeneric();
+
+    // Reset mock state so we can observe the revive call.
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+
+    const resultPromise = runner.revive(id, "second turn");
+    await flush();
+
+    // createAgentSession was called again.
+    expect(capturedCreateArgs).toHaveLength(1);
+    const opts = capturedCreateArgs[0] as Record<string, unknown>;
+    expect(opts.cwd).toBe(join(tmp, "workdir"));
+    expect(opts.customTools).toEqual([]);
+
+    // The new prompt was sent.
+    expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("second turn");
+
+    // Simulate the response.
+    sessionHolder.emit({ type: "agent_start" });
+    sessionHolder.emit({
+      type: "message_update",
+      message: {},
+      assistantMessageEvent: { type: "text_delta", delta: "second response" },
+    });
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+
+    const text = await resultPromise;
+    expect(text).toBe("second response");
+  });
+
+  it("updates meta.json to status=running on revive, then completed on agent_end", async () => {
+    const id = await spawnGeneric();
+
+    // Verify it was completed after the first turn.
+    let meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("completed");
+
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+
+    const resultPromise = runner.revive(id, "follow-up");
+    await flush();
+
+    // After revive(), meta flips back to running.
+    meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("running");
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await resultPromise;
+
+    // After agent_end, back to completed.
+    meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("completed");
+  });
+
+  it("tracks the revived subagent in list()", async () => {
+    const id = await spawnGeneric();
+
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+
+    const resultPromise = runner.revive(id, "check");
+    resultPromise.catch(() => {});
+    await flush();
+
+    const list = runner.list();
+    const entry = list.find((info) => info.id === id);
+    expect(entry).toBeDefined();
+    expect(entry?.status).toBe("running");
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await resultPromise;
+  });
+
+  it("revives a named subagent using its AGENTS.md and isolated skills dir", async () => {
+    // Set up a named agent.
+    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
+    const agentsMd = "# Researcher\nYou do research.\n";
+    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), agentsMd);
+
+    const handle = await runner.spawn({
+      prompt: "initial",
+      name: "researcher",
+    });
+    await flush();
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+
+    // Write a fake session file so findSessionFile() discovers it.
+    const instDir = namedAgentInstanceDir(tmp, "researcher", handle.id);
+    if (!existsSync(instDir)) mkdirSync(instDir, { recursive: true });
+    writeFileSync(join(instDir, "2026-01-01T00-00-00_fake-session.jsonl"), "");
+
+    // Now revive.
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+
+    const resultPromise = runner.revive(handle.id, "more research");
+    await flush();
+
+    // Verify the revived session uses the named agent's cwd and resource loader.
+    const opts = capturedCreateArgs[0] as Record<string, unknown>;
+    expect(opts.cwd).toBe(namedAgentDir(tmp, "researcher"));
+    const loader = opts.resourceLoader as { options: Record<string, unknown> };
+    expect(loader).toBeDefined();
+    expect(loader.options.systemPrompt).toBe(agentsMd);
+    expect(loader.options.noContextFiles).toBe(true);
+    expect(loader.options.noSkills).toBe(true);
+    expect(loader.options.additionalSkillPaths).toEqual([
+      namedAgentSkillsDir(tmp, "researcher"),
+    ]);
+
+    expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("more research");
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await resultPromise;
+  });
+
+  it("rejects revive result when the revived subagent errors", async () => {
+    const id = await spawnGeneric();
+
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+    sessionHolder.sendUserMessage = mock(async () => {
+      throw new Error("revive-fail");
+    });
+
+    await expect(runner.revive(id, "bad")).rejects.toThrow("revive-fail");
   });
 });

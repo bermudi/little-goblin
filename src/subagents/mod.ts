@@ -10,7 +10,7 @@
  * See specs/changes/subagent-runtime/ for the full design and tasks.
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
@@ -35,6 +35,7 @@ import {
   namedAgentInstanceDir,
   namedAgentInstanceMetaPath,
   namedAgentSkillsDir,
+  namedAgentsRoot,
 } from "./paths.ts";
 import {
   MAX_SUBAGENT_DEPTH,
@@ -400,10 +401,81 @@ export class SubagentRunner {
 
   /**
    * Resume a persisted subagent and send it a follow-up prompt.
-   * Implemented in phase 5.
+   *
+   * Loads the subagent's `meta.json` to locate its session directory, opens
+   * the existing `.jsonl` session file via pi's `SessionManager.open()`,
+   * reconstructs a `SubagentInstance`, and runs the new prompt through
+   * `runAgent()` — reusing all execution wiring (status callbacks, error
+   * handling, meta persistence).
+   *
+   * Throws "Subagent not found" if no `meta.json` exists for the given id.
    */
-  async revive(_id: string, _prompt: string): Promise<string> {
-    throw new Error("SubagentRunner.revive() not implemented yet (phase 5)");
+  async revive(id: string, prompt: string): Promise<string> {
+    // Locate meta.json: could be generic or named. Scan both trees.
+    const { dir, meta } = loadSubagentMeta(this.cfg.goblinHome, id);
+
+    // Find the persisted session file inside the subagent's dir.
+    const sessionFile = findSessionFile(dir);
+    if (sessionFile === null) {
+      throw new Error(`Subagent not found`);
+    }
+
+    // Determine cwd the same way spawn() does.
+    const cwd =
+      meta.role === "named" && meta.name !== null
+        ? namedAgentDir(this.cfg.goblinHome, meta.name)
+        : workdirPath(this.cfg.goblinHome);
+
+    // Open the existing session so conversation history is preserved.
+    const sessionManager = SessionManager.open(sessionFile, dir, cwd);
+
+    // Rebuild the named-agent definition if the subagent is named.
+    let definition: NamedAgentDefinition | null = null;
+    if (meta.role === "named" && meta.name !== null) {
+      definition = loadNamedAgent(this.cfg.goblinHome, meta.name);
+    }
+
+    // Wire result promise the same way spawn() does.
+    let resolveResult: (text: string) => void;
+    let rejectResult: (err: unknown) => void;
+    const result = new Promise<string>((res, rej) => {
+      resolveResult = res;
+      rejectResult = rej;
+    });
+
+    const instance: SubagentInstance = {
+      id,
+      name: meta.name ?? null,
+      role: meta.role,
+      status: "running",
+      depth: meta.depth,
+      spawnedAt: meta.createdAt,
+      spawnedBy: meta.spawnedBy ?? null,
+      dir,
+      metaPath: join(dir, "meta.json"),
+      sessionManager,
+      initialPrompt: prompt,
+      onStatusUpdate: undefined,
+      definition,
+      session: null,
+      unsubscribe: null,
+      result,
+    };
+    this.activeSubagents.set(id, instance);
+
+    // Update meta to reflect the revival.
+    this.persistMeta(instance, { status: "running" });
+
+    log.debug("subagent revived", { id, role: meta.role, name: meta.name });
+
+    // Kick off execution — same pipeline as spawn().
+    this.runAgent(instance, cwd).then(
+      (text) => resolveResult(text),
+      (err) => rejectResult(err),
+    );
+    result.catch(() => {});
+
+    return result;
   }
 
   /**
@@ -455,6 +527,65 @@ function loadNamedAgent(home: string, name: string): NamedAgentDefinition {
     agentsMd,
     skillsDir: namedAgentSkillsDir(home, name),
   };
+}
+
+/**
+ * Locate and parse a subagent's `meta.json` by id.
+ *
+ * Searches both the generic tree (`~/goblin/subagents/<id>/meta.json`)
+ * and all named-agent instance trees (`~/goblin/agents/<name>/instances/<id>/meta.json`).
+ *
+ * Throws "Subagent not found" if no matching meta.json exists.
+ */
+function loadSubagentMeta(home: string, id: string): { dir: string; meta: SubagentMeta } {
+  // Try generic first — most common case.
+  const genericMetaPath = genericSubagentMetaPath(home, id);
+  if (existsSync(genericMetaPath)) {
+    const dir = genericSubagentDir(home, id);
+    return { dir, meta: JSON.parse(readFileSync(genericMetaPath, "utf-8")) as SubagentMeta };
+  }
+
+  // Scan named agents' instances.
+  const agentsRoot = namedAgentsRoot(home);
+  if (existsSync(agentsRoot)) {
+    let entries: string[];
+    try {
+      entries = readdirSync(agentsRoot, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name);
+    } catch {
+      entries = [];
+    }
+    for (const name of entries) {
+      const namedMetaPath = namedAgentInstanceMetaPath(home, name, id);
+      if (existsSync(namedMetaPath)) {
+        const dir = namedAgentInstanceDir(home, name, id);
+        return {
+          dir,
+          meta: JSON.parse(readFileSync(namedMetaPath, "utf-8")) as SubagentMeta,
+        };
+      }
+    }
+  }
+
+  throw new Error("Subagent not found");
+}
+
+/**
+ * Find the most recent `.jsonl` session file inside a directory.
+ * Returns `null` if none found.
+ */
+function findSessionFile(dir: string): string | null {
+  try {
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .sort()
+      // Most recent file first (timestamp prefix sorts lexicographically).
+      .reverse();
+    return files.length > 0 ? join(dir, files[0] as string) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

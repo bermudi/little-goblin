@@ -46,11 +46,11 @@ Commit: `phase 4: response text streaming with edits`
 
 ## Phase 5: 4096 rollover for response messages
 
-- [ ] Implement `maybeRollover()`: check `accumulatedText.length > 4096`.
-- [ ] If over threshold: send current text as final edit, create new message for remaining text, reset `accumulatedText` to overflow portion.
-- [ ] Ensure Unicode safety (don't split surrogate pairs).
-- [ ] Unit test: verify rollover at 4096, verify content preserved across messages.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Implement `maybeRollover()`: check `accumulatedText.length > 4096`.
+- [x] If over threshold: send current text as final edit, create new message for remaining text, reset `accumulatedText` to overflow portion.
+- [x] Ensure Unicode safety (don't split surrogate pairs).
+- [x] Unit test: verify rollover at 4096, verify content preserved across messages.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 5: 4096 character rollover for response messages`
 

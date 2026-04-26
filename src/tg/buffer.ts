@@ -30,6 +30,23 @@ const TOOL_STATE_EMOJI: Record<ToolState, string> = {
   error: "❌",
 };
 
+/** Telegram's hard message length limit. */
+export const MAX_MESSAGE_LEN = 4096;
+
+/**
+ * Pick a split index <= `maxLen` that does not cut a UTF-16 surrogate pair.
+ * If the character at `maxLen - 1` is a high surrogate, the matching low
+ * surrogate sits at `maxLen`; backing up by one keeps the pair intact.
+ */
+export function findSafeSplit(text: string, maxLen: number): number {
+  if (text.length <= maxLen) return text.length;
+  const codeAtCut = text.charCodeAt(maxLen - 1);
+  if (codeAtCut >= 0xd800 && codeAtCut <= 0xdbff) {
+    return maxLen - 1;
+  }
+  return maxLen;
+}
+
 export class MessageBuffer implements TurnCallbacks {
   private bot: Bot;
   private chatId: number;
@@ -144,9 +161,9 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   /**
-   * Flush accumulated response text to Telegram. Phase 4 implements basic
-   * streaming with a ~5/sec throttle. Phase 5 will add 4096 rollover; phase
-   * 6 will add 20KB file escape.
+   * Flush accumulated response text to Telegram. Implements ~5/sec
+   * throttle, 4096 rollover (phase 5), and basic error recovery. Phase 6
+   * will add 20KB file escape.
    */
   async flushResponse(force: boolean = false): Promise<void> {
     const now = this.now();
@@ -156,6 +173,11 @@ export class MessageBuffer implements TurnCallbacks {
     if (this.accumulatedText.length === 0) return;
 
     this.lastResponseEditTime = now;
+
+    // Drain any overflow first; this may send/edit several messages.
+    await this.maybeRollover();
+
+    if (this.accumulatedText.length === 0) return;
 
     try {
       if (this.responseMessageId === undefined) {
@@ -174,6 +196,42 @@ export class MessageBuffer implements TurnCallbacks {
     } catch (err) {
       this.handleResponseError(err);
     }
+  }
+
+  /**
+   * Split `accumulatedText` across multiple Telegram messages whenever it
+   * exceeds `MAX_MESSAGE_LEN`. The current `responseMessageId` is finalized
+   * with the head (edit if it exists, send if it does not), then a fresh
+   * tail becomes the new active message. Loops until the tail fits.
+   *
+   * Returns true if at least one rollover occurred.
+   */
+  private async maybeRollover(): Promise<boolean> {
+    let rolled = false;
+    while (this.accumulatedText.length > MAX_MESSAGE_LEN) {
+      const splitAt = findSafeSplit(this.accumulatedText, MAX_MESSAGE_LEN);
+      const head = this.accumulatedText.slice(0, splitAt);
+      const tail = this.accumulatedText.slice(splitAt);
+      try {
+        if (this.responseMessageId !== undefined) {
+          await this.bot.api.editMessageText(
+            this.chatId,
+            this.responseMessageId,
+            head,
+          );
+        } else {
+          await this.bot.api.sendMessage(this.chatId, head);
+        }
+        // The previous message is now "closed"; the tail starts a new one.
+        this.responseMessageId = undefined;
+        this.accumulatedText = tail;
+        rolled = true;
+      } catch (err) {
+        this.handleResponseError(err);
+        return rolled;
+      }
+    }
+    return rolled;
   }
 
   private handleResponseError(err: unknown): void {

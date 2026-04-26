@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import type { Bot } from "grammy";
-import { MessageBuffer } from "./buffer.ts";
+import { MessageBuffer, MAX_MESSAGE_LEN, findSafeSplit } from "./buffer.ts";
 
 interface SendCall {
   chatId: number | string;
@@ -470,6 +470,167 @@ describe("MessageBuffer", () => {
       await tick();
       const lastEdit = m.edit[m.edit.length - 1];
       expect(lastEdit?.text).toBe("draft more");
+    });
+  });
+
+  describe("findSafeSplit (Unicode safety)", () => {
+    it("returns text.length when text is shorter than maxLen", () => {
+      expect(findSafeSplit("hi", 10)).toBe(2);
+    });
+
+    it("returns maxLen for plain ASCII at the boundary", () => {
+      expect(findSafeSplit("a".repeat(20), 10)).toBe(10);
+    });
+
+    it("backs up by one when split would land mid-surrogate-pair", () => {
+      // "😀" = U+1F600 → high surrogate 0xD83D + low surrogate 0xDE00.
+      // Build: 9 ASCII chars + "😀" (2 code units) + 9 ASCII = length 20.
+      const text = "a".repeat(9) + "😀" + "b".repeat(9);
+      // maxLen=10 would slice [0..10), keeping the high surrogate at index 9
+      // but cutting off the low surrogate at index 10. Back up to 9.
+      expect(findSafeSplit(text, 10)).toBe(9);
+      const head = text.slice(0, findSafeSplit(text, 10));
+      // Head must not end on a lone high surrogate.
+      const last = head.charCodeAt(head.length - 1);
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+    });
+
+    it("does not back up when split is between full BMP characters", () => {
+      // "😀" at the very start, ASCII rest. maxLen=10 sits in the ASCII
+      // section, no surrogate to worry about.
+      const text = "😀" + "a".repeat(20);
+      expect(findSafeSplit(text, 10)).toBe(10);
+    });
+  });
+
+  describe("4096 rollover via maybeRollover", () => {
+    /**
+     * Disable both auto-flushes so the rollover tests are driven entirely
+     * by explicit `flushResponse(true)` calls. This avoids the race between
+     * `onTextDelta`'s fire-and-forget flush and the test's explicit flush.
+     */
+    const ALL_OFF: Partial<{
+      statusThrottleMs: number;
+      responseThrottleMs: number;
+    }> = {
+      statusThrottleMs: Number.MAX_SAFE_INTEGER,
+      responseThrottleMs: Number.MAX_SAFE_INTEGER,
+    };
+
+    it("does not roll over when accumulatedText fits", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      buffer.onTextDelta("a".repeat(MAX_MESSAGE_LEN));
+      await buffer.flushResponse(true);
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]?.text.length).toBe(MAX_MESSAGE_LEN);
+      expect(buffer._state().accumulatedText.length).toBe(MAX_MESSAGE_LEN);
+    });
+
+    it("rolls over once when accumulatedText is just over the limit", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      // Pre-seed the response message id by sending a small chunk first.
+      buffer.onTextDelta("seed");
+      await buffer.flushResponse(true);
+      expect(m.send.length).toBe(1);
+      expect(buffer._state().responseMessageId).toBe(101);
+
+      // Now grow well past the limit. The first 4096 chars become the head
+      // (edit on msg 101); the remainder becomes a new message.
+      const big = "x".repeat(MAX_MESSAGE_LEN + 100);
+      buffer.onTextDelta(big);
+      await buffer.flushResponse(true);
+
+      // Head edit on msg 101 with 4096 chars.
+      expect(m.edit.length).toBe(1);
+      expect(m.edit[0]?.messageId).toBe(101);
+      expect(m.edit[0]?.text.length).toBe(MAX_MESSAGE_LEN);
+
+      // Tail send with the overflow.
+      expect(m.send.length).toBe(2);
+      expect(m.send[1]?.text.length).toBe("seed".length + 100);
+      expect(buffer._state().responseMessageId).toBe(102);
+      expect(buffer._state().accumulatedText.length).toBe(
+        "seed".length + 100,
+      );
+    });
+
+    it("rolls over multiple times for very large accumulated text", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      // 8200 chars from a fresh buffer (no prior responseMessageId).
+      const big = "y".repeat(MAX_MESSAGE_LEN * 2 + 8);
+      buffer.onTextDelta(big);
+      await buffer.flushResponse(true);
+
+      // 3 messages: head1 (4096), head2 (4096), tail (8). All sends, no edits
+      // since responseMessageId starts undefined.
+      expect(m.edit.length).toBe(0);
+      expect(m.send.length).toBe(3);
+      expect(m.send[0]?.text.length).toBe(MAX_MESSAGE_LEN);
+      expect(m.send[1]?.text.length).toBe(MAX_MESSAGE_LEN);
+      expect(m.send[2]?.text.length).toBe(8);
+      // The final tail message is the active responseMessageId.
+      expect(buffer._state().responseMessageId).toBe(103);
+      expect(buffer._state().accumulatedText.length).toBe(8);
+    });
+
+    it("preserves total content across rollovers", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      const total = "a".repeat(MAX_MESSAGE_LEN) + "b".repeat(MAX_MESSAGE_LEN) + "c".repeat(50);
+      buffer.onTextDelta(total);
+      await buffer.flushResponse(true);
+
+      const reconstructed =
+        m.send.map((s) => s.text).join("") + m.edit.map((e) => e.text).join("");
+      // No edits in this scenario (no pre-existing message), so concatenation
+      // of sends should equal the original.
+      expect(reconstructed).toBe(total);
+    });
+
+    it("does not split a UTF-16 surrogate pair across messages", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      // Put an emoji ("😀" = 2 code units) right at the boundary.
+      // Layout: (MAX_MESSAGE_LEN - 1) ASCII + emoji + filler.
+      const head = "a".repeat(MAX_MESSAGE_LEN - 1);
+      const text = head + "😀" + "b".repeat(50);
+      buffer.onTextDelta(text);
+      await buffer.flushResponse(true);
+
+      // First message must end before the surrogate pair (length = 4095).
+      expect(m.send[0]?.text.length).toBe(MAX_MESSAGE_LEN - 1);
+      const last = m.send[0]!.text.charCodeAt(m.send[0]!.text.length - 1);
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+      // The emoji should be at the start of the next message, intact.
+      expect(m.send[1]?.text.startsWith("😀")).toBe(true);
+    });
+
+    it("subsequent edits target the new active message after rollover", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, {
+        ...ALL_OFF,
+        now: () => t,
+      });
+      buffer.onTextDelta("seed");
+      await buffer.flushResponse(true);
+      expect(buffer._state().responseMessageId).toBe(101);
+
+      buffer.onTextDelta("x".repeat(MAX_MESSAGE_LEN + 10));
+      t = 2000;
+      await buffer.flushResponse(true);
+      const newId = buffer._state().responseMessageId;
+      expect(newId).toBe(102);
+
+      // Append more; should edit msg 102, not 101.
+      t = 3000;
+      buffer.onTextDelta("after");
+      await buffer.flushResponse(true);
+      const lastEdit = m.edit[m.edit.length - 1];
+      expect(lastEdit?.messageId).toBe(102);
     });
   });
 });

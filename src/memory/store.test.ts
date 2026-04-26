@@ -269,6 +269,35 @@ describe("MemoryStore", () => {
       );
     });
 
+    it("swallows commit failures: file persists, no throw, no commit", () => {
+      const dir = memoryDir(tmp);
+      // Inject a fault: create `.git` as a regular file, not a directory.
+      // ensureGitRepo's existsSync check passes (skipping `git init`), then
+      // `git add` fails because .git isn't a real repository.
+      writeFileSync(join(dir, ".git"), "not a real repo", "utf-8");
+
+      const r = store.add("memory", "should-persist");
+      // Tool semantics: success — file write is the source of truth.
+      expect(r.ok).toBe(true);
+      expect(store.read("memory")).toBe("should-persist");
+
+      // No commit was created (no HEAD exists at all).
+      const rev = spawnSync("git", ["rev-list", "--count", "HEAD"], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+      expect(rev.status).not.toBe(0);
+    });
+
+    it("subsequent writes still succeed after a commit failure", () => {
+      const dir = memoryDir(tmp);
+      writeFileSync(join(dir, ".git"), "not a real repo", "utf-8");
+      expect(store.add("memory", "first").ok).toBe(true);
+      // Tool is still usable for further mutations even though git is broken.
+      expect(store.add("memory", "second").ok).toBe(true);
+      expect(store.read("memory")).toBe(`first\n§\nsecond`);
+    });
+
     it("failed writes do not produce commits", () => {
       const dir = memoryDir(tmp);
       // Seed one commit so HEAD exists.

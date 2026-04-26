@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { log } from "../log.ts";
 import { memoryDir, memoryFilePath, type MemoryTarget } from "./paths.ts";
 
 /**
@@ -140,29 +141,48 @@ export class MemoryStore {
 
   /**
    * Commit the just-written file to the memory git repo.
-   * Lazy-inits the repo on first commit. Swallows "nothing to commit".
+   *
+   * **Best-effort.** The file write has already succeeded by the time we get
+   * here; git versioning is a separate concern. If anything goes wrong
+   * (`git init` fails, `.git` is corrupt, hooks reject the commit, etc.) we
+   * log a warning and return — we do NOT throw, because surfacing this as a
+   * tool failure would invite the model to retry the mutation and produce a
+   * duplicate entry. The on-disk file remains the source of truth.
+   *
+   * Tolerates "nothing to commit" (idempotent rewrite path).
    */
   private commit(
     action: "add" | "replace" | "remove",
     target: MemoryTarget,
   ): void {
     const dir = memoryDir(this.home);
-    this.ensureGitRepo(dir);
-    const fileName = target === "memory" ? "memory.md" : "user.md";
-    const message = `memory: ${action} in ${target}`;
-    runGit(dir, ["add", "--", fileName]);
-    const result = runGit(dir, ["commit", "-q", "-m", message], {
-      allowFailure: true,
-    });
-    if (result.status !== 0) {
-      const out = (result.stdout + result.stderr).toLowerCase();
-      // Tolerate the "nothing to commit" path (idempotent rewrite).
-      if (out.includes("nothing to commit") || out.includes("no changes added")) {
-        return;
+    try {
+      this.ensureGitRepo(dir);
+      const fileName = target === "memory" ? "memory.md" : "user.md";
+      const message = `memory: ${action} in ${target}`;
+      runGit(dir, ["add", "--", fileName]);
+      const result = runGit(dir, ["commit", "-q", "-m", message], {
+        allowFailure: true,
+      });
+      if (result.status !== 0) {
+        const out = (result.stdout + result.stderr).toLowerCase();
+        // Tolerate the "nothing to commit" path (idempotent rewrite).
+        if (out.includes("nothing to commit") || out.includes("no changes added")) {
+          return;
+        }
+        log.warn("memory: git commit failed; file persisted without versioning", {
+          action,
+          target,
+          status: result.status,
+          stderr: result.stderr.trim() || result.stdout.trim(),
+        });
       }
-      throw new Error(
-        `git commit failed (status ${result.status}): ${result.stderr || result.stdout}`,
-      );
+    } catch (e) {
+      log.warn("memory: git versioning errored; file persisted without versioning", {
+        action,
+        target,
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
   }
 

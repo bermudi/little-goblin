@@ -39,11 +39,11 @@ Commit: `phase 2: git versioning for memory mutations`
 
 ## Phase 3: Memory tool definition
 
-- [ ] Create `src/memory/tool.ts` exporting `createMemoryTool(store: MemoryStore): ToolDefinition`.
-  - Zod input schema: `action` enum, `target` enum, optional `content`, optional `old_text`.
-  - Action-specific validation: `add` requires `content`; `replace` requires `old_text` + `content`; `remove` requires `old_text`. Validation failure returns error result without calling store.
-  - Dispatch to `store.add/replace/remove`. Map `{ ok: false, error }` to a tool error result; map `{ ok: true }` to a success result with a one-line summary the agent can echo to the user.
-- [ ] Create `src/memory/snapshot.ts` exporting a free function `formatSnapshot(store: MemoryStore): { customType, content, display, details } | null`:
+- [x] Create `src/memory/tool.ts` exporting `createMemoryTool(store: MemoryStore): ToolDefinition`.
+  - ~~Zod~~ TypeBox input schema (pi's `ToolDefinition.parameters` requires `TSchema`): `action` union of literals, `target` union of literals, optional `content`, optional `old_text`.
+  - Action-specific validation inside `execute`: `add` requires `content`; `replace` requires `old_text` + `content`; `remove` requires `old_text`. Validation failure throws (pi maps thrown errors to `isError: true` tool results) without calling store.
+  - Dispatch to `store.add/replace/remove`. Map `{ ok: false, error }` to a thrown error; map `{ ok: true }` to a success result with a one-line summary the agent can echo to the user.
+- [x] Create `src/memory/snapshot.ts` exporting a free function `formatSnapshot(store: MemoryStore): { customType, content, display, details } | null`:
   - Returns `null` when both files are empty or absent (matches spec scenario `Both files empty`).
   - Otherwise returns a `customType: "goblin.memory.snapshot"` payload whose `content` text is exactly:
     ```
@@ -56,16 +56,16 @@ Commit: `phase 2: git versioning for memory mutations`
     <user.md contents or `(empty)`>
     ```
   - Both sections always present. Empty individual files render as the literal string `(empty)`. Matches spec scenarios `Only memory.md populated` and `Only user.md populated`.
-- [ ] Create `src/memory/mod.ts` barrel exporting `MemoryStore`, `createMemoryTool`, `formatSnapshot`, `memoryDir`.
-- [ ] Create `src/memory/tool.test.ts`:
+- [x] Create `src/memory/mod.ts` barrel exporting `MemoryStore`, `createMemoryTool`, `formatSnapshot`, `memoryDir`.
+- [x] Create `src/memory/tool.test.ts`:
   - Schema validation rejects missing required args without writing.
   - `add` happy path produces success result and updates store.
   - Overflow returns error result; store unchanged.
   - Ambiguous `replace` returns error result; store unchanged.
-- [ ] Create `src/memory/snapshot.test.ts`:
+- [x] Create `src/memory/snapshot.test.ts`:
   - Both empty → `null`.
   - One file populated → snapshot includes both sections, empty one as `(empty)`.
-- [ ] Verify `bun run typecheck` and `bun test` pass.
+- [x] Verify `bun run typecheck` and `bun test` pass.
 
 Commit: `phase 3: memory tool and snapshot formatter`
 

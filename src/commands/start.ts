@@ -36,7 +36,17 @@ export function buildStartHandler(manager: SessionManager) {
       return;
     }
 
-    // Private chat (DM): create a new session
+    // Private chat (DM): reuse existing session if any, else create one.
+    // /start is idempotent — use /new to force a fresh session.
+    const existing = manager.resolve(loc);
+    if (existing) {
+      await ctx.reply(
+        `Welcome back\\. Session \`${existing.id}\` is active\\. Use /new for a fresh one\\.`,
+        { parse_mode: "MarkdownV2", ...replyOpts },
+      );
+      return;
+    }
+
     let state;
     try {
       state = manager.createForChat(loc);

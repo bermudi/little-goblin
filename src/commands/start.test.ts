@@ -20,15 +20,23 @@ function makeCtx(overrides: {
   } as unknown as Context;
 }
 
-function makeManager(sessionId: string): { manager: SessionManager; calls: ChatLocator[] } {
+function makeManager(
+  sessionId: string,
+  existing?: SessionState | null,
+): { manager: SessionManager; calls: ChatLocator[]; resolveCalls: ChatLocator[] } {
   const calls: ChatLocator[] = [];
+  const resolveCalls: ChatLocator[] = [];
   const manager = {
+    resolve: (loc: ChatLocator) => {
+      resolveCalls.push(loc);
+      return existing ?? null;
+    },
     createForChat: (loc: ChatLocator) => {
       calls.push(loc);
       return { id: sessionId, createdAt: new Date().toISOString(), chatId: loc.chatId, topicId: loc.topicId } as SessionState;
     },
   } as unknown as SessionManager;
-  return { manager, calls };
+  return { manager, calls, resolveCalls };
 }
 
 describe("buildStartHandler", () => {
@@ -51,6 +59,34 @@ describe("buildStartHandler", () => {
     expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2" });
     expect(calls.length).toBe(1);
     expect(calls[0]!).toEqual({ chatId: 123, topicId: undefined });
+  });
+
+  it("welcomes back without creating when DM session already exists", async () => {
+    const replies: ReplyCall[] = [];
+    const ctx = makeCtx({
+      chat: { id: 123, type: "private" },
+      reply: async (text, opts) => {
+        replies.push({ text, opts });
+        return { message_id: 1 };
+      },
+    });
+
+    const existing: SessionState = {
+      id: "existing-99",
+      createdAt: new Date().toISOString(),
+      chatId: 123,
+      topicId: undefined,
+    };
+    const { manager, calls } = makeManager("unused", existing);
+    const handler = buildStartHandler(manager);
+    await handler(ctx);
+
+    expect(replies.length).toBe(1);
+    expect(replies[0]!.text).toBe(
+      "Welcome back\\. Session `existing-99` is active\\. Use /new for a fresh one\\.",
+    );
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2" });
+    expect(calls.length).toBe(0); // No new session created
   });
 
   it("informs that forum General topic is already a session", async () => {

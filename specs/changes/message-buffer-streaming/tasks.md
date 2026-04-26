@@ -24,12 +24,12 @@ Commit: `phase 2: status line state machine with emoji indicators`
 
 ## Phase 3: Status line editing with throttle
 
-- [ ] Implement `flushStatus()`: call `bot.api.sendMessage` (first) or `editMessageText` (subsequent), track `statusMessageId`.
-- [ ] Add throttle: skip edit if `< 1000ms` since `lastEditTime`, unless forced (on `onAgentEnd`).
-- [ ] Handle rate limit (429): log warning, skip this edit, continue.
-- [ ] Handle deleted message error: log warning, reset `statusMessageId` to create new message next time.
-- [ ] Unit test with mocked bot API: verify throttle, verify edit vs send, verify error handling.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Implement `flushStatus()`: call `bot.api.sendMessage` (first) or `editMessageText` (subsequent), track `statusMessageId`.
+- [x] Add throttle: skip edit if `< 1000ms` since `lastEditTime`, unless forced (on `onAgentEnd`).
+- [x] Handle rate limit (429): log warning, skip this edit, continue.
+- [x] Handle deleted message error: log warning, reset `statusMessageId` to create new message next time.
+- [x] Unit test with mocked bot API: verify throttle, verify edit vs send, verify error handling.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 3: status line editing with ~1/sec throttle and error recovery`
 

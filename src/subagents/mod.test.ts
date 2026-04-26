@@ -486,6 +486,8 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     handle.result.catch(() => {});
     await flush();
 
+    const prefix = `🧠 ${handle.id.slice(0, 8)} `;
+
     sessionHolder.emit({ type: "agent_start" });
     sessionHolder.emit({
       type: "tool_execution_start",
@@ -501,7 +503,11 @@ describe("SubagentRunner.spawn — execution & result return", () => {
       isError: false,
     });
 
-    expect(events).toEqual(["thinking...", "tool: bash", "tool ok: bash"]);
+    expect(events).toEqual([
+      `${prefix}thinking...`,
+      `${prefix}tool: bash`,
+      `${prefix}tool ok: bash`,
+    ]);
   });
 
   it("updates meta.json with status=completed and completedAt on agent_end", async () => {
@@ -890,5 +896,109 @@ describe("SubagentRunner.list", () => {
 
     const list = runner.list();
     expect(list[0]?.status).toBe("completed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 7: Status callback propagation
+// ---------------------------------------------------------------------------
+
+describe("SubagentRunner — status prefix propagation", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-subagents-status-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("prefixes generic subagent status with 🧠 and truncated id", async () => {
+    const events: string[] = [];
+    const handle = await runner.spawn({
+      prompt: "work",
+      onStatusUpdate: (msg) => events.push(msg),
+    });
+    handle.result.catch(() => {});
+    await flush();
+
+    sessionHolder.emit({ type: "agent_start" });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toBe(`🧠 ${handle.id.slice(0, 8)} thinking...`);
+  });
+
+  it("prefixes named subagent status with 🧠 and agent name", async () => {
+    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
+    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# R");
+
+    const events: string[] = [];
+    const handle = await runner.spawn({
+      prompt: "work",
+      name: "researcher",
+      onStatusUpdate: (msg) => events.push(msg),
+    });
+    handle.result.catch(() => {});
+    await flush();
+
+    sessionHolder.emit({ type: "agent_start" });
+    sessionHolder.emit({
+      type: "tool_execution_start",
+      toolCallId: "t1",
+      toolName: "read",
+      args: {},
+    });
+
+    expect(events).toEqual([
+      "🧠 researcher thinking...",
+      "🧠 researcher tool: read",
+    ]);
+  });
+
+  it("does not call back when onStatusUpdate is not provided", async () => {
+    // No callback — should not throw or explode.
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+
+    // Emitting events without a callback is a no-op.
+    expect(() => {
+      sessionHolder.emit({ type: "agent_start" });
+      sessionHolder.emit({
+        type: "tool_execution_start",
+        toolCallId: "t1",
+        toolName: "bash",
+        args: {},
+      });
+    }).not.toThrow();
+
+    handle.result.catch(() => {});
+  });
+
+  it("propagates tool error status with prefix", async () => {
+    const events: string[] = [];
+    const handle = await runner.spawn({
+      prompt: "work",
+      onStatusUpdate: (msg) => events.push(msg),
+    });
+    handle.result.catch(() => {});
+    await flush();
+
+    sessionHolder.emit({
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "bash",
+      result: {},
+      isError: true,
+    });
+
+    const prefix = `🧠 ${handle.id.slice(0, 8)} `;
+    expect(events).toEqual([`${prefix}tool error: bash`]);
   });
 });

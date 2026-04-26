@@ -91,12 +91,12 @@ Commit: `phase 6: list and cancel subagent operations`
 
 ## Phase 7: Status callback propagation
 
-- [ ] Implement status reporting from subagent to parent:
+- [x] Implement status reporting from subagent to parent:
   - Subagent's `AgentSession` events → parent's callback.
   - Prefix status with subagent name: "🧠 Researcher thinking..."
-- [ ] Ensure this flows through to goblin's `MessageBuffer` for display.
-- [ ] Unit test: verify status events propagate with correct prefix.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Ensure this flows through to goblin's `MessageBuffer` for display.
+- [x] Unit test: verify status events propagate with correct prefix.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 7: subagent status callback propagation`
 

@@ -163,7 +163,7 @@ export class SubagentRunner {
       metaPath,
       sessionManager,
       initialPrompt: options.prompt,
-      onStatusUpdate: options.onStatusUpdate,
+      onStatusUpdate: prefixStatusCallback(displayName ?? id.slice(0, 8), options.onStatusUpdate),
       definition,
       session: null,
       unsubscribe: null,
@@ -609,6 +609,21 @@ function findSessionFile(dir: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Wrap a status callback so every message is prefixed with
+ * `🧠 <label> `. Named agents use their name; generic agents use
+ * the first 8 chars of their UUID. Returns `undefined` when the
+ * input callback is `undefined` (no allocation overhead).
+ */
+function prefixStatusCallback(
+  label: string,
+  cb: ((msg: string) => void) | undefined,
+): ((msg: string) => void) | undefined {
+  if (cb === undefined) return undefined;
+  const prefix = `🧠 ${label} `;
+  return (msg: string) => cb(`${prefix}${msg}`);
 }
 
 /**

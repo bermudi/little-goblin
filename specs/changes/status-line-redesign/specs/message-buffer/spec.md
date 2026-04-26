@@ -27,11 +27,13 @@ The buffer SHALL send a placeholder status message on the first agent event of a
 
 ### Requirement: Status renders coalesced phases, not per-tool entries
 
-The buffer SHALL render the status line as one of three coarse phases derived from accumulated tool state:
+The buffer SHALL render the status line as one of three coarse phases:
 
-- **Thinking** (no tools observed yet) → `"🤔 thinking…"`
-- **Working** (at least one tool started, none failed yet) → `"🔧 working: <comma-separated visible tool names>"`
-- **Done** (all observed tools have ended) → `"✅ <comma-separated names>"` if no errors, `"❌ <names>"` if any tool errored
+- **Thinking** (no tool has started) → `"🤔 thinking…"`
+- **Working** (at least one tool has started; agent has not yet moved on to its final answer) → `"🔧 working: <comma-separated visible tool names>"`
+- **Done** (the agent has moved on — either it has begun emitting its final text after all tools completed, or `onAgentEnd` has fired) → `"✅ <names>"` if no errors, `"❌ <names>"` if any tool errored
+
+The Working→Done transition SHALL fire on the FIRST `onTextDelta` after all visible tools are done, OR on `onAgentEnd`, whichever comes first. It SHALL NOT fire merely on `onToolEnd` (the agent might still fire another tool sequentially). A new `onToolStart` from a non-Working phase SHALL pull the buffer back into Working.
 
 The buffer SHALL NOT show progressive per-tool emoji transitions ("🔧 bash" → "✅ bash") in the rendered status line.
 
@@ -47,13 +49,19 @@ The buffer SHALL NOT show progressive per-tool emoji transitions ("🔧 bash" �
 
 #### Scenario: Done phase, no errors
 
-- **WHEN** `onToolStart` and `onToolEnd(name, false)` have fired for `bash` and `read`
+- **WHEN** `onToolStart`/`onToolEnd(name, false)` have fired for `bash` and `read`, AND the agent has begun emitting text (or `onAgentEnd` has fired)
 - **THEN** the rendered status SHALL be `"✅ bash, read"`
 
 #### Scenario: Done phase, at least one error
 
-- **WHEN** any tool ended with `isError === true`
+- **WHEN** any tool ended with `isError === true` AND the Done transition has fired
 - **THEN** the rendered status SHALL begin with `"❌"` and include the failing tool name
+
+#### Scenario: Sequential tool re-enters Working
+
+- **WHEN** the buffer is in Done with `["write"]` AND `onToolStart("read", ...)` fires
+- **THEN** the phase SHALL transition back to Working
+- **AND** the rendered status SHALL become `"🔧 working: write, read"`
 
 #### Scenario: Filtered tools do not appear
 

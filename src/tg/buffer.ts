@@ -158,6 +158,28 @@ export class MessageBuffer implements TurnCallbacks {
    */
   private creatingResponse: Promise<void> | null = null;
 
+  /**
+   * Promise tracking an in-flight status edit (send or edit). Concurrent
+   * status events (e.g. four sequential `onToolStart` in rapid succession)
+   * all see the in-flight promise and bail; the loop inside the in-flight
+   * promise re-renders `buildStatusLine()` after each round-trip and picks
+   * up whatever state mutated during the wait. This collapses N events
+   * into ≤2 Telegram round-trips per turn.
+   */
+  private editingStatus: Promise<void> | null = null;
+
+  /**
+   * Promise tracking an in-flight `editMessageText` against the response
+   * message. Telegram does NOT guarantee ordering across concurrent edits
+   * to the same message: a later-issued edit can land first and a stale
+   * earlier edit overwrite it. Without serialization, the final text the
+   * user sees can be a partial mid-stream snapshot. New flushes await this
+   * (force=true) or skip (non-force, the natural throttle picks it up
+   * later). The agent_end force flush therefore always lands LAST, with
+   * the full accumulated text.
+   */
+  private editingResponse: Promise<void> | null = null;
+
   constructor(bot: Bot, chatId: number, options: MessageBufferOptions = {}) {
     this.bot = bot;
     this.chatId = chatId;
@@ -182,32 +204,42 @@ export class MessageBuffer implements TurnCallbacks {
     // on phase transitions. Liveness is conveyed by the chat-action above.
     // Lazy-send the placeholder if no agent_start arrived first (defensive).
     if (!this.placeholderSent) this.commitStatus();
+    // First text delta after all tools finished is the unambiguous signal
+    // that the agent has moved on from tool execution to its final answer.
+    // Promote Working→Done here. (If a sequential tool fires later,
+    // onToolStart will pull us back to Working.)
+    if (this.phase === "working" && this.toolsRunning.size === 0) {
+      this.phase = "done";
+      this.commitStatus();
+    }
     void this.flushResponse();
   }
 
   onToolStart(name: string, _input: unknown): void {
     if (!shouldShowTool(name, this.visibility)) return;
-    if (!this.toolsObserved.includes(name)) this.toolsObserved.push(name);
+    const isNewName = !this.toolsObserved.includes(name);
+    if (isNewName) this.toolsObserved.push(name);
     this.toolsRunning.add(name);
-    // First tool of the turn flips us into the Working phase. Subsequent
-    // tools just append to `toolsObserved` without scheduling a flush —
-    // the visible status text already says "🔧 working: ..." and the next
-    // event we care about is the Working→Done transition in onToolEnd.
-    if (this.phase === "thinking") {
-      this.phase = "working";
-      this.commitStatus();
-    }
+    // Enter (or re-enter) Working whenever a tool starts. Sequential
+    // tools that fire after a brief Done state pull us back to Working
+    // so the resting state never misleads the user. The phase stays in
+    // Working until either (a) the agent emits text after all tools
+    // are done, or (b) onAgentEnd fires — see onTextDelta / onAgentEnd.
+    const phaseChanged = this.phase !== "working";
+    if (phaseChanged) this.phase = "working";
+    // commitStatus is idempotent via lastRenderedStatusText, so it only
+    // fires when the rendered text actually changed (new tool joined).
+    if (phaseChanged || isNewName) this.commitStatus();
   }
 
   onToolEnd(name: string, isError: boolean): void {
     if (!shouldShowTool(name, this.visibility)) return;
     this.toolsRunning.delete(name);
     if (isError) this.hadError = true;
-    // Last running tool finished — transition to Done.
-    if (this.toolsRunning.size === 0 && this.phase === "working") {
-      this.phase = "done";
-      this.commitStatus();
-    }
+    // No phase transition here. "All tools currently done" does NOT mean
+    // the agent is finished with tools — a sequential agent might fire
+    // another tool a moment later. We let onTextDelta / onAgentEnd drive
+    // the Working→Done transition; that signal is unambiguous.
   }
 
   onStatusUpdate(_message: string): void {
@@ -323,33 +355,61 @@ export class MessageBuffer implements TurnCallbacks {
     const now = this.now();
     if (!force && now - this.lastEditTime < this.statusThrottleMs) return;
 
-    const text = this.buildStatusLine();
-    if (!text) return;
-    // Idempotent edit suppression — see `lastRenderedStatusText` doc.
-    if (text === this.lastRenderedStatusText) return;
+    // Quick-exit before scheduling: nothing to render OR nothing changed.
+    const initial = this.buildStatusLine();
+    if (!initial) return;
+    if (initial === this.lastRenderedStatusText) return;
 
-    // Set the throttle window before awaiting so concurrent events coalesce.
+    // Coalesce concurrent flushes. If an edit is in flight, just bail —
+    // the in-flight loop below re-renders `buildStatusLine()` after each
+    // round-trip and picks up whatever state was mutated during the wait.
+    if (this.editingStatus) return;
+
     this.lastEditTime = now;
-    this.lastRenderedStatusText = text;
 
-    try {
-      if (this.statusMessageId === undefined) {
-        const msg = await this.bot.api.sendMessage(this.chatId, text);
-        this.statusMessageId = msg.message_id;
-      } else {
-        await this.bot.api.editMessageText(
-          this.chatId,
-          this.statusMessageId,
-          text,
-        );
+    const inFlight: Promise<void> = (async () => {
+      // Yield to a microtask before the first network call. Synchronous
+      // siblings that fired alongside this flush (e.g. four onToolStart
+      // in a row) all bail at the `editingStatus` check above; by the
+      // time we resume, their state mutations are visible in
+      // `buildStatusLine()`, so the FIRST edit captures the full set.
+      await Promise.resolve();
+
+      while (true) {
+        if (this.statusFrozen) return;
+        const t = this.buildStatusLine();
+        if (!t || t === this.lastRenderedStatusText) return;
+        try {
+          if (this.statusMessageId === undefined) {
+            const msg = await this.bot.api.sendMessage(this.chatId, t);
+            this.statusMessageId = msg.message_id;
+          } else {
+            await this.bot.api.editMessageText(
+              this.chatId,
+              this.statusMessageId,
+              t,
+            );
+          }
+          this.lastRenderedStatusText = t;
+        } catch (err) {
+          this.handleStatusError(err);
+          // Don't loop on errors; the next non-duplicate transition will
+          // re-trigger via the normal flushStatus path.
+          return;
+        }
+        // Loop continues; checks above re-render to see if state mutated
+        // during the round-trip and another edit is needed.
       }
-    } catch (err) {
-      // Keep `lastRenderedStatusText` set even on error; on retry the next
-      // flush will skip the duplicate. If state recovery resets the message
-      // id (handleStatusError), the next non-duplicate transition will
-      // re-send. The 429 path explicitly does not need re-attempt.
-      this.handleStatusError(err);
-    }
+    })();
+
+    this.editingStatus = inFlight;
+    inFlight.finally(() => {
+      if (this.editingStatus === inFlight) this.editingStatus = null;
+    });
+    // Awaiting here makes `await buffer.flushStatus(...)` deterministic
+    // for tests; in production the call site uses `void flushStatus(...)`
+    // so this await never blocks event-handler return.
+    await inFlight;
   }
 
   private handleStatusError(err: unknown): void {
@@ -383,6 +443,17 @@ export class MessageBuffer implements TurnCallbacks {
     if (this.responseMessageId === undefined && this.creatingResponse) {
       if (!force) return;
       await this.creatingResponse;
+    }
+
+    // Serialize edits. Telegram does not guarantee ordering for concurrent
+    // edits against the same message; a stale edit can land last and
+    // overwrite the latest text. A non-force flush whose throttle window
+    // opened while another edit is in flight just skips — the next window
+    // will pick up the latest accumulatedText. The force flush from
+    // onAgentEnd MUST wait, so the final write contains the full text.
+    if (this.editingResponse) {
+      if (!force) return;
+      await this.editingResponse;
     }
 
     this.lastResponseEditTime = now;
@@ -421,11 +492,26 @@ export class MessageBuffer implements TurnCallbacks {
           }
         }
       } else {
-        await this.bot.api.editMessageText(
-          this.chatId,
-          this.responseMessageId,
-          this.accumulatedText,
-        );
+        // Capture the text at scheduling time. The serialization above
+        // ensures the LATEST flush sees the LATEST accumulatedText,
+        // since each edit awaits prior edits.
+        const text = this.accumulatedText;
+        const messageId = this.responseMessageId;
+        const inFlight = (async () => {
+          try {
+            await this.bot.api.editMessageText(this.chatId, messageId, text);
+          } catch (err) {
+            this.handleResponseError(err);
+          }
+        })();
+        this.editingResponse = inFlight;
+        try {
+          await inFlight;
+        } finally {
+          if (this.editingResponse === inFlight) {
+            this.editingResponse = null;
+          }
+        }
       }
     } catch (err) {
       this.handleResponseError(err);

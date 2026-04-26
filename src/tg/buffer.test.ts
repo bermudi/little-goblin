@@ -183,6 +183,8 @@ describe("MessageBuffer", () => {
         const buffer = new MessageBuffer(bot, 1, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
+        // Working→Done transition fires on first text after tools done.
+        buffer.onTextDelta("answer");
         expect(buffer._state().phase).toBe("done");
         expect(buffer.buildStatusLine()).toBe("✅ bash");
       });
@@ -194,6 +196,7 @@ describe("MessageBuffer", () => {
         buffer.onToolStart("read", {});
         buffer.onToolEnd("bash", true);
         buffer.onToolEnd("read", false);
+        buffer.onTextDelta("answer");
         expect(buffer._state().phase).toBe("done");
         expect(buffer._state().hadError).toBe(true);
         expect(buffer.buildStatusLine()).toBe("❌ bash, read");
@@ -254,15 +257,56 @@ describe("MessageBuffer", () => {
         expect(buffer._state().toolsObserved).toEqual(["bash"]);
       });
 
-      it("last running tool ending transitions working → done", () => {
+      it("onToolEnd alone does NOT transition working → done", () => {
+        // The agent might fire another tool sequentially — stay in Working.
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, NO_AUTO);
         buffer.onToolStart("bash", {});
-        buffer.onToolStart("read", {});
         buffer.onToolEnd("bash", false);
         expect(buffer._state().phase).toBe("working");
-        buffer.onToolEnd("read", false);
+        expect(buffer._state().toolsRunning.size).toBe(0);
+      });
+
+      it("first text delta after tools done transitions working → done", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        buffer.onToolStart("bash", {});
+        buffer.onToolEnd("bash", false);
+        expect(buffer._state().phase).toBe("working");
+        buffer.onTextDelta("answer");
         expect(buffer._state().phase).toBe("done");
+      });
+
+      it("text delta WHILE tools are still running stays in working", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        buffer.onToolStart("bash", {});
+        buffer.onTextDelta("interim");
+        // Bash is still running; do not promote to Done.
+        expect(buffer._state().phase).toBe("working");
+      });
+
+      it("sequential tool re-enters working from done", () => {
+        // Regression for the real-world bug: agent ran `write` then `read`
+        // sequentially (with no tools in flight in between). The phase
+        // machine must NOT prematurely lock into Done with only `write`.
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        buffer.onToolStart("write", {});
+        buffer.onToolEnd("write", false);
+        buffer.onTextDelta("thinking aloud"); // promotes to Done.
+        expect(buffer._state().phase).toBe("done");
+
+        // Now a second tool fires — should pull us back to Working.
+        buffer.onToolStart("read", {});
+        expect(buffer._state().phase).toBe("working");
+        expect(buffer._state().toolsObserved).toEqual(["write", "read"]);
+
+        buffer.onToolEnd("read", false);
+        expect(buffer._state().phase).toBe("working"); // still, until text
+        buffer.onTextDelta("final");
+        expect(buffer._state().phase).toBe("done");
+        expect(buffer.buildStatusLine()).toBe("✅ write, read");
       });
 
       it("filtered (hidden) tools do not appear in toolsObserved", () => {
@@ -819,6 +863,79 @@ describe("MessageBuffer", () => {
       const lastEdit = edits[edits.length - 1];
       expect(lastEdit?.messageId).toBe(101);
       expect(lastEdit?.text).toBe("I'll run a quick test.");
+    });
+
+    it("agent_end force flush awaits in-flight edit, lands with FULL text (no truncation)", async () => {
+      // Regression for real-world bug: during streaming, a delta-driven
+      // editMessageText is in flight. Just before it returns, agent_end
+      // fires and force-flushes. Without serialization, two concurrent
+      // edits race and Telegram can process them in reverse order — the
+      // user sees the partial mid-stream snapshot as the final text.
+      // Repro: real session 2f03b2fe9e showed "...What" instead of the
+      // full "...What else do you want to test?".
+      let editCount = 0;
+      const edits: { messageId: number; text: string }[] = [];
+      let releaseEdit!: () => void;
+
+      const bot = {
+        api: {
+          sendMessage: async (_c: number, _text: string) => {
+            return { message_id: 200 };
+          },
+          editMessageText: (_c: number, messageId: number, text: string) => {
+            const myCount = ++editCount;
+            // First edit hangs until manually released; later edits resolve
+            // immediately. This forces the second edit to be issued (or
+            // not!) while the first is still in flight.
+            return new Promise<true>((resolve) => {
+              if (myCount === 1) {
+                releaseEdit = () => {
+                  edits.push({ messageId, text });
+                  resolve(true);
+                };
+              } else {
+                edits.push({ messageId, text });
+                resolve(true);
+              }
+            });
+          },
+          sendChatAction: async () => true,
+        },
+      } as unknown as Bot;
+
+      let t = 1000;
+      const buffer = new MessageBuffer(bot, 1, {
+        now: () => t,
+        visibility: "none" as const,
+      });
+
+      // Send a delta to create the response message and trigger an edit.
+      buffer.onTextDelta("partial");
+      await tick();
+      // The first edit's promise is hanging. responseMessageId is set.
+
+      // Add more deltas; their flushes are throttled or serialized.
+      t = 1100;
+      buffer.onTextDelta(" more");
+      buffer.onTextDelta(" stuff");
+      buffer.onTextDelta(" arriving");
+      await tick();
+
+      // Agent ends while the first edit is still in flight. force=true
+      // must NOT race a second edit; it must wait, then issue once with
+      // the full accumulatedText.
+      buffer.onAgentEnd();
+      await tick();
+
+      // Release the first edit. Serialization unblocks downstream.
+      releaseEdit();
+      await tick();
+      await tick();
+      await tick();
+
+      // The LAST edit Telegram saw must contain the full accumulated text.
+      const last = edits[edits.length - 1];
+      expect(last?.text).toBe("partial more stuff arriving");
     });
 
     it("force-flush during in-flight send awaits and edits, never duplicates", async () => {

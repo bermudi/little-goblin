@@ -731,10 +731,17 @@ export class SubagentRunner {
           /* best-effort */
         }
         instance.status = "cancelled";
-        this.persistMeta(instance, {
-          status: "cancelled",
-          completedAt: new Date().toISOString(),
-        });
+        try {
+          this.persistMeta(instance, {
+            status: "cancelled",
+            completedAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          log.error("dispose persistMeta failed", {
+            id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
       this.teardownInstance(instance);
     }

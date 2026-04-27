@@ -52,6 +52,15 @@ If Phase 1 was skipped, state `Phase 1 skipped: no stateful code paths detected`
 #### CRITICAL / WARNING / SUGGESTION
 Tag each issue with the scenario number it relates to (e.g., "S2: Missing state guard on...").
 
+#### Pattern Annotations
+Group findings that share a common structural root. For each pattern:
+- **Pattern**: one-line description of the abstract issue (e.g., "unguarded state transition on cancellation", "stale closure over loop variable")
+- **Confirmed locations**: `file:line` references already flagged as CRITICAL or WARNING above
+- **Likely locations**: `file:line` references that share the same pattern but were not directly triggered by the scenarios you enumerated — the fixer should verify and guard these too
+- **Fix guidance**: a single recommendation that addresses all confirmed and likely locations at once (e.g., "Add a unified state-guard check at the top of every method that transitions SubagentInstance status")
+
+Omit this section if no findings share a common pattern.
+
 ### Phase 2: Compliance Findings
 
 #### CRITICAL

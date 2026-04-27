@@ -68,6 +68,29 @@ Do not offer to start the next phase yourself. One phase. Stop.
 
 ---
 
+## Fixing Review Findings
+
+When you are asked to fix, address, or resolve review findings (rather than implementing tasks from tasks.md), different rules apply. The review found symptoms; your job is to cure the disease.
+
+**Behavioral shift — scope expands, does not narrow:**
+- For each finding, identify the **abstract pattern** behind it. Do not fix just the reported `file:line`
+- Search the entire affected module (or modules) for the same pattern. Fix all instances, not just the reported one
+- If the review included **Pattern Annotations**, use them as your roadmap — confirmed locations must be fixed, likely locations must be verified and fixed if the pattern holds
+- After fixing, re-read the entire affected module end-to-end. Ask: "Did my changes introduce new surface area? What invariants might now be broken?"
+- Run the full test suite, not just tests related to your fix
+
+**What NOT to do:**
+- Do not fix only the specific `file:line` from the report while ignoring structurally identical code nearby
+- Do not declare done after tests pass without re-reading the changed module
+- Do not treat SUGGESTIONs as optional if they share a pattern with CRITICALs or WARNINGs — the pattern is the problem, not the severity tag
+
+**Verification:**
+After all fixes, verify:
+1. Every location in every Pattern Annotation is addressed
+2. No new unguarded paths were introduced by the fix
+3. The full test suite passes
+4. A re-read of the affected module reveals no remaining instances of the pattern
+
 ## References
 
 `specs/glossary.md` — the project's ubiquitous language. You may consult it for terminology after completing a phase. No enforcement, purely optional context.

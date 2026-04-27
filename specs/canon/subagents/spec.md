@@ -1,12 +1,13 @@
 # subagents
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: SubagentRunner manages subagent lifecycle
 
 The `SubagentRunner` class SHALL handle spawning, revival, and status tracking for all subagents.
 
 #### Scenario: Runner creation
+
 - **WHEN** `SubagentRunner` is instantiated
 - **THEN** it SHALL have access to shared services (AuthStorage, ModelRegistry, SettingsManager)
 - **AND** it SHALL track active subagents in memory
@@ -16,12 +17,14 @@ The `SubagentRunner` class SHALL handle spawning, revival, and status tracking f
 A `spawn_subagent` tool SHALL be registered for goblin's use, allowing dynamic creation of ad-hoc subagents.
 
 #### Scenario: Spawn generic subagent
+
 - **WHEN** goblin calls `spawn_subagent({prompt: "Analyze this log"})`
 - **THEN** a new subagent SHALL be created with given system prompt
 - **AND** it SHALL inherit parent's skills
 - **AND** a subagent ID SHALL be returned
 
 #### Scenario: Spawn with task specification
+
 - **WHEN** spawn includes explicit task description
 - **THEN** the subagent SHALL be created focused on that task
 - **AND** its session SHALL be persisted to disk
@@ -31,12 +34,14 @@ A `spawn_subagent` tool SHALL be registered for goblin's use, allowing dynamic c
 Named subagents (e.g., "researcher", "reviewer") SHALL load their `AGENTS.md` and `skills/` from `~/goblin/agents/<name>/`.
 
 #### Scenario: Spawn named subagent
+
 - **WHEN** `spawn_subagent({name: "researcher", prompt: "..."})` is called
 - **THEN** `~/goblin/agents/researcher/AGENTS.md` SHALL be loaded as system prompt
 - **AND** `~/goblin/agents/researcher/skills/` SHALL be discoverable by the subagent
 - **AND** parent's skills SHALL NOT be inherited (strict isolation)
 
 #### Scenario: Named subagent not found
+
 - **WHEN** `spawn_subagent({name: "nonexistent"})` is called
 - **THEN** it SHALL throw an error: "Named agent 'nonexistent' not found"
 
@@ -45,16 +50,19 @@ Named subagents (e.g., "researcher", "reviewer") SHALL load their `AGENTS.md` an
 Every subagent spawn SHALL create a persisted pi session. Generic subagents use `~/goblin/subagents/<id>/session.jsonl`; named agents use `~/goblin/agents/<name>/instances/<id>/session.jsonl`.
 
 #### Scenario: Session creation for generic subagent
+
 - **WHEN** a generic subagent is spawned
 - **THEN** `~/goblin/subagents/<uuid>/session.jsonl` SHALL be created via `SessionManager.create()`
 - **AND** `~/goblin/subagents/<uuid>/meta.json` SHALL store metadata (spawnedBy, role, timestamps)
 
 #### Scenario: Session creation for named subagent
+
 - **WHEN** a named subagent "researcher" is spawned
 - **THEN** `~/goblin/agents/researcher/instances/<uuid>/session.jsonl` SHALL be created
 - **AND** `~/goblin/agents/researcher/instances/<uuid>/meta.json` SHALL store metadata
 
 #### Scenario: Conversation accumulation
+
 - **WHEN** subagent processes multiple turns
 - **THEN** each SHALL be appended to `session.jsonl`
 
@@ -63,6 +71,7 @@ Every subagent spawn SHALL create a persisted pi session. Generic subagents use 
 The `revive(id, prompt)` method on `SubagentRunner` SHALL load a subagent's conversation from disk and continue it, returning the subagent's response as a string.
 
 #### Scenario: Revive after restart
+
 - **WHEN** goblin restarts and calls `revive("abc123", "Check results")`
 - **THEN** subagent "abc123" SHALL be loaded from its `session.jsonl`
 - **AND** conversation history SHALL be intact
@@ -70,6 +79,7 @@ The `revive(id, prompt)` method on `SubagentRunner` SHALL load a subagent's conv
 - **AND** the response SHALL be returned as a string
 
 #### Scenario: Revive with new prompt
+
 - **WHEN** revive is called with a prompt
 - **THEN** the subagent SHALL receive it as a new user message
 - **AND** it SHALL respond based on combined history + new prompt
@@ -79,11 +89,13 @@ The `revive(id, prompt)` method on `SubagentRunner` SHALL load a subagent's conv
 Subagents SHALL be able to spawn their own subagents, but the depth SHALL be limited to 3 to prevent runaway.
 
 #### Scenario: Depth 1 spawn
+
 - **WHEN** goblin spawns subagent A
 - **AND** A spawns B
 - **THEN** depth is 2, allowed
 
 #### Scenario: Depth 3 blocked
+
 - **WHEN** depth 3 subagent tries to spawn
 - **THEN** the spawn SHALL fail with error "Maximum subagent depth reached (3)"
 
@@ -92,21 +104,24 @@ Subagents SHALL be able to spawn their own subagents, but the depth SHALL be lim
 When a subagent is running, its activity SHALL be reported to goblin via `onStatusUpdate` callbacks.
 
 #### Scenario: Subagent starts work
+
 - **WHEN** subagent begins processing
 - **THEN** goblin's status line SHALL show "🧠 Researcher thinking..."
 
 #### Scenario: Subagent completes
+
 - **WHEN** subagent finishes and returns result
 - **THEN** goblin SHALL receive the result
 - **AND** status SHALL update to show completion
 
 ### Requirement: No beta tools for subagents
 
-Subagents SHALL NOT have access to Telegram-native (β) tools. They operate without direct Telegram surface. Subagents MAY receive the `spawn_subagent` tool (α) to enable recursive spawning.
+Subagents SHALL NOT have access to Telegram-native (β) tools. They operate without direct Telegram surface. Subagents MAY receive the `spawn_subagent` tool (α) to enable recursive spawning, and the `revive_subagent` tool (α) to enable continuation of nested subagents.
 
 #### Scenario: Subagent tool set
+
 - **WHEN** a subagent is spawned
-- **THEN** its tools SHALL be α (pi built-in) plus optionally `spawn_subagent`
+- **THEN** its tools SHALL be α (pi built-in) plus optionally `spawn_subagent` and `revive_subagent`
 - **AND** no β (Telegram-native) tools SHALL be present
 
 ### Requirement: Generic subagents inherit parent skills
@@ -114,6 +129,7 @@ Subagents SHALL NOT have access to Telegram-native (β) tools. They operate with
 Generic (unnamed) subagents SHALL discover skills from the parent's `~/goblin/skills/` directory.
 
 #### Scenario: Generic spawn
+
 - **WHEN** `spawn_subagent({prompt: "..."})` without name
 - **THEN** the subagent SHALL have access to `~/goblin/skills/`
 - **AND** it SHALL NOT have access to named agent isolated skills
@@ -123,6 +139,7 @@ Generic (unnamed) subagents SHALL discover skills from the parent's `~/goblin/sk
 When a subagent completes, its final output SHALL be returned to the spawner (goblin or parent subagent).
 
 #### Scenario: Goblin spawns researcher
+
 - **WHEN** researcher subagent finishes analysis
 - **THEN** its final response SHALL be returned to goblin
 - **AND** goblin SHALL incorporate it into its own context
@@ -132,11 +149,13 @@ When a subagent completes, its final output SHALL be returned to the spawner (go
 The `list()` method SHALL return all active (running or recent) subagents with their IDs, status, and spawned time.
 
 #### Scenario: List active subagents
+
 - **WHEN** `list()` is called
 - **THEN** it SHALL return an array of `{id, name, role, status, spawnedAt}`
 - **AND** status SHALL be one of: running, completed, cancelled, error
 
 #### Scenario: List when empty
+
 - **WHEN** `list()` is called with no active subagents
 - **THEN** it SHALL return an empty array
 
@@ -145,11 +164,13 @@ The `list()` method SHALL return all active (running or recent) subagents with t
 The `cancel(id)` method SHALL abort the specified subagent's current turn.
 
 #### Scenario: Cancel running subagent
+
 - **WHEN** `cancel("abc123")` is called
 - **THEN** subagent "abc123" SHALL have its session aborted
 - **AND** its status SHALL be updated to cancelled
 
 #### Scenario: Cancel nonexistent subagent
+
 - **WHEN** `cancel("xyz999")` is called for nonexistent ID
 - **THEN** it SHALL throw an error: "Subagent not found"
 
@@ -158,12 +179,14 @@ The `cancel(id)` method SHALL abort the specified subagent's current turn.
 A `revive_subagent` tool SHALL be registered for goblin's use, allowing continuation of previously completed, cancelled, or errored subagents.
 
 #### Scenario: Revive completed subagent
+
 - **WHEN** goblin calls `revive_subagent({id: "abc123", prompt: "Go deeper"})`
 - **THEN** subagent "abc123" SHALL be loaded from its persisted session
 - **AND** the new prompt SHALL be processed
 - **AND** the response SHALL be returned
 
 #### Scenario: Revive nonexistent subagent
+
 - **WHEN** `revive_subagent({id: "xyz999", prompt: "..."})` is called for nonexistent ID
 - **THEN** it SHALL throw an error: "Subagent not found"
 
@@ -172,6 +195,7 @@ A `revive_subagent` tool SHALL be registered for goblin's use, allowing continua
 The `dispose()` method SHALL cancel all running subagents, dispose their sessions, and clear the active map.
 
 #### Scenario: Dispose with running subagents
+
 - **WHEN** `dispose()` is called with active running subagents
 - **THEN** each running subagent SHALL be aborted
 - **AND** their status SHALL be updated to cancelled
@@ -182,5 +206,6 @@ The `dispose()` method SHALL cancel all running subagents, dispose their session
 Agent names SHALL be validated to prevent path traversal.
 
 #### Scenario: Invalid name rejected
+
 - **WHEN** a name containing characters outside `[a-zA-Z0-9_-]` is provided
 - **THEN** spawn SHALL throw an error matching "Invalid agent name"

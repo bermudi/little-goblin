@@ -73,7 +73,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
 
     // MessageBuffer turns agent events into Telegram UI (status line + streamed
     // response). One buffer per turn so message IDs are scoped to this prompt.
-    const buffer = new MessageBuffer(bot, locator.chatId, {
+    const buffer = new MessageBuffer(bot, locator.chatId, locator.topicId, {
       visibility: cfg.toolVisibility,
     });
 

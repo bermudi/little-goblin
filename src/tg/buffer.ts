@@ -109,6 +109,7 @@ export function findSafeSplit(text: string, maxLen: number): number {
 export class MessageBuffer implements TurnCallbacks {
   private bot: Bot;
   private chatId: number;
+  private topicId: number | undefined;
   private visibility: string;
 
   // Telegram message tracking.
@@ -180,9 +181,10 @@ export class MessageBuffer implements TurnCallbacks {
    */
   private editingResponse: Promise<void> | null = null;
 
-  constructor(bot: Bot, chatId: number, options: MessageBufferOptions = {}) {
+  constructor(bot: Bot, chatId: number, topicId: number | undefined, options: MessageBufferOptions = {}) {
     this.bot = bot;
     this.chatId = chatId;
+    this.topicId = topicId;
     this.visibility = options.visibility ?? DEFAULT_VISIBILITY;
     this.now = options.now ?? Date.now;
     this.statusThrottleMs = options.statusThrottleMs ?? 1000;
@@ -303,9 +305,17 @@ export class MessageBuffer implements TurnCallbacks {
     this.chatActionHandle = undefined;
   }
 
+  /** Build API options with message_thread_id if topicId is set. */
+  private withThread(opts: Record<string, unknown> = {}): Record<string, unknown> {
+    if (this.topicId !== undefined) {
+      return { ...opts, message_thread_id: this.topicId };
+    }
+    return opts;
+  }
+
   /** Best-effort `sendChatAction("typing")`; never throws out. */
   private sendChatActionSafe(): void {
-    Promise.resolve(this.bot.api.sendChatAction(this.chatId, "typing")).catch(
+    Promise.resolve(this.bot.api.sendChatAction(this.chatId, "typing", this.withThread())).catch(
       (err: unknown) => {
         log.warn("sendChatAction failed", { error: String(err) });
       },
@@ -381,13 +391,14 @@ export class MessageBuffer implements TurnCallbacks {
         if (!t || t === this.lastRenderedStatusText) return;
         try {
           if (this.statusMessageId === undefined) {
-            const msg = await this.bot.api.sendMessage(this.chatId, t);
+            const msg = await this.bot.api.sendMessage(this.chatId, t, this.withThread());
             this.statusMessageId = msg.message_id;
           } else {
             await this.bot.api.editMessageText(
               this.chatId,
               this.statusMessageId,
               t,
+              this.withThread(),
             );
           }
           this.lastRenderedStatusText = t;
@@ -477,6 +488,7 @@ export class MessageBuffer implements TurnCallbacks {
             const msg = await this.bot.api.sendMessage(
               this.chatId,
               this.accumulatedText,
+              this.withThread(),
             );
             this.responseMessageId = msg.message_id;
           } catch (err) {
@@ -499,7 +511,7 @@ export class MessageBuffer implements TurnCallbacks {
         const messageId = this.responseMessageId;
         const inFlight = (async () => {
           try {
-            await this.bot.api.editMessageText(this.chatId, messageId, text);
+            await this.bot.api.editMessageText(this.chatId, messageId, text, this.withThread());
           } catch (err) {
             this.handleResponseError(err);
           }
@@ -543,8 +555,9 @@ export class MessageBuffer implements TurnCallbacks {
       await this.bot.api.sendDocument(
         this.chatId,
         new InputFile(tmpPath, "reply.md"),
+        this.withThread(),
       );
-      await this.bot.api.sendMessage(this.chatId, summary);
+      await this.bot.api.sendMessage(this.chatId, summary, this.withThread());
     } catch (err) {
       this.handleResponseError(err);
     } finally {
@@ -578,9 +591,10 @@ export class MessageBuffer implements TurnCallbacks {
             this.chatId,
             this.responseMessageId,
             head,
+            this.withThread(),
           );
         } else {
-          await this.bot.api.sendMessage(this.chatId, head);
+          await this.bot.api.sendMessage(this.chatId, head, this.withThread());
         }
         // The previous message is now "closed"; the tail starts a new one.
         this.responseMessageId = undefined;

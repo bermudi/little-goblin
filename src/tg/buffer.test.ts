@@ -116,7 +116,7 @@ async function tick(): Promise<void> {
 describe("MessageBuffer", () => {
   it("instantiates with default visibility and thinking phase", () => {
     const { bot } = makeBot();
-    const buffer = new MessageBuffer(bot, 123);
+    const buffer = new MessageBuffer(bot, 123, undefined);
     const s = buffer._state();
     expect(s.chatId).toBe(123);
     expect(s.visibility).toBe("standard");
@@ -135,13 +135,13 @@ describe("MessageBuffer", () => {
 
   it("respects visibility option", () => {
     const { bot } = makeBot();
-    const buffer = new MessageBuffer(bot, 7, { visibility: "verbose" });
+    const buffer = new MessageBuffer(bot, 7, undefined, { visibility: "verbose" });
     expect(buffer._state().visibility).toBe("verbose");
   });
 
   it("exposes all TurnCallbacks methods without throwing", async () => {
     const { bot } = makeBot();
-    const buffer = new MessageBuffer(bot, 1);
+    const buffer = new MessageBuffer(bot, 1, undefined);
     expect(() => buffer.onTextDelta("hi")).not.toThrow();
     expect(() => buffer.onToolStart("bash", {})).not.toThrow();
     expect(() => buffer.onToolEnd("bash", false)).not.toThrow();
@@ -165,13 +165,13 @@ describe("MessageBuffer", () => {
     describe("buildStatusLine rendering", () => {
       it("renders the thinking phase as 🤔 thinking…", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         expect(buffer.buildStatusLine()).toBe("🤔 thinking…");
       });
 
       it("renders working phase with comma-joined tool names", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("read", {});
         expect(buffer._state().phase).toBe("working");
@@ -180,7 +180,7 @@ describe("MessageBuffer", () => {
 
       it("renders done phase with ✅ when no errors", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
         // Working→Done transition fires on first text after tools done.
@@ -191,7 +191,7 @@ describe("MessageBuffer", () => {
 
       it("renders done phase with ❌ when any tool errored", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("read", {});
         buffer.onToolEnd("bash", true);
@@ -204,7 +204,7 @@ describe("MessageBuffer", () => {
 
       it("renders empty string in none visibility (any phase)", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, {
+        const buffer = new MessageBuffer(bot, 1, undefined, {
           ...NO_AUTO,
           visibility: "none",
         });
@@ -215,7 +215,7 @@ describe("MessageBuffer", () => {
 
       it("renders empty string in done with zero observed tools", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onAgentEnd();
         expect(buffer._state().phase).toBe("done");
         expect(buffer.buildStatusLine()).toBe("");
@@ -223,7 +223,7 @@ describe("MessageBuffer", () => {
 
       it("✍️ composing indicator is gone (chat_action covers liveness)", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onTextDelta("hello");
         // Still in thinking phase (no tools), but composing must NOT appear.
         expect(buffer.buildStatusLine()).not.toContain("composing");
@@ -234,7 +234,7 @@ describe("MessageBuffer", () => {
     describe("phase transitions", () => {
       it("first onToolStart transitions thinking → working", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         expect(buffer._state().phase).toBe("thinking");
         buffer.onToolStart("bash", {});
         expect(buffer._state().phase).toBe("working");
@@ -242,7 +242,7 @@ describe("MessageBuffer", () => {
 
       it("subsequent onToolStart calls do not re-transition", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("read", {});
         expect(buffer._state().phase).toBe("working");
@@ -251,7 +251,7 @@ describe("MessageBuffer", () => {
 
       it("repeated onToolStart for the same tool does not duplicate it", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("bash", {});
         expect(buffer._state().toolsObserved).toEqual(["bash"]);
@@ -260,7 +260,7 @@ describe("MessageBuffer", () => {
       it("onToolEnd alone does NOT transition working → done", () => {
         // The agent might fire another tool sequentially — stay in Working.
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
         expect(buffer._state().phase).toBe("working");
@@ -269,7 +269,7 @@ describe("MessageBuffer", () => {
 
       it("first text delta after tools done transitions working → done", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
         expect(buffer._state().phase).toBe("working");
@@ -279,7 +279,7 @@ describe("MessageBuffer", () => {
 
       it("text delta WHILE tools are still running stays in working", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onTextDelta("interim");
         // Bash is still running; do not promote to Done.
@@ -291,7 +291,7 @@ describe("MessageBuffer", () => {
         // sequentially (with no tools in flight in between). The phase
         // machine must NOT prematurely lock into Done with only `write`.
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("write", {});
         buffer.onToolEnd("write", false);
         buffer.onTextDelta("thinking aloud"); // promotes to Done.
@@ -311,7 +311,7 @@ describe("MessageBuffer", () => {
 
       it("filtered (hidden) tools do not appear in toolsObserved", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, {
+        const buffer = new MessageBuffer(bot, 1, undefined, {
           ...NO_AUTO,
           visibility: "minimal",
         });
@@ -322,7 +322,7 @@ describe("MessageBuffer", () => {
 
       it("hadError is set if any tool errored", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", true);
         expect(buffer._state().hadError).toBe(true);
@@ -330,14 +330,14 @@ describe("MessageBuffer", () => {
 
       it("onAgentEnd freezes the status", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onAgentEnd();
         expect(buffer._state().statusFrozen).toBe(true);
       });
 
       it("onAgentEnd transitions working → done if tools were left dangling", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         // Tool never ended; agent ends anyway.
         buffer.onAgentEnd();
@@ -346,7 +346,7 @@ describe("MessageBuffer", () => {
 
       it("clears isStreaming on onAgentEnd", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, NO_AUTO);
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onTextDelta("text");
         expect(buffer._state().isStreaming).toBe(true);
         buffer.onAgentEnd();
@@ -358,7 +358,7 @@ describe("MessageBuffer", () => {
   describe("eager placeholder via onStatusUpdate", () => {
     it("sends the thinking placeholder on first onStatusUpdate", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 7);
+      const buffer = new MessageBuffer(m.bot, 7, undefined);
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(1);
@@ -369,7 +369,7 @@ describe("MessageBuffer", () => {
 
     it("is idempotent — repeated onStatusUpdate does not resend", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
       buffer.onStatusUpdate("a");
       await tick();
       buffer.onStatusUpdate("b");
@@ -380,7 +380,7 @@ describe("MessageBuffer", () => {
 
     it("none visibility suppresses the placeholder entirely", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, { visibility: "none" });
+      const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" });
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(0);
@@ -389,7 +389,7 @@ describe("MessageBuffer", () => {
 
     it("placeholder is sent before any response message", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
       // Real AgentRunner ordering: agent_start (→ onStatusUpdate) then text.
       buffer.onStatusUpdate("thinking...");
       buffer.onTextDelta("hello");
@@ -403,7 +403,7 @@ describe("MessageBuffer", () => {
 
     it("lazy-sends placeholder on first onTextDelta if no onStatusUpdate fired", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
       buffer.onTextDelta("hi");
       await tick();
       // The status placeholder lands alongside the response. Order may vary
@@ -416,7 +416,7 @@ describe("MessageBuffer", () => {
 
     it("lazy-sends placeholder on first onToolStart if no onStatusUpdate fired", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
       buffer.onToolStart("bash", {});
       await tick();
       // One send: phase already in working when commitStatus fires, so the
@@ -434,7 +434,7 @@ describe("MessageBuffer", () => {
       // The phase machine should produce: 1 send (placeholder) +
       // 1 edit (working) + 1 edit (done) = 3 writes total.
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
 
       buffer.onStatusUpdate("thinking...");
       await tick();
@@ -480,7 +480,7 @@ describe("MessageBuffer", () => {
 
     it("many tools collapse to ONE Working edit (no per-tool churn)", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
 
       buffer.onStatusUpdate("thinking...");
       await tick();
@@ -504,7 +504,7 @@ describe("MessageBuffer", () => {
 
     it("first phase-driven flush sends and tracks statusMessageId", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 42);
+      const buffer = new MessageBuffer(m.bot, 42, undefined);
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(1);
@@ -515,7 +515,7 @@ describe("MessageBuffer", () => {
     it("phase transitions edit the tracked message", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 42, { now: () => t });
+      const buffer = new MessageBuffer(m.bot, 42, undefined, { now: () => t });
       buffer.onStatusUpdate("thinking...");
       await tick();
 
@@ -531,7 +531,7 @@ describe("MessageBuffer", () => {
 
     it("statusFrozen blocks any further edits after onAgentEnd", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
       buffer.onStatusUpdate("thinking...");
       await tick();
       buffer.onToolStart("bash", {});
@@ -557,7 +557,7 @@ describe("MessageBuffer", () => {
     it("force=true bypasses throttle (used by onAgentEnd)", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, { now: () => t });
+      const buffer = new MessageBuffer(m.bot, 1, undefined, { now: () => t });
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(1);
@@ -572,7 +572,7 @@ describe("MessageBuffer", () => {
 
     it("skips when status line is empty (none visibility, no force)", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, { visibility: "none" });
+      const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" });
       await buffer.flushStatus(true);
       expect(m.send.length).toBe(0);
       expect(m.edit.length).toBe(0);
@@ -581,7 +581,7 @@ describe("MessageBuffer", () => {
     it("handles 429 rate limit by logging and not setting statusMessageId", async () => {
       const m = makeBot();
       m.failNext.send = { error_code: 429, description: "Too Many Requests" };
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
 
       buffer.onStatusUpdate("thinking...");
       await tick();
@@ -592,7 +592,7 @@ describe("MessageBuffer", () => {
     it("handles deleted status message by resetting statusMessageId", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, { now: () => t });
+      const buffer = new MessageBuffer(m.bot, 1, undefined, { now: () => t });
 
       buffer.onStatusUpdate("thinking...");
       await tick();
@@ -612,14 +612,14 @@ describe("MessageBuffer", () => {
     it("does not throw out of flushStatus on unknown errors", async () => {
       const m = makeBot();
       m.failNext.send = new Error("boom");
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
       buffer.onStatusUpdate("thinking...");
       await expect(buffer.flushStatus()).resolves.toBeUndefined();
     });
 
     it("auto-flushes from callbacks (fire-and-forget)", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(1);
@@ -627,7 +627,7 @@ describe("MessageBuffer", () => {
 
     it("zero-tool turn: agent_end with no tools observed sends nothing", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1);
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
       // No onStatusUpdate, no onToolStart — just an immediate end.
       buffer.onAgentEnd();
       await tick();
@@ -648,7 +648,7 @@ describe("MessageBuffer", () => {
 
     it("accumulates text deltas in accumulatedText", () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, {
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
         responseThrottleMs: 1_000_000,
         ...STATUS_OFF,
       });
@@ -659,7 +659,7 @@ describe("MessageBuffer", () => {
 
     it("first flush sends a new response message and tracks responseMessageId", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 99, {
+      const buffer = new MessageBuffer(m.bot, 99, undefined, {
         now: () => 1000,
         ...STATUS_OFF,
       });
@@ -673,7 +673,7 @@ describe("MessageBuffer", () => {
     it("subsequent flushes edit the response message with full accumulated text", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, {
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -696,7 +696,7 @@ describe("MessageBuffer", () => {
     it("throttles response edits within ~200ms window", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, {
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -719,7 +719,7 @@ describe("MessageBuffer", () => {
     it("force=true bypasses response throttle (used by onAgentEnd)", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, {
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -737,7 +737,7 @@ describe("MessageBuffer", () => {
 
     it("skips when accumulatedText is empty", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, {
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
         ...STATUS_OFF,
       });
       await buffer.flushResponse(true);
@@ -748,7 +748,7 @@ describe("MessageBuffer", () => {
     it("handles deleted response message by resetting responseMessageId", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, {
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -775,7 +775,7 @@ describe("MessageBuffer", () => {
     it("does not throw out of flushResponse on unknown errors", async () => {
       const m = makeBot();
       m.failNext.send = new Error("boom");
-      const buffer = new MessageBuffer(m.bot, 1, {
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
         ...STATUS_OFF,
       });
       buffer.onTextDelta("x");
@@ -784,7 +784,7 @@ describe("MessageBuffer", () => {
 
     it("auto-flushes response from onTextDelta", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, {
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
         ...STATUS_OFF,
       });
       buffer.onTextDelta("auto");
@@ -831,7 +831,7 @@ describe("MessageBuffer", () => {
       } as unknown as Bot;
 
       let t = 1000;
-      const buffer = new MessageBuffer(bot, 1, {
+      const buffer = new MessageBuffer(bot, 1, undefined, {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -904,7 +904,7 @@ describe("MessageBuffer", () => {
       } as unknown as Bot;
 
       let t = 1000;
-      const buffer = new MessageBuffer(bot, 1, {
+      const buffer = new MessageBuffer(bot, 1, undefined, {
         now: () => t,
         visibility: "none" as const,
       });
@@ -966,7 +966,7 @@ describe("MessageBuffer", () => {
         },
       } as unknown as Bot;
 
-      const buffer = new MessageBuffer(bot, 1, {
+      const buffer = new MessageBuffer(bot, 1, undefined, {
         ...STATUS_OFF,
       });
 
@@ -999,7 +999,7 @@ describe("MessageBuffer", () => {
     it("onAgentEnd force-flushes the final response despite throttle", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, {
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -1059,7 +1059,7 @@ describe("MessageBuffer", () => {
 
     it("does not roll over when accumulatedText fits", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
       buffer.onTextDelta("a".repeat(MAX_MESSAGE_LEN));
       await buffer.flushResponse(true);
       expect(m.send.length).toBe(1);
@@ -1069,7 +1069,7 @@ describe("MessageBuffer", () => {
 
     it("rolls over once when accumulatedText is just over the limit", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
       // Pre-seed the response message id by sending a small chunk first.
       buffer.onTextDelta("seed");
       await buffer.flushResponse(true);
@@ -1098,7 +1098,7 @@ describe("MessageBuffer", () => {
 
     it("rolls over multiple times for very large accumulated text", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
       // 8200 chars from a fresh buffer (no prior responseMessageId).
       const big = "y".repeat(MAX_MESSAGE_LEN * 2 + 8);
       buffer.onTextDelta(big);
@@ -1118,7 +1118,7 @@ describe("MessageBuffer", () => {
 
     it("preserves total content across rollovers", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
       const total = "a".repeat(MAX_MESSAGE_LEN) + "b".repeat(MAX_MESSAGE_LEN) + "c".repeat(50);
       buffer.onTextDelta(total);
       await buffer.flushResponse(true);
@@ -1132,7 +1132,7 @@ describe("MessageBuffer", () => {
 
     it("does not split a UTF-16 surrogate pair across messages", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
       // Put an emoji ("😀" = 2 code units) right at the boundary.
       // Layout: (MAX_MESSAGE_LEN - 1) ASCII + emoji + filler.
       const head = "a".repeat(MAX_MESSAGE_LEN - 1);
@@ -1151,7 +1151,7 @@ describe("MessageBuffer", () => {
     it("subsequent edits target the new active message after rollover", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, {
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
         ...ALL_OFF,
         now: () => t,
       });
@@ -1183,7 +1183,7 @@ describe("MessageBuffer", () => {
 
     it("does not escape when text is at or below threshold", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
       buffer.onTextDelta("a".repeat(BIG_OUTPUT_THRESHOLD));
       await buffer.flushResponse(true);
       expect(m.documents.length).toBe(0);
@@ -1191,7 +1191,7 @@ describe("MessageBuffer", () => {
 
     it("escapes >20KB text to reply.md attachment with summary", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 42, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, 42, undefined, ALL_OFF);
       const big = "X".repeat(BIG_OUTPUT_THRESHOLD + 1000);
       buffer.onTextDelta(big);
       await buffer.flushResponse(true);
@@ -1214,7 +1214,7 @@ describe("MessageBuffer", () => {
 
     it("clears state after file escape so future deltas start fresh", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
       buffer.onTextDelta("Y".repeat(BIG_OUTPUT_THRESHOLD + 100));
       await buffer.flushResponse(true);
 
@@ -1232,7 +1232,7 @@ describe("MessageBuffer", () => {
     it("clears state even if sendDocument fails", async () => {
       const m = makeBot();
       m.failNext.document = new Error("network");
-      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
       buffer.onTextDelta("Z".repeat(BIG_OUTPUT_THRESHOLD + 5));
       await buffer.flushResponse(true);
 
@@ -1244,7 +1244,7 @@ describe("MessageBuffer", () => {
 
     it("file escape pre-empts rollover (no 4096-message spam)", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
       // 50KB would otherwise produce ~12 rollover messages.
       buffer.onTextDelta("Q".repeat(50_000));
       await buffer.flushResponse(true);
@@ -1314,7 +1314,7 @@ describe("MessageBuffer", () => {
     describe("MessageBuffer integration", () => {
       it("none visibility: no observed tools, no status line, no flush", async () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, { visibility: "none" });
+        const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" });
         buffer.onStatusUpdate("thinking...");
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
@@ -1327,7 +1327,7 @@ describe("MessageBuffer", () => {
 
       it("none visibility: suppresses status entirely on text deltas", async () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, { visibility: "none" });
+        const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" });
         buffer.onTextDelta("hello");
         await tick();
         expect(buffer.buildStatusLine()).toBe("");
@@ -1340,7 +1340,7 @@ describe("MessageBuffer", () => {
 
       it("minimal visibility: bash visible, read filtered", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, {
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
           visibility: "minimal",
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
@@ -1352,7 +1352,7 @@ describe("MessageBuffer", () => {
 
       it("standard visibility (default): read + bash both visible, γ filtered", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, {
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
         buffer.onToolStart("read", {});
@@ -1363,7 +1363,7 @@ describe("MessageBuffer", () => {
 
       it("verbose visibility: revive_subagent now visible", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, {
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
           visibility: "verbose",
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
@@ -1373,7 +1373,7 @@ describe("MessageBuffer", () => {
 
       it("debug visibility: even unknown tools are shown", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, {
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
           visibility: "debug",
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
@@ -1384,7 +1384,7 @@ describe("MessageBuffer", () => {
 
       it("filtering applies to onToolEnd as well", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, {
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
           visibility: "minimal",
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
@@ -1432,7 +1432,7 @@ describe("MessageBuffer", () => {
       sched: FakeScheduler,
       extra: Partial<{ chatActionMs: number; visibility: string }> = {},
     ) {
-      return new MessageBuffer(m.bot, 1, {
+      return new MessageBuffer(m.bot, 1, undefined, {
         statusThrottleMs: Number.MAX_SAFE_INTEGER,
         responseThrottleMs: Number.MAX_SAFE_INTEGER,
         setIntervalFn: sched.setIntervalFn,

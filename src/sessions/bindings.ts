@@ -7,6 +7,7 @@ import { configPath } from "./paths.ts";
 const DEFAULT_BINDINGS: BindingsFile = {
   dm: {},
   topics: {},
+  supergroups: {},
 };
 
 function pathFor(home: string): string {

@@ -21,11 +21,12 @@ export function buildNewHandler(manager: SessionManager) {
       ctx.msg && "message_thread_id" in ctx.msg ? ctx.msg.message_thread_id : undefined;
     const replyOpts = replyThreadId !== undefined ? { message_thread_id: replyThreadId } : {};
 
-    // Reject non-private, non-topic chats (plain groups have no session isolation)
+    // Reject non-private, non-topic, non-supergroup chats (plain groups have no session isolation)
     // Check for message_thread_id to handle forum General topics (is_topic_message=false but still a forum)
     const chatType = ctx.chat?.type;
     const hasThreadId = ctx.msg && "message_thread_id" in ctx.msg && typeof ctx.msg.message_thread_id === "number";
-    if (chatType !== "private" && loc.topicId === undefined && !hasThreadId) {
+    const isSupergroup = chatType === "supergroup";
+    if (chatType !== "private" && loc.topicId === undefined && !hasThreadId && !isSupergroup) {
       await ctx.reply("Use /new in a private chat or a forum topic.", replyOpts);
       return;
     }
@@ -36,9 +37,9 @@ export function buildNewHandler(manager: SessionManager) {
       return;
     }
 
-    // Private chat (DM): create a new session
+    // Private chat (DM) or Supergroup: create a new session
     try {
-      const state = manager.createForChat(loc);
+      const state = manager.createForChat(loc, { isSupergroup });
       await ctx.reply(
         `Created new session \`${state.id}\``,
         { parse_mode: "MarkdownV2", ...replyOpts },

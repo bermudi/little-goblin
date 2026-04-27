@@ -21,11 +21,12 @@ export function buildStartHandler(manager: SessionManager) {
       ctx.msg && "message_thread_id" in ctx.msg ? ctx.msg.message_thread_id : undefined;
     const replyOpts = replyThreadId !== undefined ? { message_thread_id: replyThreadId } : {};
 
-    // Reject non-private, non-topic chats (plain groups have no session isolation)
+    // Reject non-private, non-topic, non-supergroup chats (plain groups have no session isolation)
     // Check for message_thread_id to handle forum General topics (is_topic_message=false but still a forum)
     const chatType = ctx.chat?.type;
     const hasThreadId = ctx.msg && "message_thread_id" in ctx.msg && typeof ctx.msg.message_thread_id === "number";
-    if (chatType !== "private" && loc.topicId === undefined && !hasThreadId) {
+    const isSupergroup = chatType === "supergroup";
+    if (chatType !== "private" && loc.topicId === undefined && !hasThreadId && !isSupergroup) {
       await ctx.reply("Use /start in a private chat or a forum topic.", replyOpts);
       return;
     }
@@ -38,7 +39,7 @@ export function buildStartHandler(manager: SessionManager) {
 
     // Private chat (DM): reuse existing session if any, else create one.
     // /start is idempotent — use /new to force a fresh session.
-    const existing = manager.resolve(loc);
+    const existing = manager.resolve(loc, { isSupergroup });
     if (existing) {
       await ctx.reply(
         `Welcome back\\. Session \`${existing.id}\` is active\\. Use /new for a fresh one\\.`,
@@ -49,7 +50,7 @@ export function buildStartHandler(manager: SessionManager) {
 
     let state;
     try {
-      state = manager.createForChat(loc);
+      state = manager.createForChat(loc, { isSupergroup });
     } catch (e) {
       await ctx.reply("Failed to create session. Please try again.");
       throw e;

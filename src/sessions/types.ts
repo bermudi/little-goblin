@@ -24,4 +24,6 @@ export interface BindingsFile {
   dm?: Record<string, string>;
   /** Topic bindings: chatId -> topicId -> sessionId */
   topics?: Record<string, Record<string, string>>;
+  /** Supergroup bindings: chatId -> sessionId (supergroup without topic = single session) */
+  supergroups?: Record<string, string>;
 }

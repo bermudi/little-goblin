@@ -52,12 +52,13 @@ export class SessionManager {
   /**
    * Resolve a chat locator to an active session.
    * - Topic messages: auto-create on first resolve (topic = session)
+   * - Supergroups: auto-create on first resolve (supergroup = session)
    * - DMs: return null if no active session (user must /new)
    *
    * Stale bindings (binding exists but state.json missing) are treated as absent
-   * and auto-heal for topics. For DMs, the stale binding is logged and cleared.
+   * and auto-heal for topics/supergroups. For DMs, the stale binding is logged and cleared.
    */
-  resolve(loc: ChatLocator): SessionState | null {
+  resolve(loc: ChatLocator, opts?: { isSupergroup?: boolean }): SessionState | null {
     const bindings = loadBindings(this.home);
     const chatKey = String(loc.chatId);
 
@@ -72,6 +73,17 @@ export class SessionManager {
         log.warn("stale topic binding, recreating session", { chatId: loc.chatId, topicId: loc.topicId, sessionId: existingId });
       }
       // Auto-create
+      return this.createForChat(loc);
+    }
+
+    // Supergroup (no topic): auto-create like topics
+    if (opts?.isSupergroup) {
+      const existingId = bindings.supergroups?.[chatKey];
+      if (existingId) {
+        const state = loadState(this.home, existingId);
+        if (state) return state;
+        log.warn("stale supergroup binding, recreating session", { chatId: loc.chatId, sessionId: existingId });
+      }
       return this.createForChat(loc);
     }
 
@@ -91,8 +103,9 @@ export class SessionManager {
    * Create a new session for a chat locator, bind it, and persist.
    * For DMs: rebinding is allowed (old session becomes orphan).
    * For Topics: should not be called if already bound (resolve handles that).
+   * For Supergroups: treated like topics (auto-created, bound to chatId).
    */
-  createForChat(loc: ChatLocator, opts?: { title?: string }): SessionState {
+  createForChat(loc: ChatLocator, opts?: { title?: string; isSupergroup?: boolean }): SessionState {
     const id = makeSessionId();
     const state: SessionState = {
       id,
@@ -116,13 +129,16 @@ export class SessionManager {
       bindings.topics ??= {};
       bindings.topics[chatKey] ??= {};
       bindings.topics[chatKey][String(loc.topicId)] = id;
+    } else if (opts?.isSupergroup) {
+      bindings.supergroups ??= {};
+      bindings.supergroups[chatKey] = id;
     } else {
       bindings.dm ??= {};
       bindings.dm[chatKey] = id;
     }
     saveBindings(this.home, bindings);
 
-    log.info("created session", { id, chatId: loc.chatId, topicId: loc.topicId });
+    log.info("created session", { id, chatId: loc.chatId, topicId: loc.topicId, isSupergroup: opts?.isSupergroup });
     return state;
   }
 

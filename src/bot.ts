@@ -47,7 +47,8 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       return;
     }
 
-    const session = manager.resolve(locator);
+    const isSupergroup = ctx.chat?.type === "supergroup";
+    const session = manager.resolve(locator, { isSupergroup });
     if (!session) {
       // DM without active session - prompt user to create one
       if (locator.topicId === undefined) {

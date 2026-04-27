@@ -104,8 +104,13 @@ export interface SubagentInstance {
   sessionManager: SessionManager;
   /** Initial prompt — handed to the AgentSession on the first turn. */
   initialPrompt: string;
-  /** Optional status callback registered by the spawner. */
+  /** Optional status callback registered by the spawner (already prefixed). */
   onStatusUpdate?: (message: string) => void;
+  /**
+   * Raw (unprefixed) callback for nested subagent spawning.
+   * Prevents prefix stacking when a subagent spawns another subagent.
+   */
+  rawStatusCallback?: (message: string) => void;
   /**
    * Loaded definition for named agents. `null` for generic subagents.
    * Phase 4 reads `agentsMd` to build the system prompt and uses

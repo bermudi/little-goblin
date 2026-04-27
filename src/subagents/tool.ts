@@ -148,6 +148,7 @@ const REVIVE_PROMPT_GUIDELINES = [
 export function createReviveSubagentTool(
   runner: SubagentRunner,
   onStatusUpdate?: (message: string) => void,
+  timeoutMs?: number,
 ): ToolDefinition {
   return defineTool({
     name: "revive_subagent",
@@ -160,7 +161,11 @@ export function createReviveSubagentTool(
       _toolCallId: string,
       params: ReviveSubagentInput,
     ) {
-      const result = await runner.revive(params.id, params.prompt, onStatusUpdate);
+      const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const result = await Promise.race([
+        runner.revive(params.id, params.prompt, onStatusUpdate),
+        timeoutReject(effectiveTimeout, params.id, runner),
+      ]);
       return {
         content: [{ type: "text" as const, text: result }],
         details: { subagentId: params.id },

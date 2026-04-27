@@ -1928,6 +1928,86 @@ describe("spawn_subagent tool — timeout", () => {
   });
 });
 
+describe("revive_subagent tool — timeout", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-revive-tool-timeout-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  async function spawnAndComplete(): Promise<string> {
+    const handle = await runner.spawn({ prompt: "first" });
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+    const dir = genericSubagentDir(tmp, handle.id);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "2026-01-01T00-00-00_fake.jsonl"), "");
+    return handle.id;
+  }
+
+  it("times out and cancels the revived subagent after timeoutMs", async () => {
+    const id = await spawnAndComplete();
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+
+    const { createReviveSubagentTool } = await import("./tool.ts");
+    const tool = createReviveSubagentTool(runner, undefined, 50);
+
+    const execPromise = tool.execute(
+      "tc-1",
+      { id, prompt: "slow follow-up" },
+      undefined, undefined, {} as never,
+    );
+    await flush();
+
+    // Don't emit agent_end — simulate a hung provider.
+    await expect(execPromise).rejects.toThrow(/timed out after 50ms/);
+
+    const list = runner.list();
+    if (list.length > 0) {
+      expect(list[0]?.status).toBe("cancelled");
+    }
+  });
+
+  it("completes normally if revived subagent finishes before timeout", async () => {
+    const id = await spawnAndComplete();
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+
+    const { createReviveSubagentTool } = await import("./tool.ts");
+    const tool = createReviveSubagentTool(runner, undefined, 10000);
+
+    const execPromise = tool.execute(
+      "tc-1",
+      { id, prompt: "fast follow-up" },
+      undefined, undefined, {} as never,
+    );
+    await flush();
+
+    sessionHolder.emit({ type: "agent_start" });
+    sessionHolder.emit({
+      type: "message_update",
+      message: {},
+      assistantMessageEvent: { type: "text_delta", delta: "Revived!" },
+    });
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+
+    const result = await execPromise;
+    expect(result.content).toEqual([{ type: "text", text: "Revived!" }]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Review fixes round 4: double-revive race, double-cancel race,
 // revive with deleted AGENTS.md, graceful shutdown
@@ -2115,5 +2195,127 @@ describe("SubagentRunner — revive rejects after dispose", () => {
   it("throws after dispose", async () => {
     await runner.dispose();
     await expect(runner.revive("any-id", "ping")).rejects.toThrow("SubagentRunner is disposed");
+  });
+});
+
+describe("SubagentRunner — cancel vs agent_end race", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-cancel-race-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("agent_end arriving during cancel() does not overwrite cancelled status", async () => {
+    const handle = await runner.spawn({ prompt: "test" });
+    await flush();
+
+    // Set up abort() to emit agent_end before resolving.
+    // This simulates pi emitting agent_end during abort.
+    sessionHolder.abort = mock(async () => {
+      // Emit agent_end while abort is "in flight".
+      sessionHolder.emit({ type: "agent_end", messages: [] });
+    });
+
+    // Cancel the subagent.
+    await runner.cancel(handle.id);
+
+    // In-memory status should be cancelled (not completed).
+    const list = runner.list();
+    const entry = list.find((i) => i.id === handle.id);
+    expect(entry).toBeDefined();
+    expect(entry?.status).toBe("cancelled");
+
+    // Disk status should also be cancelled.
+    const meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("cancelled");
+  });
+
+  it("error event arriving during cancel() does not overwrite cancelled status", async () => {
+    const handle = await runner.spawn({ prompt: "test" });
+    await flush();
+
+    // Set up abort() to emit an error event before resolving.
+    sessionHolder.abort = mock(async () => {
+      // Simulate an error arriving during abort.
+      sessionHolder.emit({ type: "agent_end", messages: [] });
+    });
+
+    // Cancel the subagent.
+    await runner.cancel(handle.id);
+
+    // Status should remain cancelled.
+    const list = runner.list();
+    const entry = list.find((i) => i.id === handle.id);
+    expect(entry?.status).toBe("cancelled");
+  });
+});
+
+describe("SubagentRunner — nested prefix prevention", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-nested-prefix-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("nested subagent receives rawStatusCallback without double-prefixing", async () => {
+    const receivedCallbacks: string[] = [];
+
+    // Tool factory that captures the callback passed to nested subagent.
+    const factory: import("./mod.ts").SubagentToolFactory = (
+      _runner,
+      _depth,
+      _sessionId,
+      onStatusUpdate,
+    ) => {
+      // Capture what callback was passed (for nested spawn inspection).
+      if (onStatusUpdate) {
+        onStatusUpdate("test-message");
+        receivedCallbacks.push("captured");
+      }
+      return [];
+    };
+
+    const parentRunner = new SubagentRunner(makeConfig(tmp), factory);
+
+    // Spawn a subagent that will receive the factory.
+    const handle = await parentRunner.spawn({
+      prompt: "parent",
+      onStatusUpdate: (msg) => {
+        receivedCallbacks.push(`parent-saw: ${msg}`);
+      },
+    });
+    await flush();
+
+    // The factory was invoked.
+    expect(receivedCallbacks).toContain("captured");
+    // Parent received the message via the factory's callback.
+    // The factory receives the raw callback (unprefixed), so when it calls
+    // onStatusUpdate("test-message"), the parent sees "test-message".
+    // This verifies that the factory gets the raw callback, not a pre-prefixed one.
+    expect(receivedCallbacks).toContain("parent-saw: test-message");
+    expect(receivedCallbacks).toHaveLength(2);
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
   });
 });

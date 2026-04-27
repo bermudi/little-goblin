@@ -200,6 +200,8 @@ export class SubagentRunner {
       sessionManager,
       initialPrompt: options.prompt,
       onStatusUpdate: prefixStatusCallback(displayName ?? id.slice(0, 8), options.onStatusUpdate),
+      // Store raw callback for nested spawning (prevents prefix stacking)
+      rawStatusCallback: options.onStatusUpdate,
       definition,
       session: null,
       unsubscribe: null,
@@ -297,8 +299,9 @@ export class SubagentRunner {
       model: resolved.model,
       // Subagents have no β tools — all UI flows through the parent's status
       // callback. See specs/.../subagents/spec.md "No beta tools for subagents".
+      // Pass rawStatusCallback to nested subagent to prevent prefix stacking.
       customTools: this.toolFactory
-        ? this.toolFactory(this, instance.depth, instance.id, instance.onStatusUpdate)
+        ? this.toolFactory(this, instance.depth, instance.id, instance.rawStatusCallback)
         : [],
       ...(resourceLoader ? { resourceLoader } : {}),
     });
@@ -409,8 +412,20 @@ export class SubagentRunner {
    * Mark the subagent as completed. Always updates in-memory status and
    * tears down, even if the disk write fails — a logging failure should
    * not destroy a compute result.
+   *
+   * Guard: does nothing if instance is already in a terminal state
+   * (cancelled/error). This prevents race conditions where cancel() sets
+   * status to 'cancelled' during await session.abort(), and then agent_end
+   * arrives before cancel() resumes.
    */
   private markCompleted(instance: SubagentInstance): void {
+    if (instance.status !== "running") {
+      log.debug("markCompleted skipped: instance already terminal", {
+        id: instance.id,
+        status: instance.status,
+      });
+      return;
+    }
     const patch = {
       status: "completed" as const,
       completedAt: new Date().toISOString(),
@@ -431,8 +446,20 @@ export class SubagentRunner {
    * Mark the subagent as errored. Always updates in-memory status and
    * tears down, even if the disk write fails — a logging failure should
    * not prevent cleanup.
+   *
+   * Guard: does nothing if instance is already in a terminal state
+   * (cancelled). This prevents race conditions where cancel() sets
+   * status to 'cancelled' during await session.abort(), and then an error
+   * event arrives.
    */
   private markErrored(instance: SubagentInstance, err: unknown): void {
+    if (instance.status !== "running") {
+      log.debug("markErrored skipped: instance already terminal", {
+        id: instance.id,
+        status: instance.status,
+      });
+      return;
+    }
     const errorMessage = err instanceof Error ? err.message : String(err);
     try {
       this.persistMeta(instance, {
@@ -606,6 +633,8 @@ export class SubagentRunner {
       sessionManager,
       initialPrompt: prompt,
       onStatusUpdate: prefixStatusCallback(meta.name ?? id.slice(0, 8), onStatusUpdate),
+      // Store raw callback for nested spawning (prevents prefix stacking)
+      rawStatusCallback: onStatusUpdate,
       definition,
       session: null,
       unsubscribe: null,

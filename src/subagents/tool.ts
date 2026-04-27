@@ -1,11 +1,11 @@
 /**
- * `spawn_subagent` tool definition for pi's custom tool API.
+ * `spawn_subagent` and `revive_subagent` tool definitions for pi's custom tool API.
  *
- * Lets goblin (or a subagent) delegate work to a subagent. The tool
- * blocks until the subagent completes and returns its final response.
+ * Lets goblin (or a subagent) delegate work to a subagent. The tools
+ * block until the subagent completes and return its final response.
  *
- * The tool closes over a `SubagentRunner` instance injected at wiring time
- * (phase 9). Subagents receive this tool too, enabling recursive spawning
+ * The tools close over a `SubagentRunner` instance injected at wiring time
+ * (phase 9). Subagents receive these tools too, enabling recursive spawning
  * up to the depth cap (3).
  */
 
@@ -79,6 +79,59 @@ export function createSpawnSubagentTool(
       return {
         content: [{ type: "text" as const, text: result }],
         details: { subagentId: handle.id },
+      };
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// revive_subagent tool
+// ---------------------------------------------------------------------------
+
+const reviveSubagentSchema = Type.Object({
+  id: Type.String({
+    description: "The ID of a previously completed, cancelled, or errored subagent to revive.",
+  }),
+  prompt: Type.String({
+    description: "The follow-up prompt for the revived subagent.",
+  }),
+});
+
+type ReviveSubagentInput = Static<typeof reviveSubagentSchema>;
+
+const REVIVE_DESCRIPTION = `Resume a previously completed, cancelled, or errored subagent with a new prompt. The subagent retains its conversation history and runs to completion.
+
+Use this when you need to follow up on work a subagent already did — e.g. asking for more detail, a different approach, or to retry after an error.`;
+
+const REVIVE_PROMPT_SNIPPET = "revive_subagent: resume a subagent with a follow-up prompt.";
+
+const REVIVE_PROMPT_GUIDELINES = [
+  "Use revive_subagent when you want to continue a conversation with a subagent that already finished.",
+  "The subagent's conversation history is preserved, so you can reference earlier context.",
+];
+
+/**
+ * Create the `revive_subagent` tool bound to a `SubagentRunner` instance.
+ */
+export function createReviveSubagentTool(
+  runner: SubagentRunner,
+  onStatusUpdate?: (message: string) => void,
+): ToolDefinition {
+  return defineTool({
+    name: "revive_subagent",
+    label: "Revive Subagent",
+    description: REVIVE_DESCRIPTION,
+    promptSnippet: REVIVE_PROMPT_SNIPPET,
+    promptGuidelines: REVIVE_PROMPT_GUIDELINES,
+    parameters: reviveSubagentSchema,
+    async execute(
+      _toolCallId: string,
+      params: ReviveSubagentInput,
+    ) {
+      const result = await runner.revive(params.id, params.prompt, onStatusUpdate);
+      return {
+        content: [{ type: "text" as const, text: result }],
+        details: { subagentId: params.id },
       };
     },
   });

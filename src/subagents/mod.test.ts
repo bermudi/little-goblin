@@ -53,40 +53,45 @@ const sessionHolder = {
 
 let capturedCreateArgs: unknown[] = [];
 
-mock.module("@mariozechner/pi-coding-agent", () => ({
-  AuthStorage: {
-    create: (_path: string) => ({
-      setRuntimeApiKey: (_provider: string, _key: string) => {},
-    }),
-  },
-  ModelRegistry: {
-    create: (_auth: unknown, _path: string) => ({}),
-  },
-  SettingsManager: {
-    inMemory: (_obj: unknown) => ({}),
-  },
-  SessionManager: {
-    create: (_cwd: string, dir: string) => {
-      mkdirSync(dir, { recursive: true });
-      return { __stub: true } as unknown;
+// Factory that produces the standard (happy-path) pi mock.
+// Shared by the top-level mock.module and by tests that need to restore it.
+function standardPiMock() {
+  return {
+    AuthStorage: {
+      create: (_path: string) => ({
+        setRuntimeApiKey: (_provider: string, _key: string) => {},
+      }),
     },
-    open: (path: string, _sessionDir?: string, _cwdOverride?: string) => {
-      // Return a stub that looks like a SessionManager for revive flows.
-      return { __stub: true, __openedFrom: path } as unknown;
+    ModelRegistry: {
+      create: (_auth: unknown, _path: string) => ({}),
     },
-  },
-  DefaultResourceLoader: class {
-    public readonly options: Record<string, unknown>;
-    constructor(options: Record<string, unknown>) {
-      this.options = options;
-    }
-    async reload() {}
-  },
-  createAgentSession: async (opts: unknown) => {
-    capturedCreateArgs.push(opts);
-    return { session: sessionHolder.proxy, extensionsResult: {} };
-  },
-}));
+    SettingsManager: {
+      inMemory: (_obj: unknown) => ({}),
+    },
+    SessionManager: {
+      create: (_cwd: string, dir: string) => {
+        mkdirSync(dir, { recursive: true });
+        return { __stub: true } as unknown;
+      },
+      open: (path: string, _sessionDir?: string, _cwdOverride?: string) => {
+        return { __stub: true, __openedFrom: path } as unknown;
+      },
+    },
+    DefaultResourceLoader: class {
+      public readonly options: Record<string, unknown>;
+      constructor(options: Record<string, unknown>) {
+        this.options = options;
+      }
+      async reload() {}
+    },
+    createAgentSession: async (opts: unknown) => {
+      capturedCreateArgs.push(opts);
+      return { session: sessionHolder.proxy, extensionsResult: {} };
+    },
+  };
+}
+
+mock.module("@mariozechner/pi-coding-agent", () => standardPiMock());
 
 // ---------------------------------------------------------------------------
 // Module under test (imported AFTER mock.module so it sees the mock)
@@ -423,8 +428,10 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     expect(Array.isArray(opts.customTools)).toBe(true);
     expect((opts.customTools as unknown[]).length).toBe(0);
     expect(opts.sessionManager).toBeDefined();
-    // Generic subagents leave resourceLoader unset → pi's default discovery.
-    expect(opts.resourceLoader).toBeUndefined();
+    // Generic subagents get a ResourceLoader pinned to ~/goblin/skills/.
+    const loader = opts.resourceLoader as { options: Record<string, unknown> } | undefined;
+    expect(loader).toBeDefined();
+    expect((loader!.options.additionalSkillPaths as string[])[0]).toBe(join(tmp, "skills"));
   });
 
   it("for named subagents, builds a DefaultResourceLoader pinned to the agent's skills dir", async () => {
@@ -1175,6 +1182,7 @@ describe("SubagentRunner — cancel guards", () => {
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
+    mock.module("@mariozechner/pi-coding-agent", () => standardPiMock());
   });
 
   it("cancel before session init (race): runAgent checks status after creating session", async () => {
@@ -1336,6 +1344,7 @@ describe("SubagentRunner — startup error handling", () => {
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
+    mock.module("@mariozechner/pi-coding-agent", () => standardPiMock());
   });
 
   it("marks meta as error when createAgentSession throws", async () => {
@@ -1372,5 +1381,310 @@ describe("SubagentRunner — startup error handling", () => {
     ) as SubagentMeta;
     expect(meta.status).toBe("error");
     expect(meta.errorMessage).toBe("session-creation-failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes round 2: path traversal, corrupted meta, prune, revive_subagent tool
+// ---------------------------------------------------------------------------
+
+describe("SubagentRunner — name validation", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-name-validation-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("rejects path traversal in name", async () => {
+    await expect(runner.spawn({ prompt: "x", name: "../etc" })).rejects.toThrow(/Invalid agent name/);
+  });
+
+  it("rejects empty string name", async () => {
+    await expect(runner.spawn({ prompt: "x", name: "" })).rejects.toThrow(/Invalid agent name/);
+  });
+
+  it("rejects names with slashes", async () => {
+    await expect(runner.spawn({ prompt: "x", name: "foo/bar" })).rejects.toThrow(/Invalid agent name/);
+  });
+
+  it("rejects names with dots", async () => {
+    await expect(runner.spawn({ prompt: "x", name: "foo.bar" })).rejects.toThrow(/Invalid agent name/);
+  });
+
+  it("accepts valid names: alphanumeric, hyphens, underscores", async () => {
+    mkdirSync(namedAgentDir(tmp, "my-agent_v2"), { recursive: true });
+    writeFileSync(namedAgentAgentsMdPath(tmp, "my-agent_v2"), "# Agent");
+    const handle = await runner.spawn({ prompt: "go", name: "my-agent_v2" });
+    expect(handle.status).toBe("running");
+    handle.result.catch(() => {});
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+  });
+});
+
+describe("SubagentRunner — corrupted meta.json", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-corrupted-meta-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("throws 'Subagent not found' for corrupted meta.json (not raw SyntaxError)", async () => {
+    // Create a subagent dir with a corrupted meta.json.
+    const id = "aaaaaaaa-0000-0000-0000-000000000000";
+    const dir = genericSubagentDir(tmp, id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "meta.json"), "NOT VALID JSON{{{");
+    // Also need a session file so findSessionFile doesn't reject first.
+    writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
+
+    await expect(runner.revive(id, "hello")).rejects.toThrow("Subagent not found");
+  });
+});
+
+describe("SubagentRunner — prune terminal instances", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-prune-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("prunes completed subagents on next spawn", async () => {
+    const h1 = await runner.spawn({ prompt: "a" });
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await h1.result;
+
+    // Completed subagent is still in list() until next spawn.
+    expect(runner.list()).toHaveLength(1);
+
+    // Spawning a new subagent prunes terminal ones.
+    const h2 = await runner.spawn({ prompt: "b" });
+    h2.result.catch(() => {});
+    await flush();
+
+    const list = runner.list();
+    const ids = list.map((i) => i.id);
+    expect(ids).not.toContain(h1.id);
+    expect(ids).toContain(h2.id);
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await h2.result;
+  });
+
+  it("prunes cancelled subagents on next spawn", async () => {
+    const h = await runner.spawn({ prompt: "a" });
+    await flush();
+    await runner.cancel(h.id);
+
+    expect(runner.list()).toHaveLength(1);
+
+    // New spawn prunes cancelled.
+    const h2 = await runner.spawn({ prompt: "b" });
+    h2.result.catch(() => {});
+    await flush();
+
+    expect(runner.list().map((i) => i.id)).not.toContain(h.id);
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await h2.result;
+  });
+});
+
+describe("SubagentRunner — negative depth rejection", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-depth-neg-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("rejects negative depth", async () => {
+    await expect(runner.spawn({ prompt: "x", depth: -1 })).rejects.toThrow(/Invalid depth/);
+  });
+});
+
+describe("SubagentRunner — dispose", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-dispose-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("cancels running subagents and clears the map", async () => {
+    const h1 = await runner.spawn({ prompt: "a" });
+    h1.result.catch(() => {}); // prevent unhandled rejection
+    await flush();
+
+    expect(runner.list()).toHaveLength(1);
+
+    await runner.dispose();
+
+    expect(runner.list()).toHaveLength(0);
+    // In production, abort() causes pi to emit a terminal event that settles
+    // the result promise. In the mock, abort is a noop, so the promise hangs.
+    // Verify status on disk instead.
+    const meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, h1.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("cancelled");
+  });
+
+  it("disposes subagents that already completed", async () => {
+    const h = await runner.spawn({ prompt: "a" });
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await h.result;
+
+    expect(runner.list()).toHaveLength(1);
+    await runner.dispose();
+    expect(runner.list()).toHaveLength(0);
+  });
+});
+
+describe("revive_subagent tool", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-revive-tool-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("has the correct name and description", async () => {
+    const { createReviveSubagentTool } = await import("./tool.ts");
+    const tool = createReviveSubagentTool(runner);
+    expect(tool.name).toBe("revive_subagent");
+    expect(tool.label).toBe("Revive Subagent");
+    expect(tool.description).toBeTruthy();
+  });
+
+  it("execute revives a completed subagent with a new prompt", async () => {
+    const { createReviveSubagentTool } = await import("./tool.ts");
+    const tool = createReviveSubagentTool(runner);
+
+    // First spawn a subagent and complete it.
+    const handle = await runner.spawn({ prompt: "first" });
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+
+    // The mock doesn't create a .jsonl file, so create one manually.
+    const dir = genericSubagentDir(tmp, handle.id);
+    writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
+
+    // Now revive it via the tool.
+    const revivePromise = tool.execute(
+      "tc-rev-1",
+      { id: handle.id, prompt: "follow-up" },
+      undefined, undefined, {} as never,
+    );
+    await flush();
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    const result = await revivePromise;
+    expect(result.content).toEqual([{ type: "text", text: "" }]);
+  });
+
+  it("propagates revive errors as tool errors", async () => {
+    const { createReviveSubagentTool } = await import("./tool.ts");
+    const tool = createReviveSubagentTool(runner);
+
+    await expect(
+      tool.execute("tc-rev-1", { id: "nonexistent", prompt: "hi" }, undefined, undefined, {} as never),
+    ).rejects.toThrow("Subagent not found");
+  });
+});
+
+describe("SubagentRunner — cancel with abort() that throws", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-cancel-abort-throws-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("still updates status and cleans up if session.abort() throws", async () => {
+    sessionHolder.abort = mock(async () => { throw new Error("abort-failed"); });
+
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+
+    // cancel should not throw even though abort() fails.
+    await runner.cancel(handle.id);
+
+    // Status should still be cancelled.
+    const list = runner.list();
+    expect(list[0]?.status).toBe("cancelled");
+
+    // Meta on disk should also be cancelled.
+    const meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("cancelled");
   });
 });

@@ -7,18 +7,21 @@ import { registerCommands } from "./commands/mod.ts";
 import { SessionManager } from "./sessions/mod.ts";
 import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
-import { createSpawnSubagentTool } from "./subagents/tool.ts";
+import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 
 /**
- * Tool factory that equips spawned subagents with spawn_subagent,
- * enabling recursive spawning up to the depth cap.
+ * Tool factory that equips spawned subagents with spawn_subagent
+ * and revive_subagent, enabling recursive spawning up to the depth cap.
  */
 const subagentToolFactory: SubagentToolFactory = (
   runner,
   depth,
   sessionId,
   onStatusUpdate,
-) => [createSpawnSubagentTool(runner, depth, sessionId, onStatusUpdate)];
+) => [
+  createSpawnSubagentTool(runner, depth, sessionId, onStatusUpdate),
+  createReviveSubagentTool(runner, onStatusUpdate),
+];
 
 /**
  * Build the grammy Bot with middleware and handlers wired up.

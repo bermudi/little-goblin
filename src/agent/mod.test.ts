@@ -434,6 +434,7 @@ describe("AgentRunner", () => {
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
       expect(names).toContain("spawn_subagent");
+      expect(names).toContain("revive_subagent");
       expect(names).toContain("memory");
     });
 
@@ -445,6 +446,7 @@ describe("AgentRunner", () => {
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
       expect(names).not.toContain("spawn_subagent");
+      expect(names).not.toContain("revive_subagent");
       expect(names).toContain("memory");
     });
 

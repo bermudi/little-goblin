@@ -10,7 +10,7 @@
  * See specs/changes/subagent-runtime/ for the full design and tasks.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
@@ -24,6 +24,9 @@ import {
   type ResourceLoader,
   type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
+
+/** Valid characters for a named agent: alphanumeric, hyphens, underscores. */
+const VALID_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 import type { Config } from "../config.ts";
 import { piAgentDir, workdirPath } from "../agent/paths.ts";
 import { resolveModel } from "../agent/models.ts";
@@ -99,10 +102,23 @@ export class SubagentRunner {
    * subagent's `agent_end` event fires (or rejects on error).
    */
   async spawn(options: SpawnOptions): Promise<SubagentHandle> {
+    // Prune terminal subagents before creating new ones.
+    this.pruneTerminal();
+
     const spawnerDepth = options.depth ?? 0;
+    if (spawnerDepth < 0) {
+      throw new Error(`Invalid depth: ${spawnerDepth}`);
+    }
     const newDepth = spawnerDepth + 1;
     if (newDepth > MAX_SUBAGENT_DEPTH) {
       throw new Error(`Maximum subagent depth reached (${MAX_SUBAGENT_DEPTH})`);
+    }
+
+    // Sanitise name to prevent path traversal.
+    if (options.name !== undefined && !VALID_NAME_RE.test(options.name)) {
+      throw new Error(
+        `Invalid agent name '${options.name}': must match ${VALID_NAME_RE.source}`,
+      );
     }
 
     const id = randomUUID();
@@ -237,7 +253,9 @@ export class SubagentRunner {
     // - noContextFiles: don't auto-discover project AGENTS.md from cwd.
     // - systemPrompt: use the named agent's AGENTS.md verbatim.
     // - noSkills + additionalSkillPaths: load only the agent's own skills/.
-    // Generic subagents use pi's defaults (loader auto-discovers from cwd).
+    // Generic subagents use pi's defaults but explicitly pin
+    // additionalSkillPaths to ~/goblin/skills/ so they always discover
+    // goblin's skills regardless of pi's default traversal behaviour.
     let resourceLoader: ResourceLoader | undefined;
     if (instance.role === "named" && instance.definition !== null) {
       resourceLoader = new DefaultResourceLoader({
@@ -248,6 +266,14 @@ export class SubagentRunner {
         noSkills: true,
         additionalSkillPaths: [instance.definition.skillsDir],
         systemPrompt: instance.definition.agentsMd,
+      });
+      await resourceLoader.reload();
+    } else if (instance.role === "generic") {
+      resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir: piAgentDir(this.cfg.goblinHome),
+        settingsManager: services.settingsManager,
+        additionalSkillPaths: [join(this.cfg.goblinHome, "skills")],
       });
       await resourceLoader.reload();
     }
@@ -372,28 +398,39 @@ export class SubagentRunner {
   /**
    * Mark the subagent as completed and persist `meta.json`.
    */
+  /**
+   * Mark the subagent as completed and persist `meta.json`.
+   * Persists first; only updates in-memory status on success.
+   */
   private markCompleted(instance: SubagentInstance, _finalText: string): void {
-    instance.status = "completed";
-    this.persistMeta(instance, {
-      status: "completed",
+    const patch = {
+      status: "completed" as const,
       completedAt: new Date().toISOString(),
       // Clear stale error from a previous lifecycle (e.g. after revival).
       errorMessage: undefined,
-    });
+    };
+    this.persistMeta(instance, patch);
+    instance.status = "completed";
+    this.teardownInstance(instance);
     log.debug("subagent completed", { id: instance.id });
   }
 
   /**
    * Mark the subagent as errored and persist `meta.json`.
    */
+  /**
+   * Mark the subagent as errored and persist `meta.json`.
+   * Persists first; only updates in-memory status on success.
+   */
   private markErrored(instance: SubagentInstance, err: unknown): void {
-    instance.status = "error";
     const errorMessage = err instanceof Error ? err.message : String(err);
     this.persistMeta(instance, {
       status: "error",
       completedAt: new Date().toISOString(),
       errorMessage,
     });
+    instance.status = "error";
+    this.teardownInstance(instance);
     log.warn("subagent errored", { id: instance.id, errorMessage });
   }
 
@@ -425,6 +462,37 @@ export class SubagentRunner {
       }
     }
     writeMetaAtomic(instance.metaPath, merged);
+  }
+
+  /**
+   * Clean up a terminal subagent: null out session and subscription.
+   *
+   * The instance stays in `activeSubagents` so `list()` can report
+   * recently-completed subagents. The heavyweight objects (AgentSession,
+   * unsubscribe closure) are released. Prune stale entries lazily on
+   * the next `spawn()` call.
+   */
+  private teardownInstance(instance: SubagentInstance): void {
+    instance.unsubscribe?.();
+    instance.unsubscribe = null;
+    try {
+      instance.session?.dispose();
+    } catch {
+      /* best-effort — session may already be disposed */
+    }
+    instance.session = null;
+  }
+
+  /**
+   * Remove terminal instances from the map to bound memory growth.
+   * Called lazily on each `spawn()`.
+   */
+  private pruneTerminal(): void {
+    for (const [id, inst] of this.activeSubagents) {
+      if (inst.status !== "running") {
+        this.activeSubagents.delete(id);
+      }
+    }
   }
 
   /**
@@ -554,6 +622,7 @@ export class SubagentRunner {
    * subagent as cancelled in both in-memory state and `meta.json`.
    *
    * Throws "Subagent not found" if the id is not in the active map.
+   * No-op if the subagent is already in a terminal state.
    */
   async cancel(id: string): Promise<void> {
     const instance = this.activeSubagents.get(id);
@@ -566,20 +635,59 @@ export class SubagentRunner {
       return;
     }
 
-    if (instance.session !== null) {
-      await instance.session.abort();
+    try {
+      if (instance.session !== null) {
+        try {
+          await instance.session.abort();
+        } catch {
+          // abort() may throw if the session is in a bad state.
+          // We still want to update status and clean up.
+          log.debug("session.abort() threw during cancel", { id, error: "(swallowed)" });
+        }
+      }
+      instance.status = "cancelled";
+      this.persistMeta(instance, {
+        status: "cancelled",
+        completedAt: new Date().toISOString(),
+      });
+      instance.unsubscribe?.();
+      instance.unsubscribe = null;
+      this.teardownInstance(instance);
+    } catch (err) {
+      // persistMeta or teardown failed — still try to clean up.
+      instance.status = "cancelled";
+      instance.unsubscribe?.();
+      instance.unsubscribe = null;
+      log.error("cancel cleanup failed", { id, err: err instanceof Error ? err.message : String(err) });
     }
 
-    instance.status = "cancelled";
-    this.persistMeta(instance, {
-      status: "cancelled",
-      completedAt: new Date().toISOString(),
-    });
-
-    instance.unsubscribe?.();
-    instance.unsubscribe = null;
-
     log.debug("subagent cancelled", { id });
+  }
+
+  /**
+   * Gracefully shut down all active subagents.
+   * Aborts running ones, disposes their sessions, and clears the map.
+   */
+  async dispose(): Promise<void> {
+    const ids = [...this.activeSubagents.keys()];
+    for (const id of ids) {
+      const instance = this.activeSubagents.get(id);
+      if (instance && instance.status === "running") {
+        try {
+          await instance.session?.abort();
+        } catch {
+          /* best-effort */
+        }
+        instance.status = "cancelled";
+        this.persistMeta(instance, {
+          status: "cancelled",
+          completedAt: new Date().toISOString(),
+        });
+      }
+      this.teardownInstance(instance!);
+    }
+    this.activeSubagents.clear();
+    log.debug("SubagentRunner disposed", { count: ids.length });
   }
 }
 
@@ -618,12 +726,18 @@ function loadNamedAgent(home: string, name: string): NamedAgentDefinition {
  * Throws "Subagent not found" if no matching meta.json exists.
  */
 function loadSubagentMeta(home: string, id: string): { dir: string; meta: SubagentMeta } {
+  const tryParse = (metaPath: string, dir: string): { dir: string; meta: SubagentMeta } | null => {
+    try {
+      return { dir, meta: JSON.parse(readFileSync(metaPath, "utf-8")) as SubagentMeta };
+    } catch {
+      // File missing or corrupted — treat as not found.
+      return null;
+    }
+  };
+
   // Try generic first — most common case.
-  const genericMetaPath = genericSubagentMetaPath(home, id);
-  if (existsSync(genericMetaPath)) {
-    const dir = genericSubagentDir(home, id);
-    return { dir, meta: JSON.parse(readFileSync(genericMetaPath, "utf-8")) as SubagentMeta };
-  }
+  const genericResult = tryParse(genericSubagentMetaPath(home, id), genericSubagentDir(home, id));
+  if (genericResult !== null) return genericResult;
 
   // Scan named agents' instances.
   const agentsRoot = namedAgentsRoot(home);
@@ -637,14 +751,11 @@ function loadSubagentMeta(home: string, id: string): { dir: string; meta: Subage
       entries = [];
     }
     for (const name of entries) {
-      const namedMetaPath = namedAgentInstanceMetaPath(home, name, id);
-      if (existsSync(namedMetaPath)) {
-        const dir = namedAgentInstanceDir(home, name, id);
-        return {
-          dir,
-          meta: JSON.parse(readFileSync(namedMetaPath, "utf-8")) as SubagentMeta,
-        };
-      }
+      const namedResult = tryParse(
+        namedAgentInstanceMetaPath(home, name, id),
+        namedAgentInstanceDir(home, name, id),
+      );
+      if (namedResult !== null) return namedResult;
     }
   }
 
@@ -654,6 +765,11 @@ function loadSubagentMeta(home: string, id: string): { dir: string; meta: Subage
 /**
  * Find the most recent `.jsonl` session file inside a directory.
  * Returns `null` if none found.
+ *
+ * Pi's SessionManager persists sessions as `<timestamp>.jsonl` files
+ * (e.g. `2026-04-26T12-00-00.jsonl`). We rely on the timestamp prefix
+ * for lexicographic sort to find the most recent. If pi changes the
+ * naming convention, this function needs updating.
  */
 function findSessionFile(dir: string): string | null {
   try {
@@ -691,8 +807,14 @@ function writeMetaAtomic(path: string, meta: SubagentMeta): void {
   // tmp file lives in the same directory as the target so the rename is
   // atomic on the same filesystem.
   const tmp = `${dirname(path)}/.meta.${meta.id}.${Date.now()}.tmp`;
-  writeFileSync(tmp, JSON.stringify(meta, null, 2));
-  renameSync(tmp, path);
+  try {
+    writeFileSync(tmp, JSON.stringify(meta, null, 2));
+    renameSync(tmp, path);
+  } catch (err) {
+    // Best-effort cleanup of the temp file.
+    try { unlinkSync(tmp); } catch { /* already gone or never created */ }
+    throw err;
+  }
 }
 
 // Convenience re-export so callers can pull everything from one entry point.

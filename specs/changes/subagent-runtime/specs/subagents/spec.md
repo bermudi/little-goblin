@@ -152,3 +152,35 @@ The `cancel(id)` method SHALL abort the specified subagent's current turn.
 #### Scenario: Cancel nonexistent subagent
 - **WHEN** `cancel("xyz999")` is called for nonexistent ID
 - **THEN** it SHALL throw an error: "Subagent not found"
+
+### Requirement: Revive subagent tool available to goblin
+
+A `revive_subagent` tool SHALL be registered for goblin's use, allowing continuation of previously completed, cancelled, or errored subagents.
+
+#### Scenario: Revive completed subagent
+- **WHEN** goblin calls `revive_subagent({id: "abc123", prompt: "Go deeper"})`
+- **THEN** subagent "abc123" SHALL be loaded from its persisted session
+- **AND** the new prompt SHALL be processed
+- **AND** the response SHALL be returned
+
+#### Scenario: Revive nonexistent subagent
+- **WHEN** `revive_subagent({id: "xyz999", prompt: "..."})` is called for nonexistent ID
+- **THEN** it SHALL throw an error: "Subagent not found"
+
+### Requirement: SubagentRunner graceful shutdown
+
+The `dispose()` method SHALL cancel all running subagents, dispose their sessions, and clear the active map.
+
+#### Scenario: Dispose with running subagents
+- **WHEN** `dispose()` is called with active running subagents
+- **THEN** each running subagent SHALL be aborted
+- **AND** their status SHALL be updated to cancelled
+- **AND** the active subagent map SHALL be empty
+
+### Requirement: Named agent names are sanitized
+
+Agent names SHALL be validated to prevent path traversal.
+
+#### Scenario: Invalid name rejected
+- **WHEN** a name containing characters outside `[a-zA-Z0-9_-]` is provided
+- **THEN** spawn SHALL throw an error matching "Invalid agent name"

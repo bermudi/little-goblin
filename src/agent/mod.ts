@@ -110,8 +110,15 @@ export class AgentRunner {
 
     if (this.subagentRunner) {
       const { createSpawnSubagentTool } = await import("../subagents/tool.ts");
+      // Use a delegating wrapper so the tool always forwards to the current
+      // turn's MessageBuffer — callbacks change per-prompt().
       tools.push(
-        createSpawnSubagentTool(this.subagentRunner, 0, this.sessionId),
+        createSpawnSubagentTool(
+          this.subagentRunner,
+          0,
+          this.sessionId,
+          (msg) => this.callbacks?.onStatusUpdate(msg),
+        ),
       );
     }
 

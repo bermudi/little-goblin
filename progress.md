@@ -1,10 +1,13 @@
-# little-goblin
+# Progress
 
-> Telegram-native personal AI agent. One user (bermudi), one goblin, one homelab.
+## Status
+In Progress
 
-Design and status live elsewhere:
+## Tasks
 
-- **Architecture**: `specs/canon/` (frozen decisions) + `specs/decisions/` (ADRs)
-- **In-flight work**: `specs/changes/` — see `litespec view` for status
-- **Deferred roadmap**: `ROADMAP.md`
-- **Guardrails**: `AGENTS.md` (how to run, what not to build)
+## Files Changed
+
+## Notes
+- Compliance review completed for subagent-runtime (phases 1-9). Findings written to review-compliance.md.
+
+- Adversarial review completed for subagent-runtime (phases 1-9). Findings written to review-adversarial.md.

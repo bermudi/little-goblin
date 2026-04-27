@@ -102,12 +102,12 @@ When a subagent is running, its activity SHALL be reported to goblin via `onStat
 
 ### Requirement: No beta tools for subagents
 
-Subagents SHALL NOT have access to Telegram-native (β) tools. They operate without direct Telegram surface.
+Subagents SHALL NOT have access to Telegram-native (β) tools. They operate without direct Telegram surface. Subagents MAY receive the `spawn_subagent` tool (α) to enable recursive spawning.
 
 #### Scenario: Subagent tool set
 - **WHEN** a subagent is spawned
-- **THEN** its tools SHALL be α (pi built-in) only
-- **AND** `customTools` passed to pi SHALL be empty
+- **THEN** its tools SHALL be α (pi built-in) plus optionally `spawn_subagent`
+- **AND** no β (Telegram-native) tools SHALL be present
 
 ### Requirement: Generic subagents inherit parent skills
 
@@ -134,7 +134,7 @@ The `list()` method SHALL return all active (running or recent) subagents with t
 #### Scenario: List active subagents
 - **WHEN** `list()` is called
 - **THEN** it SHALL return an array of `{id, name, status, spawnedAt}`
-- **AND** status SHALL be one of: running, completed, cancelled
+- **AND** status SHALL be one of: running, completed, cancelled, error
 
 #### Scenario: List when empty
 - **WHEN** `list()` is called with no active subagents

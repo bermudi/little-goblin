@@ -216,6 +216,19 @@ export class SubagentRunner {
    * prompt, and resolves with the accumulated assistant text on `agent_end`.
    */
   private async runAgent(instance: SubagentInstance, cwd: string): Promise<string> {
+    try {
+      return await this._runAgentInner(instance, cwd);
+    } catch (err) {
+      // Catch startup failures (resolveModel, createAgentSession, reload)
+      // that would otherwise leave meta.json stuck in "running".
+      if (instance.status === "running") {
+        this.markErrored(instance, err);
+      }
+      throw err;
+    }
+  }
+
+  private async _runAgentInner(instance: SubagentInstance, cwd: string): Promise<string> {
     const services = this.getSharedServices();
     const resolved = resolveModel(this.cfg);
     services.authStorage.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
@@ -255,6 +268,13 @@ export class SubagentRunner {
     });
     instance.session = session;
 
+    // Guard: if cancel() was called while we were setting up the session,
+    // tear down immediately instead of sending the prompt.
+    if (instance.status === "cancelled") {
+      try { await session.abort(); } catch { /* best-effort */ }
+      return "";
+    }
+
     // Resolve on agent_end, reject on errors during the run.
     let finalText = "";
     let resolved_text: ((s: string) => void) | null = null;
@@ -284,6 +304,9 @@ export class SubagentRunner {
           id: instance.id,
           err: err instanceof Error ? err.message : String(err),
         });
+        // Ensure the completion promise settles even if handleEvent or
+        // persistMeta throws — otherwise the parent's tool call hangs forever.
+        rejected_err?.(err);
       }
     });
 
@@ -354,6 +377,8 @@ export class SubagentRunner {
     this.persistMeta(instance, {
       status: "completed",
       completedAt: new Date().toISOString(),
+      // Clear stale error from a previous lifecycle (e.g. after revival).
+      errorMessage: undefined,
     });
     log.debug("subagent completed", { id: instance.id });
   }
@@ -392,7 +417,14 @@ export class SubagentRunner {
         status: instance.status,
       };
     }
-    writeMetaAtomic(instance.metaPath, { ...current, ...patch });
+    const merged = { ...current, ...patch };
+    // Drop keys set to undefined (e.g. clearing stale errorMessage).
+    for (const key of Object.keys(merged) as (keyof SubagentMeta)[]) {
+      if (merged[key] === undefined) {
+        delete merged[key];
+      }
+    }
+    writeMetaAtomic(instance.metaPath, merged);
   }
 
   /**
@@ -424,7 +456,13 @@ export class SubagentRunner {
    *
    * Throws "Subagent not found" if no `meta.json` exists for the given id.
    */
-  async revive(id: string, prompt: string): Promise<string> {
+  async revive(id: string, prompt: string, onStatusUpdate?: (message: string) => void): Promise<string> {
+    // Reject if this subagent is already active and running.
+    const existing = this.activeSubagents.get(id);
+    if (existing !== undefined && existing.status === "running") {
+      throw new Error("Subagent is already running");
+    }
+
     // Locate meta.json: could be generic or named. Scan both trees.
     const { dir, meta } = loadSubagentMeta(this.cfg.goblinHome, id);
 
@@ -469,7 +507,7 @@ export class SubagentRunner {
       metaPath: join(dir, "meta.json"),
       sessionManager,
       initialPrompt: prompt,
-      onStatusUpdate: undefined,
+      onStatusUpdate: prefixStatusCallback(meta.name ?? id.slice(0, 8), onStatusUpdate),
       definition,
       session: null,
       unsubscribe: null,
@@ -477,8 +515,8 @@ export class SubagentRunner {
     };
     this.activeSubagents.set(id, instance);
 
-    // Update meta to reflect the revival.
-    this.persistMeta(instance, { status: "running" });
+    // Update meta to reflect the revival — clear stale terminal fields.
+    this.persistMeta(instance, { status: "running", completedAt: undefined, errorMessage: undefined });
 
     log.debug("subagent revived", { id, role: meta.role, name: meta.name });
 
@@ -521,6 +559,11 @@ export class SubagentRunner {
     const instance = this.activeSubagents.get(id);
     if (instance === undefined) {
       throw new Error("Subagent not found");
+    }
+
+    // No-op on terminal states — don't overwrite the audit trail.
+    if (instance.status !== "running") {
+      return;
     }
 
     if (instance.session !== null) {

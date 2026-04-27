@@ -1155,3 +1155,222 @@ describe("SubagentRunner — recursive tool injection", () => {
     await handle.result;
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review fixes: guard behaviors
+// ---------------------------------------------------------------------------
+
+describe("SubagentRunner — cancel guards", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-subagent-cancel-guards-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("cancel before session init (race): runAgent checks status after creating session", async () => {
+    // Use a deferred createAgentSession so cancel can fire between
+    // session creation and sendUserMessage.
+    let resolveCreate!: () => void;
+    const createBlocked = new Promise<void>((res) => { resolveCreate = res; });
+    mock.module("@mariozechner/pi-coding-agent", () => ({
+      AuthStorage: { create: () => ({ setRuntimeApiKey: () => {} }) },
+      ModelRegistry: { create: () => ({}) },
+      SettingsManager: { inMemory: () => ({}) },
+      SessionManager: {
+        create: (_cwd: string, dir: string) => {
+          mkdirSync(dir, { recursive: true });
+          return { __stub: true };
+        },
+        open: () => ({ __stub: true }),
+      },
+      DefaultResourceLoader: class {
+        options: Record<string, unknown>;
+        constructor(o: Record<string, unknown>) { this.options = o; }
+        async reload() {}
+      },
+      createAgentSession: async (opts: unknown) => {
+        capturedCreateArgs.push(opts);
+        await createBlocked;
+        return { session: sessionHolder.proxy, extensionsResult: {} };
+      },
+    }));
+
+    const handle = await runner.spawn({ prompt: "work" });
+    // runAgent is now blocked inside createAgentSession.
+    await flush(); // let it enter the async fn
+
+    // Cancel while the session is still being created.
+    await runner.cancel(handle.id);
+    expect(runner.list()[0]?.status).toBe("cancelled");
+
+    // Now unblock createAgentSession.
+    resolveCreate();
+    await flush();
+    await flush();
+
+    // runAgent should observe cancelled status, skip sendUserMessage.
+    expect(sessionHolder.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("cancel on completed subagent is a no-op (doesn't overwrite status)", async () => {
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+    expect(runner.list()[0]?.status).toBe("completed");
+
+    // Cancel should be a no-op — status stays completed.
+    await runner.cancel(handle.id);
+    expect(runner.list()[0]?.status).toBe("completed");
+    expect(sessionHolder.abort).not.toHaveBeenCalled();
+  });
+
+  it("cancel on errored subagent is a no-op", async () => {
+    sessionHolder.sendUserMessage = mock(async () => {
+      throw new Error("boom");
+    });
+    const handle = await runner.spawn({ prompt: "trigger" });
+    await flush();
+    await flush();
+    await expect(handle.result).rejects.toThrow("boom");
+
+    expect(runner.list()[0]?.status).toBe("error");
+    await runner.cancel(handle.id);
+    expect(runner.list()[0]?.status).toBe("error");
+  });
+});
+
+describe("SubagentRunner — revive guards", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-subagent-revive-guards-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("throws when reviving a subagent that is already running", async () => {
+    const handle = await runner.spawn({ prompt: "first" });
+    await flush();
+    // Don't complete it — it's still running.
+
+    // Write a fake session file so findSessionFile succeeds.
+    const dir = genericSubagentDir(tmp, handle.id);
+    writeFileSync(join(dir, "2026-01-01T00-00-00_fake.jsonl"), "");
+
+    await expect(runner.revive(handle.id, "second")).rejects.toThrow("Subagent is already running");
+  });
+
+  it("clears stale errorMessage and completedAt on revival", async () => {
+    // Spawn → error → revive → complete. Verify errorMessage is gone.
+    sessionHolder.sendUserMessage = mock(async () => {
+      throw new Error("first-fail");
+    });
+    const handle = await runner.spawn({ prompt: "first" });
+    await flush();
+    await flush();
+    await expect(handle.result).rejects.toThrow("first-fail");
+
+    // Write a fake session file.
+    const dir = genericSubagentDir(tmp, handle.id);
+    writeFileSync(join(dir, "2026-01-01T00-00-00_fake.jsonl"), "");
+
+    // Reset mocks for revival.
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+
+    const resultPromise = runner.revive(handle.id, "second");
+    await flush();
+
+    // After revival, meta should have running status and no errorMessage.
+    let meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("running");
+    expect(meta.errorMessage).toBeUndefined();
+
+    // Complete the revived run.
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await resultPromise;
+
+    // Final meta should be completed with no errorMessage.
+    meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("completed");
+    expect(meta.errorMessage).toBeUndefined();
+  });
+});
+
+describe("SubagentRunner — startup error handling", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-subagent-startup-err-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("marks meta as error when createAgentSession throws", async () => {
+    // Override the mock to throw on createAgentSession.
+    mock.module("@mariozechner/pi-coding-agent", () => ({
+      AuthStorage: { create: () => ({ setRuntimeApiKey: () => {} }) },
+      ModelRegistry: { create: () => ({}) },
+      SettingsManager: { inMemory: () => ({}) },
+      SessionManager: {
+        create: (_cwd: string, dir: string) => {
+          mkdirSync(dir, { recursive: true });
+          return { __stub: true };
+        },
+        open: () => ({ __stub: true }),
+      },
+      DefaultResourceLoader: class {
+        options: Record<string, unknown>;
+        constructor(o: Record<string, unknown>) { this.options = o; }
+        async reload() {}
+      },
+      createAgentSession: async () => {
+        throw new Error("session-creation-failed");
+      },
+    }));
+
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+    await flush();
+
+    await expect(handle.result).rejects.toThrow("session-creation-failed");
+
+    const meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("error");
+    expect(meta.errorMessage).toBe("session-creation-failed");
+  });
+});

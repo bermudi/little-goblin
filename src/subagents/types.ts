@@ -7,7 +7,7 @@
 import type { AgentSession, SessionManager } from "@mariozechner/pi-coding-agent";
 
 /** Status of a subagent instance. */
-export type SubagentStatus = "running" | "idle" | "completed" | "cancelled" | "error";
+export type SubagentStatus = "running" | "completed" | "cancelled" | "error";
 
 /** Role of a subagent. Generic = inherits parent skills; named = isolated. */
 export type SubagentRole = "generic" | "named";

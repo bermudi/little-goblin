@@ -27,7 +27,7 @@ const subagentToolFactory: SubagentToolFactory = (
  * Build the grammy Bot with middleware and handlers wired up.
  * Exported so main can start the bot.
  */
-export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager } {
+export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner> } {
   const bot = new Bot(cfg.botToken);
   const manager = new SessionManager(cfg);
   const runners = new Map<string, AgentRunner>();
@@ -91,5 +91,5 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager } {
     });
   });
 
-  return { bot, manager };
+  return { bot, manager, subagentRunner, agentRunners: runners };
 }

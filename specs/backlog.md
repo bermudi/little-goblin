@@ -4,6 +4,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 
 ## Deferred
 
+- v1.1: cascade cancel — abort child subagents when parent session is cancelled / disposed
 - v1.1: approval-required tool mode (allowlist + inline-keyboard approvals)
 - v1.1: user-facing named subagent invocation (slash command `/researcher` or topic-to-agent binding)
 - v1.x: mixed-provider routing (`selectModel(task)`), per-subagent model override

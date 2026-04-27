@@ -8,12 +8,18 @@ async function main(): Promise<void> {
   initLog(cfg.logLevel);
   ensureGoblinHome(cfg);
   await validateModelAtStartup(cfg, log);
-  const { bot, manager } = buildBot(cfg);
+  const { bot, manager, subagentRunner, agentRunners } = buildBot(cfg);
   manager.init();
 
   // Graceful shutdown. grammy's start() resolves when stop() is called.
   const shutdown = async (signal: string): Promise<void> => {
     log.info(`received ${signal}, stopping bot`);
+    // Dispose subagents first (cancels running ones, releases sessions).
+    await subagentRunner.dispose();
+    // Dispose agent runners (releases pi sessions).
+    for (const runner of agentRunners.values()) {
+      runner.dispose();
+    }
     await bot.stop();
     process.exit(0);
   };

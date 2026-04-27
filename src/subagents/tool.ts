@@ -13,6 +13,30 @@ import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { SubagentRunner } from "./mod.ts";
 
+/** Default timeout for subagent execution (10 minutes). */
+const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Create a promise that rejects after `ms` milliseconds, cancelling the
+ * subagent and returning a timeout error to the LLM.
+ */
+function timeoutReject(
+  ms: number,
+  subagentId: string,
+  runner: SubagentRunner,
+): Promise<never> {
+  return new Promise<never>((_, reject) => {
+    setTimeout(async () => {
+      try {
+        await runner.cancel(subagentId);
+      } catch {
+        // Already completed/errored — ignore.
+      }
+      reject(new Error(`Subagent ${subagentId} timed out after ${ms}ms`));
+    }, ms);
+  });
+}
+
 const spawnSubagentSchema = Type.Object({
   prompt: Type.String({
     description: "The task prompt for the subagent.",
@@ -52,6 +76,7 @@ export function createSpawnSubagentTool(
   depth: number,
   sessionId: string,
   onStatusUpdate?: (message: string) => void,
+  timeoutMs?: number,
 ): ToolDefinition {
   return defineTool({
     name: "spawn_subagent",
@@ -70,11 +95,17 @@ export function createSpawnSubagentTool(
         depth,
         spawnedBy: sessionId,
         onStatusUpdate,
+        timeoutMs,
       });
 
-      // Block until the subagent finishes. Errors propagate as tool errors
-      // that the LLM can read and decide how to handle.
-      const result = await handle.result;
+      // Block until the subagent finishes or the timeout fires.
+      // Errors propagate as tool errors that the LLM can read and decide
+      // how to handle.
+      const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const result = await Promise.race([
+        handle.result,
+        timeoutReject(effectiveTimeout, handle.id, runner),
+      ]);
 
       return {
         content: [{ type: "text" as const, text: result }],
@@ -107,6 +138,7 @@ const REVIVE_PROMPT_SNIPPET = "revive_subagent: resume a subagent with a follow-
 
 const REVIVE_PROMPT_GUIDELINES = [
   "Use revive_subagent when you want to continue a conversation with a subagent that already finished.",
+  "You can also revive errored or cancelled subagents to retry or continue their work.",
   "The subagent's conversation history is preserved, so you can reference earlier context.",
 ];
 

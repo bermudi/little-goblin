@@ -37,6 +37,16 @@ export interface SpawnOptions {
    * The runner prefixes status messages with the subagent name/id.
    */
   onStatusUpdate?: (message: string) => void;
+
+  /**
+   * Maximum wall-clock time (ms) the subagent may run before being
+   * considered timed out. Defaults to 10 minutes (600 000 ms).
+   *
+   * The timeout is enforced at the tool-handler layer (Promise.race).
+   * On timeout the subagent is cancelled and a timeout error is
+   * returned to the LLM.
+   */
+  timeoutMs?: number;
 }
 
 /**

@@ -133,7 +133,7 @@ The `list()` method SHALL return all active (running or recent) subagents with t
 
 #### Scenario: List active subagents
 - **WHEN** `list()` is called
-- **THEN** it SHALL return an array of `{id, name, status, spawnedAt}`
+- **THEN** it SHALL return an array of `{id, name, role, status, spawnedAt}`
 - **AND** status SHALL be one of: running, completed, cancelled, error
 
 #### Scenario: List when empty

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Module mock for @mariozechner/pi-coding-agent
@@ -1686,5 +1686,434 @@ describe("SubagentRunner — cancel with abort() that throws", () => {
       readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
     ) as SubagentMeta;
     expect(meta.status).toBe("cancelled");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes round 3: timeout, disposed flag, completed-not-overwritten
+// ---------------------------------------------------------------------------
+
+describe("SubagentRunner — disposed flag", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-disposed-flag-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("rejects spawn after dispose", async () => {
+    await runner.dispose();
+    await expect(runner.spawn({ prompt: "late" })).rejects.toThrow("SubagentRunner is disposed");
+  });
+
+  it("rejects spawn even if active map was empty at dispose time", async () => {
+    expect(runner.list()).toEqual([]);
+    await runner.dispose();
+    await expect(runner.spawn({ prompt: "x" })).rejects.toThrow("SubagentRunner is disposed");
+  });
+});
+
+describe("SubagentRunner — dispose does not overwrite completed", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-dispose-no-overwrite-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("preserves completed meta.json status on dispose", async () => {
+    const h = await runner.spawn({ prompt: "a" });
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await h.result;
+
+    // Meta should say completed.
+    let meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, h.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("completed");
+
+    await runner.dispose();
+
+    // After dispose, meta should STILL say completed — not cancelled.
+    meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, h.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("completed");
+  });
+
+  it("preserves errored meta.json status on dispose", async () => {
+    sessionHolder.sendUserMessage = mock(async () => {
+      throw new Error("boom");
+    });
+    const h = await runner.spawn({ prompt: "a" });
+    await flush();
+    await flush();
+    await expect(h.result).rejects.toThrow("boom");
+
+    let meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, h.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("error");
+
+    await runner.dispose();
+
+    meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, h.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.status).toBe("error");
+  });
+});
+
+describe("SubagentRunner — persistMeta failure resilience", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-persist-resilience-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("markErrored still updates in-memory status when persistMeta fails", async () => {
+    sessionHolder.sendUserMessage = mock(async () => {
+      throw new Error("first-fail");
+    });
+
+    const handle = await runner.spawn({ prompt: "trigger" });
+    const metaPath = genericSubagentMetaPath(tmp, handle.id);
+    const dir = dirname(metaPath);
+
+    // Make the dir read-only after initial meta.json was written.
+    rmSync(metaPath);
+    chmodSync(dir, 0o444);
+
+    await flush();
+    await flush();
+
+    // The result rejects with the original error.
+    await expect(handle.result).rejects.toThrow("first-fail");
+
+    // In-memory status is still updated to error (not stuck running).
+    const list = runner.list();
+    const entry = list.find((i) => i.id === handle.id);
+    expect(entry).toBeDefined();
+    expect(entry?.status).toBe("error");
+
+    // Restore permissions for cleanup.
+    chmodSync(dir, 0o755);
+  });
+
+  it("markCompleted still resolves with text when persistMeta fails", async () => {
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+
+    // Make the dir read-only so markCompleted's persistMeta fails.
+    const metaPath = genericSubagentMetaPath(tmp, handle.id);
+    const dir = dirname(metaPath);
+    rmSync(metaPath);
+    chmodSync(dir, 0o444);
+
+    // Subagent completes successfully.
+    sessionHolder.emit({ type: "agent_start" });
+    sessionHolder.emit({
+      type: "message_update",
+      message: {},
+      assistantMessageEvent: { type: "text_delta", delta: "important result" },
+    });
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+
+    // The result resolves with the actual text, not a persist error.
+    const text = await handle.result;
+    expect(text).toBe("important result");
+
+    // In-memory status is completed.
+    const list = runner.list();
+    expect(list.find((i) => i.id === handle.id)?.status).toBe("completed");
+
+    // Restore permissions for cleanup.
+    chmodSync(dir, 0o755);
+  });
+});
+
+describe("spawn_subagent tool — timeout", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-tool-timeout-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("times out and cancels the subagent after timeoutMs", async () => {
+    const { createSpawnSubagentTool } = await import("./tool.ts");
+    // 50ms timeout — very short so the test runs fast.
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1", undefined, 50);
+
+    // Execute the tool — it will spawn a subagent and race against the timeout.
+    const execPromise = tool.execute(
+      "tc-1",
+      { prompt: "slow work" },
+      undefined, undefined, {} as never,
+    );
+    await flush();
+
+    // Don't emit agent_end — simulate a hung provider.
+    // The timeout should fire after 50ms.
+    await expect(execPromise).rejects.toThrow(/timed out after 50ms/);
+
+    // The subagent should be cancelled.
+    // After prune/dispose it may be gone from the map, so check meta.json.
+    const list = runner.list();
+    if (list.length > 0) {
+      expect(list[0]?.status).toBe("cancelled");
+    }
+  });
+
+  it("completes normally if subagent finishes before timeout", async () => {
+    const { createSpawnSubagentTool } = await import("./tool.ts");
+    // 10 second timeout — should not fire.
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1", undefined, 10000);
+
+    const execPromise = tool.execute(
+      "tc-1",
+      { prompt: "fast work" },
+      undefined, undefined, {} as never,
+    );
+    await flush();
+
+    sessionHolder.emit({ type: "agent_start" });
+    sessionHolder.emit({
+      type: "message_update",
+      message: {},
+      assistantMessageEvent: { type: "text_delta", delta: "Done!" },
+    });
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+
+    const result = await execPromise;
+    expect(result.content).toEqual([{ type: "text", text: "Done!" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes round 4: double-revive race, double-cancel race,
+// revive with deleted AGENTS.md, graceful shutdown
+// ---------------------------------------------------------------------------
+
+describe("SubagentRunner — double-revive race guard", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-revive-race-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  async function spawnAndComplete(): Promise<string> {
+    const handle = await runner.spawn({ prompt: "first" });
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+    const dir = genericSubagentDir(tmp, handle.id);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "2026-01-01T00-00-00_fake.jsonl"), "");
+    return handle.id;
+  }
+
+  it("throws 'Subagent revive already in progress' on concurrent revive of same ID", async () => {
+    const id = await spawnAndComplete();
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+
+    // Start a revive but don't complete it (don't emit agent_end).
+    const revive1 = runner.revive(id, "turn 2");
+    await flush(); // let it enter the running state
+
+    // Second concurrent revive should be rejected.
+    await expect(runner.revive(id, "turn 2b")).rejects.toThrow("Subagent revive already in progress");
+
+    // Complete the first revive to clean up.
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await revive1;
+  });
+
+  it("clears revivesInProgress after revive completes", async () => {
+    const id = await spawnAndComplete();
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+
+    const revive1 = runner.revive(id, "turn 2");
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await revive1;
+
+    // Should be able to revive again now that the first one completed.
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+    const revive2 = runner.revive(id, "turn 3");
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await revive2;
+    // No error thrown — success.
+  });
+
+  it("clears revivesInProgress after revive errors", async () => {
+    const id = await spawnAndComplete();
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+    sessionHolder.sendUserMessage = mock(async () => {
+      throw new Error("revive-err");
+    });
+
+    await expect(runner.revive(id, "bad")).rejects.toThrow("revive-err");
+
+    // Guard should be cleared — a second revive should not hit the race guard.
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+    sessionHolder.sendUserMessage = mock(async () => {});
+    const revive2 = runner.revive(id, "turn 3");
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await revive2;
+  });
+});
+
+describe("SubagentRunner — double-cancel race guard", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-cancel-race-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("second cancel is a no-op when first cancels synchronously", async () => {
+    const handle = await runner.spawn({ prompt: "work" });
+    await flush();
+
+    // Both cancels fire without yielding between them.
+    await Promise.all([
+      runner.cancel(handle.id),
+      runner.cancel(handle.id),
+    ]);
+
+    // Only one abort call (second cancel sees non-running status and exits early).
+    expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+    const list = runner.list();
+    expect(list[0]?.status).toBe("cancelled");
+  });
+});
+
+describe("SubagentRunner — revive with deleted AGENTS.md", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-revive-deleted-agents-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("throws clear error when named agent's AGENTS.md was deleted after original spawn", async () => {
+    // Set up named agent.
+    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
+    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# R");
+
+    // Spawn and complete.
+    const handle = await runner.spawn({ prompt: "go", name: "researcher" });
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+
+    // Write a fake session file.
+    const instDir = namedAgentInstanceDir(tmp, "researcher", handle.id);
+    writeFileSync(join(instDir, "2026-01-01T00-00-00.jsonl"), "");
+
+    // Delete the AGENTS.md.
+    rmSync(namedAgentAgentsMdPath(tmp, "researcher"));
+
+    // Revive should throw a clear message.
+    await expect(runner.revive(handle.id, "more")).rejects.toThrow(
+      /definition missing; cannot revive/,
+    );
+  });
+});
+
+describe("SubagentRunner — revive rejects after dispose", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-revive-disposed-"));
+    mkdirSync(join(tmp, "workdir"), { recursive: true });
+    mkdirSync(join(tmp, "pi-agent"), { recursive: true });
+    runner = new SubagentRunner(makeConfig(tmp));
+    capturedCreateArgs = [];
+    sessionHolder.reset();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("throws after dispose", async () => {
+    await runner.dispose();
+    await expect(runner.revive("any-id", "ping")).rejects.toThrow("SubagentRunner is disposed");
   });
 });

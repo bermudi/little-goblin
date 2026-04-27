@@ -80,6 +80,10 @@ export class SubagentRunner {
   private services: SharedServices | null = null;
   /** Produces tools (e.g. spawn_subagent) injected into each spawned subagent. */
   private readonly toolFactory: SubagentToolFactory | null;
+  /** Prevents new spawns after dispose(). */
+  private disposed = false;
+  /** Guards against concurrent revive() of the same subagent ID. */
+  private readonly revivesInProgress: Set<string> = new Set();
 
   constructor(cfg: Config, toolFactory?: SubagentToolFactory) {
     this.cfg = cfg;
@@ -102,6 +106,10 @@ export class SubagentRunner {
    * subagent's `agent_end` event fires (or rejects on error).
    */
   async spawn(options: SpawnOptions): Promise<SubagentHandle> {
+    if (this.disposed) {
+      throw new Error("SubagentRunner is disposed");
+    }
+
     // Prune terminal subagents before creating new ones.
     this.pruneTerminal();
 
@@ -237,6 +245,8 @@ export class SubagentRunner {
     } catch (err) {
       // Catch startup failures (resolveModel, createAgentSession, reload)
       // that would otherwise leave meta.json stuck in "running".
+      // markErrored is safe to call — it always updates in-memory state
+      // even if the disk write fails.
       if (instance.status === "running") {
         this.markErrored(instance, err);
       }
@@ -317,7 +327,7 @@ export class SubagentRunner {
             finalText += delta;
           },
           onEnd: () => {
-            this.markCompleted(instance, finalText);
+            this.markCompleted(instance);
             resolved_text?.(finalText);
           },
           onError: (err) => {
@@ -396,39 +406,43 @@ export class SubagentRunner {
   }
 
   /**
-   * Mark the subagent as completed and persist `meta.json`.
+   * Mark the subagent as completed. Always updates in-memory status and
+   * tears down, even if the disk write fails — a logging failure should
+   * not destroy a compute result.
    */
-  /**
-   * Mark the subagent as completed and persist `meta.json`.
-   * Persists first; only updates in-memory status on success.
-   */
-  private markCompleted(instance: SubagentInstance, _finalText: string): void {
+  private markCompleted(instance: SubagentInstance): void {
     const patch = {
       status: "completed" as const,
       completedAt: new Date().toISOString(),
       // Clear stale error from a previous lifecycle (e.g. after revival).
       errorMessage: undefined,
     };
-    this.persistMeta(instance, patch);
+    try {
+      this.persistMeta(instance, patch);
+    } catch (err) {
+      log.error("failed to persist completed meta", { id: instance.id, err: err instanceof Error ? err.message : String(err) });
+    }
     instance.status = "completed";
     this.teardownInstance(instance);
     log.debug("subagent completed", { id: instance.id });
   }
 
   /**
-   * Mark the subagent as errored and persist `meta.json`.
-   */
-  /**
-   * Mark the subagent as errored and persist `meta.json`.
-   * Persists first; only updates in-memory status on success.
+   * Mark the subagent as errored. Always updates in-memory status and
+   * tears down, even if the disk write fails — a logging failure should
+   * not prevent cleanup.
    */
   private markErrored(instance: SubagentInstance, err: unknown): void {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    this.persistMeta(instance, {
-      status: "error",
-      completedAt: new Date().toISOString(),
-      errorMessage,
-    });
+    try {
+      this.persistMeta(instance, {
+        status: "error",
+        completedAt: new Date().toISOString(),
+        errorMessage,
+      });
+    } catch (persistErr) {
+      log.error("failed to persist error meta", { id: instance.id, err: persistErr instanceof Error ? persistErr.message : String(persistErr) });
+    }
     instance.status = "error";
     this.teardownInstance(instance);
     log.warn("subagent errored", { id: instance.id, errorMessage });
@@ -525,11 +539,22 @@ export class SubagentRunner {
    * Throws "Subagent not found" if no `meta.json` exists for the given id.
    */
   async revive(id: string, prompt: string, onStatusUpdate?: (message: string) => void): Promise<string> {
+    if (this.disposed) {
+      throw new Error("SubagentRunner is disposed");
+    }
+
+    // Guard against concurrent revive() of the same subagent ID.
+    if (this.revivesInProgress.has(id)) {
+      throw new Error("Subagent revive already in progress");
+    }
+
     // Reject if this subagent is already active and running.
     const existing = this.activeSubagents.get(id);
     if (existing !== undefined && existing.status === "running") {
       throw new Error("Subagent is already running");
     }
+
+    this.revivesInProgress.add(id);
 
     // Locate meta.json: could be generic or named. Scan both trees.
     const { dir, meta } = loadSubagentMeta(this.cfg.goblinHome, id);
@@ -552,7 +577,12 @@ export class SubagentRunner {
     // Rebuild the named-agent definition if the subagent is named.
     let definition: NamedAgentDefinition | null = null;
     if (meta.role === "named" && meta.name !== null) {
-      definition = loadNamedAgent(this.cfg.goblinHome, meta.name);
+      try {
+        definition = loadNamedAgent(this.cfg.goblinHome, meta.name);
+      } catch {
+        this.revivesInProgress.delete(id);
+        throw new Error(`Named agent '${meta.name}' definition missing; cannot revive`);
+      }
     }
 
     // Wire result promise the same way spawn() does.
@@ -584,7 +614,13 @@ export class SubagentRunner {
     this.activeSubagents.set(id, instance);
 
     // Update meta to reflect the revival — clear stale terminal fields.
-    this.persistMeta(instance, { status: "running", completedAt: undefined, errorMessage: undefined });
+    // Best-effort: stale meta is cosmetic; the session file is the
+    // source of truth for revival.
+    try {
+      this.persistMeta(instance, { status: "running", completedAt: undefined, errorMessage: undefined });
+    } catch (err) {
+      log.warn("failed to persist revive meta", { id, err: err instanceof Error ? err.message : String(err) });
+    }
 
     log.debug("subagent revived", { id, role: meta.role, name: meta.name });
 
@@ -592,7 +628,9 @@ export class SubagentRunner {
     this.runAgent(instance, cwd).then(
       (text) => resolveResult(text),
       (err) => rejectResult(err),
-    );
+    ).finally(() => {
+      this.revivesInProgress.delete(id);
+    });
     result.catch(() => {});
 
     return result;
@@ -631,9 +669,13 @@ export class SubagentRunner {
     }
 
     // No-op on terminal states — don't overwrite the audit trail.
+    // Synchronous check + set prevents double-cancel races.
     if (instance.status !== "running") {
       return;
     }
+    // Mark cancelled synchronously before any await so concurrent
+    // cancel() calls see a non-running status and exit early.
+    instance.status = "cancelled";
 
     try {
       if (instance.session !== null) {
@@ -645,17 +687,22 @@ export class SubagentRunner {
           log.debug("session.abort() threw during cancel", { id, error: "(swallowed)" });
         }
       }
-      instance.status = "cancelled";
-      this.persistMeta(instance, {
-        status: "cancelled",
-        completedAt: new Date().toISOString(),
-      });
+      try {
+        this.persistMeta(instance, {
+          status: "cancelled",
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        log.error("cancel persistMeta failed — disk state may be stale", {
+          id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
       instance.unsubscribe?.();
       instance.unsubscribe = null;
       this.teardownInstance(instance);
     } catch (err) {
-      // persistMeta or teardown failed — still try to clean up.
-      instance.status = "cancelled";
+      // teardown failed — still try to clean up.
       instance.unsubscribe?.();
       instance.unsubscribe = null;
       log.error("cancel cleanup failed", { id, err: err instanceof Error ? err.message : String(err) });
@@ -669,10 +716,15 @@ export class SubagentRunner {
    * Aborts running ones, disposes their sessions, and clears the map.
    */
   async dispose(): Promise<void> {
+    this.disposed = true;
     const ids = [...this.activeSubagents.keys()];
     for (const id of ids) {
       const instance = this.activeSubagents.get(id);
-      if (instance && instance.status === "running") {
+      if (!instance) continue;
+      // Only cancel instances that are still running. Completed/errored/
+      // cancelled instances should keep their existing status — don't
+      // overwrite a successful completion with "cancelled".
+      if (instance.status === "running") {
         try {
           await instance.session?.abort();
         } catch {
@@ -684,7 +736,7 @@ export class SubagentRunner {
           completedAt: new Date().toISOString(),
         });
       }
-      this.teardownInstance(instance!);
+      this.teardownInstance(instance);
     }
     this.activeSubagents.clear();
     log.debug("SubagentRunner disposed", { count: ids.length });
@@ -783,6 +835,11 @@ function findSessionFile(dir: string): string | null {
     return null;
   }
 }
+// NOTE: findSessionFile assumes pi's SessionManager names session files as
+// `<ISO-timestamp>.jsonl` (e.g. `2026-04-26T12-00-00.jsonl`). This is an
+// internal pi implementation detail, not a public API. If pi changes the
+// naming convention, this function must be updated. Prefer querying
+// SessionManager for the active session path once pi exposes such an API.
 
 /**
  * Wrap a status callback so every message is prefixed with

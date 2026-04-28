@@ -76,6 +76,8 @@ export type SubagentToolFactory = (
  */
 export class SubagentRunner {
   private readonly cfg: Config;
+  /** Goblin home directory — exposed for dynamic tool descriptions. */
+  readonly goblinHome: string;
   private readonly activeSubagents: Map<string, SubagentInstance> = new Map();
   private services: SharedServices | null = null;
   /** Produces tools (e.g. spawn_subagent) injected into each spawned subagent. */
@@ -87,6 +89,7 @@ export class SubagentRunner {
 
   constructor(cfg: Config, toolFactory?: SubagentToolFactory) {
     this.cfg = cfg;
+    this.goblinHome = cfg.goblinHome;
     this.toolFactory = toolFactory ?? null;
   }
 

@@ -16,6 +16,7 @@
  *                   └── meta.json
  */
 
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 export function subagentsRoot(home: string): string {
@@ -52,4 +53,27 @@ export function namedAgentInstanceDir(home: string, name: string, id: string): s
 
 export function namedAgentInstanceMetaPath(home: string, name: string, id: string): string {
   return join(namedAgentInstanceDir(home, name, id), "meta.json");
+}
+
+/**
+ * List all valid named agents in ~/goblin/agents/.
+ * A directory is considered a named agent if it contains AGENTS.md.
+ */
+export function listNamedAgents(home: string): string[] {
+  const root = namedAgentsRoot(home);
+  if (!existsSync(root)) return [];
+
+  const agents: string[] = [];
+  try {
+    for (const entry of readdirSync(root)) {
+      const agentDir = join(root, entry);
+      if (!statSync(agentDir).isDirectory()) continue;
+      if (existsSync(join(agentDir, "AGENTS.md"))) {
+        agents.push(entry);
+      }
+    }
+  } catch {
+    // Fail silently — no agents available
+  }
+  return agents.sort();
 }

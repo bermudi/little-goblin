@@ -12,6 +12,7 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { SubagentRunner } from "./mod.ts";
+import { listNamedAgents } from "./paths.ts";
 
 /** Default timeout for subagent execution (10 minutes). */
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -51,11 +52,18 @@ const spawnSubagentSchema = Type.Object({
 
 type SpawnSubagentInput = Static<typeof spawnSubagentSchema>;
 
-const DESCRIPTION = `Spawn a subagent to perform a focused task. The subagent runs to completion and its final response is returned.
+const BASE_DESCRIPTION = `Spawn a subagent to perform a focused task. The subagent runs to completion and its final response is returned.
 
 Subagents are sandboxed: they have no access to Telegram and run with standard tools (read, bash, edit, write, memory). They can spawn their own subagents, up to depth 3.
 
-Use named agents for specialist work (e.g. 'researcher' for deep investigation). Use generic subagents (no name) for ad-hoc tasks that benefit from the parent's project context.`;
+Use named agents for specialist work. Use generic subagents (no name) for ad-hoc tasks that benefit from the parent's project context.`;
+
+/** Build dynamic description listing available named agents. */
+function buildDescription(home: string): string {
+  const agents = listNamedAgents(home);
+  const agentsList = agents.length > 0 ? `Available named agents: ${agents.join(", ")}.` : "No named agents configured.";
+  return `${BASE_DESCRIPTION}\n\n${agentsList}`;
+}
 
 const PROMPT_SNIPPET = "spawn_subagent: delegate work to a subagent and get results.";
 
@@ -81,7 +89,7 @@ export function createSpawnSubagentTool(
   return defineTool({
     name: "spawn_subagent",
     label: "Spawn Subagent",
-    description: DESCRIPTION,
+    description: buildDescription(runner.goblinHome),
     promptSnippet: PROMPT_SNIPPET,
     promptGuidelines: PROMPT_GUIDELINES,
     parameters: spawnSubagentSchema,

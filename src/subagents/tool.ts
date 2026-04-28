@@ -53,7 +53,7 @@ type SpawnSubagentInput = Static<typeof spawnSubagentSchema>;
 
 const DESCRIPTION = `Spawn a subagent to perform a focused task. The subagent runs to completion and its final response is returned.
 
-Subagents are sandboxed: they have no access to Telegram and run with standard tools (read, bash, edit, write, grep, find, ls). They can spawn their own subagents, up to depth 3.
+Subagents are sandboxed: they have no access to Telegram and run with standard tools (read, bash, edit, write, memory). They can spawn their own subagents, up to depth 3.
 
 Use named agents for specialist work (e.g. 'researcher' for deep investigation). Use generic subagents (no name) for ad-hoc tasks that benefit from the parent's project context.`;
 

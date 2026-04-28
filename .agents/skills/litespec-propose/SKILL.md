@@ -5,7 +5,9 @@ description: Materialize a complete change proposal with all planning artifacts 
 
 Enter propose mode. Your job is to materialize a complete change proposal from conversation context and codebase understanding onto disk.
 
-If this propose call follows exploration or grilling in the current session, distill from that conversation. Do not re-grill the user. Do not re-author from scratch. Your job is to capture decisions already made.
+If this propose call follows exploration or grilling in the current session, distill from that conversation. Do not re-grill the user. Do not re-author from scratch. Your job is high-fidelity transcription — the decisions are settled, your task is to serialize them across artifacts without losing fidelity between them.
+
+If this is a standalone propose (no prior exploration/grill), you are making decisions as you go. Either way, the verification checkpoints in the loop below are not optional.
 
 ---
 
@@ -53,9 +55,11 @@ litespec instructions <artifact-id> --json
 
 5. **Verify the file exists** after writing it. If it did not land, write it again.
 
-6. **Validate the change** — run `litespec validate <name>` (where `<name>` is the change directory name) to make sure the artifacts pass validation.
+6. **Cross-check** — after writing specs, re-read your proposal alongside each spec delta. Ask: does any spec assert behavior the proposal excludes? Do any two specs contradict each other on the same concept? Fix before moving on.
 
-7. **Loop** back to step 1 until `isComplete` is true.
+7. **Check structure** — run `litespec validate <name>` (where `<name>` is the change directory name). This catches formatting issues (missing scenarios, malformed deltas, requirement-name conflicts). It does NOT check semantic consistency — that was your job in step 6.
+
+8. **Loop** back to step 1 until `isComplete` is true.
 
 ---
 
@@ -72,7 +76,7 @@ Before writing a delta for capability X, read `specs/canon/X/spec.md` if it exis
 Delta spec structure — `litespec instructions specs --json` returns this at runtime, summarized here for convenience:
 
     ## ADDED Requirements          ### Requirement: <name>   body (SHALL/MUST) + `#### Scenario:` blocks
-    ## MODIFIED Requirements       ### Requirement: <name>   full replacement including scenarios
+    ## MODIFIED Requirements       ### Requirement: <name>   write only what should exist after the change (unchanged parts you want to preserve + the changed behavior), including scenarios
     ## REMOVED Requirements        ### Requirement: <name>   name only, no body
     ## RENAMED Requirements        ### Requirement: <old> → <new>   heading change only, content carries over
 
@@ -83,7 +87,7 @@ Rules: ADDED/MODIFIED must have ≥1 scenario. Scenarios use WHEN/THEN format. R
 ## Behavioral Guardrails
 
 - **Verify every file after writing.** Confirm the artifact landed at `outputPath`. If it did not, write it again before moving on.
-- **Decide, do not block.** If the user is vague or a detail is unclear, make a reasonable decision and note what you chose in the artifact. The user can correct it during apply or review. Momentum matters more than perfection at this stage.
+- **Decide, do not block.** If the user is vague or a detail is unclear, make a reasonable decision and note what you chose in the artifact. The user can correct it during apply or review. But do not skip verification steps — the cross-check and source re-read exist precisely because momentum without checkpoints produces artifacts that look done but aren't.
 - **Resume, do not restart.** If the change already exists, check status and continue from the first incomplete artifact. Never overwrite completed work.
 - **Suggest patch when appropriate.** If the change is delta-only (a flag, a small behavior tweak, a single requirement), suggest `litespec patch <name> <capability>` instead. Propose is for changes that warrant full planning artifacts.
 - **Show a summary when done.** After all artifacts are created, print a brief summary of what was created and the file paths. Then suggest next steps:

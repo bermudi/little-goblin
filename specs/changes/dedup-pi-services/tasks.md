@@ -8,9 +8,9 @@
 
 ## Phase 2: Migrate AgentRunner to pi-host
 
-- [ ] Update `src/agent/mod.ts`: replace inline AuthStorage/ModelRegistry/SettingsManager construction with `createPiServices(home)`, import path helpers from `../pi-host.ts`
-- [ ] Remove the dead AGENTS.md read + try/catch from `AgentRunner.init()` (content is read but never passed to pi; a pre-existing dead code path)
-- [ ] Verify: `bun test src/agent/` passes
+- [x] Update `src/agent/mod.ts`: replace inline AuthStorage/ModelRegistry/SettingsManager construction with `createPiServices(home)`, import path helpers from `../pi-host.ts`
+- [x] Remove the dead AGENTS.md read + try/catch from `AgentRunner.init()` (content is read but never passed to pi; a pre-existing dead code path)
+- [x] Verify: `bun test src/agent/` passes
 
 **Commit:** `phase 2: migrate AgentRunner pi service construction to pi-host, drop dead AGENTS.md read`
 

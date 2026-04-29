@@ -5,10 +5,7 @@
 
 import {
   AgentSession,
-  AuthStorage,
-  ModelRegistry,
   SessionManager,
-  SettingsManager,
   createAgentSession,
   type ToolDefinition,
   type AgentSessionEvent,
@@ -16,10 +13,8 @@ import {
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { appendEvent } from "./events.ts";
-import { agentsMdPath, piAgentDir, workdirPath } from "./paths.ts";
+import { workdirPath, createPiServices } from "../pi-host.ts";
 import { resolveModel } from "./models.ts";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { MemoryStore, createMemoryTool, formatSnapshot } from "../memory/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
 
@@ -75,32 +70,10 @@ export class AgentRunner {
     const resolved = resolveModel(this.cfg);
 
     // Create pi services with goblin paths
-    const authStorage = AuthStorage.create(join(piAgentDir(home), "auth.json"));
-    // Set the API key as a runtime override
+    const { authStorage, modelRegistry, settingsManager } = createPiServices(home);
     authStorage.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
 
-    const modelRegistry = ModelRegistry.create(
-      authStorage,
-      join(piAgentDir(home), "models.json")
-    );
-
-    const settingsManager = SettingsManager.inMemory({});
     const sessionManager = SessionManager.inMemory(workdirPath(home));
-
-    // Read AGENTS.md for system prompt augmentation
-    // Note: AGENTS.md content would need to be prepended to system prompt.
-    // This is handled via pi's resource loader when DefaultResourceLoader is used.
-    // For now, we proceed without custom system prompt modification.
-    try {
-      readFileSync(agentsMdPath(home), "utf-8");
-      // Content available but system prompt modification requires pi resource loader integration
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-        log.warn("AGENTS.md not found, proceeding without custom system prompt");
-      } else {
-        throw e;
-      }
-    }
 
     // Caller-supplied tools first; then memory; then spawn_subagent if wired.
     const tools: ToolDefinition[] = [

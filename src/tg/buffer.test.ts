@@ -1541,6 +1541,149 @@ describe("MessageBuffer", () => {
     });
   });
 
+  describe("response message segments at tool boundaries", () => {
+    const STATUS_OFF = { visibility: "none" as const };
+
+    it("text → tool → text produces two distinct response bubbles", async () => {
+      // Spec: "Response message segments at tool boundaries" — the seal
+      // must clear responseMessageId so the second text segment becomes a
+      // fresh sendMessage rather than an edit of the first bubble.
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        ...STATUS_OFF,
+      });
+
+      buffer.onTextDelta("Got it. Running bash now.");
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]?.text).toBe("Got it. Running bash now.");
+      const firstMsgId = buffer._state().responseMessageId;
+      expect(firstMsgId).toBeDefined();
+
+      // Tool boundary seals the segment. Internally: force-flush (no-op
+      // edit, since the send already covered the text) then reset state.
+      t = 1100;
+      buffer.onToolStart("bash", {});
+      await tick();
+      expect(buffer._state().responseMessageId).toBeUndefined();
+      expect(buffer._state().accumulatedText).toBe("");
+
+      buffer.onToolEnd("bash", false);
+
+      // Second segment must be a brand-new sendMessage, not an edit.
+      t = 5000;
+      buffer.onTextDelta("Done. Output was 42.");
+      await tick();
+      expect(m.send.length).toBe(2);
+      expect(m.send[1]?.text).toBe("Done. Output was 42.");
+      expect(buffer._state().responseMessageId).not.toBe(firstMsgId);
+
+      // No edit ever should have appended segment-2 text onto bubble-1.
+      const cross = m.edit.filter((e) => e.text.includes("Done. Output was 42."));
+      expect(cross.length).toBe(0);
+    });
+
+    it("naked tool call (no preamble text) emits no stub bubble", async () => {
+      // Spec: "If a tool starts when no text has accumulated since the
+      // last seal (or since turn start), the buffer SHALL NOT send
+      // anything and SHALL NOT mutate state."
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
+
+      buffer.onToolStart("delegate", {});
+      await tick();
+      expect(m.send.length).toBe(0);
+      expect(buffer._state().responseMessageId).toBeUndefined();
+
+      buffer.onToolEnd("delegate", false);
+      buffer.onTextDelta("Subagents finished.");
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]?.text).toBe("Subagents finished.");
+    });
+
+    it("text → tool → text → tool → text produces three response messages", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        ...STATUS_OFF,
+      });
+
+      buffer.onTextDelta("A.");
+      await tick();
+      t = 2000;
+      buffer.onToolStart("bash", {});
+      await tick();
+      buffer.onToolEnd("bash", false);
+
+      t = 3000;
+      buffer.onTextDelta("B.");
+      await tick();
+      t = 4000;
+      buffer.onToolStart("read", {});
+      await tick();
+      buffer.onToolEnd("read", false);
+
+      t = 5000;
+      buffer.onTextDelta("C.");
+      await tick();
+
+      // Three distinct sends, one per segment, in order.
+      expect(m.send.map((s) => s.text)).toEqual(["A.", "B.", "C."]);
+      // No edit should have ever cross-contaminated segments.
+      for (const e of m.edit) {
+        const inOne = e.text.includes("A.");
+        const inTwo = e.text.includes("B.");
+        const inThree = e.text.includes("C.");
+        expect([inOne, inTwo, inThree].filter(Boolean).length).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it("final segment is force-flushed in full on agent_end", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        ...STATUS_OFF,
+      });
+
+      buffer.onTextDelta("First segment.");
+      await tick();
+      t = 1100;
+      buffer.onToolStart("bash", {});
+      await tick();
+      buffer.onToolEnd("bash", false);
+
+      // Stream the final segment in pieces; the last delta arrives within
+      // the throttle window so the natural flush would be skipped.
+      t = 5000;
+      buffer.onTextDelta("Final ");
+      await tick();
+      t = 5050; // <200ms — natural flushResponse would be throttled out
+      buffer.onTextDelta("answer.");
+      buffer.onAgentEnd();
+      await tick();
+
+      // Two sends total: one per segment.
+      expect(m.send.length).toBe(2);
+      expect(m.send[0]?.text).toBe("First segment.");
+
+      // The latest write to Telegram (whether the initial send or a
+      // subsequent edit on agent_end) must be the complete final text.
+      const lastWrite =
+        m.edit.length > 0 ? m.edit[m.edit.length - 1]?.text : m.send[1]?.text;
+      expect(lastWrite).toBe("Final answer.");
+
+      // No edit ever touched bubble 1's id with the final-segment text.
+      const bubble1Id = m.send[0] ? 101 : -1; // makeBot starts at 100, ++ before return → first id = 101
+      const bubble1Edits = m.edit.filter((e) => e.messageId === bubble1Id);
+      expect(bubble1Edits.every((e) => !e.text.includes("Final"))).toBe(true);
+    });
+  });
+
   describe("chat action refresh", () => {
     interface FakeScheduler {
       setIntervalFn: (fn: () => void, ms: number) => unknown;

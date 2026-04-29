@@ -240,12 +240,26 @@ export class MessageBuffer implements TurnCallbacks {
     // so the user sees a truncated prefix (e.g. "Let" instead of
     // "Let me check the pi docs...").
     if (this.accumulatedText.length > 0) {
-      log.debug("response: force-flush before tool", {
+      log.debug("response: seal segment before tool", {
         tool: name,
         accLen: this.accumulatedText.length,
         msgId: this.responseMessageId,
       });
-      void this.flushResponse(true);
+      // Seal the current response segment: force-flush so the just-completed
+      // text lands in its bubble, then clear response state so the next text
+      // delta after the tool creates a fresh bubble. The snapshot guard
+      // prevents losing text if a delta sneaks in during the in-flight flush
+      // (not expected — LLM tool calls don't interleave with text — but
+      // cheap defense). See spec: "Response message segments at tool
+      // boundaries" in canon/message-buffer.
+      const sealedSnapshot = this.accumulatedText;
+      void (async () => {
+        await this.flushResponse(true);
+        if (this.accumulatedText !== sealedSnapshot) return;
+        this.responseMessageId = undefined;
+        this.accumulatedText = "";
+        this.lastRenderedResponseText = "";
+      })();
     }
 
     if (!shouldShowTool(name, this.visibility)) return;

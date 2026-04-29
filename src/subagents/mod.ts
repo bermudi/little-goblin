@@ -21,6 +21,7 @@ import {
   type ResourceLoader,
   type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
+import { dispatchAgentEvent, type TurnCallbacks } from "../agent/events.ts";
 
 /** Valid characters for a named agent: alphanumeric, hyphens, underscores. */
 const VALID_NAME_RE = /^[a-zA-Z0-9_-]+$/;
@@ -369,37 +370,16 @@ export class SubagentRunner {
       onError: (err: unknown) => void;
     },
   ): void {
-    switch (event.type) {
-      case "agent_start":
-        instance.onStatusUpdate?.("thinking...");
-        break;
-
-      case "message_update": {
-        const ame = event.assistantMessageEvent;
-        if (ame.type === "text_delta") {
-          hooks.onText(ame.delta);
-        }
-        break;
-      }
-
-      case "tool_execution_start":
-        instance.onStatusUpdate?.(`tool: ${event.toolName}`);
-        break;
-
-      case "tool_execution_end":
-        instance.onStatusUpdate?.(
-          event.isError ? `tool error: ${event.toolName}` : `tool ok: ${event.toolName}`,
-        );
-        break;
-
-      case "agent_end":
-        hooks.onEnd();
-        break;
-
-      // Other event types (turn_start/end, message_start/end, etc.) are
-      // ignored at this layer; the persisted session.jsonl carries the
-      // full record for revival.
-    }
+    const adapter: TurnCallbacks = {
+      onTextDelta: (delta) => hooks.onText(delta),
+      onToolStart: (name) => instance.onStatusUpdate?.(`tool: ${name}`),
+      onToolEnd: (name, isError) => instance.onStatusUpdate?.(
+        isError ? `tool error: ${name}` : `tool ok: ${name}`,
+      ),
+      onStatusUpdate: (msg) => instance.onStatusUpdate?.(msg),
+      onAgentEnd: () => hooks.onEnd(),
+    };
+    dispatchAgentEvent(event, adapter);
   }
 
   /**

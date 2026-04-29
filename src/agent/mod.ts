@@ -12,20 +12,13 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { appendEvent } from "./events.ts";
+import { appendEvent, dispatchAgentEvent } from "./events.ts";
+import type { TurnCallbacks } from "./events.ts";
+export type { TurnCallbacks } from "./events.ts";
 import { workdirPath, createPiServices } from "../pi-host.ts";
 import { resolveModel } from "./models.ts";
 import { MemoryStore, createMemoryTool, formatSnapshot } from "../memory/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
-
-/** Callbacks for turn events */
-export interface TurnCallbacks {
-  onTextDelta: (text: string) => void;
-  onToolStart: (name: string, input: unknown) => void;
-  onToolEnd: (name: string, isError: boolean) => void;
-  onStatusUpdate: (message: string) => void;
-  onAgentEnd: () => void;
-}
 
 /** Options for constructing an AgentRunner. */
 export interface AgentRunnerOptions {
@@ -130,34 +123,15 @@ export class AgentRunner {
 
     if (!this.callbacks) return;
 
-    switch (event.type) {
-      case "agent_start":
-        this.callbacks.onStatusUpdate("thinking...");
-        break;
-
-      case "message_update": {
-        const ame = event.assistantMessageEvent;
-        if (ame.type === "text_delta") {
-          this.accumulatedText += ame.delta;
-          this.callbacks.onTextDelta(ame.delta);
-        }
-        break;
+    // AgentRunner-specific text accumulation (not part of dispatch)
+    if (event.type === "message_update") {
+      const ame = event.assistantMessageEvent;
+      if (ame.type === "text_delta") {
+        this.accumulatedText += ame.delta;
       }
-
-      case "agent_end":
-        this.callbacks.onAgentEnd();
-        break;
-
-      case "tool_execution_start":
-        this.callbacks.onToolStart(event.toolName, event.args);
-        break;
-
-      case "tool_execution_end":
-        this.callbacks.onToolEnd(event.toolName, event.isError === true);
-        break;
-
-      // Ignore other event types for now
     }
+
+    dispatchAgentEvent(event, this.callbacks);
   }
 
   /**

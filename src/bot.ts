@@ -9,6 +9,7 @@ import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 import { interruptAndCascade } from "./interrupt.ts";
+import { cancelReply } from "./commands/cancel.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
 const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/debug"]);
@@ -64,6 +65,13 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     if (rawText?.startsWith("/")) {
       const command = rawText.split(" ")[0] ?? "";
 
+      // Capture pre-interrupt state so /cancel can report honestly:
+      // the cascade about to run will reset both signals to "nothing live".
+      const wasStreaming = existingRunner?.isStreaming ?? false;
+      const hadLiveSubagents = subagentRunner
+        .list()
+        .some((s) => s.status === "running");
+
       // Cancel-capable commands abort the active stream and cascade-cancel
       // every live subagent before executing their own logic.
       if (CANCEL_CAPABLE_COMMANDS.has(command)) {
@@ -72,7 +80,13 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
 
       switch (command) {
         case "/cancel":
-          await ctx.reply("Cancelled.");
+          await ctx.reply(
+            cancelReply({
+              hasSession: session !== null,
+              wasStreaming,
+              hadLiveSubagents,
+            }),
+          );
           return;
         case "/new":
         case "/archive":

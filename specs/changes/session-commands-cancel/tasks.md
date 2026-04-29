@@ -30,13 +30,15 @@ Commit: `phase 2: interrupt semantics with cascade cancel`
 
 ## Phase 3: /cancel command
 
-- [ ] Implement `/cancel` command:
+- [x] Implement `/cancel` command:
   - If streaming: abort (with cascade from phase 2), reply "Cancelled."
   - If idle: reply "Nothing to cancel."
   - If no active session: reply "Nothing to cancel."
-- [ ] Ensure it works in both DMs and topics.
-- [ ] Unit test: verify behavior in all three states (streaming, idle, no session).
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Ensure it works in both DMs and topics. _The /cancel handler reads only `session`, `wasStreaming`, and `hadLiveSubagents` — none of which depend on chat type, so DMs and topics share identical behavior._
+- [x] Unit test: verify behavior in all three states (streaming, idle, no session). _Plus two extras: idle-but-live-subagents and the streaming+subagents combo._
+- [x] Verify `bun run typecheck` + `bun test` pass.
+
+_Implementation note: the helper also returns "Cancelled." when the main agent is idle but live subagents existed pre-interrupt. The cascade kills them, so reporting "Nothing to cancel." would be a lie._
 
 Commit: `phase 3: /cancel command implementation`
 

@@ -251,7 +251,7 @@ export class SubagentRunner {
   }
 
   private async _runAgentInner(instance: SubagentInstance, cwd: string): Promise<string> {
-    const services = this.getSharedServices();
+    const services = this.getPiServices();
     const resolved = resolveModel(this.cfg);
     services.authStorage.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
 
@@ -535,10 +535,10 @@ export class SubagentRunner {
    * All subagents within a `SubagentRunner` share these — only the
    * `SessionManager` is per-subagent so each has its own conversation file.
    */
-  private getSharedServices(): PiServices {
-    if (this.services) return this.services;
-    this.services = createPiServices(this.cfg.goblinHome);
-    return this.services;
+  // Lazy-init pi services. Safe without synchronization because Node.js
+  // single-threaded event loop serializes code between async ticks.
+  private getPiServices(): PiServices {
+    return (this.services ??= createPiServices(this.cfg.goblinHome));
   }
 
   /**

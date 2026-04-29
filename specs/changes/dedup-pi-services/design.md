@@ -21,7 +21,7 @@ The module is a thin stateless factory — no caching, no lifecycle, no dependen
 
 ### Pi-host is stateless — no internal caching
 
-`createPiServices(home)` returns new service instances on every call. Caching is the caller's responsibility (SubagentRunner already lazily caches via `getSharedServices()`; AgentRunner has no reuse concern since it creates once in `init()`).
+`createPiServices(home)` returns new service instances on every call. Caching is the caller's responsibility (SubagentRunner already lazily caches via `getPiServices()`; AgentRunner has no reuse concern since it creates once in `init()`).
 
 **Why:** Stateless factories compose cleanly. If a future caller needs a fresh auth read mid-process, they can call `createPiServices()` without worrying about stale cached state. The existing caching patterns in callers are already correct and don't need to move into the factory.
 
@@ -58,7 +58,7 @@ Moved from `src/agent/paths.test.ts`. Tests the three path helpers. No new tests
 
 ### Modify: `src/agent/mod.ts`
 
-- Replace `import { agentsMdPath, piAgentDir, workdirPath } from "./paths.ts"` with `import { createPiServices, agentsMdPath, piAgentDir, workdirPath } from "../pi-host.ts"`
+- Replace `import { agentsMdPath, piAgentDir, workdirPath } from "./paths.ts"` with `import { workdirPath, createPiServices } from "../pi-host.ts"` (only the exports actually needed after removing the dead AGENTS.md read)
 - Replace inline AuthStorage + ModelRegistry + SettingsManager construction with:
   ```ts
   const { authStorage, modelRegistry, settingsManager } = createPiServices(home);
@@ -73,9 +73,9 @@ Also: delete the dead `readFileSync(agentsMdPath(...))` call in `init()` and its
 ### Modify: `src/subagents/mod.ts`
 
 - Replace `import { piAgentDir, workdirPath } from "../agent/paths.ts"` with `import { createPiServices, piAgentDir, workdirPath } from "../pi-host.ts"`
-- Replace the body of `getSharedServices()` to call `createPiServices(this.cfg.goblinHome)` instead of constructing the trio inline.
+- Replace the body of `getPiServices()` to call `createPiServices(this.cfg.goblinHome)` instead of constructing the trio inline.
 - Replace the private `SharedServices` interface with `PiServices` imported from `../pi-host.ts` for the `this.services` caching field.
-- `setRuntimeApiKey()` stays in `_runAgentInner()` (unchanged — it's already there, called after `resolveModel()`). Only the service *construction* inside `getSharedServices()` is replaced with `createPiServices()`.
+- `setRuntimeApiKey()` stays in `_runAgentInner()` (unchanged — it's already there, called after `resolveModel()`). Only the service *construction* inside `getPiServices()` is replaced with `createPiServices()`.
 
 Satisfies: "SubagentRunner manages subagent lifecycle"
 

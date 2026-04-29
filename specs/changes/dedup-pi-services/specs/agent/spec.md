@@ -30,3 +30,9 @@ Every `AgentRunner` SHALL pass `cwd = workdirPath($GOBLIN_HOME)` to `createAgent
 
 - **WHEN** an `AgentRunner` is instantiated in any session
 - **THEN** pi's `AgentSession` SHALL run with cwd `$GOBLIN_HOME/workdir/`
+
+## REMOVED Requirements
+
+### Requirement: AgentRunner loads goblin's AGENTS.md into the system prompt
+
+This requirement was never implemented — the code read `AGENTS.md` but never passed the content to pi. The dead read is removed as part of migrating service construction to `pi-host.ts`. Wiring AGENTS.md into the system prompt belongs in a separate change (see Non-Goals in proposal.md).

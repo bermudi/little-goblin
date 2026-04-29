@@ -1,6 +1,6 @@
 # memory
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Memory store filesystem layout
 

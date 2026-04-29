@@ -44,13 +44,15 @@ Commit: `phase 3: /cancel command implementation`
 
 ## Phase 4: /new command
 
-- [ ] Implement `/new` command:
+- [x] Implement `/new` command:
   - Interrupt if streaming (with cascade from phase 2).
   - Handle topic case: reply "This topic is already its own session. No need for /new here."
   - Handle DM case: call `sessionManager.createForChat(locator)`, reply with new session ID.
   - Handle no-session case: same as DM case (creates a session).
-- [ ] Unit test: verify session creation, verify interrupt behavior, verify topic rejection.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Unit test: verify session creation, verify interrupt behavior, verify topic rejection. _Helper-level tests pin topic rejection and the create branch (+ the no-prior-session fresh-start contract). Interrupt behavior is already covered by `interruptAndCascade` tests in phase 2; `/new` is in `CANCEL_CAPABLE_COMMANDS` so it inherits that path._
+- [x] Verify `bun run typecheck` + `bun test` pass.
+
+_Implementation note: the bot.ts `/new` branch passes `isSupergroup: ctx.chat?.type === "supergroup"` to `manager.createForChat` so a `/new` issued in a supergroup-without-topic rebinds the supergroup slot rather than accidentally creating a DM binding. The design.md snippet omitted this; it's a strict superset that mirrors `start.ts`._
 
 Commit: `phase 4: /new command for DM sessions`
 

@@ -10,6 +10,7 @@ import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 import { interruptAndCascade } from "./interrupt.ts";
 import { cancelReply } from "./commands/cancel.ts";
+import { executeNew } from "./commands/new.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
 const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/debug"]);
@@ -88,7 +89,28 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
             }),
           );
           return;
-        case "/new":
+        case "/new": {
+          const isSupergroupChat = ctx.chat?.type === "supergroup";
+          const result = executeNew({
+            hasTopic: locator.topicId !== undefined,
+            createSession: () =>
+              manager.createForChat(locator, { isSupergroup: isSupergroupChat }),
+          });
+          if (result.kind === "created") {
+            runners.set(
+              result.session.id,
+              new AgentRunner({
+                cfg,
+                sessionId: result.session.id,
+                customTools: [],
+                subagentRunner,
+              }),
+            );
+            log.debug("created runner for /new session", { sessionId: result.session.id });
+          }
+          await ctx.reply(result.reply);
+          return;
+        }
         case "/archive":
         case "/debug":
         case "/subagents":

@@ -1,0 +1,24 @@
+# Glossary
+
+- **AgentRunner**: The orchestrator that wraps a pi-coding-agent session for a given Telegram session. Owns memory injection, tool registration, and prompt dispatch. Not the LLM itself.
+- **atomic write**: Write-to-temp-then-rename pattern used for all file mutations (state, bindings, memory). Guarantees no partial files on crash.
+- **binding**: Maps a `ChatLocator` to a session ID. Stored in `config.json`. DMs have at most one; topics have exactly one (auto-created).
+- **canon**: The set of accepted, implemented specs in `specs/canon/`. Each subdirectory is one domain module.
+- **ChatLocator**: A discriminated key — `{ chatId }` for DMs, `{ chatId, topicId }` for forum topics — used to resolve which session handles a message.
+- **defrag**: Agent-driven consolidation of memory files when they approach the character cap. Not a system operation.
+- **goblin**: The AI bot. Single user, single process. Lives in Telegram.
+- **GOBLIN_HOME**: Root data directory (default `~/goblin`). Holds sessions, memory, skills, config, and agent definitions.
+- **locator**: Shorthand for `ChatLocator`.
+- **memory.md / user.md**: The two curated memory files under `$GOBLIN_HOME/memory/`. Agent-maintained, character-capped, git-versioned. Not raw chat logs.
+- **MessageBuffer**: Implements `TurnCallbacks` to render agent activity as Telegram messages. Manages status phases, streaming edits, and rollover.
+- **named subagent**: A subagent that loads its `AGENTS.md` and `skills/` from `~/goblin/agents/<name>/`. Strictly isolated from parent skills.
+- **pi-coding-agent**: The underlying agent framework that goblin wraps. Provides `AgentSession`, `defineTool`, extension/skill loading. Ships a sample subagent extension (`examples/extensions/subagent/`) that spawns child `pi` processes, but goblin's subagent system is custom-built on the core SDK.
+- **session**: A persisted conversation scoped to one `(chat, topic)` pair. Has its own `workdir/`, `events.jsonl`, `transcript.jsonl`, and `state.json`.
+- **SessionManager**: Owns session lifecycle — creation, resolution, persistence, and binding management.
+- **snapshot**: The formatted memory payload injected per-turn via `sendCustomMessage(..., { deliverAs: "nextTurn" })`. Begins with `[goblin memory snapshot]`.
+- **stale binding**: A binding whose session directory no longer exists. DMs clear the binding; topics auto-recreate.
+- **status phases**: Three coarse states rendered in the MessageBuffer status line: Thinking, Working, Done. Not per-tool.
+- **subagent**: An agent spawned by goblin (or another subagent) for focused work. Recursive up to depth 3.
+- **TurnCallbacks**: Interface (`onTextDelta`, `onToolStart`, `onToolEnd`, `onStatusUpdate`, `onAgentEnd`) that bridges the agent layer to the Telegram layer.
+- **visibility**: Config for which tool names appear in status phases (`none | minimal | standard | verbose | debug`).
+- **workdir**: Per-session working directory at `sessions/<id>/workdir/`. The agent's cwd for tool execution.

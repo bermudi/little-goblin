@@ -1,6 +1,6 @@
 # pi-host
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Pi-host module provides shared pi service construction
 

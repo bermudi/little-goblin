@@ -34,7 +34,7 @@ The `AgentRunner` SHALL create pi's `AgentSession` via `createAgentSession()` la
 
 ### Requirement: cwd is the shared goblin workspace
 
-Every `AgentRunner` SHALL pass `cwd = $GOBLIN_HOME/workdir/` to `createAgentSession()`. Per-session workdirs MUST NOT be used.
+Every `AgentRunner` SHALL pass `cwd = workdirPath($GOBLIN_HOME)` to `createAgentSession()`, where `workdirPath` is imported from `src/pi-host.ts`. Per-session workdirs MUST NOT be used.
 
 #### Scenario: Runner created
 
@@ -43,23 +43,23 @@ Every `AgentRunner` SHALL pass `cwd = $GOBLIN_HOME/workdir/` to `createAgentSess
 
 ### Requirement: Shared services point at $GOBLIN_HOME/pi-agent/
 
-The `AgentRunner` SHALL configure pi's `AuthStorage`, `ModelRegistry`, and `SettingsManager` to read from and write to `$GOBLIN_HOME/pi-agent/` so authentication and settings persist across restarts and are shared by every session.
+The `AgentRunner` SHALL obtain pi's `AuthStorage`, `ModelRegistry`, and `SettingsManager` from the `createPiServices()` function exported by `src/pi-host.ts`. `AuthStorage` and `ModelRegistry` SHALL be configured to read from and write to `$GOBLIN_HOME/pi-agent/` so authentication and model configuration persist across restarts and are shared by every session. `SettingsManager` SHALL be an in-memory instance with empty defaults.
 
 #### Scenario: AuthStorage location
 
 - **WHEN** an `AgentRunner` is created
 - **THEN** pi's `AuthStorage` SHALL use `$GOBLIN_HOME/pi-agent/auth.json`
 
-#### Scenario: SettingsManager location
+#### Scenario: Two sessions share the auth file path
 
-- **WHEN** an `AgentRunner` is created
-- **THEN** pi's `SettingsManager` SHALL use `$GOBLIN_HOME/pi-agent/settings.json`
+- **WHEN** two `AgentRunner` instances are created in two different sessions
+- **THEN** each runner's `AuthStorage` SHALL point at the same `$GOBLIN_HOME/pi-agent/auth.json` path
 
-#### Scenario: Two sessions, same auth
+#### Scenario: Services obtained from pi-host
 
-- **WHEN** auth is written by session A
-- **AND** session B's runner reads auth
-- **THEN** session B SHALL see the credentials session A wrote
+- **WHEN** `AgentRunner.init()` builds pi services
+- **THEN** it SHALL call `createPiServices(home)` from `src/pi-host.ts`
+- **AND** it SHALL NOT construct `AuthStorage`, `ModelRegistry`, or `SettingsManager` inline
 
 ### Requirement: Pi SessionManager runs in-memory for main goblin sessions
 
@@ -142,21 +142,6 @@ The `AgentRunner` constructor SHALL accept `customTools: ToolDefinition[]` and p
 
 - **WHEN** `AgentRunner` is constructed with `customTools = []`
 - **THEN** pi SHALL run with only its built-in `codingTools`
-
-### Requirement: AgentRunner loads goblin's AGENTS.md into the system prompt
-
-The `AgentRunner` SHALL read `$GOBLIN_HOME/AGENTS.md` at creation and include its contents in pi's system prompt. If the file is missing, the runner SHALL log a warning and proceed with the default system prompt.
-
-#### Scenario: AGENTS.md present
-
-- **WHEN** `$GOBLIN_HOME/AGENTS.md` exists
-- **THEN** the file contents SHALL be included in pi's system prompt
-
-#### Scenario: AGENTS.md missing
-
-- **WHEN** `$GOBLIN_HOME/AGENTS.md` does not exist
-- **THEN** a warning SHALL be logged via `log.warn`
-- **AND** the runner SHALL proceed without throwing
 
 ### Requirement: AgentRunner never imports telegram libraries
 

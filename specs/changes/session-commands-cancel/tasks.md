@@ -104,12 +104,12 @@ Commit: `phase 6: /debug command with diagnostics`
 
 ## Phase 7: Subagent command surface (stub)
 
-- [ ] Implement `/subagents` command: reply with stub "Not implemented".
-- [ ] Implement `/cancel_subagent <id>`: parse ID from args, reply "Not implemented".
-- [ ] Implement `/revive <id>`: parse ID, reply "Not implemented".
-- [ ] These are surface-only; implementation in `subagent-runtime` change.
-- [ ] Unit test: verify command parsing and stub responses.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Implement `/subagents` command: reply with stub "Not implemented".
+- [x] Implement `/cancel_subagent <id>`: parse ID from args, reply "Not implemented". _Parsing extracted to `parseSubagentId` in `src/commands/subagents.ts` so the eventual real handler has a stable, tested call-site._
+- [x] Implement `/revive <id>`: parse ID, reply "Not implemented".
+- [x] These are surface-only; implementation in `subagent-runtime` change.
+- [x] Unit test: verify command parsing and stub responses. _See `src/commands/subagents.test.ts`: 5 parsing assertions + 1 pinning the literal stub reply._
+- [x] Verify `bun run typecheck` + `bun test` pass. _356 pass, 0 fail._
 
 Commit: `phase 7: subagent command surface (stubs)`
 

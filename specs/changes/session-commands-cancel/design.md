@@ -113,16 +113,18 @@ Context: ~12k tokens used
       case '/cancel':
         await ctx.reply(runner?.session?.isStreaming ? 'Cancelled.' : 'Nothing to cancel.');
         return;
-      case '/new':
+      case '/new': {
+        const isSupergroup = ctx.chat?.type === "supergroup";
         // topic case: already has a session
         if (locator.topicId !== undefined) {
           await ctx.reply('This topic is already its own session. No need for /new here.');
           return;
         }
-        const newSession = manager.createForChat(locator);
+        const newSession = manager.createForChat(locator, { isSupergroup });
         runners.set(newSession.id, new AgentRunner({ cfg, sessionId: newSession.id, customTools: [], subagentRunner }));
         await ctx.reply(`Created new session \`${newSession.id}\``);
         return;
+      }
       case '/archive':
         if (!session) { await ctx.reply('No active session to archive.'); return; }
         const sessionDir = path.join(cfg.goblinHome, 'sessions', session.id);

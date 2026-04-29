@@ -14,6 +14,7 @@ import { interruptAndCascade } from "./interrupt.ts";
 import { cancelReply } from "./commands/cancel.ts";
 import { executeNew } from "./commands/new.ts";
 import { executeArchive } from "./commands/archive.ts";
+import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./commands/subagents.ts";
 import { generateDiagnostics } from "./diagnostics.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
@@ -157,8 +158,20 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           return;
         }
         case "/subagents":
-        case "/cancel_subagent":
-        case "/revive":
+          await ctx.reply(SUBAGENT_STUB_REPLY);
+          return;
+        case "/cancel_subagent": {
+          const id = parseSubagentId(rawText);
+          log.debug("/cancel_subagent stub invoked", { id });
+          await ctx.reply(SUBAGENT_STUB_REPLY);
+          return;
+        }
+        case "/revive": {
+          const id = parseSubagentId(rawText);
+          log.debug("/revive stub invoked", { id });
+          await ctx.reply(SUBAGENT_STUB_REPLY);
+          return;
+        }
         case "/help":
           await ctx.reply("Not implemented");
           return;

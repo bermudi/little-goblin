@@ -199,6 +199,7 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   onTextDelta(delta: string): void {
+    const prevLen = this.accumulatedText.length;
     this.accumulatedText += delta;
     this.isStreaming = true;
     this.startChatAction();
@@ -214,10 +215,31 @@ export class MessageBuffer implements TurnCallbacks {
       this.phase = "done";
       this.commitStatus();
     }
+    log.debug("response: delta", {
+      deltaLen: delta.length,
+      accLen: this.accumulatedText.length,
+      accGrow: prevLen === 0,
+      msgId: this.responseMessageId,
+    });
     void this.flushResponse();
   }
 
   onToolStart(name: string, _input: unknown): void {
+    // Force-flush any accumulated response text before the tool runs,
+    // regardless of whether this tool is visible in the status line.
+    // Without this, text that arrived after the last throttle window
+    // sits invisible in accumulatedText for the entire tool execution,
+    // so the user sees a truncated prefix (e.g. "Let" instead of
+    // "Let me check the pi docs...").
+    if (this.accumulatedText.length > 0) {
+      log.debug("response: force-flush before tool", {
+        tool: name,
+        accLen: this.accumulatedText.length,
+        msgId: this.responseMessageId,
+      });
+      void this.flushResponse(true);
+    }
+
     if (!shouldShowTool(name, this.visibility)) return;
     const isNewName = !this.toolsObserved.includes(name);
     if (isNewName) this.toolsObserved.push(name);
@@ -254,6 +276,10 @@ export class MessageBuffer implements TurnCallbacks {
   onAgentEnd(): void {
     this.isStreaming = false;
     this.stopChatAction();
+    log.debug("response: agent_end", {
+      accLen: this.accumulatedText.length,
+      msgId: this.responseMessageId,
+    });
     // The turn is over; the resting state is always Done. (Zero-tool
     // turns transition thinking→done; typical turns are already there
     // courtesy of the last onToolEnd.)
@@ -439,8 +465,14 @@ export class MessageBuffer implements TurnCallbacks {
    */
   async flushResponse(force: boolean = false): Promise<void> {
     const now = this.now();
-    if (!force && now - this.lastResponseEditTime < this.responseThrottleMs)
+    if (!force && now - this.lastResponseEditTime < this.responseThrottleMs) {
+      log.debug("response: skip (throttled)", {
+        elapsed: now - this.lastResponseEditTime,
+        throttleMs: this.responseThrottleMs,
+        accLen: this.accumulatedText.length,
+      });
       return;
+    }
 
     if (this.accumulatedText.length === 0) return;
 
@@ -452,7 +484,11 @@ export class MessageBuffer implements TurnCallbacks {
     // `sendMessage`. See test "does not duplicate-send when sendMessage is
     // slower than the throttle window".
     if (this.responseMessageId === undefined && this.creatingResponse) {
-      if (!force) return;
+      if (!force) {
+        log.debug("response: skip (send in-flight)", { accLen: this.accumulatedText.length });
+        return;
+      }
+      log.debug("response: await send in-flight (force)", { accLen: this.accumulatedText.length });
       await this.creatingResponse;
     }
 
@@ -463,11 +499,21 @@ export class MessageBuffer implements TurnCallbacks {
     // will pick up the latest accumulatedText. The force flush from
     // onAgentEnd MUST wait, so the final write contains the full text.
     if (this.editingResponse) {
-      if (!force) return;
+      if (!force) {
+        log.debug("response: skip (edit in-flight)", { accLen: this.accumulatedText.length });
+        return;
+      }
+      log.debug("response: await edit in-flight (force)", { accLen: this.accumulatedText.length });
       await this.editingResponse;
     }
 
     this.lastResponseEditTime = now;
+    log.debug("response: flush", {
+      force,
+      accLen: this.accumulatedText.length,
+      op: this.responseMessageId === undefined ? "send" : "edit",
+      msgId: this.responseMessageId,
+    });
 
     // Big output? Escape to file before doing anything else; we do not want
     // to spam many rollover messages for a 50KB code dump.
@@ -491,6 +537,10 @@ export class MessageBuffer implements TurnCallbacks {
               this.withThread(),
             );
             this.responseMessageId = msg.message_id;
+            log.debug("response: sent", {
+              msgId: msg.message_id,
+              accLen: this.accumulatedText.length,
+            });
           } catch (err) {
             this.handleResponseError(err);
           }
@@ -512,6 +562,10 @@ export class MessageBuffer implements TurnCallbacks {
         const inFlight = (async () => {
           try {
             await this.bot.api.editMessageText(this.chatId, messageId, text, this.withThread());
+            log.debug("response: edited", {
+              msgId: messageId,
+              accLen: text.length,
+            });
           } catch (err) {
             this.handleResponseError(err);
           }

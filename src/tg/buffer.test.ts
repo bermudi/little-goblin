@@ -1397,6 +1397,82 @@ describe("MessageBuffer", () => {
     });
   });
 
+  describe("response flush before tool execution", () => {
+    const STATUS_OFF = { visibility: "none" as const };
+
+    it("force-flushes accumulated text when a tool starts", async () => {
+      // Regression: LLM streams "Let me check the pi docs..." then calls a
+      // tool. Without the fix, only the prefix that made it through the
+      // throttle (e.g. "Let") is visible during tool execution. The user
+      // sees "Let" for seconds until the tool finishes and more text arrives.
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        ...STATUS_OFF,
+      });
+
+      // First delta creates the response message.
+      buffer.onTextDelta("Let");
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]?.text).toBe("Let");
+
+      // More deltas arrive within the throttle window — they accumulate but
+      // don't trigger a flush yet.
+      t = 1100;
+      buffer.onTextDelta(" me check the pi docs...");
+      // Still within 200ms throttle, so no edit yet.
+      expect(m.edit.length).toBe(0);
+
+      // Now a tool starts. The fix force-flushes ALL accumulated text.
+      buffer.onToolStart("read", {});
+      await tick();
+
+      // The response message should now show the FULL text.
+      expect(m.edit.length).toBe(1);
+      expect(m.edit[0]?.text).toBe("Let me check the pi docs...");
+    });
+
+    it("flushes even for filtered (hidden) tools", async () => {
+      // In minimal visibility, "read" is hidden. The response flush must
+      // still fire — it's about the response text, not the status line.
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        visibility: "minimal",
+      });
+
+      buffer.onTextDelta("Checking something");
+      await tick();
+      expect(m.send.length).toBeGreaterThanOrEqual(1);
+
+      // "read" is filtered in minimal visibility.
+      buffer.onToolStart("read", {});
+      await tick();
+
+      // Status line should NOT mention "read".
+      expect(buffer._state().toolsObserved).toEqual([]);
+      // But the response message must have the full text flushed.
+      const responseEdits = m.edit.filter(
+        (e) => !e.text.startsWith("🤔") && !e.text.startsWith("🔧"),
+      );
+      expect(responseEdits.length).toBeGreaterThanOrEqual(1);
+      expect(responseEdits[responseEdits.length - 1]?.text).toBe("Checking something");
+    });
+
+    it("no-ops when there is no accumulated text", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
+      buffer.onToolStart("bash", {});
+      await tick();
+      // No text was emitted, so nothing to flush.
+      expect(m.send.length).toBe(0);
+      expect(m.edit.length).toBe(0);
+    });
+  });
+
   describe("chat action refresh", () => {
     interface FakeScheduler {
       setIntervalFn: (fn: () => void, ms: number) => unknown;

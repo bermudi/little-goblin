@@ -18,7 +18,6 @@ This change wires the slash commands that affect session state and defines the i
 
 ### Out of scope
 - Subagent lifecycle implementation (spawning, revival, persistence — separate `subagent-runtime` change).
-- Cascade cancel (killing subagents when main is cancelled — deferred to v1.1).
 - Approval prompts or confirmation flows (YOLO mode per `progress.md`).
 - Message history navigation (fork, navigate tree — pi features, not goblin commands).
 

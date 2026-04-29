@@ -47,13 +47,13 @@ Telegram message received
 
 **Alternative rejected:** Queue commands until idle. Would frustrate users who want immediate control.
 
-### Separate cancel for subagents
+### Cascade cancel is the default
 
-**Chosen:** `/cancel` affects main goblin only. Subagents have `/cancel_subagent <id>`.
+**Chosen:** `/cancel`, `/new`, `/archive` kill the main agent **and** all live subagents. `/cancel_subagent <id>` remains available for surgical cancel of a single subagent without killing the parent.
 
-**Why:** Main agent and subagents are independent processes. Killing subagents when the user just wants to stop goblin's current response would be surprising. Explicit control over each entity is clearer.
+**Why:** User mental model for "cancel" is *stop everything*. Leaving subagents alive after the parent dies means orphan processes still consuming tokens and potentially writing to shared state (memory, events) — which is the actually surprising outcome. Cascade is a simple loop over the live subagent list, not architectural complexity.
 
-**Cascade cancel deferred:** v1.1 will add a flag or separate command to kill goblin + all its subagents.
+**If you want selective cancel later:** `/cancel --main` could kill just the parent without cascading, but that's an opt-in escape hatch, not the default.
 
 ### Command parsing at bot layer
 

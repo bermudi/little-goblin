@@ -85,6 +85,25 @@ The `/revive <id>` command SHALL exist and reply with a stub message. Full imple
 - **WHEN** `/revive abc123` is sent
 - **THEN** a stub reply "Not implemented" SHALL be shown
 
+### Requirement: Cancel cascades to all live subagents
+
+All cancel-capable commands (`/cancel`, `/new`, `/archive`, `/debug`) SHALL abort all live subagents in addition to the main agent.
+
+#### Scenario: Cancel kills parent and subagents
+- **WHEN** `/cancel` is sent while goblin is streaming and subagents are running
+- **THEN** all live subagents SHALL be aborted
+- **AND** the main agent SHALL be aborted
+- **AND** a "Cancelled" reply SHALL be sent
+
+#### Scenario: Cancel with no subagents
+- **WHEN** `/cancel` is sent while goblin is streaming with no subagents
+- **THEN** only the main agent SHALL be aborted (cascade is a no-op)
+
+#### Scenario: /new cascades before creating session
+- **WHEN** `/new` is sent while subagents are running
+- **THEN** all subagents SHALL be aborted before creating the new session
+- **AND** no orphan subagents SHALL reference the old session
+
 ### Requirement: Commands use interrupt semantics not queue
 
 All session-affecting commands (`/new`, `/archive`, `/debug`) SHALL cancel any active stream before executing.

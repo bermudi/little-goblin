@@ -17,7 +17,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 
 ## Open Questions
 
-- Which pi-coding-agent release to pin? Check latest stable before `bun add`.
+- ~~Which pi-coding-agent release to pin?~~ Resolved: ^0.67.x caret is fine. ToolDefinition fields we use are stable; re-evaluate at ^0.68 or ^1.0 cutover.
 - STT provider when v2 voice lands — Whisper local vs. Poe/OpenRouter audio endpoint.
 - Named subagent user-facing invocation (v1.1 design): slash per agent (`/researcher`), generic dispatcher (`/agent researcher …`), or Telegram topic binding?
 - `spawn_named` when no existing instance: always create new, or prompt goblin to pick between create / continue latest / continue specific?

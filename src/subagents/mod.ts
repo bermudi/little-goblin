@@ -14,11 +14,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSyn
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
-  AuthStorage,
   DefaultResourceLoader,
-  ModelRegistry,
   SessionManager,
-  SettingsManager,
   createAgentSession,
   type AgentSessionEvent,
   type ResourceLoader,
@@ -28,7 +25,8 @@ import {
 /** Valid characters for a named agent: alphanumeric, hyphens, underscores. */
 const VALID_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 import type { Config } from "../config.ts";
-import { piAgentDir, workdirPath } from "../agent/paths.ts";
+import { createPiServices, type PiServices } from "../pi-host.ts";
+import { piAgentDir, workdirPath } from "../pi-host.ts";
 import { resolveModel } from "../agent/models.ts";
 import { log } from "../log.ts";
 import {
@@ -52,13 +50,6 @@ import {
   type SubagentRole,
 } from "./types.ts";
 
-/** Lazily-initialised pi services shared across all subagents in this runner. */
-interface SharedServices {
-  authStorage: AuthStorage;
-  modelRegistry: ModelRegistry;
-  settingsManager: SettingsManager;
-}
-
 /** Factory that produces tools to inject into spawned subagents. */
 export type SubagentToolFactory = (
   runner: SubagentRunner,
@@ -79,7 +70,7 @@ export class SubagentRunner {
   /** Goblin home directory — exposed for dynamic tool descriptions. */
   readonly goblinHome: string;
   private readonly activeSubagents: Map<string, SubagentInstance> = new Map();
-  private services: SharedServices | null = null;
+  private services: PiServices | null = null;
   /** Produces tools (e.g. spawn_subagent) injected into each spawned subagent. */
   private readonly toolFactory: SubagentToolFactory | null;
   /** Prevents new spawns after dispose(). */
@@ -544,16 +535,9 @@ export class SubagentRunner {
    * All subagents within a `SubagentRunner` share these — only the
    * `SessionManager` is per-subagent so each has its own conversation file.
    */
-  private getSharedServices(): SharedServices {
+  private getSharedServices(): PiServices {
     if (this.services) return this.services;
-    const home = this.cfg.goblinHome;
-    const authStorage = AuthStorage.create(join(piAgentDir(home), "auth.json"));
-    const modelRegistry = ModelRegistry.create(
-      authStorage,
-      join(piAgentDir(home), "models.json"),
-    );
-    const settingsManager = SettingsManager.inMemory({});
-    this.services = { authStorage, modelRegistry, settingsManager };
+    this.services = createPiServices(this.cfg.goblinHome);
     return this.services;
   }
 

@@ -16,10 +16,10 @@
 
 ## Phase 3: Migrate SubagentRunner to pi-host, delete old paths module
 
-- [ ] Update `src/subagents/mod.ts`: import `PiServices` and `createPiServices` + path helpers from `../pi-host.ts`, replace `SharedServices` interface with `PiServices`, swap `getSharedServices()` body to call `createPiServices()`
-- [ ] Delete `src/agent/paths.ts`
-- [ ] Delete `src/agent/paths.test.ts`
-- [ ] Verify: full test suite passes — `bun test`
-- [ ] Verify: TypeScript compiles clean — `tsc --noEmit`
+- [x] Update `src/subagents/mod.ts`: import `PiServices` and `createPiServices` + path helpers from `../pi-host.ts`, replace `SharedServices` interface with `PiServices`, swap `getSharedServices()` body to call `createPiServices()`
+- [x] Delete `src/agent/paths.ts`
+- [x] Delete `src/agent/paths.test.ts`
+- [x] Verify: full test suite passes — `bun test`
+- [x] Verify: TypeScript compiles clean — `tsc --noEmit`
 
 **Commit:** `phase 3: migrate SubagentRunner to pi-host, delete agent/paths module`

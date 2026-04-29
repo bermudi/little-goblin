@@ -11,15 +11,19 @@
 
 Commit: `phase 1: command detection and basic routing`
 
-## Phase 2: Interrupt semantics (abort on command)
+## Phase 2: Interrupt semantics (abort on command with cascade)
 
 - [ ] Implement interrupt check: for `/cancel`, `/new`, `/archive`, `/debug`, check if `runner?.isStreaming`.
 - [ ] If streaming: call `await runner.abort()` before executing command logic.
+- [ ] Implement cascade-cancel: abort all live subagents before executing command logic.
+  - Iterate `SubagentRunner.liveSubagents()` (or equivalent), call `abort()` on each.
+  - Await all subagent aborts before proceeding to command logic.
 - [ ] Add `runner?.isStreaming` getter to `AgentRunner` if not already present.
 - [ ] Unit test: verify abort is called when streaming, verify command executes after abort.
+- [ ] Unit test: verify cascade-cancel aborts all live subagents.
 - [ ] Verify `bun run typecheck` + `bun test` pass.
 
-Commit: `phase 2: interrupt semantics for cancel/new/archive/debug`
+Commit: `phase 2: interrupt semantics with cascade cancel`
 
 ## Phase 3: /cancel command
 

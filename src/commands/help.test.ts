@@ -1,0 +1,33 @@
+import { describe, it, expect } from "bun:test";
+import { HELP_REPLY } from "./help.ts";
+
+describe("HELP_REPLY", () => {
+  it("lists every command mandated by the spec", () => {
+    // Spec scenario: "Help output" — the reply MUST list all available
+    // commands: /cancel, /new, /archive, /debug, /subagents,
+    // /cancel_subagent, /revive, /help. Pin the set so a future
+    // refactor that drops one fails loudly.
+    const required = [
+      "/cancel",
+      "/new",
+      "/archive",
+      "/debug",
+      "/subagents",
+      "/cancel_subagent",
+      "/revive",
+      "/help",
+    ];
+    for (const cmd of required) {
+      expect(HELP_REPLY).toContain(cmd);
+    }
+  });
+
+  it("flags subagent commands as not yet implemented", () => {
+    // Avoid surprising users who type /subagents and get "Not implemented".
+    expect(HELP_REPLY).toContain("not implemented yet");
+  });
+
+  it("renders as a multi-line string", () => {
+    expect(HELP_REPLY.split("\n").length).toBeGreaterThan(5);
+  });
+});

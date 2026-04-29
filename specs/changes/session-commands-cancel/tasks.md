@@ -115,11 +115,11 @@ Commit: `phase 7: subagent command surface (stubs)`
 
 ## Phase 8: Integration and polish
 
-- [ ] Ensure all commands work in both DMs and topics.
-- [ ] Implement `/help` command: reply with list of all available commands.
-- [ ] Review error messages for clarity.
-- [ ] Smoke test end-to-end: run bot, test each command.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Ensure all commands work in both DMs and topics. _Sweep: `/cancel` reads only `session`/`wasStreaming`/`hadLiveSubagents` — chat-type independent. `/new` uses `hasTopic` to refuse in topics, creates in DM/supergroup-no-topic. `/archive` runs in both, additionally renames the topic via `editForumTopic` when `locator.topicId !== undefined`. `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help` have no chat-type branches._
+- [x] Implement `/help` command: reply with list of all available commands. _`HELP_REPLY` constant in `src/commands/help.ts`; lists all 8 commands with one-line descriptions, flags subagent commands as not yet implemented to pre-empt the "Not implemented" surprise._
+- [x] Review error messages for clarity. _Cross-checked against spec literals: "Nothing to cancel.", "Cancelled.", "This topic is already its own session. No need for /new here.", "Created new session \`<id>\`", "No active session to archive.", "Session already archived.", "Session archived.", "No active session." (from /debug — matches spec scenario verbatim), "No active session. Use /new to start one." (DM fallthrough). All clear, consistent capitalization + period punctuation, and aligned with the spec scenarios._
+- [ ] Smoke test end-to-end: run bot, test each command. _Requires a real `BOT_TOKEN` against Telegram — out of reach for this session. **User: please run `bun run dev`, then exercise `/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent <id>`, `/revive <id>`, `/help` in a DM and a forum topic, and report any rough edges.**_
+- [x] Verify `bun run typecheck` + `bun test` pass. _359 pass, 0 fail._
 
 ### Test infrastructure note
 Use `vitest` `mock.module` for `@mariozechner/pi-coding-agent` and `SubagentRunner` (pattern: see `src/agent/mod.test.ts`). Use `mkdtempSync` for `SessionManager` tests (pattern: see `src/sessions/manager.test.ts`).

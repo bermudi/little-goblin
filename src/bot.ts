@@ -15,6 +15,7 @@ import { cancelReply } from "./commands/cancel.ts";
 import { executeNew } from "./commands/new.ts";
 import { executeArchive } from "./commands/archive.ts";
 import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./commands/subagents.ts";
+import { HELP_REPLY } from "./commands/help.ts";
 import { generateDiagnostics } from "./diagnostics.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
@@ -173,7 +174,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           return;
         }
         case "/help":
-          await ctx.reply("Not implemented");
+          await ctx.reply(HELP_REPLY);
           return;
         default:
           // Unknown /command — fall through to normal agent routing

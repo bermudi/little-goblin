@@ -43,7 +43,7 @@ patch → implement → archive
 
 4. **Validate:** `litespec validate <name>` to check your delta
 
-5. **Archive:** `litespec archive <name>` to merge deltas into canonical specs
+5. **Hand off to human:** Tell the user the patch is implemented and validated. They run `litespec archive <name>` when they're satisfied — archiving is the human's final stamp of approval, not an agent step
 
 ---
 
@@ -51,5 +51,5 @@ patch → implement → archive
 
 - **One capability per patch** — if you need to touch multiple, use propose instead
 - **No planning artifacts** — patch mode omits proposal, design, and tasks. The delta IS the contract.
-- **Validate before archive** — always run `litespec validate` to catch spec errors
-- **Commit after archive** — archive updates canon; commit the result
+- **Validate after implementing** — always run `litespec validate` to catch spec errors
+- **Do not archive** — archiving is the human's decision. Tell them to run `litespec archive <name>` when ready

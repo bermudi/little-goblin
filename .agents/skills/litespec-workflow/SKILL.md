@@ -37,6 +37,7 @@ patch → archive  (lightweight lane for small, single-capability changes)
 - **validate detects dangling deltas early** — Run it during apply to catch spec drift.
 - **Decisions are opt-in** — Created via `litespec decide` when architectural rulings span changes.
 - **archive is not "implement"** — apply is implement. archive commits deltas to canonical specs.
+- **Archive is a human decision** — the agent never runs `litespec archive`. After review, tell the user to run it themselves. It is the final stamp of approval.
 
 ---
 
@@ -78,7 +79,7 @@ Find the most relevant change (user-mentioned, or most recently touched) and exp
 
 **Tasks exist, not all done (active)** — totalTasks > 0 and completedTasks < totalTasks. Show progress and identify the current phase (first unchecked tasks block in tasks.md). Next: litespec-apply for that phase.
 
-**All tasks done (ready to archive)** — completedTasks == totalTasks > 0. Next: litespec-review then litespec-archive.
+**All tasks done (ready to archive)** — completedTasks == totalTasks > 0. Next: run `litespec-review`, then tell the user to run `litespec archive <name>` when they're satisfied. Archive is the human's final stamp of approval.
 
 ### If archived changes exist
 

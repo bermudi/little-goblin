@@ -171,6 +171,23 @@ export class AgentRunner {
   }
 
   /**
+   * Names of tools currently active on the underlying pi `AgentSession`.
+   * Returns `null` when the session has not been initialized yet (i.e. no
+   * `prompt()` has run); callers should render that as "unavailable".
+   */
+  getActiveToolNames(): string[] | null {
+    return this.session?.getActiveToolNames() ?? null;
+  }
+
+  /**
+   * Configured model id (passed at construction time via `Config.modelName`).
+   * Available even before the session has been initialized.
+   */
+  get modelName(): string {
+    return this.cfg.modelName;
+  }
+
+  /**
    * Abort the current agent operation.
    */
   async abort(): Promise<void> {

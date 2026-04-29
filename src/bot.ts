@@ -14,6 +14,7 @@ import { interruptAndCascade } from "./interrupt.ts";
 import { cancelReply } from "./commands/cancel.ts";
 import { executeNew } from "./commands/new.ts";
 import { executeArchive } from "./commands/archive.ts";
+import { generateDiagnostics } from "./diagnostics.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
 const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/debug"]);
@@ -140,7 +141,21 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           await ctx.reply(archiveResult.reply);
           return;
         }
-        case "/debug":
+        case "/debug": {
+          if (!session) {
+            await ctx.reply("No active session.");
+            return;
+          }
+          const diag = generateDiagnostics({
+            session,
+            runner: existingRunner,
+            subagentRunner,
+            goblinHome: cfg.goblinHome,
+            modelName: cfg.modelName,
+          });
+          await ctx.reply(diag);
+          return;
+        }
         case "/subagents":
         case "/cancel_subagent":
         case "/revive":

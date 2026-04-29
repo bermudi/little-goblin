@@ -81,17 +81,24 @@ Commit: `phase 5: /archive command with topic renaming`
 
 ## Phase 6: /debug command
 
-- [ ] Create `src/diagnostics.ts` with `generateDiagnostics(session, runner, subagentRunner)`:
-  - Gather: session ID, current model, active tools, loaded skills count (best-effort), events.jsonl path, events.jsonl size/line count, active subagent count.
+- [x] Create `src/diagnostics.ts` with `generateDiagnostics(deps)`:
+  - Gather: session ID, createdAt, current model, active tools, loaded skills count (best-effort), events.jsonl path, events.jsonl size/line count, total + running subagent count, context token usage (best-effort).
   - Format as human-readable text.
   - Fields that cannot be discovered (loaded skills, context token count) SHALL show "unavailable".
-- [ ] Implement `/debug` command:
-  - Interrupt if streaming (with cascade from phase 2).
+- [x] Implement `/debug` command:
+  - Interrupt if streaming (with cascade from phase 2). _`/debug` is in `CANCEL_CAPABLE_COMMANDS` so it inherits this from `interruptAndCascade`._
   - Check for no active session: reply "No active session."
   - Call `generateDiagnostics`.
   - Reply with formatted diagnostics.
-- [ ] Unit test: verify diagnostics content includes expected fields.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Unit test: verify diagnostics content includes expected fields. _Split into `formatDiagnostics` (deterministic snapshot → string) and `gatherDiagnostics` (real fs + stub runner/subagent). 11 new assertions in `src/diagnostics.test.ts`._
+- [x] Verify `bun run typecheck` + `bun test` pass. _350 pass, 0 fail._
+
+_Implementation notes:_
+- _`Diagnostics` is a structured snapshot, formatted by a separate pure function. This makes the format trivially testable without spinning up an `AgentSession`._
+- _Added `AgentRunner.getActiveToolNames()` (passes through to pi's `AgentSession.getActiveToolNames()`) and `AgentRunner.modelName` so diagnostics doesn't have to reach into private state. Tools are `null` (rendered "unavailable") until the first prompt initializes the session, since pi only knows tool names after `createAgentSession`._
+- _`skillsLoaded` and `contextTokens` are deliberately wired as `null` for now — pi exposes no API to query them. The fields are present in `Diagnostics` so they appear in the formatted output as "unavailable" rather than being silently dropped, matching the spec's "shown as 'unavailable' if not exposed by the API"._
+- _`/debug` reads only `existingRunner` (the resolved-but-non-creating lookup), so diagnostics for a brand-new session-with-no-runner will show `Tools: unavailable` rather than spuriously creating a runner just to populate the field._
+- _Events file stats use `statSync` for size + `readFileSync().split("\n").filter(Boolean).length` for lines. ENOENT and any read error are swallowed → null fields. Fine at v1; if events.jsonl ever grows into the hundreds of MB this becomes a streaming-line-count problem._
 
 Commit: `phase 6: /debug command with diagnostics`
 

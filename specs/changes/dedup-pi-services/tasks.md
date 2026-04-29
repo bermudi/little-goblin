@@ -1,8 +1,8 @@
 ## Phase 1: Add pi-host module
 
-- [ ] Create `src/pi-host.ts` exporting `PiServices` type, `createPiServices(home)`, `workdirPath(home)`, `piAgentDir(home)`, `agentsMdPath(home)`
-- [ ] Create `src/pi-host.test.ts` with path helper tests (moved from agent/paths.test.ts)
-- [ ] Verify: `bun test src/pi-host.test.ts` passes
+- [x] Create `src/pi-host.ts` exporting `PiServices` type, `createPiServices(home)`, `workdirPath(home)`, `piAgentDir(home)`, `agentsMdPath(home)`
+- [x] Create `src/pi-host.test.ts` with path helper tests (moved from agent/paths.test.ts)
+- [x] Verify: `bun test src/pi-host.test.ts` passes
 
 **Commit:** `phase 1: add pi-host module with shared service construction and path helpers`
 

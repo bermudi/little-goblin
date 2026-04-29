@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { Bot } from "grammy";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
@@ -5,12 +6,14 @@ import { log } from "./log.ts";
 import { buildAllowlistMiddleware, locatorFromCtx, MessageBuffer } from "./tg/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
 import { SessionManager } from "./sessions/mod.ts";
+import { sessionDir } from "./sessions/paths.ts";
 import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 import { interruptAndCascade } from "./interrupt.ts";
 import { cancelReply } from "./commands/cancel.ts";
 import { executeNew } from "./commands/new.ts";
+import { executeArchive } from "./commands/archive.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
 const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/debug"]);
@@ -111,7 +114,32 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           await ctx.reply(result.reply);
           return;
         }
-        case "/archive":
+        case "/archive": {
+          const archiveResult = executeArchive({
+            hasSession: session !== null,
+            sessionExists: session !== null && existsSync(sessionDir(cfg.goblinHome, session.id)),
+            archive: () => {
+              // session is guaranteed non-null in this branch (sessionExists implies hasSession)
+              manager.archive(session!.id);
+              runners.delete(session!.id);
+            },
+          });
+          if (archiveResult.kind === "archived" && locator.topicId !== undefined && session) {
+            try {
+              await bot.api.editForumTopic(locator.chatId, locator.topicId, {
+                name: `Archived: ${session.title ?? session.id}`,
+              });
+            } catch (err) {
+              log.error("failed to rename topic on archive", {
+                error: String(err),
+                chatId: locator.chatId,
+                topicId: locator.topicId,
+              });
+            }
+          }
+          await ctx.reply(archiveResult.reply);
+          return;
+        }
         case "/debug":
         case "/subagents":
         case "/cancel_subagent":

@@ -1,8 +1,9 @@
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import type { ChatLocator, SessionState } from "./types.ts";
+import type { BindingsFile, ChatLocator, SessionState } from "./types.ts";
 import { loadBindings, saveBindings } from "./bindings.ts";
 import { loadState, saveState } from "./state.ts";
 import { eventsPath, sessionsDir, sessionDir, transcriptPath } from "./paths.ts";
@@ -14,6 +15,44 @@ import { eventsPath, sessionsDir, sessionDir, transcriptPath } from "./paths.ts"
 function makeSessionId(): string {
   const hex = randomUUID().replace(/-/g, "");
   return hex.slice(0, 10);
+}
+
+/**
+ * Remove every binding (DM, supergroup, topic) that references the given
+ * session id. Returns true iff anything was removed.
+ */
+function clearBindingsForSession(bindings: BindingsFile, sessionId: string): boolean {
+  let changed = false;
+  if (bindings.dm) {
+    for (const key of Object.keys(bindings.dm)) {
+      if (bindings.dm[key] === sessionId) {
+        delete bindings.dm[key];
+        changed = true;
+      }
+    }
+  }
+  if (bindings.supergroups) {
+    for (const key of Object.keys(bindings.supergroups)) {
+      if (bindings.supergroups[key] === sessionId) {
+        delete bindings.supergroups[key];
+        changed = true;
+      }
+    }
+  }
+  if (bindings.topics) {
+    for (const chat of Object.keys(bindings.topics)) {
+      const inner = bindings.topics[chat];
+      if (!inner) continue;
+      for (const tid of Object.keys(inner)) {
+        if (inner[tid] === sessionId) {
+          delete inner[tid];
+          changed = true;
+        }
+      }
+      if (Object.keys(inner).length === 0) delete bindings.topics[chat];
+    }
+  }
+  return changed;
 }
 
 function ensureSessionFiles(home: string, id: string): void {
@@ -143,6 +182,32 @@ export class SessionManager {
   }
 
   /**
+   * Archive a session: move `sessions/<id>/` to `sessions/archive/<id>/`
+   * and remove every binding that references it.
+   *
+   * Throws if the source directory does not exist (already archived or
+   * unknown id). The caller is expected to detect the already-archived
+   * case via `existsSync(sessionDir(...))` first and surface a friendly
+   * message; the throw here is a defensive backstop.
+   */
+  archive(sessionId: string): void {
+    const src = sessionDir(this.home, sessionId);
+    if (!existsSync(src)) {
+      throw new Error(`session not found or already archived: ${sessionId}`);
+    }
+    const archiveBase = join(sessionsDir(this.home), "archive");
+    mkdirSync(archiveBase, { recursive: true });
+    const dst = join(archiveBase, sessionId);
+    renameSync(src, dst);
+
+    const bindings = loadBindings(this.home);
+    const changed = clearBindingsForSession(bindings, sessionId);
+    if (changed) saveBindings(this.home, bindings);
+
+    log.info("archived session", { id: sessionId });
+  }
+
+  /**
    * List all sessions by scanning the sessions directory.
    */
   list(): SessionState[] {
@@ -151,6 +216,7 @@ export class SessionManager {
       const entries = readdirSync(dir);
       const states: SessionState[] = [];
       for (const id of entries) {
+        if (id === "archive") continue; // archived sessions live in their own subtree
         const s = loadState(this.home, id);
         if (s) states.push(s);
       }

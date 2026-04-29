@@ -142,6 +142,61 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("archive", () => {
+    it("moves session dir to sessions/archive/<id>/ and clears DM binding", () => {
+      const loc: ChatLocator = { chatId: 123456 };
+      const created = manager.createForChat(loc);
+      expect(existsSync(join(tmpDir, "sessions", created.id, "state.json"))).toBe(true);
+
+      manager.archive(created.id);
+
+      expect(existsSync(join(tmpDir, "sessions", created.id))).toBe(false);
+      expect(existsSync(join(tmpDir, "sessions", "archive", created.id, "state.json"))).toBe(true);
+
+      const config = JSON.parse(readFileSync(join(tmpDir, "config.json"), "utf-8")) as BindingsFile;
+      expect(config.dm?.["123456"]).toBeUndefined();
+    });
+
+    it("clears topic binding and prunes empty chat entry", () => {
+      const loc: ChatLocator = { chatId: 999, topicId: 7 };
+      const created = manager.createForChat(loc);
+
+      manager.archive(created.id);
+
+      const config = JSON.parse(readFileSync(join(tmpDir, "config.json"), "utf-8")) as BindingsFile;
+      expect(config.topics?.["999"]).toBeUndefined();
+    });
+
+    it("clears supergroup binding", () => {
+      const loc: ChatLocator = { chatId: 555 };
+      const created = manager.createForChat(loc, { isSupergroup: true });
+
+      manager.archive(created.id);
+
+      const config = JSON.parse(readFileSync(join(tmpDir, "config.json"), "utf-8")) as BindingsFile;
+      expect(config.supergroups?.["555"]).toBeUndefined();
+    });
+
+    it("throws when session dir does not exist", () => {
+      expect(() => manager.archive("nonexistent")).toThrow(/not found or already archived/);
+    });
+
+    it("throws when called twice on the same session", () => {
+      const created = manager.createForChat({ chatId: 1 });
+      manager.archive(created.id);
+      expect(() => manager.archive(created.id)).toThrow(/not found or already archived/);
+    });
+
+    it("list() ignores the archive subtree", () => {
+      const a = manager.createForChat({ chatId: 1 });
+      const b = manager.createForChat({ chatId: 2 });
+      manager.archive(a.id);
+
+      const ids = manager.list().map((s) => s.id);
+      expect(ids).toEqual([b.id]);
+    });
+  });
+
   describe("list", () => {
     it("returns empty array when no sessions", () => {
       expect(manager.list()).toEqual([]);

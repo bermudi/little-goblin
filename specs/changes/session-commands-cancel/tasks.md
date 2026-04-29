@@ -52,25 +52,30 @@ Commit: `phase 3: /cancel command implementation`
 - [x] Unit test: verify session creation, verify interrupt behavior, verify topic rejection. _Helper-level tests pin topic rejection and the create branch (+ the no-prior-session fresh-start contract). Interrupt behavior is already covered by `interruptAndCascade` tests in phase 2; `/new` is in `CANCEL_CAPABLE_COMMANDS` so it inherits that path._
 - [x] Verify `bun run typecheck` + `bun test` pass.
 
-_Implementation note: the bot.ts `/new` branch passes `isSupergroup: ctx.chat?.type === "supergroup"` to `manager.createForChat` so a `/new` issued in a supergroup-without-topic rebinds the supergroup slot rather than accidentally creating a DM binding. The design.md snippet omitted this; it's a strict superset that mirrors `start.ts`._
+_The `/new` branch passes `isSupergroup: ctx.chat?.type === "supergroup"` to `createForChat` so a `/new` issued in a supergroup-without-topic rebinds the supergroup slot rather than accidentally creating a DM binding. This mirrors `start.ts`._
 
 Commit: `phase 4: /new command for DM sessions`
 
 ## Phase 5: /archive command
 
-- [ ] Add `sessionManager.archive(sessionId)` method to `src/sessions/manager.ts`:
+- [x] Add `sessionManager.archive(sessionId)` method to `src/sessions/manager.ts`:
   - Move session directory from `sessions/<id>/` to `sessions/archive/<id>/` via `renameSync`.
   - Remove the binding for this session from the chat's `config.json`.
   - Throw if source directory doesn't exist (already archived).
-- [ ] Implement `/archive` command:
+- [x] Implement `/archive` command:
   - Interrupt if streaming (with cascade from phase 2).
   - Check for no active session: reply "No active session to archive."
   - Check if `sessions/<id>/` exists: if not, reply "Session already archived."
   - Call `sessionManager.archive(session.id)`.
-  - In topics: rename topic to final title via `bot.api.setForumTopicName`.
+  - In topics: rename topic to final title via `bot.api.editForumTopic` (`setForumTopicName` does not exist on grammy's `Api`; the equivalent is `editForumTopic(chat_id, message_thread_id, { name })`).
   - Reply "Session archived."
-- [ ] Unit test: verify archive moves files, clears binding, handles already-archived, handles no-session.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Unit test: verify archive moves files, clears binding, handles already-archived, handles no-session. _Manager-level: DM/topic/supergroup binding clear, double-archive throw, `list()` ignores archive subtree. Helper-level (`commands/archive.test.ts`): three states + error propagation._
+- [x] Verify `bun run typecheck` + `bun test` pass. _339 pass, 0 fail._
+
+_Implementation notes:_
+- _The `archive(id)` method also drops the runner from `bot.ts`'s in-memory `runners` map via the injected `archive` closure, so the next message in that chat creates a fresh runner instead of pointing at a moved session dir._
+- _`SessionManager.list()` now skips the literal `archive` directory entry when scanning `sessions/` (was previously surviving by accident because `loadState(home, "archive")` returned null)._
+- _Topic rename uses `editForumTopic`, not `setForumTopicName` (no such grammy method). Failures are logged but do not block the reply — the archive itself already succeeded by that point._
 
 Commit: `phase 5: /archive command with topic renaming`
 

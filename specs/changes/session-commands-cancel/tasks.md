@@ -15,16 +15,16 @@ Commit: `phase 1: command detection and basic routing`
 
 ## Phase 2: Interrupt semantics (abort on command with cascade)
 
-- [ ] Implement interrupt check: for `/cancel`, `/new`, `/archive`, `/debug`, check if `runner?.isStreaming`.
-- [ ] If streaming: call `await runner.abort()` before executing command logic.
-- [ ] Implement cascade-cancel: abort all live subagents before executing command logic.
+- [x] Implement interrupt check: for `/cancel`, `/new`, `/archive`, `/debug`, check if `runner?.isStreaming`.
+- [x] If streaming: call `await runner.abort()` before executing command logic.
+- [x] Implement cascade-cancel: abort all live subagents before executing command logic.
   - Use `subagentRunner.list().filter(s => s.status === "running")` to enumerate live subagents.
   - Call `subagentRunner.cancel(id)` on each, via `Promise.all` with individual `.catch()` (best-effort, don't block command on a stuck subagent).
   - Await all subagent aborts before proceeding to command logic.
-- [ ] Note: `AgentRunner.session.isStreaming` is already available via pi's `AgentSession`. No new getter needed — access via `runner.session?.isStreaming` or store a local `isStreaming` flag.
-- [ ] Unit test: verify abort is called when streaming, verify command executes after abort.
-- [ ] Unit test: verify cascade-cancel aborts all live subagents.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Note: `AgentRunner.session.isStreaming` is already available via pi's `AgentSession`. No new getter needed — access via `runner.session?.isStreaming` or store a local `isStreaming` flag. _Implementation note: added an `isStreaming` getter on `AgentRunner` because `session` is private; the helper takes a structural `InterruptableRunner` shape so tests stay light._
+- [x] Unit test: verify abort is called when streaming, verify command executes after abort.
+- [x] Unit test: verify cascade-cancel aborts all live subagents.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 2: interrupt semantics with cascade cancel`
 

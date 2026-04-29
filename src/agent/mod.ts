@@ -163,6 +163,14 @@ export class AgentRunner {
   }
 
   /**
+   * True when the underlying pi `AgentSession` is mid-stream.
+   * False when no session has been initialized yet.
+   */
+  get isStreaming(): boolean {
+    return this.session?.isStreaming ?? false;
+  }
+
+  /**
    * Abort the current agent operation.
    */
   async abort(): Promise<void> {

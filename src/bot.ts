@@ -8,6 +8,10 @@ import { SessionManager } from "./sessions/mod.ts";
 import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
+import { interruptAndCascade } from "./interrupt.ts";
+
+/** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
+const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/debug"]);
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -47,12 +51,25 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       return;
     }
 
-    // Command routing: known slash-commands handled here before session
-    // resolution so they work even without an active session. Unknown
+    // Resolve session (non-creating) early so command handlers can see
+    // current runner state without forcing creation for slash-only flows.
+    const isSupergroup = ctx.chat?.type === "supergroup";
+    const session = manager.resolve(locator, { isSupergroup });
+    const existingRunner = session ? runners.get(session.id) ?? null : null;
+
+    // Command routing: known slash-commands handled here before normal
+    // agent routing so they work even without an active session. Unknown
     // slash-commands fall through to normal agent routing.
     const rawText = ctx.msg?.text;
     if (rawText?.startsWith("/")) {
-      const command = rawText.split(" ")[0];
+      const command = rawText.split(" ")[0] ?? "";
+
+      // Cancel-capable commands abort the active stream and cascade-cancel
+      // every live subagent before executing their own logic.
+      if (CANCEL_CAPABLE_COMMANDS.has(command)) {
+        await interruptAndCascade(existingRunner, subagentRunner);
+      }
+
       switch (command) {
         case "/cancel":
           await ctx.reply("Cancelled.");
@@ -72,8 +89,6 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       }
     }
 
-    const isSupergroup = ctx.chat?.type === "supergroup";
-    const session = manager.resolve(locator, { isSupergroup });
     if (!session) {
       // DM without active session - prompt user to create one
       if (locator.topicId === undefined) {

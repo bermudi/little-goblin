@@ -47,6 +47,31 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       return;
     }
 
+    // Command routing: known slash-commands handled here before session
+    // resolution so they work even without an active session. Unknown
+    // slash-commands fall through to normal agent routing.
+    const rawText = ctx.msg?.text;
+    if (rawText?.startsWith("/")) {
+      const command = rawText.split(" ")[0];
+      switch (command) {
+        case "/cancel":
+          await ctx.reply("Cancelled.");
+          return;
+        case "/new":
+        case "/archive":
+        case "/debug":
+        case "/subagents":
+        case "/cancel_subagent":
+        case "/revive":
+        case "/help":
+          await ctx.reply("Not implemented");
+          return;
+        default:
+          // Unknown /command — fall through to normal agent routing
+          break;
+      }
+    }
+
     const isSupergroup = ctx.chat?.type === "supergroup";
     const session = manager.resolve(locator, { isSupergroup });
     if (!session) {

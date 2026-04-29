@@ -2,14 +2,14 @@
 
 ## Phase 1: Command detection and routing
 
-- [ ] In `src/bot.ts` message handler, add command detection: check if `ctx.message.text.startsWith('/')`.
-- [ ] Parse command: `const command = ctx.message.text.split(' ')[0]`.
-- [ ] Add switch/case or router for commands: `/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help`.
-- [ ] For unknown slash-commands: fall through to normal agent routing (don't reply "Unknown command").
-- [ ] Add basic `/cancel` implementation: reply "Cancelled" and return (interrupt logic comes in phase 2).
-- [ ] Remove `bot.command("new")` from `src/commands/mod.ts` — `/new` is now handled in `bot.ts` text handler. Keep `ping` and `start` registrations.
-- [ ] Delete or leave `src/commands/new.ts` as dead code.
-- [ ] Verify `bun run typecheck` passes.
+- [x] In `src/bot.ts` message handler, add command detection: check if `ctx.message.text.startsWith('/')`.
+- [x] Parse command: `const command = ctx.message.text.split(' ')[0]`.
+- [x] Add switch/case or router for commands: `/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help`.
+- [x] For unknown slash-commands: fall through to normal agent routing (don't reply "Unknown command").
+- [x] Add basic `/cancel` implementation: reply "Cancelled" and return (interrupt logic comes in phase 2).
+- [x] Remove `bot.command("new")` from `src/commands/mod.ts` — `/new` is now handled in `bot.ts` text handler. Keep `ping` and `start` registrations.
+- [x] Delete or leave `src/commands/new.ts` as dead code.
+- [x] Verify `bun run typecheck` passes.
 
 Commit: `phase 1: command detection and basic routing`
 

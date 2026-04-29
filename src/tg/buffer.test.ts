@@ -745,6 +745,67 @@ describe("MessageBuffer", () => {
       expect(m.edit.length).toBe(0);
     });
 
+    it("skips a no-op edit when text is unchanged since the last successful render", async () => {
+      // Regression: agent_end's force-flush after the last delta already
+      // landed would otherwise hit Telegram with the same text and earn
+      // a 400 "message is not modified" warning. The local guard now
+      // turns this into a no-op.
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        ...STATUS_OFF,
+      });
+      buffer.onTextDelta("hello");
+      await tick();
+      expect(m.send.length).toBe(1); // initial sendMessage
+
+      t = 2000; // beyond throttle so a second flush would actually issue
+      // No new delta; text is unchanged. Force-flush should be a no-op.
+      await buffer.flushResponse(true);
+      expect(m.edit.length).toBe(0);
+
+      // After a real new delta, the edit fires as normal.
+      buffer.onTextDelta(" world");
+      await tick();
+      expect(m.edit.length).toBe(1);
+      expect(m.edit[0]?.text).toBe("hello world");
+
+      // And one more force-flush after that lands as a no-op too.
+      t = 3000;
+      await buffer.flushResponse(true);
+      expect(m.edit.length).toBe(1);
+    });
+
+    it("downgrades 400 'message is not modified' to a debug log (no warn)", async () => {
+      // Belt-and-braces for the guard above: even if a duplicate edit
+      // slips through (e.g. concurrent flushes both reading the same
+      // accumulatedText), Telegram's 400 must not be reported as a flush
+      // failure. Verified indirectly: the API call happens, the buffer
+      // stays usable, no error throws out.
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        ...STATUS_OFF,
+      });
+      buffer.onTextDelta("hi");
+      await tick();
+      expect(m.send.length).toBe(1);
+
+      t = 2000;
+      m.failNext.edit = {
+        error_code: 400,
+        description: "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message",
+      };
+      // Force a different text so the local guard doesn't short-circuit;
+      // we want the API call to actually happen and the 400 to be handled.
+      buffer.onTextDelta("!");
+      await tick();
+      // Buffer survives, responseMessageId still set (not "message gone").
+      expect(buffer._state().responseMessageId).toBe(101);
+    });
+
     it("handles deleted response message by resetting responseMessageId", async () => {
       let t = 1000;
       const m = makeBot();
@@ -1444,9 +1505,16 @@ describe("MessageBuffer", () => {
         visibility: "minimal",
       });
 
-      buffer.onTextDelta("Checking something");
+      // First delta: triggers sendMessage. Second delta within throttle:
+      // accumulated but not yet flushed. The toolStart force-flush is
+      // what we're verifying — without it the second delta would only
+      // land at the next throttle tick.
+      buffer.onTextDelta("Checking ");
       await tick();
       expect(m.send.length).toBeGreaterThanOrEqual(1);
+      buffer.onTextDelta("something");
+      // Still within 200ms throttle, so no edit yet.
+      const editsBefore = m.edit.length;
 
       // "read" is filtered in minimal visibility.
       buffer.onToolStart("read", {});
@@ -1455,9 +1523,9 @@ describe("MessageBuffer", () => {
       // Status line should NOT mention "read".
       expect(buffer._state().toolsObserved).toEqual([]);
       // But the response message must have the full text flushed.
-      const responseEdits = m.edit.filter(
-        (e) => !e.text.startsWith("🤔") && !e.text.startsWith("🔧"),
-      );
+      const responseEdits = m.edit
+        .slice(editsBefore)
+        .filter((e) => !e.text.startsWith("🤔") && !e.text.startsWith("🔧"));
       expect(responseEdits.length).toBeGreaterThanOrEqual(1);
       expect(responseEdits[responseEdits.length - 1]?.text).toBe("Checking something");
     });

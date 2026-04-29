@@ -139,6 +139,14 @@ export class MessageBuffer implements TurnCallbacks {
    * caps the typical turn at 3 writes (placeholder + working + done).
    */
   private lastRenderedStatusText: string = "";
+  /**
+   * Mirror of `lastRenderedStatusText` for the response message. Suppresses
+   * no-op `editMessageText` calls when the throttle re-fires with no new
+   * text (e.g. a force-flush at `onAgentEnd` after the last delta already
+   * landed). Telegram would otherwise return 400 "message is not modified".
+   * Reset to "" whenever the response message is recreated or goes away.
+   */
+  private lastRenderedResponseText: string = "";
 
   private now: () => number;
   private statusThrottleMs: number;
@@ -507,7 +515,6 @@ export class MessageBuffer implements TurnCallbacks {
       await this.editingResponse;
     }
 
-    this.lastResponseEditTime = now;
     log.debug("response: flush", {
       force,
       accLen: this.accumulatedText.length,
@@ -517,29 +524,54 @@ export class MessageBuffer implements TurnCallbacks {
 
     // Big output? Escape to file before doing anything else; we do not want
     // to spam many rollover messages for a 50KB code dump.
-    if (await this.maybeFileEscape()) return;
+    if (await this.maybeFileEscape()) {
+      this.lastResponseEditTime = now;
+      return;
+    }
 
     // Drain any overflow first; this may send/edit several messages.
     await this.maybeRollover();
 
     if (this.accumulatedText.length === 0) return;
 
+    // Idempotence guard for the edit path: if the message already has
+    // this exact text we'd just earn a 400 "message is not modified".
+    // Returning early here means we also do NOT touch
+    // `lastResponseEditTime` — otherwise a subsequent real delta would
+    // get throttled-out by a fake "edit" that never happened.
+    if (
+      this.responseMessageId !== undefined &&
+      this.accumulatedText === this.lastRenderedResponseText
+    ) {
+      log.debug("response: skip (no-op edit)", {
+        msgId: this.responseMessageId,
+        accLen: this.accumulatedText.length,
+      });
+      return;
+    }
+
+    this.lastResponseEditTime = now;
+
     try {
       if (this.responseMessageId === undefined) {
         // Publish the in-flight promise BEFORE awaiting so concurrent flushes
         // can observe it and skip/wait. Clear it after the send resolves
         // (success or failure), regardless of which branch handled the error.
+        const sentText = this.accumulatedText;
         const inFlight = (async () => {
           try {
             const msg = await this.bot.api.sendMessage(
               this.chatId,
-              this.accumulatedText,
+              sentText,
               this.withThread(),
             );
             this.responseMessageId = msg.message_id;
+            // Seed the idempotence guard so a force-flush at agent_end
+            // with the same text becomes a no-op rather than a 400.
+            this.lastRenderedResponseText = sentText;
             log.debug("response: sent", {
               msgId: msg.message_id,
-              accLen: this.accumulatedText.length,
+              accLen: sentText.length,
             });
           } catch (err) {
             this.handleResponseError(err);
@@ -556,12 +588,14 @@ export class MessageBuffer implements TurnCallbacks {
       } else {
         // Capture the text at scheduling time. The serialization above
         // ensures the LATEST flush sees the LATEST accumulatedText,
-        // since each edit awaits prior edits.
+        // since each edit awaits prior edits. The no-op guard against
+        // an unchanged text already fired above.
         const text = this.accumulatedText;
         const messageId = this.responseMessageId;
         const inFlight = (async () => {
           try {
             await this.bot.api.editMessageText(this.chatId, messageId, text, this.withThread());
+            this.lastRenderedResponseText = text;
             log.debug("response: edited", {
               msgId: messageId,
               accLen: text.length,
@@ -622,6 +656,7 @@ export class MessageBuffer implements TurnCallbacks {
     // outcome so we do not loop trying to upload it again.
     this.accumulatedText = "";
     this.responseMessageId = undefined;
+    this.lastRenderedResponseText = "";
     return true;
   }
 
@@ -652,6 +687,7 @@ export class MessageBuffer implements TurnCallbacks {
         }
         // The previous message is now "closed"; the tail starts a new one.
         this.responseMessageId = undefined;
+        this.lastRenderedResponseText = "";
         this.accumulatedText = tail;
         rolled = true;
       } catch (err) {
@@ -665,6 +701,7 @@ export class MessageBuffer implements TurnCallbacks {
   private handleResponseError(err: unknown): void {
     this.handleApiError(err, "response", () => {
       this.responseMessageId = undefined;
+      this.lastRenderedResponseText = "";
     });
   }
 
@@ -690,6 +727,14 @@ export class MessageBuffer implements TurnCallbacks {
         description,
       });
       onMessageGone();
+      return;
+    }
+    if (code === 400 && /message is not modified/i.test(description)) {
+      // Telegram already has the desired content — duplicate edit is a
+      // no-op, not a failure. Belt-and-braces alongside the local
+      // `lastRendered*Text` guards: covers any edge case where the
+      // guard misses (e.g. concurrent edits with the same final text).
+      log.debug(`${kind} edit not modified, skipping`, { description });
       return;
     }
     log.warn(`${kind} flush failed`, { description });

@@ -10,10 +10,11 @@ import { sessionDir } from "./sessions/paths.ts";
 import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
-import { interruptAndCascade } from "./interrupt.ts";
+import { interruptAndCascade, DEFAULT_CASCADE_TIMEOUT_MS, type CascadeResult } from "./interrupt.ts";
 import { cancelReply } from "./commands/cancel.ts";
 import { executeNew } from "./commands/new.ts";
 import { executeArchive } from "./commands/archive.ts";
+import { parseCommand } from "./commands/parse.ts";
 import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./commands/subagents.ts";
 import { HELP_REPLY } from "./commands/help.ts";
 import { generateDiagnostics } from "./diagnostics.ts";
@@ -69,20 +70,16 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     // agent routing so they work even without an active session. Unknown
     // slash-commands fall through to normal agent routing.
     const rawText = ctx.msg?.text;
-    if (rawText?.startsWith("/")) {
-      const command = rawText.split(" ")[0] ?? "";
-
-      // Capture pre-interrupt state so /cancel can report honestly:
-      // the cascade about to run will reset both signals to "nothing live".
-      const wasStreaming = existingRunner?.isStreaming ?? false;
-      const hadLiveSubagents = subagentRunner
-        .list()
-        .some((s) => s.status === "running");
+    const command = parseCommand(rawText);
+    if (command !== null) {
 
       // Cancel-capable commands abort the active stream and cascade-cancel
-      // every live subagent before executing their own logic.
+      // every live subagent before executing their own logic. The cascade
+      // returns a summary so /cancel can report honestly (including any
+      // timeouts) instead of relying on a stale pre-interrupt snapshot.
+      let cascade: CascadeResult | null = null;
       if (CANCEL_CAPABLE_COMMANDS.has(command)) {
-        await interruptAndCascade(existingRunner, subagentRunner);
+        cascade = await interruptAndCascade(existingRunner, subagentRunner);
       }
 
       switch (command) {
@@ -90,19 +87,39 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           await ctx.reply(
             cancelReply({
               hasSession: session !== null,
-              wasStreaming,
-              hadLiveSubagents,
+              cascade: cascade ?? {
+                attemptedMain: false,
+                attemptedSubagents: 0,
+                timedOutMain: false,
+                timedOutSubagents: 0,
+              },
+              cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
             }),
           );
           return;
         case "/new": {
           const isSupergroupChat = ctx.chat?.type === "supergroup";
+          // Treat forum General topics as topics: locator.topicId is undefined
+          // for them, but message_thread_id is set. Mirrors /start's check.
+          const hasThreadId =
+            !!ctx.msg && "message_thread_id" in ctx.msg && typeof ctx.msg.message_thread_id === "number";
           const result = executeNew({
-            hasTopic: locator.topicId !== undefined,
+            hasTopic: locator.topicId !== undefined || hasThreadId,
             createSession: () =>
               manager.createForChat(locator, { isSupergroup: isSupergroupChat }),
           });
           if (result.kind === "created") {
+            // Dispose any prior runner for this chat before swapping in the
+            // new one. Without this the old AgentRunner stays in the map
+            // forever (orphaned: bindings point at the new session) and
+            // leaks its pi AgentSession subscription.
+            if (session) {
+              const prior = runners.get(session.id);
+              if (prior) {
+                prior.dispose();
+                runners.delete(session.id);
+              }
+            }
             runners.set(
               result.session.id,
               new AgentRunner({
@@ -118,15 +135,33 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           return;
         }
         case "/archive": {
+          let archiveError: unknown = null;
           const archiveResult = executeArchive({
             hasSession: session !== null,
             sessionExists: session !== null && existsSync(sessionDir(cfg.goblinHome, session.id)),
             archive: () => {
               // session is guaranteed non-null in this branch (sessionExists implies hasSession)
-              manager.archive(session!.id);
+              try {
+                manager.archive(session!.id);
+              } catch (err) {
+                archiveError = err;
+                throw err;
+              }
+              // Dispose the runner so its pi AgentSession releases its
+              // subscription before we drop the map entry.
+              const prior = runners.get(session!.id);
+              if (prior) prior.dispose();
               runners.delete(session!.id);
             },
           });
+          if (archiveError) {
+            log.error("archive failed", {
+              error: String(archiveError),
+              sessionId: session?.id,
+            });
+            await ctx.reply("Failed to archive session. Please try again.");
+            return;
+          }
           if (archiveResult.kind === "archived" && locator.topicId !== undefined && session) {
             try {
               await bot.api.editForumTopic(locator.chatId, locator.topicId, {
@@ -162,13 +197,13 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           await ctx.reply(SUBAGENT_STUB_REPLY);
           return;
         case "/cancel_subagent": {
-          const id = parseSubagentId(rawText);
+          const id = parseSubagentId(rawText ?? "");
           log.debug("/cancel_subagent stub invoked", { id });
           await ctx.reply(SUBAGENT_STUB_REPLY);
           return;
         }
         case "/revive": {
-          const id = parseSubagentId(rawText);
+          const id = parseSubagentId(rawText ?? "");
           log.debug("/revive stub invoked", { id });
           await ctx.reply(SUBAGENT_STUB_REPLY);
           return;

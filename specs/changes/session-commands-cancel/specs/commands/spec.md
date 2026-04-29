@@ -141,6 +141,22 @@ All session-affecting commands (`/new`, `/archive`, `/debug`) SHALL cancel any a
 - **AND** the binding SHALL be cleared
 - **AND** no runner SHALL be active for that chat
 
+### Requirement: Cascade cancel is bounded by a timeout
+
+The cascade SHALL bound each individual `abort()`/`cancel()` call by a per-call timeout (default 5 seconds). A target whose abort does not resolve within the timeout SHALL be left alone (no kill-9 fallback per non-goal) but SHALL be reported in the cascade summary so the user-facing reply is honest about what may still be running.
+
+#### Scenario: Stuck subagent does not block the command
+- **WHEN** `/cancel` is sent and a subagent's `cancel()` never resolves
+- **THEN** the cascade SHALL stop waiting on that subagent after the timeout
+- **AND** the command SHALL still complete and reply within bounded time
+- **AND** the reply SHALL acknowledge the timed-out subagent (e.g. "Cancelled. (1 subagent didn't respond in 5s and may still be running.)")
+
+#### Scenario: Stuck main agent does not block the command
+- **WHEN** `/cancel` is sent and the main runner's `abort()` never resolves
+- **THEN** the cascade SHALL stop waiting on the main runner after the timeout
+- **AND** subagent cancels SHALL still run after the main timeout
+- **AND** the reply SHALL acknowledge the stuck main agent
+
 ### Requirement: Help command lists available commands
 
 The `/help` command SHALL reply with a list of all available commands.
@@ -148,3 +164,33 @@ The `/help` command SHALL reply with a list of all available commands.
 #### Scenario: Help output
 - **WHEN** `/help` is sent
 - **THEN** a reply SHALL list all available commands: `/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help`
+
+## MODIFIED Requirements
+
+### Requirement: Register command handlers on bot
+
+The system SHALL register command handlers in two locations: pure-helper commands (`/ping`, `/start`) via grammy's `bot.command()` middleware in `registerCommands()`, and session-affecting commands (`/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help`) inline in the `message:text` handler in `bot.ts` so they share interrupt semantics and can run even when no session is bound.
+
+#### Scenario: Bot initialized
+
+- **WHEN** `registerCommands()` is called with a Bot instance and SessionManager
+- **THEN** it SHALL register handlers for `/ping` and `/start` only
+- **AND** session-affecting commands SHALL be routed by `bot.ts`'s `message:text` handler
+
+## REMOVED Requirements
+
+### Requirement: Implement /new command for DM session creation
+
+**Reason:** Replaced by **New command cancels and creates fresh session**. The old reply format (`Created new session \`<id>\`\nWorkdir: \`sessions/<id>/workdir\`` with MarkdownV2) is superseded by the simpler `Created new session \`<id>\`` reply, because `/new` no longer guarantees session creation in every chat type and the workdir is now exposed via `/debug`.
+
+### Requirement: Reject /new in non-forum groups
+
+**Reason:** `/new` is now routed through `bot.ts`'s `message:text` handler. Plain groups never reach this handler because `locatorFromCtx` only emits a locator for chats with a usable id, the allowlist middleware drops non-allowed senders, and supergroup-without-topic is now an explicit supported surface (rebinds the supergroup slot). Plain-group rejection is no longer a meaningful contract.
+
+### Requirement: Warn when /new used in topic
+
+**Reason:** Absorbed into **New command cancels and creates fresh session** → scenario *New in a forum topic*. The reply text is preserved verbatim (`This topic is already its own session. No need for /new here.`); the new requirement adds the cancel-with-cascade semantics.
+
+### Requirement: Handle indeterminate chat context gracefully
+
+**Reason:** `/new` is no longer eligible to receive a null locator: the `message:text` handler returns early when `locatorFromCtx` yields `null` (logged but no reply). The `Unable to determine chat context.` reply only applies to commands that hit grammy's `bot.command()` path (still kept by `/start`).

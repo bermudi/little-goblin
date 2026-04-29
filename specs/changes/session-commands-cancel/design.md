@@ -51,21 +51,23 @@ Telegram message received
 
 **Chosen:** `/cancel`, `/new`, `/archive` kill the main agent **and** all live subagents. `/cancel_subagent <id>` remains available for surgical cancel of a single subagent without killing the parent.
 
-**Why:** User mental model for "cancel" is *stop everything*. Leaving subagents alive after the parent dies means orphan processes still consuming tokens and potentially writing to shared state (memory, events) — which is the actually surprising outcome. Cascade is a simple loop over the live subagent list, not architectural complexity.
+**Why:** User mental model for "cancel" is *stop everything*. Leaving subagents alive after the parent dies means orphan processes still consuming tokens and potentially writing to shared state (memory, events) — which is the actually surprising outcome. Cascade is a simple loop over the live subagent list via `SubagentRunner.list().filter(s => s.status === "running")`, not architectural complexity.
 
-**If you want selective cancel later:** `/cancel --main` could kill just the parent without cascading, but that's an opt-in escape hatch, not the default.
+**Selective cancel is not in scope** but could be added later as `/cancel --main` if a use case emerges.
 
 ### Command parsing at bot layer
 
-**Chosen:** Commands are detected and parsed in `src/bot.ts`, not in `AgentRunner` or as pi extension commands.
+**Chosen:** Commands are detected and parsed in `src/bot.ts` `bot.on("message:text")` handler, replacing the existing `bot.command()` registrations from `src/commands/mod.ts`.
 
-**Why:** Commands affect session state (archiving, new sessions) which the Telegram layer owns. Pi extensions require the agent to be running; these commands must work even when the agent is busy/crashed.
+**Why:** Commands affect session state (archiving, new sessions) which the Telegram layer owns. Pi extensions require the agent to be running; these commands must work even when the agent is busy/crashed. grammy's `bot.command()` middleware fires before `bot.on("message:text")`, so keeping both would cause double-handling — the text handler would never see `/new` because `bot.command("new")` already consumed it.
+
+**Migration:** Remove `/new` from `registerCommands()` in `src/commands/mod.ts`. The text handler in `bot.ts` becomes the single command router. `bot.command("ping")` and `bot.command("start")` remain in `mod.ts` since they have no interrupt semantics and don't conflict.
 
 ### Diagnostics in /debug
 
-**Chosen:** `/debug` outputs: current model, active tools, loaded skills, events.jsonl path, session stats (context usage if available), recent tool calls.
+**Chosen:** `/debug` outputs: current model, active tools, loaded skills (if discoverable), events.jsonl path, session stats (context usage if available).
 
-**Why:** When things feel slow or weird, users need visibility. This is a v1 debugging aid until we have better observability.
+**Why:** When things feel slow or weird, users need visibility. This is a v1 debugging aid until we have better observability. Some fields (loaded skills, context token count) may not be easily exposed by pi's `AgentSession` API — these are included on a best-effort basis. Missing fields are shown as "unavailable" rather than omitted.
 
 **Format:** Plain text, human-readable, not structured. Example:
 ```
@@ -89,50 +91,76 @@ Context: ~12k tokens used
 
 - **`src/bot.ts`** — Add command parsing and interrupt handling:
   ```typescript
-  // In message handler, after session resolution
-  if (ctx.message.text.startsWith('/')) {
-    const command = ctx.message.text.split(' ')[0];
+  // In bot.on("message:text") handler, BEFORE session resolution, after locator
+  const text = ctx.msg?.text;
+  if (text?.startsWith('/')) {
+    const command = text.split(' ')[0];
     
-    // Interrupt semantics
+    // Interrupt semantics: cancel-capable commands abort first
     if (['/cancel', '/new', '/archive', '/debug'].includes(command)) {
-      if (runner?.isStreaming) await runner.abort();
+      try {
+        if (runner?.session?.isStreaming) await runner.abort();
+      } catch (err) {
+        log.error("abort failed during interrupt", { error: String(err) });
+        // continue — command still executes even if abort fails
+      }
+      // Cascade: abort all live subagents
+      const live = subagentRunner.list().filter(s => s.status === "running");
+      await Promise.all(live.map(s => subagentRunner.cancel(s.id).catch(() => {})));
     }
     
     switch (command) {
       case '/cancel':
-        await ctx.reply('Cancelled');
+        await ctx.reply(runner?.session?.isStreaming ? 'Cancelled.' : 'Nothing to cancel.');
         return;
       case '/new':
-        session = sessionManager.createForChat(locator);
-        await ctx.reply(`New session: ${session.id}`);
+        // topic case: already has a session
+        if (locator.topicId !== undefined) {
+          await ctx.reply('This topic is already its own session. No need for /new here.');
+          return;
+        }
+        const newSession = manager.createForChat(locator);
+        runners.set(newSession.id, new AgentRunner({ cfg, sessionId: newSession.id, customTools: [], subagentRunner }));
+        await ctx.reply(`Created new session \`${newSession.id}\``);
         return;
       case '/archive':
-        sessionManager.archive(session.id);
-        await ctx.reply('Session archived');
+        if (!session) { await ctx.reply('No active session to archive.'); return; }
+        const sessionDir = path.join(cfg.goblinHome, 'sessions', session.id);
+        if (!existsSync(sessionDir)) { await ctx.reply('Session already archived.'); return; }
+        manager.archive(session.id);
+        if (locator.topicId !== undefined) {
+          await bot.api.setForumTopicName(locator.chatId, locator.topicId, `Archived: ${session.id}`);
+        }
+        await ctx.reply('Session archived.');
         return;
       case '/debug':
-        const diag = await generateDiagnostics(session, runner);
+        if (!session) { await ctx.reply('No active session.'); return; }
+        const diag = await generateDiagnostics(session, runner, subagentRunner);
         await ctx.reply(diag);
         return;
       case '/subagents':
-        // stub - implementation in subagent-runtime
         await ctx.reply('Not implemented');
         return;
       case '/cancel_subagent':
-        // parse ID, delegate
-        await ctx.reply('Not implemented'); // placeholder
+        await ctx.reply('Not implemented');
         return;
       case '/revive':
-        // parse ID, delegate
-        await ctx.reply('Not implemented'); // placeholder
+        await ctx.reply('Not implemented');
         return;
+      case '/help':
+        await ctx.reply('Commands: /cancel /new /archive /debug /subagents /cancel_subagent /revive /help');
+        return;
+      default:
+        // Unknown /command — fall through to normal agent routing
+        break;
     }
   }
   ```
-  - Covers: all command routing and interrupt semantics.
+  - Covers: all command routing, interrupt semantics, cascade cancel.
+  - **Important:** This replaces the existing `bot.command("new")` registration in `src/commands/mod.ts`.
 
-- **`src/commands/*.ts`** — May add formal command handlers in `src/commands/cancel.ts`, `new.ts`, etc., registered in `mod.ts`.
-  - Alternative: keep inline in `bot.ts` for v1 simplicity.
+- **`src/commands/mod.ts`** — Remove `bot.command("new")` registration; `/new` is now handled in `bot.ts` text handler. Keep `ping` and `start` registrations.
+- **`src/commands/new.ts`** — File can be deleted or left as dead code; handler is now inline in `bot.ts`.
 
 ### New files
 
@@ -145,8 +173,17 @@ Context: ~12k tokens used
 
 ### Not touched
 
-- `src/agent/` — no changes; abort is already implemented.
-- `src/sessions/` — archive method exists (verify); no new behavior.
+- `src/agent/` — no changes; `abort()` and `isStreaming` are already implemented.
+- `src/subagents/` — no changes; `list()`, `cancel()` are already implemented.
+- `src/sessions/manager.ts` — add `archive(sessionId)` method (see below).
+
+### New methods on existing files
+
+- **`src/sessions/manager.ts`** — Add `archive(sessionId: string): void`:
+  - Move `sessions/<id>/` to `sessions/archive/<id>/` via `renameSync`.
+  - Remove the binding for this session from the chat's `config.json`.
+  - Throw if source directory doesn't exist (already archived or unknown session).
+  - Detection: if `sessions/<id>/` doesn't exist, the caller replies "Session already archived."
 
 ## State diagram
 
@@ -159,10 +196,16 @@ User sends /new while streaming
 └───────┬───────┘
         │
         ▼
-┌───────────────┐
-│ runner.abort()│
-│ await idle    │
-└───────┬───────┘
+┌───────────────────────┐
+│ try { runner.abort() } │
+│ catch { log + continue}│
+└───────┬───────────────┘
+        │
+        ▼
+┌───────────────────────────────────┐
+│ Cascade: abort all live subagents  │
+│ via SubagentRunner.cancel(id)      │
+└───────┬───────────────────────────┘
         │
         ▼
 ┌───────────────┐
@@ -176,4 +219,4 @@ User sends /new while streaming
 └───────────────┘
 ```
 
-Note: We rely on pi's abort() being reliable. No timeout fallback per non-goals.
+Note: `runner.abort()` is wrapped in try/catch — if abort fails, the command still executes but the failure is logged. We rely on pi's `abort()` being reliable; no timeout fallback per non-goals.

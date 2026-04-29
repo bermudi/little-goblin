@@ -16,19 +16,36 @@ The `/cancel` command SHALL call `AgentRunner.abort()` immediately, cancelling a
 - **THEN** it SHALL succeed without error
 - **AND** a "Nothing to cancel" reply SHALL be sent
 
+#### Scenario: Cancel with no active session
+- **WHEN** `/cancel` is sent in a DM with no active session
+- **THEN** a "Nothing to cancel" reply SHALL be sent
+
 ### Requirement: New command cancels and creates fresh session
 
 The `/new` command SHALL cancel any active turn, create a new DM session, and switch to it.
 
 #### Scenario: New during active turn
 - **WHEN** `/new` is sent while streaming
-- **THEN** the current turn SHALL be aborted
+- **THEN** the current turn SHALL be aborted (with cascade to subagents)
 - **AND** a new session SHALL be created
-- **AND** goblin SHALL reply from the new session
+- **AND** a reply SHALL include the new session ID
+- **AND** the chat binding SHALL reference the new session ID
 
 #### Scenario: New when idle
 - **WHEN** `/new` is sent while idle
 - **THEN** a new session SHALL be created without abort
+- **AND** a reply SHALL include the new session ID
+
+#### Scenario: New in a forum topic
+- **WHEN** `/new` is sent in a forum topic (while streaming or idle)
+- **THEN** the active turn SHALL be aborted (if streaming)
+- **AND** a reply SHALL state "This topic is already its own session. No need for /new here."
+- **AND** no new session SHALL be created
+
+#### Scenario: New with no active session
+- **WHEN** `/new` is sent in a DM with no active session
+- **THEN** a new session SHALL be created
+- **AND** a reply SHALL include the new session ID
 
 ### Requirement: Archive command cancels and archives session
 
@@ -36,7 +53,7 @@ The `/archive` command SHALL cancel any active turn, move the current session to
 
 #### Scenario: Archive during streaming
 - **WHEN** `/archive` is sent while streaming
-- **THEN** the current turn SHALL be aborted
+- **THEN** the current turn SHALL be aborted (with cascade to subagents)
 - **AND** the session SHALL be archived
 
 #### Scenario: Archive in topic
@@ -46,7 +63,11 @@ The `/archive` command SHALL cancel any active turn, move the current session to
 
 #### Scenario: Already archived session
 - **WHEN** `/archive` is used on an already-archived session
-- **THEN** an error "Session already archived" SHALL be shown
+- **THEN** detection SHALL check if `sessions/<id>/` exists; if not, "Session already archived" SHALL be shown
+
+#### Scenario: Archive with no active session
+- **WHEN** `/archive` is sent in a DM with no active session
+- **THEN** a "No active session to archive" reply SHALL be sent
 
 ### Requirement: Debug command cancels and dumps diagnostics
 
@@ -54,12 +75,17 @@ The `/debug` command SHALL cancel any active turn and dump session diagnostics (
 
 #### Scenario: Debug during streaming
 - **WHEN** `/debug` is sent while streaming
-- **THEN** the current turn SHALL be aborted
+- **THEN** the current turn SHALL be aborted (with cascade to subagents)
 - **AND** diagnostics SHALL be sent as a formatted message
 
 #### Scenario: Debug output format
 - **WHEN** `/debug` is used
-- **THEN** output SHALL include: current model, active tools, loaded skills, events.jsonl path, session stats
+- **THEN** output SHALL include: current model, active tools, events.jsonl path, session stats
+- **AND** output MAY include: loaded skills, context token usage (on a best-effort basis; shown as "unavailable" if not exposed by the API)
+
+#### Scenario: Debug with no active session
+- **WHEN** `/debug` is sent in a DM with no active session
+- **THEN** a "No active session" reply SHALL be sent
 
 ### Requirement: Subagents command surface exists (stub)
 
@@ -111,4 +137,14 @@ All session-affecting commands (`/new`, `/archive`, `/debug`) SHALL cancel any a
 #### Scenario: Rapid command spam
 - **WHEN** `/new` then `/archive` sent in quick succession
 - **THEN** each SHALL execute immediately, cancelling prior activity
-- **AND** final state SHALL reflect the last command
+- **AND** the session SHALL be in `sessions/archive/`
+- **AND** the binding SHALL be cleared
+- **AND** no runner SHALL be active for that chat
+
+### Requirement: Help command lists available commands
+
+The `/help` command SHALL reply with a list of all available commands.
+
+#### Scenario: Help output
+- **WHEN** `/help` is sent
+- **THEN** a reply SHALL list all available commands: `/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help`

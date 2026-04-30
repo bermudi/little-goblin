@@ -22,11 +22,18 @@ import { log } from "./log.ts";
 export interface InterruptableRunner {
   readonly isStreaming: boolean;
   abort(): Promise<void>;
+  /**
+   * Optional hook called by the cascade when `abort()` doesn't resolve
+   * within the timeout. Implementations should flip into a terminal
+   * "abort gave up" state so subsequent cancel-capable commands don't
+   * re-attempt the same wedged abort.
+   */
+  markAbortTimedOut?(): void;
 }
 
 /** Minimal shape we need from `SubagentRunner` — keeps testing trivial. */
 export interface InterruptableSubagentRunner {
-  list(): ReadonlyArray<{ id: string; status: string }>;
+  list(): ReadonlyArray<{ id: string; status: string; spawnedBy?: string | null }>;
   cancel(id: string): Promise<void>;
 }
 
@@ -54,6 +61,32 @@ export interface CascadeResult {
 /** Default cascade timeout. Long enough to cover real network aborts; short enough to not feel hung. */
 export const DEFAULT_CASCADE_TIMEOUT_MS = 5000;
 
+/** Poll interval while waiting for a runner to return to the idle state. */
+const IDLE_POLL_MS = 10;
+/** Max time we wait for isStreaming → false after abort() resolves. */
+const IDLE_MAX_WAIT_MS = 500;
+
+/**
+ * Poll `runner.isStreaming` until it flips false or `maxMs` elapses.
+ * Non-blocking by design: tight bound, never throws. Returns true when
+ * idle, false on max-wait timeout (logged by caller if needed).
+ */
+async function waitForIdle(
+  runner: InterruptableRunner,
+  pollMs: number,
+  maxMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + maxMs;
+  while (runner.isStreaming) {
+    if (Date.now() >= deadline) {
+      log.warn("runner remained streaming after abort resolved", { maxMs });
+      return false;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, pollMs));
+  }
+  return true;
+}
+
 const TIMEOUT_SENTINEL: unique symbol = Symbol("cascade-timeout");
 type Timeout = typeof TIMEOUT_SENTINEL;
 
@@ -80,11 +113,18 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | Timeout> {
  * Abort the main runner if streaming, then cascade-cancel every live
  * subagent, each bounded by `cascadeTimeoutMs`. Resolves with a summary
  * of what was attempted and what timed out.
+ *
+ * When `sessionId` is provided, the cascade only touches subagents
+ * reachable from that session via the `spawnedBy` chain — i.e. direct
+ * children and their transitive descendants. Subagents belonging to
+ * other sessions are left alone. Pass `null`/undefined to cancel every
+ * live subagent process-wide (legacy behaviour, still used in tests).
  */
 export async function interruptAndCascade(
   runner: InterruptableRunner | null,
   subagentRunner: InterruptableSubagentRunner,
   cascadeTimeoutMs: number = DEFAULT_CASCADE_TIMEOUT_MS,
+  sessionId?: string | null,
 ): Promise<CascadeResult> {
   const result: CascadeResult = {
     attemptedMain: false,
@@ -107,10 +147,43 @@ export async function interruptAndCascade(
     if (outcome === TIMEOUT_SENTINEL) {
       result.timedOutMain = true;
       log.warn("main runner abort timed out", { timeoutMs: cascadeTimeoutMs });
+      // Flip the runner into a "gave up" state so the next cancel-capable
+      // command doesn't re-enter abort() on a wedged pi session.
+      runner.markAbortTimedOut?.();
+    } else {
+      // abort() resolved. pi sometimes resolves `session.abort()` before
+      // `isStreaming` has flipped back to false — a trailing tick may
+      // still be flushing event handlers. Poll briefly so callers who
+      // rename the session directory immediately afterwards (`/new`,
+      // `/archive`) don't race an in-flight events.jsonl append.
+      await waitForIdle(runner, IDLE_POLL_MS, IDLE_MAX_WAIT_MS);
     }
   }
 
-  const live = subagentRunner.list().filter((s) => s.status === "running");
+  const snapshot = subagentRunner.list();
+  const running = snapshot.filter((s) => s.status === "running");
+  // When a sessionId is supplied, walk spawnedBy transitively: a subagent
+  // belongs to this session iff its spawnedBy is the session itself or
+  // any other subagent already in the set. Iterate to fixed point — the
+  // list is small (bounded by MAX_SUBAGENT_DEPTH branching) so a couple
+  // of passes is fine.
+  let live: typeof running;
+  if (sessionId) {
+    const reachable = new Set<string>([sessionId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const s of snapshot) {
+        if (s.spawnedBy && reachable.has(s.spawnedBy) && !reachable.has(s.id)) {
+          reachable.add(s.id);
+          changed = true;
+        }
+      }
+    }
+    live = running.filter((s) => s.spawnedBy !== undefined && s.spawnedBy !== null && reachable.has(s.spawnedBy));
+  } else {
+    live = running;
+  }
   result.attemptedSubagents = live.length;
 
   await Promise.all(

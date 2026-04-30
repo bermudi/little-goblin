@@ -76,6 +76,12 @@ export interface SubagentInfo {
   role: SubagentRole;
   status: SubagentStatus;
   spawnedAt: string;
+  /**
+   * Identifier of the spawning agent — goblin session id for top-level
+   * subagents, or parent subagent id for nested ones. `null` for
+   * subagents whose meta predates this field.
+   */
+  spawnedBy: string | null;
 }
 
 /**

@@ -20,31 +20,34 @@ The `/cancel` command SHALL call `AgentRunner.abort()` immediately, cancelling a
 - **WHEN** `/cancel` is sent in a DM with no active session
 - **THEN** a "Nothing to cancel" reply SHALL be sent
 
-### Requirement: New command cancels and creates fresh session
+### Requirement: New command resets the chat to a fresh session
 
-The `/new` command SHALL cancel any active turn, create a new DM session, and switch to it.
+The `/new` command SHALL cancel any active turn, archive the chat's current session if one exists, create a fresh session bound to the same chat surface (DM, forum topic, or supergroup), and switch to it. Unlike `/archive`, `/new` SHALL NOT rename the forum topic — the topic title is preserved so the user can keep using it.
 
 #### Scenario: New during active turn
 - **WHEN** `/new` is sent while streaming
 - **THEN** the current turn SHALL be aborted (with cascade to subagents)
-- **AND** a new session SHALL be created
+- **AND** the existing session SHALL be archived
+- **AND** a new session SHALL be created and bound to the same chat surface
 - **AND** a reply SHALL include the new session ID
-- **AND** the chat binding SHALL reference the new session ID
 
-#### Scenario: New when idle
-- **WHEN** `/new` is sent while idle
-- **THEN** a new session SHALL be created without abort
+#### Scenario: New when idle with prior session
+- **WHEN** `/new` is sent while idle and a session is already bound to the chat
+- **THEN** the existing session SHALL be archived without abort
+- **AND** a new session SHALL be created and bound to the same chat surface
 - **AND** a reply SHALL include the new session ID
 
 #### Scenario: New in a forum topic
-- **WHEN** `/new` is sent in a forum topic (while streaming or idle)
-- **THEN** the active turn SHALL be aborted (if streaming)
-- **AND** a reply SHALL state "This topic is already its own session. No need for /new here."
-- **AND** no new session SHALL be created
+- **WHEN** `/new` is sent in a forum topic
+- **THEN** the active turn SHALL be aborted (if streaming, with cascade to subagents)
+- **AND** the topic's existing session SHALL be archived
+- **AND** a fresh session SHALL be created and bound to the same `(chat, topic)`
+- **AND** the topic SHALL NOT be renamed (in contrast to `/archive`)
+- **AND** a reply SHALL include the new session ID
 
 #### Scenario: New with no active session
 - **WHEN** `/new` is sent in a DM with no active session
-- **THEN** a new session SHALL be created
+- **THEN** a new session SHALL be created (no archive step, since there is nothing to archive)
 - **AND** a reply SHALL include the new session ID
 
 ### Requirement: Archive command cancels and archives session
@@ -181,7 +184,7 @@ The system SHALL register command handlers in two locations: pure-helper command
 
 ### Requirement: Implement /new command for DM session creation
 
-**Reason:** Replaced by **New command cancels and creates fresh session**. The old reply format (`Created new session \`<id>\`\nWorkdir: \`sessions/<id>/workdir\`` with MarkdownV2) is superseded by the simpler `Created new session \`<id>\`` reply, because `/new` no longer guarantees session creation in every chat type and the workdir is now exposed via `/debug`.
+**Reason:** Replaced by **New command resets the chat to a fresh session**. The old reply format (`Created new session \`<id>\`\nWorkdir: \`sessions/<id>/workdir\`` with MarkdownV2) is superseded by the simpler `Created new session \`<id>\`` reply, because `/new` no longer guarantees session creation in every chat type and the workdir is now exposed via `/debug`.
 
 ### Requirement: Reject /new in non-forum groups
 
@@ -189,7 +192,7 @@ The system SHALL register command handlers in two locations: pure-helper command
 
 ### Requirement: Warn when /new used in topic
 
-**Reason:** Absorbed into **New command cancels and creates fresh session** → scenario *New in a forum topic*. The reply text is preserved verbatim (`This topic is already its own session. No need for /new here.`); the new requirement adds the cancel-with-cascade semantics.
+**Reason:** Removed. `/new` in a topic now resets the topic's session (archive + create + rebind) rather than refusing. Topics are still 1:1 with sessions, but `/new` is the user's escape hatch for "clear context here" regardless of chat surface — refusing in topics left the user with no in-place reset short of `/archive`, which retitles the topic and is a heavier operation.
 
 ### Requirement: Handle indeterminate chat context gracefully
 

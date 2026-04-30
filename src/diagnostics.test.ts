@@ -159,10 +159,10 @@ describe("gatherDiagnostics", () => {
 
   it("counts subagents by status", () => {
     const subagents: SubagentInfo[] = [
-      { id: "a", name: null, role: "generic", status: "running", spawnedAt: "" },
-      { id: "b", name: null, role: "generic", status: "running", spawnedAt: "" },
-      { id: "c", name: null, role: "generic", status: "completed", spawnedAt: "" },
-      { id: "d", name: null, role: "generic", status: "cancelled", spawnedAt: "" },
+      { id: "a", name: null, role: "generic", status: "running", spawnedAt: "", spawnedBy: null },
+      { id: "b", name: null, role: "generic", status: "running", spawnedAt: "", spawnedBy: null },
+      { id: "c", name: null, role: "generic", status: "completed", spawnedAt: "", spawnedBy: null },
+      { id: "d", name: null, role: "generic", status: "cancelled", spawnedAt: "", spawnedBy: null },
     ];
     const d = gatherDiagnostics({
       session: makeSession("sess000004"),

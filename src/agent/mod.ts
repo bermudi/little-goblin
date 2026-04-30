@@ -42,6 +42,15 @@ export class AgentRunner {
   private accumulatedText: string = "";
   private callbacks: TurnCallbacks | null = null;
   private memoryStore: MemoryStore;
+  /**
+   * Sticky flag set by the interrupt layer when a prior `abort()` did not
+   * resolve within the cascade timeout. Once set, `isStreaming` reports
+   * false and `abort()` is a no-op — we've already given up on the
+   * in-flight abort, so a second call (from another cancel-capable
+   * command) would just hit pi's abort path again on a session in an
+   * undefined state.
+   */
+  private _abortTimedOut: boolean = false;
 
   constructor(opts: AgentRunnerOptions) {
     this.cfg = opts.cfg;
@@ -167,7 +176,17 @@ export class AgentRunner {
    * False when no session has been initialized yet.
    */
   get isStreaming(): boolean {
+    if (this._abortTimedOut) return false;
     return this.session?.isStreaming ?? false;
+  }
+
+  /**
+   * Mark this runner's current abort as having timed out. Called by the
+   * interrupt layer when `abort()` didn't resolve within the cascade
+   * budget. Sticky until `dispose()`.
+   */
+  markAbortTimedOut(): void {
+    this._abortTimedOut = true;
   }
 
   /**
@@ -191,6 +210,7 @@ export class AgentRunner {
    * Abort the current agent operation.
    */
   async abort(): Promise<void> {
+    if (this._abortTimedOut) return;
     if (!this.session) return;
     await this.session.abort();
   }

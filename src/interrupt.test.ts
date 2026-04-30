@@ -8,18 +8,20 @@ import {
 function makeRunner(opts: {
   isStreaming: boolean;
   abort?: () => Promise<void>;
-}): InterruptableRunner & { abort: ReturnType<typeof mock> } {
+}): InterruptableRunner & { abort: ReturnType<typeof mock>; markAbortTimedOut: ReturnType<typeof mock> } {
   const abort = mock(opts.abort ?? (async () => {}));
+  const markAbortTimedOut = mock(() => {});
   return {
     get isStreaming() {
       return opts.isStreaming;
     },
     abort,
+    markAbortTimedOut,
   };
 }
 
 function makeSubagentRunner(
-  subs: ReadonlyArray<{ id: string; status: string }>,
+  subs: ReadonlyArray<{ id: string; status: string; spawnedBy?: string | null }>,
   cancelImpl?: (id: string) => Promise<void>,
 ): InterruptableSubagentRunner & { cancel: ReturnType<typeof mock> } {
   const cancel = mock(cancelImpl ?? (async (_id: string) => {}));
@@ -139,6 +141,126 @@ describe("interruptAndCascade", () => {
     expect(res.timedOutMain).toBe(true);
     // Subagent cancels still run after the main timeout.
     expect(sr.cancel).toHaveBeenCalledWith("a");
+  });
+
+  it("waits for isStreaming to settle false after abort resolves", async () => {
+    // Simulates pi's behaviour where session.abort() resolves before
+    // isStreaming flips — the cascade should not return until the
+    // runner is actually idle so /new /archive don't race event
+    // flushes. We flip streaming → false 30ms after abort resolves.
+    let streaming = true;
+    setTimeout(() => {
+      streaming = false;
+    }, 30);
+    const runner: InterruptableRunner = {
+      get isStreaming() {
+        return streaming;
+      },
+      abort: async () => {
+        // abort resolves immediately; isStreaming is still true
+      },
+    };
+    const sr = makeSubagentRunner([]);
+    const start = Date.now();
+    await interruptAndCascade(runner, sr);
+    const elapsed = Date.now() - start;
+    expect(streaming).toBe(false);
+    expect(elapsed).toBeGreaterThanOrEqual(25);
+    expect(elapsed).toBeLessThan(600);
+  });
+
+  it("gives up waiting for idle after the bounded max (500ms)", async () => {
+    // Never flips streaming → false. The cascade should not hang;
+    // it should log and proceed after the internal max-wait.
+    const runner: InterruptableRunner = {
+      get isStreaming() {
+        return true;
+      },
+      abort: async () => {},
+    };
+    const sr = makeSubagentRunner([]);
+    const start = Date.now();
+    await interruptAndCascade(runner, sr);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(1000);
+    expect(elapsed).toBeGreaterThanOrEqual(400);
+  });
+
+  it("calls markAbortTimedOut on the runner when main abort times out", async () => {
+    const runner = makeRunner({
+      isStreaming: true,
+      abort: () => new Promise<void>(() => {}),
+    });
+    const sr = makeSubagentRunner([]);
+    const res = await interruptAndCascade(runner, sr, 10);
+    expect(res.timedOutMain).toBe(true);
+    expect(runner.markAbortTimedOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call markAbortTimedOut when abort resolves in time", async () => {
+    const runner = makeRunner({ isStreaming: true });
+    const sr = makeSubagentRunner([]);
+    await interruptAndCascade(runner, sr);
+    expect(runner.markAbortTimedOut).not.toHaveBeenCalled();
+  });
+
+  it("tolerates a runner without markAbortTimedOut (optional hook)", async () => {
+    // The interface marks markAbortTimedOut as optional; a legacy runner
+    // without it shouldn't crash the cascade when abort times out.
+    const abort = mock(() => new Promise<void>(() => {}));
+    const runner: InterruptableRunner = {
+      get isStreaming() {
+        return true;
+      },
+      abort,
+    };
+    const sr = makeSubagentRunner([]);
+    const res = await interruptAndCascade(runner, sr, 10);
+    expect(res.timedOutMain).toBe(true);
+  });
+
+  describe("session scoping", () => {
+    it("when sessionId given, only cancels subagents in the session tree", async () => {
+      const sr = makeSubagentRunner([
+        { id: "a", status: "running", spawnedBy: "sess-A" },
+        { id: "b", status: "running", spawnedBy: "sess-B" },
+        { id: "c", status: "running", spawnedBy: "a" }, // nested under a
+        { id: "d", status: "running", spawnedBy: "b" }, // nested under b
+      ]);
+      const res = await interruptAndCascade(null, sr, 5000, "sess-A");
+      const ids = sr.cancel.mock.calls.map((c) => c[0]).sort();
+      expect(ids).toEqual(["a", "c"]);
+      expect(res.attemptedSubagents).toBe(2);
+    });
+
+    it("walks the spawnedBy chain transitively (depth > 2)", async () => {
+      const sr = makeSubagentRunner([
+        { id: "a", status: "running", spawnedBy: "sess-A" },
+        { id: "b", status: "running", spawnedBy: "a" },
+        { id: "c", status: "running", spawnedBy: "b" },
+      ]);
+      await interruptAndCascade(null, sr, 5000, "sess-A");
+      expect(sr.cancel).toHaveBeenCalledTimes(3);
+    });
+
+    it("skips subagents with null spawnedBy when sessionId is set", async () => {
+      const sr = makeSubagentRunner([
+        { id: "a", status: "running", spawnedBy: null },
+        { id: "b", status: "running", spawnedBy: "sess-A" },
+      ]);
+      await interruptAndCascade(null, sr, 5000, "sess-A");
+      const ids = sr.cancel.mock.calls.map((c) => c[0]);
+      expect(ids).toEqual(["b"]);
+    });
+
+    it("without sessionId, cancels every running subagent (legacy behaviour)", async () => {
+      const sr = makeSubagentRunner([
+        { id: "a", status: "running", spawnedBy: "sess-A" },
+        { id: "b", status: "running", spawnedBy: "sess-B" },
+      ]);
+      await interruptAndCascade(null, sr);
+      expect(sr.cancel).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("times out stuck subagent cancels and reports the count", async () => {

@@ -11,7 +11,7 @@ import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 import { interruptAndCascade, DEFAULT_CASCADE_TIMEOUT_MS, type CascadeResult } from "./interrupt.ts";
-import { cancelReply } from "./commands/cancel.ts";
+import { cancelReply, formatCascadeTimeoutSuffix } from "./commands/cancel.ts";
 import { executeNew } from "./commands/new.ts";
 import { executeArchive } from "./commands/archive.ts";
 import { parseCommand } from "./commands/parse.ts";
@@ -79,7 +79,12 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       // timeouts) instead of relying on a stale pre-interrupt snapshot.
       let cascade: CascadeResult | null = null;
       if (CANCEL_CAPABLE_COMMANDS.has(command)) {
-        cascade = await interruptAndCascade(existingRunner, subagentRunner);
+        cascade = await interruptAndCascade(
+          existingRunner,
+          subagentRunner,
+          DEFAULT_CASCADE_TIMEOUT_MS,
+          session?.id ?? null,
+        );
       }
 
       switch (command) {
@@ -99,64 +104,87 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           return;
         case "/new": {
           const isSupergroupChat = ctx.chat?.type === "supergroup";
-          // Treat forum General topics as topics: locator.topicId is undefined
-          // for them, but message_thread_id is set. Mirrors /start's check.
-          const hasThreadId =
-            !!ctx.msg && "message_thread_id" in ctx.msg && typeof ctx.msg.message_thread_id === "number";
-          const result = executeNew({
-            hasTopic: locator.topicId !== undefined || hasThreadId,
-            createSession: () =>
-              manager.createForChat(locator, { isSupergroup: isSupergroupChat }),
-          });
-          if (result.kind === "created") {
-            // Dispose any prior runner for this chat before swapping in the
-            // new one. Without this the old AgentRunner stays in the map
-            // forever (orphaned: bindings point at the new session) and
-            // leaks its pi AgentSession subscription.
-            if (session) {
-              const prior = runners.get(session.id);
-              if (prior) {
-                prior.dispose();
-                runners.delete(session.id);
-              }
-            }
-            runners.set(
-              result.session.id,
-              new AgentRunner({
-                cfg,
-                sessionId: result.session.id,
-                customTools: [],
-                subagentRunner,
-              }),
-            );
-            log.debug("created runner for /new session", { sessionId: result.session.id });
+          // /new is a universal "reset this chat surface" command:
+          // archive the prior session (if one exists and is not already
+          // archived), then create a fresh session bound to the same
+          // (chat, topic) / supergroup / DM slot. Topic title is NOT
+          // renamed — that's /archive's job, not /new's.
+          const priorSession = session;
+          const priorSessionExists =
+            priorSession !== null && existsSync(sessionDir(cfg.goblinHome, priorSession.id));
+          let result;
+          try {
+            result = executeNew({
+              archivePrior: priorSessionExists
+                ? () => {
+                    // Archive first; if rename fails, the old runner
+                    // stays alive on the original dir and the user can
+                    // retry. Only dispose after a successful move.
+                    manager.archive(priorSession!.id);
+                    const prior = runners.get(priorSession!.id);
+                    if (prior) prior.dispose();
+                    runners.delete(priorSession!.id);
+                  }
+                : undefined,
+              createSession: () =>
+                manager.createForChat(locator, { isSupergroup: isSupergroupChat }),
+            });
+          } catch (err) {
+            log.error("archive-on-new failed", {
+              error: String(err),
+              sessionId: priorSession?.id,
+            });
+            await ctx.reply("Failed to reset session. Please try again.");
+            return;
           }
-          await ctx.reply(result.reply);
+          // Edge case: prior binding was stale (state.json existed but
+          // session dir was missing). Clear the dangling runner entry so
+          // it doesn't outlive its now-orphaned session.
+          if (priorSession && !priorSessionExists) {
+            const orphan = runners.get(priorSession.id);
+            if (orphan) {
+              orphan.dispose();
+              runners.delete(priorSession.id);
+            }
+          }
+          runners.set(
+            result.session.id,
+            new AgentRunner({
+              cfg,
+              sessionId: result.session.id,
+              customTools: [],
+              subagentRunner,
+            }),
+          );
+          log.debug("created runner for /new session", {
+            sessionId: result.session.id,
+            archivedPrior: result.archivedPrior,
+          });
+          // Surface cascade timeouts honestly — the new session is ready
+          // but the user should know if the old stream/subagents stalled.
+          const suffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
+          await ctx.reply(`${result.reply}${suffix}`);
           return;
         }
         case "/archive": {
-          let archiveError: unknown = null;
-          const archiveResult = executeArchive({
-            hasSession: session !== null,
-            sessionExists: session !== null && existsSync(sessionDir(cfg.goblinHome, session.id)),
-            archive: () => {
-              // session is guaranteed non-null in this branch (sessionExists implies hasSession)
-              try {
+          let archiveResult;
+          try {
+            archiveResult = executeArchive({
+              hasSession: session !== null,
+              sessionExists: session !== null && existsSync(sessionDir(cfg.goblinHome, session.id)),
+              archive: () => {
+                // session is guaranteed non-null in this branch (sessionExists implies hasSession)
                 manager.archive(session!.id);
-              } catch (err) {
-                archiveError = err;
-                throw err;
-              }
-              // Dispose the runner so its pi AgentSession releases its
-              // subscription before we drop the map entry.
-              const prior = runners.get(session!.id);
-              if (prior) prior.dispose();
-              runners.delete(session!.id);
-            },
-          });
-          if (archiveError) {
+                // Dispose the runner so its pi AgentSession releases its
+                // subscription before we drop the map entry.
+                const prior = runners.get(session!.id);
+                if (prior) prior.dispose();
+                runners.delete(session!.id);
+              },
+            });
+          } catch (err) {
             log.error("archive failed", {
-              error: String(archiveError),
+              error: String(err),
               sessionId: session?.id,
             });
             await ctx.reply("Failed to archive session. Please try again.");
@@ -175,7 +203,8 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
               });
             }
           }
-          await ctx.reply(archiveResult.reply);
+          const archiveSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
+          await ctx.reply(`${archiveResult.reply}${archiveSuffix}`);
           return;
         }
         case "/debug": {
@@ -190,7 +219,8 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
             goblinHome: cfg.goblinHome,
             modelName: cfg.modelName,
           });
-          await ctx.reply(diag);
+          const debugSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
+          await ctx.reply(`${diag}${debugSuffix}`);
           return;
         }
         case "/subagents":

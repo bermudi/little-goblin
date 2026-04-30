@@ -46,13 +46,14 @@ Commit: `phase 3: /cancel command implementation`
 
 - [x] Implement `/new` command:
   - Interrupt if streaming (with cascade from phase 2).
-  - Handle topic case: reply "This topic is already its own session. No need for /new here."
-  - Handle DM case: call `sessionManager.createForChat(locator)`, reply with new session ID.
-  - Handle no-session case: same as DM case (creates a session).
-- [x] Unit test: verify session creation, verify interrupt behavior, verify topic rejection. _Helper-level tests pin topic rejection and the create branch (+ the no-prior-session fresh-start contract). Interrupt behavior is already covered by `interruptAndCascade` tests in phase 2; `/new` is in `CANCEL_CAPABLE_COMMANDS` so it inherits that path._
+  - **Universal reset:** archive the prior session (if one exists and its dir is still present), then create a fresh session bound to the same chat surface (DM, topic, or supergroup). Reply with the new session ID.
+  - In forum topics: do NOT rename the topic (that's `/archive`'s job).
+- [x] Unit test: verify session creation, verify archive-then-create ordering, verify archive-error propagation, verify no chat-surface special-casing in the helper. _See `src/commands/new.test.ts` (4 cases). Interrupt behavior is covered by `interruptAndCascade` tests in phase 2; `/new` is in `CANCEL_CAPABLE_COMMANDS` so it inherits that path._
 - [x] Verify `bun run typecheck` + `bun test` pass.
 
 _The `/new` branch passes `isSupergroup: ctx.chat?.type === "supergroup"` to `createForChat` so a `/new` issued in a supergroup-without-topic rebinds the supergroup slot rather than accidentally creating a DM binding. This mirrors `start.ts`._
+
+_**Mid-flight spec flip (added late):** the original spec refused `/new` in topics with `"This topic is already its own session. No need for /new here."` That left the user with no in-place reset — `/archive` retitles the topic, and there was no other way to clear context within a topic. Per the user's pushback, `/new` is now the universal "reset this chat" command in every chat surface. The change spec was updated (`Requirement: New command resets the chat to a fresh session`, plus a REMOVED note for the old "Warn when /new used in topic" requirement). The helper lost `hasTopic` / `TOPIC_REJECTED_REPLY` / the `topic-rejected` result kind, gained an optional `archivePrior` hook. `bot.ts` now invokes archive-then-create unconditionally when a prior session exists, with a stale-binding fallback that disposes any orphan runner if the prior session's dir was missing._
 
 Commit: `phase 4: /new command for DM sessions`
 
@@ -115,9 +116,9 @@ Commit: `phase 7: subagent command surface (stubs)`
 
 ## Phase 8: Integration and polish
 
-- [x] Ensure all commands work in both DMs and topics. _Sweep: `/cancel` reads only `session`/`wasStreaming`/`hadLiveSubagents` — chat-type independent. `/new` uses `hasTopic` to refuse in topics, creates in DM/supergroup-no-topic. `/archive` runs in both, additionally renames the topic via `editForumTopic` when `locator.topicId !== undefined`. `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help` have no chat-type branches._
+- [x] Ensure all commands work in both DMs and topics. _Sweep: `/cancel` reads only `session`/`wasStreaming`/`hadLiveSubagents` — chat-type independent. `/new` is now a universal reset in every chat surface (archive prior + create fresh + rebind, topic title preserved). `/archive` runs in both, additionally renames the topic via `editForumTopic` when `locator.topicId !== undefined`. `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help` have no chat-type branches._
 - [x] Implement `/help` command: reply with list of all available commands. _`HELP_REPLY` constant in `src/commands/help.ts`; lists all 8 commands with one-line descriptions, flags subagent commands as not yet implemented to pre-empt the "Not implemented" surprise._
-- [x] Review error messages for clarity. _Cross-checked against spec literals: "Nothing to cancel.", "Cancelled.", "This topic is already its own session. No need for /new here.", "Created new session \`<id>\`", "No active session to archive.", "Session already archived.", "Session archived.", "No active session." (from /debug — matches spec scenario verbatim), "No active session. Use /new to start one." (DM fallthrough). All clear, consistent capitalization + period punctuation, and aligned with the spec scenarios._
+- [x] Review error messages for clarity. _Cross-checked against spec literals: "Nothing to cancel.", "Cancelled.", "Created new session \`<id>\`", "Failed to reset session. Please try again." (`/new` archive failure), "No active session to archive.", "Session already archived.", "Session archived.", "Failed to archive session. Please try again." (`/archive` failure), "No active session." (from /debug), "No active session. Use /new to start one." (DM fallthrough). All clear, consistent capitalization + period punctuation, and aligned with the spec scenarios._
 - [ ] Smoke test end-to-end: run bot, test each command. _Requires a real `BOT_TOKEN` against Telegram — out of reach for this session. **User: please run `bun run dev`, then exercise `/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent <id>`, `/revive <id>`, `/help` in a DM and a forum topic, and report any rough edges.**_
 - [x] Verify `bun run typecheck` + `bun test` pass. _359 pass, 0 fail._
 

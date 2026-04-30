@@ -14,7 +14,7 @@
 export const HELP_REPLY = [
   "Commands:",
   "/cancel — abort the current turn (cascades to subagents)",
-  "/new — start a fresh DM session (no-op in topics)",
+  "/new — reset this chat: archive the current session and start a fresh one",
   "/archive — archive the active session",
   "/debug — dump session diagnostics",
   "/subagents — list live subagents (not implemented yet)",

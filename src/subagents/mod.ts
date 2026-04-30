@@ -644,6 +644,7 @@ export class SubagentRunner {
         role: inst.role,
         status: inst.status,
         spawnedAt: inst.spawnedAt,
+        spawnedBy: inst.spawnedBy,
       });
     }
     return out;

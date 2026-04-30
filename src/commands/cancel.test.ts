@@ -10,22 +10,23 @@ const NOTHING: CascadeResult = {
 };
 
 describe("cancelReply", () => {
-  it("returns 'Nothing to cancel.' when no active session", () => {
+  it("returns 'Nothing to cancel.' when no session and nothing was running", () => {
     expect(
       cancelReply({ hasSession: false, cascade: NOTHING, cascadeTimeoutMs: 5000 }),
     ).toBe("Nothing to cancel.");
   });
 
-  it("returns 'Nothing to cancel.' when no active session even if subagents were attempted", () => {
-    // Defensive: without a session the user has no agent context; the cascade
-    // wouldn't have been invoked anyway in this branch.
+  it("reports 'Cancelled.' when orphaned subagents were killed, even without a session", () => {
+    // A /cancel without an active session that nonetheless aborts live
+    // subagents must not lie with "Nothing to cancel." — the cascade did
+    // something observable and the reply should reflect that.
     expect(
       cancelReply({
         hasSession: false,
         cascade: { ...NOTHING, attemptedSubagents: 1 },
         cascadeTimeoutMs: 5000,
       }),
-    ).toBe("Nothing to cancel.");
+    ).toBe("Cancelled.");
   });
 
   it("returns 'Nothing to cancel.' when nothing was running", () => {

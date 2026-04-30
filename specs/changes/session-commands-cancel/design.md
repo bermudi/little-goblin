@@ -90,6 +90,18 @@ Context: ~12k tokens used
 ### Modified files
 
 - **`src/bot.ts`** — Add command parsing and interrupt handling:
+
+  > **Note:** the code below is illustrative, not normative. The implemented
+  > shape diverges in a few places: `AgentRunner` exposes a public
+  > `isStreaming` getter (and a sticky `markAbortTimedOut()`) because
+  > `session` is private; the cascade is factored into
+  > `interruptAndCascade()` in `src/interrupt.ts` with per-target
+  > timeouts, transitive session scoping via `spawnedBy`, and a
+  > structured `CascadeResult` driving the /cancel reply text; and the
+  > archive/new error paths use an outer try/catch around the
+  > `executeNew`/`executeArchive` helpers rather than per-closure
+  > sentinel variables.
+
   ```typescript
   // In bot.on("message:text") handler, BEFORE session resolution, after locator
   const text = ctx.msg?.text;
@@ -99,19 +111,19 @@ Context: ~12k tokens used
     // Interrupt semantics: cancel-capable commands abort first
     if (['/cancel', '/new', '/archive', '/debug'].includes(command)) {
       try {
-        if (runner?.session?.isStreaming) await runner.abort();
+        if (runner?.isStreaming) await runner.abort();
       } catch (err) {
         log.error("abort failed during interrupt", { error: String(err) });
         // continue — command still executes even if abort fails
       }
-      // Cascade: abort all live subagents
+      // Cascade: abort all live subagents in this session's tree
       const live = subagentRunner.list().filter(s => s.status === "running");
       await Promise.all(live.map(s => subagentRunner.cancel(s.id).catch(() => {})));
     }
     
     switch (command) {
       case '/cancel':
-        await ctx.reply(runner?.session?.isStreaming ? 'Cancelled.' : 'Nothing to cancel.');
+        await ctx.reply(runner?.isStreaming ? 'Cancelled.' : 'Nothing to cancel.');
         return;
       case '/new': {
         const isSupergroup = ctx.chat?.type === "supergroup";

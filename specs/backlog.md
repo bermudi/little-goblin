@@ -8,7 +8,9 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 - v1.1: approval-required tool mode (allowlist + inline-keyboard approvals)
 - v1.1: user-facing named subagent invocation (slash command `/researcher` or topic-to-agent binding)
 - v1.x: mixed-provider routing (`selectModel(task)`), per-subagent model override
-- v1.x: subagent memory access — wire memory read (and decide on write) into SubagentRunner once curated-memory and subagent-runtime are both in canon.
+- ~~v1.x: subagent memory access~~ — resolved by `scoped-memory` (anonymous subagents inherit parent active scope; named subagents get a three-tier model with persona memory).
+- v1.x: PII redaction in memory writes — explicit redaction pipeline before persisting curated entries (health, finance, identifiers). Out of scope of `scoped-memory`. Needs a design pass on rule sources, false-positive handling, and whether the agent or the store does the filtering.
+- v2.x: per-chat isolation for `general` memory — today `memory/general/memory.md` is shared across DMs and every supergroup-no-topic surface. If multi-chat usage stops being single-user, switch to `memory/general/<chatId>/memory.md`. Single consumer (`MemoryStore` scope resolver) so the change is local.
 - v1.x: auto-archive / auto-prune daemons
 - v2: voice-note-first workflow (STT + TTS)
 - v2: skills for common homelab services shipped in repo

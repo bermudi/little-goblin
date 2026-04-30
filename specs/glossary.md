@@ -9,7 +9,11 @@
 - **goblin**: The AI bot. Single user, single process. Lives in Telegram.
 - **GOBLIN_HOME**: Root data directory (default `~/goblin`). Holds sessions, memory, skills, config, and agent definitions.
 - **locator**: Shorthand for `ChatLocator`.
-- **memory.md / user.md**: The two curated memory files under `$GOBLIN_HOME/memory/`. Agent-maintained, character-capped, git-versioned. Not raw chat logs.
+- **memory.md / user.md**: Curated memory files under `$GOBLIN_HOME/memory/`. Agent-maintained, character-capped, git-versioned. Not raw chat logs. After the `scoped-memory` change, `memory.md` exists once per scope (general / topic / named-agent persona); `user.md` remains a single global file.
+- **memory scope**: The unit memory is keyed by. One of: `general` (singleton — DMs and supergroup-no-topic), a topic scope identified by `(chatId, topicId)`, or a named-agent persona scope identified by `<name>`. Each scope owns an independent `memory.md` with its own 4000-character cap.
+- **active scope**: The memory scope resolved from the calling session's locator (and, for named subagents, the agent's name). `memory_write` always targets the active scope; the agent cannot supply an arbitrary scope on writes.
+- **persona memory**: A named subagent's `agents/<name>/memory.md` — the agent's self-knowledge across invocations, distinct from any single topic's domain memory. Loaded into every snapshot that named agent sees.
+- **scope description**: A one-line agent-curated summary stored in a YAML-style `--- description: ... ---` frontmatter at the top of a scope's `memory.md`. Used in `memory_read_index` and the snapshot's `## other scopes` section for progressive disclosure (≤200 chars).
 - **MessageBuffer**: Implements `TurnCallbacks` to render agent activity as Telegram messages. Manages status phases, streaming edits, and rollover.
 - **named subagent**: A subagent that loads its `AGENTS.md` and `skills/` from `~/goblin/agents/<name>/`. Strictly isolated from parent skills.
 - **pi-coding-agent**: The underlying agent framework that goblin wraps. Provides `AgentSession`, `defineTool`, extension/skill loading. Ships a sample subagent extension (`examples/extensions/subagent/`) that spawns child `pi` processes, but goblin's subagent system is custom-built on the core SDK.

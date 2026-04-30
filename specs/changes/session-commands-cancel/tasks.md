@@ -68,7 +68,7 @@ Commit: `phase 4: /new command for DM sessions`
   - Check for no active session: reply "No active session to archive."
   - Check if `sessions/<id>/` exists: if not, reply "Session already archived."
   - Call `sessionManager.archive(session.id)`.
-  - In topics: rename topic to final title via `bot.api.editForumTopic` (`setForumTopicName` does not exist on grammy's `Api`; the equivalent is `editForumTopic(chat_id, message_thread_id, { name })`).
+  - The forum topic surface MUST NOT be mutated (no rename, no close, no icon change). Per decision 0002 `topic-ui-is-user-owned`, the topic is owned by the user. The next user message in the same topic auto-creates a fresh session.
   - Reply "Session archived."
 - [x] Unit test: verify archive moves files, clears binding, handles already-archived, handles no-session. _Manager-level: DM/topic/supergroup binding clear, double-archive throw, `list()` ignores archive subtree. Helper-level (`commands/archive.test.ts`): three states + error propagation._
 - [x] Verify `bun run typecheck` + `bun test` pass. _339 pass, 0 fail._
@@ -76,9 +76,9 @@ Commit: `phase 4: /new command for DM sessions`
 _Implementation notes:_
 - _The `archive(id)` method also drops the runner from `bot.ts`'s in-memory `runners` map via the injected `archive` closure, so the next message in that chat creates a fresh runner instead of pointing at a moved session dir._
 - _`SessionManager.list()` now skips the literal `archive` directory entry when scanning `sessions/` (was previously surviving by accident because `loadState(home, "archive")` returned null)._
-- _Topic rename uses `editForumTopic`, not `setForumTopicName` (no such grammy method). Failures are logged but do not block the reply — the archive itself already succeeded by that point._
+- _**Mid-flight spec flip (added late):** the original spec had `/archive` rename the topic to `Archived: <topic_name>` via `bot.api.editForumTopic`. After running it the user found the rename pollutes the topic surface (which represents a life domain like #Health, not a session) without actually closing the topic, producing incoherent UX. Per decision 0002 `topic-ui-is-user-owned`, goblin SHALL NOT mutate topic UI as a side effect of any session operation. The `editForumTopic` block in `bot.ts` was removed; the spec scenario "Archive in topic" was replaced with "Archive in topic does not mutate topic UI"._
 
-Commit: `phase 5: /archive command with topic renaming`
+Commit: `phase 5: /archive command (no topic UI mutation)`
 
 ## Phase 6: /debug command
 
@@ -116,7 +116,7 @@ Commit: `phase 7: subagent command surface (stubs)`
 
 ## Phase 8: Integration and polish
 
-- [x] Ensure all commands work in both DMs and topics. _Sweep: `/cancel` reads only `session`/`wasStreaming`/`hadLiveSubagents` — chat-type independent. `/new` is now a universal reset in every chat surface (archive prior + create fresh + rebind, topic title preserved). `/archive` runs in both, additionally renames the topic via `editForumTopic` when `locator.topicId !== undefined`. `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help` have no chat-type branches._
+- [x] Ensure all commands work in both DMs and topics. _Sweep: `/cancel` reads only `session`/`wasStreaming`/`hadLiveSubagents` — chat-type independent. `/new` is now a universal reset in every chat surface (archive prior + create fresh + rebind, topic title preserved). `/archive` runs in both surfaces and never mutates the topic UI (per decision 0002). `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help` have no chat-type branches._
 - [x] Implement `/help` command: reply with list of all available commands. _`HELP_REPLY` constant in `src/commands/help.ts`; lists all 8 commands with one-line descriptions, flags subagent commands as not yet implemented to pre-empt the "Not implemented" surprise._
 - [x] Review error messages for clarity. _Cross-checked against spec literals: "Nothing to cancel.", "Cancelled.", "Created new session \`<id>\`", "Failed to reset session. Please try again." (`/new` archive failure), "No active session to archive.", "Session already archived.", "Session archived.", "Failed to archive session. Please try again." (`/archive` failure), "No active session." (from /debug), "No active session. Use /new to start one." (DM fallthrough). All clear, consistent capitalization + period punctuation, and aligned with the spec scenarios._
 - [ ] Smoke test end-to-end: run bot, test each command. _Requires a real `BOT_TOKEN` against Telegram — out of reach for this session. **User: please run `bun run dev`, then exercise `/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent <id>`, `/revive <id>`, `/help` in a DM and a forum topic, and report any rough edges.**_

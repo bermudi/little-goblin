@@ -190,19 +190,10 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
             await ctx.reply("Failed to archive session. Please try again.");
             return;
           }
-          if (archiveResult.kind === "archived" && locator.topicId !== undefined && session) {
-            try {
-              await bot.api.editForumTopic(locator.chatId, locator.topicId, {
-                name: `Archived: ${session.title ?? session.id}`,
-              });
-            } catch (err) {
-              log.error("failed to rename topic on archive", {
-                error: String(err),
-                chatId: locator.chatId,
-                topicId: locator.topicId,
-              });
-            }
-          }
+          // Topic UI is user-owned (decision 0002 topic-ui-is-user-owned):
+          // /archive moves the session and clears the binding. It MUST NOT
+          // rename, close, or otherwise mutate the topic surface. The next
+          // user message in this topic will auto-create a fresh session.
           const archiveSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
           await ctx.reply(`${archiveResult.reply}${archiveSuffix}`);
           return;

@@ -4,6 +4,7 @@
     "agent-memory-management": {
       "source": "bermudi/skills",
       "sourceType": "github",
+      "skillPath": "agent-memory-management/SKILL.md",
       "computedHash": "4596b0cc463460c4bb574f56801bb4b1e79b49378d599c6ddd229e1e2c8dc840"
     }
   }

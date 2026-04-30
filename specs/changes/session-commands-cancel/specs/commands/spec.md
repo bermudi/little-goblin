@@ -22,7 +22,7 @@ The `/cancel` command SHALL call `AgentRunner.abort()` immediately, cancelling a
 
 ### Requirement: New command resets the chat to a fresh session
 
-The `/new` command SHALL cancel any active turn, archive the chat's current session if one exists, create a fresh session bound to the same chat surface (DM, forum topic, or supergroup), and switch to it. Unlike `/archive`, `/new` SHALL NOT rename the forum topic — the topic title is preserved so the user can keep using it.
+The `/new` command SHALL cancel any active turn, archive the chat's current session if one exists, create a fresh session bound to the same chat surface (DM, forum topic, or supergroup), and switch to it. The forum topic title MUST NOT be modified — the topic surface is user-owned per decision `topic-ui-is-user-owned` (0002).
 
 #### Scenario: New during active turn
 - **WHEN** `/new` is sent while streaming
@@ -42,7 +42,7 @@ The `/new` command SHALL cancel any active turn, archive the chat's current sess
 - **THEN** the active turn SHALL be aborted (if streaming, with cascade to subagents)
 - **AND** the topic's existing session SHALL be archived
 - **AND** a fresh session SHALL be created and bound to the same `(chat, topic)`
-- **AND** the topic SHALL NOT be renamed (in contrast to `/archive`)
+- **AND** the topic title MUST NOT be modified
 - **AND** a reply SHALL include the new session ID
 
 #### Scenario: New with no active session
@@ -52,17 +52,19 @@ The `/new` command SHALL cancel any active turn, archive the chat's current sess
 
 ### Requirement: Archive command cancels and archives session
 
-The `/archive` command SHALL cancel any active turn, move the current session to `sessions/archive/`, and clear the binding.
+The `/archive` command SHALL cancel any active turn, move the current session to `sessions/archive/`, and clear the binding. The forum topic surface MUST NOT be mutated (no rename, no close, no icon change) — the topic is user-owned per decision `topic-ui-is-user-owned` (0002).
 
 #### Scenario: Archive during streaming
 - **WHEN** `/archive` is sent while streaming
 - **THEN** the current turn SHALL be aborted (with cascade to subagents)
 - **AND** the session SHALL be archived
 
-#### Scenario: Archive in topic
+#### Scenario: Archive in topic does not mutate topic UI
 - **WHEN** `/archive` is used in a forum topic
-- **THEN** the topic SHALL be renamed to format "Archived: <topic_name>"
-- **AND** the session SHALL be moved to archive
+- **THEN** the session SHALL be moved to archive
+- **AND** the binding SHALL be cleared
+- **AND** the topic name, status (open/closed), and icon MUST NOT be changed
+- **AND** the next user message in the same topic SHALL auto-create a fresh session bound to the same `(chat, topic)`
 
 #### Scenario: Already archived session
 - **WHEN** `/archive` is used on an already-archived session

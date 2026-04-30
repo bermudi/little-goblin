@@ -1682,6 +1682,56 @@ describe("MessageBuffer", () => {
       const bubble1Edits = m.edit.filter((e) => e.messageId === bubble1Id);
       expect(bubble1Edits.every((e) => !e.text.includes("Final"))).toBe(true);
     });
+
+    it("seal with rollover starts fresh segment (no cross-contamination)", async () => {
+      // Bug: when accumulatedText > 4096 triggers rollover DURING the seal flush,
+      // the old single-snapshot guard would see changed accumulatedText and
+      // skip cleanup, leaving the tail message active. The next segment's
+      // text would then edit that tail instead of creating a fresh message.
+      let t = 1000;
+      const m = makeBot();
+      // Disable auto-flush so rollover happens during seal, not before
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        statusThrottleMs: Number.MAX_SAFE_INTEGER,
+        responseThrottleMs: Number.MAX_SAFE_INTEGER,
+        visibility: "none" as const,
+      });
+
+      // Accumulate >4096 chars WITHOUT flushing (auto-flush is disabled)
+      buffer.onTextDelta("a".repeat(MAX_MESSAGE_LEN + 100));
+      // No await tick() - don't let natural flush happen
+      expect(buffer._state().accumulatedText.length).toBe(MAX_MESSAGE_LEN + 100);
+      expect(buffer._state().responseMessageId).toBeUndefined();
+
+      // Tool boundary: seal triggers rollover DURING the flushResponse(true).
+      // After rollover, the guard should recognize that msgId changed and
+      // DO the cleanup — the tail message was already sent as message 102.
+      t = 2000;
+      buffer.onToolStart("bash", {});
+      await tick();
+
+      // Debug: check actual state after seal
+      const stateAfterSeal = buffer._state();
+      expect(stateAfterSeal.accumulatedText).toBe(""); // should be cleared
+      expect(stateAfterSeal.responseMessageId).toBeUndefined(); // should be cleared
+
+      buffer.onToolEnd("bash", false);
+
+      // Second segment: should create a FRESH message (103), not edit message 102
+      t = 3000;
+      buffer.onTextDelta("Second segment after tool.");
+      // Need explicit force-flush since auto-flush is disabled
+      await buffer.flushResponse(true);
+
+      // Should send a new message, not edit the tail
+      expect(m.send.length).toBe(3); // 101 (head), 102 (tail), 103 (new segment)
+      expect(m.send[2]?.text).toBe("Second segment after tool.");
+
+      // Message 102 should never have been edited (only sent during rollover)
+      const msg102Edits = m.edit.filter((e) => e.messageId === 102);
+      expect(msg102Edits.length).toBe(0);
+    });
   });
 
   describe("chat action refresh", () => {

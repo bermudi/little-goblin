@@ -252,10 +252,19 @@ export class MessageBuffer implements TurnCallbacks {
       // (not expected — LLM tool calls don't interleave with text — but
       // cheap defense). See spec: "Response message segments at tool
       // boundaries" in canon/message-buffer.
-      const sealedSnapshot = this.accumulatedText;
+      const sealedTextSnapshot = this.accumulatedText;
+      const sealedMsgIdSnapshot = this.responseMessageId;
       void (async () => {
         await this.flushResponse(true);
-        if (this.accumulatedText !== sealedSnapshot) return;
+        // Guard: skip cleanup only if text changed WITHOUT a message id change.
+        // This happens when a concurrent text delta arrived during the flush.
+        // Rollover changes BOTH text (head removed) AND msgId (undefined→new),
+        // so we DO cleanup after rollover — the tail message was already sent.
+        const textChanged = this.accumulatedText !== sealedTextSnapshot;
+        const msgIdChanged = this.responseMessageId !== sealedMsgIdSnapshot;
+        if (textChanged && !msgIdChanged) {
+          return;
+        }
         this.responseMessageId = undefined;
         this.accumulatedText = "";
         this.lastRenderedResponseText = "";

@@ -52,13 +52,24 @@ export interface DiagnosticsDeps {
 }
 
 /**
+ * Max file size to read into memory for line counting (10 MB).
+ * Above this, we report size but skip line count to avoid blocking the event loop.
+ */
+const EVENTS_MAX_READ_BYTES = 10_000_000;
+
+/**
  * Read the events.jsonl on disk and report size + line count.
  * Treats ENOENT (and any read error) as "unavailable" rather than throwing —
  * `/debug` is a diagnostics aid, not a critical path.
+ * If the file exceeds {@link EVENTS_MAX_READ_BYTES}, lines is returned as `null`
+ * to prevent blocking the event loop on a giant file.
  */
 function readEventsStats(path: string): { bytes: number | null; lines: number | null } {
   try {
     const stat = statSync(path);
+    if (stat.size > EVENTS_MAX_READ_BYTES) {
+      return { bytes: stat.size, lines: null };
+    }
     const raw = readFileSync(path, "utf-8");
     // events.jsonl is line-delimited JSON; trailing newline is conventional, so
     // filter empties to avoid an off-by-one on a freshly-created file.

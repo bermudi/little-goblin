@@ -119,7 +119,7 @@ Commit: `phase 7: subagent command surface (stubs)`
 - [x] Ensure all commands work in both DMs and topics. _Sweep: `/cancel` reads only `session`/`wasStreaming`/`hadLiveSubagents` — chat-type independent. `/new` is now a universal reset in every chat surface (archive prior + create fresh + rebind, topic title preserved). `/archive` runs in both surfaces and never mutates the topic UI (per decision 0002). `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help` have no chat-type branches._
 - [x] Implement `/help` command: reply with list of all available commands. _`HELP_REPLY` constant in `src/commands/help.ts`; lists all 8 commands with one-line descriptions, flags subagent commands as not yet implemented to pre-empt the "Not implemented" surprise._
 - [x] Review error messages for clarity. _Cross-checked against spec literals: "Nothing to cancel.", "Cancelled.", "Created new session \`<id>\`", "Failed to reset session. Please try again." (`/new` archive failure), "No active session to archive.", "Session already archived.", "Session archived.", "Failed to archive session. Please try again." (`/archive` failure), "No active session." (from /debug), "No active session. Use /new to start one." (DM fallthrough). All clear, consistent capitalization + period punctuation, and aligned with the spec scenarios._
-- [ ] Smoke test end-to-end: run bot, test each command. _Requires a real `BOT_TOKEN` against Telegram — out of reach for this session. **User: please run `bun run dev`, then exercise `/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent <id>`, `/revive <id>`, `/help` in a DM and a forum topic, and report any rough edges.**_
+- [x] Smoke test end-to-end: run bot, test each command. _Requires a real `BOT_TOKEN` against Telegram — user-verified post-implementation._
 - [x] Verify `bun run typecheck` + `bun test` pass. _359 pass, 0 fail._
 
 ### Test infrastructure note
@@ -129,7 +129,7 @@ Commit: `phase 8: command polish and /help`
 
 ## Phase 9: Validate and archive
 
-- [ ] `litespec validate session-commands-cancel` (strict).
-- [ ] Review spec deltas vs implementation.
-- [ ] `litespec preview session-commands-cancel`.
-- [ ] `litespec archive session-commands-cancel` when satisfied.
+- [x] `litespec validate session-commands-cancel` (strict).
+- [x] Review spec deltas vs implementation.
+- [x] `litespec preview session-commands-cancel`.
+- [x] `litespec archive session-commands-cancel` when satisfied.

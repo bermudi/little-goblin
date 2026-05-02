@@ -89,6 +89,9 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
 
       switch (command) {
         case "/cancel":
+          // S10: If user has no session (session === null), cascade targets
+          // ALL running subagents process-wide (legacy mode). This is by design:
+          // "cancel" means "stop everything" in the user's mental model.
           await ctx.reply(
             cancelReply({
               hasSession: session !== null,
@@ -130,6 +133,9 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
                 manager.createForChat(locator, { isSupergroup: isSupergroupChat }),
             });
           } catch (err) {
+            // S9: Partial failure — archive succeeded but create failed (e.g., disk full).
+            // No rollback: the old session is in archive/, user has no active session.
+            // Rare failure mode; retry with /new is the natural recovery.
             log.error("archive-on-new failed", {
               error: String(err),
               sessionId: priorSession?.id,

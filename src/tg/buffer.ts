@@ -32,6 +32,11 @@ export interface MessageBufferOptions {
   setIntervalFn?: (fn: () => void, ms: number) => unknown;
   /** Scheduler injection for tests. Defaults to global `clearInterval`. */
   clearIntervalFn?: (handle: unknown) => void;
+  /**
+   * Called once when a "topic not found" error is detected from Telegram.
+   * Used to archive orphaned topic memory scopes.
+   */
+  onTopicNotFound?: () => void;
 }
 
 /** Coarse phase the status message reflects. */
@@ -158,6 +163,11 @@ export class MessageBuffer implements TurnCallbacks {
   private clearIntervalFn: (handle: unknown) => void;
   private chatActionHandle: unknown = undefined;
 
+  /** Called once when a "topic not found" error is detected. */
+  private onTopicNotFound: (() => void) | undefined;
+  /** Ensures onTopicNotFound is only called once. */
+  private topicNotFoundReported: boolean = false;
+
   /**
    * Promise tracking an in-flight `sendMessage` that is creating the response
    * message. Any concurrent flush whose throttle window opens before the send
@@ -204,6 +214,7 @@ export class MessageBuffer implements TurnCallbacks {
     this.clearIntervalFn =
       options.clearIntervalFn ??
       ((handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]));
+    this.onTopicNotFound = options.onTopicNotFound;
   }
 
   onTextDelta(delta: string): void {
@@ -731,6 +742,7 @@ export class MessageBuffer implements TurnCallbacks {
   /**
    * Shared error policy for status and response flushes. 429 → log + skip;
    * 400 message-gone → reset id via `onMessageGone`; otherwise log.
+   * Also detects "topic not found" errors to trigger orphan archival.
    */
   private handleApiError(
     err: unknown,
@@ -745,6 +757,22 @@ export class MessageBuffer implements TurnCallbacks {
       log.warn(`${kind} edit rate-limited, skipping`, { description });
       return;
     }
+
+    // Detect "topic not found" errors (distinct from "message not found")
+    // Telegram returns these when the topic/thread ID is invalid (deleted topic)
+    if (code === 400 && /topic not found|message thread not found|invalid message thread id/i.test(description)) {
+      log.warn(`${kind} topic not found, archiving orphaned scope`, { description });
+      if (!this.topicNotFoundReported && this.onTopicNotFound) {
+        this.topicNotFoundReported = true;
+        try {
+          this.onTopicNotFound();
+        } catch (cbErr) {
+          log.error("onTopicNotFound callback failed", { error: String(cbErr) });
+        }
+      }
+      return;
+    }
+
     if (code === 400 && /not found|can't be edited|to edit/i.test(description)) {
       log.warn(`${kind} message gone, will re-create on next flush`, {
         description,

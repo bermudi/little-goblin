@@ -843,6 +843,98 @@ describe("MessageBuffer", () => {
       await expect(buffer.flushResponse()).resolves.toBeUndefined();
     });
 
+    it("calls onTopicNotFound when Telegram reports topic not found", async () => {
+      let t = 1000;
+      const m = makeBot();
+      let callbackCalled = false;
+      const buffer = new MessageBuffer(m.bot, 1, 42, {
+        now: () => t,
+        ...STATUS_OFF,
+        onTopicNotFound: () => {
+          callbackCalled = true;
+        },
+      });
+      buffer.onTextDelta("hi");
+      await tick();
+      expect(m.send.length).toBe(1);
+
+      // Next edit fails with "topic not found" — should trigger callback
+      t += 500; // beyond 200ms throttle
+      m.failNext.edit = {
+        error_code: 400,
+        description: "Bad Request: topic not found",
+      };
+      buffer.onTextDelta("!");
+      await tick();
+      expect(callbackCalled).toBe(true);
+    });
+
+    it("calls onTopicNotFound only once even on multiple errors", async () => {
+      let t = 1000;
+      const m = makeBot();
+      let callbackCount = 0;
+      const buffer = new MessageBuffer(m.bot, 1, 42, {
+        now: () => t,
+        ...STATUS_OFF,
+        onTopicNotFound: () => {
+          callbackCount++;
+        },
+      });
+
+      // First send succeeds to establish a message
+      buffer.onTextDelta("first");
+      await tick();
+      expect(m.send.length).toBe(1);
+
+      // Multiple edits fail with topic not found — callback only once
+      t += 500;
+      m.failNext.edit = {
+        error_code: 400,
+        description: "Bad Request: message thread not found",
+      };
+      buffer.onTextDelta("second");
+      await tick();
+
+      t += 500;
+      m.failNext.edit = {
+        error_code: 400,
+        description: "Bad Request: invalid message thread id",
+      };
+      buffer.onTextDelta("third");
+      await tick();
+
+      expect(callbackCount).toBe(1); // Only called once
+    });
+
+    it("does not call onTopicNotFound for non-topic errors", async () => {
+      let t = 1000;
+      const m = makeBot();
+      let callbackCalled = false;
+      const buffer = new MessageBuffer(m.bot, 1, 42, {
+        now: () => t,
+        ...STATUS_OFF,
+        onTopicNotFound: () => {
+          callbackCalled = true;
+        },
+      });
+
+      // First send succeeds
+      buffer.onTextDelta("test");
+      await tick();
+      expect(m.send.length).toBe(1);
+
+      // Regular message not found should not trigger callback
+      t += 500;
+      m.failNext.edit = {
+        error_code: 400,
+        description: "Bad Request: message to edit not found",
+      };
+      buffer.onTextDelta("more");
+      await tick();
+
+      expect(callbackCalled).toBe(false);
+    });
+
     it("auto-flushes response from onTextDelta", async () => {
       const m = makeBot();
       const buffer = new MessageBuffer(m.bot, 1, undefined, {

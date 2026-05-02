@@ -4,6 +4,7 @@ import type { Context } from "grammy";
 import type { Config } from "./config.ts";
 import { log } from "./log.ts";
 import { buildAllowlistMiddleware, locatorFromCtx, MessageBuffer } from "./tg/mod.ts";
+import { MemoryStore } from "./memory/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
 import { SessionManager } from "./sessions/mod.ts";
 import { sessionDir } from "./sessions/paths.ts";
@@ -291,8 +292,18 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
 
     // MessageBuffer turns agent events into Telegram UI (status line + streamed
     // response). One buffer per turn so message IDs are scoped to this prompt.
-    const buffer = new MessageBuffer(bot, locator.chatId, locator.topicId, {
+    // Wire up orphan archival: if Telegram reports "topic not found", archive
+    // the orphaned memory scope before propagating the error.
+    const memoryStore = new MemoryStore(cfg.goblinHome);
+    const topicId = locator.topicId;
+    const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
       visibility: cfg.toolVisibility,
+      onTopicNotFound:
+        topicId !== undefined
+          ? () => {
+              memoryStore.archiveOrphan(locator.chatId, topicId);
+            }
+          : undefined,
     });
 
     try {

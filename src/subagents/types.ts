@@ -5,6 +5,7 @@
  */
 
 import type { AgentSession, SessionManager } from "@mariozechner/pi-coding-agent";
+import type { ActiveScope } from "../memory/scope.ts";
 
 /** Status of a subagent instance. */
 export type SubagentStatus = "running" | "completed" | "cancelled" | "error";
@@ -18,6 +19,8 @@ export type SubagentRole = "generic" | "named";
 export interface SpawnOptions {
   /** The user-message-style prompt sent to the subagent on its first turn. */
   prompt: string;
+  /** Active memory scope inherited from the spawning agent. */
+  activeScope?: ActiveScope;
   /**
    * Optional named-agent identifier. When set, the runner loads
    * `~/goblin/agents/<name>/AGENTS.md` and isolates skills.
@@ -98,6 +101,8 @@ export interface SubagentInstance {
   name: string | null;
   role: SubagentRole;
   status: SubagentStatus;
+  /** Active memory scope inherited from the spawning agent. */
+  activeScope: ActiveScope;
   /** Depth of *this* subagent (spawner.depth + 1). */
   depth: number;
   spawnedAt: string;
@@ -139,6 +144,7 @@ export interface SubagentMeta {
   role: SubagentRole;
   name: string | null;
   spawnedBy: string | null;
+  activeScope?: ActiveScope;
   depth: number;
   createdAt: string;
   /** Set when execution finishes (success, error, or cancellation). */

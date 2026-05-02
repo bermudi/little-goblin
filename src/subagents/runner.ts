@@ -23,6 +23,7 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
+import type { ActiveScope } from "../memory/mod.ts";
 import { createPiServices, type PiServices, workdirPath } from "../pi-host.ts";
 import {
   type ExecutionDeps,
@@ -55,6 +56,7 @@ export type SubagentToolFactory = (
   runner: SubagentRunner,
   depth: number,
   sessionId: string,
+  activeScope: ActiveScope,
   onStatusUpdate?: (message: string) => void,
 ) => ToolDefinition[];
 
@@ -122,6 +124,7 @@ export class SubagentRunner {
     const id = randomUUID();
     const spawnedAt = new Date().toISOString();
     const spawnedBy = options.spawnedBy ?? null;
+    const activeScope = childActiveScope(options.activeScope, options.name);
 
     let role: SubagentRole;
     let dir: string;
@@ -152,6 +155,7 @@ export class SubagentRunner {
       role,
       name: displayName,
       spawnedBy,
+      activeScope,
       depth: newDepth,
       createdAt: spawnedAt,
       status: "running",
@@ -182,6 +186,7 @@ export class SubagentRunner {
       name: displayName,
       role,
       status: "running",
+      activeScope,
       depth: newDepth,
       spawnedAt,
       spawnedBy,
@@ -295,6 +300,7 @@ export class SubagentRunner {
       name: meta.name ?? null,
       role: meta.role,
       status: "running",
+      activeScope: reviveActiveScope(meta),
       depth: meta.depth,
       spawnedAt: meta.createdAt,
       spawnedBy: meta.spawnedBy ?? null,
@@ -481,8 +487,35 @@ export class SubagentRunner {
     return {
       cfg: this.cfg,
       services: this.getPiServices(),
-      buildTools: (depth, sessionId, onStatusUpdate) =>
-        this.toolFactory ? this.toolFactory(this, depth, sessionId, onStatusUpdate) : [],
+      buildTools: (depth, sessionId, activeScope, onStatusUpdate) =>
+        this.toolFactory ? this.toolFactory(this, depth, sessionId, activeScope, onStatusUpdate) : [],
     };
   }
+}
+
+function childActiveScope(parentScope: ActiveScope | undefined, name: string | undefined): ActiveScope {
+  const topicScope = parentScope?.topicScope ?? "general";
+  return {
+    chatId: parentScope?.chatId ?? 0,
+    topicScope,
+    namedAgent: name === undefined ? null : { name },
+  };
+}
+
+function reviveActiveScope(meta: SubagentMeta): ActiveScope {
+  if (meta.activeScope !== undefined) {
+    return {
+      chatId: meta.activeScope.chatId,
+      topicScope: meta.activeScope.topicScope,
+      namedAgent: meta.role === "named" && meta.name !== null ? { name: meta.name } : null,
+    };
+  }
+  if (meta.role === "named" && meta.name !== null) {
+    throw new Error(`Subagent '${meta.id}' is missing scoped-memory metadata; cannot revive`);
+  }
+  return {
+    chatId: 0,
+    topicScope: "general",
+    namedAgent: null,
+  };
 }

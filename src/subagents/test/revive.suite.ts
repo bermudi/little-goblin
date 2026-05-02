@@ -89,7 +89,11 @@ describe("SubagentRunner.revive", () => {
 
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
     expect(opts.cwd).toBe(join(tmp, "workdir"));
-    expect(opts.customTools).toEqual([]);
+    expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
+      "memory_read",
+      "memory_read_index",
+      "memory_write",
+    ]);
     expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("second turn");
 
     sessionHolder.emit({ type: "agent_start" });

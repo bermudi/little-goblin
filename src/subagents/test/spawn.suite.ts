@@ -294,7 +294,11 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     const opts = captured[0] as Record<string, unknown>;
     expect(opts.cwd).toBe(join(tmp, "workdir"));
     expect(Array.isArray(opts.customTools)).toBe(true);
-    expect((opts.customTools as unknown[]).length).toBe(0);
+    expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
+      "memory_read",
+      "memory_read_index",
+      "memory_write",
+    ]);
     expect(opts.sessionManager).toBeDefined();
 
     const loader = opts.resourceLoader as { options: Record<string, unknown> } | undefined;
@@ -594,8 +598,8 @@ describe("SubagentRunner — recursive tool injection", () => {
 
   it("passes subagent tools to spawned subagents via toolFactory", async () => {
     const { createSpawnSubagentTool } = await import("../tool.ts");
-    runner = new SubagentRunner(makeConfig(tmp), (subagentRunner, depth, sessionId, onStatusUpdate) => [
-      createSpawnSubagentTool(subagentRunner, depth, sessionId, onStatusUpdate),
+    runner = new SubagentRunner(makeConfig(tmp), (subagentRunner, depth, sessionId, activeScope, onStatusUpdate) => [
+      createSpawnSubagentTool(subagentRunner, depth, sessionId, onStatusUpdate, undefined, activeScope),
     ]);
 
     const handle = await runner.spawn({ prompt: "work" });
@@ -604,19 +608,24 @@ describe("SubagentRunner — recursive tool injection", () => {
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
     const tools = opts.customTools as Array<{ name: string }>;
     expect(tools.map((tool) => tool.name)).toContain("spawn_subagent");
+    expect(tools.map((tool) => tool.name)).toContain("memory_write");
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
   });
 
-  it("uses empty customTools when no toolFactory is provided", async () => {
+  it("always registers scoped memory tools even when no toolFactory is provided", async () => {
     runner = new SubagentRunner(makeConfig(tmp));
 
     const handle = await runner.spawn({ prompt: "work" });
     await flush();
 
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    expect((opts.customTools as unknown[]).length).toBe(0);
+    expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
+      "memory_read",
+      "memory_read_index",
+      "memory_write",
+    ]);
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -642,6 +651,7 @@ describe("SubagentRunner — nested prefix prevention", () => {
       _runner,
       _depth,
       _sessionId,
+      _activeScope,
       onStatusUpdate,
     ) => {
       if (onStatusUpdate) {

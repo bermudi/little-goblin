@@ -11,6 +11,7 @@
 
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { ActiveScope } from "../memory/mod.ts";
 import type { SubagentRunner } from "./mod.ts";
 import { listNamedAgents } from "./paths.ts";
 
@@ -85,6 +86,7 @@ export function createSpawnSubagentTool(
   sessionId: string,
   onStatusUpdate?: (message: string) => void,
   timeoutMs?: number,
+  activeScope?: ActiveScope,
 ): ToolDefinition {
   return defineTool({
     name: "spawn_subagent",
@@ -99,6 +101,7 @@ export function createSpawnSubagentTool(
     ) {
       const handle = await runner.spawn({
         prompt: params.prompt,
+        activeScope,
         name: params.name,
         depth,
         spawnedBy: sessionId,

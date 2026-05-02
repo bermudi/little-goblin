@@ -10,12 +10,14 @@ const capturedCreateArgs: unknown[] = [];
 
 export const sessionHolder = {
   listeners: [] as Listener[],
+  sendCustomMessage: mock(async (_msg: unknown, _opts?: unknown) => {}),
   sendUserMessage: mock(async (_text: string) => {}),
   abort: mock(async () => {}),
   dispose: mock(() => {}),
 
   reset(): void {
     this.listeners = [];
+    this.sendCustomMessage = mock(async (_msg: unknown, _opts?: unknown) => {});
     this.sendUserMessage = mock(async (_text: string) => {});
     this.abort = mock(async () => {});
     this.dispose = mock(() => {});
@@ -39,6 +41,7 @@ export const sessionHolder = {
           }
         };
       },
+      sendCustomMessage: (msg: unknown, opts?: unknown) => holder.sendCustomMessage(msg, opts),
       sendUserMessage: (text: string) => holder.sendUserMessage(text),
       abort: () => holder.abort(),
       dispose: () => holder.dispose(),
@@ -74,6 +77,7 @@ export function standardPiMock() {
       inMemory: (_obj: unknown) => ({}),
     },
     SessionManager: {
+      inMemory: (_cwd: string) => ({ __stub: true } as unknown),
       create: (_cwd: string, dir: string) => {
         mkdirSync(dir, { recursive: true });
         return { __stub: true } as unknown;

@@ -22,9 +22,17 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { dispatchAgentEvent, type TurnCallbacks } from "../agent/events.ts";
 import type { Config } from "../config.ts";
+import {
+  MemoryStore,
+  createMemoryReadIndexTool,
+  createMemoryReadTool,
+  createMemoryWriteTool,
+  formatSnapshot,
+} from "../memory/mod.ts";
 import { resolveModel } from "../agent/models.ts";
 import { log } from "../log.ts";
 import type { PiServices } from "../pi-host.ts";
+import type { ActiveScope } from "../memory/mod.ts";
 import { persistMetaPatch } from "./meta.ts";
 import { buildResourceLoader } from "./named-agents.ts";
 import type { SubagentInstance } from "./types.ts";
@@ -38,7 +46,12 @@ import type { SubagentInstance } from "./types.ts";
 export interface ExecutionDeps {
   cfg: Config;
   services: PiServices;
-  buildTools: (depth: number, sessionId: string, onStatusUpdate?: (msg: string) => void) => ToolDefinition[];
+  buildTools: (
+    depth: number,
+    sessionId: string,
+    activeScope: ActiveScope,
+    onStatusUpdate?: (msg: string) => void,
+  ) => ToolDefinition[];
 }
 
 /**
@@ -85,6 +98,7 @@ async function _runInstanceInner(
   deps: ExecutionDeps,
 ): Promise<string> {
   const { cfg, services, buildTools } = deps;
+  const memoryStore = new MemoryStore(cfg.goblinHome);
 
   const resolved = resolveModel(cfg);
   services.authStorage.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
@@ -107,7 +121,16 @@ async function _runInstanceInner(
     // Subagents have no β tools — all UI flows through the parent's status
     // callback. See specs/canon/subagents/spec.md "No beta tools for subagents".
     // Pass rawStatusCallback to nested subagent to prevent prefix stacking.
-    customTools: buildTools(instance.depth, instance.id, instance.rawStatusCallback),
+    customTools: [
+      ...buildTools(instance.depth, instance.id, instance.activeScope, instance.rawStatusCallback),
+      createMemoryReadTool({ store: memoryStore, activeScope: instance.activeScope }),
+      createMemoryReadIndexTool({
+        store: memoryStore,
+        activeChatId: instance.activeScope.chatId,
+        includeAgents: false,
+      }),
+      createMemoryWriteTool({ store: memoryStore, activeScope: instance.activeScope }),
+    ],
     ...(resourceLoader ? { resourceLoader } : {}),
   });
   instance.session = session;
@@ -158,6 +181,16 @@ async function _runInstanceInner(
   // before any events stream), the outer .then in spawn() turns it into
   // a rejected `handle.result`.
   try {
+    const aside = await formatSnapshot({
+      store: memoryStore,
+      activeScope: instance.activeScope,
+      includePersona: instance.role === "named" && instance.name !== null
+        ? { name: instance.name }
+        : undefined,
+    });
+    if (aside !== null) {
+      await session.sendCustomMessage(aside, { deliverAs: "nextTurn" });
+    }
     await session.sendUserMessage(instance.initialPrompt);
   } catch (err) {
     markErrored(instance, err);

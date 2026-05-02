@@ -30,9 +30,10 @@ const subagentToolFactory: SubagentToolFactory = (
   runner,
   depth,
   sessionId,
+  activeScope,
   onStatusUpdate,
 ) => [
-  createSpawnSubagentTool(runner, depth, sessionId, onStatusUpdate),
+  createSpawnSubagentTool(runner, depth, sessionId, onStatusUpdate, undefined, activeScope),
   createReviveSubagentTool(runner, onStatusUpdate),
 ];
 

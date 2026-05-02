@@ -115,12 +115,12 @@ Commit: `phase 5: AgentRunner uses scoped memory tools and snapshot`
 
 ## Phase 6: SubagentRunner integration
 
-- [ ] In `src/subagents/runner.ts` (the `SubagentRunner.spawn` path) and `src/subagents/execution.ts` (where `customTools` is assembled inside `_runInstanceInner` via `ExecutionDeps.buildTools`):
+- [x] In `src/subagents/runner.ts` (the `SubagentRunner.spawn` path) and `src/subagents/execution.ts` (where `customTools` is assembled inside `_runInstanceInner` via `ExecutionDeps.buildTools`):
   - Anonymous: `activeScope = parent.activeScope` verbatim. `namedAgent: null`.
   - Named: `activeScope = {topicScope: parent.activeScope.topicScope, namedAgent: {name: <sanitized>}}`.
   - Register the same three memory tool factories with the child's `activeScope`.
-- [ ] When dispatching the per-turn snapshot for a subagent (via `sendCustomMessage`), use `formatSnapshot` with `includePersona: {name}` for named subagents only.
-- [ ] Subagent tests in `src/subagents/mod.test.ts`:
+- [x] When dispatching the per-turn snapshot for a subagent (via `sendCustomMessage`), use `formatSnapshot` with `includePersona: {name}` for named subagents only.
+- [x] Subagent tests in `src/subagents/mod.test.ts`:
   - Anonymous subagent in topic writes to parent's topic scope.
   - Named subagent persona file populated by `target: agent` writes; not affected by `target: memory` writes.
   - `target=agent` rejected for anonymous.

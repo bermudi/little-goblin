@@ -115,6 +115,8 @@ export class AgentRunner {
           0,
           this.sessionId,
           (msg) => this.callbacks?.onStatusUpdate(msg),
+          undefined,
+          this.activeScope,
         ),
       );
       tools.push(
@@ -265,4 +267,3 @@ export class AgentRunner {
     }
   }
 }
-

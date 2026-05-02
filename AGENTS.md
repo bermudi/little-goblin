@@ -32,6 +32,10 @@ Architecture lives in `specs/` (litespec). This file is just guardrails.
 - **No `console.log`.** Use `log` from `src/log.ts`.
 - **One module, one job.** Flat modules with `mod.ts` barrels. Colocate tests.
 
+## Temporary Notes
+
+[src/bot.ts] is approaching its limit at 291 lines. The single message:text handler is now ~225 lines with a big switch and a lot of nested closures. Each command's body is doing wiring (lookup runner, archive, dispose, delete from map, format reply) that smells dispatchable. I'd extract a handleCommand(command, ctx, deps): Promise<boolean> so bot.ts becomes "wire middleware, route to handler, error-handle." Don't refactor for its own sake, but next time you add a command you'll feel the friction.
+
 ## Memory
 
 Curated, agent-controlled persistent memory lives at `$GOBLIN_HOME/memory/`:

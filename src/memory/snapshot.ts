@@ -20,8 +20,8 @@ export interface MemorySnapshotPayload {
 }
 
 export function formatSnapshot(store: MemoryStore): MemorySnapshotPayload | null {
-  const memoryBody = store.read("memory");
-  const userBody = store.read("user");
+  const memoryBody = store.readBody("memory");
+  const userBody = store.readBody("user");
   if (memoryBody.length === 0 && userBody.length === 0) {
     return null;
   }

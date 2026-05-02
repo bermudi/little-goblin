@@ -35,5 +35,5 @@ export function archiveTopicPath(home: string, chatId: number, topicId: number):
 }
 
 export function memoryFilePath(home: string, target: MemoryTarget): string {
-  return target === "memory" ? join(memoryDir(home), "memory.md") : userPath(home);
+  return target === "memory" ? scopeMemoryPath(home, "general") : userPath(home);
 }

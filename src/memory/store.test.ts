@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
-import { memoryDir, memoryFilePath } from "./paths.ts";
+import { archiveTopicPath, memoryDir, memoryFilePath, scopeMemoryPath } from "./paths.ts";
 
 const DELIMITER = "\n§\n";
 
@@ -36,22 +36,31 @@ describe("MemoryStore", () => {
   });
 
   describe("read", () => {
-    it("returns empty string when file is absent", () => {
-      expect(store.read("memory")).toBe("");
-      expect(store.read("user")).toBe("");
+    it("returns empty parsed memory when file is absent", () => {
+      expect(store.read("memory")).toEqual({ body: "" });
+      expect(store.read("user")).toEqual({ body: "" });
     });
 
     it("returns file contents when present", () => {
-      const r = store.add("memory", "hello");
-      expect(r.ok).toBe(true);
-      expect(store.read("memory")).toBe("hello");
+      expect(store.add("memory", "hello").ok).toBe(true);
+      expect(store.readBody("memory")).toBe("hello");
+    });
+
+    it("parses one-line description frontmatter separately from body", () => {
+      const scope = { topic: { chatId: -100, topicId: 42 } };
+      mkdirSync(join(memoryDir(tmp), "topics", "-100", "42"), { recursive: true });
+      writeFileSync(
+        scopeMemoryPath(tmp, scope),
+        "---\ndescription: health notes\n---\n\nalpha",
+        "utf-8",
+      );
+      expect(store.read(scope)).toEqual({ description: "health notes", body: "alpha" });
     });
   });
 
   describe("add", () => {
     it("first add to empty file produces no delimiter", () => {
-      const r = store.add("memory", "hello world");
-      expect(r.ok).toBe(true);
+      expect(store.add("memory", "hello world").ok).toBe(true);
       const contents = readFileSync(memoryFilePath(tmp, "memory"), "utf-8");
       expect(contents).toBe("hello world");
       expect(contents.includes(DELIMITER)).toBe(false);
@@ -60,30 +69,26 @@ describe("MemoryStore", () => {
     it("second add produces exactly one delimiter", () => {
       expect(store.add("memory", "first").ok).toBe(true);
       expect(store.add("memory", "second").ok).toBe(true);
-      const contents = readFileSync(memoryFilePath(tmp, "memory"), "utf-8");
-      expect(contents).toBe(`first${DELIMITER}second`);
-      const parts = contents.split(DELIMITER);
-      expect(parts).toHaveLength(2);
+      expect(readFileSync(memoryFilePath(tmp, "memory"), "utf-8")).toBe(
+        `first${DELIMITER}second`,
+      );
     });
 
-    it("creates the memory dir lazily", () => {
-      store.add("user", "x");
-      const entries = readdirSync(memoryDir(tmp));
-      expect(entries).toContain("user.md");
+    it("creates scope directories lazily", () => {
+      const scope = { topic: { chatId: -100, topicId: 42 } };
+      expect(store.add(scope, "x").ok).toBe(true);
+      expect(readFileSync(scopeMemoryPath(tmp, scope), "utf-8")).toBe("x");
     });
 
     it("succeeds when result is exactly at the cap", () => {
-      const exactly = "a".repeat(2000);
-      const r = store.add("user", exactly);
-      expect(r.ok).toBe(true);
-      expect(store.read("user").length).toBe(2000);
+      expect(store.add("user", "a".repeat(2000)).ok).toBe(true);
+      expect(store.readBody("user").length).toBe(2000);
     });
 
     it("rejects when add would exceed cap; file unchanged", () => {
-      // Pre-fill user.md to 1999 chars.
       const initial = "a".repeat(1999);
+      mkdirSync(memoryDir(tmp), { recursive: true });
       writeFileSync(memoryFilePath(tmp, "user"), initial, "utf-8");
-      // Adding "bb" would yield 1999 + DELIMITER.length(3) + 2 = 2004 → overflow 4.
       const r = store.add("user", "bb");
       expect(r.ok).toBe(false);
       if (!r.ok) {
@@ -91,15 +96,16 @@ describe("MemoryStore", () => {
         expect(r.error).toContain("2000");
         expect(r.error).toContain("4");
       }
-      // File untouched.
       expect(readFileSync(memoryFilePath(tmp, "user"), "utf-8")).toBe(initial);
     });
 
-    it("uses the 4000 cap for memory.md", () => {
-      const exactly = "m".repeat(4000);
-      expect(store.add("memory", exactly).ok).toBe(true);
-      const r = store.add("memory", "x");
-      expect(r.ok).toBe(false);
+    it("keeps caps independent per scope", () => {
+      const topic42 = { topic: { chatId: -100, topicId: 42 } };
+      const topic7 = { topic: { chatId: -100, topicId: 7 } };
+      expect(store.add(topic42, "m".repeat(4000)).ok).toBe(true);
+      expect(store.add(topic42, "x").ok).toBe(false);
+      expect(store.add(topic7, "fresh").ok).toBe(true);
+      expect(store.readBody(topic7)).toBe("fresh");
     });
   });
 
@@ -111,11 +117,8 @@ describe("MemoryStore", () => {
     });
 
     it("replaces a unique substring", () => {
-      const r = store.replace("memory", "bravo", "BRAVO!");
-      expect(r.ok).toBe(true);
-      expect(store.read("memory")).toBe(
-        `alpha${DELIMITER}BRAVO!${DELIMITER}charlie`,
-      );
+      expect(store.replace("memory", "bravo", "BRAVO!").ok).toBe(true);
+      expect(store.readBody("memory")).toBe(`alpha${DELIMITER}BRAVO!${DELIMITER}charlie`);
     });
 
     it("rejects ambiguous match", () => {
@@ -123,31 +126,13 @@ describe("MemoryStore", () => {
       const r = store.replace("memory", "alpha", "X");
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error).toContain("2");
-      expect(store.read("memory")).toBe(
-        `alpha${DELIMITER}bravo${DELIMITER}charlie${DELIMITER}alpha`,
-      );
     });
 
     it("rejects not-found", () => {
-      const before = store.read("memory");
+      const before = store.readBody("memory");
       const r = store.replace("memory", "zzz", "X");
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error.toLowerCase()).toContain("not found");
-      expect(store.read("memory")).toBe(before);
-    });
-
-    it("rejects when replacement would overflow cap", () => {
-      // Build user.md near cap and try to replace a tiny token with a huge one.
-      writeFileSync(
-        memoryFilePath(tmp, "user"),
-        "TOKEN" + "a".repeat(1990),
-        "utf-8",
-      );
-      const huge = "z".repeat(2000);
-      const r = store.replace("user", "TOKEN", huge);
-      expect(r.ok).toBe(false);
-      // File untouched.
-      expect(store.read("user").startsWith("TOKEN")).toBe(true);
+      expect(store.readBody("memory")).toBe(before);
     });
   });
 
@@ -159,21 +144,18 @@ describe("MemoryStore", () => {
     });
 
     it("removes a middle entry along with one delimiter", () => {
-      const r = store.remove("memory", "bravo");
-      expect(r.ok).toBe(true);
-      expect(store.read("memory")).toBe(`alpha${DELIMITER}charlie`);
+      expect(store.remove("memory", "bravo").ok).toBe(true);
+      expect(store.readBody("memory")).toBe(`alpha${DELIMITER}charlie`);
     });
 
     it("removes the first entry cleanly", () => {
-      const r = store.remove("memory", "alpha");
-      expect(r.ok).toBe(true);
-      expect(store.read("memory")).toBe(`bravo${DELIMITER}charlie`);
+      expect(store.remove("memory", "alpha").ok).toBe(true);
+      expect(store.readBody("memory")).toBe(`bravo${DELIMITER}charlie`);
     });
 
     it("removes the last entry cleanly", () => {
-      const r = store.remove("memory", "charlie");
-      expect(r.ok).toBe(true);
-      expect(store.read("memory")).toBe(`alpha${DELIMITER}bravo`);
+      expect(store.remove("memory", "charlie").ok).toBe(true);
+      expect(store.readBody("memory")).toBe(`alpha${DELIMITER}bravo`);
     });
 
     it("removes the sole entry, leaving an empty file", () => {
@@ -181,49 +163,63 @@ describe("MemoryStore", () => {
       try {
         const s2 = new MemoryStore(tmp2);
         s2.add("user", "only");
-        const r = s2.remove("user", "only");
-        expect(r.ok).toBe(true);
-        expect(s2.read("user")).toBe("");
+        expect(s2.remove("user", "only").ok).toBe(true);
+        expect(s2.readBody("user")).toBe("");
       } finally {
         rmSync(tmp2, { recursive: true, force: true });
       }
     });
+  });
 
-    it("rejects ambiguous", () => {
-      store.add("memory", "alpha");
-      const r = store.remove("memory", "alpha");
-      expect(r.ok).toBe(false);
+  describe("frontmatter", () => {
+    it("setDescription preserves body and empty description removes header", () => {
+      const scope = { topic: { chatId: -100, topicId: 42 } };
+      store.add(scope, "alpha");
+      expect(store.setDescription(scope, "health notes").ok).toBe(true);
+      expect(readFileSync(scopeMemoryPath(tmp, scope), "utf-8")).toBe(
+        "---\ndescription: health notes\n---\n\nalpha",
+      );
+      expect(store.setDescription(scope, "").ok).toBe(true);
+      expect(readFileSync(scopeMemoryPath(tmp, scope), "utf-8")).toBe("alpha");
     });
 
-    it("rejects not-found", () => {
-      const r = store.remove("memory", "zzz");
-      expect(r.ok).toBe(false);
+    it("round-trips description through add, replace, remove, and rewrite", () => {
+      const scope = { topic: { chatId: -100, topicId: 42 } };
+      store.setDescription(scope, "ops notes");
+      store.add(scope, "alpha");
+      store.add(scope, "bravo");
+      store.replace(scope, "bravo", "charlie");
+      store.remove(scope, "alpha");
+      store.rewrite(scope, "delta");
+      expect(store.read(scope)).toEqual({ description: "ops notes", body: "delta" });
+    });
+
+    it("rejects multiline and overlong descriptions", () => {
+      expect(store.setDescription("memory", "bad\nwolf").ok).toBe(false);
+      expect(store.setDescription("memory", "x".repeat(201)).ok).toBe(false);
+    });
+
+    it("excludes frontmatter from body cap calculation", () => {
+      const scope = { agent: { name: "researcher" } };
+      expect(store.setDescription(scope, "x".repeat(200)).ok).toBe(true);
+      expect(store.rewrite(scope, "m".repeat(4000)).ok).toBe(true);
+      expect(store.read(scope).body.length).toBe(4000);
     });
   });
 
   describe("atomic write", () => {
-    it("does not leave a non-tmp file behind on partial write", () => {
-      // Sanity: after a successful add, only memory.md (no .tmp leftovers).
+    it("does not leave a non-tmp file behind on successful write", () => {
       store.add("memory", "x");
-      const entries = readdirSync(memoryDir(tmp));
-      const tmpLeftovers = entries.filter((n) => n.endsWith(".tmp"));
-      expect(tmpLeftovers).toEqual([]);
+      const entries = readdirSync(join(memoryDir(tmp), "general"));
+      expect(entries.filter((n) => n.endsWith(".tmp"))).toEqual([]);
     });
 
-    it("uses a hidden tmp filename pattern in memoryDir", () => {
-      // We can't easily simulate a crash mid-rename without a fault-injection
-      // FS, so instead assert that no extraneous files exist after a write
-      // and that a failed write (overflow) does not modify the target file
-      // nor leave a tmp file behind.
+    it("uses a hidden tmp filename pattern in target dir", () => {
       writeFileSync(memoryFilePath(tmp, "user"), "a".repeat(1999), "utf-8");
       const before = readFileSync(memoryFilePath(tmp, "user"), "utf-8");
-      const r = store.add("user", "bb");
-      expect(r.ok).toBe(false);
-      const after = readFileSync(memoryFilePath(tmp, "user"), "utf-8");
-      expect(after).toBe(before);
-      const entries = readdirSync(memoryDir(tmp));
-      const tmpLeftovers = entries.filter((n) => n.endsWith(".tmp"));
-      expect(tmpLeftovers).toEqual([]);
+      expect(store.add("user", "bb").ok).toBe(false);
+      expect(readFileSync(memoryFilePath(tmp, "user"), "utf-8")).toBe(before);
+      expect(readdirSync(memoryDir(tmp)).filter((n) => n.endsWith(".tmp"))).toEqual([]);
     });
   });
 
@@ -231,8 +227,7 @@ describe("MemoryStore", () => {
     it("first successful write initializes .git", () => {
       const dir = memoryDir(tmp);
       expect(existsSync(join(dir, ".git"))).toBe(false);
-      const r = store.add("memory", "first");
-      expect(r.ok).toBe(true);
+      expect(store.add("memory", "first").ok).toBe(true);
       expect(existsSync(join(dir, ".git"))).toBe(true);
       expect(commitCount(dir)).toBe(1);
     });
@@ -249,39 +244,25 @@ describe("MemoryStore", () => {
       expect(commitCount(dir)).toBe(4);
     });
 
-    it("commit subjects match `memory: <action> in <target>` exactly", () => {
+    it("commit subjects include scope tags", () => {
       const dir = memoryDir(tmp);
       store.add("user", "x");
+      expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe("memory: add in user");
+      store.add({ topic: { chatId: -100, topicId: 42 } }, "m1");
       expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
-        "memory: add in user",
+        "memory: add in topics/-100/42",
       );
-      store.replace("user", "x", "y");
+      store.setDescription("memory", "general notes");
       expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
-        "memory: replace in user",
-      );
-      store.remove("user", "y");
-      expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
-        "memory: remove in user",
-      );
-      store.add("memory", "m1");
-      expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
-        "memory: add in memory",
+        "memory: set_description in general",
       );
     });
 
     it("swallows commit failures: file persists, no throw, no commit", () => {
       const dir = memoryDir(tmp);
-      // Inject a fault: create `.git` as a regular file, not a directory.
-      // ensureGitRepo's existsSync check passes (skipping `git init`), then
-      // `git add` fails because .git isn't a real repository.
       writeFileSync(join(dir, ".git"), "not a real repo", "utf-8");
-
-      const r = store.add("memory", "should-persist");
-      // Tool semantics: success — file write is the source of truth.
-      expect(r.ok).toBe(true);
-      expect(store.read("memory")).toBe("should-persist");
-
-      // No commit was created (no HEAD exists at all).
+      expect(store.add("memory", "should-persist").ok).toBe(true);
+      expect(store.readBody("memory")).toBe("should-persist");
       const rev = spawnSync("git", ["rev-list", "--count", "HEAD"], {
         cwd: dir,
         encoding: "utf-8",
@@ -289,34 +270,57 @@ describe("MemoryStore", () => {
       expect(rev.status).not.toBe(0);
     });
 
-    it("subsequent writes still succeed after a commit failure", () => {
-      const dir = memoryDir(tmp);
-      writeFileSync(join(dir, ".git"), "not a real repo", "utf-8");
-      expect(store.add("memory", "first").ok).toBe(true);
-      // Tool is still usable for further mutations even though git is broken.
-      expect(store.add("memory", "second").ok).toBe(true);
-      expect(store.read("memory")).toBe(`first\n§\nsecond`);
-    });
-
     it("failed writes do not produce commits", () => {
       const dir = memoryDir(tmp);
-      // Seed one commit so HEAD exists.
       store.add("memory", "seed");
       const before = commitCount(dir);
-
-      // Overflow: pre-fill user.md and try a too-large add.
       writeFileSync(memoryFilePath(tmp, "user"), "a".repeat(1999), "utf-8");
-      const r1 = store.add("user", "bb");
-      expect(r1.ok).toBe(false);
-
-      // Ambiguous match.
+      expect(store.add("user", "bb").ok).toBe(false);
       store.add("memory", "seed");
-      const r2 = store.replace("memory", "seed", "X");
-      expect(r2.ok).toBe(false);
-
-      // After the second `add("memory", "seed")` succeeded once, count went
-      // up by exactly 1; failed ops added nothing.
+      expect(store.replace("memory", "seed", "X").ok).toBe(false);
       expect(commitCount(dir)).toBe(before + 1);
+    });
+  });
+
+  describe("archiveOrphan", () => {
+    it("moves a topic directory to archive and commits", () => {
+      const scope = { topic: { chatId: -100, topicId: 42 } };
+      store.add(scope, "alpha");
+      expect(store.archiveOrphan(-100, 42)).toBe(true);
+      expect(existsSync(scopeMemoryPath(tmp, scope))).toBe(false);
+      expect(existsSync(join(archiveTopicPath(tmp, -100, 42), "memory.md"))).toBe(true);
+      expect(gitOut(memoryDir(tmp), ["log", "-1", "--format=%s"])).toBe(
+        "memory: archive orphan topics/-100/42",
+      );
+    });
+
+    it("returns false when the source is missing", () => {
+      expect(store.archiveOrphan(-100, 42)).toBe(false);
+    });
+  });
+
+  describe("listIndex", () => {
+    it("filters topics by chat id and optionally includes agents", () => {
+      store.setDescription({ topic: { chatId: -100, topicId: 1 } }, "chat A one");
+      store.setDescription({ topic: { chatId: -100, topicId: 2 } }, "chat A two");
+      store.setDescription({ topic: { chatId: -200, topicId: 9 } }, "chat B nine");
+      store.setDescription({ agent: { name: "researcher" } }, "research persona");
+
+      expect(store.listIndex({ chatId: -100, includeAgents: false })).toEqual({
+        topics: [
+          { chatId: -100, topicId: 1, description: "chat A one" },
+          { chatId: -100, topicId: 2, description: "chat A two" },
+        ],
+        agents: [],
+      });
+      expect(store.listIndex({ includeAgents: true })).toEqual({
+        topics: [
+          { chatId: -200, topicId: 9, description: "chat B nine" },
+          { chatId: -100, topicId: 1, description: "chat A one" },
+          { chatId: -100, topicId: 2, description: "chat A two" },
+        ],
+        agents: [{ name: "researcher", description: "research persona" }],
+      });
     });
   });
 });

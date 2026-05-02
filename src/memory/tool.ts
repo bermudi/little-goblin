@@ -1,6 +1,5 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
-import type { MemoryTarget } from "./paths.ts";
 import type { MemoryStore, StoreResult } from "./store.ts";
 
 /**
@@ -47,6 +46,8 @@ function textResult(message: string): {
 } {
   return { content: [{ type: "text", text: message }], details: undefined };
 }
+
+type MemoryTarget = "memory" | "user";
 
 function summarize(action: "add" | "replace" | "remove", target: MemoryTarget): string {
   switch (action) {

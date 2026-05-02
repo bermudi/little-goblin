@@ -192,7 +192,8 @@ describe("AgentRunner", () => {
     function seedMemory(home: string, files: { memory?: string; user?: string }): void {
       mkdirSync(join(home, "memory"), { recursive: true });
       if (files.memory !== undefined) {
-        writeFileSync(join(home, "memory", "memory.md"), files.memory, "utf-8");
+        mkdirSync(join(home, "memory", "general"), { recursive: true });
+        writeFileSync(join(home, "memory", "general", "memory.md"), files.memory, "utf-8");
       }
       if (files.user !== undefined) {
         writeFileSync(join(home, "memory", "user.md"), files.user, "utf-8");

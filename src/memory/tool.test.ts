@@ -44,7 +44,7 @@ describe("memory tool", () => {
       expect(r.content[0].text).toContain("memory.md");
       expect(r.content[0].text).toContain("added");
     }
-    expect(store.read("memory")).toBe("alpha");
+    expect(store.readBody("memory")).toBe("alpha");
   });
 
   it("rejects replace with no old_text and does not write", async () => {
@@ -119,6 +119,6 @@ describe("memory tool", () => {
         NULL_CTX,
       ),
     ).rejects.toThrow(/unique/);
-    expect(store.read("memory")).toBe(before);
+    expect(store.read("memory")).toEqual(before);
   });
 });

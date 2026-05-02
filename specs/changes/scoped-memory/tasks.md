@@ -25,19 +25,19 @@ Commit: `phase 1: scope types, scope.ts, paths.ts updates`
 
 ## Phase 2: MemoryStore refactor
 
-- [ ] Rewrite `src/memory/store.ts` around the new layout:
+- [x] Rewrite `src/memory/store.ts` around the new layout:
   - `MemoryStore.add(scope, content)`, `replace(scope, oldText, content)`, `remove(scope, oldText)`, `rewrite(scope, body)`, `setDescription(scope, description)`. Each funnels into a private `mutate(scope, op)` helper.
   - `mutate` is the single chokepoint: resolve path → read current → apply op → validate body cap (4000 / 2000) → atomic write (tmp + rename) → single git commit with `memory: <action> in <scopeTag>` subject.
   - `read(scope): {description?: string; body: string}` — parses frontmatter `--- description: ... ---` and returns the body separately.
   - `listIndex({chatId?: number; includeAgents: boolean}): {topics: Array<{topicId, chatId, description}>; agents: Array<{name, description}>}`. Default `chatId` filter is the caller's; `chatId` undefined or explicit `all_chats: true` returns everything. Excludes `archive/` subtrees.
   - `archiveOrphan(chatId, topicId): boolean` — moves `topics/<chat>/<topic>/` to `archive/topics/<chat>/<topic>/` via `renameSync`. Returns `true` if moved, `false` if source missing (idempotent). Commits with subject `memory: archive orphan topics/<chat>/<topic>`.
-- [ ] Frontmatter parser:
+- [x] Frontmatter parser:
   - Recognizes `--- description: <one-line> ---` followed by a blank line.
   - Description ≤ 200 chars, single line. Reject multi-line on write.
   - Body cap calculation excludes frontmatter bytes.
-- [ ] Cap enforcement is per-scope-file, applied to body length only.
-- [ ] Atomic-write primitive preserved (`tmp` in same dir, `renameSync`).
-- [ ] Update `src/memory/store.test.ts`:
+- [x] Cap enforcement is per-scope-file, applied to body length only.
+- [x] Atomic-write primitive preserved (`tmp` in same dir, `renameSync`).
+- [x] Update `src/memory/store.test.ts`:
   - Per-scope cap independence.
   - Frontmatter round-trip on every action.
   - `set_description` preserves body; empty description removes header.
@@ -45,7 +45,7 @@ Commit: `phase 1: scope types, scope.ts, paths.ts updates`
   - Scope-tagged commit subjects (`memory: add in topics/-100/42`).
   - `archiveOrphan` happy path + missing-source idempotency.
   - `listIndex` filters by `chatId` by default; opt-in returns all.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 2: scope-aware MemoryStore with frontmatter, rewrite, archive`
 

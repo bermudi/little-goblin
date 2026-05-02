@@ -129,7 +129,7 @@ function makeConfig(home: string): Config {
  * (and the subscribe call) have actually run before we emit events.
  *
  * Two microtask flushes is enough today: one for the promise returned by
- * `getSharedServices` setup, one for the awaited `createAgentSession`.
+ * `getPiServices` setup, one for the awaited `createAgentSession`.
  * Bun's test runner doesn't expose a "next tick" helper, so we approximate
  * with a 0-ms timer + a microtask drain — robust enough for the fake
  * session pipeline.

@@ -14,13 +14,13 @@ The `SubagentRunner` class SHALL handle spawning, revival, and status tracking f
 
 #### Scenario: Services from pi-host
 
-- **WHEN** `SubagentRunner.getSharedServices()` is called
+- **WHEN** `SubagentRunner.getPiServices()` is called
 - **THEN** it SHALL call `createPiServices(this.cfg.goblinHome)` from `src/pi-host.ts`
 - **AND** it SHALL NOT construct `AuthStorage`, `ModelRegistry`, or `SettingsManager` inline
 
 #### Scenario: Lazy caching preserved
 
-- **WHEN** `getSharedServices()` is called twice within the same `SubagentRunner` lifetime
+- **WHEN** `getPiServices()` is called twice within the same `SubagentRunner` lifetime
 - **THEN** `createPiServices()` SHALL be called only once
 - **AND** the cached result SHALL be returned on subsequent calls
 
@@ -222,9 +222,9 @@ Agent names SHALL be validated to prevent path traversal.
 - **WHEN** a name containing characters outside `[a-zA-Z0-9_-]` is provided
 - **THEN** spawn SHALL throw an error matching "Invalid agent name"
 
-### Requirement: SubagentRunner dispatches events through shared dispatchAgentEvent
+### Requirement: Subagent event dispatch goes through shared dispatchAgentEvent
 
-The `SubagentRunner.handleEvent()` method SHALL construct a local `TurnCallbacks` adapter object and delegate pi event dispatch to `dispatchAgentEvent(event, callbacks)` from `src/agent/events.ts`. The adapter SHALL map the typed `TurnCallbacks` methods to the subagent's existing callback surface:
+The subagent runtime SHALL dispatch each pi `AgentSessionEvent` by constructing a local `TurnCallbacks` adapter and delegating to `dispatchAgentEvent(event, callbacks)` from `src/agent/events.ts`. The adapter SHALL map the typed `TurnCallbacks` methods to the subagent's existing callback surface:
 
 - `onTextDelta(delta)` → `hooks.onText(delta)`
 - `onToolStart(name)` → `instance.onStatusUpdate?.(``tool: ${name}``)`
@@ -232,7 +232,7 @@ The `SubagentRunner.handleEvent()` method SHALL construct a local `TurnCallbacks
 - `onStatusUpdate(message)` → `instance.onStatusUpdate?.(message)`
 - `onAgentEnd()` → `hooks.onEnd()`
 
-The adapter SHALL be constructed fresh per-event (no retained state). The inline `switch` statement SHALL be removed from `SubagentRunner.handleEvent`.
+The adapter SHALL be constructed fresh per-event (no retained state). No inline `switch` statement on event type SHALL remain in the subagent runtime.
 
 #### Scenario: Subagent receives a text delta event
 

@@ -267,9 +267,9 @@ Spec: *AgentRunner registers the memory write tool*, all the `memory` requiremen
 
 Spec: *AgentRunner injects memory snapshot as per-turn aside*, *AgentRunner registers the memory write tool*.
 
-#### `src/subagents/mod.ts`
+#### `src/subagents/runner.ts` (and `src/subagents/execution.ts`)
 
-- **Spawn paths gain memory wiring.** When `SubagentRunner.spawn` builds the child's pi `customTools`, it includes the same three memory tools, with `activeScope` derived from:
+- **Spawn paths gain memory wiring.** When `SubagentRunner.spawn` (in `runner.ts`) builds the child's pi `customTools` — the actual `customTools` array is assembled inside `_runInstanceInner` in `execution.ts` via the `buildTools` callback on `ExecutionDeps` — it includes the same three memory tools, with `activeScope` derived from:
     - Anonymous subagent: parent's `activeScope` verbatim. `namedAgent: null`.
     - Named subagent: parent's `activeScope.topicScope`, plus `namedAgent: {name: <sanitized name>}`.
 - **Snapshot for named subagents.** Subagent's pi `AgentSession` receives a per-turn snapshot via `sendCustomMessage` analogous to `AgentRunner`'s, but with `includePersona: {name}` so `## agent persona` renders. The snapshot is built from the same `formatSnapshot` factory.

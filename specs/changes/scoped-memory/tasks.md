@@ -115,7 +115,7 @@ Commit: `phase 5: AgentRunner uses scoped memory tools and snapshot`
 
 ## Phase 6: SubagentRunner integration
 
-- [ ] In `src/subagents/mod.ts`, when `SubagentRunner.spawn` builds the child's `customTools`:
+- [ ] In `src/subagents/runner.ts` (the `SubagentRunner.spawn` path) and `src/subagents/execution.ts` (where `customTools` is assembled inside `_runInstanceInner` via `ExecutionDeps.buildTools`):
   - Anonymous: `activeScope = parent.activeScope` verbatim. `namedAgent: null`.
   - Named: `activeScope = {topicScope: parent.activeScope.topicScope, namedAgent: {name: <sanitized>}}`.
   - Register the same three memory tool factories with the child's `activeScope`.

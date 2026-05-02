@@ -292,6 +292,10 @@ describe("MemoryStore", () => {
       expect(gitOut(memoryDir(tmp), ["log", "-1", "--format=%s"])).toBe(
         "memory: archive orphan topics/-100/42",
       );
+      const treePaths = gitOut(memoryDir(tmp), ["ls-tree", "-r", "--name-only", "HEAD"]).split("\n");
+      expect(treePaths).toContain("archive/topics/-100/42/memory.md");
+      expect(treePaths).not.toContain("topics/-100/42/memory.md");
+      expect(gitOut(memoryDir(tmp), ["status", "--short"])).toBe("");
     });
 
     it("returns false when the source is missing", () => {

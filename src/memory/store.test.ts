@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
-import { archiveTopicPath, memoryDir, memoryFilePath, scopeMemoryPath } from "./paths.ts";
+import { archiveTopicPath, memoryDir, scopeMemoryPath, userPath } from "./paths.ts";
 
 const DELIMITER = "\n§\n";
 
@@ -61,7 +61,7 @@ describe("MemoryStore", () => {
   describe("add", () => {
     it("first add to empty file produces no delimiter", () => {
       expect(store.add("memory", "hello world").ok).toBe(true);
-      const contents = readFileSync(memoryFilePath(tmp, "memory"), "utf-8");
+      const contents = readFileSync(scopeMemoryPath(tmp, "general"), "utf-8");
       expect(contents).toBe("hello world");
       expect(contents.includes(DELIMITER)).toBe(false);
     });
@@ -69,7 +69,7 @@ describe("MemoryStore", () => {
     it("second add produces exactly one delimiter", () => {
       expect(store.add("memory", "first").ok).toBe(true);
       expect(store.add("memory", "second").ok).toBe(true);
-      expect(readFileSync(memoryFilePath(tmp, "memory"), "utf-8")).toBe(
+      expect(readFileSync(scopeMemoryPath(tmp, "general"), "utf-8")).toBe(
         `first${DELIMITER}second`,
       );
     });
@@ -88,7 +88,7 @@ describe("MemoryStore", () => {
     it("rejects when add would exceed cap; file unchanged", () => {
       const initial = "a".repeat(1999);
       mkdirSync(memoryDir(tmp), { recursive: true });
-      writeFileSync(memoryFilePath(tmp, "user"), initial, "utf-8");
+      writeFileSync(userPath(tmp), initial, "utf-8");
       const r = store.add("user", "bb");
       expect(r.ok).toBe(false);
       if (!r.ok) {
@@ -96,7 +96,7 @@ describe("MemoryStore", () => {
         expect(r.error).toContain("2000");
         expect(r.error).toContain("4");
       }
-      expect(readFileSync(memoryFilePath(tmp, "user"), "utf-8")).toBe(initial);
+      expect(readFileSync(userPath(tmp), "utf-8")).toBe(initial);
     });
 
     it("keeps caps independent per scope", () => {
@@ -215,10 +215,10 @@ describe("MemoryStore", () => {
     });
 
     it("uses a hidden tmp filename pattern in target dir", () => {
-      writeFileSync(memoryFilePath(tmp, "user"), "a".repeat(1999), "utf-8");
-      const before = readFileSync(memoryFilePath(tmp, "user"), "utf-8");
+      writeFileSync(userPath(tmp), "a".repeat(1999), "utf-8");
+      const before = readFileSync(userPath(tmp), "utf-8");
       expect(store.add("user", "bb").ok).toBe(false);
-      expect(readFileSync(memoryFilePath(tmp, "user"), "utf-8")).toBe(before);
+      expect(readFileSync(userPath(tmp), "utf-8")).toBe(before);
       expect(readdirSync(memoryDir(tmp)).filter((n) => n.endsWith(".tmp"))).toEqual([]);
     });
   });
@@ -274,7 +274,7 @@ describe("MemoryStore", () => {
       const dir = memoryDir(tmp);
       store.add("memory", "seed");
       const before = commitCount(dir);
-      writeFileSync(memoryFilePath(tmp, "user"), "a".repeat(1999), "utf-8");
+      writeFileSync(userPath(tmp), "a".repeat(1999), "utf-8");
       expect(store.add("user", "bb").ok).toBe(false);
       store.add("memory", "seed");
       expect(store.replace("memory", "seed", "X").ok).toBe(false);

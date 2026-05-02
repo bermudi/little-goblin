@@ -8,10 +8,8 @@ export { formatSnapshot, type MemorySnapshotPayload } from "./snapshot.ts";
 export {
   archiveTopicPath,
   memoryDir,
-  memoryFilePath,
   scopeMemoryPath,
   userPath,
-  type MemoryTarget,
 } from "./paths.ts";
 export {
   resolveActiveScope,

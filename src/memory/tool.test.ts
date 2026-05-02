@@ -8,7 +8,7 @@ import {
   createMemoryReadTool,
   createMemoryWriteTool,
 } from "./tool.ts";
-import { memoryDir, memoryFilePath, scopeMemoryPath } from "./paths.ts";
+import { memoryDir, scopeMemoryPath, userPath } from "./paths.ts";
 import type { ActiveScope } from "./scope.ts";
 
 const NULL_CTX = {} as Parameters<ReturnType<typeof createMemoryWriteTool>["execute"]>[4];
@@ -160,7 +160,7 @@ describe("memory tool", () => {
 
   it("rejects replace with no old_text and does not write", async () => {
     store.add("user", "x");
-    const before = readFileSync(memoryFilePath(tmp, "user"), "utf-8");
+    const before = readFileSync(userPath(tmp), "utf-8");
     await expect(
       writeTool.execute(
         "call-2",
@@ -170,7 +170,7 @@ describe("memory tool", () => {
         NULL_CTX,
       ),
     ).rejects.toThrow(/old_text/);
-    expect(readFileSync(memoryFilePath(tmp, "user"), "utf-8")).toBe(before);
+    expect(readFileSync(userPath(tmp), "utf-8")).toBe(before);
   });
 
   it("rejects add with no content", async () => {
@@ -231,8 +231,8 @@ describe("memory tool", () => {
   });
 
   it("propagates overflow errors as thrown errors; store unchanged", async () => {
-    writeFileSync(memoryFilePath(tmp, "user"), "a".repeat(1999), "utf-8");
-    const before = readFileSync(memoryFilePath(tmp, "user"), "utf-8");
+    writeFileSync(userPath(tmp), "a".repeat(1999), "utf-8");
+    const before = readFileSync(userPath(tmp), "utf-8");
     await expect(
       writeTool.execute(
         "call-5",
@@ -242,7 +242,7 @@ describe("memory tool", () => {
         NULL_CTX,
       ),
     ).rejects.toThrow(/cap|overflow/i);
-    expect(readFileSync(memoryFilePath(tmp, "user"), "utf-8")).toBe(before);
+    expect(readFileSync(userPath(tmp), "utf-8")).toBe(before);
   });
 
   it("propagates ambiguous-replace errors; store unchanged", async () => {

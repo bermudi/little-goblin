@@ -213,6 +213,9 @@ export class MemoryStore {
   private commitArchive(chatId: number, topicId: number): void {
     const tag = `topics/${chatId}/${topicId}`;
     const dir = memoryDir(this.home);
+    // The tag is passed (even though not a valid path) so git records the deletion
+    // of the source directory. `git add -A -- <pathspec>` needs the old path to
+    // track the rename as a delete+add rather than just an add.
     this.commitPaths(`memory: archive orphan ${tag}`, [
       relative(dir, archiveTopicPath(this.home, chatId, topicId)),
       tag,

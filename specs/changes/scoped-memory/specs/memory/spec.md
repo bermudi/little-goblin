@@ -136,8 +136,8 @@ The `target` parameter on `memory_write` accepts only:
 The `memory_read` tool SHALL accept an optional `scope` argument as a discriminated union. The accepted values are:
 - absent or `"active"` — the calling session's active scope (default).
 - `"general"` — the general scope file.
-- `{topic: <topicId>}` — a topic scope in the same chat as the caller.
-- `{agent: <name>}` — a named-agent persona scope.
+- `{topic: {chatId: <chatId>, topicId: <topicId>}}` — a topic scope (chatId must match the caller's chat).
+- `{agent: {name: <name>}}` — a named-agent persona scope.
 
 The `scope` argument SHALL NOT be a free-form string path. Internals translate the discriminated value into the canonical disk path. `target = "user"` ignores the `scope` argument; `user.md` is global.
 
@@ -145,7 +145,7 @@ The `memory_read_index` tool SHALL return available topic scopes (their topic ID
 
 #### Scenario: Read from another topic
 
-- **WHEN** `memory_read({target: "memory", scope: {topic: 7}})` is called from a session in topic `42`
+- **WHEN** `memory_read({target: "memory", scope: {topic: {chatId: -100123, topicId: 7}}})` is called from a session in topic `42` of chat `-100123`
 - **AND** topic `7` has a non-empty `memory.md`
 - **THEN** the tool SHALL return the contents of `topics/<chat>/7/memory.md`
 - **AND** SHALL NOT modify any file

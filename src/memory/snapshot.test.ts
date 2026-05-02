@@ -20,49 +20,115 @@ describe("formatSnapshot", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("returns null when both files are empty/absent", () => {
-    expect(formatSnapshot(store)).toBeNull();
+  it("returns null when all snapshot sources are empty or absent", async () => {
+    await expect(
+      formatSnapshot({
+        store,
+        activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+      }),
+    ).resolves.toBeNull();
   });
 
-  it("renders both sections when only memory.md is populated; user.md → (empty)", () => {
-    store.add("memory", "fact-A");
-    const snap = formatSnapshot(store);
+  it("renders a topic-bound snapshot with peer topics in the index", async () => {
+    store.add({ topic: { chatId: -100123, topicId: 42 } }, "health fact");
+    store.add({ topic: { chatId: -100123, topicId: 7 } }, "it fact");
+    store.setDescription({ topic: { chatId: -100123, topicId: 7 } }, "homelab + dotfiles");
+    store.add({ topic: { chatId: -100123, topicId: 11 } }, "finance fact");
+    store.setDescription({ topic: { chatId: -100123, topicId: 11 } }, "money goblins");
+
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
+    });
+
     expect(snap).not.toBeNull();
     expect(snap!.customType).toBe("goblin.memory.snapshot");
     expect(typeof snap!.content).toBe("string");
     const text = snap!.content;
     expect(text.startsWith("[goblin memory snapshot]")).toBe(true);
-    expect(text).toContain("## memory.md\nfact-A");
+    expect(text).toContain("## scope\nTopic: -100123/42");
     expect(text).toContain("## user.md\n(empty)");
-    // Order: memory first, then user.
-    expect(text.indexOf("## memory.md")).toBeLessThan(text.indexOf("## user.md"));
+    expect(text).toContain("## memory.md\nhealth fact");
+    expect(text).toContain("## other scopes\n- topics/-100123/7 — homelab + dotfiles\n- topics/-100123/11 — money goblins");
+    expect(text).not.toContain("topics/-100123/42");
+    expect(text.indexOf("## scope")).toBeLessThan(text.indexOf("## user.md"));
+    expect(text.indexOf("## user.md")).toBeLessThan(text.indexOf("## memory.md"));
   });
 
-  it("renders both sections when only user.md is populated; memory.md → (empty)", () => {
+  it("renders a DM/general snapshot and lists only current-chat topics", async () => {
+    store.add("general", "general fact");
+    store.add({ topic: { chatId: 123, topicId: 7 } }, "current chat fact");
+    store.setDescription({ topic: { chatId: 123, topicId: 7 } }, "current chat topic");
+    store.add({ topic: { chatId: 456, topicId: 9 } }, "other chat fact");
+    store.setDescription({ topic: { chatId: 456, topicId: 9 } }, "other chat topic");
+
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+    });
+
+    expect(snap).not.toBeNull();
+    const text = snap!.content;
+    expect(text).toContain("## scope\nGeneral (DM/supergroup-no-topic)");
+    expect(text).toContain("## memory.md\ngeneral fact");
+    expect(text).toContain("- topics/123/7 — current chat topic");
+    expect(text).not.toContain("topics/456/9");
+  });
+
+  it("renders a named-subagent snapshot with persona memory", async () => {
     store.add("user", "pref-1");
-    const snap = formatSnapshot(store);
+    store.add({ topic: { chatId: -100123, topicId: 42 } }, "active topic fact");
+    store.add({ agent: { name: "researcher" } }, "persona fact");
+
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: { name: "researcher" } },
+      includePersona: { name: "researcher" },
+    });
+
+    expect(snap).not.toBeNull();
+    const text = snap!.content;
+    expect(text).toContain("## scope\nTopic: -100123/42\nAgent: researcher");
+    expect(text).toContain("## user.md\npref-1");
+    expect(text).toContain("## memory.md\nactive topic fact");
+    expect(text).toContain("## agent persona\npersona fact");
+  });
+
+  it("falls back to topic names for undescribed peer topics", async () => {
+    store.add({ topic: { chatId: -100123, topicId: 42 } }, "active topic fact");
+    store.add({ topic: { chatId: -100123, topicId: 7 } }, "peer topic fact");
+
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
+      getTopicName: async (_chatId, topicId) => (topicId === 7 ? "IT" : null),
+    });
+
+    expect(snap!.content).toContain("- topics/-100123/7 — IT");
+  });
+
+  it("renders partial-empty placeholders", async () => {
+    store.add("user", "pref-1");
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
+    });
+
     expect(snap).not.toBeNull();
     const text = snap!.content;
     expect(text).toContain("## memory.md\n(empty)");
     expect(text).toContain("## user.md\npref-1");
+    expect(text).not.toContain("## other scopes");
   });
 
-  it("renders both files when both are populated, no (empty) placeholder", () => {
-    store.add("memory", "m-1");
-    store.add("user", "u-1");
-    const snap = formatSnapshot(store);
-    expect(snap).not.toBeNull();
-    const text = snap!.content;
-    expect(text).toContain("## memory.md\nm-1");
-    expect(text).toContain("## user.md\nu-1");
-    expect(text).not.toContain("(empty)");
-  });
+  it("payload shape matches sendCustomMessage Pick", async () => {
+    store.add("general", "x");
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+    });
 
-  it("payload shape matches sendCustomMessage Pick", () => {
-    store.add("memory", "x");
-    const snap = formatSnapshot(store)!;
-    // display=false ensures the aside doesn't render in any TUI.
-    expect(snap.display).toBe(false);
-    expect(snap.details).toBeUndefined();
+    expect(snap!.display).toBe(false);
+    expect(snap!.details).toBeUndefined();
   });
 });

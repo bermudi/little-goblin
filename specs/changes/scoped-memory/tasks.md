@@ -51,20 +51,20 @@ Commit: `phase 2: scope-aware MemoryStore with frontmatter, rewrite, archive`
 
 ## Phase 3: Snapshot formatter rewrite
 
-- [ ] Rewrite `src/memory/snapshot.ts`:
+- [x] Rewrite `src/memory/snapshot.ts`:
   - New signature: `formatSnapshot({store, activeScope, includePersona?: {name}, getTopicName?: (chatId, topicId) => Promise<string | null>}): Promise<string | null>`.
   - Section order: header, `## scope`, `## user.md`, `## memory.md`, optional `## agent persona`, optional `## other scopes`.
   - Empty source → `(empty)`. All-empty → `null`. `## other scopes` omitted if no peer scopes.
   - `## other scopes` is filtered to the active scope's `chatId` (current-chat default per the just-locked decision).
   - `getTopicName` is best-effort and async; on miss, render `topics/<chat>/<topic>` literal.
-- [ ] Update `src/memory/snapshot.test.ts`:
+- [x] Update `src/memory/snapshot.test.ts`:
   - Topic-bound snapshot with peer topics renders index.
   - DM snapshot uses `general` and lists current-chat topics only.
   - Named-subagent snapshot includes `## agent persona`.
   - Cross-chat topics excluded from snapshot index.
   - All-empty returns `null`.
   - Partial-empty renders `(empty)` placeholders.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 3: snapshot formatter for scoped memory`
 

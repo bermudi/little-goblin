@@ -6,17 +6,19 @@ export type MemoryScope =
   | { agent: { name: string } };
 
 export interface ActiveScope {
-  topicScope: { chatId: number; topicId: number } | "general";
+  chatId: number;
+  topicScope: { topicId: number } | "general";
   namedAgent: { name: string } | null;
 }
 
 export function resolveActiveScope(locator: ChatLocator, namedAgent?: string): ActiveScope {
   return {
+    chatId: locator.chatId,
     topicScope:
       locator.topicId === undefined
         ? "general"
-        : { chatId: locator.chatId, topicId: locator.topicId },
-    namedAgent: namedAgent === undefined ? null : { name: namedAgent },
+        : { topicId: locator.topicId },
+    namedAgent: namedAgent ? { name: namedAgent } : null,
   };
 }
 

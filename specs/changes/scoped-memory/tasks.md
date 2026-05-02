@@ -101,15 +101,15 @@ Commit: `phase 4: split memory tool into read / read_index / write`
 
 ## Phase 5: AgentRunner integration
 
-- [ ] Update `AgentRunnerOptions` in `src/agent/mod.ts` to accept `locator: ChatLocator`.
-- [ ] In `init()` (or eagerly in constructor), build `activeScope` from `locator` via `resolveActiveScope(locator)`. `namedAgent: null` for the main agent.
-- [ ] Replace single `memory` tool registration with the three factories, each given `{store, activeScope}` (read tool also gets `includeAgents: true` for the index).
-- [ ] Replace `formatSnapshot(this.memoryStore)` call with the new async signature, passing `getTopicName` that calls `bot.api.getForumTopic` lazily with a small in-memory cache (cache lives on the runner).
-- [ ] Update `src/agent/mod.test.ts`:
+- [x] Update `AgentRunnerOptions` in `src/agent/mod.ts` to accept `locator: ChatLocator`.
+- [x] In `init()` (or eagerly in constructor), build `activeScope` from `locator` via `resolveActiveScope(locator)`. `namedAgent: null` for the main agent.
+- [x] Replace single `memory` tool registration with the three factories, each given `{store, activeScope}` (read tool also gets `includeAgents: true` for the index).
+- [x] Replace `formatSnapshot(this.memoryStore)` call with the new async signature, passing `getTopicName` that calls `bot.api.getForumTopic` lazily with a small in-memory cache (cache lives on the runner).
+- [x] Update `src/agent/mod.test.ts`:
   - Runner registers exactly three memory tools plus any `customTools`.
   - Snapshot building integrates `activeScope` for DM (`general`) vs topic.
   - System prompt unchanged across turns despite memory writes.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 5: AgentRunner uses scoped memory tools and snapshot`
 

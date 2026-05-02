@@ -1,6 +1,5 @@
 export { MemoryStore, type StoreResult } from "./store.ts";
 export {
-  createMemoryTool,
   createMemoryReadIndexTool,
   createMemoryReadTool,
   createMemoryWriteTool,

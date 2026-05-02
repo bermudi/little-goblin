@@ -36,6 +36,19 @@ const subagentToolFactory: SubagentToolFactory = (
   createReviveSubagentTool(runner, onStatusUpdate),
 ];
 
+async function getTopicName(bot: Bot, chatId: number, topicId: number): Promise<string | null> {
+  const api = bot.api as unknown as {
+    getForumTopic?: (chatId: number, messageThreadId: number) => Promise<{ name?: unknown }>;
+  };
+  if (api.getForumTopic === undefined) return null;
+  try {
+    const topic = await api.getForumTopic(chatId, topicId);
+    return typeof topic.name === "string" ? topic.name : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Build the grammy Bot with middleware and handlers wired up.
  * Exported so main can start the bot.
@@ -158,8 +171,10 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
             new AgentRunner({
               cfg,
               sessionId: result.session.id,
+              locator,
               customTools: [],
               subagentRunner,
+              getTopicName: (chatId, topicId) => getTopicName(bot, chatId, topicId),
             }),
           );
           log.debug("created runner for /new session", {
@@ -258,7 +273,14 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     // Look up or lazily construct the runner for this session
     let runner = runners.get(session.id);
     if (!runner) {
-      runner = new AgentRunner({ cfg, sessionId: session.id, customTools: [], subagentRunner });
+      runner = new AgentRunner({
+        cfg,
+        sessionId: session.id,
+        locator,
+        customTools: [],
+        subagentRunner,
+        getTopicName: (chatId, topicId) => getTopicName(bot, chatId, topicId),
+      });
       runners.set(session.id, runner);
       log.debug("created runner for session", { sessionId: session.id });
     }

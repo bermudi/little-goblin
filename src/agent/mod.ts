@@ -17,15 +17,26 @@ import type { TurnCallbacks } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
 import { workdirPath, createPiServices } from "../pi-host.ts";
 import { resolveModel } from "./models.ts";
-import { MemoryStore, createMemoryTool, formatSnapshot } from "../memory/mod.ts";
+import {
+  MemoryStore,
+  createMemoryReadIndexTool,
+  createMemoryReadTool,
+  createMemoryWriteTool,
+  formatSnapshot,
+  resolveActiveScope,
+} from "../memory/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
+import type { ChatLocator } from "../sessions/types.ts";
+import type { ActiveScope } from "../memory/mod.ts";
 
 /** Options for constructing an AgentRunner. */
 export interface AgentRunnerOptions {
   cfg: Config;
   sessionId: string;
+  locator: ChatLocator;
   customTools: ToolDefinition[];
   subagentRunner?: SubagentRunner;
+  getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
 }
 
 /**
@@ -42,6 +53,9 @@ export class AgentRunner {
   private accumulatedText: string = "";
   private callbacks: TurnCallbacks | null = null;
   private memoryStore: MemoryStore;
+  private activeScope: ActiveScope;
+  private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
+  private topicNameCache = new Map<string, string | null>();
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
    * resolve within the cascade timeout. Once set, `isStreaming` reports
@@ -55,8 +69,10 @@ export class AgentRunner {
   constructor(opts: AgentRunnerOptions) {
     this.cfg = opts.cfg;
     this.sessionId = opts.sessionId;
+    this.activeScope = resolveActiveScope(opts.locator);
     this.customTools = opts.customTools;
     this.subagentRunner = opts.subagentRunner ?? null;
+    this.getTopicName = opts.getTopicName;
     // Construction is cheap (no I/O); the directory is created lazily on first write.
     this.memoryStore = new MemoryStore(opts.cfg.goblinHome);
   }
@@ -80,7 +96,13 @@ export class AgentRunner {
     // Caller-supplied tools first; then memory; then spawn_subagent if wired.
     const tools: ToolDefinition[] = [
       ...this.customTools,
-      createMemoryTool(this.memoryStore),
+      createMemoryReadTool({ store: this.memoryStore, activeScope: this.activeScope }),
+      createMemoryReadIndexTool({
+        store: this.memoryStore,
+        activeChatId: this.activeScope.chatId,
+        includeAgents: true,
+      }),
+      createMemoryWriteTool({ store: this.memoryStore, activeScope: this.activeScope }),
     ];
 
     if (this.subagentRunner) {
@@ -159,7 +181,11 @@ export class AgentRunner {
     // Inject the curated memory snapshot as a per-turn aside.
     // Pi queues it and flushes alongside the next user message; the system
     // prompt stays frozen, preserving the provider prefix cache.
-    const aside = formatSnapshot(this.memoryStore);
+    const aside = await formatSnapshot({
+      store: this.memoryStore,
+      activeScope: this.activeScope,
+      getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
+    });
     if (aside !== null) {
       await this.session.sendCustomMessage(aside, { deliverAs: "nextTurn" });
     }
@@ -169,6 +195,16 @@ export class AgentRunner {
     } else {
       await this.session.sendUserMessage(text);
     }
+  }
+
+  private async cachedTopicName(chatId: number, topicId: number): Promise<string | null> {
+    const key = `${chatId}/${topicId}`;
+    if (this.topicNameCache.has(key)) {
+      return this.topicNameCache.get(key) ?? null;
+    }
+    const name = this.getTopicName === undefined ? null : await this.getTopicName(chatId, topicId);
+    this.topicNameCache.set(key, name);
+    return name;
   }
 
   /**

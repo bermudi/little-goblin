@@ -106,6 +106,7 @@ mock.module("@mariozechner/pi-coding-agent", () => {
 import { AgentRunner, type TurnCallbacks } from "./mod.ts";
 import type { Config } from "../config.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
+import type { ChatLocator } from "../sessions/types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -133,8 +134,19 @@ function nopCallbacks(): TurnCallbacks {
   };
 }
 
-function makeRunner(home: string, customTools: unknown[] = []) {
-  return new AgentRunner({ cfg: makeConfig(home), sessionId: "sess-001", customTools: customTools as never });
+function makeRunner(
+  home: string,
+  customTools: unknown[] = [],
+  locator: ChatLocator = { chatId: 123 },
+  getTopicName?: (chatId: number, topicId: number) => Promise<string | null>,
+) {
+  return new AgentRunner({
+    cfg: makeConfig(home),
+    sessionId: "sess-001",
+    locator,
+    customTools: customTools as never,
+    getTopicName,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +176,7 @@ afterEach(() => {
 
 describe("AgentRunner", () => {
   describe("memory tool registration", () => {
-    it("appends a memory_write tool to customTools when none are supplied", async () => {
+    it("appends the three memory tools to customTools when none are supplied", async () => {
       const runner = makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
@@ -172,6 +184,8 @@ describe("AgentRunner", () => {
       const tools = opts.customTools as Array<{ name: string }>;
       expect(Array.isArray(tools)).toBe(true);
       const names = tools.map((t) => t.name);
+      expect(names).toContain("memory_read");
+      expect(names).toContain("memory_read_index");
       expect(names).toContain("memory_write");
     });
 
@@ -184,7 +198,25 @@ describe("AgentRunner", () => {
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
-      expect(names).toEqual(["t1", "t2", "memory_write"]);
+      expect(names).toEqual(["t1", "t2", "memory_read", "memory_read_index", "memory_write"]);
+    });
+
+    it("topic-bound memory_write targets the runner's active topic scope", async () => {
+      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      await runner.prompt("hello", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }>;
+      const writeTool = tools.find((t) => t.name === "memory_write");
+      expect(writeTool).toBeDefined();
+      await writeTool!.execute(
+        "call-memory-write",
+        { action: "add", target: "memory", content: "topic fact" },
+        undefined,
+        undefined,
+        {},
+      );
+      expect(readFileSync(join(tmpDir, "memory", "topics", "-100", "42", "memory.md"), "utf-8")).toBe("topic fact");
     });
   });
 
@@ -426,6 +458,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "sess-001",
+        locator: { chatId: 123 },
         customTools: [],
         subagentRunner: subRunner,
       });
@@ -456,6 +489,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "sess-001",
+        locator: { chatId: 123 },
         customTools: [],
         subagentRunner: subRunner,
       });

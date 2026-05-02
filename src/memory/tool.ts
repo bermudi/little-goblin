@@ -205,13 +205,6 @@ export function createMemoryWriteTool(args: {
   });
 }
 
-export function createMemoryTool(store: MemoryStore): ToolDefinition {
-  return createMemoryWriteTool({
-    store,
-    activeScope: { chatId: 0, topicScope: "general", namedAgent: null },
-  });
-}
-
 function resolveReadScope(activeScope: ActiveScope, input: MemoryReadInput): MemoryScope | "user" {
   if (input.target === "user") return "user";
   if (input.target === "agent") {

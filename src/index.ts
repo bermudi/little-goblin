@@ -1,7 +1,7 @@
 import { loadConfig, ensureGoblinHome } from "./config.ts";
 import { buildBot } from "./bot.ts";
 import { log, initLog } from "./log.ts";
-import { validateModelAtStartup } from "./agent/models.ts";
+import { validateModelAtStartup } from "./agent/poe-validate.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();

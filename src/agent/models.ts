@@ -17,6 +17,8 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { Config } from "../config.ts";
 
+// Async Poe validation lives in poe-validate.ts. This file is sync-only.
+
 export type ApiKeyEnv =
   | "POE_API_KEY"
   | "OPENROUTER_API_KEY"
@@ -199,19 +201,15 @@ function poePatternMatch(modelName: string): ModelEntry | null {
   return poeCompletions(id, `${id} (Poe)`);
 }
 
+const KEY_FIELD: Record<ApiKeyEnv, keyof Config> = {
+  POE_API_KEY: "poeApiKey",
+  OPENROUTER_API_KEY: "openrouterApiKey",
+  OPENAI_API_KEY: "openaiApiKey",
+  ANTHROPIC_API_KEY: "anthropicApiKey",
+};
+
 function getApiKey(cfg: Config, env: ApiKeyEnv): string | undefined {
-  switch (env) {
-    case "POE_API_KEY":
-      return cfg.poeApiKey;
-    case "OPENROUTER_API_KEY":
-      return cfg.openrouterApiKey;
-    case "OPENAI_API_KEY":
-      return cfg.openaiApiKey;
-    case "ANTHROPIC_API_KEY":
-      return cfg.anthropicApiKey;
-    default:
-      return undefined;
-  }
+  return cfg[KEY_FIELD[env]] as string | undefined;
 }
 
 /**
@@ -235,54 +233,3 @@ export function resolveModel(cfg: Config): ResolvedModel {
   return { model: entry.model, apiKey };
 }
 
-/**
- * Validate `cfg.modelName` against Poe's `/v1/models` catalog at startup.
- *
- * - Non-poe model names: no-op (registry / direct provider failures surface elsewhere).
- * - Unknown poe id: throws with up to 5 close-match suggestions.
- * - Poe unreachable / non-2xx: logs a warning and returns (don't brick on flakes).
- *
- * The endpoint is auth-free per Poe docs, but we send the key when present.
- */
-export async function validateModelAtStartup(
-  cfg: Config,
-  logger: { warn: (msg: string, ctx?: Record<string, unknown>) => void },
-): Promise<void> {
-  if (!cfg.modelName.startsWith("poe/")) return;
-  const id = cfg.modelName.slice("poe/".length);
-
-  let res: Response;
-  try {
-    res = await fetch("https://api.poe.com/v1/models", {
-      headers: cfg.poeApiKey ? { Authorization: `Bearer ${cfg.poeApiKey}` } : {},
-      signal: AbortSignal.timeout(5_000),
-    });
-  } catch (e) {
-    logger.warn("could not reach Poe to validate model; skipping", {
-      error: e instanceof Error ? e.message : String(e),
-    });
-    return;
-  }
-  if (!res.ok) {
-    logger.warn("Poe model list returned non-2xx; skipping validation", { status: res.status });
-    return;
-  }
-
-  const body = (await res.json()) as { data?: Array<{ id?: string }> };
-  const ids = (body.data ?? []).map((m) => m.id).filter((x): x is string => typeof x === "string");
-  if (ids.length === 0) {
-    logger.warn("Poe model list was empty; skipping validation");
-    return;
-  }
-  if (ids.includes(id)) return;
-
-  const lower = id.toLowerCase();
-  const suggestions = ids
-    .filter((x) => x.toLowerCase().includes(lower) || lower.includes(x.toLowerCase()))
-    .slice(0, 5);
-  const hint =
-    suggestions.length > 0
-      ? ` Did you mean: ${suggestions.map((s) => `poe/${s}`).join(", ")}?`
-      : ` See https://api.poe.com/v1/models for the full list.`;
-  throw new Error(`Unknown Poe model "${id}" (MODEL_NAME=${cfg.modelName}).${hint}`);
-}

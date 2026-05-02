@@ -3,55 +3,166 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
-import { createMemoryTool } from "./tool.ts";
-import { memoryDir, memoryFilePath } from "./paths.ts";
+import {
+  createMemoryReadIndexTool,
+  createMemoryReadTool,
+  createMemoryWriteTool,
+} from "./tool.ts";
+import { memoryDir, memoryFilePath, scopeMemoryPath } from "./paths.ts";
+import type { ActiveScope } from "./scope.ts";
 
-const NULL_CTX = {} as Parameters<ReturnType<typeof createMemoryTool>["execute"]>[4];
+const NULL_CTX = {} as Parameters<ReturnType<typeof createMemoryWriteTool>["execute"]>[4];
+const TOPIC_SCOPE: ActiveScope = {
+  chatId: -100,
+  topicScope: { topicId: 42 },
+  namedAgent: null,
+};
+const NAMED_AGENT_SCOPE: ActiveScope = {
+  chatId: -100,
+  topicScope: { topicId: 42 },
+  namedAgent: { name: "researcher" },
+};
+
+function textOf(result: Awaited<ReturnType<ReturnType<typeof createMemoryWriteTool>["execute"]>>): string {
+  const content = result.content[0];
+  expect(content?.type).toBe("text");
+  return content?.type === "text" ? content.text : "";
+}
+
+function jsonOf<T>(result: Awaited<ReturnType<ReturnType<typeof createMemoryReadTool>["execute"]>>): T {
+  return JSON.parse(textOf(result)) as T;
+}
 
 describe("memory tool", () => {
   let tmp: string;
   let store: MemoryStore;
-  let tool: ReturnType<typeof createMemoryTool>;
+  let readTool: ReturnType<typeof createMemoryReadTool>;
+  let readIndexTool: ReturnType<typeof createMemoryReadIndexTool>;
+  let writeTool: ReturnType<typeof createMemoryWriteTool>;
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "goblin-memory-tool-"));
     mkdirSync(memoryDir(tmp), { recursive: true });
     store = new MemoryStore(tmp);
-    tool = createMemoryTool(store);
+    readTool = createMemoryReadTool({ store, activeScope: TOPIC_SCOPE });
+    readIndexTool = createMemoryReadIndexTool({
+      store,
+      activeChatId: TOPIC_SCOPE.chatId,
+      includeAgents: true,
+    });
+    writeTool = createMemoryWriteTool({ store, activeScope: TOPIC_SCOPE });
   });
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("exposes the canonical name and metadata", () => {
-    expect(tool.name).toBe("memory");
-    expect(tool.label).toBeDefined();
-    expect(tool.description.length).toBeGreaterThan(0);
-    expect(tool.parameters).toBeDefined();
+  it("exposes the split canonical names and metadata", () => {
+    expect(readTool.name).toBe("memory_read");
+    expect(readIndexTool.name).toBe("memory_read_index");
+    expect(writeTool.name).toBe("memory_write");
+    expect(readTool.parameters).toBeDefined();
+    expect(readIndexTool.parameters).toBeDefined();
+    expect(writeTool.parameters).toBeDefined();
   });
 
-  it("add happy path returns a success message and updates the store", async () => {
-    const r = await tool.execute(
+  it("write schema has no scope key", () => {
+    const properties = writeTool.parameters.properties as Record<string, unknown>;
+    expect(Object.keys(properties)).not.toContain("scope");
+  });
+
+  it("uses the same write schema for named and unnamed callers", () => {
+    const namedWriteTool = createMemoryWriteTool({ store, activeScope: NAMED_AGENT_SCOPE });
+    expect(namedWriteTool.parameters).toEqual(writeTool.parameters);
+  });
+
+  it("target=memory from a topic-bound scope writes to that topic", async () => {
+    const r = await writeTool.execute(
       "call-1",
       { action: "add", target: "memory", content: "alpha" },
       undefined,
       undefined,
       NULL_CTX,
     );
-    expect(r.content[0]?.type).toBe("text");
-    if (r.content[0]?.type === "text") {
-      expect(r.content[0].text).toContain("memory.md");
-      expect(r.content[0].text).toContain("added");
-    }
-    expect(store.readBody("memory")).toBe("alpha");
+    expect(textOf(r)).toContain("added");
+    expect(store.readBody({ topic: { chatId: -100, topicId: 42 } })).toBe("alpha");
+    expect(store.readBody("general")).toBe("");
+  });
+
+  it("target=agent is rejected for callers without namedAgent", async () => {
+    await expect(
+      writeTool.execute(
+        "call-agent",
+        { action: "add", target: "agent", content: "alpha" },
+        undefined,
+        undefined,
+        NULL_CTX,
+      ),
+    ).rejects.toThrow(/named subagents/);
+    expect(store.readBody({ agent: { name: "researcher" } })).toBe("");
+  });
+
+  it("target=agent writes named-agent persona memory", async () => {
+    const namedWriteTool = createMemoryWriteTool({ store, activeScope: NAMED_AGENT_SCOPE });
+    await namedWriteTool.execute(
+      "call-named-agent",
+      { action: "add", target: "agent", content: "persona fact" },
+      undefined,
+      undefined,
+      NULL_CTX,
+    );
+    expect(store.readBody({ agent: { name: "researcher" } })).toBe("persona fact");
+    expect(store.readBody({ topic: { chatId: -100, topicId: 42 } })).toBe("");
+  });
+
+  it("memory_read can read another topic in the same chat without writing", async () => {
+    store.add({ topic: { chatId: -100, topicId: 7 } }, "peer fact");
+    const before = readFileSync(scopeMemoryPath(tmp, { topic: { chatId: -100, topicId: 7 } }), "utf-8");
+    const r = await readTool.execute(
+      "call-read-topic",
+      { target: "memory", scope: { topic: { chatId: -100, topicId: 7 } } },
+      undefined,
+      undefined,
+      NULL_CTX,
+    );
+    expect(jsonOf<{ body: string }>(r).body).toBe("peer fact");
+    expect(readFileSync(scopeMemoryPath(tmp, { topic: { chatId: -100, topicId: 7 } }), "utf-8")).toBe(before);
+  });
+
+  it("memory_read_index defaults to current-chat topics and all_chats returns all", async () => {
+    store.setDescription({ topic: { chatId: -100, topicId: 7 } }, "same chat");
+    store.setDescription({ topic: { chatId: -200, topicId: 9 } }, "other chat");
+    store.setDescription({ agent: { name: "researcher" } }, "research persona");
+
+    const current = jsonOf<{ topics: Array<{ chatId: number; topicId: number; description?: string }>; agents: unknown[] }>(
+      await readIndexTool.execute("call-index", {}, undefined, undefined, NULL_CTX),
+    );
+    expect(current.topics).toEqual([{ chatId: -100, topicId: 7, description: "same chat" }]);
+    expect(current.agents).toEqual([{ name: "researcher", description: "research persona" }]);
+
+    const all = jsonOf<{ topics: Array<{ chatId: number; topicId: number; description?: string }> }>(
+      await readIndexTool.execute("call-index-all", { all_chats: true }, undefined, undefined, NULL_CTX),
+    );
+    expect(all.topics).toEqual([
+      { chatId: -200, topicId: 9, description: "other chat" },
+      { chatId: -100, topicId: 7, description: "same chat" },
+    ]);
+  });
+
+  it("memory_read_index omits agents when includeAgents=false", async () => {
+    store.setDescription({ agent: { name: "researcher" } }, "research persona");
+    const tool = createMemoryReadIndexTool({ store, activeChatId: -100, includeAgents: false });
+    const index = jsonOf<{ agents: unknown[] }>(
+      await tool.execute("call-index-no-agents", {}, undefined, undefined, NULL_CTX),
+    );
+    expect(index.agents).toEqual([]);
   });
 
   it("rejects replace with no old_text and does not write", async () => {
     store.add("user", "x");
     const before = readFileSync(memoryFilePath(tmp, "user"), "utf-8");
     await expect(
-      tool.execute(
+      writeTool.execute(
         "call-2",
         { action: "replace", target: "user", content: "y" },
         undefined,
@@ -64,7 +175,7 @@ describe("memory tool", () => {
 
   it("rejects add with no content", async () => {
     await expect(
-      tool.execute(
+      writeTool.execute(
         "call-3",
         { action: "add", target: "memory" },
         undefined,
@@ -76,7 +187,7 @@ describe("memory tool", () => {
 
   it("rejects remove with no old_text", async () => {
     await expect(
-      tool.execute(
+      writeTool.execute(
         "call-4",
         { action: "remove", target: "memory" },
         undefined,
@@ -86,11 +197,44 @@ describe("memory tool", () => {
     ).rejects.toThrow(/old_text/);
   });
 
+  it("validates required args for rewrite and set_description", async () => {
+    await expect(
+      writeTool.execute(
+        "call-rewrite",
+        { action: "rewrite", target: "memory" },
+        undefined,
+        undefined,
+        NULL_CTX,
+      ),
+    ).rejects.toThrow(/content/);
+    await expect(
+      writeTool.execute(
+        "call-description",
+        { action: "set_description", target: "memory" },
+        undefined,
+        undefined,
+        NULL_CTX,
+      ),
+    ).rejects.toThrow(/description/);
+  });
+
+  it("rejects set_description over 200 chars", async () => {
+    await expect(
+      writeTool.execute(
+        "call-long-description",
+        { action: "set_description", target: "memory", description: "a".repeat(201) },
+        undefined,
+        undefined,
+        NULL_CTX,
+      ),
+    ).rejects.toThrow(/cap 200/);
+  });
+
   it("propagates overflow errors as thrown errors; store unchanged", async () => {
     writeFileSync(memoryFilePath(tmp, "user"), "a".repeat(1999), "utf-8");
     const before = readFileSync(memoryFilePath(tmp, "user"), "utf-8");
     await expect(
-      tool.execute(
+      writeTool.execute(
         "call-5",
         { action: "add", target: "user", content: "bb" },
         undefined,
@@ -102,11 +246,12 @@ describe("memory tool", () => {
   });
 
   it("propagates ambiguous-replace errors; store unchanged", async () => {
-    store.add("memory", "alpha");
-    store.add("memory", "alpha");
-    const before = store.read("memory");
+    const active = { topic: { chatId: -100, topicId: 42 } };
+    store.add(active, "alpha");
+    store.add(active, "alpha");
+    const before = store.read(active);
     await expect(
-      tool.execute(
+      writeTool.execute(
         "call-6",
         {
           action: "replace",
@@ -119,6 +264,6 @@ describe("memory tool", () => {
         NULL_CTX,
       ),
     ).rejects.toThrow(/unique/);
-    expect(store.read("memory")).toEqual(before);
+    expect(store.read(active)).toEqual(before);
   });
 });

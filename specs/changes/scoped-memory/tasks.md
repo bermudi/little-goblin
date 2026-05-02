@@ -70,7 +70,7 @@ Commit: `phase 3: snapshot formatter for scoped memory`
 
 ## Phase 4: Tool surface split (read / read_index / write)
 
-- [ ] Replace `createMemoryTool` in `src/memory/tool.ts` with three factories:
+- [x] Replace `createMemoryTool` in `src/memory/tool.ts` with three factories:
   - `createMemoryReadTool({store, activeScope})`:
     - Schema: `{target: "memory"|"user"|"agent", scope?: "active"|"general"|{topic:{chatId,topicId}}|{agent:{name}}}`.
     - Resolves `target=user` to `userPath` (ignores `scope`).
@@ -86,7 +86,7 @@ Commit: `phase 3: snapshot formatter for scoped memory`
     - Resolver: `target=memory` → `activeScope.topicScope ?? generalScope`; `target=user` → user path; `target=agent` → `activeScope.namedAgent` or error.
     - Per-action required-arg validation (missing → tool error, no write).
     - Funnels into `MemoryStore` mutators.
-- [ ] Update `src/memory/tool.test.ts`:
+- [x] Update `src/memory/tool.test.ts`:
   - Schema parity across runner types (write schema has no `scope` key).
   - `target=agent` rejected for callers without `namedAgent`.
   - `target=memory` from a topic-bound `activeScope` writes to that topic's scope.
@@ -94,8 +94,8 @@ Commit: `phase 3: snapshot formatter for scoped memory`
   - `memory_read` with cross-topic `scope` reads but does not write.
   - Required-arg validation per action.
   - `set_description` with >200 chars rejected.
-- [ ] Update `src/memory/mod.ts` re-exports.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Update `src/memory/mod.ts` re-exports.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 4: split memory tool into read / read_index / write`
 

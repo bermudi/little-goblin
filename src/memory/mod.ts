@@ -1,5 +1,10 @@
 export { MemoryStore, type StoreResult } from "./store.ts";
-export { createMemoryTool } from "./tool.ts";
+export {
+  createMemoryTool,
+  createMemoryReadIndexTool,
+  createMemoryReadTool,
+  createMemoryWriteTool,
+} from "./tool.ts";
 export { formatSnapshot, type MemorySnapshotPayload } from "./snapshot.ts";
 export {
   archiveTopicPath,

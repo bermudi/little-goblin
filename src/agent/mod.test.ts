@@ -164,7 +164,7 @@ afterEach(() => {
 
 describe("AgentRunner", () => {
   describe("memory tool registration", () => {
-    it("appends a `memory` tool to customTools when none are supplied", async () => {
+    it("appends a memory_write tool to customTools when none are supplied", async () => {
       const runner = makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
@@ -172,7 +172,7 @@ describe("AgentRunner", () => {
       const tools = opts.customTools as Array<{ name: string }>;
       expect(Array.isArray(tools)).toBe(true);
       const names = tools.map((t) => t.name);
-      expect(names).toContain("memory");
+      expect(names).toContain("memory_write");
     });
 
     it("preserves caller-supplied tools and appends memory after them", async () => {
@@ -184,7 +184,7 @@ describe("AgentRunner", () => {
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
-      expect(names).toEqual(["t1", "t2", "memory"]);
+      expect(names).toEqual(["t1", "t2", "memory_write"]);
     });
   });
 
@@ -436,7 +436,7 @@ describe("AgentRunner", () => {
       const names = tools.map((t) => t.name);
       expect(names).toContain("spawn_subagent");
       expect(names).toContain("revive_subagent");
-      expect(names).toContain("memory");
+      expect(names).toContain("memory_write");
     });
 
     it("does not include spawn_subagent tool when subagentRunner is absent", async () => {
@@ -448,7 +448,7 @@ describe("AgentRunner", () => {
       const names = tools.map((t) => t.name);
       expect(names).not.toContain("spawn_subagent");
       expect(names).not.toContain("revive_subagent");
-      expect(names).toContain("memory");
+      expect(names).toContain("memory_write");
     });
 
     it("wires onStatusUpdate through to the tool so subagent events reach the turn callbacks", async () => {

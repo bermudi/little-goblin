@@ -1,42 +1,72 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { MemoryStore, StoreResult } from "./store.ts";
+import type { ActiveScope, MemoryScope } from "./scope.ts";
 
-/**
- * Schema for the `memory` tool. We accept a single union schema and validate
- * action-specific required args inside `execute` so the model gets a clear
- * error message instead of an opaque schema-validation failure.
- */
-const memorySchema = Type.Object({
+const targetSchema = Type.Union([
+  Type.Literal("memory"),
+  Type.Literal("user"),
+  Type.Literal("agent"),
+]);
+
+const memoryReadSchema = Type.Object({
+  target: targetSchema,
+  scope: Type.Optional(
+    Type.Union([
+      Type.Literal("active"),
+      Type.Literal("general"),
+      Type.Object({ topic: Type.Object({ chatId: Type.Number(), topicId: Type.Number() }) }),
+      Type.Object({ agent: Type.Object({ name: Type.String() }) }),
+    ]),
+  ),
+});
+
+const memoryReadIndexSchema = Type.Object({
+  all_chats: Type.Optional(Type.Boolean()),
+});
+
+const memoryWriteSchema = Type.Object({
   action: Type.Union([
     Type.Literal("add"),
     Type.Literal("replace"),
     Type.Literal("remove"),
+    Type.Literal("rewrite"),
+    Type.Literal("set_description"),
   ]),
-  target: Type.Union([Type.Literal("memory"), Type.Literal("user")]),
+  target: targetSchema,
   content: Type.Optional(Type.String()),
   old_text: Type.Optional(Type.String()),
+  description: Type.Optional(Type.String()),
 });
 
-type MemoryToolInput = Static<typeof memorySchema>;
+type MemoryReadInput = Static<typeof memoryReadSchema>;
+type MemoryReadIndexInput = Static<typeof memoryReadIndexSchema>;
+type MemoryWriteInput = Static<typeof memoryWriteSchema>;
 
-const DESCRIPTION = `Curate persistent memory.
+const READ_DESCRIPTION = "Read scoped goblin memory without modifying files.";
+const READ_INDEX_DESCRIPTION = "List available scoped goblin memories and their descriptions.";
+const WRITE_DESCRIPTION = `Curate persistent goblin memory.
 
-Two files: \`memory.md\` (notes about the environment, projects, conventions, decisions; cap 4000 chars) and \`user.md\` (user preferences, communication style, recurring people/places; cap 2000 chars).
-Entries are separated by the delimiter \`\\n§\\n\` automatically; \`content\` is the entry body only.
+Targets:
+- \`memory\` — the active chat/topic scope.
+- \`user\` — global user identity.
+- \`agent\` — named subagent persona memory.
 
 Actions:
 - \`add\`     — append a new entry. Requires \`content\`.
 - \`replace\` — replace a unique substring. Requires \`old_text\` (must match exactly one location) and \`content\`.
 - \`remove\` — delete the entry whose text uniquely contains \`old_text\`. Requires \`old_text\`.
+- \`rewrite\` — replace the whole body. Requires \`content\`.
+- \`set_description\` — set the one-line scope description. Requires \`description\`.
 
 If a write would overflow the cap, the call fails and you must consolidate before retrying.`;
 
-const PROMPT_SNIPPET =
-  "memory: persist or revise curated facts in memory.md / user.md.";
+const READ_PROMPT_SNIPPET = "memory_read: read scoped memory.md, user.md, or named agent memory.";
+const READ_INDEX_PROMPT_SNIPPET = "memory_read_index: discover other memory scopes by description.";
+const WRITE_PROMPT_SNIPPET = "memory_write: persist or revise curated facts in the active memory scope.";
 
-const PROMPT_GUIDELINES = [
-  "Use the memory tool to record durable facts about the user, the environment, and project conventions.",
+const WRITE_PROMPT_GUIDELINES = [
+  "Use memory_write to record durable facts about the user, the environment, and project conventions.",
   "On overflow errors, consolidate existing entries with replace/remove before retrying — do not ask the user.",
 ];
 
@@ -47,60 +77,123 @@ function textResult(message: string): {
   return { content: [{ type: "text", text: message }], details: undefined };
 }
 
-type MemoryTarget = "memory" | "user";
+type MemoryTarget = "memory" | "user" | "agent";
+type MemoryWriteAction = "add" | "replace" | "remove" | "rewrite" | "set_description";
 
-function summarize(action: "add" | "replace" | "remove", target: MemoryTarget): string {
+function jsonResult(value: unknown): {
+  content: { type: "text"; text: string }[];
+  details: undefined;
+} {
+  return textResult(JSON.stringify(value));
+}
+
+function summarize(action: MemoryWriteAction, target: MemoryTarget): string {
   switch (action) {
     case "add":
-      return `memory: added entry to ${target}.md`;
+      return `memory: added entry to ${target}`;
     case "replace":
-      return `memory: replaced entry in ${target}.md`;
+      return `memory: replaced entry in ${target}`;
     case "remove":
-      return `memory: removed entry from ${target}.md`;
+      return `memory: removed entry from ${target}`;
+    case "rewrite":
+      return `memory: rewrote ${target}`;
+    case "set_description":
+      return `memory: set description for ${target}`;
   }
 }
 
-/**
- * Build the `memory` tool. The handler closes over a single MemoryStore.
- *
- * Validation failures and store-level failures both throw — pi turns thrown
- * errors into `isError: true` tool results that the model can read and
- * recover from.
- */
-export function createMemoryTool(store: MemoryStore): ToolDefinition {
+export function createMemoryReadTool(args: {
+  store: MemoryStore;
+  activeScope: ActiveScope;
+}): ToolDefinition {
   return defineTool({
-    name: "memory",
-    label: "Memory",
-    description: DESCRIPTION,
-    promptSnippet: PROMPT_SNIPPET,
-    promptGuidelines: PROMPT_GUIDELINES,
-    parameters: memorySchema,
-    async execute(_toolCallId, params: MemoryToolInput) {
+    name: "memory_read",
+    label: "Memory Read",
+    description: READ_DESCRIPTION,
+    promptSnippet: READ_PROMPT_SNIPPET,
+    promptGuidelines: [],
+    parameters: memoryReadSchema,
+    async execute(_toolCallId, params: MemoryReadInput) {
+      return jsonResult(args.store.read(resolveReadScope(args.activeScope, params)));
+    },
+  });
+}
+
+export function createMemoryReadIndexTool(args: {
+  store: MemoryStore;
+  activeChatId: number;
+  includeAgents: boolean;
+}): ToolDefinition {
+  return defineTool({
+    name: "memory_read_index",
+    label: "Memory Read Index",
+    description: READ_INDEX_DESCRIPTION,
+    promptSnippet: READ_INDEX_PROMPT_SNIPPET,
+    promptGuidelines: [],
+    parameters: memoryReadIndexSchema,
+    async execute(_toolCallId, params: MemoryReadIndexInput) {
+      return jsonResult(
+        args.store.listIndex({
+          chatId: params.all_chats === true ? undefined : args.activeChatId,
+          includeAgents: args.includeAgents,
+        }),
+      );
+    },
+  });
+}
+
+export function createMemoryWriteTool(args: {
+  store: MemoryStore;
+  activeScope: ActiveScope;
+}): ToolDefinition {
+  return defineTool({
+    name: "memory_write",
+    label: "Memory Write",
+    description: WRITE_DESCRIPTION,
+    promptSnippet: WRITE_PROMPT_SNIPPET,
+    promptGuidelines: WRITE_PROMPT_GUIDELINES,
+    parameters: memoryWriteSchema,
+    async execute(_toolCallId, params: MemoryWriteInput) {
       const { action, target } = params;
+      const scope = resolveWriteScope(args.activeScope, target);
       let result: StoreResult;
       switch (action) {
         case "add": {
           if (params.content === undefined) {
-            throw new Error("memory.add requires `content`");
+            throw new Error("memory_write.add requires `content`");
           }
-          result = store.add(target, params.content);
+          result = args.store.add(scope, params.content);
           break;
         }
         case "replace": {
           if (params.old_text === undefined) {
-            throw new Error("memory.replace requires `old_text`");
+            throw new Error("memory_write.replace requires `old_text`");
           }
           if (params.content === undefined) {
-            throw new Error("memory.replace requires `content`");
+            throw new Error("memory_write.replace requires `content`");
           }
-          result = store.replace(target, params.old_text, params.content);
+          result = args.store.replace(scope, params.old_text, params.content);
           break;
         }
         case "remove": {
           if (params.old_text === undefined) {
-            throw new Error("memory.remove requires `old_text`");
+            throw new Error("memory_write.remove requires `old_text`");
           }
-          result = store.remove(target, params.old_text);
+          result = args.store.remove(scope, params.old_text);
+          break;
+        }
+        case "rewrite": {
+          if (params.content === undefined) {
+            throw new Error("memory_write.rewrite requires `content`");
+          }
+          result = args.store.rewrite(scope, params.content);
+          break;
+        }
+        case "set_description": {
+          if (params.description === undefined) {
+            throw new Error("memory_write.set_description requires `description`");
+          }
+          result = args.store.setDescription(scope, params.description);
           break;
         }
       }
@@ -110,4 +203,50 @@ export function createMemoryTool(store: MemoryStore): ToolDefinition {
       return textResult(summarize(action, target));
     },
   });
+}
+
+export function createMemoryTool(store: MemoryStore): ToolDefinition {
+  return createMemoryWriteTool({
+    store,
+    activeScope: { chatId: 0, topicScope: "general", namedAgent: null },
+  });
+}
+
+function resolveReadScope(activeScope: ActiveScope, input: MemoryReadInput): MemoryScope | "user" {
+  if (input.target === "user") return "user";
+  if (input.target === "agent") {
+    if (activeScope.namedAgent === null) {
+      throw new Error('target = "agent" is only valid for named subagents');
+    }
+    return { agent: { name: activeScope.namedAgent.name } };
+  }
+  const scope = input.scope ?? "active";
+  if (scope === "active") return activeMemoryScope(activeScope);
+  if (scope === "general") return "general";
+  if ("agent" in scope) return { agent: { name: scope.agent.name } };
+  if (scope.topic.chatId !== activeScope.chatId) {
+    throw new Error("memory_read topic scope must be in the active chat");
+  }
+  return { topic: { chatId: scope.topic.chatId, topicId: scope.topic.topicId } };
+}
+
+function resolveWriteScope(activeScope: ActiveScope, target: MemoryTarget): MemoryScope | "user" {
+  if (target === "user") return "user";
+  if (target === "agent") {
+    if (activeScope.namedAgent === null) {
+      throw new Error('target = "agent" is only valid for named subagents');
+    }
+    return { agent: { name: activeScope.namedAgent.name } };
+  }
+  return activeMemoryScope(activeScope);
+}
+
+function activeMemoryScope(activeScope: ActiveScope): MemoryScope {
+  if (activeScope.topicScope === "general") return "general";
+  return {
+    topic: {
+      chatId: activeScope.chatId,
+      topicId: activeScope.topicScope.topicId,
+    },
+  };
 }

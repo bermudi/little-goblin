@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { MemoryScope } from "./scope.ts";
 
 /**
  * Pure path utilities for the curated memory store filesystem layout.
@@ -13,11 +14,26 @@ export function memoryDir(home: string): string {
   return join(home, "memory");
 }
 
-/**
- * Path to the memory file for a given target.
- * - "memory" → memory.md
- * - "user"   → user.md
- */
+function topicScopeDir(home: string, chatId: number, topicId: number): string {
+  return join(memoryDir(home), "topics", String(chatId), String(topicId));
+}
+
+export function scopeMemoryPath(home: string, scope: MemoryScope): string {
+  if (scope === "general") return join(memoryDir(home), "general", "memory.md");
+  if ("topic" in scope) {
+    return join(topicScopeDir(home, scope.topic.chatId, scope.topic.topicId), "memory.md");
+  }
+  return join(memoryDir(home), "agents", scope.agent.name, "memory.md");
+}
+
+export function userPath(home: string): string {
+  return join(memoryDir(home), "user.md");
+}
+
+export function archiveTopicPath(home: string, chatId: number, topicId: number): string {
+  return join(memoryDir(home), "archive", "topics", String(chatId), String(topicId));
+}
+
 export function memoryFilePath(home: string, target: MemoryTarget): string {
-  return join(memoryDir(home), target === "memory" ? "memory.md" : "user.md");
+  return target === "memory" ? join(memoryDir(home), "memory.md") : userPath(home);
 }

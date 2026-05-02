@@ -2,24 +2,24 @@
 
 ## Phase 1: Scope types and path resolution
 
-- [ ] Create `src/memory/scope.ts`:
+- [x] Create `src/memory/scope.ts`:
   - Export `MemoryScope` discriminated union: `"general" | {topic: {chatId: number; topicId: number}} | {agent: {name: string}}`.
   - Export `ActiveScope` bundle: `{topicScope: {chatId, topicId} | "general"; namedAgent: {name: string} | null}`.
   - Export `resolveActiveScope(locator: ChatLocator, namedAgent?: string): ActiveScope`.
   - Export `scopeTag(scope: MemoryScope): string` — returns `"user"`, `"general"`, `"topics/<chat>/<topic>"`, or `"agents/<name>"` for git commit subjects. Note `"user"` is not in the union but `scopeTag` accepts it as a special-case input alongside `MemoryScope` values used in commit subjects.
-- [ ] Update `src/memory/paths.ts`:
+- [x] Update `src/memory/paths.ts`:
   - Replace `memoryFilePath` / `userFilePath` with:
     - `scopeMemoryPath(home: string, scope: MemoryScope): string`.
     - `userPath(home: string): string`.
     - `archiveTopicPath(home: string, chatId: number, topicId: number): string`.
   - Internal helper `topicScopeDir(home, chatId, topicId)` for parent-dir creation.
-- [ ] Unit tests in `src/memory/scope.test.ts`:
+- [x] Unit tests in `src/memory/scope.test.ts`:
   - `resolveActiveScope` for DM (no topicId), topic, and named subagent forms.
   - `scopeTag` for every scope kind including `"user"`.
-- [ ] Unit tests in `src/memory/paths.test.ts`:
+- [x] Unit tests in `src/memory/paths.test.ts`:
   - Path resolution for each scope kind.
   - Archive path mirrors topic path under `archive/`.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 1: scope types, scope.ts, paths.ts updates`
 

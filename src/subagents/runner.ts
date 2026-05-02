@@ -495,10 +495,12 @@ export class SubagentRunner {
 
 function childActiveScope(parentScope: ActiveScope | undefined, name: string | undefined): ActiveScope {
   const topicScope = parentScope?.topicScope ?? "general";
+  // Empty string is treated as undefined (no named agent)
+  const effectiveName = name && name.length > 0 ? name : undefined;
   return {
     chatId: parentScope?.chatId ?? 0,
     topicScope,
-    namedAgent: name === undefined ? null : { name },
+    namedAgent: effectiveName === undefined ? null : { name: effectiveName },
   };
 }
 

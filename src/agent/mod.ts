@@ -186,6 +186,7 @@ export class AgentRunner {
     const aside = await formatSnapshot({
       store: this.memoryStore,
       activeScope: this.activeScope,
+      includeAgents: true,
       getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
     });
     if (aside !== null) {

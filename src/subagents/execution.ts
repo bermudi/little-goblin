@@ -187,6 +187,7 @@ async function _runInstanceInner(
       includePersona: instance.role === "named" && instance.name !== null
         ? { name: instance.name }
         : undefined,
+      includeAgents: false, // Subagents never see other agents' personas
     });
     if (aside !== null) {
       await session.sendCustomMessage(aside, { deliverAs: "nextTurn" });

@@ -24,6 +24,7 @@ export interface FormatSnapshotArgs {
   store: MemoryStore;
   activeScope: ActiveScope;
   includePersona?: { name: string };
+  includeAgents: boolean;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
 }
 
@@ -121,10 +122,17 @@ function formatLegacySnapshot(store: MemoryStore): MemorySnapshotPayload | null 
 async function formatOtherScopes(args: FormatSnapshotArgs): Promise<string[]> {
   const index = args.store.listIndex({
     chatId: args.activeScope.chatId,
-    includeAgents: args.includePersona === undefined,
+    includeAgents: args.includeAgents,
   });
   const activeTopicId =
     args.activeScope.topicScope === "general" ? null : args.activeScope.topicScope.topicId;
+
+  // General scope appears when not in general and has content/description
+  const generalScope: string[] = [];
+  if (args.activeScope.topicScope !== "general" && index.general) {
+    generalScope.push(`- general — ${index.general.description ?? "(no description)"}`);
+  }
+
   const topics = await Promise.all(
     index.topics
       .filter((topic) => topic.topicId !== activeTopicId)
@@ -142,5 +150,5 @@ async function formatOtherScopes(args: FormatSnapshotArgs): Promise<string[]> {
   const agents = index.agents
     .filter((agent) => agent.name !== args.includePersona?.name)
     .map((agent) => `- agents/${agent.name} — ${agent.description ?? "(no description)"}`);
-  return [...topics, ...agents];
+  return [...generalScope, ...topics, ...agents];
 }

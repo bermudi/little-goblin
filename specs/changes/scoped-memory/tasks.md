@@ -131,13 +131,13 @@ Commit: `phase 6: SubagentRunner inherits parent scope, named subagents get pers
 
 ## Phase 7: Bot-layer wiring + orphan archival
 
-- [ ] In `src/bot.ts`, pass `locator` to every `new AgentRunner({...})` call site (the `/new` branch and the lazy first-message construction).
-- [ ] Identify the failure path where Telegram returns "topic not found" (likely the `MessageBuffer` flush via `bot.api.editMessageText` / `sendMessage`). Add a hook that:
+- [x] In `src/bot.ts`, pass `locator` to every `new AgentRunner({...})` call site (the `/new` branch and the lazy first-message construction).
+- [x] Identify the failure path where Telegram returns "topic not found" (likely the `MessageBuffer` flush via `bot.api.editMessageText` / `sendMessage`). Add a hook that:
   - Catches the specific error class / description fragment.
   - Calls `memoryStore.archiveOrphan(chatId, topicId)` once.
   - Continues to propagate the original error so the rest of the pipeline behaves unchanged.
 - [ ] Manual smoke test: create a topic, send a message to populate `topics/<chat>/<topic>/memory.md`, delete the topic in Telegram, send another message, verify the directory is moved to `archive/topics/`.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 7: bot.ts threads locator and archives orphan scopes`
 

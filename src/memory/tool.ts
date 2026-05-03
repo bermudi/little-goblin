@@ -124,7 +124,7 @@ export function createMemoryReadTool(args: {
 
 export function createMemoryReadIndexTool(args: {
   store: MemoryStore;
-  activeChatId: number;
+  activeChatId?: number;
   includeAgents: boolean;
 }): ToolDefinition {
   return defineTool({

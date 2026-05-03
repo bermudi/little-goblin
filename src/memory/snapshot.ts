@@ -107,7 +107,8 @@ async function formatOtherScopes(args: FormatSnapshotArgs): Promise<string[]> {
   // General scope appears when not in general
   const generalScope: string[] = [];
   if (args.activeScope.topicScope !== "general") {
-    generalScope.push(`- general — ${index.general.description ?? "(no description)"}`);
+    const generalParsed = args.store.read("general");
+    generalScope.push(`- general — ${generalParsed.description ?? "(no description)"}`);
   }
 
   const topics = await Promise.all(

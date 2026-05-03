@@ -26,7 +26,6 @@ export interface ParsedMemory {
 }
 
 export interface MemoryIndex {
-  general: { description?: string };
   topics: Array<{ chatId: number; topicId: number; description?: string }>;
   agents: Array<{ name: string; description?: string }>;
 }
@@ -154,8 +153,6 @@ export class MemoryStore {
   listIndex(opts: { chatId?: number; includeAgents: boolean }): MemoryIndex {
     const topicsRoot = join(memoryDir(this.home), "topics");
     const agentsRoot = join(memoryDir(this.home), "agents");
-    const generalParsed = this.read("general");
-    const general: MemoryIndex["general"] = { description: generalParsed.description };
     const topics: MemoryIndex["topics"] = [];
     const agents: MemoryIndex["agents"] = [];
 
@@ -186,7 +183,7 @@ export class MemoryStore {
 
     topics.sort((a, b) => a.chatId - b.chatId || a.topicId - b.topicId);
     agents.sort((a, b) => a.name.localeCompare(b.name));
-    return { general, topics, agents };
+    return { topics, agents };
   }
 
   archiveOrphan(chatId: number, topicId: number): boolean {

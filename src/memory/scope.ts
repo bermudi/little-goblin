@@ -6,7 +6,9 @@ export type MemoryScope =
   | { agent: { name: string } };
 
 export interface ActiveScope {
+  /** Binding context: which chat this session is in (DM, supergroup, or forum). */
   chatId: number;
+  /** Memory scope: general (no topic) or specific topic within the chat. */
   topicScope: { topicId: number } | "general";
   namedAgent: { name: string } | null;
 }

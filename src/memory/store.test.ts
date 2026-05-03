@@ -355,7 +355,6 @@ describe("MemoryStore", () => {
       await store.setDescription({ agent: { name: "researcher" } }, "research persona");
 
       expect(store.listIndex({ chatId: -100, includeAgents: false })).toEqual({
-        general: { description: undefined },
         topics: [
           { chatId: -100, topicId: 1, description: "chat A one" },
           { chatId: -100, topicId: 2, description: "chat A two" },
@@ -363,7 +362,6 @@ describe("MemoryStore", () => {
         agents: [],
       });
       expect(store.listIndex({ includeAgents: true })).toEqual({
-        general: { description: undefined },
         topics: [
           { chatId: -200, topicId: 9, description: "chat B nine" },
           { chatId: -100, topicId: 1, description: "chat A one" },

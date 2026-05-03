@@ -1,89 +1,241 @@
-# scoped-memory — Consolidated Review Report
+# Review Report: scoped-memory
 
-## Status / Readiness
-- **Missing artifacts:** none (proposal/design/specs/tasks all present).
-- **Verification:** **423 tests pass (0 failures)** and **typecheck is clean**.
-- **Coverage of checklist tasks:** **Phase 1–5 checked**. **Phase 6–8 remain partially/fully unchecked**:
-  - Phase 6: typecheck/test verification checkbox left unchecked (even though it passes).
-  - Phase 7: manual smoke test left unchecked.
-  - Phase 8: validation/archive ceremony tasks left unchecked.
+## Missing Artifacts
 
-Overall: **structurally sound and tests are strong**, but there are **a few spec/interface mismatches, several defensive hardening items, and outstanding checklist/test gaps before archive.**
+All required artifacts are present: `proposal.md`, `design.md`, `tasks.md`, and `specs/` (including `specs/memory/spec.md`, `specs/agent/spec.md`, `specs/subagents/spec.md`).
+
+## Review Mode
+
+**Implementation Review** (adversarial → compliance → scorecard).
+
+- **Phases 1–5:** fully checked.
+- **Phase 6:** `bun run typecheck + bun test` is not checked in the snapshot, but results are reported as passing (`tsc --noEmit` clean; **432 tests pass**).
+- **Phase 7:** manual smoke test (topic delete → archive) unchecked.
+- **Phase 8:** litespec validation/preview + housekeeping (glossary/backlog/decision verification + user `litespec archive`) entirely unchecked.
+
+No `dependsOn` declared.
 
 ---
 
 ## Phase 1: Adversarial Findings
 
-### CRITICAL / High-risk (depends on runtime concurrency assumptions)
-1. **Concurrent writes to the same scope file can clobber updates**
-   - **Issue:** `MemoryStore.mutate()` is a read-modify-write flow (TOCTOU). Without a per-scope lock, overlapping writes can silently overwrite earlier changes.
-   - Seen as: concurrent named subagent + main agent writes; and also concurrent writes to **named persona memory** (`agents/<name>/memory.md`).
-   - **Recommendation:** add **per-scope (and per-agent) file locking** (or, if v1 is intentionally homelab/serialized, add a prominent comment + TODO documenting the assumption and future lock site).
-   - (Common location noted across reviews: `src/memory/store.ts:mutate()`; persona paths driven by `src/subagents/runner.ts` / `src/subagents/execution.ts`.)
+### Adversarial Scenarios Enumerated
 
-2. **`archiveOrphan` / rename behavior under contention**
-   - **Potential race:** reviewers flagged that `archiveOrphan()` may move directories while a write’s temp file exists, which could misplace temp artifacts or break the final rename.
-   - **But** another reviewer noted mitigation: if all relevant I/O in `mutate()` is synchronous, Node won’t interleave during that call (so the window may be narrower than feared).
-   - **Also:** **rename destination already exists** can cause `renameSync` to throw; some reviewers note the caller swallows exceptions, potentially leaving orphans unarchived.
-   - **Recommendation:** regardless of the exact interleaving risk, harden `archiveOrphan()`:
-     - guard/cleanup destination before `renameSync`, and/or
-     - reject archive when scope temp artifacts exist, and/or
-     - move to locking for correctness under parallelism/multi-process.
+**S1: `archiveOrphan` races `mutate()` on the same scope (residual TOCTOU)**
+- **Why it’s adversarial:** `archiveOrphan` uses synchronous `renameSync` without taking the same scope lock as `mutate()`; if it runs between `mutate`’s “read” and “write” steps, `write` may recreate the directory, yielding a fresh scope alongside the archived one.
+- **Mitigation observed:** an existing tmp-file guard in `archiveOrphan` scans for `.tmp` files and blocks archival during typical in-flight writes.
+- **Residual risk:** the guard may still not cover all ordering windows (e.g., if `.tmp` hasn’t appeared yet when the guard runs).
+- **Locations:**  
+  - `src/memory/store.ts:286-317` (`archiveOrphan`)  
+  - `src/memory/store.ts:228-242` (`mutate`)  
+- **Assessment:** **WARNING** (very low likelihood; data separation rather than loss, but behavior can surprise).
+- **Recommendation:** either make `archiveOrphan` acquire the scope lock before moving, or explicitly document this as a v1-known edge.
+
+**S2: TOCTOU in subagent `revive` topic-scope existence check**
+- **Why it’s adversarial:** `revive` checks with `existsSync` at revive time, but the first memory write happens later in async execution; the topic could be archived in the gap, and the subsequent write would recreate the topic directory while old content remains under `archive/`.
+- **Location:** `src/subagents/runner.ts:220-229`
+- **Assessment:** **WARNING**
+- **Recommendation:** if it matters, re-validate inside `mutate()` after acquiring the lock (e.g., check `existsSync(sourceDir)` after lock).
+
+**S3: `memory_read_index` `all_chats:true` leaks unreadable topology**
+- **Why it’s adversarial:** `memory_read_index` can reveal `(chatId, topicId)` pairs across chats, while `memory_read` enforces a cross-chat guard that rejects reads for other chats—so callers may “see” scopes they cannot read.
+- **Locations:**  
+  - `src/memory/tool.ts:130-136` (resolver/index)  
+  - `src/memory/tool.ts:153` (cross-chat guard: `scope.topic.chatId !== activeScope.chatId`)
+- **Assessment:** **WARNING** (leaky abstraction; not necessarily loss, but surprising)
+- **Recommendation:** document as a known limitation, or filter `all_chats` results to the active chat until cross-chat read gating is lifted.
+
+**S4: `ScopeLock.acquire` retry loop lacks backoff under worker-thread concurrency**
+- **Why it’s adversarial:** no backoff for spurious contention; fine under today’s single-threaded Node assumptions, but could starve under worker-thread concurrency if the lock is shared imperfectly across workers.
+- **Assessment:** **SUGGESTION**
+- **Recommendation:** consider backoff / stronger cross-worker guarantees if concurrency model changes.
+
+**S5: `memory_read` with `target:"agent"` ignores the `scope` discriminator**
+- **Why it’s adversarial:** if a subagent requests a different agent persona via `scope`, the implementation may still return `activeScope`’s persona because the `target=agent` branch ignores `input.scope`.
+- **Location:** `src/memory/tool.ts:186-195` (`resolveReadScope`)
+- **Assessment:** **WARNING** (behavioral ambiguity vs spec intent)
+- **Recommendation:** either (a) honor `scope` for `target:"agent"` reads, or (b) explicitly document that `target:"agent"` is always “self persona” and the persona selection only works via the other `target`+`scope` combinations.
+
+**S6: Concurrent `memory_write` calls to the same scope losing entries**
+- **Assessment:** **HANDLED** — expected races are mitigated by `ScopeLock` serialization for `mutate()` (and concurrent-safety tests are reported as passing).
+
+**S7: `listIndex` (`readdirSync`) vs `archiveOrphan` (`renameSync`) interleaving**
+- **Assessment:** **WARNING / NOTE** — because both operations are synchronous, mid-call interleaving can’t happen in a single JS thread; however, the safety relies on staying with sync filesystem operations (and scan→later-act windows still matter elsewhere).
+- **Location:** relates to `listIndex` and `archiveOrphan` usage in `src/memory/store.ts` / `src/memory/tool.ts`.
+
+**S8: Snapshot formatter scan→name lookup window (`listIndex` then async `getTopicName`)**
+- **Assessment:** **SUGGESTION** — archival between index scan and name lookup could yield a snapshot that references a topic that has just been archived; next turn should reflect corrected state.
+- **Recommendation:** accept for v1, or tighten ordering if snapshot correctness becomes critical.
+
+**S9: `resolveActiveScope` handling of empty-string `namedAgent`**
+- **Assessment:** **HANDLED** — falsy handling plus explicit test coverage for empty string.
+
+**S10: Concurrent writes to different scopes + single git repo**
+- **Assessment:** **HANDLED** — distinct scope keys avoid blocking; git operations serialize at the process level via `spawnSync` (no data loss reported).
+
+#### CRITICAL
+None.
+
+#### WARNING (consolidated)
+- **S1:** residual `archiveOrphan` ↔ `mutate()` TOCTOU despite tmp-file guard  
+- **S2:** revive-time `existsSync` TOCTOU  
+- **S3:** `all_chats:true` leaks topology for unreadable scopes  
+- **S5:** `target:"agent"` ignores requested `scope` discriminator  
+- **S7:** scan/index safety relies on sync FS (note-worthy if refactors introduce async)
+
+#### SUGGESTION (consolidated)
+- **S4:** add backoff / harden for worker-thread concurrency assumptions  
+- **S8:** consider ordering if snapshot correctness needs stronger guarantees  
+- (and the “HANDLED” items above are not actionable unless future refactors change the model)
+
+### Pattern Annotations
+
+Across both drafts, the common theme is **scan→later-act windows** around scope/tagging and **lock-free archival** that relies on **tmp-file guards + synchronous filesystem behavior**. Residual edge cases remain where guards don’t fully cover ordering between async boundaries and subsequent sync steps.
 
 ---
 
-### WARNING (spec alignment, correctness edges, robustness)
-1. **`listIndex` / `memory_read_index` JSON shape vs spec scenario**
-   - **Mismatch:** some spec wording expects `general` to appear inside the `topics` array; implementation returns `general` as a **separate field** (alongside `topics`, `agents`).
-   - **Recommendation:** choose one:
-     - update the spec scenario to match the implementation shape, **or**
-     - change implementation to encode `general` into `topics` (with a sentinel entry), if the spec must be followed literally.
+## Phase 2: Compliance Findings
 
-2. **`listIndex` may omit `general` when general scope is empty**
-   - **Issue:** `general` is only populated when the general file has body/description content; empty general becomes “invisible” in the index.
-   - **Recommendation:** always include `general` in the index response (even if empty), per the “SHALL appear” requirement.
+### CRITICAL
+None.
 
-3. **`formatSnapshot` / topic name best-effort handling**
-   - **Gap A:** subagent snapshot formatting may not thread `getTopicName`, so subagents may show literal `topics/<chat>/<topic>` paths while main agent gets names.
-   - **Gap B (robustness):** if a provided `getTopicName` callback throws, `Promise.all` can fail the whole snapshot formatting.
-   - **Recommendation:** thread `getTopicName` into subagent snapshot deps, and wrap the callback in `try/catch` with a null fallback to preserve “best-effort” behavior.
+### WARNING
 
-4. **`memory_write.add` accepts empty string content**
-   - **Issue:** empty string content creates degenerate `§\n` entries (phantom delimiters).
-   - **Recommendation:** reject empty content in the `add` tool handler (`memory_write.add`).
+**W1: `memory_read_index` missing best-effort Telegram topic names (spec gap)**
+- **Spec requirement (scenario):** response SHALL include topic id, best-effort name, and description (or null).
+- **Observed behavior:** `listIndex` returns `{chatId, topicId, description}`; topic names require a Telegram API call (but tool factory has no `getTopicName` callback).
+- **Locations:**  
+  - `src/memory/tool.ts:119-131` (index tool calls `store.listIndex()`)  
+  - `src/memory/store.ts:158-178` (`listIndex`)
+- **Assessment:** **WARNING** (spec→code compliance gap)
+- **Recommendation:** add optional `getTopicName` wiring to `createMemoryReadIndexTool` args, or defer as a follow-up.
 
-5. **Path traversal risk via unsanitized agent names**
-   - **Issue:** `memory_read` that accepts arbitrary `agent.name` can allow `../`-style traversal to resolve paths outside the intended discriminated union boundaries.
-   - **Recommendation:** validate agent names using the same allowlist/pattern used for spawn (e.g. `VALID_NAME_RE`), rejecting `/`, `..`, etc.
+**W2: `FormatSnapshotArgs` signature drift from `design.md`**
+- **Description:** design: `formatSnapshot({store, activeScope, includePersona?, getTopicName?})`; implementation adds required `includeAgents: boolean`.
+- **Location:** `src/memory/snapshot.ts:24`
+- **Recommendation:** document the decision in the design/decision log.
 
-6. **`childActiveScope` uses a `chatId: 0` sentinel**
-   - **Issue:** when `activeScope` is missing, it defaults to a magic value that won’t match real topics, which can silently confuse debugging.
-   - **Recommendation:** make `activeScope` required (or throw if missing for topic-scoped usage).
+**W3: `memory_read_index` includes `general` field not mentioned in the spec scenario**
+- **Description:** `listIndex` returns `{general: {description?}, topics: [...], agents: [...]}`; spec scenario omits `general`.
+- **Locations:**  
+  - `src/memory/store.ts:46-50` (`MemoryIndex` type)  
+  - `src/memory/store.ts:130-131` (`listIndex` return)
+- **Recommendation:** update the spec scenario to include `general` (or clarify it’s always included).
 
-7. **Frontmatter fallback may hide corruption**
-   - **Issue:** malformed frontmatter can fall back to “body-only,” potentially masking a broken description header.
-   - **Recommendation:** log/track when fallback occurs, or validate on write to prevent malformed files from ever being produced.
+**W4: `resolveActiveScope` doc/design shape mismatch for topic scopes**
+- **Description:** design says topic scopes include `{chatId, topicId}`; implementation uses `{topicId}` and keeps `chatId` as sibling field on `ActiveScope`.
+- **Location:** `src/memory/scope.ts:8-12` vs `design.md`
+- **Recommendation:** update `design.md` to match the implemented shape.
 
-8. **Orphan lifecycle edge cases**
-   - **Silent orphans:** `onTopicNotFound` triggers only when the system attempts an operation; if a deleted topic never gets touched again, it can remain orphaned indefinitely.
-   - **Revival with stale active scope:** subagents resurrected from `meta.json` can point at a topic scope that was archived since last run.
-   - **Recommendation:** consider (a) periodic orphan scanning or (b) explicitly documenting the trade-off; and validate/repair/abort revival when topic directories no longer exist.
+**W5: `normalizeScope("memory")` maps to `"general"`**
+- **Description:** store-level `"memory"` alias normalizes to `"general"`. This may be semantically confusing vs “active scope,” but is apparently internal and resolved by the tool layer into concrete `MemoryScope` before reaching the store.
+- **Location:** `src/memory/store.ts:37-38`
+- **Recommendation:** document/rename the alias for clarity (or tighten the conceptual mapping).
 
-9. **Delim-boundary edge case in `removeEnclosingEntry`**
-   - **Issue:** delimiter-boundary cases (needle containing `§\n`) may not be fully covered.
-   - **Recommendation:** add a regression test for the boundary behavior.
+**W6: `createMemoryReadIndexTool` takes `activeChatId: number` instead of deriving from `ActiveScope`**
+- **Description:** minor pattern/design drift; works but bypasses a single “scope resolution” pathway.
+- **Locations:**  
+  - `src/memory/tool.ts:96-100`  
+  - `src/agent/mod.ts:120-124`
+- **Recommendation:** accept `activeScope` instead (optional; no functional issue implied).
+
+### SUGGESTIONS
+
+**S1: No test for `getTopicName` cache hit behavior in `AgentRunner`**
+- **Location:** `src/agent/mod.ts:120-127` (`cachedTopicName`)
+
+**S2: `_baseSystemPrompt` invariance between turns not asserted directly**
+- **Description:** spec requires `agent.state.systemPrompt` to remain equal to `_baseSystemPrompt` from session creation; current tests apparently don’t assert it.
+- **Location:** `specs/changes/scoped-memory/specs/agent/spec.md` (Scenario: System prompt unchanged across turns)
+
+**S3: `scopeTag` test covers valid inputs only**
+- **Description:** malformed discriminants would fall through to `undefined`, but types prevent reaching it.
+- **Location:** `src/memory/scope.ts:26-32`
+
+**S4: Snapshot “General (DM/supergroup-no-topic)” label length**
+- **Location:** `src/memory/snapshot.ts:68`
+- **Recommendation:** optional aesthetic tweak.
+
+**S5: `includeAgents:false` for subagents may surprise named subagents**
+- **Description:** named subagents may not discover peer persona scopes via index when they’re not the main goblin agent.
+- **Location:** `src/subagents/execution.ts:99`
+
+**S6: Tests use `store.read("memory")` alias instead of `"general"`**
+- **Location:** `src/memory/store.test.ts`
+- **Recommendation:** use `"general"` for clarity; keep alias limited to tool-layer input.
+
+**S7: Optional hardening: treat `namedAgent` falsy values explicitly**
+- **Location:** `src/memory/scope.ts:20`
+- **Recommendation:** `namedAgent !== undefined && namedAgent.length > 0` style check (optional; current typing excludes most invalid values, but not all falsy cases).
 
 ---
 
-### SUGGESTIONS / Hygiene & Cleanup (often low-risk, but worth doing)
-1. **Legacy/dead compatibility code should be removed**
-   - `formatSnapshot(store: MemoryStore)` legacy overload / `formatLegacySnapshot` is likely dead code and should be removed to avoid accidental spec regressions.
-2. **Backward-compat shim `memoryFilePath` should be deprecated/renamed**
-   - It maps “memory” to the **general** scope path, which is semantically confusing relative to “memory file” expectations.
-3. **Trim description whitespace**
-   - `setDescription` stores raw strings; trimming would prevent whitespace drift in persisted descriptions.
-4. **ListIndex directory handling / symlink assumptions (homelab risk)**
-   - Some reviews raised symlink/unexpected structure concerns for `readdirSync`-based traversal. If inputs are fully controlled, this may be acceptable; otherwise guard/resolve defensively.
+## Cross-Change Consistency
+
+No `dependsOn`.
+
+---
+
+## Unchecked Tasks Summary
+
+| Phase | Task | Status |
+|------|------|--------|
+| 6 | Verify `bun run typecheck` + `bun test` pass | `- [ ]` (reported as passing: `tsc --noEmit` clean; 432 tests pass) |
+| 7 | Manual smoke test (topic delete → archive) | `- [ ]` |
+| 8 | `litespec validate scoped-memory --strict` | `- [ ]` |
+| 8 | `litespec preview scoped-memory` | `- [ ]` |
+| 8 | Verify decision 0002 referenced by design | `- [ ]` |
+| 8 | Update glossary entries | `- [ ]` |
+| 8 | Update backlog (strike old, add PII redaction) | `- [ ]` |
+| 8 | User runs `litespec archive` | `- [ ]` |
+
+---
+
+## Summary (folded)
+
+- **No CRITICAL issues** reported.
+- **One confirmed spec→code gap:** `memory_read_index` does not currently include best-effort **topic names** in its response (`W1`).
+- **Key adversarial edge cases to consider documenting or hardening:**
+  - residual `archiveOrphan` ↔ `mutate()` TOCTOU despite tmp-file guard (`S1`)
+  - `revive` existence-check TOCTOU (`S2`)
+  - `all_chats:true` topology leak for unreadable scopes (`S3`)
+  - behavioral ambiguity around `memory_read({target:"agent", scope: ...})` (`S5`)
+- **Overall test health:** 432 tests reported passing; remaining gaps are mostly around missing-topic-names wiring and a few behavioral invariants/caching assertions (`S1`, `S2`).
+
+If you want, I can also produce a shorter “TL;DR” version of this merged report for dropping into a PR review.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ---
 

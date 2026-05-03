@@ -2,9 +2,7 @@ import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { MemoryStore, StoreResult } from "./store.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
-
-/** Valid characters for agent names: alphanumeric, hyphens, underscores. Mirrors subagents/named-agents.ts. */
-const VALID_NAME_RE = /^[a-zA-Z0-9_-]+$/;
+import { VALID_NAME_RE } from "../subagents/named-agents.ts";
 
 const targetSchema = Type.Union([
   Type.Literal("memory"),

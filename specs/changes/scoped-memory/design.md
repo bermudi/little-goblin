@@ -53,7 +53,7 @@ distinct from any single topic's domain memory.
 ### D1. Scope key is `(chatId, topicId)`, not topic name
 
 **Chosen:** Topic scopes are addressed by their numeric Telegram topic ID,
-mirroring the existing `bindings.ts` model.
+mirroring the existing `bindings.ts` model. This aligns with decision [0002-topic-ui-is-user-owned](../decisions/0002-topic-ui-is-user-owned.md).
 
 **Why:** Telegram IDs are stable across renames. Renaming a topic from `Health`
 to `Wellness` keeps the same memory; deleting and re-creating a topic gets a

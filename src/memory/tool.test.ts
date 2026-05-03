@@ -11,6 +11,8 @@ import {
 import { memoryDir, scopeMemoryPath, userPath } from "./paths.ts";
 import type { ActiveScope } from "./scope.ts";
 
+// Context param is typed by pi-coding-agent but unused in these tests.
+// We cast an empty object to satisfy the type system without coupling to pi internals.
 const NULL_CTX = {} as Parameters<ReturnType<typeof createMemoryWriteTool>["execute"]>[4];
 const TOPIC_SCOPE: ActiveScope = {
   chatId: -100,

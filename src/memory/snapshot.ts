@@ -122,7 +122,8 @@ async function formatOtherScopes(args: FormatSnapshotArgs): Promise<string[]> {
         let description = topic.description ?? null;
         if (description === null && args.getTopicName !== undefined) {
           try {
-            description = await args.getTopicName(topic.chatId, topic.topicId);
+            const fetched = await args.getTopicName(topic.chatId, topic.topicId);
+            description = fetched && fetched.length > 0 ? fetched : null;
           } catch {
             description = null;
           }

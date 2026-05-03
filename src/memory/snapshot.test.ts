@@ -112,6 +112,20 @@ describe("formatSnapshot", () => {
     expect(snap!.content).toContain("- topics/-100123/7 — IT");
   });
 
+  it("falls back to (no description) when getTopicName returns empty string", async () => {
+    await store.add({ topic: { chatId: -100123, topicId: 42 } }, "active topic fact");
+    await store.add({ topic: { chatId: -100123, topicId: 7 } }, "peer topic fact");
+
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
+      includeAgents: true,
+      getTopicName: async () => "",
+    });
+
+    expect(snap!.content).toContain("- topics/-100123/7 — (no description)");
+  });
+
   it("renders partial-empty placeholders", async () => {
     await store.add("user", "pref-1");
     const snap = await formatSnapshot({

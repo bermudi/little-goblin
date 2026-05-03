@@ -17,6 +17,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 - v2: live subagent cross-talk / swarms — `message_sibling`, `ask_sibling`, spawn_swarm DAG (ref: `~/build/pi-messenger-swarm`)
 - v1.x: render `onStatusUpdate` events in the MessageBuffer status line (e.g. "🧠 Researcher analyzing…"). Hook is already implemented as a no-op stub in `src/tg/buffer.ts`; rendering deferred until subagents land. Split out of `message-buffer-streaming`.
 - v1.x: end-to-end smoke test of `/cancel`, `/new`, `/archive`, `/debug`, `/help`, and subagent command stubs in both DM and forum-topic surfaces. Deferred from `session-commands-cancel` phase 8; unit tests cover helpers but the grammy ↔ SessionManager ↔ AgentRunner integration path still needs a manual walk-through.
+- v1.x: rate limiting — beta tools operate in "YOLO mode". No client-side rate limiting; we rely on Telegram's server-side limits and return errors to the LLM.
 
 ## Open Questions
 

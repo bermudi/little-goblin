@@ -555,7 +555,7 @@ describe("createRenameTopicTool", () => {
     expect(schema.properties).toHaveProperty("title");
   });
 
-  it("calls bot.api.setForumTopicTitle with bound chatId and topicId", async () => {
+  it("calls bot.api.editForumTopic with bound chatId and topicId", async () => {
     const mock = makeBot();
     const tool = createRenameTopicTool(mock.bot, 123, 5)!;
     const result = await tool.execute(
@@ -573,7 +573,7 @@ describe("createRenameTopicTool", () => {
     expect(JSON.parse(getText(result))).toEqual({ ok: true });
   });
 
-  it("returns structured error when bot.api.setForumTopicTitle throws", async () => {
+  it("returns structured error when bot.api.editForumTopic throws", async () => {
     const mock = makeBot();
     mock.failNext.rename = new Error("not admin");
     const tool = createRenameTopicTool(mock.bot, 123, 5)!;

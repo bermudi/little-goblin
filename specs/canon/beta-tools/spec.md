@@ -42,19 +42,19 @@ Every β tool factory SHALL accept a `Bot` instance as its first parameter, used
 - **WHEN** the handler of a created `send_voice` tool is invoked
 - **THEN** it SHALL call `bot.api.sendVoice(chatId, ...)` with the bound `chatId`
 
-### Requirement: Tool handler validates required parameters
+### Requirement: Tool validates required parameters
 
-Each tool handler SHALL validate that required parameters are present and of the correct type, returning a clear error if validation fails.
+Each tool SHALL reject calls with missing required parameters. Validation is enforced by the framework's schema layer (TypeBox via `defineTool`) before the handler is invoked.
 
 #### Scenario: Send voice missing file
 
 - **WHEN** `send_voice` is called with `{}` (no voiceFile)
-- **THEN** the handler SHALL return an error: `"voiceFile is required"`
+- **THEN** the tool SHALL return a validation error indicating the missing parameter
 
 #### Scenario: Rename topic missing title
 
 - **WHEN** `rename_topic` is called with `{}`
-- **THEN** the handler SHALL return an error: `"title is required"`
+- **THEN** the tool SHALL return a validation error indicating the missing parameter
 
 ### Requirement: Tools handle Telegram API errors
 
@@ -122,7 +122,7 @@ When a Telegram API call fails, the tool handler SHALL catch the error and retur
 
 - **WHEN** called with `topicId = 5`
 - **AND** the tool is called with `{title: "New Topic Name"}`
-- **THEN** `bot.api.setForumTopicTitle(chatId, topicId, "New Topic Name")` SHALL be invoked
+- **THEN** `bot.api.editForumTopic(chatId, topicId, { name: "New Topic Name" })` SHALL be invoked
 
 #### Scenario: Called for DM (no topic)
 

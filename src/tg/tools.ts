@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { Bot, InputFile } from "grammy";
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { ReactionType } from "@grammyjs/types";
 
 function jsonResult(value: unknown): {
   content: { type: "text"; text: string }[];
@@ -35,7 +36,7 @@ const reactSchema = Type.Object({
 });
 
 const renameTopicSchema = Type.Object({
-  title: Type.String(),
+  title: Type.String({ minLength: 1 }),
 });
 
 const chatActionSchema = Type.Object({
@@ -160,9 +161,8 @@ export function createReactTool(
       try {
         // Telegram restricts reaction emoji to a fixed set; we trust the regex check
         // above and let the API reject any disallowed emoji at runtime.
-        await bot.api.setMessageReaction(chatId, messageId, [
-          { type: "emoji", emoji: params.emoji },
-        ] as Parameters<typeof bot.api.setMessageReaction>[2]);
+        const reaction = [{ type: "emoji" as const, emoji: params.emoji }];
+        await bot.api.setMessageReaction(chatId, messageId, reaction as ReactionType[]);
         return jsonResult({ ok: true });
       } catch (err) {
         return jsonResult({ ok: false, error: `Telegram API error: ${errorMessage(err)}` });

@@ -154,7 +154,7 @@ The `memory_read_index` tool SHALL return an object with three fields: `general`
 
 - **WHEN** `memory_read_index()` is called and topics `7`, `11`, and `42` exist in the calling chat
 - **THEN** the response SHALL include a `general` field with the general scope's description (or `null` if unset)
-- **AND** the `topics` array SHALL include each topic's id, best-effort name, and description (or `null` if unset)
+- **AND** the `topics` array SHALL include each topic's `topicId`, `chatId`, best-effort `name`, and `description` (fields absent if unset)
 - **AND** archived scopes SHALL be excluded
 
 ### Requirement: Cross-scope discovery defaults to the current chat
@@ -163,7 +163,7 @@ The `memory_read_index` tool and the snapshot's `## other scopes` section SHALL 
 
 `memory_read_index` SHALL accept an optional boolean parameter `all_chats` (default `false`). When `all_chats: true`, the response SHALL include topic scopes from every `chatId` under `topics/`, with the chat id rendered alongside the topic id in each entry. The snapshot's `## other scopes` section is NOT influenced by this parameter — it is always current-chat-only — to keep per-turn context bounded.
 
-The `general` scope and named-agent persona scopes are not chat-scoped and SHALL appear in every index response and every snapshot regardless of caller chat (subject to the existing rule that `agents/*` are only visible to the main goblin agent).
+The `general` scope and named-agent persona scopes are not chat-scoped and SHALL appear in every index response. In snapshots, `general` appears in the `## other scopes` section only when it is not the active scope (to avoid repeating the active scope). Named-agent persona scopes appear in `## other scopes` when the caller is the main goblin agent.
 
 This default exists for two reasons: (1) `chatId` is a privacy boundary, not just an organizational one — facts in a household supergroup should not bleed into a personal DM by default; (2) bounding the index to the current chat keeps the snapshot's `## other scopes` payload small and predictable.
 

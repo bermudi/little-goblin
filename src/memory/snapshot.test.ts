@@ -51,7 +51,7 @@ describe("formatSnapshot", () => {
     expect(text).toContain("## scope\nTopic: -100123/42");
     expect(text).toContain("## user.md\n(empty)");
     expect(text).toContain("## memory.md\nhealth fact");
-    expect(text).toContain("## other scopes\n- general — (no description)\n- topics/-100123/7 — homelab + dotfiles\n- topics/-100123/11 — money goblins");
+    expect(text).toContain("## other scopes\n- topics/-100123/7 — homelab + dotfiles\n- topics/-100123/11 — money goblins");
     expect(text).not.toContain("topics/-100123/42");
     expect(text.indexOf("## scope")).toBeLessThan(text.indexOf("## user.md"));
     expect(text.indexOf("## user.md")).toBeLessThan(text.indexOf("## memory.md"));
@@ -124,8 +124,8 @@ describe("formatSnapshot", () => {
     const text = snap!.content;
     expect(text).toContain("## memory.md\n(empty)");
     expect(text).toContain("## user.md\npref-1");
-    // General always appears in other scopes when not in general
-    expect(text).toContain("## other scopes\n- general — (no description)");
+    // General is omitted from other scopes when it has no content
+    expect(text).not.toContain("## other scopes");
   });
 
   it("payload shape matches sendCustomMessage Pick", async () => {

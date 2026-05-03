@@ -104,11 +104,14 @@ async function formatOtherScopes(args: FormatSnapshotArgs): Promise<string[]> {
   const activeTopicId =
     args.activeScope.topicScope === "general" ? null : args.activeScope.topicScope.topicId;
 
-  // General scope appears when not in general
+  // General scope appears when not in general AND general has content
   const generalScope: string[] = [];
   if (args.activeScope.topicScope !== "general") {
     const generalParsed = args.store.read("general");
-    generalScope.push(`- general — ${generalParsed.description ?? "(no description)"}`);
+    const generalHasContent = generalParsed.description !== undefined || generalParsed.body.length > 0;
+    if (generalHasContent) {
+      generalScope.push(`- general — ${generalParsed.description ?? "(no description)"}`);
+    }
   }
 
   const topics = await Promise.all(

@@ -236,6 +236,19 @@ export class MemoryStore {
 
     const release = await GLOBAL_SCOPE_LOCK.acquire(scopeKey);
     try {
+      // TOCTOU guard: re-validate topic scope exists after acquiring lock.
+      // The topic could have been archived between revive check and this write.
+      // Only fail if the archive directory exists (topic was previously archived).
+      if (isTopicScope(scope)) {
+        const topicDir = dirname(scopeMemoryPath(this.home, scope));
+        if (!existsSync(topicDir)) {
+          const archivedDir = archiveTopicPath(this.home, scope.topic.chatId, scope.topic.topicId);
+          if (existsSync(archivedDir)) {
+            return { ok: false, error: `Topic scope no longer exists (archived)` };
+          }
+          // Otherwise: new topic, allow lazy directory creation
+        }
+      }
       const current = this.read(scope);
       const next = op(current);
       if ("ok" in next) return next;
@@ -404,6 +417,10 @@ function runGit(
     );
   }
   return result;
+}
+
+function isTopicScope(scope: MemoryScope | "user"): scope is { topic: { chatId: number; topicId: number } } {
+  return typeof scope === "object" && "topic" in scope;
 }
 
 function removeEnclosingEntry(current: string, index: number, len: number): string {

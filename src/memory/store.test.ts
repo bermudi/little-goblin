@@ -372,6 +372,64 @@ describe("MemoryStore", () => {
     });
   });
 
+  describe("TOCTOU protection", () => {
+    it("rejects writes to archived topic scopes (was revived but topic archived)", async () => {
+      // Simulate the TOCTOU scenario: subagent revived while topic still exists,
+      // but topic gets archived before the subagent writes.
+      const scope = { topic: { chatId: -100, topicId: 999 } };
+
+      // 1. Create topic with content
+      await store.add(scope, "original content");
+      expect(store.readBody(scope)).toBe("original content");
+
+      // 2. Archive the topic (simulating /archive command)
+      expect(await store.archiveOrphan(-100, 999)).toBe(true);
+      expect(existsSync(scopeMemoryPath(tmp, scope))).toBe(false);
+      expect(existsSync(archiveTopicPath(tmp, -100, 999))).toBe(true);
+
+      // 3. Try to write to the archived topic (simulating revived subagent writing)
+      // This should fail because the topic was archived
+      const result = await store.add(scope, "new content after archive");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("archived");
+      }
+
+      // 4. Verify the archive was not corrupted
+      expect(readFileSync(join(archiveTopicPath(tmp, -100, 999), "memory.md"), "utf-8")).toBe(
+        "original content",
+      );
+
+      // 5. Verify the topic directory was NOT recreated
+      expect(existsSync(dirname(scopeMemoryPath(tmp, scope)))).toBe(false);
+    });
+
+    it("rejects all mutation operations on archived topic scopes", async () => {
+      const scope = { topic: { chatId: -100, topicId: 888 } };
+
+      // Setup: create and archive
+      await store.add(scope, "alpha");
+      await store.add(scope, "bravo");
+      await store.setDescription(scope, "test topic");
+      expect(await store.archiveOrphan(-100, 888)).toBe(true);
+
+      // All mutation operations should fail
+      expect((await store.add(scope, "gamma")).ok).toBe(false);
+      expect((await store.replace(scope, "alpha", "ALPHA")).ok).toBe(false);
+      expect((await store.remove(scope, "bravo")).ok).toBe(false);
+      expect((await store.rewrite(scope, "new")).ok).toBe(false);
+      expect((await store.setDescription(scope, "new desc")).ok).toBe(false);
+    });
+
+    it("allows writes to new topics (lazy directory creation)", async () => {
+      const scope = { topic: { chatId: -100, topicId: 777 } };
+
+      // Writing to a completely new topic should work
+      expect((await store.add(scope, "fresh content")).ok).toBe(true);
+      expect(store.readBody(scope)).toBe("fresh content");
+    });
+  });
+
   describe("concurrent safety", () => {
     it("serializes concurrent writes to the same scope (no data loss)", async () => {
       // Simulate multiple agents writing concurrently to the same scope.

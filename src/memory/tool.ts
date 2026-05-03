@@ -135,13 +135,10 @@ export function createMemoryReadIndexTool(args: {
     promptSnippet: READ_INDEX_PROMPT_SNIPPET,
     promptGuidelines: [],
     parameters: memoryReadIndexSchema,
-    async execute(_toolCallId, _params: MemoryReadIndexInput) {
-      // Note: all_chats is ignored to prevent leaking unreadable topology.
-      // Cross-chat reads are gated; listing all chats would reveal scopes
-      // that cannot be read via memory_read. Filter to active chat only.
+    async execute(_toolCallId, params: MemoryReadIndexInput) {
       return jsonResult(
         await args.store.listIndex({
-          chatId: args.activeScope.chatId,
+          chatId: params.all_chats ? undefined : args.activeScope.chatId,
           includeAgents: args.includeAgents,
           getTopicName: args.getTopicName,
         }),

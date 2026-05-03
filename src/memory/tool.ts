@@ -3,6 +3,9 @@ import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { MemoryStore, StoreResult } from "./store.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
 
+/** Valid characters for agent names: alphanumeric, hyphens, underscores. Mirrors subagents/named-agents.ts. */
+const VALID_NAME_RE = /^[a-zA-Z0-9_-]+$/;
+
 const targetSchema = Type.Union([
   Type.Literal("memory"),
   Type.Literal("user"),
@@ -162,7 +165,10 @@ export function createMemoryWriteTool(args: {
           if (params.content === undefined) {
             throw new Error("memory_write.add requires `content`");
           }
-          result = args.store.add(scope, params.content);
+          if (params.content.length === 0) {
+            throw new Error("memory_write.add requires non-empty `content`");
+          }
+          result = await args.store.add(scope, params.content);
           break;
         }
         case "replace": {
@@ -172,28 +178,28 @@ export function createMemoryWriteTool(args: {
           if (params.content === undefined) {
             throw new Error("memory_write.replace requires `content`");
           }
-          result = args.store.replace(scope, params.old_text, params.content);
+          result = await args.store.replace(scope, params.old_text, params.content);
           break;
         }
         case "remove": {
           if (params.old_text === undefined) {
             throw new Error("memory_write.remove requires `old_text`");
           }
-          result = args.store.remove(scope, params.old_text);
+          result = await args.store.remove(scope, params.old_text);
           break;
         }
         case "rewrite": {
           if (params.content === undefined) {
             throw new Error("memory_write.rewrite requires `content`");
           }
-          result = args.store.rewrite(scope, params.content);
+          result = await args.store.rewrite(scope, params.content);
           break;
         }
         case "set_description": {
           if (params.description === undefined) {
             throw new Error("memory_write.set_description requires `description`");
           }
-          result = args.store.setDescription(scope, params.description);
+          result = await args.store.setDescription(scope, params.description);
           break;
         }
       }
@@ -211,12 +217,20 @@ function resolveReadScope(activeScope: ActiveScope, input: MemoryReadInput): Mem
     if (activeScope.namedAgent === null) {
       throw new Error('target = "agent" is only valid for named subagents');
     }
+    if (!VALID_NAME_RE.test(activeScope.namedAgent.name)) {
+      throw new Error(`Invalid agent name: must match ${VALID_NAME_RE.source}`);
+    }
     return { agent: { name: activeScope.namedAgent.name } };
   }
   const scope = input.scope ?? "active";
   if (scope === "active") return activeMemoryScope(activeScope);
   if (scope === "general") return "general";
-  if ("agent" in scope) return { agent: { name: scope.agent.name } };
+  if ("agent" in scope) {
+    if (!VALID_NAME_RE.test(scope.agent.name)) {
+      throw new Error(`Invalid agent name: must match ${VALID_NAME_RE.source}`);
+    }
+    return { agent: { name: scope.agent.name } };
+  }
   if (scope.topic.chatId !== activeScope.chatId) {
     throw new Error("memory_read topic scope must be in the active chat");
   }

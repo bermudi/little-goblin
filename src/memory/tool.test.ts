@@ -116,7 +116,7 @@ describe("memory tool", () => {
   });
 
   it("memory_read can read another topic in the same chat without writing", async () => {
-    store.add({ topic: { chatId: -100, topicId: 7 } }, "peer fact");
+    await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer fact");
     const before = readFileSync(scopeMemoryPath(tmp, { topic: { chatId: -100, topicId: 7 } }), "utf-8");
     const r = await readTool.execute(
       "call-read-topic",
@@ -130,9 +130,9 @@ describe("memory tool", () => {
   });
 
   it("memory_read_index defaults to current-chat topics and all_chats returns all", async () => {
-    store.setDescription({ topic: { chatId: -100, topicId: 7 } }, "same chat");
-    store.setDescription({ topic: { chatId: -200, topicId: 9 } }, "other chat");
-    store.setDescription({ agent: { name: "researcher" } }, "research persona");
+    await store.setDescription({ topic: { chatId: -100, topicId: 7 } }, "same chat");
+    await store.setDescription({ topic: { chatId: -200, topicId: 9 } }, "other chat");
+    await store.setDescription({ agent: { name: "researcher" } }, "research persona");
 
     const current = jsonOf<{ topics: Array<{ chatId: number; topicId: number; description?: string }>; agents: unknown[] }>(
       await readIndexTool.execute("call-index", {}, undefined, undefined, NULL_CTX),
@@ -150,7 +150,7 @@ describe("memory tool", () => {
   });
 
   it("memory_read_index omits agents when includeAgents=false", async () => {
-    store.setDescription({ agent: { name: "researcher" } }, "research persona");
+    await store.setDescription({ agent: { name: "researcher" } }, "research persona");
     const tool = createMemoryReadIndexTool({ store, activeChatId: -100, includeAgents: false });
     const index = jsonOf<{ agents: unknown[] }>(
       await tool.execute("call-index-no-agents", {}, undefined, undefined, NULL_CTX),
@@ -159,7 +159,7 @@ describe("memory tool", () => {
   });
 
   it("rejects replace with no old_text and does not write", async () => {
-    store.add("user", "x");
+    await store.add("user", "x");
     const before = readFileSync(userPath(tmp), "utf-8");
     await expect(
       writeTool.execute(
@@ -183,6 +183,18 @@ describe("memory tool", () => {
         NULL_CTX,
       ),
     ).rejects.toThrow(/content/);
+  });
+
+  it("rejects add with empty content", async () => {
+    await expect(
+      writeTool.execute(
+        "call-3-empty",
+        { action: "add", target: "memory", content: "" },
+        undefined,
+        undefined,
+        NULL_CTX,
+      ),
+    ).rejects.toThrow(/non-empty/);
   });
 
   it("rejects remove with no old_text", async () => {
@@ -247,8 +259,8 @@ describe("memory tool", () => {
 
   it("propagates ambiguous-replace errors; store unchanged", async () => {
     const active = { topic: { chatId: -100, topicId: 42 } };
-    store.add(active, "alpha");
-    store.add(active, "alpha");
+    await store.add(active, "alpha");
+    await store.add(active, "alpha");
     const before = store.read(active);
     await expect(
       writeTool.execute(

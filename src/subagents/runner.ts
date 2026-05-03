@@ -16,14 +16,14 @@
  * See specs/canon/subagents/spec.md for behavioural requirements.
  */
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import type { ActiveScope } from "../memory/mod.ts";
+import { memoryDir, type ActiveScope } from "../memory/mod.ts";
 import { createPiServices, type PiServices, workdirPath } from "../pi-host.ts";
 import {
   type ExecutionDeps,
@@ -267,6 +267,20 @@ export class SubagentRunner {
       throw new Error(`Subagent not found`);
     }
 
+    // Validate that the topic directory exists if the subagent has a topic scope.
+    // This catches cases where the topic was archived since the subagent was last run.
+    if (meta.activeScope?.topicScope !== undefined && meta.activeScope.topicScope !== "general") {
+      const chatId = meta.activeScope.chatId;
+      const topicId = meta.activeScope.topicScope.topicId;
+      const topicDir = join(memoryDir(this.cfg.goblinHome), "topics", String(chatId), String(topicId));
+      if (!existsSync(topicDir)) {
+        this.revivesInProgress.delete(id);
+        throw new Error(
+          `Subagent '${id}' topic scope (${chatId}/${topicId}) no longer exists; cannot revive`,
+        );
+      }
+    }
+
     // Determine cwd the same way spawn() does.
     const cwd =
       meta.role === "named" && meta.name !== null
@@ -494,30 +508,23 @@ export class SubagentRunner {
 }
 
 function childActiveScope(parentScope: ActiveScope | undefined, name: string | undefined): ActiveScope {
-  const topicScope = parentScope?.topicScope ?? "general";
+  if (parentScope === undefined) {
+    throw new Error("activeScope is required for subagent spawning");
+  }
+  const topicScope = parentScope.topicScope;
   // Empty string is treated as undefined (no named agent)
   const effectiveName = name && name.length > 0 ? name : undefined;
   return {
-    chatId: parentScope?.chatId ?? 0,
+    chatId: parentScope.chatId,
     topicScope,
     namedAgent: effectiveName === undefined ? null : { name: effectiveName },
   };
 }
 
 function reviveActiveScope(meta: SubagentMeta): ActiveScope {
-  if (meta.activeScope !== undefined) {
-    return {
-      chatId: meta.activeScope.chatId,
-      topicScope: meta.activeScope.topicScope,
-      namedAgent: meta.role === "named" && meta.name !== null ? { name: meta.name } : null,
-    };
-  }
-  if (meta.role === "named" && meta.name !== null) {
-    throw new Error(`Subagent '${meta.id}' is missing scoped-memory metadata; cannot revive`);
-  }
   return {
-    chatId: 0,
-    topicScope: "general",
-    namedAgent: null,
+    chatId: meta.activeScope.chatId,
+    topicScope: meta.activeScope.topicScope,
+    namedAgent: meta.role === "named" && meta.name !== null ? { name: meta.name } : null,
   };
 }

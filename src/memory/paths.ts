@@ -5,8 +5,6 @@ import type { MemoryScope } from "./scope.ts";
  * Pure path utilities for the curated memory store filesystem layout.
  */
 
-export type MemoryTarget = "memory" | "user";
-
 /**
  * Path to the memory directory at $GOBLIN_HOME/memory/.
  */
@@ -32,8 +30,4 @@ export function userPath(home: string): string {
 
 export function archiveTopicPath(home: string, chatId: number, topicId: number): string {
   return join(memoryDir(home), "archive", "topics", String(chatId), String(topicId));
-}
-
-export function memoryFilePath(home: string, target: MemoryTarget): string {
-  return target === "memory" ? scopeMemoryPath(home, "general") : userPath(home);
 }

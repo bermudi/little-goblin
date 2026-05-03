@@ -114,9 +114,9 @@ export class AgentRunner {
           this.subagentRunner,
           0,
           this.sessionId,
+          this.activeScope,
           (msg) => this.callbacks?.onStatusUpdate(msg),
           undefined,
-          this.activeScope,
         ),
       );
       tools.push(

@@ -5,6 +5,7 @@ import { SubagentRunner } from "../mod.ts";
 import type { SubagentMeta } from "../types.ts";
 import {
   createTestHome,
+  DEFAULT_SCOPE,
   flush,
   installStandardPiMock,
   makeConfig,
@@ -62,7 +63,7 @@ describe("SubagentRunner — cancel guards", () => {
       },
     }));
 
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
 
     await runner.cancel(handle.id);
@@ -76,7 +77,7 @@ describe("SubagentRunner — cancel guards", () => {
   });
 
   it("cancel on completed subagent is a no-op (doesn't overwrite status)", async () => {
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
@@ -92,7 +93,7 @@ describe("SubagentRunner — cancel guards", () => {
     sessionHolder.sendUserMessage = mock(async () => {
       throw new Error("boom");
     });
-    const handle = await runner.spawn({ prompt: "trigger" });
+    const handle = await runner.spawn({ prompt: "trigger", activeScope: DEFAULT_SCOPE });
     await flush();
     await flush();
     await expect(handle.result).rejects.toThrow("boom");
@@ -145,7 +146,7 @@ describe("SubagentRunner — startup error handling", () => {
       },
     }));
 
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
     await flush();
 
@@ -174,7 +175,7 @@ describe("SubagentRunner — double-cancel race guard", () => {
   });
 
   it("second cancel is a no-op when first cancels synchronously", async () => {
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
 
     await Promise.all([runner.cancel(handle.id), runner.cancel(handle.id)]);
@@ -199,7 +200,7 @@ describe("SubagentRunner — cancel vs agent_end race", () => {
   });
 
   it("agent_end arriving during cancel() does not overwrite cancelled status", async () => {
-    const handle = await runner.spawn({ prompt: "test" });
+    const handle = await runner.spawn({ prompt: "test", activeScope: DEFAULT_SCOPE });
     await flush();
 
     sessionHolder.abort = mock(async () => {
@@ -216,7 +217,7 @@ describe("SubagentRunner — cancel vs agent_end race", () => {
   });
 
   it("error event arriving during cancel() does not overwrite cancelled status", async () => {
-    const handle = await runner.spawn({ prompt: "test" });
+    const handle = await runner.spawn({ prompt: "test", activeScope: DEFAULT_SCOPE });
     await flush();
 
     sessionHolder.abort = mock(async () => {

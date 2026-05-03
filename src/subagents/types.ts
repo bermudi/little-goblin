@@ -20,7 +20,7 @@ export interface SpawnOptions {
   /** The user-message-style prompt sent to the subagent on its first turn. */
   prompt: string;
   /** Active memory scope inherited from the spawning agent. */
-  activeScope?: ActiveScope;
+  activeScope: ActiveScope;
   /**
    * Optional named-agent identifier. When set, the runner loads
    * `~/goblin/agents/<name>/AGENTS.md` and isolates skills.
@@ -144,7 +144,7 @@ export interface SubagentMeta {
   role: SubagentRole;
   name: string | null;
   spawnedBy: string | null;
-  activeScope?: ActiveScope;
+  activeScope: ActiveScope;
   depth: number;
   createdAt: string;
   /** Set when execution finishes (success, error, or cancellation). */

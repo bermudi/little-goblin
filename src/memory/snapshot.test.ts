@@ -31,11 +31,11 @@ describe("formatSnapshot", () => {
   });
 
   it("renders a topic-bound snapshot with peer topics in the index", async () => {
-    store.add({ topic: { chatId: -100123, topicId: 42 } }, "health fact");
-    store.add({ topic: { chatId: -100123, topicId: 7 } }, "it fact");
-    store.setDescription({ topic: { chatId: -100123, topicId: 7 } }, "homelab + dotfiles");
-    store.add({ topic: { chatId: -100123, topicId: 11 } }, "finance fact");
-    store.setDescription({ topic: { chatId: -100123, topicId: 11 } }, "money goblins");
+    await store.add({ topic: { chatId: -100123, topicId: 42 } }, "health fact");
+    await store.add({ topic: { chatId: -100123, topicId: 7 } }, "it fact");
+    await store.setDescription({ topic: { chatId: -100123, topicId: 7 } }, "homelab + dotfiles");
+    await store.add({ topic: { chatId: -100123, topicId: 11 } }, "finance fact");
+    await store.setDescription({ topic: { chatId: -100123, topicId: 11 } }, "money goblins");
 
     const snap = await formatSnapshot({
       store,
@@ -51,18 +51,18 @@ describe("formatSnapshot", () => {
     expect(text).toContain("## scope\nTopic: -100123/42");
     expect(text).toContain("## user.md\n(empty)");
     expect(text).toContain("## memory.md\nhealth fact");
-    expect(text).toContain("## other scopes\n- topics/-100123/7 — homelab + dotfiles\n- topics/-100123/11 — money goblins");
+    expect(text).toContain("## other scopes\n- general — (no description)\n- topics/-100123/7 — homelab + dotfiles\n- topics/-100123/11 — money goblins");
     expect(text).not.toContain("topics/-100123/42");
     expect(text.indexOf("## scope")).toBeLessThan(text.indexOf("## user.md"));
     expect(text.indexOf("## user.md")).toBeLessThan(text.indexOf("## memory.md"));
   });
 
   it("renders a DM/general snapshot and lists only current-chat topics", async () => {
-    store.add("general", "general fact");
-    store.add({ topic: { chatId: 123, topicId: 7 } }, "current chat fact");
-    store.setDescription({ topic: { chatId: 123, topicId: 7 } }, "current chat topic");
-    store.add({ topic: { chatId: 456, topicId: 9 } }, "other chat fact");
-    store.setDescription({ topic: { chatId: 456, topicId: 9 } }, "other chat topic");
+    await store.add("general", "general fact");
+    await store.add({ topic: { chatId: 123, topicId: 7 } }, "current chat fact");
+    await store.setDescription({ topic: { chatId: 123, topicId: 7 } }, "current chat topic");
+    await store.add({ topic: { chatId: 456, topicId: 9 } }, "other chat fact");
+    await store.setDescription({ topic: { chatId: 456, topicId: 9 } }, "other chat topic");
 
     const snap = await formatSnapshot({
       store,
@@ -79,9 +79,9 @@ describe("formatSnapshot", () => {
   });
 
   it("renders a named-subagent snapshot with persona memory", async () => {
-    store.add("user", "pref-1");
-    store.add({ topic: { chatId: -100123, topicId: 42 } }, "active topic fact");
-    store.add({ agent: { name: "researcher" } }, "persona fact");
+    await store.add("user", "pref-1");
+    await store.add({ topic: { chatId: -100123, topicId: 42 } }, "active topic fact");
+    await store.add({ agent: { name: "researcher" } }, "persona fact");
 
     const snap = await formatSnapshot({
       store,
@@ -99,8 +99,8 @@ describe("formatSnapshot", () => {
   });
 
   it("falls back to topic names for undescribed peer topics", async () => {
-    store.add({ topic: { chatId: -100123, topicId: 42 } }, "active topic fact");
-    store.add({ topic: { chatId: -100123, topicId: 7 } }, "peer topic fact");
+    await store.add({ topic: { chatId: -100123, topicId: 42 } }, "active topic fact");
+    await store.add({ topic: { chatId: -100123, topicId: 7 } }, "peer topic fact");
 
     const snap = await formatSnapshot({
       store,
@@ -113,7 +113,7 @@ describe("formatSnapshot", () => {
   });
 
   it("renders partial-empty placeholders", async () => {
-    store.add("user", "pref-1");
+    await store.add("user", "pref-1");
     const snap = await formatSnapshot({
       store,
       activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
@@ -124,11 +124,12 @@ describe("formatSnapshot", () => {
     const text = snap!.content;
     expect(text).toContain("## memory.md\n(empty)");
     expect(text).toContain("## user.md\npref-1");
-    expect(text).not.toContain("## other scopes");
+    // General always appears in other scopes when not in general
+    expect(text).toContain("## other scopes\n- general — (no description)");
   });
 
   it("payload shape matches sendCustomMessage Pick", async () => {
-    store.add("general", "x");
+    await store.add("general", "x");
     const snap = await formatSnapshot({
       store,
       activeScope: { chatId: 123, topicScope: "general", namedAgent: null },

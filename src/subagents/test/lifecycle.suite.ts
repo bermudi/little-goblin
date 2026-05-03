@@ -6,11 +6,16 @@ import type { SubagentMeta } from "../types.ts";
 import { genericSubagentMetaPath } from "../paths.ts";
 import {
   createTestHome,
+  DEFAULT_SCOPE,
   flush,
+  installStandardPiMock,
   makeConfig,
   resetPiMockState,
   sessionHolder,
 } from "./support.ts";
+
+// Install mock before any tests run
+installStandardPiMock();
 
 describe("SubagentRunner.cancel", () => {
   let tmp: string;
@@ -31,7 +36,7 @@ describe("SubagentRunner.cancel", () => {
   });
 
   it("calls session.abort() and updates status to cancelled", async () => {
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
 
     expect(sessionHolder.abort).not.toHaveBeenCalled();
@@ -42,7 +47,7 @@ describe("SubagentRunner.cancel", () => {
   });
 
   it("persists status=cancelled to meta.json with completedAt", async () => {
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
 
     await runner.cancel(handle.id);
@@ -55,7 +60,7 @@ describe("SubagentRunner.cancel", () => {
   });
 
   it("cleans up the event subscription on cancel", async () => {
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
 
     const listenerCountBefore = sessionHolder.listeners.length;
@@ -86,9 +91,9 @@ describe("SubagentRunner.list", () => {
   });
 
   it("returns multiple subagents with correct shape", async () => {
-    const first = await runner.spawn({ prompt: "a" });
+    const first = await runner.spawn({ prompt: "a", activeScope: DEFAULT_SCOPE });
     first.result.catch(() => {});
-    const second = await runner.spawn({ prompt: "b" });
+    const second = await runner.spawn({ prompt: "b", activeScope: DEFAULT_SCOPE });
     second.result.catch(() => {});
     await flush();
 
@@ -107,7 +112,7 @@ describe("SubagentRunner.list", () => {
   });
 
   it("reflects cancelled status after cancel()", async () => {
-    const handle = await runner.spawn({ prompt: "x" });
+    const handle = await runner.spawn({ prompt: "x", activeScope: DEFAULT_SCOPE });
     await flush();
     await runner.cancel(handle.id);
 
@@ -116,7 +121,7 @@ describe("SubagentRunner.list", () => {
   });
 
   it("reflects completed status after agent_end", async () => {
-    const handle = await runner.spawn({ prompt: "x" });
+    const handle = await runner.spawn({ prompt: "x", activeScope: DEFAULT_SCOPE });
     await flush();
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
@@ -141,14 +146,14 @@ describe("SubagentRunner — prune terminal instances", () => {
   });
 
   it("prunes completed subagents on next spawn", async () => {
-    const first = await runner.spawn({ prompt: "a" });
+    const first = await runner.spawn({ prompt: "a", activeScope: DEFAULT_SCOPE });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await first.result;
 
     expect(runner.list()).toHaveLength(1);
 
-    const second = await runner.spawn({ prompt: "b" });
+    const second = await runner.spawn({ prompt: "b", activeScope: DEFAULT_SCOPE });
     second.result.catch(() => {});
     await flush();
 
@@ -161,13 +166,13 @@ describe("SubagentRunner — prune terminal instances", () => {
   });
 
   it("prunes cancelled subagents on next spawn", async () => {
-    const first = await runner.spawn({ prompt: "a" });
+    const first = await runner.spawn({ prompt: "a", activeScope: DEFAULT_SCOPE });
     await flush();
     await runner.cancel(first.id);
 
     expect(runner.list()).toHaveLength(1);
 
-    const second = await runner.spawn({ prompt: "b" });
+    const second = await runner.spawn({ prompt: "b", activeScope: DEFAULT_SCOPE });
     second.result.catch(() => {});
     await flush();
 
@@ -192,7 +197,7 @@ describe("SubagentRunner — dispose", () => {
   });
 
   it("cancels running subagents and clears the map", async () => {
-    const handle = await runner.spawn({ prompt: "a" });
+    const handle = await runner.spawn({ prompt: "a", activeScope: DEFAULT_SCOPE });
     handle.result.catch(() => {});
     await flush();
 
@@ -207,7 +212,7 @@ describe("SubagentRunner — dispose", () => {
   });
 
   it("disposes subagents that already completed", async () => {
-    const handle = await runner.spawn({ prompt: "a" });
+    const handle = await runner.spawn({ prompt: "a", activeScope: DEFAULT_SCOPE });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -237,7 +242,7 @@ describe("SubagentRunner — cancel with abort() that throws", () => {
       throw new Error("abort-failed");
     });
 
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
     await runner.cancel(handle.id);
 
@@ -266,13 +271,13 @@ describe("SubagentRunner — disposed flag", () => {
 
   it("rejects spawn after dispose", async () => {
     await runner.dispose();
-    await expect(runner.spawn({ prompt: "late" })).rejects.toThrow("SubagentRunner is disposed");
+    await expect(runner.spawn({ prompt: "late", activeScope: DEFAULT_SCOPE })).rejects.toThrow("SubagentRunner is disposed");
   });
 
   it("rejects spawn even if active map was empty at dispose time", async () => {
     expect(runner.list()).toEqual([]);
     await runner.dispose();
-    await expect(runner.spawn({ prompt: "x" })).rejects.toThrow("SubagentRunner is disposed");
+    await expect(runner.spawn({ prompt: "x", activeScope: DEFAULT_SCOPE })).rejects.toThrow("SubagentRunner is disposed");
   });
 });
 
@@ -291,7 +296,7 @@ describe("SubagentRunner — dispose does not overwrite completed", () => {
   });
 
   it("preserves completed meta.json status on dispose", async () => {
-    const handle = await runner.spawn({ prompt: "a" });
+    const handle = await runner.spawn({ prompt: "a", activeScope: DEFAULT_SCOPE });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -310,7 +315,7 @@ describe("SubagentRunner — dispose does not overwrite completed", () => {
       throw new Error("boom");
     });
 
-    const handle = await runner.spawn({ prompt: "a" });
+    const handle = await runner.spawn({ prompt: "a", activeScope: DEFAULT_SCOPE });
     await flush();
     await flush();
     await expect(handle.result).rejects.toThrow("boom");
@@ -344,7 +349,7 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
       throw new Error("first-fail");
     });
 
-    const handle = await runner.spawn({ prompt: "trigger" });
+    const handle = await runner.spawn({ prompt: "trigger", activeScope: DEFAULT_SCOPE });
     const metaPath = genericSubagentMetaPath(tmp, handle.id);
     const dir = dirname(metaPath);
 
@@ -361,7 +366,7 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
   });
 
   it("markCompleted still resolves with text when persistMeta fails", async () => {
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
 
     const metaPath = genericSubagentMetaPath(tmp, handle.id);

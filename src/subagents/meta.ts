@@ -60,6 +60,7 @@ export function persistMetaPatch(instance: SubagentInstance, patch: Partial<Suba
       role: instance.role,
       name: instance.name,
       spawnedBy: instance.spawnedBy,
+      activeScope: instance.activeScope,
       depth: instance.depth,
       createdAt: instance.spawnedAt,
       status: instance.status,

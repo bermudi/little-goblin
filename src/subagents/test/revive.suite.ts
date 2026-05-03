@@ -13,12 +13,17 @@ import {
 } from "../paths.ts";
 import {
   createTestHome,
+  DEFAULT_SCOPE,
   flush,
   getCapturedCreateArgs,
+  installStandardPiMock,
   makeConfig,
   resetPiMockState,
   sessionHolder,
 } from "./support.ts";
+
+// Install mock before any tests run
+installStandardPiMock();
 
 describe("SubagentRunner.revive", () => {
   let tmp: string;
@@ -35,7 +40,7 @@ describe("SubagentRunner.revive", () => {
   });
 
   async function spawnGeneric(): Promise<string> {
-    const handle = await runner.spawn({ prompt: "first turn" });
+    const handle = await runner.spawn({ prompt: "first turn", activeScope: DEFAULT_SCOPE });
     await flush();
 
     sessionHolder.emit({ type: "agent_start" });
@@ -150,6 +155,7 @@ describe("SubagentRunner.revive", () => {
     const handle = await runner.spawn({
       prompt: "initial",
       name: "researcher",
+      activeScope: DEFAULT_SCOPE,
     });
     await flush();
 
@@ -206,7 +212,7 @@ describe("SubagentRunner — revive guards", () => {
   });
 
   it("throws when reviving a subagent that is already running", async () => {
-    const handle = await runner.spawn({ prompt: "first" });
+    const handle = await runner.spawn({ prompt: "first", activeScope: DEFAULT_SCOPE });
     await flush();
 
     writeFileSync(join(genericSubagentDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
@@ -218,7 +224,7 @@ describe("SubagentRunner — revive guards", () => {
     sessionHolder.sendUserMessage = mock(async () => {
       throw new Error("first-fail");
     });
-    const handle = await runner.spawn({ prompt: "first" });
+    const handle = await runner.spawn({ prompt: "first", activeScope: DEFAULT_SCOPE });
     await flush();
     await flush();
     await expect(handle.result).rejects.toThrow("first-fail");
@@ -284,7 +290,7 @@ describe("SubagentRunner — double-revive race guard", () => {
   });
 
   async function spawnAndComplete(): Promise<string> {
-    const handle = await runner.spawn({ prompt: "first" });
+    const handle = await runner.spawn({ prompt: "first", activeScope: DEFAULT_SCOPE });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -360,7 +366,7 @@ describe("SubagentRunner — revive with deleted AGENTS.md", () => {
     mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# R");
 
-    const handle = await runner.spawn({ prompt: "go", name: "researcher" });
+    const handle = await runner.spawn({ prompt: "go", name: "researcher", activeScope: DEFAULT_SCOPE });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;

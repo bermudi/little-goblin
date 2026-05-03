@@ -28,14 +28,9 @@ export interface FormatSnapshotArgs {
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
 }
 
-export function formatSnapshot(store: MemoryStore): MemorySnapshotPayload | null;
-export function formatSnapshot(args: FormatSnapshotArgs): Promise<MemorySnapshotPayload | null>;
-export function formatSnapshot(
-  args: MemoryStore | FormatSnapshotArgs,
-): MemorySnapshotPayload | Promise<MemorySnapshotPayload | null> | null {
-  if (args instanceof MemoryStore) {
-    return formatLegacySnapshot(args);
-  }
+export async function formatSnapshot(
+  args: FormatSnapshotArgs,
+): Promise<MemorySnapshotPayload | null> {
   return formatScopedSnapshot(args);
 }
 
@@ -101,24 +96,6 @@ function formatBody(body: string): string {
   return body.length === 0 ? "(empty)" : body;
 }
 
-function formatLegacySnapshot(store: MemoryStore): MemorySnapshotPayload | null {
-  const memoryBody = store.readBody("memory");
-  const userBody = store.readBody("user");
-  if (memoryBody.length === 0 && userBody.length === 0) {
-    return null;
-  }
-  return {
-    customType: "goblin.memory.snapshot",
-    content: [
-      "[goblin memory snapshot]",
-      `## memory.md\n${formatBody(memoryBody)}`,
-      `## user.md\n${formatBody(userBody)}`,
-    ].join("\n\n"),
-    display: false,
-    details: undefined,
-  };
-}
-
 async function formatOtherScopes(args: FormatSnapshotArgs): Promise<string[]> {
   const index = args.store.listIndex({
     chatId: args.activeScope.chatId,
@@ -127,9 +104,9 @@ async function formatOtherScopes(args: FormatSnapshotArgs): Promise<string[]> {
   const activeTopicId =
     args.activeScope.topicScope === "general" ? null : args.activeScope.topicScope.topicId;
 
-  // General scope appears when not in general and has content/description
+  // General scope appears when not in general
   const generalScope: string[] = [];
-  if (args.activeScope.topicScope !== "general" && index.general) {
+  if (args.activeScope.topicScope !== "general") {
     generalScope.push(`- general — ${index.general.description ?? "(no description)"}`);
   }
 
@@ -138,13 +115,15 @@ async function formatOtherScopes(args: FormatSnapshotArgs): Promise<string[]> {
       .filter((topic) => topic.topicId !== activeTopicId)
       .map(async (topic) => {
         const label = `topics/${topic.chatId}/${topic.topicId}`;
-        const description =
-          topic.description ??
-          (args.getTopicName === undefined
-            ? null
-            : await args.getTopicName(topic.chatId, topic.topicId)) ??
-          "(no description)";
-        return `- ${label} — ${description}`;
+        let description = topic.description ?? null;
+        if (description === null && args.getTopicName !== undefined) {
+          try {
+            description = await args.getTopicName(topic.chatId, topic.topicId);
+          } catch {
+            description = null;
+          }
+        }
+        return `- ${label} — ${description ?? "(no description)"}`;
       }),
   );
   const agents = index.agents

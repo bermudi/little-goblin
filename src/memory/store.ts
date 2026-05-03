@@ -4,6 +4,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -25,7 +26,7 @@ export interface ParsedMemory {
 }
 
 export interface MemoryIndex {
-  general?: { description?: string };
+  general: { description?: string };
   topics: Array<{ chatId: number; topicId: number; description?: string }>;
   agents: Array<{ name: string; description?: string }>;
 }
@@ -45,6 +46,45 @@ function capFor(scope: MemoryScope | "user"): number {
   return scope === "user" ? USER_CAP : MEMORY_CAP;
 }
 
+/**
+ * Simple async mutex keyed by string scope.
+ *
+ * Goblin is single-process, single-user, single-threaded (Node.js event loop).
+ * Concurrent writes to the same memory file can only race when the event
+ * loop yields between the read and the write inside `mutate()`. This
+ * mutex serialises those async windows per file so that overlapping
+ * `mutate()` calls on the same scope observe each other's writes.
+ *
+ * It is NOT a cross-process lock — if multiple goblin processes share a
+ * home directory, races are still possible. That is outside the v1
+ * homelab scope.
+ */
+class ScopeLock {
+  private locks = new Map<string, Promise<void>>();
+
+  async acquire(scope: string): Promise<() => void> {
+    while (true) {
+      const existing = this.locks.get(scope);
+      if (!existing) break;
+      await existing;
+      // loop and recheck — another waiter may have grabbed it
+    }
+
+    let release!: () => void;
+    const promise = new Promise<void>((res) => {
+      release = res;
+    });
+    this.locks.set(scope, promise);
+
+    return () => {
+      this.locks.delete(scope);
+      release();
+    };
+  }
+}
+
+const GLOBAL_SCOPE_LOCK = new ScopeLock();
+
 export class MemoryStore {
   private home: string;
 
@@ -53,21 +93,22 @@ export class MemoryStore {
   }
 
   read(scope: StoreScope): ParsedMemory {
-    return parseMemoryFile(this.readRaw(normalizeScope(scope)));
+    const normalized = normalizeScope(scope);
+    return parseMemoryFile(this.readRaw(normalized), scopeTag(normalized));
   }
 
   readBody(scope: StoreScope): string {
     return this.read(scope).body;
   }
 
-  add(scope: StoreScope, content: string): StoreResult {
+  async add(scope: StoreScope, content: string): Promise<StoreResult> {
     return this.mutate(scope, "add", ({ body, description }) => ({
       description,
       body: body.length === 0 ? content : body + DELIMITER + content,
     }));
   }
 
-  replace(scope: StoreScope, oldText: string, content: string): StoreResult {
+  async replace(scope: StoreScope, oldText: string, content: string): Promise<StoreResult> {
     return this.mutate(scope, "replace", ({ body, description }) => {
       const match = findUnique(body, oldText);
       if (!match.ok) return match;
@@ -78,7 +119,7 @@ export class MemoryStore {
     });
   }
 
-  remove(scope: StoreScope, oldText: string): StoreResult {
+  async remove(scope: StoreScope, oldText: string): Promise<StoreResult> {
     return this.mutate(scope, "remove", ({ body, description }) => {
       const match = findUnique(body, oldText);
       if (!match.ok) return match;
@@ -89,22 +130,23 @@ export class MemoryStore {
     });
   }
 
-  rewrite(scope: StoreScope, body: string): StoreResult {
+  async rewrite(scope: StoreScope, body: string): Promise<StoreResult> {
     return this.mutate(scope, "rewrite", ({ description }) => ({ description, body }));
   }
 
-  setDescription(scope: StoreScope, description: string): StoreResult {
-    if (description.includes("\n")) {
+  async setDescription(scope: StoreScope, description: string): Promise<StoreResult> {
+    const trimmed = description.trim();
+    if (trimmed.includes("\n")) {
       return { ok: false, error: "description must be a single line" };
     }
-    if (description.length > DESCRIPTION_CAP) {
+    if (trimmed.length > DESCRIPTION_CAP) {
       return {
         ok: false,
-        error: `description would be ${description.length} chars (cap ${DESCRIPTION_CAP}, overflow ${description.length - DESCRIPTION_CAP})`,
+        error: `description would be ${trimmed.length} chars (cap ${DESCRIPTION_CAP}, overflow ${trimmed.length - DESCRIPTION_CAP})`,
       };
     }
     return this.mutate(scope, "set_description", ({ body }) => ({
-      description: description.length === 0 ? undefined : description,
+      description: trimmed.length === 0 ? undefined : trimmed,
       body,
     }));
   }
@@ -113,7 +155,7 @@ export class MemoryStore {
     const topicsRoot = join(memoryDir(this.home), "topics");
     const agentsRoot = join(memoryDir(this.home), "agents");
     const generalParsed = this.read("general");
-    const general = generalParsed.body.length > 0 || generalParsed.description ? generalParsed : undefined;
+    const general: MemoryIndex["general"] = { description: generalParsed.description };
     const topics: MemoryIndex["topics"] = [];
     const agents: MemoryIndex["agents"] = [];
 
@@ -150,27 +192,54 @@ export class MemoryStore {
   archiveOrphan(chatId: number, topicId: number): boolean {
     const source = dirname(scopeMemoryPath(this.home, { topic: { chatId, topicId } }));
     if (!existsSync(source)) return false;
+
+    // Guard: reject archive when a concurrent write has a temp artifact in the scope.
+    try {
+      for (const entry of readdirSync(source)) {
+        if (entry.endsWith(".tmp")) {
+          log.warn("memory: archiveOrphan aborted, temp file in scope", { chatId, topicId, entry });
+          return false;
+        }
+      }
+    } catch {
+      return false;
+    }
+
     const dest = archiveTopicPath(this.home, chatId, topicId);
-    mkdirSync(dirname(dest), { recursive: true });
-    renameSync(source, dest);
-    this.commitArchive(chatId, topicId);
-    return true;
+    try {
+      mkdirSync(dirname(dest), { recursive: true });
+      if (existsSync(dest)) {
+        rmSync(dest, { recursive: true, force: true });
+      }
+      renameSync(source, dest);
+      this.commitArchive(chatId, topicId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
-  private mutate(
+  private async mutate(
     inputScope: StoreScope,
     action: MutateAction,
     op: (current: ParsedMemory) => ParsedMemory | StoreResult,
-  ): StoreResult {
+  ): Promise<StoreResult> {
     const scope = normalizeScope(inputScope);
-    const current = this.read(scope);
-    const next = op(current);
-    if ("ok" in next) return next;
-    const overflow = this.checkCap(scope, next.body);
-    if (overflow) return overflow;
-    this.write(scope, formatMemoryFile(next));
-    this.commit(action, scope);
-    return { ok: true };
+    const scopeKey = scopeTag(scope);
+
+    const release = await GLOBAL_SCOPE_LOCK.acquire(scopeKey);
+    try {
+      const current = this.read(scope);
+      const next = op(current);
+      if ("ok" in next) return next;
+      const overflow = this.checkCap(scope, next.body);
+      if (overflow) return overflow;
+      this.write(scope, formatMemoryFile(next));
+      this.commit(action, scope);
+      return { ok: true };
+    } finally {
+      release();
+    }
   }
 
   private readRaw(scope: MemoryScope | "user"): string {
@@ -213,12 +282,12 @@ export class MemoryStore {
   private commitArchive(chatId: number, topicId: number): void {
     const tag = `topics/${chatId}/${topicId}`;
     const dir = memoryDir(this.home);
-    // The tag is passed (even though not a valid path) so git records the deletion
-    // of the source directory. `git add -A -- <pathspec>` needs the old path to
-    // track the rename as a delete+add rather than just an add.
+    // Stage both the deleted source file and the new archive file.
+    // Use explicit file paths (not directories) so git tracks memory.md
+    // rather than treating the directory as a gitlink or missing empty dirs.
     this.commitPaths(`memory: archive orphan ${tag}`, [
-      relative(dir, archiveTopicPath(this.home, chatId, topicId)),
-      tag,
+      relative(dir, join(archiveTopicPath(this.home, chatId, topicId), "memory.md")),
+      `${tag}/memory.md`,
     ]);
   }
 
@@ -257,13 +326,21 @@ export class MemoryStore {
   }
 }
 
-function parseMemoryFile(raw: string): ParsedMemory {
+function parseMemoryFile(raw: string, scopeTagForLog?: string): ParsedMemory {
   if (!raw.startsWith("---\n")) return { body: raw };
   const end = raw.indexOf("\n---\n\n", 4);
-  if (end === -1) return { body: raw };
+  if (end === -1) {
+    log.warn("memory: malformed frontmatter (no closing delimiter), using body-only fallback", {
+      scope: scopeTagForLog,
+    });
+    return { body: raw };
+  }
   const header = raw.slice(4, end);
   const lines = header.split("\n");
   if (lines.length !== 1 || !lines[0]!.startsWith("description: ")) {
+    log.warn("memory: malformed frontmatter header, using body-only fallback", {
+      scope: scopeTagForLog,
+    });
     return { body: raw };
   }
   const description = lines[0]!.slice("description: ".length);

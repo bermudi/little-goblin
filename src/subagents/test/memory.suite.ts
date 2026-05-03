@@ -14,10 +14,14 @@ import {
   createTestHome,
   flush,
   getCapturedCreateArgs,
+  installStandardPiMock,
   makeConfig,
   resetPiMockState,
   sessionHolder,
 } from "./support.ts";
+
+// Install mock before any tests run
+installStandardPiMock();
 
 const TOPIC_SCOPE: ActiveScope = {
   chatId: -100123,

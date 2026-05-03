@@ -84,9 +84,9 @@ export function createSpawnSubagentTool(
   runner: SubagentRunner,
   depth: number,
   sessionId: string,
+  activeScope: ActiveScope,
   onStatusUpdate?: (message: string) => void,
   timeoutMs?: number,
-  activeScope?: ActiveScope,
 ): ToolDefinition {
   return defineTool({
     name: "spawn_subagent",

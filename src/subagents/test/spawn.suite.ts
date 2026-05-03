@@ -18,12 +18,17 @@ import {
 } from "../paths.ts";
 import {
   createTestHome,
+  DEFAULT_SCOPE,
   flush,
   getCapturedCreateArgs,
+  installStandardPiMock,
   makeConfig,
   resetPiMockState,
   sessionHolder,
 } from "./support.ts";
+
+// Install mock before any tests run
+installStandardPiMock();
 
 describe("SubagentRunner — skeleton", () => {
   let tmp: string;
@@ -76,7 +81,7 @@ describe("SubagentRunner.spawn — generic", () => {
   });
 
   it("creates the subagent directory and meta.json", async () => {
-    const handle = await runner.spawn({ prompt: "Analyze logs" });
+    const handle = await runner.spawn({ prompt: "Analyze logs", activeScope: DEFAULT_SCOPE });
     handle.result.catch(() => {});
 
     expect(handle.status).toBe("running");
@@ -103,6 +108,7 @@ describe("SubagentRunner.spawn — generic", () => {
   it("records spawnedBy when provided", async () => {
     const handle = await runner.spawn({
       prompt: "hi",
+      activeScope: DEFAULT_SCOPE,
       spawnedBy: "goblin-session-42",
     });
     handle.result.catch(() => {});
@@ -114,7 +120,7 @@ describe("SubagentRunner.spawn — generic", () => {
   });
 
   it("tracks the spawned subagent in list()", async () => {
-    const handle = await runner.spawn({ prompt: "ping" });
+    const handle = await runner.spawn({ prompt: "ping", activeScope: DEFAULT_SCOPE });
     handle.result.catch(() => {});
 
     const list = runner.list();
@@ -128,7 +134,7 @@ describe("SubagentRunner.spawn — generic", () => {
   });
 
   it("provisions a persisted SessionManager pointing at the subagent dir", async () => {
-    const handle = await runner.spawn({ prompt: "ping" });
+    const handle = await runner.spawn({ prompt: "ping", activeScope: DEFAULT_SCOPE });
     handle.result.catch(() => {});
 
     expect(runner.list()[0]?.id).toBe(handle.id);
@@ -136,13 +142,13 @@ describe("SubagentRunner.spawn — generic", () => {
   });
 
   it("rejects spawning beyond depth 3", async () => {
-    await expect(runner.spawn({ prompt: "deep", depth: 3 })).rejects.toThrow(
+    await expect(runner.spawn({ prompt: "deep", depth: 3, activeScope: DEFAULT_SCOPE })).rejects.toThrow(
       /Maximum subagent depth reached \(3\)/,
     );
   });
 
   it("permits spawning at the boundary (depth 2 spawner → depth 3 child)", async () => {
-    const handle = await runner.spawn({ prompt: "boundary", depth: 2 });
+    const handle = await runner.spawn({ prompt: "boundary", depth: 2, activeScope: DEFAULT_SCOPE });
     handle.result.catch(() => {});
 
     const meta = JSON.parse(
@@ -167,7 +173,7 @@ describe("SubagentRunner.spawn — named", () => {
   });
 
   it("throws 'Named agent <name> not found' when AGENTS.md is missing", async () => {
-    await expect(runner.spawn({ prompt: "hi", name: "nonexistent" })).rejects.toThrow(
+    await expect(runner.spawn({ prompt: "hi", activeScope: DEFAULT_SCOPE, name: "nonexistent" })).rejects.toThrow(
       "Named agent 'nonexistent' not found",
     );
   });
@@ -181,6 +187,7 @@ describe("SubagentRunner.spawn — named", () => {
     const handle = await runner.spawn({
       prompt: "Investigate the docs",
       name: "researcher",
+      activeScope: DEFAULT_SCOPE,
     });
     handle.result.catch(() => {});
 
@@ -210,6 +217,7 @@ describe("SubagentRunner.spawn — named", () => {
     const handle = await runner.spawn({
       prompt: "ping",
       name: "researcher",
+      activeScope: DEFAULT_SCOPE,
     });
     handle.result.catch(() => {});
 
@@ -224,6 +232,7 @@ describe("SubagentRunner.spawn — named", () => {
     const handle = await runner.spawn({
       prompt: "ping",
       name: "researcher",
+      activeScope: DEFAULT_SCOPE,
     });
     handle.result.catch(() => {});
 
@@ -245,6 +254,7 @@ describe("SubagentRunner.spawn — named", () => {
     const handle = await runner.spawn({
       prompt: "ping",
       name: "researcher",
+      activeScope: DEFAULT_SCOPE,
     });
     handle.result.catch(() => {});
 
@@ -265,7 +275,7 @@ describe("SubagentRunner.spawn — named", () => {
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# x");
 
     await expect(
-      runner.spawn({ prompt: "deep", name: "researcher", depth: 3 }),
+      runner.spawn({ prompt: "deep", name: "researcher", depth: 3, activeScope: DEFAULT_SCOPE }),
     ).rejects.toThrow(/Maximum subagent depth reached \(3\)/);
   });
 });
@@ -285,7 +295,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
   });
 
   it("creates an AgentSession with customTools=[] and the subagent's SessionManager", async () => {
-    const handle = await runner.spawn({ prompt: "Analyze logs" });
+    const handle = await runner.spawn({ prompt: "Analyze logs", activeScope: DEFAULT_SCOPE });
     handle.result.catch(() => {});
     await flush();
 
@@ -311,7 +321,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     const agentsMd = "# Researcher\nYou are a research specialist.\n";
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), agentsMd);
 
-    const handle = await runner.spawn({ prompt: "go", name: "researcher" });
+    const handle = await runner.spawn({ prompt: "go", name: "researcher", activeScope: DEFAULT_SCOPE });
     handle.result.catch(() => {});
     await flush();
 
@@ -326,7 +336,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
   });
 
   it("sends the initial prompt as the first user message", async () => {
-    const handle = await runner.spawn({ prompt: "Hello there" });
+    const handle = await runner.spawn({ prompt: "Hello there", activeScope: DEFAULT_SCOPE });
     handle.result.catch(() => {});
     await flush();
 
@@ -334,7 +344,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
   });
 
   it("resolves handle.result with the accumulated assistant text on agent_end", async () => {
-    const handle = await runner.spawn({ prompt: "Greet me" });
+    const handle = await runner.spawn({ prompt: "Greet me", activeScope: DEFAULT_SCOPE });
     await flush();
 
     sessionHolder.emit({ type: "agent_start" });
@@ -357,6 +367,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     const events: string[] = [];
     const handle = await runner.spawn({
       prompt: "do work",
+      activeScope: DEFAULT_SCOPE,
       onStatusUpdate: (message) => events.push(message),
     });
     handle.result.catch(() => {});
@@ -387,7 +398,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
   });
 
   it("updates meta.json with status=completed and completedAt on agent_end", async () => {
-    const handle = await runner.spawn({ prompt: "ping" });
+    const handle = await runner.spawn({ prompt: "ping", activeScope: DEFAULT_SCOPE });
     await flush();
 
     sessionHolder.emit({
@@ -412,7 +423,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
       throw new Error("boom");
     });
 
-    const handle = await runner.spawn({ prompt: "trigger" });
+    const handle = await runner.spawn({ prompt: "trigger", activeScope: DEFAULT_SCOPE });
     await flush();
     await flush();
 
@@ -445,6 +456,7 @@ describe("SubagentRunner — status prefix propagation", () => {
     const events: string[] = [];
     const handle = await runner.spawn({
       prompt: "work",
+      activeScope: DEFAULT_SCOPE,
       onStatusUpdate: (message) => events.push(message),
     });
     handle.result.catch(() => {});
@@ -463,6 +475,7 @@ describe("SubagentRunner — status prefix propagation", () => {
     const handle = await runner.spawn({
       prompt: "work",
       name: "researcher",
+      activeScope: DEFAULT_SCOPE,
       onStatusUpdate: (message) => events.push(message),
     });
     handle.result.catch(() => {});
@@ -483,7 +496,7 @@ describe("SubagentRunner — status prefix propagation", () => {
   });
 
   it("does not call back when onStatusUpdate is not provided", async () => {
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
 
     expect(() => {
@@ -503,6 +516,7 @@ describe("SubagentRunner — status prefix propagation", () => {
     const events: string[] = [];
     const handle = await runner.spawn({
       prompt: "work",
+      activeScope: DEFAULT_SCOPE,
       onStatusUpdate: (message) => events.push(message),
     });
     handle.result.catch(() => {});
@@ -535,26 +549,26 @@ describe("SubagentRunner — name validation", () => {
   });
 
   it("rejects path traversal in name", async () => {
-    await expect(runner.spawn({ prompt: "x", name: "../etc" })).rejects.toThrow(/Invalid agent name/);
+    await expect(runner.spawn({ prompt: "x", activeScope: DEFAULT_SCOPE, name: "../etc" })).rejects.toThrow(/Invalid agent name/);
   });
 
   it("rejects empty string name", async () => {
-    await expect(runner.spawn({ prompt: "x", name: "" })).rejects.toThrow(/Invalid agent name/);
+    await expect(runner.spawn({ prompt: "x", activeScope: DEFAULT_SCOPE, name: "" })).rejects.toThrow(/Invalid agent name/);
   });
 
   it("rejects names with slashes", async () => {
-    await expect(runner.spawn({ prompt: "x", name: "foo/bar" })).rejects.toThrow(/Invalid agent name/);
+    await expect(runner.spawn({ prompt: "x", activeScope: DEFAULT_SCOPE, name: "foo/bar" })).rejects.toThrow(/Invalid agent name/);
   });
 
   it("rejects names with dots", async () => {
-    await expect(runner.spawn({ prompt: "x", name: "foo.bar" })).rejects.toThrow(/Invalid agent name/);
+    await expect(runner.spawn({ prompt: "x", activeScope: DEFAULT_SCOPE, name: "foo.bar" })).rejects.toThrow(/Invalid agent name/);
   });
 
   it("accepts valid names: alphanumeric, hyphens, underscores", async () => {
     mkdirSync(namedAgentDir(tmp, "my-agent_v2"), { recursive: true });
     writeFileSync(namedAgentAgentsMdPath(tmp, "my-agent_v2"), "# Agent");
 
-    const handle = await runner.spawn({ prompt: "go", name: "my-agent_v2" });
+    const handle = await runner.spawn({ prompt: "go", name: "my-agent_v2", activeScope: DEFAULT_SCOPE });
     expect(handle.status).toBe("running");
     handle.result.catch(() => {});
 
@@ -579,7 +593,7 @@ describe("SubagentRunner — negative depth rejection", () => {
   });
 
   it("rejects negative depth", async () => {
-    await expect(runner.spawn({ prompt: "x", depth: -1 })).rejects.toThrow(/Invalid depth/);
+    await expect(runner.spawn({ prompt: "x", activeScope: DEFAULT_SCOPE, depth: -1 })).rejects.toThrow(/Invalid depth/);
   });
 });
 
@@ -599,10 +613,10 @@ describe("SubagentRunner — recursive tool injection", () => {
   it("passes subagent tools to spawned subagents via toolFactory", async () => {
     const { createSpawnSubagentTool } = await import("../tool.ts");
     runner = new SubagentRunner(makeConfig(tmp), (subagentRunner, depth, sessionId, activeScope, onStatusUpdate) => [
-      createSpawnSubagentTool(subagentRunner, depth, sessionId, onStatusUpdate, undefined, activeScope),
+      createSpawnSubagentTool(subagentRunner, depth, sessionId, activeScope, onStatusUpdate, undefined),
     ]);
 
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
 
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
@@ -617,7 +631,7 @@ describe("SubagentRunner — recursive tool injection", () => {
   it("always registers scoped memory tools even when no toolFactory is provided", async () => {
     runner = new SubagentRunner(makeConfig(tmp));
 
-    const handle = await runner.spawn({ prompt: "work" });
+    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
     await flush();
 
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
@@ -664,6 +678,7 @@ describe("SubagentRunner — nested prefix prevention", () => {
     const parentRunner = new SubagentRunner(makeConfig(tmp), toolFactory);
     const handle = await parentRunner.spawn({
       prompt: "parent",
+      activeScope: DEFAULT_SCOPE,
       onStatusUpdate: (message) => {
         receivedCallbacks.push(`parent-saw: ${message}`);
       },

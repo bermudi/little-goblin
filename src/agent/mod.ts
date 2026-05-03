@@ -101,6 +101,7 @@ export class AgentRunner {
         store: this.memoryStore,
         activeChatId: this.activeScope.chatId,
         includeAgents: true,
+        getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
       }),
       createMemoryWriteTool({ store: this.memoryStore, activeScope: this.activeScope }),
     ];

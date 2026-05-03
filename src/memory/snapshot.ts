@@ -97,7 +97,7 @@ function formatBody(body: string): string {
 }
 
 async function formatOtherScopes(args: FormatSnapshotArgs): Promise<string[]> {
-  const index = args.store.listIndex({
+  const index = await args.store.listIndex({
     chatId: args.activeScope.chatId,
     includeAgents: args.includeAgents,
   });

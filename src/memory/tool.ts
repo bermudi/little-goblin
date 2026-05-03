@@ -126,6 +126,7 @@ export function createMemoryReadIndexTool(args: {
   store: MemoryStore;
   activeChatId?: number;
   includeAgents: boolean;
+  getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
 }): ToolDefinition {
   return defineTool({
     name: "memory_read_index",
@@ -139,9 +140,10 @@ export function createMemoryReadIndexTool(args: {
       // Cross-chat reads are gated; listing all chats would reveal scopes
       // that cannot be read via memory_read. Filter to active chat only.
       return jsonResult(
-        args.store.listIndex({
+        await args.store.listIndex({
           chatId: args.activeChatId,
           includeAgents: args.includeAgents,
+          getTopicName: args.getTopicName,
         }),
       );
     },

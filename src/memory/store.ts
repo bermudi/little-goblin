@@ -26,7 +26,7 @@ export interface ParsedMemory {
 }
 
 export interface MemoryIndex {
-  topics: Array<{ chatId: number; topicId: number; description?: string }>;
+  topics: Array<{ chatId: number; topicId: number; name?: string; description?: string }>;
   agents: Array<{ name: string; description?: string }>;
 }
 
@@ -153,7 +153,11 @@ export class MemoryStore {
     }));
   }
 
-  listIndex(opts: { chatId?: number; includeAgents: boolean }): MemoryIndex {
+  async listIndex(opts: {
+    chatId?: number;
+    includeAgents: boolean;
+    getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
+  }): Promise<MemoryIndex> {
     const topicsRoot = join(memoryDir(this.home), "topics");
     const agentsRoot = join(memoryDir(this.home), "agents");
     const topics: MemoryIndex["topics"] = [];
@@ -171,7 +175,15 @@ export class MemoryStore {
           const topicId = Number.parseInt(topicEntry.name, 10);
           if (!Number.isFinite(topicId)) continue;
           const parsed = this.read({ topic: { chatId, topicId } });
-          topics.push({ chatId, topicId, description: parsed.description });
+          let name: string | undefined;
+          if (opts.getTopicName !== undefined && parsed.description === undefined) {
+            try {
+              name = (await opts.getTopicName(chatId, topicId)) ?? undefined;
+            } catch {
+              name = undefined;
+            }
+          }
+          topics.push({ chatId, topicId, name, description: parsed.description });
         }
       }
     }

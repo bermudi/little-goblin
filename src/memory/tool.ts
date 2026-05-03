@@ -124,7 +124,7 @@ export function createMemoryReadTool(args: {
 
 export function createMemoryReadIndexTool(args: {
   store: MemoryStore;
-  activeChatId?: number;
+  activeScope: ActiveScope;
   includeAgents: boolean;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
 }): ToolDefinition {
@@ -141,7 +141,7 @@ export function createMemoryReadIndexTool(args: {
       // that cannot be read via memory_read. Filter to active chat only.
       return jsonResult(
         await args.store.listIndex({
-          chatId: args.activeChatId,
+          chatId: args.activeScope.chatId,
           includeAgents: args.includeAgents,
           getTopicName: args.getTopicName,
         }),

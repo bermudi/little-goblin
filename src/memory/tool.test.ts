@@ -47,7 +47,7 @@ describe("memory tool", () => {
     readTool = createMemoryReadTool({ store, activeScope: TOPIC_SCOPE });
     readIndexTool = createMemoryReadIndexTool({
       store,
-      activeChatId: TOPIC_SCOPE.chatId,
+      activeScope: TOPIC_SCOPE,
       includeAgents: true,
     });
     writeTool = createMemoryWriteTool({ store, activeScope: TOPIC_SCOPE });
@@ -167,7 +167,11 @@ describe("memory tool", () => {
 
   it("memory_read_index omits agents when includeAgents=false", async () => {
     await store.setDescription({ agent: { name: "researcher" } }, "research persona");
-    const tool = createMemoryReadIndexTool({ store, activeChatId: -100, includeAgents: false });
+    const tool = createMemoryReadIndexTool({
+      store,
+      activeScope: { chatId: -100, topicScope: { topicId: 42 }, namedAgent: null },
+      includeAgents: false,
+    });
     const index = jsonOf<{ agents: unknown[] }>(
       await tool.execute("call-index-no-agents", {}, undefined, undefined, NULL_CTX),
     );

@@ -141,7 +141,7 @@ The `memory_read` tool SHALL accept an optional `scope` argument as a discrimina
 
 The `scope` argument SHALL NOT be a free-form string path. Internals translate the discriminated value into the canonical disk path. `target = "user"` ignores the `scope` argument; `user.md` is global.
 
-The `memory_read_index` tool SHALL return available topic scopes (their topic IDs, best-effort Telegram names, and descriptions) and, when called by the main goblin agent, all named-agent persona scopes (their names and descriptions). It MUST NOT include archived or orphaned scopes.
+The `memory_read_index` tool SHALL return an object with three fields: `general` (the `general` scope's description, or `null` if unset), `topics` (an array of topic scopes with their IDs, best-effort Telegram names, and descriptions), and `agents` (an array of named-agent persona scopes with their names and descriptions, only when called by the main goblin agent). It MUST NOT include archived or orphaned scopes.
 
 #### Scenario: Read from another topic
 
@@ -153,7 +153,8 @@ The `memory_read_index` tool SHALL return available topic scopes (their topic ID
 #### Scenario: Index lists topics with descriptions
 
 - **WHEN** `memory_read_index()` is called and topics `7`, `11`, and `42` exist in the calling chat
-- **THEN** the response SHALL include each topic's id, best-effort name, and description (or `null` if unset)
+- **THEN** the response SHALL include a `general` field with the general scope's description (or `null` if unset)
+- **AND** the `topics` array SHALL include each topic's id, best-effort name, and description (or `null` if unset)
 - **AND** archived scopes SHALL be excluded
 
 ### Requirement: Cross-scope discovery defaults to the current chat
@@ -172,7 +173,7 @@ This default exists for two reasons: (1) `chatId` is a privacy boundary, not jus
 - **WHEN** `memory_read_index()` is called from a session in chat `A`
 - **THEN** the returned `topics` array SHALL contain entries for `A/1` and `A/2`
 - **AND** the array SHALL NOT contain an entry for `B/9`
-- **AND** the array SHALL contain an entry for `general`
+- **AND** the response SHALL include a `general` field (the `general` scope is always included regardless of chat filter)
 
 #### Scenario: all_chats opt-in surfaces every topic
 

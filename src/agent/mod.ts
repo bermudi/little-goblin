@@ -99,7 +99,7 @@ export class AgentRunner {
       createMemoryReadTool({ store: this.memoryStore, activeScope: this.activeScope }),
       createMemoryReadIndexTool({
         store: this.memoryStore,
-        activeChatId: this.activeScope.chatId,
+        activeScope: this.activeScope,
         includeAgents: true,
         getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
       }),

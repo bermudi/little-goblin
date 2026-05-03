@@ -355,6 +355,7 @@ describe("MemoryStore", () => {
       await store.setDescription({ agent: { name: "researcher" } }, "research persona");
 
       expect(await store.listIndex({ chatId: -100, includeAgents: false })).toEqual({
+        general: null,
         topics: [
           { chatId: -100, topicId: 1, description: "chat A one" },
           { chatId: -100, topicId: 2, description: "chat A two" },
@@ -362,6 +363,7 @@ describe("MemoryStore", () => {
         agents: [],
       });
       expect(await store.listIndex({ includeAgents: true })).toEqual({
+        general: null,
         topics: [
           { chatId: -200, topicId: 9, description: "chat B nine" },
           { chatId: -100, topicId: 1, description: "chat A one" },
@@ -383,10 +385,26 @@ describe("MemoryStore", () => {
 
       const index = await store.listIndex({ chatId: -100, includeAgents: false, getTopicName });
 
+      expect(index.general).toBeNull();
       expect(index.topics).toEqual([
         { chatId: -100, topicId: 1, description: "has description" },
         { chatId: -100, topicId: 2, name: "Fetched Topic Name", description: undefined },
       ]);
+    });
+
+    it("returns general scope description when set", async () => {
+      await store.setDescription("general", "general scope description");
+
+      const index = await store.listIndex({ chatId: -100, includeAgents: false });
+
+      expect(index.general).toEqual({ description: "general scope description" });
+    });
+
+    it("returns general as null when general scope is empty", async () => {
+      // Ensure general is empty (no description, no body)
+      const index = await store.listIndex({ chatId: -100, includeAgents: false });
+
+      expect(index.general).toBeNull();
     });
 
     it("ignores getTopicName when description is already set", async () => {
@@ -396,13 +414,14 @@ describe("MemoryStore", () => {
 
       const index = await store.listIndex({ chatId: -100, includeAgents: false, getTopicName });
 
+      expect(index.general).toBeNull();
       // Should not have name field since description exists
       expect(index.topics[0]).toEqual({
         chatId: -100,
         topicId: 1,
         description: "existing description",
       });
-      expect(index.topics[0].name).toBeUndefined();
+      expect(index.topics[0]?.name).toBeUndefined();
     });
 
     it("handles getTopicName returning null gracefully", async () => {
@@ -412,12 +431,13 @@ describe("MemoryStore", () => {
 
       const index = await store.listIndex({ chatId: -100, includeAgents: false, getTopicName });
 
+      expect(index.general).toBeNull();
       expect(index.topics[0]).toEqual({
         chatId: -100,
         topicId: 1,
         description: undefined,
       });
-      expect(index.topics[0].name).toBeUndefined();
+      expect(index.topics[0]?.name).toBeUndefined();
     });
 
     it("handles getTopicName throwing gracefully", async () => {
@@ -429,6 +449,7 @@ describe("MemoryStore", () => {
 
       const index = await store.listIndex({ chatId: -100, includeAgents: false, getTopicName });
 
+      expect(index.general).toBeNull();
       // Should still return topic without name
       expect(index.topics[0]).toEqual({
         chatId: -100,

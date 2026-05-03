@@ -165,7 +165,7 @@ describe("SubagentRunner — scoped memory", () => {
       JSON.stringify(
         createMemoryReadIndexTool({
           store: new MemoryStore(tmp),
-          activeChatId: TOPIC_SCOPE.chatId,
+          activeScope: TOPIC_SCOPE,
           includeAgents: false,
         }).parameters,
       ),

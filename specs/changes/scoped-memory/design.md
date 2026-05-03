@@ -187,6 +187,23 @@ checks at startup is not worth saving them one `mv` command.
 cleanup is *only* the old top-level `memory.md`. Existing git history at
 `$GOBLIN_HOME/memory/.git` is preserved.
 
+### D10. `formatSnapshot` requires explicit `includeAgents` boolean
+
+**Chosen:** The `FormatSnapshotArgs` interface requires `includeAgents: boolean`
+in addition to the design's original `store`, `activeScope`, `includePersona?`,
+and `getTopicName?` parameters.
+
+**Why:** The `## other scopes` section can include agent persona scopes (when
+`includeAgents: true`) or omit them (when `false`). This is a caller decision:
+the main agent's snapshot includes agents for cross-scope discovery, while
+subagents receive `includeAgents: false` because they cannot spawn other agents
+and should not see sibling personas. Making this explicit at the call site
+prevents accidental leakage of agent topology into subagent contexts.
+
+**Constraint:** Callers must now pass the flag; there is no default. This is
+intentional — it forces a conscious choice about agent visibility at every
+snapshot construction site.
+
 ## File Changes
 
 ### Modified
@@ -215,7 +232,7 @@ Substantial refactor.
     3. Atomic write (tmp + rename) — same primitive as today.
     4. Single git commit with subject `memory: <action> in <scope-tag>`.
 - **`scope-tag`** is `user`, `general`, `topics/<chat>/<topic>`, or `agents/<name>`.
-- **`MemoryStore.read(scope)`** returns the parsed `{description?, body}` of the requested scope file.
+- **`MemoryStore.read(scope)`** returns the parsed `{description?, body}` of the requested scope file. Note: the store accepts an internal `"memory"` string alias that normalizes to `"general"`; this is a legacy implementation detail distinct from the tool layer's `target: "memory"` concept.
 - **`MemoryStore.listIndex({includeAgents: boolean})`** scans `topics/` and (optionally) `agents/` for non-archived scopes and returns `[{id, description}]` arrays.
 - **`MemoryStore.archiveOrphan(chatId, topicId)`** moves `topics/<chat>/<topic>/` to `archive/topics/<chat>/<topic>/` via `renameSync`.
 - **Frontmatter parsing.** A minimal `--- description: ... ---` parser. Single-line description only; reject multi-line for v1.
@@ -227,7 +244,7 @@ Spec: *Enforce character caps with overflow errors*, *Atomic writes* (preserved)
 
 Rewrite the formatter.
 
-- **New input shape:** `formatSnapshot({store, activeScope, includePersona?: {name: string}, getTopicName?: (chatId, topicId) => Promise<string | null>})`.
+- **New input shape:** `formatSnapshot({store, activeScope, includeAgents: boolean, includePersona?: {name: string}, getTopicName?: (chatId, topicId) => Promise<string | null>})`.
 - **Output sections in order:** `[goblin memory snapshot]`, `## scope`, `## user.md`, `## memory.md` (active), optional `## agent persona`, optional `## other scopes`.
 - **Empty handling:** sections render `(empty)`; whole payload is `null` when every source is empty/absent and the cross-scope index is empty.
 - The function MUST stay synchronous-from-disk where possible. Telegram name lookup (`getTopicName`) is async and best-effort; on miss, falls back to `topics/<chat>/<topic>` literal.
@@ -239,14 +256,14 @@ Spec: *Per-turn snapshot includes active scope and cross-scope index*, *Snapshot
 Replace `createMemoryTool(store)` with three factories:
 
 - **`createMemoryReadTool({store, activeScope})`** — schema accepts `target: "memory"|"user"|"agent"` and optional discriminated `scope`. Returns parsed body + description. Resolves `target=user` to `userPath`, ignores `scope`. Resolves `target=agent` against the calling agent's name (passed in as part of `activeScope` for named subagents).
-- **`createMemoryReadIndexTool({store, includeAgents})`** — no inputs. Returns `{topics: [...], agents: [...]}`. `agents` empty for callers that aren't the main goblin agent.
+- **`createMemoryReadIndexTool({store, activeScope, includeAgents})`** — derives `chatId` from `activeScope` to filter topics to the current chat. Returns `{general, topics: [...], agents: [...]}`. `agents` empty for callers that aren't the main goblin agent.
 - **`createMemoryWriteTool({store, activeScope})`** — schema accepts `action`, `target`, plus action-specific fields. Resolver path:
     1. `target=memory` → `activeScope.topicScope ?? generalScope`.
     2. `target=user` → user path.
     3. `target=agent` → `activeScope.namedAgent` (reject if absent).
 - **Validation:** missing required field → tool error, no write. Cap overflow → tool error, no write. Substring-match ambiguity (replace/remove) → tool error, no write.
 
-`activeScope` is a small typed bundle: `{topicScope: {chatId, topicId} | "general"; namedAgent: {name: string} | null}`. Built once at runner construction.
+`activeScope` is a small typed bundle: `{chatId: number; topicScope: {topicId: number} | "general"; namedAgent: {name: string} | null}`. The `chatId` is the binding context (which chat this session is in), while `topicScope` distinguishes between the general scope (DM/supergroup-no-topic) and a specific topic. Built once at runner construction.
 
 Spec: *AgentRunner registers the memory write tool*, all the `memory` requirements covering action semantics.
 
@@ -259,7 +276,7 @@ Spec: *AgentRunner registers the memory write tool*, all the `memory` requiremen
     const tools: ToolDefinition[] = [
       ...this.customTools,
       createMemoryReadTool({store, activeScope}),
-      createMemoryReadIndexTool({store, includeAgents: true}),
+      createMemoryReadIndexTool({store, activeScope, includeAgents: true}),
       createMemoryWriteTool({store, activeScope}),
     ];
     ```
@@ -298,7 +315,7 @@ Re-exports updated to surface the new factory functions and types
 
 A small focused module containing:
 
-- The `MemoryScope` discriminated union and `ActiveScope` bundle types.
+- The `MemoryScope` discriminated union and `ActiveScope` bundle types. `ActiveScope` keeps `chatId` as a sibling field rather than nested in `topicScope` because the chat binding is constant for the session lifetime, while the topic scope can vary (general vs specific topic).
 - `resolveActiveScope(locator: ChatLocator, namedAgent?: string): ActiveScope`.
 - `scopeTag(scope: MemoryScope): string` — produces the git commit subject's
   scope label (e.g. `topics/-100123/42`).

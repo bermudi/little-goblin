@@ -126,7 +126,7 @@ async function _runInstanceInner(
       createMemoryReadTool({ store: memoryStore, activeScope: instance.activeScope }),
       createMemoryReadIndexTool({
         store: memoryStore,
-        activeChatId: instance.activeScope.chatId,
+        activeScope: instance.activeScope,
         includeAgents: false,
       }),
       createMemoryWriteTool({ store: memoryStore, activeScope: instance.activeScope }),

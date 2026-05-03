@@ -26,13 +26,29 @@ export interface ParsedMemory {
 }
 
 export interface MemoryIndex {
+  general: { description?: string } | null;
   topics: Array<{ chatId: number; topicId: number; name?: string; description?: string }>;
   agents: Array<{ name: string; description?: string }>;
 }
 
+/**
+ * Internal store scope type allowing store methods to accept either:
+ * - A concrete MemoryScope ("general", topic, or agent)
+ * - "user" for the global user.md
+ * - "memory" as an internal alias that normalizes to "general"
+ *
+ * Note: The "memory" alias is an internal implementation detail. It is NOT
+ * the tool layer's `target: "memory"` concept (which means "active scope" and
+ * is resolved to a concrete scope before reaching the store). This alias exists
+ * for historical reasons in test code and internal helpers.
+ */
 type StoreScope = MemoryScope | "user" | "memory";
 type MutateAction = "add" | "replace" | "remove" | "rewrite" | "set_description";
 
+/**
+ * Normalizes the internal "memory" alias to "general".
+ * The "memory" string is a legacy alias; new code should use "general" directly.
+ */
 function normalizeScope(scope: StoreScope): MemoryScope | "user" {
   return scope === "memory" ? "general" : scope;
 }
@@ -198,7 +214,14 @@ export class MemoryStore {
 
     topics.sort((a, b) => a.chatId - b.chatId || a.topicId - b.topicId);
     agents.sort((a, b) => a.name.localeCompare(b.name));
-    return { topics, agents };
+
+    // General scope is always included (not chat-scoped)
+    const generalParsed = this.read("general");
+    const general = generalParsed.description === undefined && generalParsed.body.length === 0
+      ? null
+      : { description: generalParsed.description };
+
+    return { general, topics, agents };
   }
 
   async archiveOrphan(chatId: number, topicId: number): Promise<boolean> {

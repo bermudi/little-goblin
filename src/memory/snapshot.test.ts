@@ -139,4 +139,21 @@ describe("formatSnapshot", () => {
     expect(snap!.display).toBe(false);
     expect(snap!.details).toBeUndefined();
   });
+
+  it("includes general with its description in other scopes when active scope is a topic", async () => {
+    await store.setDescription("general", "general notes");
+    await store.add("general", "general content");
+    await store.add({ topic: { chatId: -100123, topicId: 42 } }, "topic fact");
+
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
+      includeAgents: true,
+    });
+
+    expect(snap).not.toBeNull();
+    const text = snap!.content;
+    expect(text).toContain("## other scopes");
+    expect(text).toContain("- general — general notes");
+  });
 });

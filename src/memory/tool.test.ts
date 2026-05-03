@@ -278,4 +278,47 @@ describe("memory tool", () => {
     ).rejects.toThrow(/unique/);
     expect(store.read(active)).toEqual(before);
   });
+
+  it("rejects cross-chat memory_read scope access", async () => {
+    await store.add({ topic: { chatId: -999, topicId: 7 } }, "other chat fact");
+    await expect(
+      readTool.execute(
+        "call-cross-chat",
+        { target: "memory", scope: { topic: { chatId: -999, topicId: 7 } } },
+        undefined,
+        undefined,
+        NULL_CTX,
+      ),
+    ).rejects.toThrow(/active chat/);
+  });
+
+  it("remove action success path deletes entry from memory", async () => {
+    const active = { topic: { chatId: -100, topicId: 42 } };
+    await store.add(active, "keep this");
+    await store.add(active, "remove this");
+    const r = await writeTool.execute(
+      "call-remove",
+      { action: "remove", target: "memory", old_text: "remove this" },
+      undefined,
+      undefined,
+      NULL_CTX,
+    );
+    expect(textOf(r)).toContain("removed");
+    expect(store.readBody(active)).toBe("keep this");
+  });
+
+  it("rewrite action success path replaces entire body", async () => {
+    const active = { topic: { chatId: -100, topicId: 42 } };
+    await store.add(active, "old content alpha");
+    await store.add(active, "old content bravo");
+    const r = await writeTool.execute(
+      "call-rewrite",
+      { action: "rewrite", target: "memory", content: "brand new content" },
+      undefined,
+      undefined,
+      NULL_CTX,
+    );
+    expect(textOf(r)).toContain("rewrote");
+    expect(store.readBody(active)).toBe("brand new content");
+  });
 });

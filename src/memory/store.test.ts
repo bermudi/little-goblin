@@ -305,7 +305,7 @@ describe("MemoryStore", () => {
     it("moves a topic directory to archive and commits", async () => {
       const scope = { topic: { chatId: -100, topicId: 42 } };
       await store.add(scope, "alpha");
-      expect(store.archiveOrphan(-100, 42)).toBe(true);
+      expect(await store.archiveOrphan(-100, 42)).toBe(true);
       expect(existsSync(scopeMemoryPath(tmp, scope))).toBe(false);
       expect(existsSync(join(archiveTopicPath(tmp, -100, 42), "memory.md"))).toBe(true);
       expect(gitOut(memoryDir(tmp), ["log", "-1", "--format=%s"])).toBe(
@@ -317,8 +317,8 @@ describe("MemoryStore", () => {
       expect(gitOut(memoryDir(tmp), ["status", "--short"])).toBe("");
     });
 
-    it("returns false when the source is missing", () => {
-      expect(store.archiveOrphan(-100, 42)).toBe(false);
+    it("returns false when the source is missing", async () => {
+      expect(await store.archiveOrphan(-100, 42)).toBe(false);
     });
 
     it("returns false when a temp file exists in the source directory", async () => {
@@ -326,7 +326,7 @@ describe("MemoryStore", () => {
       await store.add(scope, "alpha");
       const sourceDir = dirname(scopeMemoryPath(tmp, scope));
       writeFileSync(join(sourceDir, ".memory.md.abcdef.tmp"), "in-flight");
-      expect(store.archiveOrphan(-100, 42)).toBe(false);
+      expect(await store.archiveOrphan(-100, 42)).toBe(false);
       expect(existsSync(scopeMemoryPath(tmp, scope))).toBe(true);
       expect(existsSync(archiveTopicPath(tmp, -100, 42))).toBe(false);
     });
@@ -334,14 +334,14 @@ describe("MemoryStore", () => {
     it("overwrites an existing archive destination", async () => {
       const scope = { topic: { chatId: -100, topicId: 42 } };
       await store.add(scope, "alpha");
-      expect(store.archiveOrphan(-100, 42)).toBe(true);
+      expect(await store.archiveOrphan(-100, 42)).toBe(true);
       // Move it back and change content
       const source = dirname(scopeMemoryPath(tmp, scope));
       const dest = archiveTopicPath(tmp, -100, 42);
       mkdirSync(source, { recursive: true });
       writeFileSync(join(source, "memory.md"), "beta");
       // Archive again — should overwrite the previous archive
-      expect(store.archiveOrphan(-100, 42)).toBe(true);
+      expect(await store.archiveOrphan(-100, 42)).toBe(true);
       expect(existsSync(source)).toBe(false);
       expect(readFileSync(join(dest, "memory.md"), "utf-8")).toBe("beta");
     });

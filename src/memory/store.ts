@@ -186,7 +186,17 @@ export class MemoryStore {
     return { topics, agents };
   }
 
-  archiveOrphan(chatId: number, topicId: number): boolean {
+  async archiveOrphan(chatId: number, topicId: number): Promise<boolean> {
+    const scopeKey = scopeTag({ topic: { chatId, topicId } });
+    const release = await GLOBAL_SCOPE_LOCK.acquire(scopeKey);
+    try {
+      return this.archiveOrphanLocked(chatId, topicId);
+    } finally {
+      release();
+    }
+  }
+
+  private archiveOrphanLocked(chatId: number, topicId: number): boolean {
     const source = dirname(scopeMemoryPath(this.home, { topic: { chatId, topicId } }));
     if (!existsSync(source)) return false;
 

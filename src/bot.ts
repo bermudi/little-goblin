@@ -300,8 +300,8 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       visibility: cfg.toolVisibility,
       onTopicNotFound:
         topicId !== undefined
-          ? () => {
-              memoryStore.archiveOrphan(locator.chatId, topicId);
+          ? async () => {
+              await memoryStore.archiveOrphan(locator.chatId, topicId);
             }
           : undefined,
     });

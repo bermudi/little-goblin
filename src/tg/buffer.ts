@@ -36,7 +36,7 @@ export interface MessageBufferOptions {
    * Called once when a "topic not found" error is detected from Telegram.
    * Used to archive orphaned topic memory scopes.
    */
-  onTopicNotFound?: () => void;
+  onTopicNotFound?: () => void | Promise<void>;
 }
 
 /** Coarse phase the status message reflects. */
@@ -164,7 +164,7 @@ export class MessageBuffer implements TurnCallbacks {
   private chatActionHandle: unknown = undefined;
 
   /** Called once when a "topic not found" error is detected. */
-  private onTopicNotFound: (() => void) | undefined;
+  private onTopicNotFound: (() => void | Promise<void>) | undefined;
   /** Ensures onTopicNotFound is only called once. */
   private topicNotFoundReported: boolean = false;
 
@@ -491,8 +491,8 @@ export class MessageBuffer implements TurnCallbacks {
     await inFlight;
   }
 
-  private handleStatusError(err: unknown): void {
-    this.handleApiError(err, "status", () => {
+  private async handleStatusError(err: unknown): Promise<void> {
+    await this.handleApiError(err, "status", () => {
       // Message gone — reset both id and lastRenderedStatusText so the
       // next flush re-sends a fresh placeholder.
       this.statusMessageId = undefined;
@@ -608,7 +608,7 @@ export class MessageBuffer implements TurnCallbacks {
               accLen: sentText.length,
             });
           } catch (err) {
-            this.handleResponseError(err);
+            await this.handleResponseError(err);
           }
         })();
         this.creatingResponse = inFlight;
@@ -635,7 +635,7 @@ export class MessageBuffer implements TurnCallbacks {
               accLen: text.length,
             });
           } catch (err) {
-            this.handleResponseError(err);
+            await this.handleResponseError(err);
           }
         })();
         this.editingResponse = inFlight;
@@ -648,18 +648,10 @@ export class MessageBuffer implements TurnCallbacks {
         }
       }
     } catch (err) {
-      this.handleResponseError(err);
+      await this.handleResponseError(err);
     }
   }
 
-  /**
-   * If `accumulatedText` exceeds `BIG_OUTPUT_THRESHOLD`, write it to a temp
-   * file, upload it as `reply.md`, and send a short summary text. Resets
-   * the response state in either success or failure so the buffer does not
-   * keep retrying with the same huge payload.
-   *
-   * Returns true if the escape was triggered (regardless of API success).
-   */
   private async maybeFileEscape(): Promise<boolean> {
     if (this.accumulatedText.length <= BIG_OUTPUT_THRESHOLD) return false;
 
@@ -681,7 +673,7 @@ export class MessageBuffer implements TurnCallbacks {
       );
       await this.bot.api.sendMessage(this.chatId, summary, this.withThread());
     } catch (err) {
-      this.handleResponseError(err);
+      await this.handleResponseError(err);
     } finally {
       if (wrote) await unlink(tmpPath).catch(() => {});
     }
@@ -725,15 +717,15 @@ export class MessageBuffer implements TurnCallbacks {
         this.accumulatedText = tail;
         rolled = true;
       } catch (err) {
-        this.handleResponseError(err);
+        await this.handleResponseError(err);
         return rolled;
       }
     }
     return rolled;
   }
 
-  private handleResponseError(err: unknown): void {
-    this.handleApiError(err, "response", () => {
+  private async handleResponseError(err: unknown): Promise<void> {
+    await this.handleApiError(err, "response", () => {
       this.responseMessageId = undefined;
       this.lastRenderedResponseText = "";
     });
@@ -744,11 +736,11 @@ export class MessageBuffer implements TurnCallbacks {
    * 400 message-gone → reset id via `onMessageGone`; otherwise log.
    * Also detects "topic not found" errors to trigger orphan archival.
    */
-  private handleApiError(
+  private async handleApiError(
     err: unknown,
     kind: "status" | "response",
     onMessageGone: () => void,
-  ): void {
+  ): Promise<void> {
     const e = err as { error_code?: number; description?: string };
     const code = e?.error_code;
     const description = e?.description ?? String(err);
@@ -765,7 +757,7 @@ export class MessageBuffer implements TurnCallbacks {
       if (!this.topicNotFoundReported && this.onTopicNotFound) {
         this.topicNotFoundReported = true;
         try {
-          this.onTopicNotFound();
+          await this.onTopicNotFound();
         } catch (cbErr) {
           log.error("onTopicNotFound callback failed", { error: String(cbErr) });
         }

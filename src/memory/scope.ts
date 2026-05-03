@@ -20,7 +20,9 @@ export function resolveActiveScope(locator: ChatLocator, namedAgent?: string): A
       locator.topicId === undefined
         ? "general"
         : { topicId: locator.topicId },
-    namedAgent: namedAgent ? { name: namedAgent } : null,
+    namedAgent: namedAgent !== undefined && namedAgent.length > 0
+      ? { name: namedAgent }
+      : null,
   };
 }
 

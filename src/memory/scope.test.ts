@@ -45,5 +45,26 @@ describe("memory scope", () => {
       );
       expect(scopeTag({ agent: { name: "researcher" } })).toBe("agents/researcher");
     });
+
+    it("handles malformed topic objects at runtime (type escape hatch)", () => {
+      // At runtime, an object with 'topic' key but wrong shape could be passed
+      // TypeScript prevents this, but we test the runtime behavior
+      const malformedTopic = { topic: { chatId: undefined, topicId: undefined } } as unknown as { topic: { chatId: number; topicId: number } };
+      expect(scopeTag(malformedTopic)).toBe("topics/undefined/undefined");
+    });
+
+    it("falls through to agent branch for objects without topic key (throws)", () => {
+      // Object with neither 'topic' nor valid 'agent' falls through to agent branch
+      // and throws when accessing scope.agent.name
+      // TypeScript prevents this, but we test runtime behavior
+      const emptyObj = {} as unknown as { agent: { name: string } };
+      expect(() => scopeTag(emptyObj)).toThrow();
+    });
+
+    it("formats malformed agent objects at runtime", () => {
+      // Object missing name field
+      const malformedAgent = { agent: {} } as unknown as { agent: { name: string } };
+      expect(scopeTag(malformedAgent)).toBe("agents/undefined");
+    });
   });
 });

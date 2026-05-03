@@ -305,6 +305,33 @@ describe("AgentRunner", () => {
       await runner.prompt("second", nopCallbacks());
       expect(capturedCreateArgs).toHaveLength(1);
     });
+
+    it("does not recreate session when memory content changes between turns", async () => {
+      // Seed initial memory
+      mkdirSync(join(tmpDir, "memory", "general"), { recursive: true });
+      writeFileSync(join(tmpDir, "memory", "general", "memory.md"), "initial", "utf-8");
+      writeFileSync(join(tmpDir, "memory", "user.md"), "user pref", "utf-8");
+
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("first", nopCallbacks());
+      expect(capturedCreateArgs).toHaveLength(1);
+
+      // Capture call count after first prompt
+      const callCountAfterFirst = capturedCreateArgs.length;
+
+      // Modify memory between turns
+      writeFileSync(join(tmpDir, "memory", "general", "memory.md"), "modified content", "utf-8");
+
+      // Second prompt should NOT recreate the session
+      await runner.prompt("second", nopCallbacks());
+      expect(capturedCreateArgs).toHaveLength(callCountAfterFirst);
+
+      // Verify second sendCustomMessage contains the new content
+      // sendCustomMessage was called twice, second call should have new content
+      expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(2);
+      const secondCall = sessionHolder.sendCustomMessage.mock.calls[1];
+      expect((secondCall![0] as { content: string }).content).toContain("modified content");
+    });
   });
 
   describe("cwd and piAgentDir paths passed to pi", () => {
@@ -449,6 +476,63 @@ describe("AgentRunner", () => {
       await runner.prompt("hi", nopCallbacks());
       await runner.abort();
       expect(sessionHolder.abort).toHaveBeenCalled();
+    });
+  });
+
+  describe("cachedTopicName", () => {
+    it("caches getTopicName results and reuses them across snapshot calls", async () => {
+      let callCount = 0;
+      const getTopicName = mock(async (_chatId: number, topicId: number) => {
+        callCount++;
+        return topicId === 7 ? "IT Topic" : null;
+      });
+
+      // Seed memory with topics so getTopicName gets invoked
+      mkdirSync(join(tmpDir, "memory", "topics", "-100"), { recursive: true });
+      mkdirSync(join(tmpDir, "memory", "topics", "-100", "42"), { recursive: true });
+      mkdirSync(join(tmpDir, "memory", "topics", "-100", "7"), { recursive: true });
+      writeFileSync(join(tmpDir, "memory", "topics", "-100", "42", "memory.md"), "fact-42", "utf-8");
+      writeFileSync(join(tmpDir, "memory", "topics", "-100", "7", "memory.md"), "fact-7", "utf-8");
+      writeFileSync(join(tmpDir, "memory", "user.md"), "user pref", "utf-8");
+
+      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 }, getTopicName);
+
+      // First prompt - should call getTopicName for peer topics
+      await runner.prompt("first", nopCallbacks());
+      expect(callCount).toBeGreaterThanOrEqual(1);
+      const callsAfterFirst = callCount;
+
+      // Second prompt - should use cached values, not increase call count
+      await runner.prompt("second", nopCallbacks());
+      expect(callCount).toBe(callsAfterFirst);
+
+      // Verify the topic name was actually used in the snapshot
+      const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
+      const text = (payload as { content: string }).content;
+      expect(text).toContain("IT Topic");
+    });
+
+    it("caches null results and does not call getTopicName again for same topic", async () => {
+      let callCount = 0;
+      const getTopicName = mock(async (_chatId: number, _topicId: number) => {
+        callCount++;
+        return null; // Always returns null
+      });
+
+      mkdirSync(join(tmpDir, "memory", "topics", "-100", "42"), { recursive: true });
+      mkdirSync(join(tmpDir, "memory", "topics", "-100", "7"), { recursive: true });
+      writeFileSync(join(tmpDir, "memory", "topics", "-100", "42", "memory.md"), "fact-42", "utf-8");
+      writeFileSync(join(tmpDir, "memory", "topics", "-100", "7", "memory.md"), "fact-7", "utf-8");
+      writeFileSync(join(tmpDir, "memory", "user.md"), "user pref", "utf-8");
+
+      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 }, getTopicName);
+
+      await runner.prompt("first", nopCallbacks());
+      const callsAfterFirst = callCount;
+
+      await runner.prompt("second", nopCallbacks());
+      // Should not have made additional calls since null is cached
+      expect(callCount).toBe(callsAfterFirst);
     });
   });
 

@@ -183,6 +183,39 @@ describe("SubagentRunner — scoped memory", () => {
     await handle.result;
   });
 
+  it("named subagents cannot discover peer persona scopes via memory_read_index", async () => {
+    // Set up: create another named agent's persona
+    mkdirSync(join(tmp, "memory", "agents", "writer"), { recursive: true });
+    writeFileSync(join(tmp, "memory", "agents", "writer", "memory.md"), "writer persona");
+    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
+    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
+
+    const handle = await runner.spawn({
+      prompt: "work",
+      name: "researcher",
+      activeScope: TOPIC_SCOPE,
+    });
+    await flush();
+
+    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
+    const tools = opts.customTools as Array<{
+      name: string;
+      execute: (toolCallId: string, params: unknown) => Promise<unknown>;
+    }>;
+    const readIndex = tools.find((tool) => tool.name === "memory_read_index");
+
+    expect(readIndex).toBeDefined();
+    const index = await readIndex!.execute("ri-named", {});
+
+    // Named subagent's index does NOT include other agents
+    // This is intentional isolation - subagents don't see peer personas
+    // When includeAgents is false, the agents field is omitted (undefined)
+    expect((index as { agents?: unknown[] }).agents).toBeUndefined();
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+  });
+
   it("sends named-subagent snapshots with the persona section only for named agents", async () => {
     mkdirSync(join(tmp, "memory", "topics", "-100123", "42"), { recursive: true });
     writeFileSync(join(tmp, "memory", "topics", "-100123", "42", "memory.md"), "topic memory");

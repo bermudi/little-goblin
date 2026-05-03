@@ -72,7 +72,7 @@ describe("formatSnapshot", () => {
 
     expect(snap).not.toBeNull();
     const text = snap!.content;
-    expect(text).toContain("## scope\nGeneral (DM/supergroup-no-topic)");
+    expect(text).toContain("## scope\nGeneral");
     expect(text).toContain("## memory.md\ngeneral fact");
     expect(text).toContain("- topics/123/7 — current chat topic");
     expect(text).not.toContain("topics/456/9");

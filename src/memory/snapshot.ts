@@ -87,7 +87,7 @@ function activeMemoryScopeFor(activeScope: ActiveScope): MemoryScope {
 function formatScope(activeScope: ActiveScope, includePersona: { name: string } | undefined): string {
   const scope =
     activeScope.topicScope === "general"
-      ? "General (DM/supergroup-no-topic)"
+      ? "General"
       : `Topic: ${activeScope.chatId}/${activeScope.topicScope.topicId}`;
   return includePersona === undefined ? scope : `${scope}\nAgent: ${includePersona.name}`;
 }

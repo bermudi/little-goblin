@@ -37,13 +37,13 @@ describe("MemoryStore", () => {
 
   describe("read", () => {
     it("returns empty parsed memory when file is absent", () => {
-      expect(store.read("memory")).toEqual({ body: "" });
+      expect(store.read("general")).toEqual({ body: "" });
       expect(store.read("user")).toEqual({ body: "" });
     });
 
     it("returns file contents when present", async () => {
-      expect((await store.add("memory", "hello")).ok).toBe(true);
-      expect(store.readBody("memory")).toBe("hello");
+      expect((await store.add("general", "hello")).ok).toBe(true);
+      expect(store.readBody("general")).toBe("hello");
     });
 
     it("parses one-line description frontmatter separately from body", () => {
@@ -60,15 +60,15 @@ describe("MemoryStore", () => {
 
   describe("add", () => {
     it("first add to empty file produces no delimiter", async () => {
-      expect((await store.add("memory", "hello world")).ok).toBe(true);
+      expect((await store.add("general", "hello world")).ok).toBe(true);
       const contents = readFileSync(scopeMemoryPath(tmp, "general"), "utf-8");
       expect(contents).toBe("hello world");
       expect(contents.includes(DELIMITER)).toBe(false);
     });
 
     it("second add produces exactly one delimiter", async () => {
-      expect((await store.add("memory", "first")).ok).toBe(true);
-      expect((await store.add("memory", "second")).ok).toBe(true);
+      expect((await store.add("general", "first")).ok).toBe(true);
+      expect((await store.add("general", "second")).ok).toBe(true);
       expect(readFileSync(scopeMemoryPath(tmp, "general"), "utf-8")).toBe(
         `first${DELIMITER}second`,
       );
@@ -111,51 +111,51 @@ describe("MemoryStore", () => {
 
   describe("replace", () => {
     beforeEach(async () => {
-      await store.add("memory", "alpha");
-      await store.add("memory", "bravo");
-      await store.add("memory", "charlie");
+      await store.add("general", "alpha");
+      await store.add("general", "bravo");
+      await store.add("general", "charlie");
     });
 
     it("replaces a unique substring", async () => {
-      expect((await store.replace("memory", "bravo", "BRAVO!")).ok).toBe(true);
-      expect(store.readBody("memory")).toBe(`alpha${DELIMITER}BRAVO!${DELIMITER}charlie`);
+      expect((await store.replace("general", "bravo", "BRAVO!")).ok).toBe(true);
+      expect(store.readBody("general")).toBe(`alpha${DELIMITER}BRAVO!${DELIMITER}charlie`);
     });
 
     it("rejects ambiguous match", async () => {
-      await store.add("memory", "alpha");
-      const r = await store.replace("memory", "alpha", "X");
+      await store.add("general", "alpha");
+      const r = await store.replace("general", "alpha", "X");
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error).toContain("2");
     });
 
     it("rejects not-found", async () => {
-      const before = store.readBody("memory");
-      const r = await store.replace("memory", "zzz", "X");
+      const before = store.readBody("general");
+      const r = await store.replace("general", "zzz", "X");
       expect(r.ok).toBe(false);
-      expect(store.readBody("memory")).toBe(before);
+      expect(store.readBody("general")).toBe(before);
     });
   });
 
   describe("remove", () => {
     beforeEach(async () => {
-      await store.add("memory", "alpha");
-      await store.add("memory", "bravo");
-      await store.add("memory", "charlie");
+      await store.add("general", "alpha");
+      await store.add("general", "bravo");
+      await store.add("general", "charlie");
     });
 
     it("removes a middle entry along with one delimiter", async () => {
-      expect((await store.remove("memory", "bravo")).ok).toBe(true);
-      expect(store.readBody("memory")).toBe(`alpha${DELIMITER}charlie`);
+      expect((await store.remove("general", "bravo")).ok).toBe(true);
+      expect(store.readBody("general")).toBe(`alpha${DELIMITER}charlie`);
     });
 
     it("removes the first entry cleanly", async () => {
-      expect((await store.remove("memory", "alpha")).ok).toBe(true);
-      expect(store.readBody("memory")).toBe(`bravo${DELIMITER}charlie`);
+      expect((await store.remove("general", "alpha")).ok).toBe(true);
+      expect(store.readBody("general")).toBe(`bravo${DELIMITER}charlie`);
     });
 
     it("removes the last entry cleanly", async () => {
-      expect((await store.remove("memory", "charlie")).ok).toBe(true);
-      expect(store.readBody("memory")).toBe(`alpha${DELIMITER}bravo`);
+      expect((await store.remove("general", "charlie")).ok).toBe(true);
+      expect(store.readBody("general")).toBe(`alpha${DELIMITER}bravo`);
     });
 
     it("removes the sole entry, leaving an empty file", async () => {
@@ -172,19 +172,19 @@ describe("MemoryStore", () => {
 
     it("handles entry containing the section delimiter character", async () => {
       // Regression test: entry content containing '§' should not confuse removal
-      await store.add("memory", `text with section ${DELIMITER.trim()} inside`);
-      expect((await store.remove("memory", "bravo")).ok).toBe(true);
+      await store.add("general", `text with section ${DELIMITER.trim()} inside`);
+      expect((await store.remove("general", "bravo")).ok).toBe(true);
       // The entry with the delimiter inside should remain intact
-      const body = store.readBody("memory");
+      const body = store.readBody("general");
       expect(body).toContain("text with section");
       expect(body).not.toContain("bravo");
     });
 
     it("handles entry containing partial delimiter", async () => {
       // Regression test: entry containing just '\n§' or '§\n' should not confuse removal
-      await store.add("memory", "line1\n§line2");
-      expect((await store.remove("memory", "bravo")).ok).toBe(true);
-      const body = store.readBody("memory");
+      await store.add("general", "line1\n§line2");
+      expect((await store.remove("general", "bravo")).ok).toBe(true);
+      const body = store.readBody("general");
       expect(body).toContain("line1\n§line2");
       expect(body).not.toContain("bravo");
     });
@@ -214,8 +214,8 @@ describe("MemoryStore", () => {
     });
 
     it("rejects multiline and overlong descriptions", async () => {
-      expect((await store.setDescription("memory", "bad\nwolf")).ok).toBe(false);
-      expect((await store.setDescription("memory", "x".repeat(201))).ok).toBe(false);
+      expect((await store.setDescription("general", "bad\nwolf")).ok).toBe(false);
+      expect((await store.setDescription("general", "x".repeat(201))).ok).toBe(false);
     });
 
     it("excludes frontmatter from body cap calculation", async () => {
@@ -246,20 +246,20 @@ describe("MemoryStore", () => {
     it("first successful write initializes .git", async () => {
       const dir = memoryDir(tmp);
       expect(existsSync(join(dir, ".git"))).toBe(false);
-      expect((await store.add("memory", "first")).ok).toBe(true);
+      expect((await store.add("general", "first")).ok).toBe(true);
       expect(existsSync(join(dir, ".git"))).toBe(true);
       expect(commitCount(dir)).toBe(1);
     });
 
     it("each successful write produces exactly one commit", async () => {
       const dir = memoryDir(tmp);
-      await store.add("memory", "alpha");
+      await store.add("general", "alpha");
       expect(commitCount(dir)).toBe(1);
       await store.add("user", "u-pref");
       expect(commitCount(dir)).toBe(2);
-      await store.replace("memory", "alpha", "ALPHA");
+      await store.replace("general", "alpha", "ALPHA");
       expect(commitCount(dir)).toBe(3);
-      await store.remove("memory", "ALPHA");
+      await store.remove("general", "ALPHA");
       expect(commitCount(dir)).toBe(4);
     });
 
@@ -271,7 +271,7 @@ describe("MemoryStore", () => {
       expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
         "memory: add in topics/-100/42",
       );
-      await store.setDescription("memory", "general notes");
+      await store.setDescription("general", "general notes");
       expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
         "memory: set_description in general",
       );
@@ -280,8 +280,8 @@ describe("MemoryStore", () => {
     it("swallows commit failures: file persists, no throw, no commit", async () => {
       const dir = memoryDir(tmp);
       writeFileSync(join(dir, ".git"), "not a real repo", "utf-8");
-      expect((await store.add("memory", "should-persist")).ok).toBe(true);
-      expect(store.readBody("memory")).toBe("should-persist");
+      expect((await store.add("general", "should-persist")).ok).toBe(true);
+      expect(store.readBody("general")).toBe("should-persist");
       const rev = spawnSync("git", ["rev-list", "--count", "HEAD"], {
         cwd: dir,
         encoding: "utf-8",
@@ -291,12 +291,12 @@ describe("MemoryStore", () => {
 
     it("failed writes do not produce commits", async () => {
       const dir = memoryDir(tmp);
-      await store.add("memory", "seed");
+      await store.add("general", "seed");
       const before = commitCount(dir);
       writeFileSync(userPath(tmp), "a".repeat(1999), "utf-8");
       expect((await store.add("user", "bb")).ok).toBe(false);
-      await store.add("memory", "seed");
-      expect((await store.replace("memory", "seed", "X")).ok).toBe(false);
+      await store.add("general", "seed");
+      expect((await store.replace("general", "seed", "X")).ok).toBe(false);
       expect(commitCount(dir)).toBe(before + 1);
     });
   });

@@ -115,6 +115,21 @@ describe("memory tool", () => {
     expect(store.readBody({ topic: { chatId: -100, topicId: 42 } })).toBe("");
   });
 
+  it("memory_read with target=agent honors scope discriminator to read other agent persona", async () => {
+    // Setup: create another agent's persona memory
+    await store.add({ agent: { name: "coder" } }, "coder persona content");
+
+    // Read via target=agent with scope specifying the other agent
+    const r = await readTool.execute(
+      "call-read-other-agent",
+      { target: "agent", scope: { agent: { name: "coder" } } },
+      undefined,
+      undefined,
+      NULL_CTX,
+    );
+    expect(jsonOf<{ body: string }>(r).body).toBe("coder persona content");
+  });
+
   it("memory_read can read another topic in the same chat without writing", async () => {
     await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer fact");
     const before = readFileSync(scopeMemoryPath(tmp, { topic: { chatId: -100, topicId: 7 } }), "utf-8");
@@ -129,24 +144,25 @@ describe("memory tool", () => {
     expect(readFileSync(scopeMemoryPath(tmp, { topic: { chatId: -100, topicId: 7 } }), "utf-8")).toBe(before);
   });
 
-  it("memory_read_index defaults to current-chat topics and all_chats returns all", async () => {
+  it("memory_read_index returns only active-chat topics (all_chats ignored to prevent leak)", async () => {
     await store.setDescription({ topic: { chatId: -100, topicId: 7 } }, "same chat");
     await store.setDescription({ topic: { chatId: -200, topicId: 9 } }, "other chat");
     await store.setDescription({ agent: { name: "researcher" } }, "research persona");
 
+    // Default call returns only active chat topics
     const current = jsonOf<{ topics: Array<{ chatId: number; topicId: number; description?: string }>; agents: unknown[] }>(
       await readIndexTool.execute("call-index", {}, undefined, undefined, NULL_CTX),
     );
     expect(current.topics).toEqual([{ chatId: -100, topicId: 7, description: "same chat" }]);
     expect(current.agents).toEqual([{ name: "researcher", description: "research persona" }]);
 
-    const all = jsonOf<{ topics: Array<{ chatId: number; topicId: number; description?: string }> }>(
+    // all_chats:true is ignored to prevent leaking unreadable topology.
+    // Cross-chat reads are gated in memory_read; listing all chats would
+    // reveal scopes that cannot be read.
+    const allChats = jsonOf<{ topics: Array<{ chatId: number; topicId: number; description?: string }> }>(
       await readIndexTool.execute("call-index-all", { all_chats: true }, undefined, undefined, NULL_CTX),
     );
-    expect(all.topics).toEqual([
-      { chatId: -200, topicId: 9, description: "other chat" },
-      { chatId: -100, topicId: 7, description: "same chat" },
-    ]);
+    expect(allChats.topics).toEqual([{ chatId: -100, topicId: 7, description: "same chat" }]);
   });
 
   it("memory_read_index omits agents when includeAgents=false", async () => {

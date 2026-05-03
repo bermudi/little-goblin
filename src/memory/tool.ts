@@ -134,10 +134,13 @@ export function createMemoryReadIndexTool(args: {
     promptSnippet: READ_INDEX_PROMPT_SNIPPET,
     promptGuidelines: [],
     parameters: memoryReadIndexSchema,
-    async execute(_toolCallId, params: MemoryReadIndexInput) {
+    async execute(_toolCallId, _params: MemoryReadIndexInput) {
+      // Note: all_chats is ignored to prevent leaking unreadable topology.
+      // Cross-chat reads are gated; listing all chats would reveal scopes
+      // that cannot be read via memory_read. Filter to active chat only.
       return jsonResult(
         args.store.listIndex({
-          chatId: params.all_chats === true ? undefined : args.activeChatId,
+          chatId: args.activeChatId,
           includeAgents: args.includeAgents,
         }),
       );
@@ -214,6 +217,14 @@ export function createMemoryWriteTool(args: {
 function resolveReadScope(activeScope: ActiveScope, input: MemoryReadInput): MemoryScope | "user" {
   if (input.target === "user") return "user";
   if (input.target === "agent") {
+    // Honor scope discriminator: if input.scope specifies an agent, use that.
+    // Otherwise fall back to the active subagent's own persona.
+    if (input.scope !== undefined && typeof input.scope === "object" && "agent" in input.scope) {
+      if (!VALID_NAME_RE.test(input.scope.agent.name)) {
+        throw new Error(`Invalid agent name: must match ${VALID_NAME_RE.source}`);
+      }
+      return { agent: { name: input.scope.agent.name } };
+    }
     if (activeScope.namedAgent === null) {
       throw new Error('target = "agent" is only valid for named subagents');
     }

@@ -66,6 +66,9 @@ class ScopeLock {
       const existing = this.locks.get(scope);
       if (!existing) break;
       await existing;
+      // Defensive: yield to prevent tight-loop starvation under worker-thread
+      // concurrency. On single-threaded Node.js this is effectively a no-op.
+      await new Promise((res) => setImmediate(res));
       // loop and recheck — another waiter may have grabbed it
     }
 

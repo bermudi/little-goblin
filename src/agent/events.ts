@@ -43,6 +43,30 @@ export function dispatchAgentEvent(event: AgentSessionEvent, callbacks: TurnCall
       callbacks.onAgentEnd();
       break;
 
+    case "message_end": {
+      // Surface assistant-side errors (bad API key, rate limit, aborted, etc.)
+      // as visible text. Without this the user is stuck on "🤔 thinking…"
+      // forever because no text_delta ever arrives and no tools observed
+      // means buildStatusLine returns "" on the done transition.
+      const msg = (event as { message?: unknown }).message;
+      if (
+        typeof msg === "object" &&
+        msg !== null &&
+        (msg as { role?: unknown }).role === "assistant"
+      ) {
+        const am = msg as { stopReason?: unknown; errorMessage?: unknown };
+        if (
+          (am.stopReason === "error" || am.stopReason === "aborted") &&
+          typeof am.errorMessage === "string" &&
+          am.errorMessage.length > 0
+        ) {
+          const label = am.stopReason === "aborted" ? "aborted" : "error";
+          callbacks.onTextDelta(`\n\n❌ ${label}: ${am.errorMessage}`);
+        }
+      }
+      break;
+    }
+
     // Ignore all other event types
   }
 }

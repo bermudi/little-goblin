@@ -4,6 +4,14 @@ import type { Context } from "grammy";
 import type { Config } from "./config.ts";
 import { log } from "./log.ts";
 import { buildAllowlistMiddleware, locatorFromCtx, MessageBuffer } from "./tg/mod.ts";
+import {
+  createSendVoiceTool,
+  createSendPhotoTool,
+  createSendDocumentTool,
+  createReactTool,
+  createRenameTopicTool,
+  createChatActionTool,
+} from "./tg/tools.ts";
 import { MemoryStore } from "./memory/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
 import { SessionManager } from "./sessions/mod.ts";
@@ -168,15 +176,26 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
               runners.delete(priorSession.id);
             }
           }
+          const chatId = locator.chatId;
+          const topicId = ctx.message?.message_thread_id;
+          const messageId = ctx.message?.message_id;
+          const betaTools = [
+            createSendVoiceTool(bot, chatId),
+            createSendPhotoTool(bot, chatId),
+            createSendDocumentTool(bot, chatId),
+            createReactTool(bot, chatId, messageId),
+            createRenameTopicTool(bot, chatId, topicId),
+            createChatActionTool(bot, chatId),
+          ].filter((t): t is NonNullable<typeof t> => t !== null);
           runners.set(
             result.session.id,
             new AgentRunner({
               cfg,
               sessionId: result.session.id,
               locator,
-              customTools: [],
+              customTools: betaTools,
               subagentRunner,
-              getTopicName: (chatId, topicId) => getTopicName(bot, chatId, topicId),
+              getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
             }),
           );
           log.debug("created runner for /new session", {
@@ -275,13 +294,24 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     // Look up or lazily construct the runner for this session
     let runner = runners.get(session.id);
     if (!runner) {
+      const chatId = locator.chatId;
+      const topicId = ctx.message?.message_thread_id;
+      const messageId = ctx.message?.message_id;
+      const betaTools = [
+        createSendVoiceTool(bot, chatId),
+        createSendPhotoTool(bot, chatId),
+        createSendDocumentTool(bot, chatId),
+        createReactTool(bot, chatId, messageId),
+        createRenameTopicTool(bot, chatId, topicId),
+        createChatActionTool(bot, chatId),
+      ].filter((t): t is NonNullable<typeof t> => t !== null);
       runner = new AgentRunner({
         cfg,
         sessionId: session.id,
         locator,
-        customTools: [],
+        customTools: betaTools,
         subagentRunner,
-        getTopicName: (chatId, topicId) => getTopicName(bot, chatId, topicId),
+        getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
       });
       runners.set(session.id, runner);
       log.debug("created runner for session", { sessionId: session.id });

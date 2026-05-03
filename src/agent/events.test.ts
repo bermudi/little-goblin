@@ -167,6 +167,82 @@ describe("dispatchAgentEvent", () => {
     expect(cb.calls).toEqual(["onAgentEnd"]);
   });
 
+  it("surfaces assistant message_end error as visible text", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent(
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: "401 Incorrect API key provided.",
+        },
+      } as any,
+      cb,
+    );
+    expect(cb.calls).toEqual([
+      "onTextDelta:\n\n❌ error: 401 Incorrect API key provided.",
+    ]);
+  });
+
+  it("surfaces assistant message_end aborted as visible text", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent(
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [],
+          stopReason: "aborted",
+          errorMessage: "user aborted",
+        },
+      } as any,
+      cb,
+    );
+    expect(cb.calls).toEqual(["onTextDelta:\n\n❌ aborted: user aborted"]);
+  });
+
+  it("ignores message_end on successful assistant message", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent(
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "hi" }],
+          stopReason: "stop",
+        },
+      } as any,
+      cb,
+    );
+    expect(cb.calls).toEqual([]);
+  });
+
+  it("ignores message_end with error stopReason but no errorMessage", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent(
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [], stopReason: "error" },
+      } as any,
+      cb,
+    );
+    expect(cb.calls).toEqual([]);
+  });
+
+  it("ignores message_end on user/tool-result messages", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent(
+      {
+        type: "message_end",
+        message: { role: "user", content: "hello" },
+      } as any,
+      cb,
+    );
+    expect(cb.calls).toEqual([]);
+  });
+
   it("ignores unknown event types without throwing", () => {
     const cb = mockCallbacks();
     expect(() => {

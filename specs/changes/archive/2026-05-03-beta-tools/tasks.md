@@ -91,3 +91,9 @@ Commit: `phase 5: implement rename_topic beta tool with DM null handling`
 
 Commit: `phase 6: wire beta tools into bot.ts per-session instantiation`
 
+## Phase 7: Validate and archive
+
+- [x] `litespec validate beta-tools` (strict).
+- [x] Review spec deltas vs implementation — ensure all 13 requirements are covered.
+- [x] `litespec preview beta-tools` to see canonical spec diff.
+- [x] `litespec archive beta-tools` when satisfied.

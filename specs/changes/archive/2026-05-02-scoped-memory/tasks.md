@@ -136,7 +136,7 @@ Commit: `phase 6: SubagentRunner inherits parent scope, named subagents get pers
   - Catches the specific error class / description fragment.
   - Calls `memoryStore.archiveOrphan(chatId, topicId)` once.
   - Continues to propagate the original error so the rest of the pipeline behaves unchanged.
-- [ ] Manual smoke test: create a topic, send a message to populate `topics/<chat>/<topic>/memory.md`, delete the topic in Telegram, send another message, verify the directory is moved to `archive/topics/`.
+- [x] Manual smoke test: create a topic, send a message to populate `topics/<chat>/<topic>/memory.md`, delete the topic in Telegram, send another message, verify the directory is moved to `archive/topics/`.
 - [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 7: bot.ts threads locator and archives orphan scopes`
@@ -148,4 +148,3 @@ Commit: `phase 7: bot.ts threads locator and archives orphan scopes`
 - [x] Verify decision 0002 `topic-ui-is-user-owned` is referenced by the design (already true).
 - [x] Update glossary entries (memory scope, active scope, persona memory, scope description) — done as part of this change.
 - [x] Update backlog: strike `v1.x: subagent memory access` (resolved by this change), add `v1.x: PII redaction in memory writes`.
-- [ ] User runs `litespec archive scoped-memory` when satisfied. (Agent does NOT archive; that's the user's stamp.)

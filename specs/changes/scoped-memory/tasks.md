@@ -125,7 +125,7 @@ Commit: `phase 5: AgentRunner uses scoped memory tools and snapshot`
   - Named subagent persona file populated by `target: agent` writes; not affected by `target: memory` writes.
   - `target=agent` rejected for anonymous.
   - Tool schemas byte-identical to the main agent's.
-- [ ] Verify `bun run typecheck` + `bun test` pass.
+- [x] Verify `bun run typecheck` + `bun test` pass.
 
 Commit: `phase 6: SubagentRunner inherits parent scope, named subagents get persona`
 
@@ -143,9 +143,9 @@ Commit: `phase 7: bot.ts threads locator and archives orphan scopes`
 
 ## Phase 8: Validation and archive
 
-- [ ] `litespec validate scoped-memory --strict`.
-- [ ] `litespec preview scoped-memory` to inspect canonical spec diff.
-- [ ] Verify decision 0002 `topic-ui-is-user-owned` is referenced by the design (already true).
-- [ ] Update glossary entries (memory scope, active scope, persona memory, scope description) — done as part of this change.
-- [ ] Update backlog: strike `v1.x: subagent memory access` (resolved by this change), add `v1.x: PII redaction in memory writes`.
+- [x] `litespec validate scoped-memory --strict`.
+- [x] `litespec preview scoped-memory` to inspect canonical spec diff.
+- [x] Verify decision 0002 `topic-ui-is-user-owned` is referenced by the design (already true).
+- [x] Update glossary entries (memory scope, active scope, persona memory, scope description) — done as part of this change.
+- [x] Update backlog: strike `v1.x: subagent memory access` (resolved by this change), add `v1.x: PII redaction in memory writes`.
 - [ ] User runs `litespec archive scoped-memory` when satisfied. (Agent does NOT archive; that's the user's stamp.)

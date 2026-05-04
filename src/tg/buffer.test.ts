@@ -556,7 +556,7 @@ describe("MessageBuffer", () => {
       expect(statusSends + statusEdits).toBeGreaterThan(0);
     });
 
-    it("many tools collapse to ONE Working edit (no per-tool churn)", async () => {
+    it("many sequential tools coalesce via throttle and in-flight dedupe", async () => {
       const m = makeBot();
       const buffer = new MessageBuffer(m.bot, 1, undefined);
 
@@ -1710,7 +1710,7 @@ describe("MessageBuffer", () => {
       expect(status).toContain("… +1 earlier");
     });
 
-    it("multi-running scenario: 8 running + 8 completed at cap 12", () => {
+    it("multi-running scenario: 16 running + 16 completed at debug cap 25", () => {
       // We need a visibility where cap=12 AND arbitrary tool names are accepted.
       // Standard has cap=12 but only accepts 6 specific tool names.
       // Debug has cap=25 and accepts all names. Use standard tool names repeated

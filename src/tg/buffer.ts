@@ -96,6 +96,24 @@ export const VISIBILITY_TOOLS: Record<string, readonly string[] | "*"> = {
 export const DEFAULT_VISIBILITY = "standard";
 
 /**
+ * Per-visibility slot cap and timing flags. Every level present in
+ * `VISIBILITY_TOOLS` must have a matching entry here; a parity test
+ * enforces this.
+ */
+export const VISIBILITY_LIMITS: Record<string, { cap: number; timing: boolean }> = {
+  none:     { cap: 0,  timing: false },
+  minimal:  { cap: 8,  timing: false },
+  standard: { cap: 12, timing: false },
+  verbose:  { cap: 20, timing: true },
+  debug:    { cap: 25, timing: true },
+};
+
+/** Resolve the active level's limits, falling back to `DEFAULT_VISIBILITY`. */
+export function getVisibilityLimits(visibility: string): { cap: number; timing: boolean } {
+  return VISIBILITY_LIMITS[visibility] ?? VISIBILITY_LIMITS[DEFAULT_VISIBILITY]!;
+}
+
+/**
  * Returns true if the given tool should appear in the status line for the
  * given visibility level. Unknown levels fall back to `DEFAULT_VISIBILITY`.
  */
@@ -403,8 +421,25 @@ export class MessageBuffer implements TurnCallbacks {
     if (!this.placeholderSent && this.slots.size === 0) return "";
 
     const lines: string[] = ["🤔 thinking…"];
+    const { cap } = getVisibilityLimits(this.visibility);
+
+    // Determine which slots to elide. Running slots are never elided.
+    const elided = new Set<string>();
+    if (cap > 0 && this.slots.size > cap) {
+      let kept = this.slots.size;
+      for (const [name, slot] of this.slots) {
+        if (kept <= cap) break;
+        const effectiveState =
+          slot.runningCount > 0 ? "running" : slot.everErrored ? "err" : "ok";
+        if (effectiveState !== "running") {
+          elided.add(name);
+          kept--;
+        }
+      }
+    }
 
     for (const [name, slot] of this.slots) {
+      if (elided.has(name)) continue;
       const effectiveState =
         slot.runningCount > 0 ? "running" : slot.everErrored ? "err" : "ok";
       const icon =
@@ -412,6 +447,10 @@ export class MessageBuffer implements TurnCallbacks {
       const count = slot.runningCount + slot.completedCount;
       const countSuffix = count > 1 ? ` ×${count}` : "";
       lines.push(`${icon} ${name}${countSuffix}`);
+    }
+
+    if (elided.size > 0) {
+      lines.push(`… +${elided.size} earlier`);
     }
 
     return lines.join("\n");

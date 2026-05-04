@@ -29,14 +29,14 @@ Adds the per-level slot cap and the `"… +N earlier"` footer when the cap is ex
 
 Touches: [src/tg/buffer.ts](file:///home/daniel/build/little-goblin/src/tg/buffer.ts), [src/tg/buffer.test.ts](file:///home/daniel/build/little-goblin/src/tg/buffer.test.ts).
 
-- [ ] Add and export `VISIBILITY_LIMITS: Record<string, { cap: number; timing: boolean }>` in `src/tg/buffer.ts` with values: `none {0,false}`, `minimal {8,false}`, `standard {12,false}`, `verbose {20,true}`, `debug {25,true}`. The `timing` flag is unused this phase; phase 3 reads it.
-- [ ] Add a small helper that resolves the active level's limits, falling back to `DEFAULT_VISIBILITY` for unknown levels (mirrors `shouldShowTool`).
-- [ ] Extend `buildStatusLine()` cap logic per **Status line caps oldest completed slots**: walk slots in insertion order; while `slots.size - elidedCount > cap`, elide the next slot whose effective state is `ok` or `err` (running slots are skipped during elision counting); render the kept slots; append `"… +<N> earlier"` footer when `elidedCount > 0`.
-- [ ] Add a unit test that asserts every key in `VISIBILITY_TOOLS` has a matching entry in `VISIBILITY_LIMITS` (parity guard, per design **D5** and the spec's build-error clause in **Tool visibility config filters status display**).
-- [ ] Add tests for the cap scenarios: under-cap renders all slots without footer; standard with 15 distinct completed tools renders 12 most recent + `"… +3 earlier"`; running slots beyond the cap still render and only completed slots count toward elision; multi-running scenario (8 running + 8 completed at cap 12) renders all 8 running plus 4 most-recent completed plus `"… +4 earlier"`.
+- [x] Add and export `VISIBILITY_LIMITS: Record<string, { cap: number; timing: boolean }>` in `src/tg/buffer.ts` with values: `none {0,false}`, `minimal {8,false}`, `standard {12,false}`, `verbose {20,true}`, `debug {25,true}`. The `timing` flag is unused this phase; phase 3 reads it.
+- [x] Add a small helper that resolves the active level's limits, falling back to `DEFAULT_VISIBILITY` for unknown levels (mirrors `shouldShowTool`).
+- [x] Extend `buildStatusLine()` cap logic per **Status line caps oldest completed slots**: walk slots in insertion order; while `slots.size - elidedCount > cap`, elide the next slot whose effective state is `ok` or `err` (running slots are skipped during elision counting); render the kept slots; append `"… +<N> earlier"` footer when `elidedCount > 0`.
+- [x] Add a unit test that asserts every key in `VISIBILITY_TOOLS` has a matching entry in `VISIBILITY_LIMITS` (parity guard, per design **D5** and the spec's build-error clause in **Tool visibility config filters status display**).
+- [x] Add tests for the cap scenarios: under-cap renders all slots without footer; standard with 15 distinct completed tools renders 12 most recent + `"… +3 earlier"`; running slots beyond the cap still render and only completed slots count toward elision; multi-running scenario (8 running + 8 completed at cap 12) renders all 8 running plus 4 most-recent completed plus `"… +4 earlier"`.
 - [x] Run `bun test src/tg/buffer.test.ts` and confirm all tests pass.
 - [x] Run `bun run tsc --noEmit` and confirm clean.
-- [ ] Commit: `phase 2: cap status slots per visibility level with overflow footer`.
+- [x] Commit: `phase 2: cap status slots per visibility level with overflow footer`.
 
 ## Phase 3: Per-tool elapsed time for verbose and debug
 

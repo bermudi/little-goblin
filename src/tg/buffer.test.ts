@@ -9,6 +9,7 @@ import {
   findSafeSplit,
   shouldShowTool,
   VISIBILITY_TOOLS,
+  VISIBILITY_LIMITS,
 } from "./buffer.ts";
 
 interface SendCall {
@@ -1629,6 +1630,102 @@ describe("MessageBuffer", () => {
         expect(slotNames).toEqual([]);
         // read slot was never created, so ending it is a no-op.
       });
+    });
+  });
+
+  describe("status slot cap per visibility level", () => {
+    const NO_AUTO = {
+      statusThrottleMs: Number.MAX_SAFE_INTEGER,
+      responseThrottleMs: Number.MAX_SAFE_INTEGER,
+    };
+
+    it("VISIBILITY_TOOLS and VISIBILITY_LIMITS have parity on all keys", () => {
+      const toolsKeys = Object.keys(VISIBILITY_TOOLS).sort();
+      const limitsKeys = Object.keys(VISIBILITY_LIMITS).sort();
+      expect(limitsKeys).toEqual(toolsKeys);
+      for (const key of toolsKeys) {
+        expect(VISIBILITY_LIMITS[key]).toBeDefined();
+        expect(typeof VISIBILITY_LIMITS[key]!.cap).toBe("number");
+        expect(typeof VISIBILITY_LIMITS[key]!.timing).toBe("boolean");
+      }
+    });
+
+    it("under-cap renders all slots without footer", () => {
+      const { bot } = makeBot();
+      const buffer = new MessageBuffer(bot, 1, undefined, { ...NO_AUTO, visibility: "debug" });
+      // debug cap is 25; create 5 completed tools.
+      for (let i = 0; i < 5; i++) {
+        buffer.onToolStart(`tool_${i}`, {});
+        buffer.onToolEnd(`tool_${i}`, false);
+      }
+      const status = buffer.buildStatusLine();
+      expect(status).not.toContain("earlier");
+      // Header + 5 slots
+      const lines = status.split("\n");
+      expect(lines.length).toBe(6);
+    });
+
+    it("over cap elides oldest completed slots", () => {
+      const { bot } = makeBot();
+      const buffer = new MessageBuffer(bot, 1, undefined, { ...NO_AUTO, visibility: "debug" });
+      // debug cap is 25; create 30 completed tools.
+      for (let i = 0; i < 30; i++) {
+        buffer.onToolStart(`tool_${i}`, {});
+        buffer.onToolEnd(`tool_${i}`, false);
+      }
+      const status = buffer.buildStatusLine();
+      const lines = status.split("\n");
+      // Header + 25 kept slots + footer
+      expect(lines.length).toBe(27);
+      expect(lines[lines.length - 1]).toBe("… +5 earlier");
+      // First kept slot should be tool_5 (tools 0-4 elided)
+      expect(lines[1]).toBe("✅ tool_5");
+    });
+
+    it("running slots are exempt from elision", () => {
+      const { bot } = makeBot();
+      const buffer = new MessageBuffer(bot, 1, undefined, { ...NO_AUTO, visibility: "debug" });
+      // debug cap is 25. Create 26 tools, with the very oldest still running.
+      buffer.onToolStart("oldest", {}); // still running — never ends
+      for (let i = 1; i < 26; i++) {
+        buffer.onToolStart(`tool_${i}`, {});
+        buffer.onToolEnd(`tool_${i}`, false);
+      }
+      const status = buffer.buildStatusLine();
+      const lines = status.split("\n");
+      // "oldest" is running and must be present.
+      expect(lines.some((l) => l.includes("oldest"))).toBe(true);
+      expect(status).toContain("… +1 earlier");
+    });
+
+    it("multi-running scenario: 8 running + 8 completed at cap 12", () => {
+      // We need a visibility where cap=12 AND arbitrary tool names are accepted.
+      // Standard has cap=12 but only accepts 6 specific tool names.
+      // Debug has cap=25 and accepts all names. Use standard tool names repeated
+      // won't work (they fold). So use a test that works with debug cap=25.
+      // 16 running + 16 completed = 32 total, cap 25.
+      // 16 running exempt. 16 completed, cap allows 25 - 16 = 9 completed kept.
+      // 7 completed elided.
+      const { bot } = makeBot();
+      const buffer = new MessageBuffer(bot, 1, undefined, { ...NO_AUTO, visibility: "debug" });
+      for (let i = 0; i < 16; i++) {
+        buffer.onToolStart(`run_${i}`, {}); // stay running
+      }
+      for (let i = 0; i < 16; i++) {
+        buffer.onToolStart(`done_${i}`, {});
+        buffer.onToolEnd(`done_${i}`, false);
+      }
+      const status = buffer.buildStatusLine();
+      const lines = status.split("\n");
+      // Header + 16 running + 9 kept completed + footer
+      expect(lines.length).toBe(27); // 1 + 16 + 9 + 1
+      expect(lines[lines.length - 1]).toBe("… +7 earlier");
+      // All 16 running slots should be present
+      const runningLines = lines.filter((l) => l.startsWith("🔧"));
+      expect(runningLines.length).toBe(16);
+      // 9 completed kept
+      const completedLines = lines.filter((l) => l.startsWith("✅"));
+      expect(completedLines.length).toBe(9);
     });
   });
 

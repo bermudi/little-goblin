@@ -10,12 +10,10 @@ import { log } from "../log.ts";
  * MessageBuffer turns AgentSession events (via TurnCallbacks) into Telegram
  * UI: a coalesced status line message and a streamed response message.
  *
- * Status line uses a three-phase state machine:
- *   thinking → working → done
- *
- * Each phase transition triggers at most one Telegram edit, regardless of
- * how many tools fired. The `✅` / `❌` decision in the Done phase is
- * driven by the cumulative `hadError` flag.
+ * Status line uses an ordered per-tool slot model:
+ *   Line 1: "🤔 thinking…" (header, persists for the whole turn)
+ *   Lines 2+: one slot per visible tool, in observation order
+ * Each slot transitions independently: 🔧 → ✅ / ❌.
  */
 
 export interface MessageBufferOptions {
@@ -39,8 +37,19 @@ export interface MessageBufferOptions {
   onTopicNotFound?: () => void | Promise<void>;
 }
 
-/** Coarse phase the status message reflects. */
-export type StatusPhase = "thinking" | "working" | "done";
+/** Per-tool slot tracking running/completed invocations and error state. */
+export interface ToolSlot {
+  /** Active concurrent invocations. Effective state is `running` while > 0. */
+  runningCount: number;
+  /** Total finished invocations (ok or err). */
+  completedCount: number;
+  /** Start time of the most recent `onToolStart` for this slot. */
+  startedAt: number;
+  /** End time of the most recent `onToolEnd` for this slot. */
+  endedAt?: number;
+  /** Sticky: set true on any error end, never cleared. */
+  everErrored: boolean;
+}
 
 /** Telegram's hard message length limit. */
 export const MAX_MESSAGE_LEN = 4096;
@@ -124,14 +133,8 @@ export class MessageBuffer implements TurnCallbacks {
   private lastEditTime: number = 0;
   private isStreaming: boolean = false;
 
-  // Status phase state machine.
-  private phase: StatusPhase = "thinking";
-  /** Visible tool names in the order they were first observed this turn. */
-  private toolsObserved: string[] = [];
-  /** Visible tools currently running (not yet ended). */
-  private toolsRunning: Set<string> = new Set();
-  /** Set true if any tool ended with `isError === true`. */
-  private hadError: boolean = false;
+  // Per-tool slot state. Ordered by first observation (Map insertion order).
+  private slots: Map<string, ToolSlot> = new Map();
   /** Once true, `flushStatus` becomes a no-op (set on `onAgentEnd`). */
   private statusFrozen: boolean = false;
   /** Tracks whether the eager placeholder has been emitted. */
@@ -226,14 +229,6 @@ export class MessageBuffer implements TurnCallbacks {
     // on phase transitions. Liveness is conveyed by the chat-action above.
     // Lazy-send the placeholder if no agent_start arrived first (defensive).
     if (!this.placeholderSent) this.commitStatus();
-    // First text delta after all tools finished is the unambiguous signal
-    // that the agent has moved on from tool execution to its final answer.
-    // Promote Working→Done here. (If a sequential tool fires later,
-    // onToolStart will pull us back to Working.)
-    if (this.phase === "working" && this.toolsRunning.size === 0) {
-      this.phase = "done";
-      this.commitStatus();
-    }
     log.debug("response: delta", {
       deltaLen: delta.length,
       accLen: this.accumulatedText.length,
@@ -283,29 +278,33 @@ export class MessageBuffer implements TurnCallbacks {
     }
 
     if (!shouldShowTool(name, this.visibility)) return;
-    const isNewName = !this.toolsObserved.includes(name);
-    if (isNewName) this.toolsObserved.push(name);
-    this.toolsRunning.add(name);
-    // Enter (or re-enter) Working whenever a tool starts. Sequential
-    // tools that fire after a brief Done state pull us back to Working
-    // so the resting state never misleads the user. The phase stays in
-    // Working until either (a) the agent emits text after all tools
-    // are done, or (b) onAgentEnd fires — see onTextDelta / onAgentEnd.
-    const phaseChanged = this.phase !== "working";
-    if (phaseChanged) this.phase = "working";
-    // commitStatus is idempotent via lastRenderedStatusText, so it only
-    // fires when the rendered text actually changed (new tool joined).
-    if (phaseChanged || isNewName) this.commitStatus();
+    const existing = this.slots.get(name);
+    if (existing) {
+      existing.runningCount++;
+      existing.startedAt = this.now();
+      existing.endedAt = undefined;
+      // everErrored is preserved across re-entry — only ever set, never cleared.
+    } else {
+      this.slots.set(name, {
+        runningCount: 1,
+        completedCount: 0,
+        startedAt: this.now(),
+        endedAt: undefined,
+        everErrored: false,
+      });
+    }
+    this.commitStatus();
   }
 
   onToolEnd(name: string, isError: boolean): void {
     if (!shouldShowTool(name, this.visibility)) return;
-    this.toolsRunning.delete(name);
-    if (isError) this.hadError = true;
-    // No phase transition here. "All tools currently done" does NOT mean
-    // the agent is finished with tools — a sequential agent might fire
-    // another tool a moment later. We let onTextDelta / onAgentEnd drive
-    // the Working→Done transition; that signal is unambiguous.
+    const slot = this.slots.get(name);
+    if (!slot) return;
+    slot.runningCount--;
+    slot.completedCount++;
+    slot.endedAt = this.now();
+    if (isError) slot.everErrored = true;
+    this.commitStatus();
   }
 
   onStatusUpdate(_message: string): void {
@@ -322,10 +321,7 @@ export class MessageBuffer implements TurnCallbacks {
       accLen: this.accumulatedText.length,
       msgId: this.responseMessageId,
     });
-    // The turn is over; the resting state is always Done. (Zero-tool
-    // turns transition thinking→done; typical turns are already there
-    // courtesy of the last onToolEnd.)
-    this.phase = "done";
+
     // Flush BEFORE freezing so this final write is the one that survives.
     // The `lastRenderedStatusText` guard inside flushStatus skips the
     // edit if Done was already committed by the last onToolEnd — keeping
@@ -391,26 +387,34 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   /**
-   * Build the rendered status line based on the current phase.
+   * Build the rendered status line based on the per-tool slot model.
    *
-   *   thinking  → "🤔 thinking…"
-   *   working   → "🔧 working: <comma-joined visible tools>"
-   *   done      → "✅ <names>"  or  "❌ <names>"  (per `hadError`)
+   *   Line 1 (header): "🤔 thinking…" — persists for the whole turn.
+   *   Lines 2+: one line per slot, in observation order.
+   *     running → "🔧 <name>"
+   *     ok      → "✅ <name>"
+   *     err     → "❌ <name>"
+   *   Repeat invocations fold: "✅ read ×3"
    *
-   * Visibility "none" suppresses the line entirely. The `✍️ composing`
-   * indicator was removed: liveness is conveyed by `chat_action("typing")`.
+   * Visibility "none" suppresses the line entirely.
    */
   buildStatusLine(): string {
     if (this.visibility === "none") return "";
-    if (this.phase === "thinking") return "🤔 thinking…";
-    if (this.phase === "working") {
-      const names = this.toolsObserved.join(", ");
-      return names.length > 0 ? `🔧 working: ${names}` : "🔧 working…";
+    if (!this.placeholderSent && this.slots.size === 0) return "";
+
+    const lines: string[] = ["🤔 thinking…"];
+
+    for (const [name, slot] of this.slots) {
+      const effectiveState =
+        slot.runningCount > 0 ? "running" : slot.everErrored ? "err" : "ok";
+      const icon =
+        effectiveState === "running" ? "🔧" : effectiveState === "err" ? "❌" : "✅";
+      const count = slot.runningCount + slot.completedCount;
+      const countSuffix = count > 1 ? ` ×${count}` : "";
+      lines.push(`${icon} ${name}${countSuffix}`);
     }
-    // done
-    const names = this.toolsObserved.join(", ");
-    if (names.length === 0) return "";
-    return `${this.hadError ? "❌" : "✅"} ${names}`;
+
+    return lines.join("\n");
   }
 
   /**
@@ -792,10 +796,7 @@ export class MessageBuffer implements TurnCallbacks {
       statusMessageId: this.statusMessageId,
       responseMessageId: this.responseMessageId,
       accumulatedText: this.accumulatedText,
-      phase: this.phase,
-      toolsObserved: this.toolsObserved,
-      toolsRunning: this.toolsRunning,
-      hadError: this.hadError,
+      slots: Array.from(this.slots.entries()),
       statusFrozen: this.statusFrozen,
       placeholderSent: this.placeholderSent,
       lastEditTime: this.lastEditTime,

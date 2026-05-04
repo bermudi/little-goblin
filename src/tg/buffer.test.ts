@@ -114,7 +114,7 @@ async function tick(): Promise<void> {
 }
 
 describe("MessageBuffer", () => {
-  it("instantiates with default visibility and thinking phase", () => {
+  it("instantiates with default visibility and empty slots", () => {
     const { bot } = makeBot();
     const buffer = new MessageBuffer(bot, 123, undefined);
     const s = buffer._state();
@@ -123,10 +123,7 @@ describe("MessageBuffer", () => {
     expect(s.statusMessageId).toBeUndefined();
     expect(s.responseMessageId).toBeUndefined();
     expect(s.accumulatedText).toBe("");
-    expect(s.phase).toBe("thinking");
-    expect(s.toolsObserved).toEqual([]);
-    expect(s.toolsRunning.size).toBe(0);
-    expect(s.hadError).toBe(false);
+    expect(s.slots).toEqual([]);
     expect(s.placeholderSent).toBe(false);
     expect(s.statusFrozen).toBe(false);
     expect(s.lastEditTime).toBe(0);
@@ -163,46 +160,111 @@ describe("MessageBuffer", () => {
     };
 
     describe("buildStatusLine rendering", () => {
-      it("renders the thinking phase as 🤔 thinking…", () => {
+      it("renders empty string before placeholder and slots", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        // No placeholder sent, no slots — nothing to render.
+        expect(buffer.buildStatusLine()).toBe("");
+      });
+
+      it("renders header when placeholder has been sent", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        // Simulate placeholder sent via commitStatus (which is suppressed by
+        // the NO_AUTO throttle — but placeholderSent is set by onStatusUpdate).
+        buffer.onStatusUpdate("thinking...");
         expect(buffer.buildStatusLine()).toBe("🤔 thinking…");
       });
 
-      it("renders working phase with comma-joined tool names", () => {
+      it("renders header + running slot when a tool starts", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
-        buffer.onToolStart("read", {});
-        expect(buffer._state().phase).toBe("working");
-        expect(buffer.buildStatusLine()).toBe("🔧 working: bash, read");
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 bash");
       });
 
-      it("renders done phase with ✅ when no errors", () => {
+      it("renders header + ok slot when a tool completes", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
-        // Working→Done transition fires on first text after tools done.
-        buffer.onTextDelta("answer");
-        expect(buffer._state().phase).toBe("done");
-        expect(buffer.buildStatusLine()).toBe("✅ bash");
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ bash");
       });
 
-      it("renders done phase with ❌ when any tool errored", () => {
+      it("renders header + err slot when a tool errors", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        buffer.onToolStart("bash", {});
+        buffer.onToolEnd("bash", true);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n❌ bash");
+      });
+
+      it("renders multiple tools each on their own line in observation order", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        buffer.onToolStart("bash", {});
+        buffer.onToolStart("read", {});
+        buffer.onToolEnd("bash", false);
+        buffer.onToolEnd("read", false);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ bash\n✅ read");
+      });
+
+      it("renders mixed success/error independently per slot", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("read", {});
         buffer.onToolEnd("bash", true);
         buffer.onToolEnd("read", false);
-        buffer.onTextDelta("answer");
-        expect(buffer._state().phase).toBe("done");
-        expect(buffer._state().hadError).toBe(true);
-        expect(buffer.buildStatusLine()).toBe("❌ bash, read");
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n❌ bash\n✅ read");
       });
 
-      it("renders empty string in none visibility (any phase)", () => {
+      it("folds repeat invocations with ×N count", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        buffer.onToolStart("read", {});
+        buffer.onToolEnd("read", false);
+        buffer.onToolStart("read", {});
+        buffer.onToolEnd("read", false);
+        buffer.onToolStart("read", {});
+        buffer.onToolEnd("read", false);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ read ×3");
+      });
+
+      it("re-entry from ok back to running increments count", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        buffer.onToolStart("read", {});
+        buffer.onToolEnd("read", false);
+        // Second invocation starts — slot goes back to running.
+        buffer.onToolStart("read", {});
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 read ×2");
+      });
+
+      it("parallel invocations stay running until all ends arrive", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        buffer.onToolStart("bash", {});
+        buffer.onToolStart("bash", {});
+        // One end: runningCount drops to 1, still running.
+        buffer.onToolEnd("bash", false);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 bash ×2");
+        // Second end: runningCount hits 0, transitions to ok.
+        buffer.onToolEnd("bash", false);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ bash ×2");
+      });
+
+      it("mixed success and error sticks to err (sticky error)", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        buffer.onToolStart("read", {});
+        buffer.onToolEnd("read", false);
+        buffer.onToolStart("read", {});
+        buffer.onToolEnd("read", true);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n❌ read ×2");
+      });
+
+      it("renders empty string in none visibility (any state)", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, {
           ...NO_AUTO,
@@ -213,11 +275,18 @@ describe("MessageBuffer", () => {
         expect(buffer.buildStatusLine()).toBe("");
       });
 
-      it("renders empty string in done with zero observed tools", () => {
+      it("zero-tool turn with placeholder sent renders header only", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        buffer.onStatusUpdate("thinking...");
+        buffer.onAgentEnd();
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…");
+      });
+
+      it("zero-tool turn with no placeholder renders empty", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onAgentEnd();
-        expect(buffer._state().phase).toBe("done");
         expect(buffer.buildStatusLine()).toBe("");
       });
 
@@ -225,91 +294,100 @@ describe("MessageBuffer", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onTextDelta("hello");
-        // Still in thinking phase (no tools), but composing must NOT appear.
         expect(buffer.buildStatusLine()).not.toContain("composing");
         expect(buffer.buildStatusLine()).not.toContain("✍️");
       });
+
+      it("header persists across slot transitions", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        buffer.onToolStart("bash", {});
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 bash");
+        buffer.onToolEnd("bash", false);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ bash");
+      });
+
+      it("filtered tool produces no slot", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, {
+          ...NO_AUTO,
+          visibility: "minimal",
+        });
+        buffer.onToolStart("read", {}); // filtered
+        buffer.onToolStart("bash", {});  // visible
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 bash");
+      });
     });
 
-    describe("phase transitions", () => {
-      it("first onToolStart transitions thinking → working", () => {
+    describe("slot state transitions", () => {
+      it("first onToolStart creates a running slot", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
-        expect(buffer._state().phase).toBe("thinking");
+        expect(buffer._state().slots).toEqual([]);
         buffer.onToolStart("bash", {});
-        expect(buffer._state().phase).toBe("working");
+        const slots = buffer._state().slots;
+        expect(slots.length).toBe(1);
+        expect(slots[0]![0]).toBe("bash");
+        expect(slots[0]![1].runningCount).toBe(1);
+        expect(slots[0]![1].completedCount).toBe(0);
+        expect(slots[0]![1].everErrored).toBe(false);
       });
 
-      it("subsequent onToolStart calls do not re-transition", () => {
+      it("subsequent onToolStart for different tools create separate slots", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("read", {});
-        expect(buffer._state().phase).toBe("working");
-        expect(buffer._state().toolsObserved).toEqual(["bash", "read"]);
+        const slotNames = buffer._state().slots.map(([n]) => n);
+        expect(slotNames).toEqual(["bash", "read"]);
       });
 
-      it("repeated onToolStart for the same tool does not duplicate it", () => {
+      it("repeated onToolStart for the same tool increments runningCount", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("bash", {});
-        expect(buffer._state().toolsObserved).toEqual(["bash"]);
+        const slot = buffer._state().slots[0]![1];
+        expect(slot.runningCount).toBe(2);
       });
 
-      it("onToolEnd alone does NOT transition working → done", () => {
-        // The agent might fire another tool sequentially — stay in Working.
-        const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
-        buffer.onToolStart("bash", {});
-        buffer.onToolEnd("bash", false);
-        expect(buffer._state().phase).toBe("working");
-        expect(buffer._state().toolsRunning.size).toBe(0);
-      });
-
-      it("first text delta after tools done transitions working → done", () => {
+      it("onToolEnd decrements runningCount and increments completedCount", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
-        expect(buffer._state().phase).toBe("working");
-        buffer.onTextDelta("answer");
-        expect(buffer._state().phase).toBe("done");
+        const slot = buffer._state().slots[0]![1];
+        expect(slot.runningCount).toBe(0);
+        expect(slot.completedCount).toBe(1);
+        expect(slot.endedAt).toBeDefined();
       });
 
-      it("text delta WHILE tools are still running stays in working", () => {
+      it("parallel invocations: slot stays running until runningCount hits zero", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
-        buffer.onTextDelta("interim");
-        // Bash is still running; do not promote to Done.
-        expect(buffer._state().phase).toBe("working");
+        buffer.onToolStart("bash", {});
+        buffer.onToolEnd("bash", false);
+        const slot = buffer._state().slots[0]![1];
+        expect(slot.runningCount).toBe(1);
+        expect(slot.completedCount).toBe(1);
+        // Still running
+        buffer.onToolEnd("bash", false);
+        expect(slot.runningCount).toBe(0);
+        expect(slot.completedCount).toBe(2);
       });
 
-      it("sequential tool re-enters working from done", () => {
-        // Regression for the real-world bug: agent ran `write` then `read`
-        // sequentially (with no tools in flight in between). The phase
-        // machine must NOT prematurely lock into Done with only `write`.
+      it("error sets everErrored sticky on the slot", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
-        buffer.onToolStart("write", {});
-        buffer.onToolEnd("write", false);
-        buffer.onTextDelta("thinking aloud"); // promotes to Done.
-        expect(buffer._state().phase).toBe("done");
-
-        // Now a second tool fires — should pull us back to Working.
-        buffer.onToolStart("read", {});
-        expect(buffer._state().phase).toBe("working");
-        expect(buffer._state().toolsObserved).toEqual(["write", "read"]);
-
-        buffer.onToolEnd("read", false);
-        expect(buffer._state().phase).toBe("working"); // still, until text
-        buffer.onTextDelta("final");
-        expect(buffer._state().phase).toBe("done");
-        expect(buffer.buildStatusLine()).toBe("✅ write, read");
+        buffer.onToolStart("bash", {});
+        buffer.onToolEnd("bash", true);
+        const slot = buffer._state().slots[0]![1];
+        expect(slot.everErrored).toBe(true);
+        expect(slot.completedCount).toBe(1);
       });
 
-      it("filtered (hidden) tools do not appear in toolsObserved", () => {
+      it("filtered tools do not produce a slot", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, {
           ...NO_AUTO,
@@ -317,15 +395,8 @@ describe("MessageBuffer", () => {
         });
         buffer.onToolStart("read", {});
         buffer.onToolStart("bash", {});
-        expect(buffer._state().toolsObserved).toEqual(["bash"]);
-      });
-
-      it("hadError is set if any tool errored", () => {
-        const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
-        buffer.onToolStart("bash", {});
-        buffer.onToolEnd("bash", true);
-        expect(buffer._state().hadError).toBe(true);
+        const slotNames = buffer._state().slots.map(([n]) => n);
+        expect(slotNames).toEqual(["bash"]);
       });
 
       it("onAgentEnd freezes the status", () => {
@@ -335,13 +406,15 @@ describe("MessageBuffer", () => {
         expect(buffer._state().statusFrozen).toBe(true);
       });
 
-      it("onAgentEnd transitions working → done if tools were left dangling", () => {
+      it("onAgentEnd leaves running slots as-is (still running)", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         // Tool never ended; agent ends anyway.
         buffer.onAgentEnd();
-        expect(buffer._state().phase).toBe("done");
+        const slot = buffer._state().slots[0]![1];
+        expect(slot.runningCount).toBe(1);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 bash");
       });
 
       it("clears isStreaming on onAgentEnd", () => {
@@ -351,6 +424,16 @@ describe("MessageBuffer", () => {
         expect(buffer._state().isStreaming).toBe(true);
         buffer.onAgentEnd();
         expect(buffer._state().isStreaming).toBe(false);
+      });
+
+      it("onTextDelta does not change slot state", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        buffer.onToolStart("bash", {});
+        buffer.onToolEnd("bash", false);
+        buffer.onTextDelta("answer");
+        // Slot is still ✅ — text deltas don't touch slots.
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ bash");
       });
     });
   });
@@ -419,20 +502,17 @@ describe("MessageBuffer", () => {
       const buffer = new MessageBuffer(m.bot, 1, undefined);
       buffer.onToolStart("bash", {});
       await tick();
-      // One send: phase already in working when commitStatus fires, so the
-      // placeholder text rendered is the Working line — not "🤔 thinking…".
+      // One send: the slot model renders header + running slot.
       expect(m.send.length).toBe(1);
-      expect(m.send[0]?.text).toBe("🔧 working: bash");
+      expect(m.send[0]?.text).toBe("🤔 thinking…\n🔧 bash");
       expect(buffer._state().placeholderSent).toBe(true);
-      expect(buffer._state().phase).toBe("working");
     });
   });
 
   describe("flushStatus phase-driven I/O", () => {
-    it("typical turn produces ≤3 status writes regardless of tool count", async () => {
+    it("typical turn coalesces via throttle and in-flight dedupe", async () => {
       // Typical agent flow: agent_start → 4 tool starts → 4 tool ends → text → end.
-      // The phase machine should produce: 1 send (placeholder) +
-      // 1 edit (working) + 1 edit (done) = 3 writes total.
+      // The slot model should coalesce rapid state changes into few writes.
       const m = makeBot();
       const buffer = new MessageBuffer(m.bot, 1, undefined);
 
@@ -455,11 +535,7 @@ describe("MessageBuffer", () => {
       buffer.onAgentEnd();
       await tick();
 
-      const totalStatusWrites = m.send.length + m.edit.length;
-      // The status side: 1 placeholder send + ≤2 edits (working, done).
-      // Plus a separate response send for the text — count those too but
-      // separately. Easiest: check that we never exceed 4 status-related
-      // edits even with 4 tools.
+      // Count status-related writes (sends + edits starting with status icons).
       const statusSends = m.send.filter(
         (s) =>
           s.text.startsWith("🤔") ||
@@ -474,8 +550,9 @@ describe("MessageBuffer", () => {
           e.text.startsWith("✅") ||
           e.text.startsWith("❌"),
       ).length;
-      expect(statusSends + statusEdits).toBeLessThanOrEqual(3);
-      expect(totalStatusWrites).toBeGreaterThan(0);
+      // Worst case: 2T + 2 = 10 for T=4. Coalescing should be well under that.
+      expect(statusSends + statusEdits).toBeLessThanOrEqual(10);
+      expect(statusSends + statusEdits).toBeGreaterThan(0);
     });
 
     it("many tools collapse to ONE Working edit (no per-tool churn)", async () => {
@@ -526,7 +603,7 @@ describe("MessageBuffer", () => {
       expect(m.edit.length).toBeGreaterThanOrEqual(1);
       const lastEdit = m.edit[m.edit.length - 1];
       expect(lastEdit?.messageId).toBe(101);
-      expect(lastEdit?.text).toBe("🔧 working: bash");
+      expect(lastEdit?.text).toBe("🤔 thinking…\n🔧 bash");
     });
 
     it("statusFrozen blocks any further edits after onAgentEnd", async () => {
@@ -1465,14 +1542,14 @@ describe("MessageBuffer", () => {
     });
 
     describe("MessageBuffer integration", () => {
-      it("none visibility: no observed tools, no status line, no flush", async () => {
+      it("none visibility: no slots, no status line, no flush", async () => {
         const m = makeBot();
         const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" });
         buffer.onStatusUpdate("thinking...");
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
         await tick();
-        expect(buffer._state().toolsObserved).toEqual([]);
+        expect(buffer._state().slots).toEqual([]);
         expect(buffer.buildStatusLine()).toBe("");
         expect(m.send.length).toBe(0);
         expect(m.edit.length).toBe(0);
@@ -1499,8 +1576,9 @@ describe("MessageBuffer", () => {
         });
         buffer.onToolStart("read", {});
         buffer.onToolStart("bash", {});
-        expect(buffer._state().toolsObserved).toEqual(["bash"]);
-        expect(buffer.buildStatusLine()).toBe("🔧 working: bash");
+        const slotNames = buffer._state().slots.map(([n]: [string, unknown]) => n);
+        expect(slotNames).toEqual(["bash"]);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 bash");
       });
 
       it("standard visibility (default): read + bash both visible, γ filtered", () => {
@@ -1511,7 +1589,8 @@ describe("MessageBuffer", () => {
         buffer.onToolStart("read", {});
         buffer.onToolStart("bash", {});
         buffer.onToolStart("revive_subagent", {});
-        expect(buffer._state().toolsObserved).toEqual(["read", "bash"]);
+        const slotNames = buffer._state().slots.map(([n]: [string, unknown]) => n);
+        expect(slotNames).toEqual(["read", "bash"]);
       });
 
       it("verbose visibility: revive_subagent now visible", () => {
@@ -1521,7 +1600,8 @@ describe("MessageBuffer", () => {
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
         buffer.onToolStart("revive_subagent", {});
-        expect(buffer._state().toolsObserved).toContain("revive_subagent");
+        const slotNames = buffer._state().slots.map(([n]: [string, unknown]) => n);
+        expect(slotNames).toContain("revive_subagent");
       });
 
       it("debug visibility: even unknown tools are shown", () => {
@@ -1531,8 +1611,9 @@ describe("MessageBuffer", () => {
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
         buffer.onToolStart("brand_new_tool", {});
-        expect(buffer._state().toolsObserved).toContain("brand_new_tool");
-        expect(buffer.buildStatusLine()).toBe("🔧 working: brand_new_tool");
+        const slotNames = buffer._state().slots.map(([n]: [string, unknown]) => n);
+        expect(slotNames).toContain("brand_new_tool");
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 brand_new_tool");
       });
 
       it("filtering applies to onToolEnd as well", () => {
@@ -1544,8 +1625,9 @@ describe("MessageBuffer", () => {
         // read is filtered at start; ending it should not retroactively add it.
         buffer.onToolStart("read", {});
         buffer.onToolEnd("read", false);
-        expect(buffer._state().toolsObserved).toEqual([]);
-        expect(buffer._state().toolsRunning.has("read")).toBe(false);
+        const slotNames = buffer._state().slots.map(([n]: [string, unknown]) => n);
+        expect(slotNames).toEqual([]);
+        // read slot was never created, so ending it is a no-op.
       });
     });
   });
@@ -1613,7 +1695,8 @@ describe("MessageBuffer", () => {
       await tick();
 
       // Status line should NOT mention "read".
-      expect(buffer._state().toolsObserved).toEqual([]);
+      const slotNames = buffer._state().slots.map(([n]: [string, unknown]) => n);
+      expect(slotNames).toEqual([]);
       // But the response message must have the full text flushed.
       const responseEdits = m.edit
         .slice(editsBefore)

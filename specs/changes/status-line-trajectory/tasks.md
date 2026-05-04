@@ -44,10 +44,10 @@ Renders `(N.Ns)` after each completed slot when the active visibility level has 
 
 Touches: [src/tg/buffer.ts](file:///home/daniel/build/little-goblin/src/tg/buffer.ts), [src/tg/buffer.test.ts](file:///home/daniel/build/little-goblin/src/tg/buffer.test.ts).
 
-- [ ] Extend `buildStatusLine()` slot render branch: when the active level's `timing` flag is true AND the slot's effective state is `"ok"` or `"err"` AND `endedAt` is defined, append `" (<seconds>s)"` where seconds = `((endedAt - startedAt) / 1000).toFixed(1)`.
-- [ ] Confirm `now: () => number` is used everywhere we set `startedAt` / `endedAt` so timing stays deterministic in tests (the constructor already injects this).
-- [ ] Add tests for the timing scenarios: verbose renders `"✅ bash (2.1s)"`; standard renders `"✅ bash"` with no suffix; running slot under verbose renders `"🔧 bash"` with no suffix; debug behaves like verbose; re-entered slot's timing reflects the most recent invocation only.
+- [x] Extend `buildStatusLine()` slot render branch: when the active level's `timing` flag is true AND the slot's effective state is `"ok"` or `"err"` AND `endedAt` is defined, append `" (<seconds>s)"` where seconds = `((endedAt - startedAt) / 1000).toFixed(1)`.
+- [x] Confirm `now: () => number` is used everywhere we set `startedAt` / `endedAt` so timing stays deterministic in tests (the constructor already injects this).
+- [x] Add tests for the timing scenarios: verbose renders `"✅ bash (2.1s)"`; standard renders `"✅ bash"` with no suffix; running slot under verbose renders `"🔧 bash"` with no suffix; debug behaves like verbose; re-entered slot's timing reflects the most recent invocation only.
 - [x] Run `bun test src/tg/buffer.test.ts` and confirm all tests pass.
-- [ ] Run `bun test` (full suite) and confirm no other test regressed.
+- [x] Run `bun test` (full suite) and confirm no other test regressed.
 - [x] Run `bun run tsc --noEmit` and confirm clean.
-- [ ] Commit: `phase 3: render per-tool elapsed time at verbose and debug visibility`.
+- [x] Commit: `phase 3: render per-tool elapsed time at verbose and debug visibility`.

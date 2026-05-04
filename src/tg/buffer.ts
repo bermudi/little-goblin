@@ -421,7 +421,7 @@ export class MessageBuffer implements TurnCallbacks {
     if (!this.placeholderSent && this.slots.size === 0) return "";
 
     const lines: string[] = ["🤔 thinking…"];
-    const { cap } = getVisibilityLimits(this.visibility);
+    const { cap, timing } = getVisibilityLimits(this.visibility);
 
     // Determine which slots to elide. Running slots are never elided.
     const elided = new Set<string>();
@@ -446,7 +446,11 @@ export class MessageBuffer implements TurnCallbacks {
         effectiveState === "running" ? "🔧" : effectiveState === "err" ? "❌" : "✅";
       const count = slot.runningCount + slot.completedCount;
       const countSuffix = count > 1 ? ` ×${count}` : "";
-      lines.push(`${icon} ${name}${countSuffix}`);
+      const timingSuffix =
+        timing && effectiveState !== "running" && slot.endedAt !== undefined
+          ? ` (${((slot.endedAt - slot.startedAt) / 1000).toFixed(1)}s)`
+          : "";
+      lines.push(`${icon} ${name}${countSuffix}${timingSuffix}`);
     }
 
     if (elided.size > 0) {

@@ -1666,11 +1666,13 @@ describe("MessageBuffer", () => {
     });
 
     it("over cap elides oldest completed slots", () => {
+      let t = 1000;
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, { ...NO_AUTO, visibility: "debug" });
+      const buffer = new MessageBuffer(bot, 1, undefined, { ...NO_AUTO, visibility: "debug", now: () => t });
       // debug cap is 25; create 30 completed tools.
       for (let i = 0; i < 30; i++) {
         buffer.onToolStart(`tool_${i}`, {});
+        t += 100;
         buffer.onToolEnd(`tool_${i}`, false);
       }
       const status = buffer.buildStatusLine();
@@ -1679,7 +1681,7 @@ describe("MessageBuffer", () => {
       expect(lines.length).toBe(27);
       expect(lines[lines.length - 1]).toBe("… +5 earlier");
       // First kept slot should be tool_5 (tools 0-4 elided)
-      expect(lines[1]).toBe("✅ tool_5");
+      expect(lines[1]).toBe("✅ tool_5 (0.1s)");
     });
 
     it("running slots are exempt from elision", () => {
@@ -1726,6 +1728,102 @@ describe("MessageBuffer", () => {
       // 9 completed kept
       const completedLines = lines.filter((l) => l.startsWith("✅"));
       expect(completedLines.length).toBe(9);
+    });
+  });
+
+  describe("per-tool elapsed timing for verbose and debug", () => {
+    const NO_AUTO = {
+      statusThrottleMs: Number.MAX_SAFE_INTEGER,
+      responseThrottleMs: Number.MAX_SAFE_INTEGER,
+    };
+
+    it("verbose renders timing on completed slots", () => {
+      let t = 1000;
+      const { bot } = makeBot();
+      const buffer = new MessageBuffer(bot, 1, undefined, {
+        ...NO_AUTO,
+        visibility: "verbose",
+        now: () => t,
+      });
+      buffer.onToolStart("bash", {});
+      t = 3130; // 2.13s later
+      buffer.onToolEnd("bash", false);
+      expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ bash (2.1s)");
+    });
+
+    it("standard does not render timing", () => {
+      let t = 1000;
+      const { bot } = makeBot();
+      const buffer = new MessageBuffer(bot, 1, undefined, {
+        ...NO_AUTO,
+        visibility: "standard",
+        now: () => t,
+      });
+      buffer.onToolStart("bash", {});
+      t = 3130;
+      buffer.onToolEnd("bash", false);
+      expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ bash");
+    });
+
+    it("running slot has no timing under verbose", () => {
+      let t = 1000;
+      const { bot } = makeBot();
+      const buffer = new MessageBuffer(bot, 1, undefined, {
+        ...NO_AUTO,
+        visibility: "verbose",
+        now: () => t,
+      });
+      buffer.onToolStart("bash", {});
+      t = 5000; // time passes but tool still running
+      expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 bash");
+    });
+
+    it("debug renders timing like verbose", () => {
+      let t = 1000;
+      const { bot } = makeBot();
+      const buffer = new MessageBuffer(bot, 1, undefined, {
+        ...NO_AUTO,
+        visibility: "debug",
+        now: () => t,
+      });
+      buffer.onToolStart("my_tool", {});
+      t = 3500;
+      buffer.onToolEnd("my_tool", false);
+      expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ my_tool (2.5s)");
+    });
+
+    it("re-entered slot timing reflects most recent invocation only", () => {
+      let t = 1000;
+      const { bot } = makeBot();
+      const buffer = new MessageBuffer(bot, 1, undefined, {
+        ...NO_AUTO,
+        visibility: "verbose",
+        now: () => t,
+      });
+      // First invocation: 2s
+      buffer.onToolStart("bash", {});
+      t = 3000;
+      buffer.onToolEnd("bash", false);
+      // Second invocation: 0.5s (startedAt resets, endedAt overwrites)
+      t = 4000;
+      buffer.onToolStart("bash", {});
+      t = 4500;
+      buffer.onToolEnd("bash", false);
+      expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ bash ×2 (0.5s)");
+    });
+
+    it("error slot also gets timing", () => {
+      let t = 1000;
+      const { bot } = makeBot();
+      const buffer = new MessageBuffer(bot, 1, undefined, {
+        ...NO_AUTO,
+        visibility: "verbose",
+        now: () => t,
+      });
+      buffer.onToolStart("bash", {});
+      t = 2100;
+      buffer.onToolEnd("bash", true);
+      expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n❌ bash (1.1s)");
     });
   });
 

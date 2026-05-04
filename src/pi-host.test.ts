@@ -12,8 +12,8 @@ describe("pi-host path helpers", () => {
   });
 
   describe("piAgentDir", () => {
-    it("returns pi-agent subdirectory", () => {
-      expect(piAgentDir(fixtureHome)).toBe(join(fixtureHome, "pi-agent"));
+    it("returns goblin subdirectory", () => {
+      expect(piAgentDir(fixtureHome)).toBe(join(fixtureHome, "goblin"));
     });
   });
 

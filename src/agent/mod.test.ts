@@ -160,7 +160,7 @@ beforeEach(() => {
   mkdirSync(join(tmpDir, "sessions", "sess-001"), { recursive: true });
   writeFileSync(join(tmpDir, "sessions", "sess-001", "events.jsonl"), "");
   mkdirSync(join(tmpDir, "workdir"), { recursive: true });
-  mkdirSync(join(tmpDir, "pi-agent"), { recursive: true });
+  mkdirSync(join(tmpDir, "goblin"), { recursive: true });
 
   capturedCreateArgs = [];
   sessionHolder.reset();
@@ -341,6 +341,14 @@ describe("AgentRunner", () => {
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
       expect(opts.cwd).toBe(join(tmpDir, "workdir"));
+    });
+
+    it("passes piAgentDir as agentDir", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      expect(opts.agentDir).toBe(join(tmpDir, "goblin"));
     });
   });
 

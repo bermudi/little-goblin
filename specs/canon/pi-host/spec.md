@@ -4,13 +4,13 @@
 
 ### Requirement: Pi-host module provides shared pi service construction
 
-The `src/pi-host.ts` module SHALL export a `PiServices` type and a `createPiServices(home: string): PiServices` function that returns `{ authStorage: AuthStorage, modelRegistry: ModelRegistry, settingsManager: SettingsManager }` configured to use `$GOBLIN_HOME/pi-agent/` as the pi configuration directory.
+The `src/pi-host.ts` module SHALL export a `PiServices` type and a `createPiServices(home: string): PiServices` function that returns `{ authStorage: AuthStorage, modelRegistry: ModelRegistry, settingsManager: SettingsManager }` configured to use `$GOBLIN_HOME/goblin/` as the pi configuration directory.
 
 #### Scenario: Services created with correct paths
 
 - **WHEN** `createPiServices("/home/user/goblin")` is called
-- **THEN** the returned `authStorage` SHALL point at `/home/user/goblin/pi-agent/auth.json`
-- **AND** the returned `modelRegistry` SHALL point at `/home/user/goblin/pi-agent/models.json`
+- **THEN** the returned `authStorage` SHALL point at `/home/user/goblin/goblin/auth.json`
+- **AND** the returned `modelRegistry` SHALL point at `/home/user/goblin/goblin/models.json`
 - **AND** the returned `settingsManager` SHALL be an in-memory instance with empty defaults
 
 #### Scenario: Idempotent — same home, same result

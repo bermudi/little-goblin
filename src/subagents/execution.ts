@@ -32,6 +32,7 @@ import {
 import { resolveModel } from "../agent/models.ts";
 import { log } from "../log.ts";
 import type { PiServices } from "../pi-host.ts";
+import { piAgentDir } from "../pi-host.ts";
 import type { ActiveScope } from "../memory/mod.ts";
 import { persistMetaPatch } from "./meta.ts";
 import { buildResourceLoader } from "./named-agents.ts";
@@ -113,6 +114,7 @@ async function _runInstanceInner(
 
   const { session } = await createAgentSession({
     cwd,
+    agentDir: piAgentDir(cfg.goblinHome),
     authStorage: services.authStorage,
     modelRegistry: services.modelRegistry,
     settingsManager: services.settingsManager,

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import JSON5 from "json5";
@@ -109,7 +109,14 @@ function resolveValue(value: unknown): unknown {
  * Call once at startup before any consumer tries to use the paths.
  */
 export function ensureGoblinHome(cfg: Config): void {
-  const dirs = [cfg.goblinHome, join(cfg.goblinHome, "sessions"), join(cfg.goblinHome, "skills"), join(cfg.goblinHome, "workdir"), join(cfg.goblinHome, "pi-agent"), join(cfg.goblinHome, "agents"), join(cfg.goblinHome, "subagents")];
+  // Migrate legacy pi-agent/ → goblin/ (one-time rename).
+  const legacyDir = join(cfg.goblinHome, "pi-agent");
+  const newDir = join(cfg.goblinHome, "goblin");
+  if (existsSync(legacyDir) && !existsSync(newDir)) {
+    renameSync(legacyDir, newDir);
+  }
+
+  const dirs = [cfg.goblinHome, join(cfg.goblinHome, "sessions"), join(cfg.goblinHome, "skills"), join(cfg.goblinHome, "workdir"), newDir, join(cfg.goblinHome, "agents"), join(cfg.goblinHome, "subagents")];
   for (const dir of dirs) {
     mkdirSync(dir, { recursive: true });
   }

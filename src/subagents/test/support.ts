@@ -129,7 +129,7 @@ export function makeConfig(home: string): Config {
 export function createTestHome(prefix: string): string {
   const home = mkdtempSync(join(tmpdir(), prefix));
   mkdirSync(join(home, "workdir"), { recursive: true });
-  mkdirSync(join(home, "pi-agent"), { recursive: true });
+  mkdirSync(join(home, "goblin"), { recursive: true });
   return home;
 }
 

@@ -20,7 +20,7 @@ export interface PiServices {
 }
 
 /**
- * Construct pi's infrastructure services with paths under `$GOBLIN_HOME/pi-agent/`.
+ * Construct pi's infrastructure services with paths under `$GOBLIN_HOME/goblin/`.
  *
  * Stateless — returns new instances on every call. Caching is the caller's
  * responsibility.
@@ -42,9 +42,9 @@ export function workdirPath(home: string): string {
   return join(home, "workdir");
 }
 
-/** Path to the pi-agent directory for pi-ai configuration. */
+/** Path to the goblin directory for pi-ai configuration. */
 export function piAgentDir(home: string): string {
-  return join(home, "pi-agent");
+  return join(home, "goblin");
 }
 
 /** Path to the AGENTS.md file at goblin home root. */

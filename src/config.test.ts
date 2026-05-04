@@ -168,7 +168,7 @@ describe("ensureGoblinHome", () => {
     ensureGoblinHome(cfg);
 
     const expectedDirs = [
-      "sessions", "skills", "workdir", "pi-agent", "agents", "subagents",
+      "sessions", "skills", "workdir", "goblin", "agents", "subagents",
     ];
     for (const sub of expectedDirs) {
       expect(existsSync(join(tempDir, sub))).toBe(true);

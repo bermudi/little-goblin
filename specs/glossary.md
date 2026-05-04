@@ -6,7 +6,7 @@
 - **canon**: The set of accepted, implemented specs in `specs/canon/`. Each subdirectory is one domain module.
 - **ChatLocator**: A discriminated key — `{ chatId }` for DMs, `{ chatId, topicId }` for forum topics — used to resolve which session handles a message.
 - **defrag**: Agent-driven consolidation of memory files when they approach the character cap. Not a system operation.
-- **goblin**: The AI bot. Single user, single process. Lives in Telegram.
+- **goblin** aka **main agent**: The AI bot. Single user, single process. Lives in Telegram.
 - **GOBLIN_HOME**: Root data directory (default `~/goblin`). Holds sessions, memory, skills, config, and agent definitions.
 - **locator**: Shorthand for `ChatLocator`.
 - **memory.md / user.md**: Curated memory files under `$GOBLIN_HOME/memory/`. Agent-maintained, character-capped, git-versioned. Not raw chat logs. After the `scoped-memory` change, `memory.md` exists once per scope (general / topic / named-agent persona); `user.md` remains a single global file.

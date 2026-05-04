@@ -15,7 +15,7 @@ import { log } from "../log.ts";
 import { appendEvent, dispatchAgentEvent } from "./events.ts";
 import type { TurnCallbacks } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
-import { workdirPath, createPiServices } from "../pi-host.ts";
+import { workdirPath, createPiServices, piAgentDir } from "../pi-host.ts";
 import { resolveModel } from "./models.ts";
 import {
   MemoryStore,
@@ -130,6 +130,7 @@ export class AgentRunner {
 
     const { session } = await createAgentSession({
       cwd: workdirPath(home),
+      agentDir: piAgentDir(home),
       authStorage,
       modelRegistry,
       settingsManager,

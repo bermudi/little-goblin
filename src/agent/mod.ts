@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 /**
  * Agent runner module.
  * Orchestrates LLM calls, tool use, and turn management.
@@ -5,6 +7,7 @@
 
 import {
   AgentSession,
+  DefaultResourceLoader,
   SessionManager,
   createAgentSession,
   type ToolDefinition,
@@ -128,6 +131,18 @@ export class AgentRunner {
       );
     }
 
+    // Build an isolated resource loader that pins skill discovery to
+    // goblin's own tree. Without this, pi's DefaultPackageManager
+    // auto-discovers skills from ~/.agents/skills/ and walks up from cwd,
+    // leaking the user's personal skills into goblin Telegram sessions.
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: workdirPath(home),
+      agentDir: piAgentDir(home),
+      settingsManager,
+      additionalSkillPaths: [join(home, "skills")],
+    });
+    await resourceLoader.reload();
+
     const { session } = await createAgentSession({
       cwd: workdirPath(home),
       agentDir: piAgentDir(home),
@@ -137,6 +152,7 @@ export class AgentRunner {
       sessionManager,
       model: resolved.model,
       customTools: tools,
+      resourceLoader,
     });
 
     this.session = session;

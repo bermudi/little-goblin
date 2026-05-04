@@ -78,6 +78,15 @@ let capturedCreateArgs: unknown[] = [];
 
 mock.module("@mariozechner/pi-coding-agent", () => {
   return {
+    AgentSession: {},
+    DefaultResourceLoader: class {
+      constructor(_opts: unknown) {}
+      async reload() {}
+      getSkills() { return { skills: [], diagnostics: [] }; }
+      getAgentsFiles() { return { agentsFiles: [] }; }
+      getSystemPrompt() { return undefined; }
+      getAppendSystemPrompt() { return []; }
+    },
     AuthStorage: {
       create: (_path: string) => ({
         setRuntimeApiKey: (_provider: string, _key: string) => {},

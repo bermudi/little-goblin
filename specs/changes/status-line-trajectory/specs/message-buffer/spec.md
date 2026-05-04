@@ -95,9 +95,9 @@ Levels `none` SHALL NOT render any status, so the cap does not apply.
 
 #### Scenario: Many concurrent running slots beyond the cap all render
 
-- **WHEN** visibility is `"standard"` (cap 12) and 16 distinct visible tools have been observed, with 8 currently in state `running` and 8 completed
-- **THEN** the rendered status SHALL contain the header plus all 8 running slot lines plus the 4 most-recently-completed slot lines
-- **AND** the footer SHALL be `"… +4 earlier"` reflecting the 4 elided completed slots
+- **WHEN** visibility is `"debug"` (cap 25) and 32 distinct visible tools have been observed, with 16 currently in state `running` and 16 completed
+- **THEN** the rendered status SHALL contain the header plus all 16 running slot lines plus the 9 most-recently-completed slot lines
+- **AND** the footer SHALL be `"… +7 earlier"` reflecting the 7 elided completed slots
 
 ### Requirement: Verbose and debug levels render per-tool elapsed time
 

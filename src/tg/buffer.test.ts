@@ -709,7 +709,7 @@ describe("MessageBuffer", () => {
       // No onStatusUpdate, no onToolStart — just an immediate end.
       buffer.onAgentEnd();
       await tick();
-      // Nothing meaningful to render in done with empty toolsObserved.
+      // No placeholder sent, no slots — nothing to render.
       expect(m.send.length).toBe(0);
       expect(m.edit.length).toBe(0);
     });
@@ -1629,6 +1629,16 @@ describe("MessageBuffer", () => {
         const slotNames = buffer._state().slots.map(([n]: [string, unknown]) => n);
         expect(slotNames).toEqual([]);
         // read slot was never created, so ending it is a no-op.
+      });
+
+      it("unmatched onToolEnd without prior onToolStart is a no-op", () => {
+        const m = makeBot();
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+          statusThrottleMs: Number.MAX_SAFE_INTEGER,
+        });
+        buffer.onToolEnd("bash", false);
+        expect(buffer._state().slots).toEqual([]);
+        expect(buffer.buildStatusLine()).toBe("");
       });
     });
   });

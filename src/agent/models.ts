@@ -14,10 +14,47 @@
  *
  * Extend by adding entries. The registry is explicit — no runtime synthesis.
  */
-import type { Api, Model } from "@mariozechner/pi-ai";
+import { type Api, type Model, getModel, getModels, getProviders } from "@mariozechner/pi-ai";
 import type { Config } from "../config.ts";
 
 // Async Poe validation lives in poe-validate.ts. This file is sync-only.
+
+/**
+ * Resolve maxTokens for a model id from pi-ai's built-in registry.
+ *
+ * Strategy: exact match → strip date suffix → prefix match → fallback.
+ * This keeps goblin's custom provider routing (poe, openrouter, direct) while
+ * inheriting correct output limits from the upstream model database.
+ */
+function resolveMaxTokens(modelId: string, fallback = 8_192): number {
+  const providers = getProviders();
+
+  // Exact match across all providers
+  for (const p of providers) {
+    const m = getModel(p, modelId);
+    if (m) return m.maxTokens;
+  }
+
+  // Strip trailing date suffix (e.g. "-20251022") and retry
+  const stripped = modelId.replace(/-\d{8}$/, "");
+  if (stripped !== modelId) {
+    for (const p of providers) {
+      const m = getModel(p, stripped);
+      if (m) return m.maxTokens;
+    }
+  }
+
+  // Prefix match — catches versioned ids that don't appear verbatim
+  for (const p of providers) {
+    for (const m of getModels(p)) {
+      if (m.id.startsWith(stripped) || stripped.startsWith(m.id)) {
+        return m.maxTokens;
+      }
+    }
+  }
+
+  return fallback;
+}
 
 export type ApiKeyEnv =
   | "POE_API_KEY"
@@ -55,7 +92,7 @@ function poeAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
       input: ["text", "image"] as ("text" | "image")[],
       cost: ZERO_COST,
       contextWindow: ctx,
-      maxTokens: 8_192,
+      maxTokens: resolveMaxTokens(id),
     } satisfies Model<"anthropic">,
   };
 }
@@ -73,7 +110,7 @@ function poeResponses(id: string, name: string, ctx = 200_000): ModelEntry {
       input: ["text", "image"] as ("text" | "image")[],
       cost: ZERO_COST,
       contextWindow: ctx,
-      maxTokens: 8_192,
+      maxTokens: resolveMaxTokens(id),
     } satisfies Model<"openai-responses">,
   };
 }
@@ -91,7 +128,7 @@ function poeCompletions(id: string, name: string, ctx = 128_000): ModelEntry {
       input: ["text", "image"] as ("text" | "image")[],
       cost: ZERO_COST,
       contextWindow: ctx,
-      maxTokens: 8_192,
+      maxTokens: resolveMaxTokens(id),
     } satisfies Model<"openai-completions">,
   };
 }
@@ -111,7 +148,7 @@ function openrouter(id: string, name: string, ctx = 200_000): ModelEntry {
       input: ["text", "image"] as ("text" | "image")[],
       cost: ZERO_COST,
       contextWindow: ctx,
-      maxTokens: 8_192,
+      maxTokens: resolveMaxTokens(id),
     } satisfies Model<"openai-completions">,
   };
 }
@@ -131,7 +168,7 @@ function directOpenAI(id: string, name: string, ctx = 128_000): ModelEntry {
       input: ["text", "image"] as ("text" | "image")[],
       cost: ZERO_COST,
       contextWindow: ctx,
-      maxTokens: 8_192,
+      maxTokens: resolveMaxTokens(id),
     } satisfies Model<"openai-responses">,
   };
 }
@@ -149,7 +186,7 @@ function directAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
       input: ["text", "image"] as ("text" | "image")[],
       cost: ZERO_COST,
       contextWindow: ctx,
-      maxTokens: 8_192,
+      maxTokens: resolveMaxTokens(id),
     } satisfies Model<"anthropic">,
   };
 }

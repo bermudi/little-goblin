@@ -238,6 +238,47 @@ function poePatternMatch(modelName: string): ModelEntry | null {
   return poeCompletions(id, `${id} (Poe)`);
 }
 
+/** Dynamic fallback for `or/<slug>` — always OpenRouter chat completions. */
+function openrouterPatternMatch(modelName: string): ModelEntry | null {
+  if (!modelName.startsWith("or/")) return null;
+  const id = modelName.slice("or/".length);
+  if (!id) return null;
+  return openrouter(id, `${id} (OR)`);
+}
+
+/** Dynamic fallback for `openai/<id>` — picks API dialect by model family. */
+function directOpenAIPatternMatch(modelName: string): ModelEntry | null {
+  if (!modelName.startsWith("openai/")) return null;
+  const id = modelName.slice("openai/".length);
+  if (!id) return null;
+  // o-series and gpt get responses API; everything else falls to completions
+  const fam = id.toLowerCase();
+  if (fam.startsWith("gpt-") || /^o\d/.test(fam)) return directOpenAI(id, `${id} (OpenAI)`);
+  return {
+    apiKeyEnv: "OPENAI_API_KEY",
+    model: {
+      id,
+      name: `${id} (OpenAI)`,
+      api: "openai-completions",
+      provider: "openai",
+      baseUrl: OPENAI,
+      reasoning: false,
+      input: ["text", "image"] as ("text" | "image")[],
+      cost: ZERO_COST,
+      contextWindow: 128_000,
+      maxTokens: resolveMaxTokens(id),
+    } satisfies Model<"openai-completions">,
+  };
+}
+
+/** Dynamic fallback for `anthropic/<id>` — always Anthropic Messages API. */
+function directAnthropicPatternMatch(modelName: string): ModelEntry | null {
+  if (!modelName.startsWith("anthropic/")) return null;
+  const id = modelName.slice("anthropic/".length);
+  if (!id) return null;
+  return directAnthropic(id, `${id} (Anthropic)`);
+}
+
 const KEY_FIELD: Record<ApiKeyEnv, keyof Config> = {
   POE_API_KEY: "poeApiKey",
   OPENROUTER_API_KEY: "openrouterApiKey",
@@ -255,7 +296,12 @@ function getApiKey(cfg: Config, env: ApiKeyEnv): string | undefined {
  * key is missing.
  */
 export function resolveModel(cfg: Config): ResolvedModel {
-  const entry = MODELS[cfg.modelName] ?? poePatternMatch(cfg.modelName);
+  const entry =
+    MODELS[cfg.modelName] ??
+    poePatternMatch(cfg.modelName) ??
+    openrouterPatternMatch(cfg.modelName) ??
+    directOpenAIPatternMatch(cfg.modelName) ??
+    directAnthropicPatternMatch(cfg.modelName);
   if (!entry) {
     const known = Object.keys(MODELS).sort().join(", ");
     throw new Error(

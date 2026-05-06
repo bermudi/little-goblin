@@ -48,6 +48,7 @@ The buffer SHALL not edit the status message more than once per second. Intermed
 - **WHEN** Telegram returns 429 (rate limit)
 - **THEN** the buffer SHALL drop the pending edit and continue
 - **AND** it SHALL NOT retry or throw
+- **AND** if the response carries `parameters.retry_after`, the buffer SHALL push its throttle clock forward by that interval so subsequent flushes within the window short-circuit
 
 ### Requirement: Response text streams via edits
 
@@ -57,7 +58,7 @@ Text deltas from `onTextDelta` SHALL accumulate into a response message, edited 
 
 - **WHEN** `onTextDelta` is called 50 times with ~10 chars each within a single segment (no tool boundary)
 - **THEN** the buffer SHALL accumulate into one string
-- **AND** send at most 5 edits per second (200ms minimum between edits)
+- **AND** send at most ~1 edit per second (≥1100ms minimum between edits) to stay under Telegram's per-chat write budget
 
 #### Scenario: 4096 rollover
 

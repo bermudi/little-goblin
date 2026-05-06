@@ -20,9 +20,15 @@ export interface MessageBufferOptions {
   visibility?: string;
   /** Clock injection for deterministic throttle tests. Defaults to `Date.now`. */
   now?: () => number;
-  /** Approximate min ms between status edits. Defaults to 1000. */
+  /** Approximate min ms between status edits. Defaults to 1100. */
   statusThrottleMs?: number;
-  /** Approximate min ms between response edits (~5/sec). Defaults to 200. */
+  /**
+   * Approximate min ms between response edits. Defaults to 1100.
+   *
+   * Telegram's per-chat write/edit budget is ~1/sec sustained. Going
+   * faster (e.g. the old 200ms / 5-per-sec default) earns 429s with
+   * `retry_after` of 20+ seconds, which then stalls the whole stream.
+   */
   responseThrottleMs?: number;
   /** Chat-action ("typing") refresh interval in ms. Defaults to 4000. */
   chatActionMs?: number;
@@ -226,8 +232,8 @@ export class MessageBuffer implements TurnCallbacks {
     this.topicId = topicId;
     this.visibility = options.visibility ?? DEFAULT_VISIBILITY;
     this.now = options.now ?? Date.now;
-    this.statusThrottleMs = options.statusThrottleMs ?? 1000;
-    this.responseThrottleMs = options.responseThrottleMs ?? 200;
+    this.statusThrottleMs = options.statusThrottleMs ?? 1100;
+    this.responseThrottleMs = options.responseThrottleMs ?? 1100;
     this.chatActionMs = options.chatActionMs ?? 4000;
     this.setIntervalFn =
       options.setIntervalFn ??
@@ -788,12 +794,32 @@ export class MessageBuffer implements TurnCallbacks {
     kind: "status" | "response",
     onMessageGone: () => void,
   ): Promise<void> {
-    const e = err as { error_code?: number; description?: string };
+    const e = err as {
+      error_code?: number;
+      description?: string;
+      parameters?: { retry_after?: number };
+    };
     const code = e?.error_code;
     const description = e?.description ?? String(err);
 
     if (code === 429) {
-      log.warn(`${kind} edit rate-limited, skipping`, { description });
+      // Honor `retry_after` (seconds) so we don't keep slamming the API and
+      // making the server angrier. Push the relevant throttle clock forward
+      // by retry_after; the next flush in that window will short-circuit at
+      // the throttle check.
+      const retryAfterSec = e?.parameters?.retry_after;
+      if (retryAfterSec && retryAfterSec > 0) {
+        const until = this.now() + retryAfterSec * 1000;
+        if (kind === "response") {
+          this.lastResponseEditTime = Math.max(this.lastResponseEditTime, until);
+        } else {
+          this.lastEditTime = Math.max(this.lastEditTime, until);
+        }
+      }
+      log.warn(`${kind} edit rate-limited, backing off`, {
+        description,
+        retryAfterSec,
+      });
       return;
     }
 

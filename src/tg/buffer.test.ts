@@ -721,13 +721,17 @@ describe("MessageBuffer", () => {
      * status side entirely with `visibility: "none"` (force=true flushes
      * inside `commitStatus` would otherwise bypass any throttle setting),
      * so any sendMessage we observe is the response message.
+     *
+     * `responseThrottleMs: 200` pins the throttle to the historical default;
+     * production now uses 1100ms (~1/sec) but these tests assert behavior
+     * around a 200ms window. Tests that need a near-infinite throttle still
+     * override explicitly.
      */
-    const STATUS_OFF = { visibility: "none" as const };
+    const STATUS_OFF = { visibility: "none" as const, responseThrottleMs: 200 };
 
     it("accumulates text deltas in accumulatedText", () => {
       const m = makeBot();
       const buffer = new MessageBuffer(m.bot, 1, undefined, {
-        responseThrottleMs: 1_000_000,
         ...STATUS_OFF,
       });
       buffer.onTextDelta("Hello, ");
@@ -1138,6 +1142,7 @@ describe("MessageBuffer", () => {
       const buffer = new MessageBuffer(bot, 1, undefined, {
         now: () => t,
         visibility: "none" as const,
+        responseThrottleMs: 200,
       });
 
       // Send a delta to create the response message and trigger an edit.
@@ -1838,7 +1843,7 @@ describe("MessageBuffer", () => {
   });
 
   describe("response flush before tool execution", () => {
-    const STATUS_OFF = { visibility: "none" as const };
+    const STATUS_OFF = { visibility: "none" as const, responseThrottleMs: 200 };
 
     it("force-flushes accumulated text when a tool starts", async () => {
       // Regression: LLM streams "Let me check the pi docs..." then calls a
@@ -1882,6 +1887,7 @@ describe("MessageBuffer", () => {
       const buffer = new MessageBuffer(m.bot, 1, undefined, {
         now: () => t,
         visibility: "minimal",
+        responseThrottleMs: 200,
       });
 
       // First delta: triggers sendMessage. Second delta within throttle:
@@ -1922,7 +1928,7 @@ describe("MessageBuffer", () => {
   });
 
   describe("response message segments at tool boundaries", () => {
-    const STATUS_OFF = { visibility: "none" as const };
+    const STATUS_OFF = { visibility: "none" as const, responseThrottleMs: 200 };
 
     it("text → tool → text produces two distinct response bubbles", async () => {
       // Spec: "Response message segments at tool boundaries" — the seal

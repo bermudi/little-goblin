@@ -254,8 +254,11 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
                 // Dispose the runner so next message recreates it with the new directory.
                 const prior = runners.get(session.id);
                 if (prior) {
-                  prior.dispose();
-                  runners.delete(session.id);
+                  try {
+                    prior.dispose();
+                  } finally {
+                    runners.delete(session.id);
+                  }
                 }
               },
             });

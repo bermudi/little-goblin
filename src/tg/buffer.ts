@@ -53,8 +53,8 @@ export interface ToolSlot {
   startedAt: number;
   /** End time of the most recent `onToolEnd` for this slot. */
   endedAt?: number;
-  /** Sticky: set true on any error end, never cleared. */
-  everErrored: boolean;
+  /** Outcome of the most recent completed invocation. */
+  lastCompletedError: boolean;
 }
 
 /** Telegram's hard message length limit. */
@@ -315,14 +315,13 @@ export class MessageBuffer implements TurnCallbacks {
       existing.runningCount++;
       existing.startedAt = this.now();
       existing.endedAt = undefined;
-      // everErrored is preserved across re-entry — only ever set, never cleared.
     } else {
       this.slots.set(name, {
         runningCount: 1,
         completedCount: 0,
         startedAt: this.now(),
         endedAt: undefined,
-        everErrored: false,
+        lastCompletedError: false,
       });
     }
     this.commitStatus();
@@ -335,7 +334,7 @@ export class MessageBuffer implements TurnCallbacks {
     slot.runningCount--;
     slot.completedCount++;
     slot.endedAt = this.now();
-    if (isError) slot.everErrored = true;
+    slot.lastCompletedError = isError;
     this.commitStatus();
   }
 
@@ -444,7 +443,7 @@ export class MessageBuffer implements TurnCallbacks {
       for (const [name, slot] of this.slots) {
         if (kept <= cap) break;
         const effectiveState =
-          slot.runningCount > 0 ? "running" : slot.everErrored ? "err" : "ok";
+          slot.runningCount > 0 ? "running" : slot.lastCompletedError ? "err" : "ok";
         if (effectiveState !== "running") {
           elided.add(name);
           kept--;
@@ -455,7 +454,7 @@ export class MessageBuffer implements TurnCallbacks {
     for (const [name, slot] of this.slots) {
       if (elided.has(name)) continue;
       const effectiveState =
-        slot.runningCount > 0 ? "running" : slot.everErrored ? "err" : "ok";
+        slot.runningCount > 0 ? "running" : slot.lastCompletedError ? "err" : "ok";
       const icon =
         effectiveState === "running" ? "🔧" : effectiveState === "err" ? "❌" : "✅";
       const count = slot.runningCount + slot.completedCount;

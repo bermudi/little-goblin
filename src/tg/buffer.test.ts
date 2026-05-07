@@ -255,14 +255,28 @@ describe("MessageBuffer", () => {
         expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ bash ×2");
       });
 
-      it("mixed success and error sticks to err (sticky error)", () => {
+      it("mixed success and error uses latest completed outcome", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("read", {});
-        buffer.onToolEnd("read", false);
-        buffer.onToolStart("read", {});
         buffer.onToolEnd("read", true);
-        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n❌ read ×2");
+        buffer.onToolStart("read", {});
+        buffer.onToolEnd("read", false);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ read ×2");
+      });
+
+      it("retry trajectory renders successful final edit after earlier failures", () => {
+        const { bot } = makeBot();
+        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        buffer.onToolStart("edit", {});
+        buffer.onToolEnd("edit", true);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n❌ edit");
+        buffer.onToolStart("edit", {});
+        buffer.onToolEnd("edit", true);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n❌ edit ×2");
+        buffer.onToolStart("edit", {});
+        buffer.onToolEnd("edit", false);
+        expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ edit ×3");
       });
 
       it("renders empty string in none visibility (any state)", () => {
@@ -331,7 +345,7 @@ describe("MessageBuffer", () => {
         expect(slots[0]![0]).toBe("bash");
         expect(slots[0]![1].runningCount).toBe(1);
         expect(slots[0]![1].completedCount).toBe(0);
-        expect(slots[0]![1].everErrored).toBe(false);
+        expect(slots[0]![1].lastCompletedError).toBe(false);
       });
 
       it("subsequent onToolStart for different tools create separate slots", () => {
@@ -378,13 +392,13 @@ describe("MessageBuffer", () => {
         expect(slot.completedCount).toBe(2);
       });
 
-      it("error sets everErrored sticky on the slot", () => {
+      it("error sets lastCompletedError on the slot", () => {
         const { bot } = makeBot();
         const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", true);
         const slot = buffer._state().slots[0]![1];
-        expect(slot.everErrored).toBe(true);
+        expect(slot.lastCompletedError).toBe(true);
         expect(slot.completedCount).toBe(1);
       });
 

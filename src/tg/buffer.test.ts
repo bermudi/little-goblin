@@ -1408,6 +1408,57 @@ describe("MessageBuffer", () => {
       const lastEdit = m.edit[m.edit.length - 1];
       expect(lastEdit?.messageId).toBe(102);
     });
+
+    it("force flush waits for in-flight rollover and does not duplicate the tail", async () => {
+      let releaseEdit!: () => void;
+      const editGate = new Promise<void>((resolve) => {
+        releaseEdit = resolve;
+      });
+      const send: SendCall[] = [];
+      const edit: EditCall[] = [];
+      let nextMessageId = 100;
+      const bot = {
+        api: {
+          sendMessage: async (chatId: number | string, text: string) => {
+            send.push({ chatId, text });
+            return { message_id: ++nextMessageId };
+          },
+          editMessageText: async (
+            chatId: number | string,
+            messageId: number,
+            text: string,
+          ) => {
+            await editGate;
+            edit.push({ chatId, messageId, text });
+            return true;
+          },
+          sendChatAction: async () => true,
+        },
+      } as unknown as Bot;
+      const buffer = new MessageBuffer(bot, 1, undefined, ALL_OFF);
+
+      buffer.onTextDelta("seed");
+      await buffer.flushResponse(true);
+      expect(buffer._state().responseMessageId).toBe(101);
+
+      buffer.onTextDelta("x".repeat(MAX_MESSAGE_LEN + 10));
+      const rollover = buffer.flushResponse(false);
+      await tick();
+      const final = buffer.flushResponse(true);
+      await tick();
+
+      expect(send.length).toBe(1);
+      releaseEdit();
+      await rollover;
+      await final;
+
+      expect(edit).toHaveLength(1);
+      expect(send.map((s) => s.text)).toEqual([
+        "seed",
+        "x".repeat(14),
+      ]);
+      expect(buffer._state().responseMessageId).toBe(102);
+    });
   });
 
   describe("big output file escape (>20KB)", () => {

@@ -226,6 +226,14 @@ export class MessageBuffer implements TurnCallbacks {
    */
   private editingResponse: Promise<void> | null = null;
 
+  /**
+   * Promise tracking the whole response flush, including 4096 rollover.
+   * Rollover mutates `accumulatedText` and `responseMessageId` across multiple
+   * Telegram calls, so serializing only send/edit is insufficient: a concurrent
+   * force flush can observe the half-rolled state and duplicate the tail bubble.
+   */
+  private flushingResponse: Promise<void> | null = null;
+
   constructor(bot: Bot, chatId: number, topicId: number | undefined, options: MessageBufferOptions = {}) {
     this.bot = bot;
     this.chatId = chatId;
@@ -559,6 +567,27 @@ export class MessageBuffer implements TurnCallbacks {
    * will add 20KB file escape.
    */
   async flushResponse(force: boolean = false): Promise<void> {
+    if (this.flushingResponse) {
+      if (!force) {
+        log.debug("response: skip (flush in-flight)", { accLen: this.accumulatedText.length });
+        return;
+      }
+      log.debug("response: await flush in-flight (force)", { accLen: this.accumulatedText.length });
+      await this.flushingResponse;
+    }
+
+    const inFlight = this.flushResponseOnce(force);
+    this.flushingResponse = inFlight;
+    try {
+      await inFlight;
+    } finally {
+      if (this.flushingResponse === inFlight) {
+        this.flushingResponse = null;
+      }
+    }
+  }
+
+  private async flushResponseOnce(force: boolean = false): Promise<void> {
     const now = this.now();
     if (!force && now - this.lastResponseEditTime < this.responseThrottleMs) {
       log.debug("response: skip (throttled)", {

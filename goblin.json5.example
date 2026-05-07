@@ -30,7 +30,7 @@
   // API keys. Set whichever your model needs. Values support env var names
   // and !commands just like botToken.
   // poeApiKey: "POE_API_KEY",
-  // openrouterApiKey: "!pass show api/openrouter",
+  // openrouterApiKey: "!pass-cli item view 'pass://Keys/OpenRouter/Api Key'",
   // openaiApiKey: "OPENAI_API_KEY",
   // anthropicApiKey: "ANTHROPIC_API_KEY",
 

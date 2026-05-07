@@ -16,6 +16,8 @@ export interface SessionState {
   topicId?: number;
   title?: string;
   archived?: boolean;
+  /** Directory to use as cwd and agentDir for this session's agent. */
+  projectDir?: string;
 }
 
 /** Root config.json shape */

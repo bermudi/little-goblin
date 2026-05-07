@@ -40,6 +40,8 @@ export interface AgentRunnerOptions {
   customTools: ToolDefinition[];
   subagentRunner?: SubagentRunner;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
+  /** Directory to use as cwd and agentDir. Falls back to goblin defaults when absent. */
+  projectDir?: string;
 }
 
 /**
@@ -59,6 +61,7 @@ export class AgentRunner {
   private activeScope: ActiveScope;
   private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
   private topicNameCache = new Map<string, string | null>();
+  private projectDir: string | undefined;
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
    * resolve within the cascade timeout. Once set, `isStreaming` reports
@@ -76,6 +79,7 @@ export class AgentRunner {
     this.customTools = opts.customTools;
     this.subagentRunner = opts.subagentRunner ?? null;
     this.getTopicName = opts.getTopicName;
+    this.projectDir = opts.projectDir;
     // Construction is cheap (no I/O); the directory is created lazily on first write.
     this.memoryStore = new MemoryStore(opts.cfg.goblinHome);
   }
@@ -94,7 +98,10 @@ export class AgentRunner {
     const { authStorage, modelRegistry, settingsManager } = createPiServices(home);
     authStorage.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
 
-    const sessionManager = SessionManager.inMemory(workdirPath(home));
+    const cwd = this.projectDir ?? workdirPath(home);
+    const agentDir = this.projectDir ?? piAgentDir(home);
+
+    const sessionManager = SessionManager.inMemory(cwd);
 
     // Caller-supplied tools first; then memory; then spawn_subagent if wired.
     const tools: ToolDefinition[] = [
@@ -132,20 +139,19 @@ export class AgentRunner {
     }
 
     // Build an isolated resource loader that pins skill discovery to
-    // goblin's own tree. Without this, pi's DefaultPackageManager
-    // auto-discovers skills from ~/.agents/skills/ and walks up from cwd,
-    // leaking the user's personal skills into goblin Telegram sessions.
+    // goblin's own tree when no projectDir is set. When projectDir is set,
+    // skills are discovered from the project directory.
     const resourceLoader = new DefaultResourceLoader({
-      cwd: workdirPath(home),
-      agentDir: piAgentDir(home),
+      cwd,
+      agentDir,
       settingsManager,
       additionalSkillPaths: [join(home, "skills")],
     });
     await resourceLoader.reload();
 
     const { session } = await createAgentSession({
-      cwd: workdirPath(home),
-      agentDir: piAgentDir(home),
+      cwd,
+      agentDir,
       authStorage,
       modelRegistry,
       settingsManager,

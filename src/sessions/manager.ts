@@ -208,6 +208,20 @@ export class SessionManager {
   }
 
   /**
+   * Set or clear the project directory for an existing session.
+   * Updates state.json atomically.
+   */
+  setProjectDir(sessionId: string, projectDir: string | undefined): void {
+    const state = loadState(this.home, sessionId);
+    if (!state) {
+      throw new Error(`session not found: ${sessionId}`);
+    }
+    const updated: SessionState = { ...state, projectDir };
+    saveState(this.home, updated);
+    log.info("set projectDir", { sessionId, projectDir });
+  }
+
+  /**
    * List all sessions by scanning the sessions directory.
    */
   list(): SessionState[] {

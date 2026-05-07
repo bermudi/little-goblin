@@ -23,13 +23,14 @@ import { interruptAndCascade, DEFAULT_CASCADE_TIMEOUT_MS, type CascadeResult } f
 import { cancelReply, formatCascadeTimeoutSuffix } from "./commands/cancel.ts";
 import { executeNew } from "./commands/new.ts";
 import { executeArchive } from "./commands/archive.ts";
+import { executeProject } from "./commands/project.ts";
 import { parseCommand } from "./commands/parse.ts";
 import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./commands/subagents.ts";
 import { HELP_REPLY } from "./commands/help.ts";
 import { generateDiagnostics } from "./diagnostics.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
-const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/debug"]);
+const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/debug"]);
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -196,6 +197,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
               customTools: betaTools,
               subagentRunner,
               getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
+              projectDir: result.session.projectDir,
             }),
           );
           log.debug("created runner for /new session", {
@@ -238,6 +240,35 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           // user message in this topic will auto-create a fresh session.
           const archiveSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
           await ctx.reply(`${archiveResult.reply}${archiveSuffix}`);
+          return;
+        }
+        case "/project": {
+          let projectResult;
+          try {
+            projectResult = executeProject({
+              hasSession: session !== null,
+              rawText: rawText ?? "",
+              setProjectDir: (dir) => {
+                if (!session) return;
+                manager.setProjectDir(session.id, dir);
+                // Dispose the runner so next message recreates it with the new directory.
+                const prior = runners.get(session.id);
+                if (prior) {
+                  prior.dispose();
+                  runners.delete(session.id);
+                }
+              },
+            });
+          } catch (err) {
+            log.error("project failed", {
+              error: String(err),
+              sessionId: session?.id,
+            });
+            await ctx.reply("Failed to set project directory. Please try again.");
+            return;
+          }
+          const projectSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
+          await ctx.reply(`${projectResult.reply}${projectSuffix}`);
           return;
         }
         case "/debug": {
@@ -312,6 +343,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
         customTools: betaTools,
         subagentRunner,
         getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
+        projectDir: session.projectDir,
       });
       runners.set(session.id, runner);
       log.debug("created runner for session", { sessionId: session.id });

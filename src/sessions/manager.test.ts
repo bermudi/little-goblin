@@ -226,4 +226,32 @@ describe("SessionManager", () => {
       expect(ids).toEqual([first.id, second.id].sort());
     });
   });
+
+  describe("setProjectDir", () => {
+    it("sets projectDir on an existing session", () => {
+      const loc: ChatLocator = { chatId: 1 };
+      const created = manager.createForChat(loc);
+      expect(created.projectDir).toBeUndefined();
+
+      manager.setProjectDir(created.id, "/home/daniel/project");
+      const updated = manager.resolve(loc);
+      expect(updated?.projectDir).toBe("/home/daniel/project");
+    });
+
+    it("clears projectDir when passed undefined", () => {
+      const loc: ChatLocator = { chatId: 1 };
+      const created = manager.createForChat(loc);
+      manager.setProjectDir(created.id, "/home/daniel/project");
+
+      manager.setProjectDir(created.id, undefined);
+      const updated = manager.resolve(loc);
+      expect(updated?.projectDir).toBeUndefined();
+    });
+
+    it("throws when session does not exist", () => {
+      expect(() => manager.setProjectDir("nonexistent", "/foo")).toThrow(
+        /session not found/,
+      );
+    });
+  });
 });

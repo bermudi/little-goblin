@@ -24,13 +24,14 @@ import { cancelReply, formatCascadeTimeoutSuffix } from "./commands/cancel.ts";
 import { executeNew } from "./commands/new.ts";
 import { executeArchive } from "./commands/archive.ts";
 import { executeProject } from "./commands/project.ts";
+import { executeModel } from "./commands/model.ts";
 import { parseCommand } from "./commands/parse.ts";
 import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./commands/subagents.ts";
 import { HELP_REPLY } from "./commands/help.ts";
 import { generateDiagnostics } from "./diagnostics.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
-const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/debug"]);
+const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug"]);
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -198,6 +199,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
               subagentRunner,
               getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
               projectDir: result.session.projectDir,
+              modelName: result.session.modelName,
             }),
           );
           log.debug("created runner for /new session", {
@@ -274,6 +276,39 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           await ctx.reply(`${projectResult.reply}${projectSuffix}`);
           return;
         }
+        case "/model": {
+          let modelResult;
+          try {
+            modelResult = executeModel({
+              hasSession: session !== null,
+              rawText: rawText ?? "",
+              favorites: cfg.favorites,
+              cfg,
+              setModelName: (name) => {
+                if (!session) return;
+                manager.setModelName(session.id, name);
+                const prior = runners.get(session.id);
+                if (prior) {
+                  try {
+                    prior.dispose();
+                  } finally {
+                    runners.delete(session.id);
+                  }
+                }
+              },
+            });
+          } catch (err) {
+            log.error("model failed", {
+              error: String(err),
+              sessionId: session?.id,
+            });
+            await ctx.reply("Failed to switch model. Please try again.");
+            return;
+          }
+          const modelSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
+          await ctx.reply(`${modelResult.reply}${modelSuffix}`);
+          return;
+        }
         case "/debug": {
           if (!session) {
             await ctx.reply("No active session.");
@@ -347,6 +382,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
         subagentRunner,
         getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
         projectDir: session.projectDir,
+        modelName: session.modelName,
       });
       runners.set(session.id, runner);
       log.debug("created runner for session", { sessionId: session.id });

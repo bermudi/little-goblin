@@ -163,6 +163,7 @@ describe("ensureGoblinHome", () => {
       modelName: "test",
       logLevel: "info" as const,
       toolVisibility: "standard" as const,
+      favorites: [],
     };
 
     ensureGoblinHome(cfg);

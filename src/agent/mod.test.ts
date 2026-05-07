@@ -130,6 +130,7 @@ function makeConfig(home: string): Config {
     goblinHome: home,
     logLevel: "info",
     toolVisibility: "standard",
+    favorites: [],
   };
 }
 

@@ -42,6 +42,8 @@ export interface AgentRunnerOptions {
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
   /** Directory to use as cwd and agentDir. Falls back to goblin defaults when absent. */
   projectDir?: string;
+  /** Session-scoped model override. Falls back to config default when absent. */
+  modelName?: string;
 }
 
 /**
@@ -62,6 +64,7 @@ export class AgentRunner {
   private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
   private topicNameCache = new Map<string, string | null>();
   private projectDir: string | undefined;
+  private _modelName: string | undefined;
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
    * resolve within the cascade timeout. Once set, `isStreaming` reports
@@ -80,6 +83,7 @@ export class AgentRunner {
     this.subagentRunner = opts.subagentRunner ?? null;
     this.getTopicName = opts.getTopicName;
     this.projectDir = opts.projectDir;
+    this._modelName = opts.modelName;
     // Construction is cheap (no I/O); the directory is created lazily on first write.
     this.memoryStore = new MemoryStore(opts.cfg.goblinHome);
   }
@@ -92,7 +96,7 @@ export class AgentRunner {
     if (this.session) return;
 
     const home = this.cfg.goblinHome;
-    const resolved = resolveModel(this.cfg);
+    const resolved = resolveModel({ ...this.cfg, modelName: this._modelName ?? this.cfg.modelName });
 
     // Create pi services with goblin paths
     const { authStorage, modelRegistry, settingsManager } = createPiServices(home);
@@ -262,11 +266,11 @@ export class AgentRunner {
   }
 
   /**
-   * Configured model id (passed at construction time via `Config.modelName`).
+   * Configured model id (session override or config default).
    * Available even before the session has been initialized.
    */
   get modelName(): string {
-    return this.cfg.modelName;
+    return this._modelName ?? this.cfg.modelName;
   }
 
   /**

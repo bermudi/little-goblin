@@ -15,6 +15,7 @@ function makeTestConfig(home: string): Config {
     goblinHome: home,
     logLevel: "info",
     toolVisibility: "standard",
+    favorites: [],
   };
 }
 
@@ -250,6 +251,34 @@ describe("SessionManager", () => {
 
     it("throws when session does not exist", () => {
       expect(() => manager.setProjectDir("nonexistent", "/foo")).toThrow(
+        /session not found/,
+      );
+    });
+  });
+
+  describe("setModelName", () => {
+    it("sets modelName on an existing session", () => {
+      const loc: ChatLocator = { chatId: 1 };
+      const created = manager.createForChat(loc);
+      expect(created.modelName).toBeUndefined();
+
+      manager.setModelName(created.id, "poe/GPT-4o");
+      const updated = manager.resolve(loc);
+      expect(updated?.modelName).toBe("poe/GPT-4o");
+    });
+
+    it("clears modelName when passed undefined", () => {
+      const loc: ChatLocator = { chatId: 1 };
+      const created = manager.createForChat(loc);
+      manager.setModelName(created.id, "poe/GPT-4o");
+
+      manager.setModelName(created.id, undefined);
+      const updated = manager.resolve(loc);
+      expect(updated?.modelName).toBeUndefined();
+    });
+
+    it("throws when session does not exist", () => {
+      expect(() => manager.setModelName("nonexistent", "poe/GPT-4o")).toThrow(
         /session not found/,
       );
     });

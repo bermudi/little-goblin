@@ -18,6 +18,8 @@ export interface SessionState {
   archived?: boolean;
   /** Directory to use as cwd and agentDir for this session's agent. */
   projectDir?: string;
+  /** Session-scoped model override. Falls back to config default when absent. */
+  modelName?: string;
 }
 
 /** Root config.json shape */

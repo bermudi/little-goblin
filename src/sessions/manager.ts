@@ -222,6 +222,20 @@ export class SessionManager {
   }
 
   /**
+   * Set or clear the session-scoped model override.
+   * Updates state.json atomically.
+   */
+  setModelName(sessionId: string, modelName: string | undefined): void {
+    const state = loadState(this.home, sessionId);
+    if (!state) {
+      throw new Error(`session not found: ${sessionId}`);
+    }
+    const updated: SessionState = { ...state, modelName };
+    saveState(this.home, updated);
+    log.info("set modelName", { sessionId, modelName });
+  }
+
+  /**
    * List all sessions by scanning the sessions directory.
    */
   list(): SessionState[] {

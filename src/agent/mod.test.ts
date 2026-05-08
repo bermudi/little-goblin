@@ -169,6 +169,7 @@ beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "goblin-agent-test-"));
   mkdirSync(join(tmpDir, "sessions", "sess-001"), { recursive: true });
   writeFileSync(join(tmpDir, "sessions", "sess-001", "events.jsonl"), "");
+  writeFileSync(join(tmpDir, "sessions", "sess-001", "transcript.jsonl"), "");
   mkdirSync(join(tmpDir, "workdir"), { recursive: true });
   mkdirSync(join(tmpDir, "goblin"), { recursive: true });
 
@@ -480,6 +481,48 @@ describe("AgentRunner", () => {
         expect(parsed.type).toBeDefined();
         expect(parsed.ts).toBeDefined();
       }
+    });
+  });
+
+  describe("transcript.jsonl", () => {
+    it("appends final message entries for message_end events only", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      sessionHolder.emit({ type: "agent_start" });
+      sessionHolder.emit({
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "partial" }] },
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: 0,
+          delta: "partial",
+          partial: { role: "assistant", content: [{ type: "text", text: "partial" }] },
+        },
+      });
+      sessionHolder.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "final" }],
+          provider: "openai",
+          model: "gpt-test",
+          stopReason: "stop",
+          timestamp: 123,
+        },
+      });
+
+      const content = readFileSync(
+        join(tmpDir, "sessions", "sess-001", "transcript.jsonl"),
+        "utf-8",
+      );
+      const lines = content.trim().split("\n").filter(Boolean);
+      expect(lines).toHaveLength(1);
+      const parsed = JSON.parse(lines[0]!);
+      expect(parsed.role).toBe("assistant");
+      expect(parsed.content).toEqual([{ type: "text", text: "final" }]);
+      expect(parsed.model).toBe("gpt-test");
     });
   });
 

@@ -90,6 +90,25 @@ The system SHALL create the complete filesystem structure when creating a sessio
 - **WHEN** `createForChat()` is called
 - **THEN** it SHALL create: `sessions/<id>/` directory, `sessions/<id>/workdir/` directory, `sessions/<id>/events.jsonl` (empty), `sessions/<id>/transcript.jsonl` (empty), and `sessions/<id>/state.json`
 
+### Requirement: Write transcript entries on message completion
+
+The system SHALL append final message entries to `transcript.jsonl` when pi emits `message_end` events.
+
+#### Scenario: Message end event received
+
+- **WHEN** a `message_end` event is received from pi
+- **THEN** the system SHALL extract the `message` field
+- **AND** normalize it into a transcript entry with `ts`, `role`, `timestamp`, and `content`
+- **AND** for assistant messages, include `api`, `provider`, `model`, `stopReason`, and `errorMessage` if present
+- **AND** for tool result messages, include `toolCallId`, `toolName`, and `isError`
+- **AND** drop noisy/sensitive payloads: image base64 data (keep `mimeType`), provider signatures (`textSignature`, `thinkingSignature`), and tool result `details`
+- **AND** append the entry as a single JSONL line to `transcript.jsonl`
+
+#### Scenario: Non-message_end events received
+
+- **WHEN** an event type other than `message_end` is received
+- **THEN** the system SHALL NOT write to `transcript.jsonl`
+
 ### Requirement: Support session rebinding for DMs
 
 The system SHALL allow creating new DM sessions even when one exists (orphaning the old session).

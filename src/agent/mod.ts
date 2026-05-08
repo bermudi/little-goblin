@@ -15,7 +15,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { appendEvent, dispatchAgentEvent } from "./events.ts";
+import { appendEvent, appendTranscriptEntry, dispatchAgentEvent } from "./events.ts";
 import type { TurnCallbacks } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
 import { workdirPath, createPiServices, piAgentDir } from "../pi-host.ts";
@@ -181,6 +181,7 @@ export class AgentRunner {
   private handleEvent(event: AgentSessionEvent): void {
     // Append every event to events.jsonl
     appendEvent(this.sessionId, this.cfg.goblinHome, event);
+    appendTranscriptEntry(this.sessionId, this.cfg.goblinHome, event);
 
     if (!this.callbacks) return;
 

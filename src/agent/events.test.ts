@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendEvent, dispatchAgentEvent, type TurnCallbacks } from "./events.ts";
+import {
+  appendEvent,
+  appendTranscriptEntry,
+  dispatchAgentEvent,
+  type TurnCallbacks,
+} from "./events.ts";
 
 describe("appendEvent", () => {
   let tmpDir: string;
@@ -15,6 +20,7 @@ describe("appendEvent", () => {
     const sessionDir = join(tmpDir, "sessions", sessionId);
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(join(sessionDir, "events.jsonl"), "");
+    writeFileSync(join(sessionDir, "transcript.jsonl"), "");
   });
 
   afterEach(() => {
@@ -91,6 +97,151 @@ describe("appendEvent", () => {
     expect(existsSync(join(sessionDir, "events.jsonl"))).toBe(true);
     const content = readFileSync(join(sessionDir, "events.jsonl"), "utf-8");
     expect(content.trim()).not.toBe("");
+  });
+
+  it("strips message and assistantMessageEvent.partial from message_update", () => {
+    appendEvent(sessionId, tmpDir, {
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "hi",
+        partial: { role: "assistant", content: [{ type: "text", text: "hi" }] },
+      },
+    });
+
+    const content = readFileSync(
+      join(tmpDir, "sessions", sessionId, "events.jsonl"),
+      "utf-8",
+    );
+    const parsed = JSON.parse(content.trim());
+    expect(parsed.type).toBe("message_update");
+    expect(parsed.message).toBeUndefined();
+    expect(parsed.assistantMessageEvent).toBeDefined();
+    expect(parsed.assistantMessageEvent.partial).toBeUndefined();
+    expect(parsed.assistantMessageEvent.delta).toBe("hi");
+    expect(parsed.ts).toBeDefined();
+  });
+
+  it("preserves non-message_update events intact", () => {
+    appendEvent(sessionId, tmpDir, {
+      type: "message_end",
+      message: { role: "assistant", content: [] },
+    });
+
+    const content = readFileSync(
+      join(tmpDir, "sessions", sessionId, "events.jsonl"),
+      "utf-8",
+    );
+    const parsed = JSON.parse(content.trim());
+    expect(parsed.type).toBe("message_end");
+    expect(parsed.message).toBeDefined();
+    expect(parsed.ts).toBeDefined();
+  });
+});
+
+describe("appendTranscriptEntry", () => {
+  let tmpDir: string;
+  let sessionId: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "goblin-transcript-test-"));
+    sessionId = "test-session-123";
+    const sessionDir = join(tmpDir, "sessions", sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, "transcript.jsonl"), "");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("ignores events that are not message_end", () => {
+    appendTranscriptEntry(sessionId, tmpDir, { type: "message_start", message: { role: "user" } });
+
+    const content = readFileSync(join(tmpDir, "sessions", sessionId, "transcript.jsonl"), "utf-8");
+    expect(content).toBe("");
+  });
+
+  it("appends user messages", () => {
+    appendTranscriptEntry(sessionId, tmpDir, {
+      type: "message_end",
+      ts: "2026-05-07T20:00:00.000Z",
+      message: { role: "user", content: "hello goblin", timestamp: 123 },
+    });
+
+    const content = readFileSync(join(tmpDir, "sessions", sessionId, "transcript.jsonl"), "utf-8");
+    const parsed = JSON.parse(content.trim());
+    expect(parsed).toEqual({
+      ts: "2026-05-07T20:00:00.000Z",
+      role: "user",
+      timestamp: 123,
+      content: "hello goblin",
+    });
+  });
+
+  it("appends assistant messages without provider signatures or image data", () => {
+    appendTranscriptEntry(sessionId, tmpDir, {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "hmm", thinkingSignature: "secret-ish-provider-state" },
+          { type: "text", text: "hi", textSignature: "provider-state" },
+          { type: "image", mimeType: "image/png", data: "base64-data" },
+          { type: "toolCall", id: "call-1", name: "memory_read", arguments: { target: "user" } },
+        ],
+        api: "openai-responses",
+        provider: "openai",
+        model: "gpt-test",
+        usage: { totalTokens: 10 },
+        stopReason: "toolUse",
+        timestamp: 456,
+      },
+    });
+
+    const content = readFileSync(join(tmpDir, "sessions", sessionId, "transcript.jsonl"), "utf-8");
+    const parsed = JSON.parse(content.trim());
+    expect(parsed.role).toBe("assistant");
+    expect(parsed.provider).toBe("openai");
+    expect(parsed.model).toBe("gpt-test");
+    expect(parsed.stopReason).toBe("toolUse");
+    expect(parsed.content).toEqual([
+      { type: "thinking", text: "hmm" },
+      { type: "text", text: "hi" },
+      { type: "image", mimeType: "image/png" },
+      { type: "toolCall", id: "call-1", name: "memory_read", arguments: { target: "user" } },
+    ]);
+    expect(JSON.stringify(parsed)).not.toContain("provider-state");
+    expect(JSON.stringify(parsed)).not.toContain("base64-data");
+  });
+
+  it("appends tool result messages", () => {
+    appendTranscriptEntry(sessionId, tmpDir, {
+      type: "message_end",
+      message: {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "memory_read",
+        content: [{ type: "text", text: "done" }],
+        details: { verbose: "not copied" },
+        isError: false,
+        timestamp: 789,
+      },
+    });
+
+    const content = readFileSync(join(tmpDir, "sessions", sessionId, "transcript.jsonl"), "utf-8");
+    const parsed = JSON.parse(content.trim());
+    expect(parsed).toEqual({
+      ts: expect.any(String),
+      role: "toolResult",
+      timestamp: 789,
+      content: [{ type: "text", text: "done" }],
+      toolCallId: "call-1",
+      toolName: "memory_read",
+      isError: false,
+    });
   });
 });
 

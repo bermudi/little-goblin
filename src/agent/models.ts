@@ -31,7 +31,7 @@ function resolveMaxTokens(modelId: string, fallback = 8_192): number {
 
   // Exact match across all providers
   for (const p of providers) {
-    const m = getModel(p, modelId);
+    const m = getModel(p, modelId as never) as Model<Api> | undefined;
     if (m) return m.maxTokens;
   }
 
@@ -39,7 +39,7 @@ function resolveMaxTokens(modelId: string, fallback = 8_192): number {
   const stripped = modelId.replace(/-\d{8}$/, "");
   if (stripped !== modelId) {
     for (const p of providers) {
-      const m = getModel(p, stripped);
+      const m = getModel(p, stripped as never) as Model<Api> | undefined;
       if (m) return m.maxTokens;
     }
   }

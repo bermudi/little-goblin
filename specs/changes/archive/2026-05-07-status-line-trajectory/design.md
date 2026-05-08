@@ -33,12 +33,12 @@ type ToolSlot = {
   /** End time of the most recent `onToolEnd` for this slot. */
   endedAt?: number;
   /** Sticky: set true on any error end, never cleared. */
-  everErrored: boolean;
+  lastCompletedError: boolean;
 };
 private slots: Map<string, ToolSlot> = new Map();
 ```
 
-Insertion order on `Map` is the observation order required by the spec — no parallel index needed. Effective render state is derived (not stored): `runningCount > 0 → "running"`, else `everErrored → "err"`, else `"ok"`. The display count `×N` rendered when `runningCount + completedCount > 1` reflects total invocations observed.
+Insertion order on `Map` is the observation order required by the spec — no parallel index needed. Effective render state is derived (not stored): `runningCount > 0 → "running"`, else `lastCompletedError → "err"`, else `"ok"`. The display count `×N` rendered when `runningCount + completedCount > 1` reflects total invocations observed.
 
 **Why over alternatives:** A "compatibility" mode that keeps the old phase machine and synthesizes slots on top would double the state and double the test surface. There is one user (bermudi), no migration concerns, no public consumers of `_state()` outside tests. Hard cutover is the smallest correct change. A simpler `state` enum (no `runningCount`) would mishandle parallel invocations of the same tool (a second start while the first is still in flight): the first end would flip the slot to `ok` while another invocation is still running. Splitting into `runningCount`/`completedCount` keeps the slot honest under parallelism.
 
@@ -61,7 +61,7 @@ Insertion order on `Map` is the observation order required by the spec — no pa
 
 **Why over alternatives:** Per-arg slots would explode the line count for any agent that calls `read` on five different files. The status line is a *summary affordance* — the journal is `events.jsonl`. Folding by name preserves the at-a-glance signal.
 
-**Constraint:** Mixed success/error across folded invocations resolves to `err` (sticky). The spec calls this out explicitly so a single failure in a batch is not hidden by later successes.
+**Constraint:** Mixed success/error across folded sequential retry invocations resolves to the latest completed outcome. A successful retry should render as success while preserving the attempt count, e.g. `"✅ edit ×3"`.
 
 ### D4: Cap elides oldest *completed* slots; running slots are immortal
 
@@ -121,7 +121,7 @@ The bulk of the work. Concrete changes:
    - No new throttle fields needed; existing ones cover the new render.
 
 3. **Add types/constants:**
-   - `interface ToolSlot { runningCount: number; completedCount: number; startedAt: number; endedAt?: number; everErrored: boolean }` — exported.
+   - `interface ToolSlot { runningCount: number; completedCount: number; startedAt: number; endedAt?: number; lastCompletedError: boolean }` — exported.
    - `export const VISIBILITY_LIMITS: Record<string, { cap: number; timing: boolean }>` per **D5**. Levels: `none` (cap 0, timing false), `minimal` (cap 8, timing false), `standard` (cap 12, timing false), `verbose` (cap 20, timing true), `debug` (cap 25, timing true).
 
 4. **Remove type:** `StatusPhase` export — see also the `src/tg/mod.ts` change below.
@@ -131,7 +131,7 @@ The bulk of the work. Concrete changes:
    - If `!placeholderSent && slots.size === 0` return `""`.
    - Header line: always `"🤔 thinking…"`.
    - For each slot, derive effective state then render `"<icon> <name>[ ×<count>][ (<sec>s)]"`:
-     - effective state: `runningCount > 0 → "running"`; else `everErrored → "err"`; else `"ok"`.
+     - effective state: `runningCount > 0 → "running"`; else `lastCompletedError → "err"`; else `"ok"`.
      - icon: `"🔧" / "✅" / "❌"`.
      - count = `runningCount + completedCount`. Suffix `" ×<count>"` only when `count > 1`.
      - timing suffix only when effective state is `ok` / `err` AND `endedAt` is defined AND the level's `timing` flag is true. Format: `((endedAt - startedAt) / 1000).toFixed(1) + "s"`.
@@ -140,12 +140,12 @@ The bulk of the work. Concrete changes:
 
 6. **Update `onToolStart(name, _input)`** per **Status renders per-tool slots in observation order**:
    - Visibility filter unchanged via `shouldShowTool`.
-   - Look up the slot. If absent, create with `{ runningCount: 1, completedCount: 0, startedAt: now(), endedAt: undefined, everErrored: false }`. If present, increment `runningCount`, set `startedAt = now()`, clear `endedAt`. The `everErrored` flag is preserved across re-entry — it is only ever set, never cleared (sticky-error is enforced at `onToolEnd`).
+   - Look up the slot. If absent, create with `{ runningCount: 1, completedCount: 0, startedAt: now(), endedAt: undefined, lastCompletedError: false }`. If present, increment `runningCount`, set `startedAt = now()`, clear `endedAt`.
    - Call `commitStatus()`.
 
 7. **Update `onToolEnd(name, isError)`** per **Status renders per-tool slots in observation order**:
    - Visibility filter unchanged.
-   - Look up the slot (must exist). Decrement `runningCount`, increment `completedCount`, set `endedAt = now()`. If `isError === true`, set `everErrored = true`. The effective render state is derived per **D1**, so an in-flight parallel sibling keeps the slot in `running` until `runningCount` reaches zero.
+   - Look up the slot (must exist). Decrement `runningCount`, increment `completedCount`, set `endedAt = now()`, set `lastCompletedError = isError`. The effective render state is derived per **D1**, so an in-flight parallel sibling keeps the slot in `running` until `runningCount` reaches zero.
    - Call `commitStatus()`.
 
 8. **Update `onTextDelta(delta)`** per **D7**: drop the `phase === "working" && toolsRunning.size === 0` block. Keep delta accumulation, chat-action, lazy placeholder, and `flushResponse`.

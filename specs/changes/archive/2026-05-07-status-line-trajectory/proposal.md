@@ -15,7 +15,7 @@ This change replaces the coarse phase machine with a per-tool ordered render: th
 **Behavior changes:**
 
 - `MessageBuffer.buildStatusLine` returns a multi-line string instead of a single line. Line 1 is `🤔 thinking…` (header, persists for the whole turn). Subsequent lines are per-tool slots in observation order.
-- Internal state replaces `toolsObserved: string[]` + `toolsRunning: Set<string>` with a single `Map<toolName, ToolSlot>` where `ToolSlot` carries `{ runningCount, completedCount, startedAt, endedAt?, everErrored }`. The display count `×N` reflects total invocations observed (running + completed). Parallel invocations of the same tool keep the slot in `running` until `runningCount` reaches zero.
+- Internal state replaces `toolsObserved: string[]` + `toolsRunning: Set<string>` with a single `Map<toolName, ToolSlot>` where `ToolSlot` carries `{ runningCount, completedCount, startedAt, endedAt?, lastCompletedError }`. The display count `×N` reflects total invocations observed (running + completed). Parallel invocations of the same tool keep the slot in `running` until `runningCount` reaches zero.
 - The phase machine (`thinking | working | done`) and the `StatusPhase` type are removed entirely. The header is a constant string for the turn; per-tool transitions are independent of any global phase.
 - Repeat invocations of the same tool name (sequential or parallel) increment the slot's running/completed counters rather than appending a new line.
 - A line cap per visibility level: when slot count exceeds the cap, the oldest *completed* slots are folded into a `… +N earlier` footer line. Running slots are never elided.

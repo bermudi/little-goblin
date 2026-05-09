@@ -113,6 +113,7 @@ mock.module("@earendil-works/pi-coding-agent", () => {
 // ---------------------------------------------------------------------------
 
 import { AgentRunner, type TurnCallbacks } from "./mod.ts";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { ChatLocator } from "../sessions/types.ts";
@@ -127,6 +128,9 @@ function makeConfig(home: string): Config {
     allowedTgUserIds: new Set([1]),
     modelName: "poe/Claude-Sonnet-4.6",
     poeApiKey: "test-key",
+    openrouterApiKey: "test-key",
+    openaiApiKey: "test-key",
+    anthropicApiKey: "test-key",
     goblinHome: home,
     logLevel: "info",
     toolVisibility: "standard",
@@ -149,9 +153,10 @@ function makeRunner(
   customTools: unknown[] = [],
   locator: ChatLocator = { chatId: 123 },
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>,
+  modelName?: string,
 ) {
   return new AgentRunner({
-    cfg: makeConfig(home),
+    cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }) },
     sessionId: "sess-001",
     locator,
     customTools: customTools as never,
@@ -377,6 +382,44 @@ describe("AgentRunner", () => {
       await runner.prompt("interrupt", nopCallbacks());
       expect(sessionHolder.followUp).toHaveBeenCalledWith("interrupt", undefined);
       expect(sessionHolder.sendUserMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Poe image-only prompt normalization", () => {
+    const image: ImageContent = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
+
+    it("adds default text before image-only messages for Poe chat completions", async () => {
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "poe/kimi-k2.6");
+      await runner.prompt([image], nopCallbacks());
+
+      expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith([
+        { type: "text", text: "What do you see in this image?" },
+        image,
+      ]);
+    });
+
+    it("does not rewrite captioned Poe chat completion image messages", async () => {
+      const content: (TextContent | ImageContent)[] = [{ type: "text", text: "caption" }, image];
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "poe/kimi-k2.6");
+      await runner.prompt(content, nopCallbacks());
+
+      expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith(content);
+    });
+
+    it("does not rewrite image-only messages for non-Poe models", async () => {
+      const content: ImageContent[] = [image];
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "openai/gpt-5.4");
+      await runner.prompt(content, nopCallbacks());
+
+      expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith(content);
+    });
+
+    it("uses the default text for Poe chat completion image follow-ups", async () => {
+      sessionHolder.streaming = true;
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "poe/kimi-k2.6");
+      await runner.prompt([image], nopCallbacks());
+
+      expect(sessionHolder.followUp).toHaveBeenCalledWith("What do you see in this image?", [image]);
     });
   });
 

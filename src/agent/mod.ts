@@ -20,7 +20,7 @@ import { appendEvent, appendTranscriptEntry, dispatchAgentEvent } from "./events
 import type { TurnCallbacks } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
 import { workdirPath, createPiServices, piAgentDir } from "../pi-host.ts";
-import { resolveModel } from "./models.ts";
+import { resolveModel, type ResolvedModel } from "./models.ts";
 import {
   MemoryStore,
   createMemoryReadIndexTool,
@@ -66,6 +66,7 @@ export class AgentRunner {
   private topicNameCache = new Map<string, string | null>();
   private projectDir: string | undefined;
   private _modelName: string | undefined;
+  private resolvedModel: ResolvedModel | null = null;
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
    * resolve within the cascade timeout. Once set, `isStreaming` reports
@@ -98,6 +99,7 @@ export class AgentRunner {
 
     const home = this.cfg.goblinHome;
     const resolved = resolveModel({ ...this.cfg, modelName: this._modelName ?? this.cfg.modelName });
+    this.resolvedModel = resolved;
 
     // Create pi services with goblin paths
     const { authStorage, modelRegistry, settingsManager } = createPiServices(home);
@@ -226,20 +228,43 @@ export class AgentRunner {
       await this.session.sendCustomMessage(aside, { deliverAs: "nextTurn" });
     }
 
+    const contentForModel = this.normalizeContentForModel(content);
+
     if (this.session.isStreaming) {
       // followUp API is (text, images?). Unpack content blocks for it.
-      if (typeof content === "string") {
-        await this.session.followUp(content);
+      if (typeof contentForModel === "string") {
+        await this.session.followUp(contentForModel);
       } else {
-        const texts = content
+        const texts = contentForModel
           .filter((c): c is TextContent => c.type === "text")
           .map((c) => c.text);
-        const images = content.filter((c): c is ImageContent => c.type === "image");
+        const images = contentForModel.filter((c): c is ImageContent => c.type === "image");
         await this.session.followUp(texts.join("\n"), images.length > 0 ? images : undefined);
       }
     } else {
-      await this.session.sendUserMessage(content);
+      await this.session.sendUserMessage(contentForModel);
     }
+  }
+
+  private normalizeContentForModel(
+    content: string | (TextContent | ImageContent)[],
+  ): string | (TextContent | ImageContent)[] {
+    if (typeof content === "string") return content;
+
+    const model = this.resolvedModel?.model;
+    if (model?.provider !== "poe" || model.api !== "openai-completions") return content;
+
+    const hasImage = content.some((part) => part.type === "image");
+    if (!hasImage) return content;
+
+    const text = content
+      .filter((part): part is TextContent => part.type === "text")
+      .map((part) => part.text)
+      .join("\n")
+      .trim();
+    if (text.length > 0) return content;
+
+    return [{ type: "text", text: "What do you see in this image?" }, ...content];
   }
 
   private async cachedTopicName(chatId: number, topicId: number): Promise<string | null> {

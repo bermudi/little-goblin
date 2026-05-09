@@ -5,12 +5,12 @@
 - [x] Verify: `bun run --bun tsc --noEmit` passes
 
 ## Phase 2: Resource loader branching in AgentRunner
-- [ ] Update `AgentRunner.init()` in `src/agent/mod.ts` to read `this.cfg.skillSources` and branch:
+- [x] Update `AgentRunner.init()` in `src/agent/mod.ts` to read `this.cfg.skillSources` and branch:
   - `"goblin-only"` → add `noSkills: true` to existing `DefaultResourceLoader` options
   - `"user"` → keep existing `DefaultResourceLoader` as-is (no `noSkills` flag)
   - `"auto"` → do not pass `resourceLoader` to `createAgentSession`
-- [ ] All three modes pass `agentDir: piAgentDir(home)`
-- [ ] Verify: `bun run --bun tsc --noEmit` passes, `bun test` passes
+- [x] All three modes pass `agentDir: piAgentDir(home)`
+- [x] Verify: `bun run --bun tsc --noEmit` passes, `bun test` passes
 
 ## Phase 3: Tests
 - [ ] Add test in `src/config.test.ts`: `skillSources` defaults to `"goblin-only"` when absent

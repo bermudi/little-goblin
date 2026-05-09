@@ -106,7 +106,7 @@ export class AgentRunner {
     authStorage.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
 
     const cwd = this.projectDir ?? workdirPath(home);
-    const agentDir = this.projectDir ?? piAgentDir(home);
+    const agentDir = piAgentDir(home);
 
     const sessionManager = SessionManager.inMemory(cwd);
 
@@ -145,16 +145,17 @@ export class AgentRunner {
       );
     }
 
-    // Build an isolated resource loader that pins skill discovery to
-    // goblin's own tree when no projectDir is set. When projectDir is set,
-    // skills are discovered from the project directory.
-    const resourceLoader = new DefaultResourceLoader({
-      cwd,
-      agentDir,
-      settingsManager,
-      additionalSkillPaths: [join(home, "skills")],
-    });
-    await resourceLoader.reload();
+    const resourceLoader =
+      this.cfg.skillSources === "auto"
+        ? undefined
+        : new DefaultResourceLoader({
+            cwd,
+            agentDir,
+            settingsManager,
+            additionalSkillPaths: [join(home, "skills")],
+            ...(this.cfg.skillSources === "goblin-only" ? { noSkills: true } : {}),
+          });
+    await resourceLoader?.reload();
 
     const { session } = await createAgentSession({
       cwd,
@@ -165,7 +166,7 @@ export class AgentRunner {
       sessionManager,
       model: resolved.model,
       customTools: tools,
-      resourceLoader,
+      ...(resourceLoader === undefined ? {} : { resourceLoader }),
     });
 
     this.session = session;

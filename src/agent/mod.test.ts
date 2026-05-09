@@ -148,6 +148,7 @@ function makeConfig(home: string): Config {
     goblinHome: home,
     logLevel: "info",
     toolVisibility: "standard",
+    skillSources: "goblin-only",
     favorites: [],
   };
 }

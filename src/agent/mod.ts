@@ -326,6 +326,12 @@ export class AgentRunner {
     if (!this.session) {
       throw new Error("Failed to initialize AgentSession");
     }
+    if (this._abortTimedOut) {
+      throw new Error("Cannot compact because the previous abort timed out. Try /new or /archive.");
+    }
+    if (this.session.isStreaming) {
+      throw new Error("Cannot compact while the agent is still streaming. Try /cancel first.");
+    }
     return this.session.compact(customInstructions);
   }
 

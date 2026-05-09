@@ -425,12 +425,23 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           return;
         }
         case "/compact": {
-          const compactResult = await executeCompact({
-            hasSession: session !== null,
-            rawText: rawText ?? "",
-            runner: existingRunner,
-          });
-          await ctx.reply(compactResult.reply);
+          let compactResult;
+          try {
+            compactResult = await executeCompact({
+              hasSession: session !== null,
+              rawText: rawText ?? "",
+              runner: existingRunner,
+            });
+          } catch (err) {
+            log.error("compact failed", {
+              error: String(err),
+              sessionId: session?.id,
+            });
+            await ctx.reply("Failed to compact session. Please try again.");
+            return;
+          }
+          const compactSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
+          await ctx.reply(`${compactResult.reply}${compactSuffix}`);
           return;
         }
         case "/subagents":

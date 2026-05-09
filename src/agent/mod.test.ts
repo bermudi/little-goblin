@@ -610,6 +610,24 @@ describe("AgentRunner", () => {
         tokensBefore: 42000,
       });
     });
+
+    it("rejects when the prior abort timed out", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+      runner.markAbortTimedOut();
+
+      await expect(runner.compact()).rejects.toThrow("previous abort timed out");
+      expect(sessionHolder.compact).not.toHaveBeenCalled();
+    });
+
+    it("rejects while the session is streaming", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+      sessionHolder.streaming = true;
+
+      await expect(runner.compact()).rejects.toThrow("still streaming");
+      expect(sessionHolder.compact).not.toHaveBeenCalled();
+    });
   });
 
   describe("cachedTopicName", () => {

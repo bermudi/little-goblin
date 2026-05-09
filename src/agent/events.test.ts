@@ -406,6 +406,12 @@ describe("dispatchAgentEvent", () => {
     expect(cb.calls).toEqual(["onStatusUpdate:compacted from ~42k tokens"]);
   });
 
+  it("fires onStatusUpdate with unknown tokens on compaction_end without tokensBefore", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent({ type: "compaction_end", result: {} } as any, cb);
+    expect(cb.calls).toEqual(["onStatusUpdate:compacted from unknown tokens"]);
+  });
+
   it("ignores unknown event types without throwing", () => {
     const cb = mockCallbacks();
     expect(() => {

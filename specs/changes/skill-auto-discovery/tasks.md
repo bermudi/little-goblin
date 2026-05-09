@@ -1,8 +1,8 @@
 ## Phase 1: Config schema and type changes
-- [ ] Add `skillSources: z.enum(["goblin-only", "user", "auto"]).default("goblin-only")` to `ConfigFileSchema` in `src/schema.ts`
-- [ ] Add `skillSources: "goblin-only" | "user" | "auto"` to the `Config` interface in `src/config.ts`
-- [ ] Wire `skillSources: cfg.skillSources` into the `Config` object in `loadConfig()`
-- [ ] Verify: `bun run --bun tsc --noEmit` passes
+- [x] Add `skillSources: z.enum(["goblin-only", "user", "auto"]).default("goblin-only")` to `ConfigFileSchema` in `src/schema.ts`
+- [x] Add `skillSources: "goblin-only" | "user" | "auto"` to the `Config` interface in `src/config.ts`
+- [x] Wire `skillSources: cfg.skillSources` into the `Config` object in `loadConfig()`
+- [x] Verify: `bun run --bun tsc --noEmit` passes
 
 ## Phase 2: Resource loader branching in AgentRunner
 - [ ] Update `AgentRunner.init()` in `src/agent/mod.ts` to read `this.cfg.skillSources` and branch:

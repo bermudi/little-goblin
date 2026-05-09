@@ -16,7 +16,7 @@ import {
 } from "./tg/tools.ts";
 import { MemoryStore } from "./memory/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
-import { SessionManager } from "./sessions/mod.ts";
+import { SessionManager, type ChatLocator, type SessionState } from "./sessions/mod.ts";
 import { sessionDir } from "./sessions/paths.ts";
 import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
@@ -165,6 +165,33 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
   const runners = new Map<string, AgentRunner>();
   const subagentRunner = new SubagentRunner(cfg, subagentToolFactory);
 
+  function createRunner(session: SessionState, locator: ChatLocator, ctx: Context): AgentRunner {
+    const chatId = locator.chatId;
+    const topicId = ctx.message?.message_thread_id;
+    const messageId = ctx.message?.message_id;
+    const betaTools = getBetaTools(bot, chatId, messageId, topicId);
+    return new AgentRunner({
+      cfg,
+      sessionId: session.id,
+      locator,
+      customTools: betaTools,
+      subagentRunner,
+      getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
+      projectDir: session.projectDir,
+      modelName: session.modelName,
+    });
+  }
+
+  function getOrCreateRunner(session: SessionState, locator: ChatLocator, ctx: Context): AgentRunner {
+    const existing = runners.get(session.id);
+    if (existing) return existing;
+
+    const runner = createRunner(session, locator, ctx);
+    runners.set(session.id, runner);
+    log.debug("created runner for session", { sessionId: session.id });
+    return runner;
+  }
+
   // Security layer: drop messages from non-allowed users
   bot.use(buildAllowlistMiddleware(cfg));
 
@@ -272,23 +299,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
               runners.delete(priorSession.id);
             }
           }
-          const chatId = locator.chatId;
-          const topicId = ctx.message?.message_thread_id;
-          const messageId = ctx.message?.message_id;
-          const betaTools = getBetaTools(bot, chatId, messageId, topicId);
-          runners.set(
-            result.session.id,
-            new AgentRunner({
-              cfg,
-              sessionId: result.session.id,
-              locator,
-              customTools: betaTools,
-              subagentRunner,
-              getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
-              projectDir: result.session.projectDir,
-              modelName: result.session.modelName,
-            }),
-          );
+          runners.set(result.session.id, createRunner(result.session, locator, ctx));
           log.debug("created runner for /new session", {
             sessionId: result.session.id,
             archivedPrior: result.archivedPrior,
@@ -447,26 +458,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       return;
     }
 
-    // Look up or lazily construct the runner for this session
-    let runner = runners.get(session.id);
-    if (!runner) {
-      const chatId = locator.chatId;
-      const topicId = ctx.message?.message_thread_id;
-      const messageId = ctx.message?.message_id;
-      const betaTools = getBetaTools(bot, chatId, messageId, topicId);
-      runner = new AgentRunner({
-        cfg,
-        sessionId: session.id,
-        locator,
-        customTools: betaTools,
-        subagentRunner,
-        getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
-        projectDir: session.projectDir,
-        modelName: session.modelName,
-      });
-      runners.set(session.id, runner);
-      log.debug("created runner for session", { sessionId: session.id });
-    }
+    const runner = getOrCreateRunner(session, locator, ctx);
 
     const text = ctx.msg?.text;
     if (!text) return;
@@ -521,26 +513,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       return;
     }
 
-    // Look up or lazily construct the runner for this session
-    let runner = runners.get(session.id);
-    if (!runner) {
-      const chatId = locator.chatId;
-      const topicId = ctx.message?.message_thread_id;
-      const messageId = ctx.message?.message_id;
-      const betaTools = getBetaTools(bot, chatId, messageId, topicId);
-      runner = new AgentRunner({
-        cfg,
-        sessionId: session.id,
-        locator,
-        customTools: betaTools,
-        subagentRunner,
-        getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
-        projectDir: session.projectDir,
-        modelName: session.modelName,
-      });
-      runners.set(session.id, runner);
-      log.debug("created runner for photo session", { sessionId: session.id });
-    }
+    const runner = getOrCreateRunner(session, locator, ctx);
 
     // Build multimodal content: caption as text, photo as image
     const caption = ctx.msg?.caption;
@@ -592,27 +565,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     const doc = ctx.msg?.document;
     if (!doc?.file_id) return;
 
-    // Look up or lazily construct the runner for this session.
-    // Created early so the non-image fallback can also use it.
-    let runner = runners.get(session.id);
-    if (!runner) {
-      const chatId = locator.chatId;
-      const topicId = ctx.message?.message_thread_id;
-      const messageId = ctx.message?.message_id;
-      const betaTools = getBetaTools(bot, chatId, messageId, topicId);
-      runner = new AgentRunner({
-        cfg,
-        sessionId: session.id,
-        locator,
-        customTools: betaTools,
-        subagentRunner,
-        getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
-        projectDir: session.projectDir,
-        modelName: session.modelName,
-      });
-      runners.set(session.id, runner);
-      log.debug("created runner for document session", { sessionId: session.id });
-    }
+    const runner = getOrCreateRunner(session, locator, ctx);
 
     // Only handle image documents; skip PDFs, archives, etc.
     const mimeType = doc.mime_type ?? "";

@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { Bot } from "grammy";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { TextContent, ImageContent } from "@mariozechner/pi-ai";
 import { log } from "./log.ts";
 import { buildAllowlistMiddleware, locatorFromCtx, MessageBuffer } from "./tg/mod.ts";
 import {
@@ -59,6 +61,98 @@ async function getTopicName(bot: Bot, chatId: number, topicId: number): Promise<
   } catch {
     return null;
   }
+}
+
+/** Create the standard β‑tools for a chat surface. */
+function getBetaTools(
+  bot: Bot,
+  chatId: number,
+  messageId?: number,
+  topicId?: number,
+): ToolDefinition[] {
+  return [
+    createSendVoiceTool(bot, chatId),
+    createSendPhotoTool(bot, chatId),
+    createSendDocumentTool(bot, chatId),
+    createReactTool(bot, chatId, messageId),
+    createRenameTopicTool(bot, chatId, topicId),
+    createChatActionTool(bot, chatId),
+  ].filter((t): t is NonNullable<typeof t> => t !== null);
+}
+
+/** Max raw bytes to download before rejecting (base64-encoded is ~1.33×). */
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Download a Telegram file by file_id and return it as base64-encoded data
+ * suitable for pi's ImageContent. Returns null on any failure.
+ */
+async function downloadFile(
+  api: Bot["api"],
+  fileId: string,
+  botToken: string,
+  mimeType = "image/jpeg",
+): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const file = await api.getFile(fileId);
+    if (!file.file_path) return null;
+
+    // Encode path segments defensively; Telegram paths are typically
+    // well-formed but the spec doesn't guarantee ASCII-only.
+    const encodedPath = file.file_path
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/");
+
+    const resp = await fetch(
+      `https://api.telegram.org/file/bot${botToken}/${encodedPath}`,
+      { signal: AbortSignal.timeout(30_000) },
+    );
+
+    if (!resp.ok) {
+      log.warn("failed to download file: bad status", { fileId, status: resp.status });
+      return null;
+    }
+
+    // Reject files that would blow out memory — 10 MB raw → ~13.3 MB base64
+    const contentLength = resp.headers.get("content-length");
+    if (contentLength !== null) {
+      const bytes = Number(contentLength);
+      if (!Number.isFinite(bytes) || bytes > MAX_FILE_BYTES) {
+        log.warn("file too large", { fileId, contentLength: bytes });
+        return null;
+      }
+    }
+
+    const raw = new Uint8Array(await resp.arrayBuffer());
+    // Chunk base64 encoding to avoid call-stack overflow on large payloads
+    const CHUNK = 48 * 1024; // multiple of 3 for clean base64 grouping
+    let data = "";
+    for (let i = 0; i < raw.length; i += CHUNK) {
+      const slice = raw.subarray(i, i + CHUNK);
+      data += btoa(String.fromCharCode(...slice));
+    }
+    return { data, mimeType };
+  } catch (err) {
+    // Never log String(err) — the URL embeds the bot token and fetch
+    // errors can include the full URL in their message.
+    log.warn("failed to download file", { fileId, code: (err as { code?: string }).code });
+    return null;
+  }
+}
+
+/**
+ * Download the largest photo from a Telegram photo message.
+ * Returns null on any failure.
+ */
+async function downloadPhoto(
+  ctx: Context,
+  botToken: string,
+): Promise<{ data: string; mimeType: string } | null> {
+  const photoSizes = ctx.msg?.photo;
+  if (!photoSizes || photoSizes.length === 0) return null;
+  const largest = photoSizes[photoSizes.length - 1]!;
+  return downloadFile(ctx.api, largest.file_id, botToken);
 }
 
 /**
@@ -181,14 +275,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           const chatId = locator.chatId;
           const topicId = ctx.message?.message_thread_id;
           const messageId = ctx.message?.message_id;
-          const betaTools = [
-            createSendVoiceTool(bot, chatId),
-            createSendPhotoTool(bot, chatId),
-            createSendDocumentTool(bot, chatId),
-            createReactTool(bot, chatId, messageId),
-            createRenameTopicTool(bot, chatId, topicId),
-            createChatActionTool(bot, chatId),
-          ].filter((t): t is NonNullable<typeof t> => t !== null);
+          const betaTools = getBetaTools(bot, chatId, messageId, topicId);
           runners.set(
             result.session.id,
             new AgentRunner({
@@ -366,14 +453,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       const chatId = locator.chatId;
       const topicId = ctx.message?.message_thread_id;
       const messageId = ctx.message?.message_id;
-      const betaTools = [
-        createSendVoiceTool(bot, chatId),
-        createSendPhotoTool(bot, chatId),
-        createSendDocumentTool(bot, chatId),
-        createReactTool(bot, chatId, messageId),
-        createRenameTopicTool(bot, chatId, topicId),
-        createChatActionTool(bot, chatId),
-      ].filter((t): t is NonNullable<typeof t> => t !== null);
+      const betaTools = getBetaTools(bot, chatId, messageId, topicId);
       runner = new AgentRunner({
         cfg,
         sessionId: session.id,
@@ -411,6 +491,189 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       await runner.prompt(text, buffer);
     } catch (err) {
       log.error("runner prompt failed", { error: String(err), sessionId: session.id });
+    }
+  });
+
+  // Wire agent runner for photo messages
+  bot.on("message:photo", async (ctx: Context) => {
+    const locator = locatorFromCtx(ctx);
+    if (!locator) {
+      log.debug("dropping photo: no locator");
+      return;
+    }
+
+    const isSupergroup = ctx.chat?.type === "supergroup";
+    const session = manager.resolve(locator, { isSupergroup });
+    if (!session) {
+      if (locator.topicId === undefined) {
+        ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
+          log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
+        });
+      }
+      log.debug("dropping photo: no session", { chatId: locator.chatId, topicId: locator.topicId });
+      return;
+    }
+
+    // Download the photo from Telegram
+    const photo = await downloadPhoto(ctx, cfg.botToken);
+    if (!photo) {
+      await ctx.reply("Sorry, I couldn't download that image.");
+      return;
+    }
+
+    // Look up or lazily construct the runner for this session
+    let runner = runners.get(session.id);
+    if (!runner) {
+      const chatId = locator.chatId;
+      const topicId = ctx.message?.message_thread_id;
+      const messageId = ctx.message?.message_id;
+      const betaTools = getBetaTools(bot, chatId, messageId, topicId);
+      runner = new AgentRunner({
+        cfg,
+        sessionId: session.id,
+        locator,
+        customTools: betaTools,
+        subagentRunner,
+        getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
+        projectDir: session.projectDir,
+        modelName: session.modelName,
+      });
+      runners.set(session.id, runner);
+      log.debug("created runner for photo session", { sessionId: session.id });
+    }
+
+    // Build multimodal content: caption as text, photo as image
+    const caption = ctx.msg?.caption;
+    const content: (TextContent | ImageContent)[] = [];
+    if (caption) {
+      content.push({ type: "text", text: caption });
+    }
+    content.push({ type: "image", data: photo.data, mimeType: photo.mimeType });
+
+    const memoryStore = new MemoryStore(cfg.goblinHome);
+    const topicId = locator.topicId;
+    const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
+      visibility: cfg.toolVisibility,
+      onTopicNotFound:
+        topicId !== undefined
+          ? async () => {
+              await memoryStore.archiveOrphan(locator.chatId, topicId);
+            }
+          : undefined,
+    });
+
+    try {
+      await runner.prompt(content, buffer);
+    } catch (err) {
+      log.error("runner photo prompt failed", { error: String(err), sessionId: session.id });
+    }
+  });
+
+  // Wire agent runner for document messages (uncompressed images sent as files)
+  bot.on("message:document", async (ctx: Context) => {
+    const locator = locatorFromCtx(ctx);
+    if (!locator) {
+      log.debug("dropping document: no locator");
+      return;
+    }
+
+    const isSupergroup = ctx.chat?.type === "supergroup";
+    const session = manager.resolve(locator, { isSupergroup });
+    if (!session) {
+      if (locator.topicId === undefined) {
+        ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
+          log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
+        });
+      }
+      log.debug("dropping document: no session", { chatId: locator.chatId, topicId: locator.topicId });
+      return;
+    }
+
+    const doc = ctx.msg?.document;
+    if (!doc?.file_id) return;
+
+    // Look up or lazily construct the runner for this session.
+    // Created early so the non-image fallback can also use it.
+    let runner = runners.get(session.id);
+    if (!runner) {
+      const chatId = locator.chatId;
+      const topicId = ctx.message?.message_thread_id;
+      const messageId = ctx.message?.message_id;
+      const betaTools = getBetaTools(bot, chatId, messageId, topicId);
+      runner = new AgentRunner({
+        cfg,
+        sessionId: session.id,
+        locator,
+        customTools: betaTools,
+        subagentRunner,
+        getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
+        projectDir: session.projectDir,
+        modelName: session.modelName,
+      });
+      runners.set(session.id, runner);
+      log.debug("created runner for document session", { sessionId: session.id });
+    }
+
+    // Only handle image documents; skip PDFs, archives, etc.
+    const mimeType = doc.mime_type ?? "";
+    if (!mimeType.startsWith("image/")) {
+      log.debug("dropping document: not an image", { mimeType, fileName: doc.file_name });
+      // Forward the caption as a text-only prompt so the user's message
+      // isn't completely lost. If there's no caption either, tell them.
+      const fallbackCaption = ctx.msg?.caption;
+      if (fallbackCaption) {
+        const memoryStore = new MemoryStore(cfg.goblinHome);
+        const topicId = locator.topicId;
+        const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
+          visibility: cfg.toolVisibility,
+          onTopicNotFound:
+            topicId !== undefined
+              ? async () => {
+                  await memoryStore.archiveOrphan(locator.chatId, topicId);
+                }
+              : undefined,
+        });
+        try {
+          await runner.prompt(fallbackCaption, buffer);
+        } catch (err) {
+          log.error("runner document caption prompt failed", { error: String(err), sessionId: session.id });
+        }
+      } else {
+        await ctx.reply("I can only view image files. Documents, PDFs, and other formats aren't supported yet.");
+      }
+      return;
+    }
+
+    const file = await downloadFile(ctx.api, doc.file_id, cfg.botToken, mimeType);
+    if (!file) {
+      await ctx.reply("Sorry, I couldn't download that file.");
+      return;
+    }
+
+    // Build multimodal content: caption as text, document as image
+    const caption = ctx.msg?.caption;
+    const content: (TextContent | ImageContent)[] = [];
+    if (caption) {
+      content.push({ type: "text", text: caption });
+    }
+    content.push({ type: "image", data: file.data, mimeType: file.mimeType });
+
+    const memoryStore = new MemoryStore(cfg.goblinHome);
+    const topicId = locator.topicId;
+    const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
+      visibility: cfg.toolVisibility,
+      onTopicNotFound:
+        topicId !== undefined
+          ? async () => {
+              await memoryStore.archiveOrphan(locator.chatId, topicId);
+            }
+          : undefined,
+    });
+
+    try {
+      await runner.prompt(content, buffer);
+    } catch (err) {
+      log.error("runner document prompt failed", { error: String(err), sessionId: session.id });
     }
   });
 

@@ -17,8 +17,8 @@ type Listener = (event: Record<string, unknown>) => void;
 const sessionHolder = {
   listeners: [] as Listener[],
   streaming: false,
-  sendUserMessage: mock(async (_text: string) => {}),
-  followUp: mock(async (_text: string) => {}),
+  sendUserMessage: mock(async (_content: string | unknown[]) => {}),
+  followUp: mock(async (_text: string, _images?: unknown[]) => {}),
   sendCustomMessage: mock(async (_msg: unknown, _opts?: unknown) => {}),
   abort: mock(async () => {}),
   dispose: mock(() => {}),
@@ -29,10 +29,10 @@ const sessionHolder = {
     this.listeners = [];
     this.streaming = false;
     this.callOrder = [];
-    this.sendUserMessage = mock(async (_text: string) => {
+    this.sendUserMessage = mock(async (_content: string | unknown[]) => {
       sessionHolder.callOrder.push("sendUserMessage");
     });
-    this.followUp = mock(async (_text: string) => {
+    this.followUp = mock(async (_text: string, _images?: unknown[]) => {
       sessionHolder.callOrder.push("followUp");
     });
     this.sendCustomMessage = mock(async (_msg: unknown, _opts?: unknown) => {
@@ -60,8 +60,8 @@ const sessionHolder = {
           if (idx !== -1) holder.listeners.splice(idx, 1);
         };
       },
-      sendUserMessage: (text: string) => holder.sendUserMessage(text),
-      followUp: (text: string) => holder.followUp(text),
+      sendUserMessage: (content: string | unknown[]) => holder.sendUserMessage(content),
+      followUp: (text: string, images?: unknown[]) => holder.followUp(text, images),
       sendCustomMessage: (msg: unknown, opts?: unknown) =>
         holder.sendCustomMessage(msg, opts),
       abort: () => holder.abort(),
@@ -375,7 +375,7 @@ describe("AgentRunner", () => {
       sessionHolder.streaming = true;
       const runner = makeRunner(tmpDir);
       await runner.prompt("interrupt", nopCallbacks());
-      expect(sessionHolder.followUp).toHaveBeenCalledWith("interrupt");
+      expect(sessionHolder.followUp).toHaveBeenCalledWith("interrupt", undefined);
       expect(sessionHolder.sendUserMessage).not.toHaveBeenCalled();
     });
   });

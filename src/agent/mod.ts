@@ -13,6 +13,7 @@ import {
   type ToolDefinition,
   type AgentSessionEvent,
 } from "@mariozechner/pi-coding-agent";
+import type { TextContent, ImageContent } from "@mariozechner/pi-ai";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { appendEvent, appendTranscriptEntry, dispatchAgentEvent } from "./events.ts";
@@ -197,10 +198,13 @@ export class AgentRunner {
   }
 
   /**
-   * Send a prompt to the agent.
-   * Creates the session lazily on first call.
+   * Send a prompt to the agent. Accepts plain text or multimodal content
+   * blocks (text + images). Creates the session lazily on first call.
    */
-  async prompt(text: string, callbacks: TurnCallbacks): Promise<void> {
+  async prompt(
+    content: string | (TextContent | ImageContent)[],
+    callbacks: TurnCallbacks,
+  ): Promise<void> {
     await this.init();
     if (!this.session) {
       throw new Error("Failed to initialize AgentSession");
@@ -223,9 +227,18 @@ export class AgentRunner {
     }
 
     if (this.session.isStreaming) {
-      await this.session.followUp(text);
+      // followUp API is (text, images?). Unpack content blocks for it.
+      if (typeof content === "string") {
+        await this.session.followUp(content);
+      } else {
+        const texts = content
+          .filter((c): c is TextContent => c.type === "text")
+          .map((c) => c.text);
+        const images = content.filter((c): c is ImageContent => c.type === "image");
+        await this.session.followUp(texts.join("\n"), images.length > 0 ? images : undefined);
+      }
     } else {
-      await this.session.sendUserMessage(text);
+      await this.session.sendUserMessage(content);
     }
   }
 

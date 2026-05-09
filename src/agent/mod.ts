@@ -12,8 +12,8 @@ import {
   createAgentSession,
   type ToolDefinition,
   type AgentSessionEvent,
-} from "@mariozechner/pi-coding-agent";
-import type { TextContent, ImageContent } from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-coding-agent";
+import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { appendEvent, appendTranscriptEntry, dispatchAgentEvent } from "./events.ts";

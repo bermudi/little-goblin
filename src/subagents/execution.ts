@@ -19,7 +19,7 @@ import {
   createAgentSession,
   type AgentSessionEvent,
   type ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { dispatchAgentEvent, type TurnCallbacks } from "../agent/events.ts";
 import type { Config } from "../config.ts";
 import {

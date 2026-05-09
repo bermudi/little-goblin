@@ -17,7 +17,7 @@ import {
   DefaultResourceLoader,
   type ResourceLoader,
   type SettingsManager,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { piAgentDir } from "../pi-host.ts";
 import { namedAgentAgentsMdPath, namedAgentDir, namedAgentSkillsDir } from "./paths.ts";
 import type { NamedAgentDefinition, SubagentRole } from "./types.ts";

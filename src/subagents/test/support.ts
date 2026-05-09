@@ -111,7 +111,7 @@ export function standardPiMock() {
 }
 
 export function installStandardPiMock(): void {
-  mock.module("@mariozechner/pi-coding-agent", () => standardPiMock());
+  mock.module("@earendil-works/pi-coding-agent", () => standardPiMock());
 }
 
 export function makeConfig(home: string): Config {

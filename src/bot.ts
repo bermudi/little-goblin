@@ -2,8 +2,8 @@ import { existsSync } from "node:fs";
 import { Bot } from "grammy";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import type { TextContent, ImageContent } from "@mariozechner/pi-ai";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import { log } from "./log.ts";
 import { buildAllowlistMiddleware, locatorFromCtx, MessageBuffer } from "./tg/mod.ts";
 import {

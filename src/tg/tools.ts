@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { Bot, InputFile } from "grammy";
 import { Type, type Static } from "@sinclair/typebox";
-import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ReactionType } from "@grammyjs/types";
 
 function jsonResult(value: unknown): {

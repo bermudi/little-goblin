@@ -4,7 +4,7 @@
  * See specs/changes/subagent-runtime/specs/subagents/spec.md for behavior.
  */
 
-import type { AgentSession, SessionManager } from "@mariozechner/pi-coding-agent";
+import type { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ActiveScope } from "../memory/scope.ts";
 
 /** Status of a subagent instance. */

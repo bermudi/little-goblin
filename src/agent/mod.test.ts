@@ -76,7 +76,7 @@ let capturedCreateArgs: unknown[] = [];
 // Module mock — hoisted by Bun before any imports below
 // ---------------------------------------------------------------------------
 
-mock.module("@mariozechner/pi-coding-agent", () => {
+mock.module("@earendil-works/pi-coding-agent", () => {
   return {
     AgentSession: {},
     DefaultResourceLoader: class {

@@ -6,7 +6,7 @@
  */
 
 import { join } from "node:path";
-import { AuthStorage, ModelRegistry, SettingsManager } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Pi service factory

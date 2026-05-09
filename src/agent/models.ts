@@ -14,7 +14,7 @@
  *
  * Extend by adding entries. The registry is explicit — no runtime synthesis.
  */
-import { type Api, type Model, getModel, getModels, getProviders } from "@mariozechner/pi-ai";
+import { type Api, type Model, getModel, getModels, getProviders } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 
 // Async Poe validation lives in poe-validate.ts. This file is sync-only.

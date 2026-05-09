@@ -10,7 +10,7 @@
  */
 
 import { Type, type Static } from "@sinclair/typebox";
-import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ActiveScope } from "../memory/mod.ts";
 import type { SubagentRunner } from "./mod.ts";
 import { listNamedAgents } from "./paths.ts";

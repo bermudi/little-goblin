@@ -1,5 +1,5 @@
 import { Type, type Static } from "@sinclair/typebox";
-import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { MemoryStore, StoreResult } from "./store.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
 import { VALID_NAME_RE } from "../subagents/named-agents.ts";

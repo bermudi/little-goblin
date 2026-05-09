@@ -1,6 +1,6 @@
 import { openSync, closeSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 /** Callbacks for turn events */
 export interface TurnCallbacks {

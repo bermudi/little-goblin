@@ -69,7 +69,7 @@ describe("memory tool", () => {
   });
 
   it("write schema has no scope key", () => {
-    const properties = writeTool.parameters.properties as Record<string, unknown>;
+    const properties = (writeTool.parameters as Record<string, unknown>).properties as Record<string, unknown>;
     expect(Object.keys(properties)).not.toContain("scope");
   });
 

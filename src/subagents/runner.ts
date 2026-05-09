@@ -19,8 +19,8 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { memoryDir, type ActiveScope } from "../memory/mod.ts";

@@ -35,7 +35,7 @@ describe("SubagentRunner — cancel guards", () => {
       resolveCreate = resolve;
     });
 
-    mock.module("@mariozechner/pi-coding-agent", () => ({
+    mock.module("@earendil-works/pi-coding-agent", () => ({
       defineTool: <T>(definition: T) => definition,
       AuthStorage: { create: () => ({ setRuntimeApiKey: () => {} }) },
       ModelRegistry: { create: () => ({}) },
@@ -120,7 +120,7 @@ describe("SubagentRunner — startup error handling", () => {
   });
 
   it("marks meta as error when createAgentSession throws", async () => {
-    mock.module("@mariozechner/pi-coding-agent", () => ({
+    mock.module("@earendil-works/pi-coding-agent", () => ({
       defineTool: <T>(definition: T) => definition,
       AuthStorage: { create: () => ({ setRuntimeApiKey: () => {} }) },
       ModelRegistry: { create: () => ({}) },

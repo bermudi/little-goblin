@@ -4,13 +4,14 @@ import { HELP_REPLY } from "./help.ts";
 describe("HELP_REPLY", () => {
   it("lists every command mandated by the spec", () => {
     // Spec scenario: "Help output" — the reply MUST list all available
-    // commands: /cancel, /new, /archive, /debug, /subagents,
+    // commands: /cancel, /new, /archive, /compact, /debug, /subagents,
     // /cancel_subagent, /revive, /help. Pin the set so a future
     // refactor that drops one fails loudly.
     const required = [
       "/cancel",
       "/new",
       "/archive",
+      "/compact",
       "/debug",
       "/subagents",
       "/cancel_subagent",

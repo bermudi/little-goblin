@@ -16,6 +16,7 @@ export const HELP_REPLY = [
   "/cancel — abort the current turn (cascades to subagents)",
   "/new — reset this chat: archive the current session and start a fresh one",
   "/archive — archive the active session",
+  "/compact [instructions] — manually compact this session's context",
   "/debug — dump session diagnostics",
   "/subagents — list live subagents (not implemented yet)",
   "/cancel_subagent <id> — cancel a single subagent (not implemented yet)",

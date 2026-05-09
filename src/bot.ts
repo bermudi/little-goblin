@@ -27,13 +27,14 @@ import { executeNew } from "./commands/new.ts";
 import { executeArchive } from "./commands/archive.ts";
 import { executeProject } from "./commands/project.ts";
 import { executeModel } from "./commands/model.ts";
+import { executeCompact } from "./commands/compact.ts";
 import { parseCommand } from "./commands/parse.ts";
 import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./commands/subagents.ts";
 import { HELP_REPLY } from "./commands/help.ts";
 import { generateDiagnostics } from "./diagnostics.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
-const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug"]);
+const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact"]);
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -421,6 +422,15 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           });
           const debugSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
           await ctx.reply(`${diag}${debugSuffix}`);
+          return;
+        }
+        case "/compact": {
+          const compactResult = await executeCompact({
+            hasSession: session !== null,
+            rawText: rawText ?? "",
+            runner: existingRunner,
+          });
+          await ctx.reply(compactResult.reply);
           return;
         }
         case "/subagents":

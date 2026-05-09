@@ -85,6 +85,7 @@ const sessionHolder = {
 };
 
 let capturedCreateArgs: unknown[] = [];
+let capturedResourceLoaderArgs: unknown[] = [];
 
 // ---------------------------------------------------------------------------
 // Module mock — hoisted by Bun before any imports below
@@ -94,7 +95,9 @@ mock.module("@earendil-works/pi-coding-agent", () => {
   return {
     AgentSession: {},
     DefaultResourceLoader: class {
-      constructor(_opts: unknown) {}
+      constructor(opts: unknown) {
+        capturedResourceLoaderArgs.push(opts);
+      }
       async reload() {}
       getSkills() { return { skills: [], diagnostics: [] }; }
       getAgentsFiles() { return { agentsFiles: [] }; }
@@ -169,9 +172,10 @@ function makeRunner(
   locator: ChatLocator = { chatId: 123 },
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>,
   modelName?: string,
+  configOverrides: Partial<Config> = {},
 ) {
   return new AgentRunner({
-    cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }) },
+    cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }), ...configOverrides },
     sessionId: "sess-001",
     locator,
     customTools: customTools as never,
@@ -194,6 +198,7 @@ beforeEach(() => {
   mkdirSync(join(tmpDir, "goblin"), { recursive: true });
 
   capturedCreateArgs = [];
+  capturedResourceLoaderArgs = [];
   sessionHolder.reset();
 });
 
@@ -380,6 +385,35 @@ describe("AgentRunner", () => {
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
       expect(opts.agentDir).toBe(join(tmpDir, "goblin"));
+    });
+  });
+
+  describe("skillSources resource loader modes", () => {
+    it("goblin-only passes noSkills true to the resource loader", async () => {
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, { skillSources: "goblin-only" });
+      await runner.prompt("hi", nopCallbacks());
+
+      const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
+      expect(loaderOpts.noSkills).toBe(true);
+      expect(loaderOpts.additionalSkillPaths).toEqual([join(tmpDir, "skills")]);
+    });
+
+    it("user omits noSkills from the resource loader constructor", async () => {
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, { skillSources: "user" });
+      await runner.prompt("hi", nopCallbacks());
+
+      const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
+      expect("noSkills" in loaderOpts).toBe(false);
+      expect(loaderOpts.additionalSkillPaths).toEqual([join(tmpDir, "skills")]);
+    });
+
+    it("auto omits resourceLoader from createAgentSession args", async () => {
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, { skillSources: "auto" });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      expect(capturedResourceLoaderArgs).toHaveLength(0);
+      expect("resourceLoader" in opts).toBe(false);
     });
   });
 

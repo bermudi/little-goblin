@@ -13,11 +13,11 @@
 - [x] Verify: `bun run --bun tsc --noEmit` passes, `bun test` passes
 
 ## Phase 3: Tests
-- [ ] Add test in `src/config.test.ts`: `skillSources` defaults to `"goblin-only"` when absent
-- [ ] Add test in `src/config.test.ts`: each valid value (`"goblin-only"`, `"user"`, `"auto"`) passes validation
-- [ ] Add test in `src/config.test.ts`: invalid value is rejected by Zod
-- [ ] Add `DefaultResourceLoader` constructor-arg capture to the mock in `src/agent/mod.test.ts` (similar to `capturedCreateArgs`)
-- [ ] Add test in `src/agent/mod.test.ts`: `"goblin-only"` passes `noSkills: true` to resource loader
-- [ ] Add test in `src/agent/mod.test.ts`: `"user"` omits `noSkills` from resource loader constructor
-- [ ] Add test in `src/agent/mod.test.ts`: `"auto"` omits `resourceLoader` from `createAgentSession` args
-- [ ] Verify: `bun test` all green
+- [x] Add test in `src/config.test.ts`: `skillSources` defaults to `"goblin-only"` when absent
+- [x] Add test in `src/config.test.ts`: each valid value (`"goblin-only"`, `"user"`, `"auto"`) passes validation
+- [x] Add test in `src/config.test.ts`: invalid value is rejected by Zod
+- [x] Add `DefaultResourceLoader` constructor-arg capture to the mock in `src/agent/mod.test.ts` (similar to `capturedCreateArgs`)
+- [x] Add test in `src/agent/mod.test.ts`: `"goblin-only"` passes `noSkills: true` to resource loader
+- [x] Add test in `src/agent/mod.test.ts`: `"user"` omits `noSkills` from resource loader constructor
+- [x] Add test in `src/agent/mod.test.ts`: `"auto"` omits `resourceLoader` from `createAgentSession` args
+- [x] Verify: `bun test` all green

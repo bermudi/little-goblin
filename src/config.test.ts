@@ -121,6 +121,45 @@ describe("loadConfig", () => {
     expect(cfg.logLevel).toBe("info");
   });
 
+  it("defaults skillSources to goblin-only when not specified", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.skillSources).toBe("goblin-only");
+  });
+
+  it("accepts every valid skillSources value", () => {
+    for (const skillSources of ["goblin-only", "user", "auto"] as const) {
+      const configContent = `{
+        botToken: "test",
+        allowedUsers: [123],
+        model: "poe/test",
+        skillSources: "${skillSources}",
+      }`;
+      writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+      const cfg = loadConfig();
+      expect(cfg.skillSources).toBe(skillSources);
+    }
+  });
+
+  it("rejects invalid skillSources values", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      skillSources: "everything",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    expect(() => loadConfig()).toThrow("Config validation failed");
+  });
+
   it("includes optional API keys when present", () => {
     const configContent = `{
       botToken: "test",

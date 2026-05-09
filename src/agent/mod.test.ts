@@ -21,6 +21,11 @@ const sessionHolder = {
   followUp: mock(async (_text: string, _images?: unknown[]) => {}),
   sendCustomMessage: mock(async (_msg: unknown, _opts?: unknown) => {}),
   abort: mock(async () => {}),
+  compact: mock(async (_customInstructions?: string) => ({
+    summary: "compressed history",
+    firstKeptEntryId: "entry-1",
+    tokensBefore: 42000,
+  })),
   dispose: mock(() => {}),
   /** Sequenced call log for asserting ordering across mocks. */
   callOrder: [] as string[],
@@ -39,6 +44,14 @@ const sessionHolder = {
       sessionHolder.callOrder.push("sendCustomMessage");
     });
     this.abort = mock(async () => {});
+    this.compact = mock(async (_customInstructions?: string) => {
+      sessionHolder.callOrder.push("compact");
+      return {
+        summary: "compressed history",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 42000,
+      };
+    });
     this.dispose = mock(() => {});
   },
 
@@ -65,6 +78,7 @@ const sessionHolder = {
       sendCustomMessage: (msg: unknown, opts?: unknown) =>
         holder.sendCustomMessage(msg, opts),
       abort: () => holder.abort(),
+      compact: (customInstructions?: string) => holder.compact(customInstructions),
       dispose: () => holder.dispose(),
     };
   },
@@ -580,6 +594,21 @@ describe("AgentRunner", () => {
       await runner.prompt("hi", nopCallbacks());
       await runner.abort();
       expect(sessionHolder.abort).toHaveBeenCalled();
+    });
+  });
+
+  describe("compact()", () => {
+    it("initializes lazily and delegates to session.compact()", async () => {
+      const runner = makeRunner(tmpDir);
+      const result = await runner.compact("focus on schema decisions");
+
+      expect(capturedCreateArgs).toHaveLength(1);
+      expect(sessionHolder.compact).toHaveBeenCalledWith("focus on schema decisions");
+      expect(result).toEqual({
+        summary: "compressed history",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 42000,
+      });
     });
   });
 

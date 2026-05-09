@@ -36,7 +36,7 @@ interface TranscriptEntry {
 /**
  * Translate a single pi AgentSessionEvent into typed callback invocations.
  *
- * Covers the five event types both runners consume; ignores all others.
+ * Covers the event types runners consume; ignores all others.
  * Pure function — no side effects beyond callback invocations.
  */
 export function dispatchAgentEvent(event: AgentSessionEvent, callbacks: TurnCallbacks): void {
@@ -65,6 +65,17 @@ export function dispatchAgentEvent(event: AgentSessionEvent, callbacks: TurnCall
       callbacks.onAgentEnd();
       break;
 
+    case "compaction_start":
+      callbacks.onStatusUpdate("🗜 compacting…");
+      break;
+
+    case "compaction_end": {
+      const tokensBefore = readCompactionTokensBefore(event);
+      const tokens = tokensBefore === undefined ? "unknown" : `~${Math.round(tokensBefore / 1000)}k`;
+      callbacks.onStatusUpdate(`compacted from ${tokens} tokens`);
+      break;
+    }
+
     case "message_end": {
       // Surface assistant-side errors (bad API key, rate limit, aborted, etc.)
       // as visible text. Without this the user is stuck on "🤔 thinking…"
@@ -91,6 +102,13 @@ export function dispatchAgentEvent(event: AgentSessionEvent, callbacks: TurnCall
 
     // Ignore all other event types
   }
+}
+
+function readCompactionTokensBefore(event: AgentSessionEvent): number | undefined {
+  const result = (event as { result?: unknown }).result;
+  if (typeof result !== "object" || result === null) return undefined;
+  const tokensBefore = (result as { tokensBefore?: unknown }).tokensBefore;
+  return typeof tokensBefore === "number" ? tokensBefore : undefined;
 }
 
 /**

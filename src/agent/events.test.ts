@@ -394,11 +394,22 @@ describe("dispatchAgentEvent", () => {
     expect(cb.calls).toEqual([]);
   });
 
+  it("fires onStatusUpdate on compaction_start", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent({ type: "compaction_start" } as any, cb);
+    expect(cb.calls).toEqual(["onStatusUpdate:🗜 compacting…"]);
+  });
+
+  it("fires onStatusUpdate on compaction_end", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent({ type: "compaction_end", result: { tokensBefore: 42000 } } as any, cb);
+    expect(cb.calls).toEqual(["onStatusUpdate:compacted from ~42k tokens"]);
+  });
+
   it("ignores unknown event types without throwing", () => {
     const cb = mockCallbacks();
     expect(() => {
       dispatchAgentEvent({ type: "turn_start" } as any, cb);
-      dispatchAgentEvent({ type: "compaction_start" } as any, cb);
       dispatchAgentEvent({ type: "some_future_event" } as any, cb);
     }).not.toThrow();
     expect(cb.calls).toEqual([]);

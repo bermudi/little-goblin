@@ -2,13 +2,15 @@
 
 ## Phase 1: Wire compaction through agent layer
 
-- [ ] Add `compaction_start` case to `dispatchAgentEvent` in `src/agent/events.ts` — invokes `callbacks.onStatusUpdate("🗜 compacting…")`
-- [ ] Add `compaction_end` case to `dispatchAgentEvent` in `src/agent/events.ts` — formats tokens-before from `event.result` and invokes `callbacks.onStatusUpdate(…)`
-- [ ] Update `dispatchAgentEvent` doc comment and existing "Unknown event type" scenario test comment to reflect that `compaction_start` is now a recognized (not ignored) event
-- [ ] Add test cases in `src/agent/events.test.ts` for `compaction_start` and `compaction_end` dispatch
-- [ ] Add `compact(customInstructions?: string)` method to `AgentRunner` in `src/agent/mod.ts` — calls `init()`, then delegates to `this.session.compact()`
-- [ ] Add test in `src/agent/mod.test.ts` verifying `compact()` delegates to session (mock pi session)
-- [ ] Run `bun test src/agent/` to confirm all agent tests pass
+- [x] Add `compaction_start` case to `dispatchAgentEvent` in `src/agent/events.ts` — invokes `callbacks.onStatusUpdate("🗜 compacting…")`
+- [x] Add `compaction_end` case to `dispatchAgentEvent` in `src/agent/events.ts` — formats tokens-before from `event.result` and invokes `callbacks.onStatusUpdate(…)`
+- [x] Update `dispatchAgentEvent` doc comment and existing "Unknown event type" scenario test comment to reflect that `compaction_start` is now a recognized (not ignored) event
+- [x] Add test cases in `src/agent/events.test.ts` for `compaction_start` and `compaction_end` dispatch
+- [x] Add `compact(customInstructions?: string)` method to `AgentRunner` in `src/agent/mod.ts` — calls `init()`, then delegates to `this.session.compact()`
+- [x] Add test in `src/agent/mod.test.ts` verifying `compact()` delegates to session (mock pi session)
+- [x] Run `bun test src/agent/` to confirm all agent tests pass
+
+Verified: `bun run typecheck`
 
 **Commit:** `phase 1: wire compaction through agent layer`
 

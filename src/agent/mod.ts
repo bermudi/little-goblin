@@ -321,6 +321,14 @@ export class AgentRunner {
     await this.session.abort();
   }
 
+  async compact(customInstructions?: string): Promise<Awaited<ReturnType<AgentSession["compact"]>>> {
+    await this.init();
+    if (!this.session) {
+      throw new Error("Failed to initialize AgentSession");
+    }
+    return this.session.compact(customInstructions);
+  }
+
   /**
    * Clean up resources.
    */

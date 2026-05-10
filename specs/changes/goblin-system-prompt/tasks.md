@@ -9,12 +9,12 @@
 
 ## Phase 2: Wire main AgentRunner
 
-- [ ] Update the main `AgentRunner` lazy session-initialization path to build the Goblin system prompt before `createAgentSession()` and pass it through `DefaultResourceLoader({ systemPrompt })`. Covers: "AgentRunner owns pi's AgentSession".
-- [ ] Set `noContextFiles: true` on the main runner resource loader. Covers: "Goblin disables implicit context file loading".
-- [ ] Preserve `goblin-only` and `user` skill-source behavior while always using an explicit main-runner resource loader.
-- [ ] Preserve per-turn memory injection as `sendCustomMessage(..., { deliverAs: "nextTurn" })` without concatenating memory into the system prompt. Covers: "Memory remains per-turn context".
-- [ ] Update `src/agent/mod.test.ts` expectations for resource loader creation, constructed prompt propagation, `noContextFiles`, and project-bound prompt behavior.
-- [ ] Run targeted agent tests.
+- [x] Update the main `AgentRunner` lazy session-initialization path to build the Goblin system prompt before `createAgentSession()` and pass it through `DefaultResourceLoader({ systemPrompt })`. Covers: "AgentRunner owns pi's AgentSession".
+- [x] Set `noContextFiles: true` on the main runner resource loader. Covers: "Goblin disables implicit context file loading".
+- [x] Preserve `goblin-only` and `user` skill-source behavior while always using an explicit main-runner resource loader.
+- [x] Preserve per-turn memory injection as `sendCustomMessage(..., { deliverAs: "nextTurn" })` without concatenating memory into the system prompt. Covers: "Memory remains per-turn context".
+- [x] Update `src/agent/mod.test.ts` expectations for resource loader creation, constructed prompt propagation, `noContextFiles`, and project-bound prompt behavior.
+- [x] Run targeted agent tests.
 
 ## Phase 3: Remove skillSources auto
 

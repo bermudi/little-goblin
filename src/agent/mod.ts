@@ -21,6 +21,7 @@ import type { TurnCallbacks } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
 import { workdirPath, createPiServices, piAgentDir } from "../pi-host.ts";
 import { resolveModel, type ResolvedModel } from "./models.ts";
+import { buildGoblinSystemPrompt } from "./system-prompt.ts";
 import {
   MemoryStore,
   createMemoryReadIndexTool,
@@ -145,17 +146,17 @@ export class AgentRunner {
       );
     }
 
-    const resourceLoader =
-      this.cfg.skillSources === "auto"
-        ? undefined
-        : new DefaultResourceLoader({
-            cwd,
-            agentDir,
-            settingsManager,
-            additionalSkillPaths: [join(home, "skills")],
-            ...(this.cfg.skillSources === "goblin-only" ? { noSkills: true } : {}),
-          });
-    await resourceLoader?.reload();
+    const systemPrompt = await buildGoblinSystemPrompt({ home, projectDir: this.projectDir });
+    const resourceLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager,
+      systemPrompt,
+      noContextFiles: true,
+      additionalSkillPaths: [join(home, "skills")],
+      ...(this.cfg.skillSources === "goblin-only" ? { noSkills: true } : {}),
+    });
+    await resourceLoader.reload();
 
     const { session } = await createAgentSession({
       cwd,
@@ -166,7 +167,7 @@ export class AgentRunner {
       sessionManager,
       model: resolved.model,
       customTools: tools,
-      ...(resourceLoader === undefined ? {} : { resourceLoader }),
+      resourceLoader,
     });
 
     this.session = session;

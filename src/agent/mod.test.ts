@@ -173,6 +173,7 @@ function makeRunner(
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>,
   modelName?: string,
   configOverrides: Partial<Config> = {},
+  projectDir?: string,
 ) {
   return new AgentRunner({
     cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }), ...configOverrides },
@@ -180,6 +181,7 @@ function makeRunner(
     locator,
     customTools: customTools as never,
     getTopicName,
+    projectDir,
   });
 }
 
@@ -196,6 +198,7 @@ beforeEach(() => {
   writeFileSync(join(tmpDir, "sessions", "sess-001", "transcript.jsonl"), "");
   mkdirSync(join(tmpDir, "workdir"), { recursive: true });
   mkdirSync(join(tmpDir, "goblin"), { recursive: true });
+  writeFileSync(join(tmpDir, "SOUL.md"), "test goblin identity\n", "utf-8");
 
   capturedCreateArgs = [];
   capturedResourceLoaderArgs = [];
@@ -395,7 +398,9 @@ describe("AgentRunner", () => {
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
       expect(loaderOpts.noSkills).toBe(true);
+      expect(loaderOpts.noContextFiles).toBe(true);
       expect(loaderOpts.additionalSkillPaths).toEqual([join(tmpDir, "skills")]);
+      expect(loaderOpts.systemPrompt).toContain("test goblin identity");
     });
 
     it("user omits noSkills from the resource loader constructor", async () => {
@@ -404,16 +409,62 @@ describe("AgentRunner", () => {
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
       expect("noSkills" in loaderOpts).toBe(false);
+      expect(loaderOpts.noContextFiles).toBe(true);
       expect(loaderOpts.additionalSkillPaths).toEqual([join(tmpDir, "skills")]);
+      expect(loaderOpts.systemPrompt).toContain("test goblin identity");
     });
 
-    it("auto omits resourceLoader from createAgentSession args", async () => {
+    it("auto still uses an explicit resource loader until config validation removes it", async () => {
       const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, { skillSources: "auto" });
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
-      expect(capturedResourceLoaderArgs).toHaveLength(0);
-      expect("resourceLoader" in opts).toBe(false);
+      expect(capturedResourceLoaderArgs).toHaveLength(1);
+      expect("resourceLoader" in opts).toBe(true);
+      expect((capturedResourceLoaderArgs[0] as Record<string, unknown>).noContextFiles).toBe(true);
+    });
+  });
+
+  describe("Goblin system prompt resource loader", () => {
+    it("passes the constructed system prompt through the resource loader", async () => {
+      writeFileSync(join(tmpDir, "AGENTS.md"), "deployment operating rules\n", "utf-8");
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
+      expect(loaderOpts.systemPrompt).toContain("test goblin identity");
+      expect(loaderOpts.systemPrompt).toContain("deployment operating rules");
+      expect(loaderOpts.systemPrompt).toContain("## Runtime Mechanics");
+      expect(loaderOpts.noContextFiles).toBe(true);
+    });
+
+    it("includes exact bound project AGENTS.md as project guidance", async () => {
+      const projectDir = join(tmpDir, "project");
+      mkdirSync(projectDir);
+      writeFileSync(join(projectDir, "AGENTS.md"), "exact project guidance\n", "utf-8");
+
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, {}, projectDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
+      expect(opts.cwd).toBe(projectDir);
+      expect(loaderOpts.systemPrompt).toContain("test goblin identity");
+      expect(loaderOpts.systemPrompt).toContain("## Project Guidance (projectDir/AGENTS.md)");
+      expect(loaderOpts.systemPrompt).toContain("exact project guidance");
+    });
+
+    it("does not concatenate memory snapshots into the system prompt", async () => {
+      mkdirSync(join(tmpDir, "memory", "general"), { recursive: true });
+      writeFileSync(join(tmpDir, "memory", "general", "memory.md"), "fresh memory fact", "utf-8");
+
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
+      expect(loaderOpts.systemPrompt).not.toContain("fresh memory fact");
+      expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
+      expect((sessionHolder.sendCustomMessage.mock.calls[0]![1] as { deliverAs?: string }).deliverAs).toBe("nextTurn");
     });
   });
 

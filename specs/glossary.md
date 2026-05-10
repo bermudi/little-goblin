@@ -17,9 +17,12 @@
 - **MessageBuffer**: Implements `TurnCallbacks` to render agent activity as Telegram messages. Manages status phases, streaming edits, and rollover.
 - **named subagent**: A subagent that loads its `AGENTS.md` and `skills/` from `~/goblin/agents/<name>/`. Strictly isolated from parent skills.
 - **pi-coding-agent**: The underlying agent framework that goblin wraps. Provides `AgentSession`, `defineTool`, extension/skill loading. Ships a sample subagent extension (`examples/extensions/subagent/`) that spawns child `pi` processes, but goblin's subagent system is custom-built on the core SDK.
+- **product shell**: The small code-owned part of Goblin's system prompt. Contains runtime mechanics and section framing, not deployed identity, user identity, or conversational voice.
+- **project guidance**: The exact `AGENTS.md` from a session's bound `projectDir`, included in the main Goblin system prompt as repository/workspace instructions. Not deployment identity.
 - **session**: A persisted conversation scoped to one `(chat, topic)` pair. Has its own `workdir/`, `events.jsonl`, `transcript.jsonl`, and `state.json`.
 - **SessionManager**: Owns session lifecycle — creation, resolution, persistence, and binding management.
 - **snapshot**: The formatted memory payload injected per-turn via `sendCustomMessage(..., { deliverAs: "nextTurn" })`. Begins with `[goblin memory snapshot]`.
+- **SOUL.md**: Required deployment-owned prompt file at `$GOBLIN_HOME/SOUL.md` that defines the main Goblin's conversational identity and voice. Created by onboarding; not hardcoded in source.
 - **stale binding**: A binding whose session directory no longer exists. DMs clear the binding; topics auto-recreate.
 - **status phases**: Three coarse states rendered in the MessageBuffer status line: Thinking, Working, Done. Not per-tool.
 - **subagent**: An agent spawned by goblin (or another subagent) for focused work. Recursive up to depth 3.

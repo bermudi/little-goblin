@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { join } from "node:path";
-import { workdirPath, piAgentDir, agentsMdPath } from "./pi-host.ts";
+import { workdirPath, piAgentDir, agentsMdPath, soulMdPath } from "./pi-host.ts";
 
 describe("pi-host path helpers", () => {
   const fixtureHome = "/home/goblin";
@@ -20,6 +20,12 @@ describe("pi-host path helpers", () => {
   describe("agentsMdPath", () => {
     it("returns AGENTS.md at home root", () => {
       expect(agentsMdPath(fixtureHome)).toBe(join(fixtureHome, "AGENTS.md"));
+    });
+  });
+
+  describe("soulMdPath", () => {
+    it("returns SOUL.md at home root", () => {
+      expect(soulMdPath(fixtureHome)).toBe(join(fixtureHome, "SOUL.md"));
     });
   });
 });

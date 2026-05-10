@@ -51,3 +51,8 @@ export function piAgentDir(home: string): string {
 export function agentsMdPath(home: string): string {
   return join(home, "AGENTS.md");
 }
+
+/** Path to the SOUL.md file at goblin home root. */
+export function soulMdPath(home: string): string {
+  return join(home, "SOUL.md");
+}

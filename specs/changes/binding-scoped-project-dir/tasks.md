@@ -27,9 +27,9 @@
 
 ## Phase 5: Manual migration script (delivered separately, outside goblin source)
 
-- [ ] Write standalone script to scan `sessions/*/state.json` for `projectDir`, populate `topic-settings.json` from bindings, strip `projectDir` from state.json files
-- [ ] Document migration in `specs/changes/binding-scoped-project-dir/migration.md`
-- [ ] Run migration on `$GOBLIN_HOME` and verify `/project` behavior
+- [x] Write standalone script to scan `sessions/*/state.json` for `projectDir`, populate `topic-settings.json` from bindings, strip `projectDir` from state.json files
+- [x] Document migration in `specs/changes/binding-scoped-project-dir/migration.md`
+- [x] Run migration on `$GOBLIN_HOME` and verify `/project` behavior
 
 ## Phase 6: Archive and spec adoption
 

@@ -15,9 +15,9 @@
 
 ## Phase 3: Bot reads projectDir from binding, /project writes to binding
 
-- [ ] Modify `src/bot.ts`: `createRunner` reads `projectDir` via `manager.getProjectDir(locator)` instead of `session.projectDir`; `/project` handler passes `locator` to `manager.bindProjectDir(locator, dir)`
-- [ ] Modify `src/commands/project.test.ts`: verify `setProjectDir` callback receives correct dir (no signature change in command logic itself)
-- [ ] Run `bun test src/bot.ts` integration tests
+- [x] Modify `src/bot.ts`: `createRunner` reads `projectDir` via `manager.getProjectDir(locator)` instead of `session.projectDir`; `/project` handler passes `locator` to `manager.bindProjectDir(locator, dir)`
+- [x] Modify `src/commands/project.test.ts`: verify `setProjectDir` callback receives correct dir (no signature change in command logic itself)
+- [x] Run `bun test src/bot.ts` integration tests
 
 ## Phase 4: Deprecate SessionState.projectDir
 

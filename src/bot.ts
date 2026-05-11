@@ -176,7 +176,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       customTools: betaTools,
       subagentRunner,
       getTopicName,
-      projectDir: session.projectDir,
+      projectDir: manager.getProjectDir(locator),
       modelName: session.modelName,
     });
   }
@@ -340,7 +340,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
               rawText: rawText ?? "",
               setProjectDir: (dir) => {
                 if (!session) return;
-                manager.setProjectDir(session.id, dir);
+                manager.bindProjectDir(locator, dir);
                 // Dispose the runner so next message recreates it with the new directory.
                 const prior = runners.get(session.id);
                 if (prior) {

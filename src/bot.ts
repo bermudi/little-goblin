@@ -51,17 +51,11 @@ const subagentToolFactory: SubagentToolFactory = (
   createReviveSubagentTool(runner, onStatusUpdate),
 ];
 
-async function getTopicName(bot: Bot, chatId: number, topicId: number): Promise<string | null> {
-  const api = bot.api as unknown as {
-    getForumTopic?: (chatId: number, messageThreadId: number) => Promise<{ name?: unknown }>;
+function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number) => Promise<string | null> {
+  return async (chatId, topicId) => {
+    const { description } = store.read({ topic: { chatId, topicId } });
+    return description ?? null;
   };
-  if (api.getForumTopic === undefined) return null;
-  try {
-    const topic = await api.getForumTopic(chatId, topicId);
-    return typeof topic.name === "string" ? topic.name : null;
-  } catch {
-    return null;
-  }
 }
 
 /** Create the standard β‑tools for a chat surface. */
@@ -165,6 +159,8 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
   const manager = new SessionManager(cfg);
   const runners = new Map<string, AgentRunner>();
   const subagentRunner = new SubagentRunner(cfg, subagentToolFactory);
+  const memoryStore = new MemoryStore(cfg.goblinHome);
+  const getTopicName = buildGetTopicName(memoryStore);
 
   function createRunner(session: SessionState, locator: ChatLocator, ctx: Context): AgentRunner {
     const chatId = locator.chatId;
@@ -177,7 +173,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       locator,
       customTools: betaTools,
       subagentRunner,
-      getTopicName: (cId, tId) => getTopicName(bot, cId, tId),
+      getTopicName,
       projectDir: session.projectDir,
       modelName: session.modelName,
     });
@@ -488,7 +484,6 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     // response). One buffer per turn so message IDs are scoped to this prompt.
     // Wire up orphan archival: if Telegram reports "topic not found", archive
     // the orphaned memory scope before propagating the error.
-    const memoryStore = new MemoryStore(cfg.goblinHome);
     const topicId = locator.topicId;
     const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
       visibility: cfg.toolVisibility,
@@ -544,7 +539,6 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     }
     content.push({ type: "image", data: photo.data, mimeType: photo.mimeType });
 
-    const memoryStore = new MemoryStore(cfg.goblinHome);
     const topicId = locator.topicId;
     const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
       visibility: cfg.toolVisibility,
@@ -596,7 +590,6 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       // isn't completely lost. If there's no caption either, tell them.
       const fallbackCaption = ctx.msg?.caption;
       if (fallbackCaption) {
-        const memoryStore = new MemoryStore(cfg.goblinHome);
         const topicId = locator.topicId;
         const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
           visibility: cfg.toolVisibility,
@@ -632,7 +625,6 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     }
     content.push({ type: "image", data: file.data, mimeType: file.mimeType });
 
-    const memoryStore = new MemoryStore(cfg.goblinHome);
     const topicId = locator.topicId;
     const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
       visibility: cfg.toolVisibility,
@@ -648,6 +640,41 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       await runner.prompt(content, buffer);
     } catch (err) {
       log.error("runner document prompt failed", { error: String(err), sessionId: session.id });
+    }
+  });
+
+  // Persist topic names from Telegram service messages so the snapshot
+  // and memory index can show human-readable names instead of bare IDs.
+  bot.on("message:forum_topic_created", async (ctx: Context) => {
+    const chatId = ctx.chat?.id;
+    const topic = ctx.msg?.forum_topic_created;
+    const threadId = ctx.msg?.message_thread_id;
+    if (chatId === undefined || topic === undefined || threadId === undefined) return;
+    try {
+      await memoryStore.setDescription(
+        { topic: { chatId, topicId: threadId } },
+        topic.name,
+      );
+    } catch {
+      // Silently ignore — bot may lack admin rights to read the topic,
+      // or the scope directory may not exist yet. The name will be
+      // captured on the next rename or when the agent sets a description.
+    }
+  });
+
+  bot.on("message:forum_topic_edited", async (ctx: Context) => {
+    const chatId = ctx.chat?.id;
+    const edit = ctx.msg?.forum_topic_edited;
+    const threadId = ctx.msg?.message_thread_id;
+    if (chatId === undefined || edit === undefined || threadId === undefined) return;
+    if (edit.name === undefined) return; // icon-only change
+    try {
+      await memoryStore.setDescription(
+        { topic: { chatId, topicId: threadId } },
+        edit.name,
+      );
+    } catch {
+      // Same silent-ignore rationale as forum_topic_created.
     }
   });
 

@@ -20,6 +20,7 @@ import { appendEvent, appendTranscriptEntry, dispatchAgentEvent } from "./events
 import type { TurnCallbacks } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
 import { workdirPath, createPiServices, piAgentDir } from "../pi-host.ts";
+import { sessionDir } from "../sessions/paths.ts";
 import { resolveModel, type ResolvedModel } from "./models.ts";
 import { buildGoblinSystemPrompt } from "./system-prompt.ts";
 import {
@@ -109,7 +110,7 @@ export class AgentRunner {
     const cwd = this.projectDir ?? workdirPath(home);
     const agentDir = piAgentDir(home);
 
-    const sessionManager = SessionManager.inMemory(cwd);
+    const sessionManager = SessionManager.continueRecent(cwd, join(sessionDir(home, this.sessionId), "pi"));
 
     // Caller-supplied tools first; then memory; then spawn_subagent if wired.
     const tools: ToolDefinition[] = [

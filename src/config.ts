@@ -38,7 +38,7 @@ export interface Config {
  */
 export function loadConfig(): Config {
   // Resolve goblinHome first (not from config file, but from env/default)
-  const goblinHome = process.env.GOBLIN_HOME ?? join(homedir(), "goblin");
+  const goblinHome = process.env.GOBLIN_HOME ?? join(homedir(), ".goblin");
   const configPath = join(goblinHome, "goblin.json5");
 
   // Read and parse config file

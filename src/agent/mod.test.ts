@@ -117,6 +117,7 @@ mock.module("@earendil-works/pi-coding-agent", () => {
     },
     SessionManager: {
       inMemory: (_path: string) => ({}),
+      continueRecent: (cwd: string, sessionDir: string) => ({ cwd, sessionDir }),
     },
     createAgentSession: async (opts: unknown) => {
       capturedCreateArgs.push(opts);
@@ -214,6 +215,19 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("AgentRunner", () => {
+  describe("pi session persistence", () => {
+    it("uses a persisted pi session directory scoped to the goblin session", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      expect(opts.sessionManager).toEqual({
+        cwd: join(tmpDir, "workdir"),
+        sessionDir: join(tmpDir, "sessions", "sess-001", "pi"),
+      });
+    });
+  });
+
   describe("memory tool registration", () => {
     it("appends the three memory tools to customTools when none are supplied", async () => {
       const runner = makeRunner(tmpDir);

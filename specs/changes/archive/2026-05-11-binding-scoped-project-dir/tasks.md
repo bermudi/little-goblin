@@ -33,9 +33,9 @@
 
 ## Phase 6: Archive and spec adoption
 
-- [ ] Run `litespec validate binding-scoped-project-dir`
-- [ ] Run `litespec archive binding-scoped-project-dir` to merge deltas into canon
-- [ ] Update `specs/canon/sessions/spec.md` (remove session-scoped projectDir)
-- [ ] Update `specs/canon/project-command/spec.md` (update to binding-scoped)
-- [ ] Update `specs/canon/agent-runner-project-dir/spec.md` (update source to binding, deprecate legacy field)
-- [ ] Update `specs/backlog.md` if applicable
+- [x] Run `litespec validate binding-scoped-project-dir`
+- [x] Run `litespec archive binding-scoped-project-dir` to merge deltas into canon
+- [x] Update `specs/canon/sessions/spec.md` (remove session-scoped projectDir)
+- [x] Update `specs/canon/project-command/spec.md` (update to binding-scoped)
+- [x] Update `specs/canon/agent-runner-project-dir/spec.md` (update source to binding, deprecate legacy field)
+- [x] Update `specs/backlog.md` if applicable

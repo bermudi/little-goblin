@@ -35,6 +35,7 @@ function makeSession(id: string): SessionState {
 
 const baseDiagnostics: Diagnostics = {
   sessionId: "abc1234567",
+  sessionName: null,
   createdAt: "2026-04-29T00:00:00.000Z",
   model: "poe/Claude-Sonnet-4.6",
   tools: ["bash", "memory"],
@@ -51,6 +52,7 @@ describe("formatDiagnostics", () => {
   it("includes all required fields from the design", () => {
     const out = formatDiagnostics(baseDiagnostics);
     expect(out).toContain("Session: abc1234567");
+    expect(out).toContain("Session Name: unavailable");
     expect(out).toContain("Model: poe/Claude-Sonnet-4.6");
     expect(out).toContain("Tools: bash, memory");
     expect(out).toContain("Events: /tmp/events.jsonl");
@@ -59,15 +61,23 @@ describe("formatDiagnostics", () => {
     expect(out).toContain("Subagents: 0 tracked, 0 running");
   });
 
+  it("renders session name when present", () => {
+    const out = formatDiagnostics({ ...baseDiagnostics, sessionName: "ttt-v2" });
+    expect(out).toContain("Session Name: ttt-v2");
+    expect(out).not.toContain("Session Name: unavailable");
+  });
+
   it("renders null fields as 'unavailable' instead of omitting them", () => {
     const out = formatDiagnostics({
       ...baseDiagnostics,
+      sessionName: null,
       tools: null,
       skillsLoaded: null,
       eventsBytes: null,
       eventsLines: null,
       contextTokens: null,
     });
+    expect(out).toContain("Session Name: unavailable");
     expect(out).toContain("Tools: unavailable");
     expect(out).toContain("Skills loaded: unavailable");
     expect(out).toContain("Events file: unavailable, unavailable lines");

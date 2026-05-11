@@ -21,6 +21,7 @@ import type { SubagentRunner } from "./subagents/mod.ts";
 /** Structured diagnostics snapshot. `null` fields are rendered "unavailable". */
 export interface Diagnostics {
   sessionId: string;
+  sessionName: string | null;
   createdAt: string;
   model: string;
   /** Tool names active on the live session. `null` if session not yet initialized. */
@@ -87,6 +88,7 @@ export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
 
   return {
     sessionId: deps.session.id,
+    sessionName: deps.session.title ?? null,
     createdAt: deps.session.createdAt,
     model: deps.runner?.modelName ?? deps.modelName,
     tools: deps.runner?.getActiveToolNames() ?? null,
@@ -122,6 +124,7 @@ function fmtNum(n: number | null): string {
 export function formatDiagnostics(d: Diagnostics): string {
   return [
     `Session: ${d.sessionId}`,
+    `Session Name: ${d.sessionName ?? UNAVAILABLE}`,
     `Created: ${d.createdAt}`,
     `Model: ${d.model}`,
     `Tools: ${fmtTools(d.tools)}`,

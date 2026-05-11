@@ -16,7 +16,10 @@ export interface SessionState {
   topicId?: number;
   title?: string;
   archived?: boolean;
-  /** Directory to use as cwd and agentDir for this session's agent. */
+  /**
+   * @deprecated Use binding-scoped projectDir via SessionManager.getProjectDir(locator) instead.
+   * This field may exist in legacy state.json files but is no longer read or written.
+   */
   projectDir?: string;
   /** Session-scoped model override. Falls back to config default when absent. */
   modelName?: string;

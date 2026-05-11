@@ -21,9 +21,9 @@
 
 ## Phase 4: Deprecate SessionState.projectDir
 
-- [ ] Modify `src/sessions/types.ts`: mark `projectDir` as `@deprecated` (keep in type for backward compat, but code stops reading it)
-- [ ] Modify `src/sessions/manager.ts`: `createForChat` stops including `projectDir` in new `SessionState`; `resolve` recreation of stale topics produces state without `projectDir`
-- [ ] Run `bun test` full suite
+- [x] Modify `src/sessions/types.ts`: mark `projectDir` as `@deprecated` (keep in type for backward compat, but code stops reading it)
+- [x] Modify `src/sessions/manager.ts`: `createForChat` stops including `projectDir` in new `SessionState`; `resolve` recreation of stale topics produces state without `projectDir`
+- [x] Run `bun test` full suite
 
 ## Phase 5: Manual migration script (delivered separately, outside goblin source)
 

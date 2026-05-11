@@ -18,23 +18,23 @@
 
 ## Phase 3: Remove skillSources auto
 
-- [ ] Remove `"auto"` from the config schema and `Config` type. Covers: "Validate config with Zod schema".
-- [ ] Update config tests so `"goblin-only"` remains the default, `"user"` remains valid, and `"auto"` is rejected.
-- [ ] Update any tests or fixtures that still configure `skillSources: "auto"`.
-- [ ] Run targeted config tests plus agent resource-loader tests.
+- [x] Remove `"auto"` from the config schema and `Config` type. Covers: "Validate config with Zod schema".
+- [x] Update config tests so `"goblin-only"` remains the default, `"user"` remains valid, and `"auto"` is rejected.
+- [x] Update any tests or fixtures that still configure `skillSources: "auto"`.
+- [x] Run targeted config tests plus agent resource-loader tests.
 
 ## Phase 4: Add startup preflight and onboarding migration
 
-- [ ] Add startup preflight before Telegram polling that fails on missing `$GOBLIN_HOME/SOUL.md` and warns on missing `$GOBLIN_HOME/AGENTS.md`. Covers: "Startup preflights Goblin prompt files".
-- [ ] Update onboarding to create missing `SOUL.md` by asking for conversational agent name and writing a concise identity-plus-voice template. Covers: "Onboarding creates deployment prompt files".
-- [ ] Update onboarding to create missing `AGENTS.md` with modest operating-rules defaults and never overwrite existing files.
-- [ ] Add onboarding warning for existing `AGENTS.md` without `SOUL.md`; do not copy or move content.
-- [ ] Run targeted startup/onboarding tests.
+- [x] Add startup preflight before Telegram polling that fails on missing `$GOBLIN_HOME/SOUL.md` and warns on missing `$GOBLIN_HOME/AGENTS.md`. Covers: "Startup preflights Goblin prompt files".
+- [x] Update onboarding to create missing `SOUL.md` by asking for conversational agent name and writing a concise identity-plus-voice template. Covers: "Onboarding creates deployment prompt files".
+- [x] Update onboarding to create missing `AGENTS.md` with modest operating-rules defaults and never overwrite existing files.
+- [x] Add onboarding warning for existing `AGENTS.md` without `SOUL.md`; do not copy or move content.
+- [x] Run targeted startup/onboarding tests.
 
 ## Phase 5: Verify behavior
 
-- [ ] Run the relevant project test command covering config, pi-host, prompt construction, AgentRunner, startup preflight, and onboarding.
-- [ ] Manually smoke-test startup with missing `SOUL.md` and confirm the process fails before Telegram polling with an actionable error.
-- [ ] Deterministically verify the main runner passes a `DefaultResourceLoader` a prompt containing `SOUL.md` content, sets `noContextFiles: true`, and does not rely on pi implicit context loading.
+- [x] Run the relevant project test command covering config, pi-host, prompt construction, AgentRunner, startup preflight, and onboarding.
+- [x] Manually smoke-test startup with missing `SOUL.md` and confirm the process fails before Telegram polling with an actionable error.
+- [x] Deterministically verify the main runner passes a `DefaultResourceLoader` a prompt containing `SOUL.md` content, sets `noContextFiles: true`, and does not rely on pi implicit context loading.
 - [ ] Manually smoke-test a configured Goblin with `SOUL.md` and sanity-check that the first reply reflects the deployment identity.
 - [ ] Manually smoke-test a project-bound session and verify only exact `projectDir/AGENTS.md` is included as project guidance.

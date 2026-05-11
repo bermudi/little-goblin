@@ -134,7 +134,7 @@ describe("loadConfig", () => {
   });
 
   it("accepts every valid skillSources value", () => {
-    for (const skillSources of ["goblin-only", "user", "auto"] as const) {
+    for (const skillSources of ["goblin-only", "user"] as const) {
       const configContent = `{
         botToken: "test",
         allowedUsers: [123],
@@ -146,6 +146,18 @@ describe("loadConfig", () => {
       const cfg = loadConfig();
       expect(cfg.skillSources).toBe(skillSources);
     }
+  });
+
+  it("rejects removed auto skillSources value", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      skillSources: "auto",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    expect(() => loadConfig()).toThrow("Config validation failed");
   });
 
   it("rejects invalid skillSources values", () => {

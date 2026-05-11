@@ -2,11 +2,13 @@ import { loadConfig, ensureGoblinHome } from "./config.ts";
 import { buildBot } from "./bot.ts";
 import { log, initLog } from "./log.ts";
 import { validateModelAtStartup } from "./agent/poe-validate.ts";
+import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
   initLog(cfg.logLevel);
   ensureGoblinHome(cfg);
+  await preflightGoblinPromptFiles({ home: cfg.goblinHome, warn: log.warn });
   await validateModelAtStartup(cfg, log);
   const { bot, manager, subagentRunner, agentRunners } = buildBot(cfg);
   manager.init();

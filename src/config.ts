@@ -22,7 +22,7 @@ export interface Config {
   logLevel: "debug" | "info" | "warn" | "error";
   /** Status-line tool visibility level. See `src/tg/buffer.ts`. */
   toolVisibility: "none" | "minimal" | "standard" | "verbose" | "debug";
-  skillSources: "goblin-only" | "user" | "auto";
+  skillSources: "goblin-only" | "user";
   /** Favorite model ids for /model switching. */
   favorites: string[];
 }

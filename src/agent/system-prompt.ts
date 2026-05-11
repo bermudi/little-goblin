@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { agentsMdPath, soulMdPath } from "../pi-host.ts";
 
@@ -55,6 +55,40 @@ export async function buildGoblinSystemPrompt(
   ]
     .filter((part): part is string => part !== null)
     .join("\n\n");
+}
+
+export interface PreflightGoblinPromptFilesOptions {
+  home: string;
+  warn: (message: string, extra?: unknown) => void;
+}
+
+export async function preflightGoblinPromptFiles(
+  opts: PreflightGoblinPromptFilesOptions,
+): Promise<void> {
+  const soulPath = soulMdPath(opts.home);
+  const deploymentAgentsPath = agentsMdPath(opts.home);
+
+  try {
+    await access(soulPath);
+  } catch (err) {
+    if (isNodeErrnoException(err) && err.code === "ENOENT") {
+      throw new MissingSoulError(soulPath);
+    }
+    throw err;
+  }
+
+  try {
+    await access(deploymentAgentsPath);
+  } catch (err) {
+    if (isNodeErrnoException(err) && err.code === "ENOENT") {
+      opts.warn("optional Goblin prompt file missing", {
+        path: deploymentAgentsPath,
+        note: "Create AGENTS.md in $GOBLIN_HOME for deployment operating rules.",
+      });
+      return;
+    }
+    throw err;
+  }
 }
 
 async function readRequiredSoul(path: string): Promise<string> {

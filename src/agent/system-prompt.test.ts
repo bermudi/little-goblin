@@ -6,6 +6,7 @@ import {
   GOBLIN_PRODUCT_SHELL,
   MissingSoulError,
   buildGoblinSystemPrompt,
+  preflightGoblinPromptFiles,
 } from "./system-prompt.ts";
 
 describe("GOBLIN_PRODUCT_SHELL", () => {
@@ -18,6 +19,48 @@ describe("GOBLIN_PRODUCT_SHELL", () => {
     expect(GOBLIN_PRODUCT_SHELL).not.toContain("Bermudi");
     expect(GOBLIN_PRODUCT_SHELL).not.toContain("your name is");
     expect(GOBLIN_PRODUCT_SHELL).not.toContain("coding assistant");
+  });
+});
+
+describe("preflightGoblinPromptFiles", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "goblin-prompt-preflight-test-"));
+  });
+
+  afterEach(() => {
+    chmodSync(tmpDir, 0o700);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("fails with the shared missing-SOUL error before startup can continue", async () => {
+    await expect(preflightGoblinPromptFiles({ home: tmpDir, warn: () => undefined })).rejects.toBeInstanceOf(MissingSoulError);
+  });
+
+  it("warns when deployment AGENTS is missing but SOUL exists", async () => {
+    const warnings: string[] = [];
+    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
+
+    await preflightGoblinPromptFiles({
+      home: tmpDir,
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(warnings).toEqual(["optional Goblin prompt file missing"]);
+  });
+
+  it("continues quietly when SOUL and deployment AGENTS exist", async () => {
+    const warnings: string[] = [];
+    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
+    writeFileSync(join(tmpDir, "AGENTS.md"), "deployment rules\n", "utf-8");
+
+    await preflightGoblinPromptFiles({
+      home: tmpDir,
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -88,6 +131,20 @@ describe("buildGoblinSystemPrompt", () => {
     expect(prompt).not.toContain("ancestor rules");
     expect(prompt).not.toContain("compat rules");
     expect(prompt).not.toContain("cursor rules");
+  });
+
+  it("propagates non-ENOENT read failures for required SOUL.md without wrapping in MissingSoulError", async () => {
+    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
+    chmodSync(join(tmpDir, "SOUL.md"), 0o000);
+
+    // Must reject with the underlying error, not MissingSoulError.
+    try {
+      await buildGoblinSystemPrompt({ home: tmpDir });
+      expect.unreachable("expected buildGoblinSystemPrompt to reject");
+    } catch (err) {
+      expect(err).toBeDefined();
+      expect(err).not.toBeInstanceOf(MissingSoulError);
+    }
   });
 
   it("propagates non-ENOENT read failures for optional deployment AGENTS.md", async () => {

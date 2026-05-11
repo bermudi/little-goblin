@@ -413,16 +413,6 @@ describe("AgentRunner", () => {
       expect(loaderOpts.additionalSkillPaths).toEqual([join(tmpDir, "skills")]);
       expect(loaderOpts.systemPrompt).toContain("test goblin identity");
     });
-
-    it("auto still uses an explicit resource loader until config validation removes it", async () => {
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, { skillSources: "auto" });
-      await runner.prompt("hi", nopCallbacks());
-
-      const opts = capturedCreateArgs[0] as Record<string, unknown>;
-      expect(capturedResourceLoaderArgs).toHaveLength(1);
-      expect("resourceLoader" in opts).toBe(true);
-      expect((capturedResourceLoaderArgs[0] as Record<string, unknown>).noContextFiles).toBe(true);
-    });
   });
 
   describe("Goblin system prompt resource loader", () => {

@@ -9,9 +9,9 @@
 
 ## Phase 2: SessionManager delegates to topic settings
 
-- [ ] Modify `src/sessions/manager.ts`: add `getProjectDir(locator)` delegating to `topic-settings.ts`; replace `setProjectDir(sessionId, dir)` with `bindProjectDir(locator, dir)` updating topic-settings instead of state.json
-- [ ] Modify `src/sessions/manager.test.ts`: remove `setProjectDir` session tests; add `getProjectDir` delegation tests
-- [ ] Run `bun test src/sessions/manager.test.ts`
+- [x] Modify `src/sessions/manager.ts`: add `getProjectDir(locator)` delegating to `topic-settings.ts`; replace `setProjectDir(sessionId, dir)` with `bindProjectDir(locator, dir)` updating topic-settings instead of state.json
+- [x] Modify `src/sessions/manager.test.ts`: remove `setProjectDir` session tests; add `getProjectDir` delegation tests
+- [x] Run `bun test src/sessions/manager.test.ts`
 
 ## Phase 3: Bot reads projectDir from binding, /project writes to binding
 

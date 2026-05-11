@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { SessionManager } from "./manager.ts";
 import type { Config } from "../config.ts";
 import type { ChatLocator, BindingsFile } from "./types.ts";
+import { topicSettingsPath } from "./paths.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -229,31 +230,50 @@ describe("SessionManager", () => {
     });
   });
 
-  describe("setProjectDir", () => {
-    it("sets projectDir on an existing session", () => {
-      const loc: ChatLocator = { chatId: 1 };
-      const created = manager.createForChat(loc);
-      expect(created.projectDir).toBeUndefined();
-
-      manager.setProjectDir(created.id, "/home/daniel/project");
-      const updated = manager.resolve(loc);
-      expect(updated?.projectDir).toBe("/home/daniel/project");
+  describe("getProjectDir", () => {
+    it("returns undefined when no topic settings exist", () => {
+      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
+      expect(manager.getProjectDir(loc)).toBeUndefined();
     });
 
-    it("clears projectDir when passed undefined", () => {
-      const loc: ChatLocator = { chatId: 1 };
-      const created = manager.createForChat(loc);
-      manager.setProjectDir(created.id, "/home/daniel/project");
-
-      manager.setProjectDir(created.id, undefined);
-      const updated = manager.resolve(loc);
-      expect(updated?.projectDir).toBeUndefined();
+    it("returns projectDir from topic settings", () => {
+      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
+      manager.bindProjectDir(loc, "/home/daniel/project");
+      expect(manager.getProjectDir(loc)).toBe("/home/daniel/project");
     });
 
-    it("throws when session does not exist", () => {
-      expect(() => manager.setProjectDir("nonexistent", "/foo")).toThrow(
-        /session not found/,
-      );
+    it("returns projectDir for DM", () => {
+      const loc: ChatLocator = { chatId: 123456 };
+      manager.bindProjectDir(loc, "/home/daniel/dm-project");
+      expect(manager.getProjectDir(loc)).toBe("/home/daniel/dm-project");
+    });
+
+    it("returns undefined after clearing", () => {
+      const loc: ChatLocator = { chatId: 123456 };
+      manager.bindProjectDir(loc, "/home/daniel/project");
+      manager.bindProjectDir(loc, undefined);
+      expect(manager.getProjectDir(loc)).toBeUndefined();
+    });
+  });
+
+  describe("bindProjectDir", () => {
+    it("persists projectDir to topic-settings.json", () => {
+      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
+      manager.bindProjectDir(loc, "/home/daniel/project");
+
+      const raw = readFileSync(topicSettingsPath(tmpDir), "utf-8");
+      const settings = JSON.parse(raw);
+      expect(settings.topics["123456"]["7"].projectDir).toBe("/home/daniel/project");
+    });
+
+    it("clears projectDir from topic-settings.json", () => {
+      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
+      manager.bindProjectDir(loc, "/home/daniel/project");
+      manager.bindProjectDir(loc, undefined);
+
+      const raw = readFileSync(topicSettingsPath(tmpDir), "utf-8");
+      const settings = JSON.parse(raw);
+      expect(settings.topics?.["123456"]?.["7"]).toBeUndefined();
     });
   });
 

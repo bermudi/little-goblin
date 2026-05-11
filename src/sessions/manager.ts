@@ -6,6 +6,7 @@ import { log } from "../log.ts";
 import type { BindingsFile, ChatLocator, SessionState } from "./types.ts";
 import { loadBindings, saveBindings } from "./bindings.ts";
 import { loadState, saveState } from "./state.ts";
+import { getProjectDir as getProjectDirFromSettings, bindProjectDir as bindProjectDirInSettings } from "./topic-settings.ts";
 import { eventsPath, sessionsDir, sessionDir, transcriptPath } from "./paths.ts";
 
 /**
@@ -232,8 +233,24 @@ export class SessionManager {
   }
 
   /**
+   * Get the projectDir for a chat surface from topic-settings.json.
+   */
+  getProjectDir(loc: ChatLocator): string | undefined {
+    return getProjectDirFromSettings(this.home, loc);
+  }
+
+  /**
+   * Bind (or clear) the projectDir for a chat surface.
+   * Updates topic-settings.json atomically.
+   */
+  bindProjectDir(loc: ChatLocator, projectDir: string | undefined): void {
+    bindProjectDirInSettings(this.home, loc, projectDir);
+  }
+
+  /**
    * Set or clear the project directory for an existing session.
    * Updates state.json atomically.
+   * @deprecated Use bindProjectDir(locator, dir) instead.
    */
   setProjectDir(sessionId: string, projectDir: string | undefined): void {
     const state = loadState(this.home, sessionId);

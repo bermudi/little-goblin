@@ -148,3 +148,60 @@ The system SHALL export the public API from `src/sessions/mod.ts`.
 
 - **WHEN** a module imports from `"./sessions/mod.ts"`
 - **THEN** it SHALL have access to `SessionManager` class and types `ChatLocator`, `SessionState`
+
+### Requirement: Persist session titles
+
+The session manager SHALL allow setting or clearing `SessionState.title` for an existing session and persist the updated state atomically.
+
+#### Scenario: Title set
+
+- **WHEN** `setTitle(sessionId, "memory refactor")` is called for an existing session
+- **THEN** `sessions/<id>/state.json` SHALL contain `"title": "memory refactor"`
+- **AND** resolving that session SHALL return the updated title
+
+#### Scenario: Missing session title update
+
+- **WHEN** `setTitle()` is called for a missing session ID
+- **THEN** it SHALL throw `session not found`
+
+### Requirement: Bind existing sessions to chat surfaces
+
+The session manager SHALL allow binding an existing resumable session to a DM, supergroup, or forum topic locator without creating a new session and without deleting or archiving the session previously bound to that surface.
+
+#### Scenario: Bind existing session to DM
+
+- **WHEN** `bindExistingToChat(sessionId, { chatId })` is called for an existing session
+- **THEN** the DM binding for `chatId` SHALL point to `sessionId`
+- **AND** the previously bound session directory SHALL remain intact
+
+#### Scenario: Bind existing session to topic
+
+- **WHEN** `bindExistingToChat(sessionId, { chatId, topicId })` is called for an existing session
+- **THEN** the topic binding for `(chatId, topicId)` SHALL point to `sessionId`
+
+#### Scenario: Bind missing session
+
+- **WHEN** `bindExistingToChat()` is called for a missing session ID
+- **THEN** it SHALL throw `session not found`
+
+### Requirement: Session rebinding leaves old session resumable
+
+When creating a new session for a DM that already has one, the old session SHALL remain under `sessions/<old-id>/` as an unbound resumable session.
+
+#### Scenario: DM session rebound
+
+- **WHEN** `createForChat()` is called for a DM that already has a session
+- **THEN** it SHALL create a new session with a new ID
+- **AND** update the binding to point to the new session
+- **AND** leave the old session directory intact as a resumable unbound session
+
+### Requirement: List resumable sessions excludes archive
+
+The session list SHALL include unbound sessions and exclude archived sessions under `sessions/archive/<id>/`.
+
+#### Scenario: List sessions
+
+- **WHEN** `list()` is called
+- **THEN** it SHALL return all `SessionState` objects found directly under the sessions directory
+- **AND** unbound sessions SHALL be included
+- **AND** archived sessions SHALL be excluded

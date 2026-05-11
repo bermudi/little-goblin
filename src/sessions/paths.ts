@@ -27,3 +27,7 @@ export function transcriptPath(home: string, id: string): string {
 export function configPath(home: string): string {
   return join(home, "config.json");
 }
+
+export function topicSettingsPath(home: string): string {
+  return join(home, "topic-settings.json");
+}

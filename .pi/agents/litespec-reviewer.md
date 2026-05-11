@@ -2,8 +2,8 @@
 name: litespec-reviewer
 description: Context-aware litespec review — artifact, implementation, and pre-archive phases. Knows little-goblin conventions.
 tools: read, grep, find, ls, bash
-model: opencode-go/kimi-k2.6
-thinking: high
+model: opencode-go/deepseek-v4-pro
+thinking: xhigh
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false

@@ -394,6 +394,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
               rawText: rawText ?? "",
               favorites: cfg.favorites,
               cfg,
+              currentModelName: existingRunner?.modelName ?? session?.modelName ?? cfg.modelName,
               setModelName: (name) => {
                 if (!session) return;
                 manager.setModelName(session.id, name);

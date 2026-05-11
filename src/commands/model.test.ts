@@ -30,6 +30,7 @@ describe("executeModel", () => {
       rawText: "/model 1",
       favorites: ["poe/Claude-Sonnet-4.6"],
       cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
+      currentModelName: "poe/Claude-Sonnet-4.6",
       setModelName: mock(),
     });
     expect(result.kind).toBe("no-session");
@@ -42,6 +43,7 @@ describe("executeModel", () => {
       rawText: "/model",
       favorites: [],
       cfg: makeConfig([]),
+      currentModelName: "poe/Claude-Sonnet-4.6",
       setModelName: mock(),
     });
     expect(result.kind).toBe("no-favorites");
@@ -54,10 +56,12 @@ describe("executeModel", () => {
       rawText: "/model",
       favorites: ["poe/A", "poe/B"],
       cfg: makeConfig(["poe/A", "poe/B"]),
+      currentModelName: "poe/A",
       setModelName: mock(),
     });
     expect(result.kind).toBe("list");
-    expect(result.reply).toContain("1. poe/A");
+    expect(result.reply).toContain("Current: `poe/A`");
+    expect(result.reply).toContain("1. poe/A ✅");
     expect(result.reply).toContain("2. poe/B");
   });
 
@@ -68,6 +72,7 @@ describe("executeModel", () => {
       rawText: "/model 1",
       favorites: ["poe/Claude-Sonnet-4.6"],
       cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
+      currentModelName: "poe/Claude-Sonnet-4.6",
       setModelName,
     });
     expect(result.kind).toBe("set");
@@ -83,6 +88,7 @@ describe("executeModel", () => {
       rawText: "/model 5",
       favorites: ["poe/A", "poe/B"],
       cfg: makeConfig(["poe/A", "poe/B"]),
+      currentModelName: "poe/A",
       setModelName: mock(),
     });
     expect(result.kind).toBe("bad-index");
@@ -95,6 +101,7 @@ describe("executeModel", () => {
       rawText: "/model 0",
       favorites: ["poe/A"],
       cfg: makeConfig(["poe/A"]),
+      currentModelName: "poe/A",
       setModelName: mock(),
     });
     expect(result.kind).toBe("bad-index");
@@ -106,20 +113,40 @@ describe("executeModel", () => {
       rawText: "/model -1",
       favorites: ["poe/A"],
       cfg: makeConfig(["poe/A"]),
+      currentModelName: "poe/A",
       setModelName: mock(),
     });
     expect(result.kind).toBe("bad-index");
   });
 
-  it("rejects non-numeric argument", () => {
+  it("rejects non-numeric argument for unknown model", () => {
     const result = executeModel({
       hasSession: true,
       rawText: "/model foo",
       favorites: ["poe/A"],
       cfg: makeConfig(["poe/A"]),
+      currentModelName: "poe/A",
       setModelName: mock(),
     });
-    expect(result.kind).toBe("bad-index");
+    expect(result.kind).toBe("bad-model");
+    expect(result.reply).toContain("Unknown MODEL_NAME");
+  });
+
+  it("switches to a valid model by direct id", () => {
+    const setModelName = mock();
+    const result = executeModel({
+      hasSession: true,
+      rawText: "/model poe/Claude-Sonnet-4.6",
+      favorites: ["poe/A"],
+      cfg: makeConfig(["poe/A"]),
+      currentModelName: "poe/A",
+      setModelName,
+    });
+    expect(result.kind).toBe("set");
+    if (result.kind === "set") {
+      expect(result.modelName).toBe("poe/Claude-Sonnet-4.6");
+    }
+    expect(setModelName).toHaveBeenCalledWith("poe/Claude-Sonnet-4.6");
   });
 
   it("rejects model without required API key", () => {
@@ -128,6 +155,7 @@ describe("executeModel", () => {
       rawText: "/model 1",
       favorites: ["anthropic/claude-sonnet-4.6"],
       cfg: makeConfig(["anthropic/claude-sonnet-4.6"]),
+      currentModelName: "poe/A",
       setModelName: mock(),
     });
     expect(result.kind).toBe("bad-model");
@@ -140,6 +168,7 @@ describe("executeModel", () => {
       rawText: "/model 1",
       favorites: ["unknown/model"],
       cfg: makeConfig(["unknown/model"]),
+      currentModelName: "poe/A",
       setModelName: mock(),
     });
     expect(result.kind).toBe("bad-model");
@@ -153,6 +182,7 @@ describe("executeModel", () => {
       rawText: "/model none",
       favorites: ["poe/A"],
       cfg: makeConfig(["poe/A"]),
+      currentModelName: "poe/A",
       setModelName,
     });
     expect(result.kind).toBe("cleared");
@@ -166,9 +196,27 @@ describe("executeModel", () => {
       rawText: "/model clear",
       favorites: ["poe/A"],
       cfg: makeConfig(["poe/A"]),
+      currentModelName: "poe/A",
       setModelName,
     });
     expect(result.kind).toBe("cleared");
     expect(setModelName).toHaveBeenCalledWith(undefined);
+  });
+
+  it("switches to a valid model by direct id even when favorites is empty", () => {
+    const setModelName = mock();
+    const result = executeModel({
+      hasSession: true,
+      rawText: "/model poe/Claude-Sonnet-4.6",
+      favorites: [],
+      cfg: makeConfig([]),
+      currentModelName: "poe/A",
+      setModelName,
+    });
+    expect(result.kind).toBe("set");
+    if (result.kind === "set") {
+      expect(result.modelName).toBe("poe/Claude-Sonnet-4.6");
+    }
+    expect(setModelName).toHaveBeenCalledWith("poe/Claude-Sonnet-4.6");
   });
 });

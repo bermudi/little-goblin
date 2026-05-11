@@ -16,6 +16,8 @@ export interface ModelCommandDeps {
   favorites: string[];
   /** Config object for resolving models. */
   cfg: Config;
+  /** Currently active model (override or default). */
+  currentModelName: string;
   /** Sets (or clears) the session-scoped model override. */
   setModelName: (name: string | undefined) => void;
 }
@@ -32,9 +34,24 @@ export type ModelCommandResult =
 export const NO_SESSION_REPLY = "No active session. Start a conversation first.";
 export const NO_FAVORITES_REPLY = "No favorites configured. Add them to `goblin.json5`.";
 
-function formatList(favorites: string[]): string {
-  const lines = favorites.map((m, i) => `${i + 1}. ${m}`);
-  return ["Favorite models:", ...lines, "", "Use `/model <number>` to switch."].join("\n");
+/**
+ * Format the /model reply, showing the current model and the favorites list
+ * with a ✅ marker on the active entry.
+ */
+function formatList(favorites: string[], currentModelName: string): string {
+  const lines = favorites.map((m, i) => {
+    const marker = m === currentModelName ? " ✅" : "";
+    return `${i + 1}. ${m}${marker}`;
+  });
+  return [
+    `Current: \`${currentModelName}\``,
+    "",
+    "Favorites:",
+    ...lines,
+    "",
+    "Use `/model <number>` or `/model <model-id>` to switch.",
+    "Use `/model clear` to use the default.",
+  ].join("\n");
 }
 
 export function executeModel(deps: ModelCommandDeps): ModelCommandResult {
@@ -49,7 +66,7 @@ export function executeModel(deps: ModelCommandDeps): ModelCommandResult {
     if (deps.favorites.length === 0) {
       return { kind: "no-favorites", reply: NO_FAVORITES_REPLY };
     }
-    return { kind: "list", reply: formatList(deps.favorites) };
+    return { kind: "list", reply: formatList(deps.favorites, deps.currentModelName) };
   }
 
   // Clear override
@@ -58,19 +75,29 @@ export function executeModel(deps: ModelCommandDeps): ModelCommandResult {
     return { kind: "cleared", reply: "Model override cleared. Using default." };
   }
 
-  // Parse 1-based index
+  // Parse 1-based index, or treat arg as raw model id
   const index = Number(arg);
-  if (!Number.isInteger(index) || index < 1 || index > deps.favorites.length) {
+  if (Number.isInteger(index) && index >= 1 && index <= deps.favorites.length) {
+    const modelName = deps.favorites[index - 1]!;
+    try {
+      resolveModel({ ...deps.cfg, modelName });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { kind: "bad-model", reply: message };
+    }
+    deps.setModelName(modelName);
+    return { kind: "set", reply: `Switched to \`${modelName}\``, modelName };
+  }
+
+  // Purely numeric but out of range → helpful index error (only when favorites exist)
+  if (Number.isInteger(index) && deps.favorites.length > 0) {
     return {
       kind: "bad-index",
-      reply:
-        deps.favorites.length === 0
-          ? NO_FAVORITES_REPLY
-          : `Invalid index. Use 1–${deps.favorites.length}.`,
+      reply: `Invalid index. Use 1–${deps.favorites.length}.`,
     };
   }
 
-  const modelName = deps.favorites[index - 1]!;
+  const modelName = arg;
 
   // Validate the model is resolvable (known model + API key present)
   try {

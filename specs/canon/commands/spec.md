@@ -149,24 +149,17 @@ The `/archive` command SHALL cancel any active turn, move the current session to
 
 ### Requirement: Debug command cancels and dumps diagnostics
 
-The `/debug` command SHALL cancel any active turn and dump session diagnostics (loaded skills, active tools, model, context usage).
+The `/debug` command SHALL include the session name in its diagnostics output. `gatherDiagnostics` SHALL extract `deps.session.title ?? null` into a new `sessionName` field on the `Diagnostics` type. `formatDiagnostics` SHALL render `Session Name: <name>` immediately after `Session: <id>` when the name is present, and `Session Name: unavailable` when absent.
 
-#### Scenario: Debug during streaming
+#### Scenario: Named session
 
-- **WHEN** `/debug` is sent while streaming
-- **THEN** the current turn SHALL be aborted (with cascade to subagents)
-- **AND** diagnostics SHALL be sent as a formatted message
+- **WHEN** `/debug` is invoked on a session with `title: "ttt-v2"`
+- **THEN** the output SHALL contain `Session: <id>` followed by `Session Name: ttt-v2`
 
-#### Scenario: Debug output format
+#### Scenario: Unnamed session
 
-- **WHEN** `/debug` is used
-- **THEN** output SHALL include: current model, active tools, events.jsonl path, session stats
-- **AND** output MAY include: loaded skills, context token usage (on a best-effort basis; shown as "unavailable" if not exposed by the API)
-
-#### Scenario: Debug with no active session
-
-- **WHEN** `/debug` is sent in a DM with no active session
-- **THEN** a "No active session" reply SHALL be sent
+- **WHEN** `/debug` is invoked on a session with no `title`
+- **THEN** the output SHALL contain `Session Name: unavailable`
 
 ### Requirement: Subagents command surface exists (stub)
 

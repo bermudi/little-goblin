@@ -28,13 +28,15 @@ import { executeArchive } from "./commands/archive.ts";
 import { executeProject } from "./commands/project.ts";
 import { executeModel } from "./commands/model.ts";
 import { executeCompact } from "./commands/compact.ts";
+import { executeName } from "./commands/name.ts";
+import { executeResume } from "./commands/resume.ts";
 import { parseCommand } from "./commands/parse.ts";
 import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./commands/subagents.ts";
 import { HELP_REPLY } from "./commands/help.ts";
 import { generateDiagnostics } from "./diagnostics.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
-const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact"]);
+const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact", "/resume", "/name"]);
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -438,6 +440,64 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           }
           const compactSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
           await ctx.reply(`${compactResult.reply}${compactSuffix}`);
+          return;
+        }
+        case "/name": {
+          let nameResult;
+          try {
+            nameResult = executeName({
+              hasSession: session !== null,
+              rawText: rawText ?? "",
+              session,
+              setTitle: (title) => {
+                if (!session) return;
+                manager.setTitle(session.id, title);
+              },
+            });
+          } catch (err) {
+            log.error("name failed", {
+              error: String(err),
+              sessionId: session?.id,
+            });
+            await ctx.reply("Failed to name session. Please try again.");
+            return;
+          }
+          const nameSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
+          await ctx.reply(`${nameResult.reply}${nameSuffix}`);
+          return;
+        }
+        case "/resume": {
+          let resumeResult;
+          try {
+            resumeResult = executeResume({
+              rawText: rawText ?? "",
+              sessions: manager.list(),
+              bindSession: (sessionId) => manager.bindExistingToChat(sessionId, locator, { isSupergroup }),
+            });
+          } catch (err) {
+            log.error("resume failed", {
+              error: String(err),
+              sessionId: session?.id,
+            });
+            await ctx.reply("Failed to resume session. Please try again.");
+            return;
+          }
+          if (resumeResult.kind === "resumed") {
+            if (session && session.id !== resumeResult.session.id) {
+              const prior = runners.get(session.id);
+              if (prior) {
+                try {
+                  prior.dispose();
+                } finally {
+                  runners.delete(session.id);
+                }
+              }
+            }
+            runners.set(resumeResult.session.id, createRunner(resumeResult.session, locator, ctx));
+            log.debug("created runner for /resume session", { sessionId: resumeResult.session.id });
+          }
+          const resumeSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
+          await ctx.reply(`${resumeResult.reply}${resumeSuffix}`);
           return;
         }
         case "/subagents":

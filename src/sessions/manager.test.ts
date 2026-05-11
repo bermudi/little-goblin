@@ -284,4 +284,36 @@ describe("SessionManager", () => {
       );
     });
   });
+
+  describe("setTitle", () => {
+    it("sets title on an existing session", () => {
+      const loc: ChatLocator = { chatId: 1 };
+      const created = manager.createForChat(loc);
+
+      manager.setTitle(created.id, "memory refactor");
+      const updated = manager.resolve(loc);
+      expect(updated?.title).toBe("memory refactor");
+    });
+
+    it("throws when session does not exist", () => {
+      expect(() => manager.setTitle("nonexistent", "nope")).toThrow(/session not found/);
+    });
+  });
+
+  describe("bindExistingToChat", () => {
+    it("rebinds a DM to an existing session", () => {
+      const first = manager.createForChat({ chatId: 1 });
+      const second = manager.createForChat({ chatId: 2 });
+
+      const rebound = manager.bindExistingToChat(first.id, { chatId: 2 });
+
+      expect(rebound.id).toBe(first.id);
+      expect(manager.resolve({ chatId: 2 })?.id).toBe(first.id);
+      expect(existsSync(join(tmpDir, "sessions", second.id, "state.json"))).toBe(true);
+    });
+
+    it("throws when session does not exist", () => {
+      expect(() => manager.bindExistingToChat("nonexistent", { chatId: 1 })).toThrow(/session not found/);
+    });
+  });
 });

@@ -181,6 +181,30 @@ export class SessionManager {
     return state;
   }
 
+  bindExistingToChat(sessionId: string, loc: ChatLocator, opts?: { isSupergroup?: boolean }): SessionState {
+    const state = loadState(this.home, sessionId);
+    if (!state) {
+      throw new Error(`session not found: ${sessionId}`);
+    }
+
+    const bindings = loadBindings(this.home);
+    const chatKey = String(loc.chatId);
+    if (loc.topicId !== undefined) {
+      bindings.topics ??= {};
+      bindings.topics[chatKey] ??= {};
+      bindings.topics[chatKey][String(loc.topicId)] = sessionId;
+    } else if (opts?.isSupergroup) {
+      bindings.supergroups ??= {};
+      bindings.supergroups[chatKey] = sessionId;
+    } else {
+      bindings.dm ??= {};
+      bindings.dm[chatKey] = sessionId;
+    }
+    saveBindings(this.home, bindings);
+    log.info("bound existing session", { sessionId, chatId: loc.chatId, topicId: loc.topicId, isSupergroup: opts?.isSupergroup });
+    return state;
+  }
+
   /**
    * Archive a session: move `sessions/<id>/` to `sessions/archive/<id>/`
    * and remove every binding that references it.
@@ -233,6 +257,16 @@ export class SessionManager {
     const updated: SessionState = { ...state, modelName };
     saveState(this.home, updated);
     log.info("set modelName", { sessionId, modelName });
+  }
+
+  setTitle(sessionId: string, title: string | undefined): void {
+    const state = loadState(this.home, sessionId);
+    if (!state) {
+      throw new Error(`session not found: ${sessionId}`);
+    }
+    const updated: SessionState = { ...state, title };
+    saveState(this.home, updated);
+    log.info("set session title", { sessionId, title });
   }
 
   /**

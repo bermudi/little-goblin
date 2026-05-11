@@ -6,6 +6,7 @@ import { SessionManager } from "./manager.ts";
 import type { Config } from "../config.ts";
 import type { ChatLocator, BindingsFile } from "./types.ts";
 import { topicSettingsPath } from "./paths.ts";
+import { consumeProjectNotice } from "./topic-settings.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -274,6 +275,24 @@ describe("SessionManager", () => {
       const raw = readFileSync(topicSettingsPath(tmpDir), "utf-8");
       const settings = JSON.parse(raw);
       expect(settings.topics?.["123456"]?.["7"]).toBeUndefined();
+    });
+  });
+
+  describe("consumeProjectNotice", () => {
+    it("returns and clears the pending notice via manager", () => {
+      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
+      manager.bindProjectDir(loc, "/home/daniel/project");
+
+      const notice = manager.consumeProjectNotice(loc);
+      expect(notice).toBe("Project directory changed to `/home/daniel/project`.");
+
+      // Consumed — second call returns undefined
+      expect(manager.consumeProjectNotice(loc)).toBeUndefined();
+    });
+
+    it("returns undefined when no notice is pending", () => {
+      const loc: ChatLocator = { chatId: 123456 };
+      expect(manager.consumeProjectNotice(loc)).toBeUndefined();
     });
   });
 

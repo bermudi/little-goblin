@@ -47,6 +47,8 @@ export interface AgentRunnerOptions {
   projectDir?: string;
   /** Session-scoped model override. Falls back to config default when absent. */
   modelName?: string;
+  /** Queued notice to inject as context on the first prompt. Consumed once. */
+  pendingProjectNotice?: string;
 }
 
 /**
@@ -68,6 +70,7 @@ export class AgentRunner {
   private topicNameCache = new Map<string, string | null>();
   private projectDir: string | undefined;
   private _modelName: string | undefined;
+  private pendingProjectNotice: string | undefined;
   private resolvedModel: ResolvedModel | null = null;
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
@@ -88,6 +91,7 @@ export class AgentRunner {
     this.getTopicName = opts.getTopicName;
     this.projectDir = opts.projectDir;
     this._modelName = opts.modelName;
+    this.pendingProjectNotice = opts.pendingProjectNotice;
     // Construction is cheap (no I/O); the directory is created lazily on first write.
     this.memoryStore = new MemoryStore(opts.cfg.goblinHome);
   }
@@ -177,6 +181,16 @@ export class AgentRunner {
     this.unsubscribe = session.subscribe((event) => {
       this.handleEvent(event);
     });
+
+    // Inject any queued project notice as a nextTurn custom message,
+    // so the model knows the cwd changed when it sees the next user message.
+    if (this.pendingProjectNotice) {
+      await session.sendCustomMessage(
+        { customType: "project_notice", content: this.pendingProjectNotice },
+        { deliverAs: "nextTurn" },
+      );
+      this.pendingProjectNotice = undefined;
+    }
 
     log.debug("AgentRunner initialized", { sessionId: this.sessionId });
   }

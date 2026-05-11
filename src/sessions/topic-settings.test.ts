@@ -8,6 +8,7 @@ import {
   saveTopicSettings,
   getProjectDir,
   bindProjectDir,
+  consumeProjectNotice,
   type TopicSettingsFile,
 } from "./topic-settings.ts";
 import { topicSettingsPath } from "./paths.ts";
@@ -203,6 +204,54 @@ describe("topic-settings", () => {
       const loaded = loadTopicSettings(tmpDir);
       expect(loaded.topics?.["-100"]?.["1"]?.projectDir).toBe("/topic-path");
       expect(loaded.dm?.["500"]?.projectDir).toBe("/dm-path");
+    });
+  });
+
+  describe("pendingProjectNotice", () => {
+    it("sets a pending notice when binding a project dir", () => {
+      const loc: ChatLocator = { chatId: 123, topicId: 7 };
+      bindProjectDir(tmpDir, loc, "/home/daniel/project");
+
+      const loaded = loadTopicSettings(tmpDir);
+      expect(loaded.topics?.["123"]?.["7"]?.pendingProjectNotice).toBe(
+        "Project directory changed to `/home/daniel/project`.",
+      );
+    });
+
+    it("does not set a notice when clearing project dir", () => {
+      const loc: ChatLocator = { chatId: 123 };
+      bindProjectDir(tmpDir, loc, "/home/daniel/project");
+      bindProjectDir(tmpDir, loc, undefined);
+
+      const loaded = loadTopicSettings(tmpDir);
+      expect(loaded.dm?.["123"]).toBeUndefined();
+    });
+
+    it("consumeProjectNotice returns and clears the notice", () => {
+      const loc: ChatLocator = { chatId: 123, topicId: 7 };
+      bindProjectDir(tmpDir, loc, "/home/daniel/project");
+
+      const notice = consumeProjectNotice(tmpDir, loc);
+      expect(notice).toBe("Project directory changed to `/home/daniel/project`.");
+
+      // Notice is consumed
+      const loaded = loadTopicSettings(tmpDir);
+      expect(loaded.topics?.["123"]?.["7"]?.pendingProjectNotice).toBeUndefined();
+      // projectDir persists
+      expect(loaded.topics?.["123"]?.["7"]?.projectDir).toBe("/home/daniel/project");
+    });
+
+    it("consumeProjectNotice returns undefined when no notice is pending", () => {
+      const loc: ChatLocator = { chatId: 123 };
+      expect(consumeProjectNotice(tmpDir, loc)).toBeUndefined();
+    });
+
+    it("consumeProjectNotice is idempotent", () => {
+      const loc: ChatLocator = { chatId: 123 };
+      bindProjectDir(tmpDir, loc, "/home/daniel/project");
+
+      expect(consumeProjectNotice(tmpDir, loc)).toBeTruthy();
+      expect(consumeProjectNotice(tmpDir, loc)).toBeUndefined();
     });
   });
 });

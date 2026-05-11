@@ -6,7 +6,7 @@ import { log } from "../log.ts";
 import type { BindingsFile, ChatLocator, SessionState } from "./types.ts";
 import { loadBindings, saveBindings } from "./bindings.ts";
 import { loadState, saveState } from "./state.ts";
-import { getProjectDir as getProjectDirFromSettings, bindProjectDir as bindProjectDirInSettings } from "./topic-settings.ts";
+import { getProjectDir as getProjectDirFromSettings, bindProjectDir as bindProjectDirInSettings, consumeProjectNotice as consumeProjectNoticeFromSettings } from "./topic-settings.ts";
 import { eventsPath, sessionsDir, sessionDir, transcriptPath } from "./paths.ts";
 
 /**
@@ -248,7 +248,13 @@ export class SessionManager {
   }
 
   /**
-   * Set or clear the project directory for an existing session.
+   * Read and clear the pending project notice for a chat surface.
+   */
+  consumeProjectNotice(loc: ChatLocator): string | undefined {
+    return consumeProjectNoticeFromSettings(this.home, loc);
+  }
+
+  /**
    * Updates state.json atomically.
    * @deprecated Use bindProjectDir(locator, dir) instead.
    */

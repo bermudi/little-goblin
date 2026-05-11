@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { Bot } from "grammy";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
@@ -81,15 +83,14 @@ function getBetaTools(
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 /**
- * Download a Telegram file by file_id and return it as base64-encoded data
- * suitable for pi's ImageContent. Returns null on any failure.
+ * Download a Telegram file by file_id and return the raw bytes.
+ * Returns null on any failure.
  */
-async function downloadFile(
+async function downloadFileBytes(
   api: Bot["api"],
   fileId: string,
   botToken: string,
-  mimeType = "image/jpeg",
-): Promise<{ data: string; mimeType: string } | null> {
+): Promise<Uint8Array | null> {
   try {
     const file = await api.getFile(fileId);
     if (!file.file_path) return null;
@@ -122,20 +123,40 @@ async function downloadFile(
     }
 
     const raw = new Uint8Array(await resp.arrayBuffer());
-    // Chunk base64 encoding to avoid call-stack overflow on large payloads
-    const CHUNK = 48 * 1024; // multiple of 3 for clean base64 grouping
-    let data = "";
-    for (let i = 0; i < raw.length; i += CHUNK) {
-      const slice = raw.subarray(i, i + CHUNK);
-      data += btoa(String.fromCharCode(...slice));
+    if (raw.byteLength > MAX_FILE_BYTES) {
+      log.warn("file too large (post-download)", { fileId, byteLength: raw.byteLength });
+      return null;
     }
-    return { data, mimeType };
+    return raw;
   } catch (err) {
     // Never log String(err) — the URL embeds the bot token and fetch
     // errors can include the full URL in their message.
     log.warn("failed to download file", { fileId, code: (err as { code?: string }).code });
     return null;
   }
+}
+
+/**
+ * Download a Telegram file by file_id and return it as base64-encoded data
+ * suitable for pi's ImageContent. Returns null on any failure.
+ */
+async function downloadFile(
+  api: Bot["api"],
+  fileId: string,
+  botToken: string,
+  mimeType = "image/jpeg",
+): Promise<{ data: string; mimeType: string } | null> {
+  const raw = await downloadFileBytes(api, fileId, botToken);
+  if (!raw) return null;
+
+  // Chunk base64 encoding to avoid call-stack overflow on large payloads
+  const CHUNK = 48 * 1024; // multiple of 3 for clean base64 grouping
+  let data = "";
+  for (let i = 0; i < raw.length; i += CHUNK) {
+    const slice = raw.subarray(i, i + CHUNK);
+    data += btoa(String.fromCharCode(...slice));
+  }
+  return { data, mimeType };
 }
 
 /**
@@ -178,6 +199,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       getTopicName,
       projectDir: manager.getProjectDir(locator),
       modelName: session.modelName,
+      pendingProjectNotice: manager.consumeProjectNotice(locator),
     });
   }
 
@@ -636,7 +658,57 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     // Only handle image documents; skip PDFs, archives, etc.
     const mimeType = doc.mime_type ?? "";
     if (!mimeType.startsWith("image/")) {
-      log.debug("dropping document: not an image", { mimeType, fileName: doc.file_name });
+      const projectDir = manager.getProjectDir(locator);
+      if (projectDir) {
+        const raw = await downloadFileBytes(ctx.api, doc.file_id, cfg.botToken);
+        if (!raw) {
+          await ctx.reply("Sorry, I couldn't download that file.");
+          return;
+        }
+
+        let safeName = basename(doc.file_name || "attachment").trim() || "attachment";
+        if (safeName === "." || safeName === "..") {
+          await ctx.reply("Rejected: unsafe filename.");
+          return;
+        }
+        const destPath = join(projectDir, safeName);
+        try {
+          await writeFile(destPath, raw);
+        } catch (err) {
+          log.error("failed to write attachment to project directory", { error: String(err), destPath });
+          await ctx.reply(`Failed to save ${safeName}.`);
+          return;
+        }
+
+        await ctx.reply(`Saved ${safeName}.`);
+
+        // Escape backticks so the file name doesn't break markdown in the prompt
+        const escapedName = safeName.replace(/`/g, "'");
+        const caption = ctx.msg?.caption;
+        const promptText = caption
+          ? `${caption}\n\n[File \`${escapedName}\` saved to project directory.]`
+          : `User uploaded \`${escapedName}\` to the project directory.`;
+
+        const topicId = locator.topicId;
+        const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
+          visibility: cfg.toolVisibility,
+          onTopicNotFound:
+            topicId !== undefined
+              ? async () => {
+                  await memoryStore.archiveOrphan(locator.chatId, topicId);
+                }
+              : undefined,
+        });
+
+        try {
+          await runner.prompt(promptText, buffer);
+        } catch (err) {
+          log.error("runner document prompt failed", { error: String(err), sessionId: session.id });
+        }
+        return;
+      }
+
+      log.debug("dropping document: not an image and no projectDir", { mimeType, fileName: doc.file_name });
       // Forward the caption as a text-only prompt so the user's message
       // isn't completely lost. If there's no caption either, tell them.
       const fallbackCaption = ctx.msg?.caption;

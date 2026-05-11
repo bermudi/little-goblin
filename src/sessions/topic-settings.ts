@@ -20,6 +20,8 @@ export interface TopicSettingsFile {
 
 export interface TopicSettings {
   projectDir?: string;
+  /** Queued notice injected as context on the next user message (e.g. project dir change). Consumed on read. */
+  pendingProjectNotice?: string;
 }
 
 const DEFAULT_SETTINGS: TopicSettingsFile = {
@@ -83,10 +85,9 @@ export function getProjectDir(home: string, loc: ChatLocator): string | undefine
 }
 
 /**
- * Bind (or clear) a projectDir for a chat surface.
- * Atomically updates topic-settings.json.
+ * Update a single TopicSettings slot for a locator, persisting atomically.
  */
-export function bindProjectDir(home: string, loc: ChatLocator, projectDir: string | undefined): void {
+function updateSettings(home: string, loc: ChatLocator, updater: (settings: TopicSettings) => TopicSettings): void {
   const settings = loadTopicSettings(home);
   const chatKey = String(loc.chatId);
 
@@ -94,32 +95,55 @@ export function bindProjectDir(home: string, loc: ChatLocator, projectDir: strin
     settings.topics ??= {};
     settings.topics[chatKey] ??= {};
     const topicKey = String(loc.topicId);
-    if (projectDir !== undefined) {
-      settings.topics[chatKey]![topicKey] = { projectDir };
-    } else {
+    settings.topics[chatKey]![topicKey] = updater(settings.topics[chatKey]![topicKey] ?? {});
+    // Prune empty
+    if (!settings.topics[chatKey]![topicKey]?.projectDir && !settings.topics[chatKey]![topicKey]?.pendingProjectNotice) {
       delete settings.topics[chatKey]![topicKey];
-      if (Object.keys(settings.topics[chatKey]!).length === 0) {
-        delete settings.topics[chatKey];
-      }
     }
+    if (Object.keys(settings.topics[chatKey]!).length === 0) delete settings.topics[chatKey];
   } else if (loc.chatId < 0) {
-    // Supergroup
     settings.supergroups ??= {};
-    if (projectDir !== undefined) {
-      settings.supergroups[chatKey] = { projectDir };
-    } else {
+    settings.supergroups[chatKey] = updater(settings.supergroups[chatKey] ?? {});
+    if (!settings.supergroups[chatKey]?.projectDir && !settings.supergroups[chatKey]?.pendingProjectNotice) {
       delete settings.supergroups[chatKey];
     }
   } else {
-    // DM
     settings.dm ??= {};
-    if (projectDir !== undefined) {
-      settings.dm[chatKey] = { projectDir };
-    } else {
+    settings.dm[chatKey] = updater(settings.dm[chatKey] ?? {});
+    if (!settings.dm[chatKey]?.projectDir && !settings.dm[chatKey]?.pendingProjectNotice) {
       delete settings.dm[chatKey];
     }
   }
 
   saveTopicSettings(home, settings);
+}
+
+/**
+ * Bind (or clear) a projectDir for a chat surface.
+ * Atomically updates topic-settings.json. Sets a pending notice
+ * that will be injected as context on the next user message.
+ */
+export function bindProjectDir(home: string, loc: ChatLocator, projectDir: string | undefined): void {
+  const notice = projectDir !== undefined
+    ? `Project directory changed to \`${projectDir}\`.`
+    : undefined;
+  updateSettings(home, loc, (s) => ({ ...s, projectDir: projectDir, pendingProjectNotice: notice }));
   log.info("bound projectDir", { chatId: loc.chatId, topicId: loc.topicId, projectDir });
+}
+
+/**
+ * Read and clear the pending project notice for a chat surface.
+ * Returns undefined if none is pending.
+ */
+export function consumeProjectNotice(home: string, loc: ChatLocator): string | undefined {
+  const settings = loadTopicSettings(home);
+  const existing = settingsForLocator(settings, loc);
+  if (!existing?.pendingProjectNotice) return undefined;
+
+  const notice = existing.pendingProjectNotice;
+  updateSettings(home, loc, (s) => {
+    const { pendingProjectNotice: _, ...rest } = s;
+    return rest;
+  });
+  return notice;
 }

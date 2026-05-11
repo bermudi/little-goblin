@@ -175,6 +175,7 @@ function makeRunner(
   modelName?: string,
   configOverrides: Partial<Config> = {},
   projectDir?: string,
+  pendingProjectNotice?: string,
 ) {
   return new AgentRunner({
     cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }), ...configOverrides },
@@ -183,6 +184,7 @@ function makeRunner(
     customTools: customTools as never,
     getTopicName,
     projectDir,
+    pendingProjectNotice,
   });
 }
 
@@ -384,6 +386,35 @@ describe("AgentRunner", () => {
       expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(2);
       const secondCall = sessionHolder.sendCustomMessage.mock.calls[1];
       expect((secondCall![0] as { content: string }).content).toContain("modified content");
+    });
+  });
+
+  describe("pending project notice", () => {
+    it("injects notice via sendCustomMessage on init and clears it", async () => {
+      const runner = makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, "Project directory changed to `/foo`.");
+      await runner.prompt("hello", nopCallbacks());
+
+      // sendCustomMessage is called twice: once for the notice, once for memory snapshot (if any)
+      const calls = sessionHolder.sendCustomMessage.mock.calls;
+      const noticeCall = calls.find((c: unknown[]) => {
+        const msg = c[0] as Record<string, unknown>;
+        return msg?.customType === "project_notice";
+      });
+      expect(noticeCall).toBeDefined();
+      expect((noticeCall![0] as Record<string, unknown>).content).toBe("Project directory changed to `/foo`.");
+      expect((noticeCall![1] as Record<string, unknown>).deliverAs).toBe("nextTurn");
+    });
+
+    it("does not inject a notice when none is pending", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      const calls = sessionHolder.sendCustomMessage.mock.calls;
+      const noticeCall = calls.find((c: unknown[]) => {
+        const msg = c[0] as Record<string, unknown>;
+        return msg?.customType === "project_notice";
+      });
+      expect(noticeCall).toBeUndefined();
     });
   });
 

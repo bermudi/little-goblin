@@ -16,13 +16,30 @@ describe("/resume command", () => {
     expect(parseResumeTarget("/resume@goblinbot abc123")).toBe("abc123");
   });
 
-  it("requires a target", () => {
+  it("lists named sessions when no target is provided", () => {
     const result = executeResume({
       rawText: "/resume",
-      sessions: [],
+      sessions: [
+        session("abc123def0", "work"),
+        session("anon123456"),
+        session("def1234567", "memory refactor"),
+      ],
       bindSession: () => session("unused"),
     });
-    expect(result.kind).toBe("usage");
+    expect(result.kind).toBe("list");
+    expect(result.reply).toContain("abc123def0 — work");
+    expect(result.reply).toContain("def1234567 — memory refactor");
+    expect(result.reply).not.toContain("anon123456");
+  });
+
+  it("reports when no named sessions exist", () => {
+    const result = executeResume({
+      rawText: "/resume",
+      sessions: [session("anon123456")],
+      bindSession: () => session("unused"),
+    });
+    expect(result.kind).toBe("list");
+    expect(result.reply).toContain("No named sessions yet");
   });
 
   it("binds an exact session id", () => {

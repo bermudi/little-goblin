@@ -15,6 +15,8 @@ import type { Config } from "../config.ts";
 import type { ChatLocator } from "../sessions/types.ts";
 import { executeNew } from "./new.ts";
 import { executeArchive } from "./archive.ts";
+import { executeName } from "./name.ts";
+import { executeResume } from "./resume.ts";
 import { sessionDir } from "../sessions/paths.ts";
 
 function makeTestConfig(home: string): Config {
@@ -82,7 +84,7 @@ describe("rapid command spam integration", () => {
     expect(afterArchive).toBeNull();
   });
 
-  it("rapid /new → /new → /archive leaves only last session archived", () => {
+  it("rapid /new → /new → /archive leaves prior sessions resumable and archives only the last", () => {
     const locator: ChatLocator = { chatId: 123456 };
 
     // First /new
@@ -91,17 +93,18 @@ describe("rapid command spam integration", () => {
     });
     const firstId = first.session.id;
 
-    // Second /new (with archive of prior)
+    // Second /new switches to a fresh session without archiving the prior one.
     const second = executeNew({
-      archivePrior: () => manager.archive(firstId),
       createSession: () => manager.createForChat(locator, { isSupergroup: false }),
     });
     const secondId = second.session.id;
     expect(secondId).not.toBe(firstId);
 
-    // First is archived, second is active
-    expect(existsSync(join(cfg.goblinHome, "sessions", "archive", firstId))).toBe(true);
+    // First is unbound but still resumable, second is bound.
+    expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
+    expect(existsSync(join(cfg.goblinHome, "sessions", "archive", firstId))).toBe(false);
     expect(existsSync(sessionDir(cfg.goblinHome, secondId))).toBe(true);
+    expect(manager.resolve(locator)?.id).toBe(secondId);
 
     // Archive second
     const archiveResult = executeArchive({
@@ -111,9 +114,44 @@ describe("rapid command spam integration", () => {
     });
     expect(archiveResult.kind).toBe("archived");
 
-    // Both archived, no active session
-    expect(existsSync(join(cfg.goblinHome, "sessions", "archive", firstId))).toBe(true);
+    // Only second is archived; first remains resumable but unbound.
+    expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
     expect(existsSync(join(cfg.goblinHome, "sessions", "archive", secondId))).toBe(true);
     expect(manager.resolve(locator)).toBeNull();
+  });
+
+  it("/name → /new → /resume switches back to the named prior session", () => {
+    const locator: ChatLocator = { chatId: 123456 };
+
+    const first = executeNew({
+      createSession: () => manager.createForChat(locator, { isSupergroup: false }),
+    });
+    const firstId = first.session.id;
+
+    const nameResult = executeName({
+      hasSession: true,
+      rawText: "/name ttt",
+      session: first.session,
+      setTitle: (title) => manager.setTitle(firstId, title),
+    });
+    expect(nameResult.kind).toBe("renamed");
+
+    const second = executeNew({
+      createSession: () => manager.createForChat(locator, { isSupergroup: false }),
+    });
+    const secondId = second.session.id;
+    expect(secondId).not.toBe(firstId);
+    expect(manager.resolve(locator)?.id).toBe(secondId);
+    expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
+
+    const resumeResult = executeResume({
+      rawText: "/resume ttt",
+      sessions: manager.list(),
+      bindSession: (sessionId) => manager.bindExistingToChat(sessionId, locator, { isSupergroup: false }),
+    });
+
+    expect(resumeResult.kind).toBe("resumed");
+    expect(manager.resolve(locator)?.id).toBe(firstId);
+    expect(existsSync(sessionDir(cfg.goblinHome, secondId))).toBe(true);
   });
 });

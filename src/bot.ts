@@ -252,56 +252,40 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           return;
         case "/new": {
           const isSupergroupChat = ctx.chat?.type === "supergroup";
-          // /new is a universal "reset this chat surface" command:
-          // archive the prior session (if one exists and is not already
-          // archived), then create a fresh session bound to the same
-          // (chat, topic) / supergroup / DM slot. Topic title is NOT
-          // renamed — that's /archive's job, not /new's.
+          // /new is a universal "switch this chat surface to a fresh
+          // session" command: create a fresh session bound to the same
+          // (chat, topic) / supergroup / DM slot. The prior session is
+          // left on disk as an unbound resumable session; /archive is the
+          // explicit "put this away" command.
           const priorSession = session;
-          const priorSessionExists =
-            priorSession !== null && existsSync(sessionDir(cfg.goblinHome, priorSession.id));
           let result;
           try {
             result = executeNew({
-              archivePrior: priorSessionExists
-                ? () => {
-                    // Archive first; if rename fails, the old runner
-                    // stays alive on the original dir and the user can
-                    // retry. Only dispose after a successful move.
-                    manager.archive(priorSession!.id);
-                    const prior = runners.get(priorSession!.id);
-                    if (prior) prior.dispose();
-                    runners.delete(priorSession!.id);
-                  }
-                : undefined,
               createSession: () =>
                 manager.createForChat(locator, { isSupergroup: isSupergroupChat }),
             });
           } catch (err) {
-            // S9: Partial failure — archive succeeded but create failed (e.g., disk full).
-            // No rollback: the old session is in archive/, user has no active session.
-            // Rare failure mode; retry with /new is the natural recovery.
-            log.error("archive-on-new failed", {
+            log.error("new session creation failed", {
               error: String(err),
               sessionId: priorSession?.id,
             });
             await ctx.reply("Failed to reset session. Please try again.");
             return;
           }
-          // Edge case: prior binding was stale (state.json existed but
-          // session dir was missing). Clear the dangling runner entry so
-          // it doesn't outlive its now-orphaned session.
-          if (priorSession && !priorSessionExists) {
-            const orphan = runners.get(priorSession.id);
-            if (orphan) {
-              orphan.dispose();
-              runners.delete(priorSession.id);
+          if (priorSession) {
+            const prior = runners.get(priorSession.id);
+            if (prior) {
+              try {
+                prior.dispose();
+              } finally {
+                runners.delete(priorSession.id);
+              }
             }
           }
           runners.set(result.session.id, createRunner(result.session, locator, ctx));
           log.debug("created runner for /new session", {
             sessionId: result.session.id,
-            archivedPrior: result.archivedPrior,
+            priorSessionId: priorSession?.id,
           });
           // Surface cascade timeouts honestly — the new session is ready
           // but the user should know if the old stream/subagents stalled.
@@ -321,8 +305,15 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
                 // Dispose the runner so its pi AgentSession releases its
                 // subscription before we drop the map entry.
                 const prior = runners.get(session!.id);
-                if (prior) prior.dispose();
-                runners.delete(session!.id);
+                if (prior) {
+                  try {
+                    prior.dispose();
+                  } finally {
+                    runners.delete(session!.id);
+                  }
+                } else {
+                  runners.delete(session!.id);
+                }
               },
             });
           } catch (err) {

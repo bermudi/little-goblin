@@ -55,7 +55,7 @@ async function formatScopedSnapshot(args: FormatSnapshotArgs): Promise<MemorySna
 
   const sections = [
     "[goblin memory snapshot]",
-    `## scope\n${formatScope(args.activeScope, args.includePersona)}`,
+    `## scope\n${await formatScope(args.activeScope, args.includePersona, args.getTopicName)}`,
     `## user.md\n${formatBody(userBody)}`,
     `## memory.md\n${formatBody(memoryBody)}`,
   ];
@@ -84,11 +84,23 @@ function activeMemoryScopeFor(activeScope: ActiveScope): MemoryScope {
   };
 }
 
-function formatScope(activeScope: ActiveScope, includePersona: { name: string } | undefined): string {
-  const scope =
-    activeScope.topicScope === "general"
-      ? "General"
-      : `Topic: ${activeScope.chatId}/${activeScope.topicScope.topicId}`;
+async function formatScope(
+  activeScope: ActiveScope,
+  includePersona: { name: string } | undefined,
+  getTopicName?: (chatId: number, topicId: number) => Promise<string | null>,
+): Promise<string> {
+  let scope: string;
+  if (activeScope.topicScope === "general") {
+    scope = "General";
+  } else {
+    const name =
+      getTopicName === undefined
+        ? null
+        : await getTopicName(activeScope.chatId, activeScope.topicScope.topicId).catch(
+            () => null,
+          );
+    scope = name !== null && name.length > 0 ? `Topic: ${name}` : "Topic";
+  }
   return includePersona === undefined ? scope : `${scope}\nAgent: ${includePersona.name}`;
 }
 

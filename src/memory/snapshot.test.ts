@@ -48,7 +48,7 @@ describe("formatSnapshot", () => {
     expect(typeof snap!.content).toBe("string");
     const text = snap!.content;
     expect(text.startsWith("[goblin memory snapshot]")).toBe(true);
-    expect(text).toContain("## scope\nTopic: -100123/42");
+    expect(text).toContain("## scope\nTopic");
     expect(text).toContain("## user.md\n(empty)");
     expect(text).toContain("## memory.md\nhealth fact");
     expect(text).toContain("## other scopes\n- topics/-100123/7 — homelab + dotfiles\n- topics/-100123/11 — money goblins");
@@ -92,7 +92,7 @@ describe("formatSnapshot", () => {
 
     expect(snap).not.toBeNull();
     const text = snap!.content;
-    expect(text).toContain("## scope\nTopic: -100123/42\nAgent: researcher");
+    expect(text).toContain("## scope\nTopic\nAgent: researcher");
     expect(text).toContain("## user.md\npref-1");
     expect(text).toContain("## memory.md\nactive topic fact");
     expect(text).toContain("## agent persona\npersona fact");

@@ -14,6 +14,7 @@
 
 import {
   existsSync,
+  readdirSync,
   readFileSync,
   renameSync,
   writeFileSync,
@@ -21,7 +22,7 @@ import {
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-const home = process.env.GOBLIN_HOME ?? join(process.env.HOME!, "goblin");
+const home = process.env.GOBLIN_HOME ?? join(process.env.HOME!, ".goblin");
 
 console.log(`Migrating projectDir from sessions to topic-settings in: ${home}`);
 
@@ -98,14 +99,6 @@ if (!existsSync(sessionsDir)) {
 let migrated = 0;
 let skipped = 0;
 
-for (const entry of Bun.fileSystemRouter
-  ? [] // fallback to readdir
-  : []) {
-  // Bun.fileSystemRouter doesn't exist, use readdir
-}
-
-// Read sessions directory
-const { readdirSync } = await import("node:fs");
 const entries = readdirSync(sessionsDir);
 
 for (const id of entries) {

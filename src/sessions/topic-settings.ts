@@ -58,6 +58,13 @@ export function saveTopicSettings(home: string, settings: TopicSettingsFile): vo
 }
 
 /**
+ * True when a TopicSettings object has no meaningful values.
+ */
+function isEmptySettings(s: TopicSettings): boolean {
+  return !s.projectDir && !s.pendingProjectNotice;
+}
+
+/**
  * Build the settings key for a chat surface.
  */
 function settingsForLocator(settings: TopicSettingsFile, loc: ChatLocator): TopicSettings | undefined {
@@ -67,12 +74,11 @@ function settingsForLocator(settings: TopicSettingsFile, loc: ChatLocator): Topi
     return settings.topics?.[chatKey]?.[String(loc.topicId)];
   }
 
-  // DMs have positive chatIds, supergroups negative.
-  // We look up DM first, then supergroups. The caller knows which kind.
-  // Since DMs and supergroups have different ranges, we try both.
-  if (settings.dm?.[chatKey]) return settings.dm[chatKey];
-  if (settings.supergroups?.[chatKey]) return settings.supergroups[chatKey];
-  return undefined;
+  // Branch on sign: DMs are positive, supergroups negative.
+  if (loc.chatId < 0) {
+    return settings.supergroups?.[chatKey];
+  }
+  return settings.dm?.[chatKey];
 }
 
 /**
@@ -87,8 +93,10 @@ export function getProjectDir(home: string, loc: ChatLocator): string | undefine
 /**
  * Update a single TopicSettings slot for a locator, persisting atomically.
  */
-function updateSettings(home: string, loc: ChatLocator, updater: (settings: TopicSettings) => TopicSettings): void {
-  const settings = loadTopicSettings(home);
+/**
+ * Mutate a single TopicSettings slot for a locator on a pre-loaded settings object.
+ */
+function applyToSlot(settings: TopicSettingsFile, loc: ChatLocator, updater: (settings: TopicSettings) => TopicSettings): void {
   const chatKey = String(loc.chatId);
 
   if (loc.topicId !== undefined) {
@@ -96,25 +104,31 @@ function updateSettings(home: string, loc: ChatLocator, updater: (settings: Topi
     settings.topics[chatKey] ??= {};
     const topicKey = String(loc.topicId);
     settings.topics[chatKey]![topicKey] = updater(settings.topics[chatKey]![topicKey] ?? {});
-    // Prune empty
-    if (!settings.topics[chatKey]![topicKey]?.projectDir && !settings.topics[chatKey]![topicKey]?.pendingProjectNotice) {
+    if (isEmptySettings(settings.topics[chatKey]![topicKey]!)) {
       delete settings.topics[chatKey]![topicKey];
     }
     if (Object.keys(settings.topics[chatKey]!).length === 0) delete settings.topics[chatKey];
   } else if (loc.chatId < 0) {
     settings.supergroups ??= {};
     settings.supergroups[chatKey] = updater(settings.supergroups[chatKey] ?? {});
-    if (!settings.supergroups[chatKey]?.projectDir && !settings.supergroups[chatKey]?.pendingProjectNotice) {
+    if (isEmptySettings(settings.supergroups[chatKey]!)) {
       delete settings.supergroups[chatKey];
     }
   } else {
     settings.dm ??= {};
     settings.dm[chatKey] = updater(settings.dm[chatKey] ?? {});
-    if (!settings.dm[chatKey]?.projectDir && !settings.dm[chatKey]?.pendingProjectNotice) {
+    if (isEmptySettings(settings.dm[chatKey]!)) {
       delete settings.dm[chatKey];
     }
   }
+}
 
+/**
+ * Load, mutate a slot, and save atomically.
+ */
+function updateSettings(home: string, loc: ChatLocator, updater: (settings: TopicSettings) => TopicSettings): void {
+  const settings = loadTopicSettings(home);
+  applyToSlot(settings, loc, updater);
   saveTopicSettings(home, settings);
 }
 
@@ -133,6 +147,7 @@ export function bindProjectDir(home: string, loc: ChatLocator, projectDir: strin
 
 /**
  * Read and clear the pending project notice for a chat surface.
+ * Single load → mutate → save to avoid TOCTOU.
  * Returns undefined if none is pending.
  */
 export function consumeProjectNotice(home: string, loc: ChatLocator): string | undefined {
@@ -141,9 +156,10 @@ export function consumeProjectNotice(home: string, loc: ChatLocator): string | u
   if (!existing?.pendingProjectNotice) return undefined;
 
   const notice = existing.pendingProjectNotice;
-  updateSettings(home, loc, (s) => {
+  applyToSlot(settings, loc, (s) => {
     const { pendingProjectNotice: _, ...rest } = s;
     return rest;
   });
+  saveTopicSettings(home, settings);
   return notice;
 }

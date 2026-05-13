@@ -738,6 +738,180 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     }
   });
 
+  // Wire agent runner for voice messages
+  bot.on("message:voice", async (ctx: Context) => {
+    const locator = locatorFromCtx(ctx);
+    if (!locator) {
+      log.debug("dropping voice: no locator");
+      return;
+    }
+
+    const isSupergroup = ctx.chat?.type === "supergroup";
+    const session = manager.resolve(locator, { isSupergroup });
+    if (!session) {
+      if (locator.topicId === undefined) {
+        ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
+          log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
+        });
+      }
+      log.debug("dropping voice: no session", { chatId: locator.chatId, topicId: locator.topicId });
+      return;
+    }
+
+    const voice = ctx.msg?.voice;
+    if (!voice?.file_id) return;
+
+    const runner = getOrCreateRunner(session, locator, ctx);
+    const projectDir = manager.getProjectDir(locator);
+
+    if (projectDir) {
+      const raw = await downloadFileBytes(ctx.api, voice.file_id, cfg.botToken);
+      if (!raw) {
+        await ctx.reply("Sorry, I couldn't download that voice message.");
+        return;
+      }
+
+      const ext = voice.mime_type === "audio/ogg" ? "oga" : "bin";
+      const safeName = `voice-${Date.now()}.${ext}`;
+      const destPath = join(projectDir, safeName);
+      try {
+        await writeFile(destPath, raw);
+      } catch (err) {
+        log.error("failed to write voice to project directory", { error: String(err), destPath });
+        await ctx.reply(`Failed to save ${safeName}.`);
+        return;
+      }
+
+      await ctx.reply(`Saved ${safeName}.`);
+
+      const escapedName = safeName.replace(/`/g, "'");
+      const promptText = `User sent a voice message: \`${escapedName}\` saved to project directory.`;
+
+      const topicId = locator.topicId;
+      const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
+        visibility: cfg.toolVisibility,
+        onTopicNotFound:
+          topicId !== undefined
+            ? async () => {
+                await memoryStore.archiveOrphan(locator.chatId, topicId);
+              }
+            : undefined,
+      });
+
+      try {
+        await runner.prompt(promptText, buffer);
+      } catch (err) {
+        log.error("runner voice prompt failed", { error: String(err), sessionId: session.id });
+      }
+      return;
+    }
+
+    log.debug("dropping voice: no projectDir");
+    await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
+  });
+
+  // Wire agent runner for audio messages (music files)
+  bot.on("message:audio", async (ctx: Context) => {
+    const locator = locatorFromCtx(ctx);
+    if (!locator) {
+      log.debug("dropping audio: no locator");
+      return;
+    }
+
+    const isSupergroup = ctx.chat?.type === "supergroup";
+    const session = manager.resolve(locator, { isSupergroup });
+    if (!session) {
+      if (locator.topicId === undefined) {
+        ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
+          log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
+        });
+      }
+      log.debug("dropping audio: no session", { chatId: locator.chatId, topicId: locator.topicId });
+      return;
+    }
+
+    const audio = ctx.msg?.audio;
+    if (!audio?.file_id) return;
+
+    const runner = getOrCreateRunner(session, locator, ctx);
+    const projectDir = manager.getProjectDir(locator);
+
+    if (projectDir) {
+      const raw = await downloadFileBytes(ctx.api, audio.file_id, cfg.botToken);
+      if (!raw) {
+        await ctx.reply("Sorry, I couldn't download that audio file.");
+        return;
+      }
+
+      let safeName = audio.file_name?.trim();
+      if (!safeName) {
+        const title = [audio.performer, audio.title].filter(Boolean).join(" - ");
+        safeName = title ? `${title}.mp3` : `audio-${Date.now()}.mp3`;
+      }
+      safeName = basename(safeName);
+      if (safeName === "." || safeName === "..") {
+        await ctx.reply("Rejected: unsafe filename.");
+        return;
+      }
+      const destPath = join(projectDir, safeName);
+      try {
+        await writeFile(destPath, raw);
+      } catch (err) {
+        log.error("failed to write audio to project directory", { error: String(err), destPath });
+        await ctx.reply(`Failed to save ${safeName}.`);
+        return;
+      }
+
+      await ctx.reply(`Saved ${safeName}.`);
+
+      const escapedName = safeName.replace(/`/g, "'");
+      const caption = ctx.msg?.caption;
+      const promptText = caption
+        ? `${caption}\n\n[Audio file \`${escapedName}\` saved to project directory.]`
+        : `User uploaded audio \`${escapedName}\` to the project directory.`;
+
+      const topicId = locator.topicId;
+      const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
+        visibility: cfg.toolVisibility,
+        onTopicNotFound:
+          topicId !== undefined
+            ? async () => {
+                await memoryStore.archiveOrphan(locator.chatId, topicId);
+              }
+            : undefined,
+      });
+
+      try {
+        await runner.prompt(promptText, buffer);
+      } catch (err) {
+        log.error("runner audio prompt failed", { error: String(err), sessionId: session.id });
+      }
+      return;
+    }
+
+    log.debug("dropping audio: no projectDir");
+    const fallbackCaption = ctx.msg?.caption;
+    if (fallbackCaption) {
+      const topicId = locator.topicId;
+      const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
+        visibility: cfg.toolVisibility,
+        onTopicNotFound:
+          topicId !== undefined
+            ? async () => {
+                await memoryStore.archiveOrphan(locator.chatId, topicId);
+              }
+            : undefined,
+      });
+      try {
+        await runner.prompt(fallbackCaption, buffer);
+      } catch (err) {
+        log.error("runner audio caption prompt failed", { error: String(err), sessionId: session.id });
+      }
+    } else {
+      await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
+    }
+  });
+
   // Persist topic names from Telegram service messages so the snapshot
   // and memory index can show human-readable names instead of bare IDs.
   bot.on("message:forum_topic_created", async (ctx: Context) => {

@@ -377,6 +377,11 @@ describe("SubagentRunner.spawn — execution & result return", () => {
 
     sessionHolder.emit({ type: "agent_start" });
     sessionHolder.emit({
+      type: "message_update",
+      message: {},
+      assistantMessageEvent: { type: "thinking_start" },
+    });
+    sessionHolder.emit({
       type: "tool_execution_start",
       toolCallId: "t1",
       toolName: "bash",
@@ -463,6 +468,11 @@ describe("SubagentRunner — status prefix propagation", () => {
     await flush();
 
     sessionHolder.emit({ type: "agent_start" });
+    sessionHolder.emit({
+      type: "message_update",
+      message: {},
+      assistantMessageEvent: { type: "thinking_delta", delta: "hmm" },
+    });
 
     expect(events).toEqual([`🧠 ${handle.id.slice(0, 8)} thinking...`]);
   });
@@ -482,6 +492,11 @@ describe("SubagentRunner — status prefix propagation", () => {
     await flush();
 
     sessionHolder.emit({ type: "agent_start" });
+    sessionHolder.emit({
+      type: "message_update",
+      message: {},
+      assistantMessageEvent: { type: "thinking_start" },
+    });
     sessionHolder.emit({
       type: "tool_execution_start",
       toolCallId: "t1",

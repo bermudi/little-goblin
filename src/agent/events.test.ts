@@ -261,9 +261,27 @@ describe("dispatchAgentEvent", () => {
     };
   }
 
-  it("fires onStatusUpdate(\"thinking...\") on agent_start", () => {
+  it("does not fire onStatusUpdate on agent_start", () => {
     const cb = mockCallbacks();
     dispatchAgentEvent({ type: "agent_start" } as any, cb);
+    expect(cb.calls).toEqual([]);
+  });
+
+  it("fires onStatusUpdate(\"thinking...\") on thinking_start", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent(
+      { type: "message_update", assistantMessageEvent: { type: "thinking_start" } } as any,
+      cb,
+    );
+    expect(cb.calls).toEqual(["onStatusUpdate:thinking..."]);
+  });
+
+  it("fires onStatusUpdate(\"thinking...\") on thinking_delta", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent(
+      { type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "hmm" } } as any,
+      cb,
+    );
     expect(cb.calls).toEqual(["onStatusUpdate:thinking..."]);
   });
 
@@ -276,7 +294,7 @@ describe("dispatchAgentEvent", () => {
     expect(cb.calls).toEqual(["onTextDelta:hello"]);
   });
 
-  it("ignores message_update with non-text-delta assistantMessageEvent", () => {
+  it("ignores message_update with irrelevant assistantMessageEvent", () => {
     const cb = mockCallbacks();
     dispatchAgentEvent(
       { type: "message_update", assistantMessageEvent: { type: "message_start" } } as any,

@@ -559,13 +559,13 @@ describe("AgentRunner", () => {
   });
 
   describe("event → callback dispatch", () => {
-    it("fires onStatusUpdate on agent_start", async () => {
+    it("does not fire onStatusUpdate on agent_start", async () => {
       const cb = nopCallbacks();
       const runner = makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({ type: "agent_start" });
-      expect(cb.onStatusUpdate).toHaveBeenCalledWith("thinking...");
+      expect(cb.onStatusUpdate).not.toHaveBeenCalled();
     });
 
     it("fires onAgentEnd on agent_end", async () => {

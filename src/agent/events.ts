@@ -42,13 +42,17 @@ interface TranscriptEntry {
 export function dispatchAgentEvent(event: AgentSessionEvent, callbacks: TurnCallbacks): void {
   switch (event.type) {
     case "agent_start":
-      callbacks.onStatusUpdate("thinking...");
       break;
 
     case "message_update": {
       const ame = event.assistantMessageEvent;
       if (ame.type === "text_delta") {
         callbacks.onTextDelta(ame.delta);
+      } else if (
+        ame.type === "thinking_start" ||
+        ame.type === "thinking_delta"
+      ) {
+        callbacks.onStatusUpdate("thinking...");
       }
       break;
     }

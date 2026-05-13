@@ -661,114 +661,80 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
 
     const runner = getOrCreateRunner(session, locator, ctx);
 
-    // Only handle image documents; skip PDFs, archives, etc.
-    const mimeType = doc.mime_type ?? "";
-    if (!mimeType.startsWith("image/")) {
-      const projectDir = manager.getProjectDir(locator);
-      if (projectDir) {
-        const raw = await downloadFileBytes(ctx.api, doc.file_id, cfg.botToken);
-        if (!raw) {
-          await ctx.reply("Sorry, I couldn't download that file.");
-          return;
-        }
-
-        let safeName = basename(doc.file_name || "attachment").trim() || "attachment";
-        if (safeName === "." || safeName === "..") {
-          await ctx.reply("Rejected: unsafe filename.");
-          return;
-        }
-        const destPath = join(projectDir, safeName);
-        try {
-          await writeFile(destPath, raw);
-        } catch (err) {
-          log.error("failed to write attachment to project directory", { error: String(err), destPath });
-          await ctx.reply(`Failed to save ${safeName}.`);
-          return;
-        }
-
-        await ctx.reply(`Saved ${safeName}.`);
-
-        // Escape backticks so the file name doesn't break markdown in the prompt
-        const escapedName = safeName.replace(/`/g, "'");
-        const caption = ctx.msg?.caption;
-        const promptText = caption
-          ? `${caption}\n\n[File \`${escapedName}\` saved to project directory.]`
-          : `User uploaded \`${escapedName}\` to the project directory.`;
-
-        const topicId = locator.topicId;
-        const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-          visibility: cfg.toolVisibility,
-          onTopicNotFound:
-            topicId !== undefined
-              ? async () => {
-                  await memoryStore.archiveOrphan(locator.chatId, topicId);
-                }
-              : undefined,
-        });
-
-        try {
-          await runner.prompt(promptText, buffer);
-        } catch (err) {
-          log.error("runner document prompt failed", { error: String(err), sessionId: session.id });
-        }
+    // All documents (including images sent as files) are saved to projectDir.
+    // Only message:photo goes directly to the model as multimodal content.
+    const projectDir = manager.getProjectDir(locator);
+    if (projectDir) {
+      const raw = await downloadFileBytes(ctx.api, doc.file_id, cfg.botToken);
+      if (!raw) {
+        await ctx.reply("Sorry, I couldn't download that file.");
         return;
       }
 
-      log.debug("dropping document: not an image and no projectDir", { mimeType, fileName: doc.file_name });
-      // Forward the caption as a text-only prompt so the user's message
-      // isn't completely lost. If there's no caption either, tell them.
-      const fallbackCaption = ctx.msg?.caption;
-      if (fallbackCaption) {
-        const topicId = locator.topicId;
-        const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-          visibility: cfg.toolVisibility,
-          onTopicNotFound:
-            topicId !== undefined
-              ? async () => {
-                  await memoryStore.archiveOrphan(locator.chatId, topicId);
-                }
-              : undefined,
-        });
-        try {
-          await runner.prompt(fallbackCaption, buffer);
-        } catch (err) {
-          log.error("runner document caption prompt failed", { error: String(err), sessionId: session.id });
-        }
-      } else {
-        await ctx.reply("I can only view image files. Documents, PDFs, and other formats aren't supported yet.");
+      let safeName = basename(doc.file_name || "attachment").trim() || "attachment";
+      if (safeName === "." || safeName === "..") {
+        await ctx.reply("Rejected: unsafe filename.");
+        return;
+      }
+      const destPath = join(projectDir, safeName);
+      try {
+        await writeFile(destPath, raw);
+      } catch (err) {
+        log.error("failed to write attachment to project directory", { error: String(err), destPath });
+        await ctx.reply(`Failed to save ${safeName}.`);
+        return;
+      }
+
+      await ctx.reply(`Saved ${safeName}.`);
+
+      // Escape backticks so the file name doesn't break markdown in the prompt
+      const escapedName = safeName.replace(/`/g, "'");
+      const caption = ctx.msg?.caption;
+      const promptText = caption
+        ? `${caption}\n\n[File \`${escapedName}\` saved to project directory.]`
+        : `User uploaded \`${escapedName}\` to the project directory.`;
+
+      const topicId = locator.topicId;
+      const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
+        visibility: cfg.toolVisibility,
+        onTopicNotFound:
+          topicId !== undefined
+            ? async () => {
+                await memoryStore.archiveOrphan(locator.chatId, topicId);
+              }
+            : undefined,
+      });
+
+      try {
+        await runner.prompt(promptText, buffer);
+      } catch (err) {
+        log.error("runner document prompt failed", { error: String(err), sessionId: session.id });
       }
       return;
     }
 
-    const file = await downloadFile(ctx.api, doc.file_id, cfg.botToken, mimeType);
-    if (!file) {
-      await ctx.reply("Sorry, I couldn't download that file.");
-      return;
-    }
-
-    // Build multimodal content: caption as text, document as image
-    const caption = ctx.msg?.caption;
-    const content: (TextContent | ImageContent)[] = [];
-    if (caption) {
-      content.push({ type: "text", text: caption });
-    }
-    content.push({ type: "image", data: file.data, mimeType: file.mimeType });
-
-    const topicId = locator.topicId;
-    const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-      visibility: cfg.toolVisibility,
-      onTopicNotFound:
-        topicId !== undefined
-          ? async () => {
-              await memoryStore.archiveOrphan(locator.chatId, topicId);
-            }
-          : undefined,
-    });
-
-    try {
-      await runner.prompt(content, buffer);
-    } catch (err) {
-      log.error("runner document prompt failed", { error: String(err), sessionId: session.id });
+    log.debug("dropping document: no projectDir", { mimeType: doc.mime_type, fileName: doc.file_name });
+    // Forward the caption as a text-only prompt so the user's message
+    // isn't completely lost. If there's no caption either, tell them.
+    const fallbackCaption = ctx.msg?.caption;
+    if (fallbackCaption) {
+      const topicId = locator.topicId;
+      const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
+        visibility: cfg.toolVisibility,
+        onTopicNotFound:
+          topicId !== undefined
+            ? async () => {
+                await memoryStore.archiveOrphan(locator.chatId, topicId);
+              }
+            : undefined,
+      });
+      try {
+        await runner.prompt(fallbackCaption, buffer);
+      } catch (err) {
+        log.error("runner document caption prompt failed", { error: String(err), sessionId: session.id });
+      }
+    } else {
+      await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
     }
   });
 

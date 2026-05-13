@@ -70,9 +70,9 @@ function getBetaTools(
   topicId?: number,
 ): ToolDefinition[] {
   return [
-    createSendVoiceTool(bot, chatId),
-    createSendPhotoTool(bot, chatId),
-    createSendDocumentTool(bot, chatId),
+    createSendVoiceTool(bot, chatId, topicId),
+    createSendPhotoTool(bot, chatId, topicId),
+    createSendDocumentTool(bot, chatId, topicId),
     createReactTool(bot, chatId, messageId),
     createRenameTopicTool(bot, chatId, topicId),
     createChatActionTool(bot, chatId),

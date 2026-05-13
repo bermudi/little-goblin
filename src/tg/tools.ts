@@ -50,7 +50,7 @@ const chatActionSchema = Type.Object({
 
 type SendVoiceInput = Static<typeof sendVoiceSchema>;
 
-export function createSendVoiceTool(bot: Bot, chatId: number): ToolDefinition {
+export function createSendVoiceTool(bot: Bot, chatId: number, topicId?: number): ToolDefinition {
   return defineTool({
     name: "send_voice",
     label: "Send Voice",
@@ -64,7 +64,10 @@ export function createSendVoiceTool(bot: Bot, chatId: number): ToolDefinition {
         const result = await bot.api.sendVoice(
           chatId,
           new InputFile(params.voiceFile),
-          params.caption !== undefined ? { caption: params.caption } : {},
+          {
+            ...(params.caption !== undefined ? { caption: params.caption } : {}),
+            ...(topicId !== undefined ? { message_thread_id: topicId } : {}),
+          },
         );
         return jsonResult({ ok: true, messageId: result.message_id });
       } catch (err) {
@@ -76,7 +79,7 @@ export function createSendVoiceTool(bot: Bot, chatId: number): ToolDefinition {
 
 type SendPhotoInput = Static<typeof sendPhotoSchema>;
 
-export function createSendPhotoTool(bot: Bot, chatId: number): ToolDefinition {
+export function createSendPhotoTool(bot: Bot, chatId: number, topicId?: number): ToolDefinition {
   return defineTool({
     name: "send_photo",
     label: "Send Photo",
@@ -90,7 +93,10 @@ export function createSendPhotoTool(bot: Bot, chatId: number): ToolDefinition {
         const result = await bot.api.sendPhoto(
           chatId,
           new InputFile(params.photoFile),
-          params.caption !== undefined ? { caption: params.caption } : {},
+          {
+            ...(params.caption !== undefined ? { caption: params.caption } : {}),
+            ...(topicId !== undefined ? { message_thread_id: topicId } : {}),
+          },
         );
         return jsonResult({ ok: true, messageId: result.message_id });
       } catch (err) {
@@ -102,7 +108,7 @@ export function createSendPhotoTool(bot: Bot, chatId: number): ToolDefinition {
 
 type SendDocumentInput = Static<typeof sendDocumentSchema>;
 
-export function createSendDocumentTool(bot: Bot, chatId: number): ToolDefinition {
+export function createSendDocumentTool(bot: Bot, chatId: number, topicId?: number): ToolDefinition {
   return defineTool({
     name: "send_document",
     label: "Send Document",
@@ -119,7 +125,10 @@ export function createSendDocumentTool(bot: Bot, chatId: number): ToolDefinition
         const result = await bot.api.sendDocument(
           chatId,
           new InputFile(params.documentFile),
-          params.caption !== undefined ? { caption: params.caption } : {},
+          {
+            ...(params.caption !== undefined ? { caption: params.caption } : {}),
+            ...(topicId !== undefined ? { message_thread_id: topicId } : {}),
+          },
         );
         return jsonResult({ ok: true, messageId: result.message_id });
       } catch (err) {

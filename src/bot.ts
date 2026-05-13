@@ -20,7 +20,7 @@ import { MemoryStore } from "./memory/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "./sessions/mod.ts";
 import { sessionDir } from "./sessions/paths.ts";
-import { AgentRunner } from "./agent/mod.ts";
+import { AgentRunner, ModelNotCapableError } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 import { interruptAndCascade, DEFAULT_CASCADE_TIMEOUT_MS, type CascadeResult } from "./interrupt.ts";
@@ -627,7 +627,12 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     try {
       await runner.prompt(content, buffer);
     } catch (err) {
-      log.error("runner photo prompt failed", { error: String(err), sessionId: session.id });
+      if (err instanceof ModelNotCapableError) {
+        await ctx.reply(`❌ ${err.message}`);
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error("runner photo prompt failed", { error: msg, sessionId: session.id });
+      }
     }
   });
 

@@ -51,6 +51,16 @@ export interface AgentRunnerOptions {
   pendingProjectNotice?: string;
 }
 
+/** Thrown when the resolved model does not support the content types present in a prompt. */
+export class ModelNotCapableError extends Error {
+  constructor(
+    public readonly modelName: string,
+    public readonly missingCapability: string,
+  ) {
+    super(`Model "${modelName}" does not support ${missingCapability} input.`);
+  }
+}
+
 /**
  * AgentRunner wraps a pi AgentSession for a single goblin session.
  * Manages lazy initialization and event dispatch.
@@ -186,7 +196,7 @@ export class AgentRunner {
     // so the model knows the cwd changed when it sees the next user message.
     if (this.pendingProjectNotice) {
       await session.sendCustomMessage(
-        { customType: "project_notice", content: this.pendingProjectNotice },
+        { customType: "project_notice", content: this.pendingProjectNotice, display: false, details: undefined },
         { deliverAs: "nextTurn" },
       );
       this.pendingProjectNotice = undefined;
@@ -269,9 +279,13 @@ export class AgentRunner {
     if (typeof content === "string") return content;
 
     const model = this.resolvedModel?.model;
-    if (model?.provider !== "poe" || model.api !== "openai-completions") return content;
-
     const hasImage = content.some((part) => part.type === "image");
+
+    if (hasImage && model !== undefined && !model.input.includes("image")) {
+      throw new ModelNotCapableError(this.modelName, "image");
+    }
+
+    if (model?.provider !== "poe" || model.api !== "openai-completions") return content;
     if (!hasImage) return content;
 
     const text = content

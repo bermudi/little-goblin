@@ -6,7 +6,6 @@ import { SessionManager } from "./manager.ts";
 import type { Config } from "../config.ts";
 import type { ChatLocator, BindingsFile } from "./types.ts";
 import { topicSettingsPath } from "./paths.ts";
-import { consumeProjectNotice } from "./topic-settings.ts";
 
 function makeTestConfig(home: string): Config {
   return {

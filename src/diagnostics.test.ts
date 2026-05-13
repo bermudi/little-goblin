@@ -46,6 +46,7 @@ const baseDiagnostics: Diagnostics = {
   activeSubagents: 0,
   runningSubagents: 0,
   contextTokens: null,
+  contextFiles: null,
 };
 
 describe("formatDiagnostics", () => {
@@ -82,12 +83,26 @@ describe("formatDiagnostics", () => {
     expect(out).toContain("Skills loaded: unavailable");
     expect(out).toContain("Events file: unavailable, unavailable lines");
     expect(out).toContain("Context: unavailable");
+    expect(out).toContain("Context files: unavailable");
   });
 
   it("renders empty tool list distinctly from 'unavailable'", () => {
     const out = formatDiagnostics({ ...baseDiagnostics, tools: [] });
     expect(out).toContain("Tools: (none)");
     expect(out).not.toContain("Tools: unavailable");
+  });
+
+  it("renders context files when present", () => {
+    const out = formatDiagnostics({
+      ...baseDiagnostics,
+      contextFiles: ["/home/user/AGENTS.md", "/home/user/.agents/skills/foo/SKILL.md"],
+    });
+    expect(out).toContain("Context files: /home/user/AGENTS.md, /home/user/.agents/skills/foo/SKILL.md");
+  });
+
+  it("renders empty context files list as '(none)'", () => {
+    const out = formatDiagnostics({ ...baseDiagnostics, contextFiles: [] });
+    expect(out).toContain("Context files: (none)");
   });
 
   it("formats bytes with KB and MB scaling", () => {

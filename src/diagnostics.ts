@@ -40,6 +40,8 @@ export interface Diagnostics {
   runningSubagents: number;
   /** Approximate context tokens used. Currently always `null` — pi exposes no API for this. */
   contextTokens: number | null;
+  /** Paths of context files (AGENTS.md, skills) loaded into the session. `null` if uninitialized. */
+  contextFiles: string[] | null;
 }
 
 /** Inputs for `gatherDiagnostics`. */
@@ -92,13 +94,14 @@ export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
     createdAt: deps.session.createdAt,
     model: deps.runner?.modelName ?? deps.modelName,
     tools: deps.runner?.getActiveToolNames() ?? null,
-    skillsLoaded: null,
+    skillsLoaded: deps.runner?.skillsLoaded ?? null,
     eventsPath: path,
     eventsBytes: bytes,
     eventsLines: lines,
     activeSubagents: subagentList.length,
     runningSubagents: subagentList.filter((s) => s.status === "running").length,
-    contextTokens: null,
+    contextTokens: deps.runner?.contextTokens ?? null,
+    contextFiles: deps.runner?.contextFiles ?? null,
   };
 }
 
@@ -121,6 +124,12 @@ function fmtNum(n: number | null): string {
   return n === null ? UNAVAILABLE : String(n);
 }
 
+function fmtContextFiles(files: string[] | null): string {
+  if (files === null) return UNAVAILABLE;
+  if (files.length === 0) return "(none)";
+  return files.join(", ");
+}
+
 export function formatDiagnostics(d: Diagnostics): string {
   return [
     `Session: ${d.sessionId}`,
@@ -133,6 +142,7 @@ export function formatDiagnostics(d: Diagnostics): string {
     `Events file: ${fmtBytes(d.eventsBytes)}, ${fmtNum(d.eventsLines)} lines`,
     `Subagents: ${d.activeSubagents} tracked, ${d.runningSubagents} running`,
     `Context: ${fmtNum(d.contextTokens)}`,
+    `Context files: ${fmtContextFiles(d.contextFiles)}`,
   ].join("\n");
 }
 

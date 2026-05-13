@@ -322,6 +322,35 @@ export class AgentRunner {
   }
 
   /**
+   * Number of skills loaded by the resource loader.
+   * Returns `null` when the session has not been initialized yet.
+   */
+  get skillsLoaded(): number | null {
+    return this.session?.resourceLoader.getSkills().skills.length ?? null;
+  }
+
+  /**
+   * Approximate context tokens used. Returns `null` when the session has
+   * not been initialized or when the token count is unknown (e.g. right
+   * after compaction).
+   */
+  get contextTokens(): number | null {
+    return this.session?.getContextUsage()?.tokens ?? null;
+  }
+
+  /**
+   * Paths of context files (AGENTS.md, skills) loaded into the session.
+   * Returns `null` when the session has not been initialized yet.
+   */
+  get contextFiles(): string[] | null {
+    const s = this.session;
+    if (!s) return null;
+    const agentsFiles = s.resourceLoader.getAgentsFiles().agentsFiles.map((f) => f.path);
+    const skillPaths = s.resourceLoader.getSkills().skills.map((sk) => sk.filePath);
+    return [...agentsFiles, ...skillPaths];
+  }
+
+  /**
    * Configured model id (session override or config default).
    * Available even before the session has been initialized.
    */

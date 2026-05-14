@@ -566,6 +566,15 @@ export class MessageBuffer implements TurnCallbacks {
    * will add 20KB file escape.
    */
   async flushResponse(force: boolean = false): Promise<void> {
+    // Ensure the status message lands before creating the first response
+    // message, so the status appears above the response in the chat.
+    // editingStatus is set synchronously by commitStatus/flushStatus and
+    // cleared when the status sendMessage resolves. Once the status
+    // exists this is a no-op (editingStatus is null).
+    if (this.responseMessageId === undefined && this.editingStatus) {
+      await this.editingStatus;
+    }
+
     if (this.flushingResponse) {
       if (!force) {
         log.debug("response: skip (flush in-flight)", { accLen: this.accumulatedText.length });

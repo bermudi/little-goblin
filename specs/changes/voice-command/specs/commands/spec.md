@@ -12,7 +12,7 @@ The `/voice` and `/v` commands SHALL read the most recent assistant message from
 - **AND** the agent is idle (not streaming)
 - **THEN** the last assistant entry in `transcript.jsonl` SHALL be read
 - **AND** the text content SHALL be extracted (from string or content-block array)
-- **AND** `uvx edge-tts --text <content> --voice <VOICE_NAME> --write-media <tmpPath>` SHALL be invoked
+- **AND** `uvx edge-tts` SHALL be invoked with the text (via a temp file with `--file`), `--voice <VOICE_NAME>`, and `--write-media <tmpPath>`
 - **AND** a synthetic prompt SHALL be dispatched to the agent: the audio path and instructions to use `send_voice`
 - **AND** the model SHALL call `send_voice(voiceFile=<tmpPath>, ...)` to deliver the voice message
 
@@ -36,13 +36,19 @@ The `/voice` and `/v` commands SHALL read the most recent assistant message from
 #### Scenario: Edge TTS subprocess fails
 
 - **WHEN** `uvx edge-tts` exits with a non-zero code or is not available
-- **THEN** the bot SHALL reply with text: "Voice generation failed. Is edge-tts installed?"
+- **THEN** the bot SHALL reply with text: `Voice generation failed: <error>` where `<error>` is the subprocess stderr or exit code
 - **AND** no synthetic prompt SHALL be dispatched
 
 #### Scenario: Shorthand /v alias
 
 - **WHEN** `/v` is sent
 - **THEN** it SHALL behave identically to `/voice`
+
+#### Scenario: Assistant message has only non-text content blocks
+
+- **WHEN** the last assistant message has only thinking, toolCall, or image content blocks (no text blocks)
+- **THEN** `readLastAssistantMessage` SHALL return `null`
+- **AND** the bot SHALL reply with text: "No messages to voice yet."
 
 ### Requirement: Voice command uses configurable Edge TTS voice
 
@@ -74,7 +80,14 @@ The temporary MP3 file created by Edge TTS SHALL be deleted after the `send_voic
 
 ### Requirement: Voice command dispatches synthetic prompt through normal agent routing
 
-The `/voice` command SHALL NOT call `bot.api.sendVoice` directly. It SHALL generate the audio file and then dispatch the instruction to use `send_voice` as a normal turn through the agent runner's `prompt()` method, using the same MessageBuffer setup as any user message.
+The `/voice` command SHALL NOT call `bot.api.sendVoice` directly. It SHALL generate the audio file and then dispatch the instruction to use `send_voice` as a normal turn through the agent runner's `prompt()` method, using the same MessageBuffer setup as any user message. The synthetic prompt SHALL instruct the model to call `send_voice` with the audio file path and SHALL explicitly tell the model not to repeat or describe the content — the audio IS the message.
+
+#### Scenario: Synthetic prompt instructs model not to repeat content
+
+- **WHEN** the synthetic prompt is dispatched after voice generation
+- **THEN** it SHALL contain the audio file path
+- **AND** it SHALL instruct the model to call `send_voice`
+- **AND** it SHALL explicitly state that the audio already contains the message, so the model MUST NOT repeat or describe the content in text
 
 #### Scenario: Model sends voice with caption
 
@@ -91,7 +104,7 @@ The `/help` command SHALL reply with a list of all available commands.
 #### Scenario: Help output
 
 - **WHEN** `/help` is sent
-- **THEN** a reply SHALL list all available commands: `/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help`, `/voice`, `/name`, `/resume`, `/compact`
+- **THEN** a reply SHALL list all available commands: `/cancel`, `/new`, `/archive`, `/compact`, `/debug`, `/think`, `/model`, `/project`, `/name`, `/resume`, `/subagents`, `/cancel_subagent`, `/revive`, `/voice`, `/help`
 
 ### Requirement: Cancel cascades to all live subagents
 

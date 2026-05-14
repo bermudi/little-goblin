@@ -1,55 +1,103 @@
-## Phase 1: Voice command module
+## Phase 1: Shared Edge TTS utility
 
-Create `src/commands/voice.ts` with `readLastAssistantMessage` and `executeVoice`. This phase delivers the command's core logic as an importable module, testable in isolation without Telegram or Edge TTS dependencies.
+Create `src/voice.ts` with the shared `edgeTts()` function. This phase delivers the TTS plumbing that both the command and tool will use. No Telegram or agent integration yet.
 
-- [ ] Create `src/commands/voice.ts` exporting `readLastAssistantMessage(home: string, sessionId: string): string | null`
-  - Read `$GOBLIN_HOME/sessions/<sessionId>/transcript.jsonl` line-by-line from end
-  - Find most recent `role: "assistant"` entry
-  - Extract text: string content passes through; array-of-blocks concatenates `type: "text"` entries; non-text blocks (thinking, toolCall, image) are skipped
-  - Return `null` if no assistant entry or file missing (ENOENT → null)
-  - Implements: **Voice command converts last assistant message to speech** (read/extract portion)
+- [ ] Create `src/voice.ts` exporting:
+  - `resolveVoiceName(): string` → single source of truth: `process.env.VOICE_NAME ?? "en-US-EmmaMultilingualNeural"`
+  - `voiceTmpPath(): string` → `join(os.tmpdir(), "goblin-voice-" + crypto.randomUUID() + ".mp3")`
+  - `edgeTts(text: string, voice: string, outputPath: string): Promise<void>` — writes text to a temp file via `writeFile` from `node:fs/promises`, spawns `uvx edge-tts --file <tmpTextPath> --voice <voice> --write-media <outputPath>` with 30s timeout, deletes temp text file via `unlink` from `node:fs/promises`, throws on non-zero exit. Uses `--file` (not `--text`) to avoid shell escaping and argument-length issues.
+  - `assertEdgeTtsAvailable(): Promise<void>` — runs `uvx edge-tts --version` with 10s timeout, throws on failure
+- [ ] Create `src/voice.test.ts`
+  - Unit test: `resolveVoiceName` with and without `VOICE_NAME` set
+  - Unit test: `voiceTmpPath` produces unique paths in tmpdir
+  - Integration test: `edgeTts` with real `uvx edge-tts` call → produces valid MP3 at outputPath
+  - Integration test: `edgeTts` with invalid voice → throws, error includes stderr
+  - Unit test: `assertEdgeTtsAvailable` → resolves (assumes edge-tts installed)
+  - Unit test: `assertEdgeTtsAvailable` with mocked failed spawn → throws
+- [ ] Verify: `bun test src/voice.test.ts` passes
+
+## Phase 2: text_to_speech β-tool
+
+Create the `text_to_speech` tool factory. The tool is wired into `bot.ts` in Phase 4 via `getBetaTools()`. This phase builds and tests the tool factory in isolation.
+
+- [ ] In `src/tg/tools.ts`, add `createTextToSpeechTool(opts?: { voiceName?: string }): ToolDefinition` factory:
+  - Tool name: `"text_to_speech"`, label: `"Text to Speech"`
+  - Description: `"Convert text to speech using Microsoft Edge TTS. Returns the path to the generated MP3 file. Chain with send_voice to deliver."`
+  - Parameters: `text` (Type.Optional(Type.String())) and `file` (Type.Optional(Type.String())) — at least one required, validated in handler. If both provided, `text` takes precedence.
+  - Handler: if neither provided → `{ ok: false, error: "either text or file is required" }`; if `file` provided (and `text` absent), read file contents via `readFile` from `node:fs/promises`; call `edgeTts()` from `src/voice.ts`; return `{ ok: true, audioPath }` or `{ ok: false, error }`
+  - Uses `resolveVoiceName()` and `voiceTmpPath()` from `src/voice.ts`; if `opts.voiceName` provided, uses it instead of `resolveVoiceName()`
+- [ ] In `src/tg/tools.ts`, add `"text_to_speech"` to `VISIBILITY_TOOLS.standard` array
+- [ ] In `src/tg/mod.ts`, re-export `createTextToSpeechTool`
+- [ ] Create `src/tg/tools.test.ts` (or add to existing):
+  - Test: tool called with `{ text: "hello" }` → returns `{ ok: true, audioPath }`
+  - Test: tool called with `{ file: "/valid/path" }` → reads file, returns audioPath
+  - Test: tool called with `{ file: "/nonexistent" }` → returns `{ ok: false, error }`
+  - Test: tool called with `{}` → returns `{ ok: false, error: "either text or file is required" }`
+  - Test: tool called with both `text` and `file` → `text` wins (precedence)
+  - Test: tool created with `{ voiceName: "test-voice" }` → uses override
+- [ ] Verify: `bun test src/tg/tools.test.ts` passes
+
+Implements spec requirements:
+- **Text-to-speech tool generates voice from text**
+- **Text-to-speech tool uses configurable voice**
+- **Text-to-speech tool appears in the MessageBuffer status line**
+- **Text-to-speech tool factory signature matches existing pattern**
+
+## Phase 3: /voice command module
+
+Create `src/commands/voice.ts` with `readLastAssistantMessage` and `executeVoice`. The `/voice` command uses the shared `edgeTts()` utility from Phase 1.
+
+- [ ] Create `src/commands/voice.ts` exporting:
+  - `readLastAssistantMessage(home: string, sessionId: string): string | null` — reads transcript.jsonl backwards, finds last assistant entry, extracts text from string or array-of-blocks (skipping non-text types; returns null if all blocks are non-text)
+  - `executeVoice(opts): Promise<VoiceResult>` — orchestrates read → `edgeTts()` → `runner.prompt(syntheticPrompt, buffer)` with `onTurnEnd` cleanup
 - [ ] Create `src/commands/voice.test.ts`
-  - Test with transcript.jsonl containing one assistant message → returns text
-  - Test with multiple messages → returns most recent assistant, skips user/toolResult
-  - Test with array-of-blocks content → concatenates text blocks, skips non-text
-  - Test with no file → returns null
-  - Test with no assistant entries → returns null
-- [ ] Export `executeVoice` function accepting `{ home, sessionId, voiceName, locator, ctx, msgCtx }` returning `{ kind, error? }`
-  - Delegates text extraction to `readLastAssistantMessage`
-  - Spawns `uvx edge-tts --text <content> --voice <voiceName> --write-media <tmpPath>` with 30s timeout
-  - On failure: returns `{ kind: "tts-failed", error: "<reason>" }`
-  - On success: constructs synthetic prompt, wraps MessageBuffer for cleanup, calls `runner.prompt`
-  - Implements: **Voice command converts last assistant message to speech** (full flow), **Voice command uses configurable Edge TTS voice**, **Voice command cleans up temporary audio files**, **Voice command dispatches synthetic prompt through normal agent routing**
+  - Test `readLastAssistantMessage`: one assistant message → returns text
+  - Test `readLastAssistantMessage`: multiple messages → most recent assistant, skips user/toolResult
+  - Test `readLastAssistantMessage`: array-of-blocks content → concatenates text blocks, skips thinking/toolCall/image
+  - Test `readLastAssistantMessage`: all blocks are non-text → returns null
+  - Test `readLastAssistantMessage`: no file → returns null
+  - Test `readLastAssistantMessage`: no assistant entries → returns null
 - [ ] Verify: `bun test src/commands/voice.test.ts` passes
 
-## Phase 2: Wire /voice and /v into command dispatch
+Implements spec requirements:
+- **Voice command converts last assistant message to speech** (read/extract portion)
 
-Register `/voice` and `/v` as cancel-capable commands in `bot.ts` and update the help text. The command routes to `executeVoice` from Phase 1.
+## Phase 4: Wire everything into the bot
 
+Register commands, wire the β-tool, add `onTurnEnd` to MessageBuffer, add startup check, and update help text.
+
+- [ ] In `src/tg/buffer.ts`, add optional `onTurnEnd?: () => void | Promise<void>` to `MessageBufferOptions`. In `MessageBuffer.onAgentEnd()`, call `this.onTurnEnd?.()` after final status and response flushes.
+- [ ] In `src/index.ts`, call `assertEdgeTtsAvailable()` before `bot.start()`. On failure, log via `log.warn` (not fatal — bot still works without voice).
+- [ ] In `src/bot.ts`, add `createTextToSpeechTool()` to `getBetaTools()` returned array — this is the single registration point, alongside all other β-tools
+- [ ] In `src/bot.ts`, import `{ executeVoice }` from `"./commands/voice.ts"` and `createTextToSpeechTool` from `"./tg/mod.ts"`
 - [ ] In `src/bot.ts`, add `"/voice"` and `"/v"` to `CANCEL_CAPABLE_COMMANDS`
-  - Implements: **Cancel cascades to all live subagents** (voice in the set), **Commands use interrupt semantics not queue** (voice in the set)
-- [ ] In `src/bot.ts`, add `import { executeVoice } from "./commands/voice.ts"`
 - [ ] In `src/bot.ts`, add switch cases for `/voice` and `/v` before `default:`:
-  - Null session → reply "No active session. Use /new to start one." and return
-  - Call `executeVoice` with session id, voice name, locator, ctx, msgCtx
-  - Handle result kinds: `no-messages`, `tts-failed`, `sent`
-  - On `sent`, return (runner.prompt already dispatched the turn)
-  - Implements: **Voice command converts last assistant message to speech** (wiring), **Shorthand /v alias**
-- [ ] In `src/commands/help.ts`, add `/voice` to the HELP_REPLY command list
-  - Implements: **Help command lists available commands** (voice added)
-- [ ] Run existing integration test: `bun test src/commands/integration.test.ts` — ensure no regressions from new CANCEL_CAPABLE_COMMANDS entries
-- [ ] Verify: `bun run src/index.ts` starts without import errors
+  - Null session → reply and return
+  - Call `executeVoice`, handle result kinds (`no-messages`, `tts-failed`, `sent`)
+  - On `tts-failed`, log via `log.warn` and reply with `"Voice generation failed: <error>"`
+- [ ] In `src/commands/help.ts`, add `/voice` to `HELP_REPLY` command list
+- [ ] Run `bun test src/commands/integration.test.ts` — no regressions from new CANCEL_CAPABLE_COMMANDS entries
+- [ ] Verify: `bun run src/index.ts` starts without import errors, model sees `text_to_speech` in tools
 
-## Phase 3: Edge TTS end-to-end verification
+Implements spec requirements:
+- **Voice command converts last assistant message to speech** (wiring)
+- **Shorthand /v alias**
+- **Help command lists available commands** (MODIFIED)
+- **Cancel cascades to all live subagents** (voice in set)
+- **Commands use interrupt semantics not queue** (voice in set)
+- **AgentRunner includes text_to_speech in custom tools** (via getBetaTools)
 
-Smoke test the full flow with real Edge TTS subprocess. This phase doesn't add new source code — it verifies Phase 1–2 behavior against the real `edge-tts` binary.
+## Phase 5: End-to-end verification
+
+Smoke test both flows with real Edge TTS.
 
 - [ ] Verify `uvx edge-tts` is callable from the bot's environment
-- [ ] Manual test: send `/voice` in a chat with an active session that has at least one completed assistant response
-  - Edge TTS generates MP3 at expected bitrate (48kbps, 24kHz, mono)
-  - `send_voice` delivers the file to the chat
-  - Temp file is gone after `onAgentEnd`
-- [ ] Manual test: send `/voice` in a session with no assistant messages → "No messages to voice yet."
-- [ ] Manual test: send `/v` (alias) → behaves identically to `/voice`
-- [ ] Manual test: send `/voice` while agent is streaming → stream aborted, last completed message voiced
-- [ ] Manual test: set `VOICE_NAME=en-US-AndrewMultilingualNeural` → male voice used for synthesis
+- [ ] Manual: send `/voice` with prior assistant response → voice message delivered, temp file cleaned via `onTurnEnd`
+- [ ] Manual: send `/v` → behaves identically to `/voice`
+- [ ] Manual: send `/voice` while agent is streaming → stream aborted, last completed message voiced
+- [ ] Manual: set `VOICE_NAME=en-US-AndrewMultilingualNeural` → male voice
+- [ ] Manual: ask model "convert the project README to a voice message" → model calls text_to_speech + send_voice
+- [ ] Manual: ask model "voice your response to me" → model generates response text, calls text_to_speech + send_voice
+- [ ] Manual: kill `uvx` or use invalid voice name → graceful error reply, no crash
+- [ ] Manual: unset `VOICE_NAME` and restart → default voice works, startup check passes
+- [ ] Manual: set `VOICE_NAME=invalid-voice` → startup check warns, `/voice` fails gracefully with error from edge-tts

@@ -27,6 +27,7 @@ const sessionHolder = {
     tokensBefore: 42000,
   })),
   dispose: mock(() => {}),
+  setThinkingLevel: mock((_level: string) => {}),
   /** Sequenced call log for asserting ordering across mocks. */
   callOrder: [] as string[],
 
@@ -53,6 +54,9 @@ const sessionHolder = {
       };
     });
     this.dispose = mock(() => {});
+    this.setThinkingLevel = mock((_level: string) => {
+      sessionHolder.callOrder.push("setThinkingLevel");
+    });
   },
 
   emit(event: Record<string, unknown>) {
@@ -80,6 +84,7 @@ const sessionHolder = {
       abort: () => holder.abort(),
       compact: (customInstructions?: string) => holder.compact(customInstructions),
       dispose: () => holder.dispose(),
+      setThinkingLevel: (level: string) => holder.setThinkingLevel(level),
     };
   },
 };
@@ -176,6 +181,7 @@ function makeRunner(
   configOverrides: Partial<Config> = {},
   projectDir?: string,
   pendingProjectNotice?: string,
+  thinkingLevel?: string,
 ) {
   return new AgentRunner({
     cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }), ...configOverrides },
@@ -185,6 +191,7 @@ function makeRunner(
     getTopicName,
     projectDir,
     pendingProjectNotice,
+    thinkingLevel: thinkingLevel as never,
   });
 }
 
@@ -386,6 +393,62 @@ describe("AgentRunner", () => {
       expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(2);
       const secondCall = sessionHolder.sendCustomMessage.mock.calls[1];
       expect((secondCall![0] as { content: string }).content).toContain("modified content");
+    });
+  });
+
+  describe("thinking level", () => {
+    beforeEach(() => {
+      capturedCreateArgs = [];
+      sessionHolder.reset();
+    });
+
+    it("passes thinkingLevel to createAgentSession on init", async () => {
+      const runner = makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, undefined, "high");
+      await runner.prompt("hello", nopCallbacks());
+
+      expect(capturedCreateArgs).toHaveLength(1);
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      expect(opts.thinkingLevel).toBe("high");
+    });
+
+    it("clears pending thinkingLevel after init so prompt() does not double-apply", async () => {
+      const runner = makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, undefined, "high");
+      await runner.prompt("hello", nopCallbacks());
+
+      // setThinkingLevel should NOT have been called on the session because
+      // the level was already applied during createAgentSession.
+      expect(sessionHolder.setThinkingLevel).not.toHaveBeenCalled();
+    });
+
+    it("applies setThinkingLevel immediately when session is live", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("first", nopCallbacks());
+
+      runner.setThinkingLevel("low");
+      expect(sessionHolder.setThinkingLevel).toHaveBeenCalledWith("low");
+    });
+
+    it("stores a pending override when setThinkingLevel is called before init", async () => {
+      const runner = makeRunner(tmpDir);
+      runner.setThinkingLevel("xhigh");
+
+      await runner.prompt("hello", nopCallbacks());
+      // The pending override is applied during createAgentSession, not via
+      // session.setThinkingLevel, because init() consumes it before prompt()
+      // checks for a flush.
+      expect(capturedCreateArgs).toHaveLength(1);
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      expect(opts.thinkingLevel).toBe("xhigh");
+      expect(sessionHolder.setThinkingLevel).not.toHaveBeenCalled();
+    });
+
+    it("clearing thinkingLevel resets to model default on a live session", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      runner.setThinkingLevel(undefined);
+      // The model default for poe/Claude-Sonnet-4.6 is "high"
+      expect(sessionHolder.setThinkingLevel).toHaveBeenCalledWith("high");
     });
   });
 

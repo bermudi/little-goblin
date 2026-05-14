@@ -14,6 +14,7 @@ import {
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { appendEvent, appendTranscriptEntry, dispatchAgentEvent } from "./events.ts";
@@ -47,6 +48,8 @@ export interface AgentRunnerOptions {
   projectDir?: string;
   /** Session-scoped model override. Falls back to config default when absent. */
   modelName?: string;
+  /** Session-scoped thinking level override. Falls back to model default when absent. */
+  thinkingLevel?: ThinkingLevel;
   /** Queued notice to inject as context on the first prompt. Consumed once. */
   pendingProjectNotice?: string;
 }
@@ -80,6 +83,7 @@ export class AgentRunner {
   private topicNameCache = new Map<string, string | null>();
   private projectDir: string | undefined;
   private _modelName: string | undefined;
+  private _thinkingLevel: ThinkingLevel | undefined;
   private pendingProjectNotice: string | undefined;
   private resolvedModel: ResolvedModel | null = null;
   /**
@@ -101,6 +105,7 @@ export class AgentRunner {
     this.getTopicName = opts.getTopicName;
     this.projectDir = opts.projectDir;
     this._modelName = opts.modelName;
+    this._thinkingLevel = opts.thinkingLevel;
     this.pendingProjectNotice = opts.pendingProjectNotice;
     // Construction is cheap (no I/O); the directory is created lazily on first write.
     this.memoryStore = new MemoryStore(opts.cfg.goblinHome);
@@ -181,9 +186,12 @@ export class AgentRunner {
       settingsManager,
       sessionManager,
       model: resolved.model,
+      thinkingLevel: this._thinkingLevel ?? resolved.thinkingLevel,
       customTools: tools,
       resourceLoader,
     });
+    // Consumed — any later setThinkingLevel() calls go through the live session.
+    this._thinkingLevel = undefined;
 
     this.session = session;
 
@@ -241,6 +249,12 @@ export class AgentRunner {
 
     this.callbacks = callbacks;
     this.accumulatedText = "";
+
+    // Apply any pending thinking-level override before the turn starts.
+    if (this._thinkingLevel !== undefined && this.session) {
+      this.session.setThinkingLevel(this._thinkingLevel);
+      this._thinkingLevel = undefined;
+    }
 
     // Inject the curated memory snapshot as a per-turn aside.
     // Pi queues it and flushes alongside the next user message; the system
@@ -370,6 +384,26 @@ export class AgentRunner {
    */
   get modelName(): string {
     return this._modelName ?? this.cfg.modelName;
+  }
+
+  /**
+   * Set the thinking level for the next turn.
+   * If the session is already initialized, applies immediately.
+   * Otherwise stores a pending override applied on first prompt().
+   * Pass `undefined` to reset to the model's default.
+   */
+  setThinkingLevel(level: ThinkingLevel | undefined): void {
+    if (this.session) {
+      if (level !== undefined) {
+        this.session.setThinkingLevel(level);
+      } else {
+        // Reset to model default by re-resolving. Pi does not expose a
+        // "clear thinking level" API, so we set it back to the default.
+        this.session.setThinkingLevel(this.resolvedModel?.thinkingLevel ?? "medium");
+      }
+    } else {
+      this._thinkingLevel = level;
+    }
   }
 
   /**

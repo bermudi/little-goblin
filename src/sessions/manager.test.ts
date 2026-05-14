@@ -323,6 +323,34 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("setThinkingLevel", () => {
+    it("sets thinkingLevel on an existing session", () => {
+      const loc: ChatLocator = { chatId: 1 };
+      const created = manager.createForChat(loc);
+      expect(created.thinkingLevel).toBeUndefined();
+
+      manager.setThinkingLevel(created.id, "high");
+      const updated = manager.resolve(loc);
+      expect(updated?.thinkingLevel).toBe("high");
+    });
+
+    it("clears thinkingLevel when passed undefined", () => {
+      const loc: ChatLocator = { chatId: 1 };
+      const created = manager.createForChat(loc);
+      manager.setThinkingLevel(created.id, "high");
+
+      manager.setThinkingLevel(created.id, undefined);
+      const updated = manager.resolve(loc);
+      expect(updated?.thinkingLevel).toBeUndefined();
+    });
+
+    it("throws when session does not exist", () => {
+      expect(() => manager.setThinkingLevel("nonexistent", "high")).toThrow(
+        /session not found/,
+      );
+    });
+  });
+
   describe("setTitle", () => {
     it("sets title on an existing session", () => {
       const loc: ChatLocator = { chatId: 1 };

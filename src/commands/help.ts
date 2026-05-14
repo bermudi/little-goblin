@@ -18,6 +18,7 @@ export const HELP_REPLY = [
   "/archive — archive the active session",
   "/compact [instructions] — manually compact this session's context",
   "/debug — dump session diagnostics",
+  "/think [level] — show or set thinking level",
   "/name <name> — name the active session",
   "/resume <id-or-name> — bind this chat to an existing session",
   "/subagents — list live subagents (not implemented yet)",

@@ -13,6 +13,7 @@ describe("HELP_REPLY", () => {
       "/archive",
       "/compact",
       "/debug",
+      "/think",
       "/name",
       "/resume",
       "/subagents",

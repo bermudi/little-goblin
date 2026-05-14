@@ -120,6 +120,7 @@ async function _runInstanceInner(
     settingsManager: services.settingsManager,
     sessionManager: instance.sessionManager,
     model: resolved.model,
+    thinkingLevel: resolved.thinkingLevel,
     // Subagents have no β tools — all UI flows through the parent's status
     // callback. See specs/canon/subagents/spec.md "No beta tools for subagents".
     // Pass rawStatusCallback to nested subagent to prevent prefix stacking.

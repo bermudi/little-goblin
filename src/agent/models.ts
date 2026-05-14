@@ -15,6 +15,7 @@
  * Extend by adding entries. The registry is explicit — no runtime synthesis.
  */
 import { type Api, type Model, getModel, getModels, getProviders } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 
 // Async Poe validation lives in poe-validate.ts. This file is sync-only.
@@ -65,6 +66,8 @@ export type ApiKeyEnv =
 export interface ModelEntry {
   model: Model<Api>;
   apiKeyEnv: ApiKeyEnv;
+  /** Default thinking level for this model. Falls back to "medium" when absent. */
+  thinkingLevel?: ThinkingLevel;
 }
 
 // Provider endpoints
@@ -82,6 +85,7 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 function poeAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
   return {
     apiKeyEnv: "POE_API_KEY",
+    thinkingLevel: "high",
     model: {
       id,
       name,
@@ -100,6 +104,7 @@ function poeAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
 function poeResponses(id: string, name: string, ctx = 200_000): ModelEntry {
   return {
     apiKeyEnv: "POE_API_KEY",
+    thinkingLevel: "medium",
     model: {
       id,
       name,
@@ -118,6 +123,7 @@ function poeResponses(id: string, name: string, ctx = 200_000): ModelEntry {
 function poeCompletions(id: string, name: string, ctx = 128_000): ModelEntry {
   return {
     apiKeyEnv: "POE_API_KEY",
+    thinkingLevel: "off",
     model: {
       id,
       name,
@@ -138,6 +144,7 @@ function poeCompletions(id: string, name: string, ctx = 128_000): ModelEntry {
 function openrouter(id: string, name: string, ctx = 200_000): ModelEntry {
   return {
     apiKeyEnv: "OPENROUTER_API_KEY",
+    thinkingLevel: "medium",
     model: {
       id,
       name,
@@ -158,6 +165,7 @@ function openrouter(id: string, name: string, ctx = 200_000): ModelEntry {
 function directOpenAI(id: string, name: string, ctx = 128_000): ModelEntry {
   return {
     apiKeyEnv: "OPENAI_API_KEY",
+    thinkingLevel: "medium",
     model: {
       id,
       name,
@@ -176,6 +184,7 @@ function directOpenAI(id: string, name: string, ctx = 128_000): ModelEntry {
 function directAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
   return {
     apiKeyEnv: "ANTHROPIC_API_KEY",
+    thinkingLevel: "high",
     model: {
       id,
       name,
@@ -217,6 +226,7 @@ export const MODELS: Record<string, ModelEntry> = {
 export interface ResolvedModel {
   model: Model<Api>;
   apiKey: string;
+  thinkingLevel: ThinkingLevel;
 }
 
 /**
@@ -313,6 +323,6 @@ export function resolveModel(cfg: Config): ResolvedModel {
   if (!apiKey) {
     throw new Error(`MODEL_NAME "${cfg.modelName}" requires ${entry.apiKeyEnv} to be set`);
   }
-  return { model: entry.model, apiKey };
+  return { model: entry.model, apiKey, thinkingLevel: entry.thinkingLevel ?? "medium" };
 }
 

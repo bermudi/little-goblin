@@ -12,6 +12,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 - v1.x: PII redaction in memory writes — explicit redaction pipeline before persisting curated entries (health, finance, identifiers). Out of scope of `scoped-memory`. Needs a design pass on rule sources, false-positive handling, and whether the agent or the store does the filtering.
 - v2.x: per-chat isolation for `general` memory — today `memory/general/memory.md` is shared across DMs and every supergroup-no-topic surface. If multi-chat usage stops being single-user, switch to `memory/general/<chatId>/memory.md`. Single consumer (`MemoryStore` scope resolver) so the change is local.
 - v1.x: auto-archive / auto-prune daemons
+- v1.x: self-hosted Telegram Bot API server (`telegram-bot-api`) to lift file download limit from 20 MB → 2 GB. Needs `botApiUrl` config option and local infra (single Go binary). Blocked until a real >20 MB file arrives.
 - v2: voice-note-first workflow (STT + TTS)
 - v2: skills for common homelab services shipped in repo
 - v2: live subagent cross-talk / swarms — `message_sibling`, `ask_sibling`, spawn_swarm DAG (ref: `~/build/pi-messenger-swarm`)

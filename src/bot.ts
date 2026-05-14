@@ -21,6 +21,7 @@ import { registerCommands } from "./commands/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "./sessions/mod.ts";
 import { sessionDir } from "./sessions/paths.ts";
 import { AgentRunner, ModelNotCapableError } from "./agent/mod.ts";
+import { resolveModel } from "./agent/models.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 import { interruptAndCascade, DEFAULT_CASCADE_TIMEOUT_MS, type CascadeResult } from "./interrupt.ts";
@@ -32,13 +33,14 @@ import { executeModel } from "./commands/model.ts";
 import { executeCompact } from "./commands/compact.ts";
 import { executeName } from "./commands/name.ts";
 import { executeResume } from "./commands/resume.ts";
+import { executeThink } from "./commands/think.ts";
 import { parseCommand } from "./commands/parse.ts";
 import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./commands/subagents.ts";
 import { HELP_REPLY } from "./commands/help.ts";
 import { generateDiagnostics } from "./diagnostics.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
-const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact", "/resume", "/name"]);
+const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact", "/resume", "/name", "/think"]);
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -79,8 +81,8 @@ function getBetaTools(
   ].filter((t): t is NonNullable<typeof t> => t !== null);
 }
 
-/** Max raw bytes to download before rejecting (base64-encoded is ~1.33×). */
-const MAX_FILE_BYTES = 10 * 1024 * 1024;
+/** Telegram Bot API max download size (20 MB). */
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 /**
  * Download a Telegram file by file_id and return the raw bytes.
@@ -112,19 +114,19 @@ async function downloadFileBytes(
       return null;
     }
 
-    // Reject files that would blow out memory — 10 MB raw → ~13.3 MB base64
+    // Reject files that exceed Telegram's Bot API download limit
     const contentLength = resp.headers.get("content-length");
     if (contentLength !== null) {
       const bytes = Number(contentLength);
       if (!Number.isFinite(bytes) || bytes > MAX_FILE_BYTES) {
-        log.warn("file too large", { fileId, contentLength: bytes });
+        log.warn("file too large", { fileId, contentLength: bytes, maxBytes: MAX_FILE_BYTES });
         return null;
       }
     }
 
     const raw = new Uint8Array(await resp.arrayBuffer());
     if (raw.byteLength > MAX_FILE_BYTES) {
-      log.warn("file too large (post-download)", { fileId, byteLength: raw.byteLength });
+      log.warn("file too large (post-download)", { fileId, byteLength: raw.byteLength, maxBytes: MAX_FILE_BYTES });
       return null;
     }
     return raw;
@@ -199,6 +201,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       getTopicName,
       projectDir: manager.getProjectDir(locator),
       modelName: session.modelName,
+      thinkingLevel: session.thinkingLevel,
       pendingProjectNotice: manager.consumeProjectNotice(locator),
     });
   }
@@ -418,6 +421,40 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
           }
           const modelSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
           await ctx.reply(`${modelResult.reply}${modelSuffix}`);
+          return;
+        }
+        case "/think": {
+          let thinkResult;
+          try {
+            thinkResult = executeThink({
+              hasSession: session !== null,
+              rawText: rawText ?? "",
+              currentLevel:
+                session?.thinkingLevel ??
+                resolveModel({ ...cfg, modelName: session?.modelName ?? cfg.modelName }).thinkingLevel,
+              setThinkingLevel: (level) => {
+                if (!session) return;
+                manager.setThinkingLevel(session.id, level);
+                const prior = runners.get(session.id);
+                if (prior) {
+                  try {
+                    prior.setThinkingLevel(level);
+                  } catch {
+                    /* best-effort */
+                  }
+                }
+              },
+            });
+          } catch (err) {
+            log.error("think failed", {
+              error: String(err),
+              sessionId: session?.id,
+            });
+            await ctx.reply("Failed to set thinking level. Please try again.");
+            return;
+          }
+          const thinkSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
+          await ctx.reply(`${thinkResult.reply}${thinkSuffix}`);
           return;
         }
         case "/debug": {

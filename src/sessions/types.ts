@@ -23,6 +23,8 @@ export interface SessionState {
   projectDir?: string;
   /** Session-scoped model override. Falls back to config default when absent. */
   modelName?: string;
+  /** Session-scoped thinking level override. Falls back to model default when absent. */
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 }
 
 /** Root config.json shape */

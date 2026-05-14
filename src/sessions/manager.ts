@@ -282,6 +282,16 @@ export class SessionManager {
     log.info("set modelName", { sessionId, modelName });
   }
 
+  setThinkingLevel(sessionId: string, thinkingLevel: SessionState["thinkingLevel"]): void {
+    const state = loadState(this.home, sessionId);
+    if (!state) {
+      throw new Error(`session not found: ${sessionId}`);
+    }
+    const updated: SessionState = { ...state, thinkingLevel: thinkingLevel as SessionState["thinkingLevel"] };
+    saveState(this.home, updated);
+    log.info("set thinkingLevel", { sessionId, thinkingLevel });
+  }
+
   setTitle(sessionId: string, title: string | undefined): void {
     const state = loadState(this.home, sessionId);
     if (!state) {

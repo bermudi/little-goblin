@@ -18,6 +18,7 @@ interface Answers {
   openrouterApiKey?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
+  zaiApiKey?: string;
   agentName?: string;
 }
 
@@ -106,6 +107,7 @@ async function collectAnswers(): Promise<Answers> {
   const openrouterApiKey = await prompt(rl, "  OpenRouter API key", envOr);
   const openaiApiKey = await prompt(rl, "  OpenAI API key", envOa);
   const anthropicApiKey = await prompt(rl, "  Anthropic API key", envAn);
+  const zaiApiKey = await prompt(rl, "  Z.AI API key (Coding Plan)", getEnvDefault("ZAI_API_KEY"));
   const agentName = await promptRequired(rl, "Conversational agent name");
 
   rl.close();
@@ -119,6 +121,7 @@ async function collectAnswers(): Promise<Answers> {
     openrouterApiKey: openrouterApiKey || undefined,
     openaiApiKey: openaiApiKey || undefined,
     anthropicApiKey: anthropicApiKey || undefined,
+    zaiApiKey: zaiApiKey || undefined,
     agentName,
   };
 }
@@ -188,7 +191,7 @@ export function buildConfig(answers: Answers): string {
   lines.push(`  model: ${JSON.stringify(answers.model)},`);
   lines.push(`  logLevel: ${JSON.stringify(answers.logLevel)},`);
 
-  const optionalKeys = ["poeApiKey", "openrouterApiKey", "openaiApiKey", "anthropicApiKey"] as const;
+  const optionalKeys = ["poeApiKey", "openrouterApiKey", "openaiApiKey", "anthropicApiKey", "zaiApiKey"] as const;
   for (const key of optionalKeys) {
     const value = answers[key];
     if (value) {
@@ -233,6 +236,7 @@ export async function main(): Promise<void> {
     openrouterApiKey: answers.openrouterApiKey,
     openaiApiKey: answers.openaiApiKey,
     anthropicApiKey: answers.anthropicApiKey,
+    zaiApiKey: answers.zaiApiKey,
   });
 
   if (!parseResult.success) {

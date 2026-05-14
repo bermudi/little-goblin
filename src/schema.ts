@@ -12,6 +12,7 @@ export const ConfigFileSchema = z.object({
   openrouterApiKey: z.string().optional(),
   openaiApiKey: z.string().optional(),
   anthropicApiKey: z.string().optional(),
+  zaiApiKey: z.string().optional(),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
   toolVisibility: z.enum(["none", "minimal", "standard", "verbose", "debug"]).default("standard"),
   skillSources: z.enum(["goblin-only", "user"]).default("goblin-only"),

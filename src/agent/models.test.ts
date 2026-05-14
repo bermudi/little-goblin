@@ -12,6 +12,7 @@ function makeConfig(modelName: string): Config {
     openrouterApiKey: "or-key",
     openaiApiKey: "oai-key",
     anthropicApiKey: "ant-key",
+    zaiApiKey: "zai-key",
   } as unknown as Config;
 }
 
@@ -95,5 +96,53 @@ describe("resolveModel", () => {
       // no openrouterApiKey
     } as unknown as Config;
     expect(() => resolveModel(cfg)).toThrow(/OPENROUTER_API_KEY/);
+  });
+
+  // --- zai/ provider ---
+
+  it("resolves zai/glm-5.1 from pi-ai registry", () => {
+    const r = resolveModel(makeConfig("zai/glm-5.1"));
+    expect(r.model.id).toBe("glm-5.1");
+    expect(r.model.provider).toBe("zai");
+    expect(r.model.api).toBe("openai-completions");
+    expect(r.apiKey).toBe("zai-key");
+    // Verify pi-ai's compat flags survived the round-trip
+    expect((r.model as any).compat?.thinkingFormat).toBe("zai");
+  });
+
+  it("resolves zai/glm-4.7 with correct endpoint", () => {
+    const r = resolveModel(makeConfig("zai/glm-4.7"));
+    expect(r.model.id).toBe("glm-4.7");
+    expect(r.model.baseUrl).toBe("https://api.z.ai/api/coding/paas/v4");
+  });
+
+  it("resolves an unknown zai/ model via fallback", () => {
+    const r = resolveModel(makeConfig("zai/glm-future-99"));
+    expect(r.model.id).toBe("glm-future-99");
+    expect(r.model.provider).toBe("zai");
+    expect(r.apiKey).toBe("zai-key");
+  });
+
+  it("throws when zai API key is missing", () => {
+    const cfg = {
+      modelName: "zai/glm-5.1",
+      botToken: "t",
+      allowedTgUserIds: "1",
+      // no zaiApiKey
+    } as unknown as Config;
+    expect(() => resolveModel(cfg)).toThrow(/ZAI_API_KEY/);
+  });
+
+  // --- thinkingLevelMap inheritance ---
+
+  it("inherits thinkingLevelMap from pi-ai registry for poe/gpt-5.5", () => {
+    const r = resolveModel(makeConfig("poe/gpt-5.5"));
+    // pi-ai's openai provider has xhigh for gpt-5.5
+    expect(r.model.thinkingLevelMap).toEqual({ off: null, xhigh: "xhigh" });
+  });
+
+  it("has no thinkingLevelMap for models without upstream entry", () => {
+    const r = resolveModel(makeConfig("poe/some-future-model"));
+    expect(r.model.thinkingLevelMap).toBeUndefined();
   });
 });

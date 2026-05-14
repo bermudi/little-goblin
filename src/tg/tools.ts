@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import { Bot, InputFile } from "grammy";
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { ReactionType } from "@grammyjs/types";
 
 function jsonResult(value: unknown): {
   content: { type: "text"; text: string }[];
@@ -31,21 +30,8 @@ const sendDocumentSchema = Type.Object({
   caption: Type.Optional(Type.String()),
 });
 
-const reactSchema = Type.Object({
-  emoji: Type.String({ description: "A single emoji character (including flag emojis and ZWJ sequences like 👨‍👩‍👧‍👦)" }),
-});
-
 const renameTopicSchema = Type.Object({
   title: Type.String({ minLength: 1 }),
-});
-
-const chatActionSchema = Type.Object({
-  action: Type.Union([
-    Type.Literal("typing"),
-    Type.Literal("upload_photo"),
-    Type.Literal("record_voice"),
-    Type.Literal("upload_document"),
-  ]),
 });
 
 type SendVoiceInput = Static<typeof sendVoiceSchema>;
@@ -138,48 +124,6 @@ export function createSendDocumentTool(bot: Bot, chatId: number, topicId?: numbe
   });
 }
 
-type ReactInput = Static<typeof reactSchema>;
-
-function isSingleEmoji(s: string): boolean {
-  // Use Intl.Segmenter to properly count grapheme clusters (user-perceived characters).
-  // This handles multi-codepoint emojis like flags (🇺🇸) and ZWJ sequences (👨‍👩‍👧‍👦).
-  const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
-  const segments = Array.from(segmenter.segment(s));
-  if (segments.length !== 1) return false;
-  const segment = segments[0]!.segment;
-  // Verify the grapheme contains at least one emoji codepoint.
-  // Multi-codepoint emojis (flags, ZWJ sequences) won't match ^\p{Emoji}$ but contain emoji codepoints.
-  return /\p{Emoji}/u.test(segment);
-}
-
-export function createReactTool(
-  bot: Bot,
-  chatId: number,
-  messageId: number | undefined,
-): ToolDefinition | null {
-  if (messageId === undefined) return null;
-  return defineTool({
-    name: "react",
-    label: "React",
-    description: "Add an emoji reaction to the message that triggered this turn.",
-    parameters: reactSchema,
-    async execute(_toolCallId, params: ReactInput) {
-      if (!isSingleEmoji(params.emoji)) {
-        return jsonResult({ ok: false, error: "emoji must be a single emoji character" });
-      }
-      try {
-        // Telegram restricts reaction emoji to a fixed set; we trust the regex check
-        // above and let the API reject any disallowed emoji at runtime.
-        const reaction = [{ type: "emoji" as const, emoji: params.emoji }];
-        await bot.api.setMessageReaction(chatId, messageId, reaction as ReactionType[]);
-        return jsonResult({ ok: true });
-      } catch (err) {
-        return jsonResult({ ok: false, error: `Telegram API error: ${errorMessage(err)}` });
-      }
-    },
-  });
-}
-
 type RenameTopicInput = Static<typeof renameTopicSchema>;
 
 export function createRenameTopicTool(
@@ -206,21 +150,4 @@ export function createRenameTopicTool(
   });
 }
 
-type ChatActionInput = Static<typeof chatActionSchema>;
 
-export function createChatActionTool(bot: Bot, chatId: number): ToolDefinition {
-  return defineTool({
-    name: "chat_action",
-    label: "Chat Action",
-    description: "Set a transient chat action (typing, recording, uploading) on the active chat.",
-    parameters: chatActionSchema,
-    async execute(_toolCallId, params: ChatActionInput) {
-      try {
-        await bot.api.sendChatAction(chatId, params.action);
-        return jsonResult({ ok: true });
-      } catch (err) {
-        return jsonResult({ ok: false, error: `Telegram API error: ${errorMessage(err)}` });
-      }
-    },
-  });
-}

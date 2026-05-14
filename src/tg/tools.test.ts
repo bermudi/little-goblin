@@ -8,26 +8,13 @@ import {
   createSendVoiceTool,
   createSendPhotoTool,
   createSendDocumentTool,
-  createReactTool,
   createRenameTopicTool,
-  createChatActionTool,
 } from "./tools.ts";
 
 interface SendCall {
   chatId: number | string;
   file: InputFile;
   other: { caption?: string } | undefined;
-}
-
-interface ReactionCall {
-  chatId: number | string;
-  messageId: number;
-  reaction: { type: "emoji"; emoji: string }[];
-}
-
-interface ChatActionCall {
-  chatId: number | string;
-  action: string;
 }
 
 interface RenameTopicCall {
@@ -41,15 +28,11 @@ interface MockBot {
   voice: SendCall[];
   photo: SendCall[];
   document: SendCall[];
-  reactions: ReactionCall[];
-  chatActions: ChatActionCall[];
   renames: RenameTopicCall[];
   failNext: {
     voice?: unknown;
     photo?: unknown;
     document?: unknown;
-    reaction?: unknown;
-    chatAction?: unknown;
     rename?: unknown;
   };
   nextMessageId: number;
@@ -59,16 +42,12 @@ function makeBot(): MockBot {
   const voice: SendCall[] = [];
   const photo: SendCall[] = [];
   const document: SendCall[] = [];
-  const reactions: ReactionCall[] = [];
-  const chatActions: ChatActionCall[] = [];
   const renames: RenameTopicCall[] = [];
   const state: MockBot = {
     bot: undefined as unknown as Bot,
     voice,
     photo,
     document,
-    reactions,
-    chatActions,
     renames,
     failNext: {},
     nextMessageId: 100,
@@ -91,28 +70,6 @@ function makeBot(): MockBot {
       sendVoice: handleSend(voice, "voice"),
       sendPhoto: handleSend(photo, "photo"),
       sendDocument: handleSend(document, "document"),
-      setMessageReaction: async (
-        chatId: number | string,
-        messageId: number,
-        reaction: { type: "emoji"; emoji: string }[],
-      ) => {
-        if (state.failNext.reaction !== undefined) {
-          const err = state.failNext.reaction;
-          state.failNext.reaction = undefined;
-          throw err;
-        }
-        reactions.push({ chatId, messageId, reaction });
-        return true;
-      },
-      sendChatAction: async (chatId: number | string, action: string) => {
-        if (state.failNext.chatAction !== undefined) {
-          const err = state.failNext.chatAction;
-          state.failNext.chatAction = undefined;
-          throw err;
-        }
-        chatActions.push({ chatId, action });
-        return true;
-      },
       editForumTopic: async (
         chatId: number | string,
         topicId: number,
@@ -364,172 +321,6 @@ describe("createSendDocumentTool", () => {
       expect(parsed.error).toContain("Telegram API error");
       expect(parsed.error).toContain("file too large");
     });
-  });
-});
-
-describe("createReactTool", () => {
-  it("returns null when messageId is undefined", () => {
-    const { bot } = makeBot();
-    expect(createReactTool(bot, 123, undefined)).toBeNull();
-  });
-
-  it("returns a ToolDefinition when messageId is provided", () => {
-    const { bot } = makeBot();
-    const tool = createReactTool(bot, 123, 789);
-    expect(tool).not.toBeNull();
-    expect(tool!.name).toBe("react");
-  });
-
-  it("schema does not expose chatId or messageId", () => {
-    const { bot } = makeBot();
-    const tool = createReactTool(bot, 123, 789)!;
-    const schema = tool.parameters as { properties?: Record<string, unknown> };
-    expect(schema.properties).not.toHaveProperty("chatId");
-    expect(schema.properties).not.toHaveProperty("messageId");
-    expect(schema.properties).toHaveProperty("emoji");
-  });
-
-  it("calls bot.api.setMessageReaction with bound chatId and messageId", async () => {
-    const mock = makeBot();
-    const tool = createReactTool(mock.bot, 123, 789)!;
-    const result = await tool.execute(
-      "call-1",
-      { emoji: "👍" },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(mock.reactions).toHaveLength(1);
-    const call = mock.reactions[0]!;
-    expect(call.chatId).toBe(123);
-    expect(call.messageId).toBe(789);
-    expect(call.reaction).toEqual([{ type: "emoji", emoji: "👍" }]);
-    expect(JSON.parse(getText(result))).toEqual({ ok: true });
-  });
-
-  it("returns structured error when emoji is not a single emoji char", async () => {
-    const mock = makeBot();
-    const tool = createReactTool(mock.bot, 123, 789)!;
-    const result = await tool.execute(
-      "call-1",
-      { emoji: "thumbs_up" },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(mock.reactions).toHaveLength(0);
-    const parsed = JSON.parse(getText(result));
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain("emoji must be a single emoji character");
-  });
-
-  it("accepts flag emojis (multi-codepoint Regional Indicators)", async () => {
-    const mock = makeBot();
-    const tool = createReactTool(mock.bot, 123, 789)!;
-    const result = await tool.execute(
-      "call-1",
-      { emoji: "🇺🇸" },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(mock.reactions).toHaveLength(1);
-    const call = mock.reactions[0]!;
-    expect(call.reaction).toEqual([{ type: "emoji", emoji: "🇺🇸" }]);
-    expect(JSON.parse(getText(result))).toEqual({ ok: true });
-  });
-
-  it("accepts ZWJ sequence emojis like family", async () => {
-    const mock = makeBot();
-    const tool = createReactTool(mock.bot, 123, 789)!;
-    const result = await tool.execute(
-      "call-1",
-      { emoji: "👨‍👩‍👧‍👦" },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(mock.reactions).toHaveLength(1);
-    const call = mock.reactions[0]!;
-    expect(call.reaction).toEqual([{ type: "emoji", emoji: "👨‍👩‍👧‍👦" }]);
-    expect(JSON.parse(getText(result))).toEqual({ ok: true });
-  });
-
-  it("rejects multiple emojis", async () => {
-    const mock = makeBot();
-    const tool = createReactTool(mock.bot, 123, 789)!;
-    const result = await tool.execute(
-      "call-1",
-      { emoji: "👍🔥" },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(mock.reactions).toHaveLength(0);
-    const parsed = JSON.parse(getText(result));
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain("emoji must be a single emoji character");
-  });
-
-  it("returns structured error when bot.api.setMessageReaction throws", async () => {
-    const mock = makeBot();
-    mock.failNext.reaction = new Error("not allowed");
-    const tool = createReactTool(mock.bot, 123, 789)!;
-    const result = await tool.execute(
-      "call-1",
-      { emoji: "🔥" },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    const parsed = JSON.parse(getText(result));
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain("Telegram API error");
-    expect(parsed.error).toContain("not allowed");
-  });
-});
-
-describe("createChatActionTool", () => {
-  it("schema does not expose chatId", () => {
-    const { bot } = makeBot();
-    const tool = createChatActionTool(bot, 123);
-    const schema = tool.parameters as { properties?: Record<string, unknown> };
-    expect(schema.properties).not.toHaveProperty("chatId");
-    expect(schema.properties).toHaveProperty("action");
-  });
-
-  it("calls bot.api.sendChatAction with bound chatId and action", async () => {
-    const mock = makeBot();
-    const tool = createChatActionTool(mock.bot, 555);
-    const result = await tool.execute(
-      "call-1",
-      { action: "typing" },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(mock.chatActions).toHaveLength(1);
-    const call = mock.chatActions[0]!;
-    expect(call.chatId).toBe(555);
-    expect(call.action).toBe("typing");
-    expect(JSON.parse(getText(result))).toEqual({ ok: true });
-  });
-
-  it("returns structured error when bot.api.sendChatAction throws", async () => {
-    const mock = makeBot();
-    mock.failNext.chatAction = new Error("flood");
-    const tool = createChatActionTool(mock.bot, 1);
-    const result = await tool.execute(
-      "call-1",
-      { action: "upload_document" },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    const parsed = JSON.parse(getText(result));
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain("Telegram API error");
-    expect(parsed.error).toContain("flood");
   });
 });
 

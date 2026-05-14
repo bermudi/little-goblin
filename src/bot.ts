@@ -12,9 +12,7 @@ import {
   createSendVoiceTool,
   createSendPhotoTool,
   createSendDocumentTool,
-  createReactTool,
   createRenameTopicTool,
-  createChatActionTool,
 } from "./tg/tools.ts";
 import { MemoryStore } from "./memory/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
@@ -68,16 +66,13 @@ function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number
 function getBetaTools(
   bot: Bot,
   chatId: number,
-  messageId?: number,
   topicId?: number,
 ): ToolDefinition[] {
   return [
     createSendVoiceTool(bot, chatId, topicId),
     createSendPhotoTool(bot, chatId, topicId),
     createSendDocumentTool(bot, chatId, topicId),
-    createReactTool(bot, chatId, messageId),
     createRenameTopicTool(bot, chatId, topicId),
-    createChatActionTool(bot, chatId),
   ].filter((t): t is NonNullable<typeof t> => t !== null);
 }
 
@@ -190,8 +185,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
   function createRunner(session: SessionState, locator: ChatLocator, ctx: Context): AgentRunner {
     const chatId = locator.chatId;
     const topicId = ctx.message?.message_thread_id;
-    const messageId = ctx.message?.message_id;
-    const betaTools = getBetaTools(bot, chatId, messageId, topicId);
+    const betaTools = getBetaTools(bot, chatId, topicId);
     return new AgentRunner({
       cfg,
       sessionId: session.id,

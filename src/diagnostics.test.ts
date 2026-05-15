@@ -40,9 +40,9 @@ const baseDiagnostics: Diagnostics = {
   model: "poe/Claude-Sonnet-4.6",
   tools: ["bash", "memory"],
   skillsLoaded: null,
-  eventsPath: "/tmp/events.jsonl",
-  eventsBytes: 1024,
-  eventsLines: 42,
+  transcriptPath: "/tmp/transcript.jsonl",
+  transcriptBytes: 1024,
+  transcriptLines: 42,
   activeSubagents: 0,
   runningSubagents: 0,
   contextTokens: null,
@@ -56,7 +56,7 @@ describe("formatDiagnostics", () => {
     expect(out).toContain("Session Name: unavailable");
     expect(out).toContain("Model: poe/Claude-Sonnet-4.6");
     expect(out).toContain("Tools: bash, memory");
-    expect(out).toContain("Events: /tmp/events.jsonl");
+    expect(out).toContain("Transcript: /tmp/transcript.jsonl");
     expect(out).toContain("1.0 KB");
     expect(out).toContain("42 lines");
     expect(out).toContain("Subagents: 0 tracked, 0 running");
@@ -74,14 +74,14 @@ describe("formatDiagnostics", () => {
       sessionName: null,
       tools: null,
       skillsLoaded: null,
-      eventsBytes: null,
-      eventsLines: null,
+      transcriptBytes: null,
+      transcriptLines: null,
       contextTokens: null,
     });
     expect(out).toContain("Session Name: unavailable");
     expect(out).toContain("Tools: unavailable");
     expect(out).toContain("Skills loaded: unavailable");
-    expect(out).toContain("Events file: unavailable, unavailable lines");
+    expect(out).toContain("Transcript file: unavailable, unavailable lines");
     expect(out).toContain("Context: unavailable");
     expect(out).toContain("Context files: unavailable");
   });
@@ -106,9 +106,9 @@ describe("formatDiagnostics", () => {
   });
 
   it("formats bytes with KB and MB scaling", () => {
-    expect(formatDiagnostics({ ...baseDiagnostics, eventsBytes: 512 })).toContain("512 B");
-    expect(formatDiagnostics({ ...baseDiagnostics, eventsBytes: 2048 })).toContain("2.0 KB");
-    expect(formatDiagnostics({ ...baseDiagnostics, eventsBytes: 5 * 1024 * 1024 })).toContain(
+    expect(formatDiagnostics({ ...baseDiagnostics, transcriptBytes: 512 })).toContain("512 B");
+    expect(formatDiagnostics({ ...baseDiagnostics, transcriptBytes: 2048 })).toContain("2.0 KB");
+    expect(formatDiagnostics({ ...baseDiagnostics, transcriptBytes: 5 * 1024 * 1024 })).toContain(
       "5.0 MB",
     );
   });
@@ -134,12 +134,12 @@ describe("gatherDiagnostics", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("reports events.jsonl size + line count when the file exists", () => {
+  it("reports transcript.jsonl size + line count when the file exists", () => {
     const session = makeSession("sess000001");
     const dir = join(tmpDir, "sessions", session.id);
     mkdirSync(dir, { recursive: true });
-    const eventsFile = join(dir, "events.jsonl");
-    writeFileSync(eventsFile, '{"a":1}\n{"a":2}\n{"a":3}\n');
+    const transcriptFile = join(dir, "transcript.jsonl");
+    writeFileSync(transcriptFile, '{"a":1}\n{"a":2}\n{"a":3}\n');
 
     const d = gatherDiagnostics({
       session,
@@ -152,9 +152,9 @@ describe("gatherDiagnostics", () => {
     expect(d.sessionId).toBe(session.id);
     expect(d.model).toBe("m1");
     expect(d.tools).toEqual(["bash"]);
-    expect(d.eventsPath).toBe(eventsFile);
-    expect(d.eventsLines).toBe(3);
-    expect(d.eventsBytes).toBe(24); // 3 × 8 bytes
+    expect(d.transcriptPath).toBe(transcriptFile);
+    expect(d.transcriptLines).toBe(3);
+    expect(d.transcriptBytes).toBe(24); // 3 × 8 bytes
   });
 
   it("reports null events stats when the file is missing", () => {
@@ -166,8 +166,8 @@ describe("gatherDiagnostics", () => {
       goblinHome: tmpDir,
       modelName: "fallback-model",
     });
-    expect(d.eventsBytes).toBeNull();
-    expect(d.eventsLines).toBeNull();
+    expect(d.transcriptBytes).toBeNull();
+    expect(d.transcriptLines).toBeNull();
   });
 
   it("falls back to deps.modelName when runner is null", () => {

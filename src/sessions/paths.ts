@@ -16,10 +16,6 @@ export function statePath(home: string, id: string): string {
   return join(sessionDir(home, id), "state.json");
 }
 
-export function eventsPath(home: string, id: string): string {
-  return join(sessionDir(home, id), "events.jsonl");
-}
-
 export function transcriptPath(home: string, id: string): string {
   return join(sessionDir(home, id), "transcript.jsonl");
 }

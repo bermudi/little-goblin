@@ -18,6 +18,15 @@ type TranscriptContent =
   | { type: "toolCall"; id: string; name: string; arguments: unknown }
   | { type: "unknown"; value: unknown };
 
+interface TranscriptUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+}
+
 interface TranscriptEntry {
   ts: string;
   role: "user" | "assistant" | "toolResult" | "unknown";
@@ -26,6 +35,9 @@ interface TranscriptEntry {
   api?: string;
   provider?: string;
   model?: string;
+  responseModel?: string;
+  responseId?: string;
+  usage?: TranscriptUsage;
   stopReason?: string;
   errorMessage?: string;
   toolCallId?: string;
@@ -115,39 +127,6 @@ function readCompactionTokensBefore(event: AgentSessionEvent): number | undefine
   return typeof tokensBefore === "number" ? tokensBefore : undefined;
 }
 
-/**
- * Strip accumulated snapshots from streaming events before persisting.
- *
- * `message_update` carries both `message` (full current message) and
- * `assistantMessageEvent.partial` (accumulated assistant snapshot). Both
- * grow with every delta, turning events.jsonl into an O(n²) log. We keep
- * the delta itself and drop the snapshots; the final message is already
- * captured by `message_end`.
- */
-function normalizeForLog(event: object): object {
-  if (
-    typeof event === "object" &&
-    event !== null &&
-    (event as Record<string, unknown>).type === "message_update"
-  ) {
-    const e = event as Record<string, unknown>;
-    const ame = e.assistantMessageEvent;
-    if (typeof ame === "object" && ame !== null) {
-      const slimAme: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(ame)) {
-        if (k !== "partial") slimAme[k] = v;
-      }
-      const slimEvent: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(e)) {
-        if (k !== "message") slimEvent[k] = v;
-      }
-      slimEvent.assistantMessageEvent = slimAme;
-      return slimEvent;
-    }
-  }
-  return event;
-}
-
 function appendJsonl(path: string, entry: object): void {
   const line = JSON.stringify(entry) + "\n";
   const fd = openSync(path, "a");
@@ -217,8 +196,23 @@ function transcriptEntryFromEvent(event: object): TranscriptEntry | null {
     entry.api = readString(m, "api");
     entry.provider = readString(m, "provider");
     entry.model = readString(m, "model");
+    entry.responseModel = readString(m, "responseModel");
+    entry.responseId = readString(m, "responseId");
     entry.stopReason = readString(m, "stopReason");
     entry.errorMessage = readString(m, "errorMessage");
+    if (typeof m.usage === "object" && m.usage !== null) {
+      const u = m.usage as Record<string, unknown>;
+      entry.usage = {
+        input: typeof u.input === "number" ? u.input : 0,
+        output: typeof u.output === "number" ? u.output : 0,
+        cacheRead: typeof u.cacheRead === "number" ? u.cacheRead : 0,
+        cacheWrite: typeof u.cacheWrite === "number" ? u.cacheWrite : 0,
+        totalTokens: typeof u.totalTokens === "number" ? u.totalTokens : 0,
+        cost: typeof u.cost === "object" && u.cost !== null
+          ? u.cost as TranscriptUsage["cost"]
+          : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      };
+    }
   }
   if (role === "toolResult") {
     entry.toolCallId = readString(m, "toolCallId");
@@ -226,25 +220,6 @@ function transcriptEntryFromEvent(event: object): TranscriptEntry | null {
     if (typeof m.isError === "boolean") entry.isError = m.isError;
   }
   return entry;
-}
-
-/**
- * Append an event to the session's events.jsonl file.
- *
- * - Opens with O_APPEND for atomic line-level appends
- * - Stamps every event with `ts: <ISO-8601>` if not already present
- * - Uses single writeSync call for atomic per-line append
- * - Normalizes `message_update` events to strip accumulated snapshots
- *
- * @param sessionId - The session ID
- * @param home - GOBLIN_HOME path
- * @param event - The event object to append
- */
-export function appendEvent(sessionId: string, home: string, event: object): void {
-  const normalized = normalizeForLog(event);
-  const eventWithTs = "ts" in normalized ? normalized : { ...normalized, ts: new Date().toISOString() };
-  const eventsFile = join(home, "sessions", sessionId, "events.jsonl");
-  appendJsonl(eventsFile, eventWithTs);
 }
 
 export function appendTranscriptEntry(sessionId: string, home: string, event: object): void {

@@ -1,145 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  appendEvent,
   appendTranscriptEntry,
   dispatchAgentEvent,
   type TurnCallbacks,
 } from "./events.ts";
-
-describe("appendEvent", () => {
-  let tmpDir: string;
-  let sessionId: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "goblin-events-test-"));
-    sessionId = "test-session-123";
-    // Create session directory and empty events.jsonl
-    const sessionDir = join(tmpDir, "sessions", sessionId);
-    mkdirSync(sessionDir, { recursive: true });
-    writeFileSync(join(sessionDir, "events.jsonl"), "");
-    writeFileSync(join(sessionDir, "transcript.jsonl"), "");
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("appends a single event", () => {
-    appendEvent(sessionId, tmpDir, { type: "test", data: "hello" });
-
-    const content = readFileSync(join(tmpDir, "sessions", sessionId, "events.jsonl"), "utf-8");
-    const lines = content.trim().split("\n");
-    expect(lines).toHaveLength(1);
-
-    const parsed = JSON.parse(lines[0]!);
-    expect(parsed.type).toBe("test");
-    expect(parsed.data).toBe("hello");
-    expect(parsed.ts).toBeDefined();
-    expect(parsed.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-  });
-
-  it("preserves existing ts if already present", () => {
-    const customTs = "2024-01-15T10:30:00.000Z";
-    appendEvent(sessionId, tmpDir, { type: "test", ts: customTs });
-
-    const content = readFileSync(join(tmpDir, "sessions", sessionId, "events.jsonl"), "utf-8");
-    const parsed = JSON.parse(content.trim());
-    expect(parsed.ts).toBe(customTs);
-  });
-
-  it("writes 1000 events concurrently without corruption", async () => {
-    const promises: Promise<void>[] = [];
-    for (let i = 0; i < 1000; i++) {
-      promises.push(
-        new Promise<void>((resolve) => {
-          appendEvent(sessionId, tmpDir, { type: "concurrent", index: i });
-          resolve();
-        })
-      );
-    }
-
-    await Promise.all(promises);
-
-    const content = readFileSync(join(tmpDir, "sessions", sessionId, "events.jsonl"), "utf-8");
-    const lines = content.trim().split("\n").filter(Boolean);
-    expect(lines).toHaveLength(1000);
-
-    // Verify every line is valid JSON
-    const indices = new Set<number>();
-    for (const line of lines) {
-      const parsed = JSON.parse(line);
-      expect(parsed.type).toBe("concurrent");
-      expect(typeof parsed.index).toBe("number");
-      expect(parsed.ts).toBeDefined();
-      indices.add(parsed.index);
-    }
-
-    // Verify all indices are unique and present
-    expect(indices.size).toBe(1000);
-    for (let i = 0; i < 1000; i++) {
-      expect(indices.has(i)).toBe(true);
-    }
-  });
-
-  it("creates file if it does not exist", () => {
-    const newSessionId = "new-session-456";
-    const sessionDir = join(tmpDir, "sessions", newSessionId);
-    mkdirSync(sessionDir, { recursive: true });
-    // Don't create events.jsonl
-
-    expect(existsSync(join(sessionDir, "events.jsonl"))).toBe(false);
-
-    appendEvent(newSessionId, tmpDir, { type: "first" });
-
-    expect(existsSync(join(sessionDir, "events.jsonl"))).toBe(true);
-    const content = readFileSync(join(sessionDir, "events.jsonl"), "utf-8");
-    expect(content.trim()).not.toBe("");
-  });
-
-  it("strips message and assistantMessageEvent.partial from message_update", () => {
-    appendEvent(sessionId, tmpDir, {
-      type: "message_update",
-      message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
-      assistantMessageEvent: {
-        type: "text_delta",
-        contentIndex: 0,
-        delta: "hi",
-        partial: { role: "assistant", content: [{ type: "text", text: "hi" }] },
-      },
-    });
-
-    const content = readFileSync(
-      join(tmpDir, "sessions", sessionId, "events.jsonl"),
-      "utf-8",
-    );
-    const parsed = JSON.parse(content.trim());
-    expect(parsed.type).toBe("message_update");
-    expect(parsed.message).toBeUndefined();
-    expect(parsed.assistantMessageEvent).toBeDefined();
-    expect(parsed.assistantMessageEvent.partial).toBeUndefined();
-    expect(parsed.assistantMessageEvent.delta).toBe("hi");
-    expect(parsed.ts).toBeDefined();
-  });
-
-  it("preserves non-message_update events intact", () => {
-    appendEvent(sessionId, tmpDir, {
-      type: "message_end",
-      message: { role: "assistant", content: [] },
-    });
-
-    const content = readFileSync(
-      join(tmpDir, "sessions", sessionId, "events.jsonl"),
-      "utf-8",
-    );
-    const parsed = JSON.parse(content.trim());
-    expect(parsed.type).toBe("message_end");
-    expect(parsed.message).toBeDefined();
-    expect(parsed.ts).toBeDefined();
-  });
-});
 
 describe("appendTranscriptEntry", () => {
   let tmpDir: string;
@@ -150,7 +17,6 @@ describe("appendTranscriptEntry", () => {
     sessionId = "test-session-123";
     const sessionDir = join(tmpDir, "sessions", sessionId);
     mkdirSync(sessionDir, { recursive: true });
-    writeFileSync(join(sessionDir, "transcript.jsonl"), "");
   });
 
   afterEach(() => {
@@ -160,8 +26,9 @@ describe("appendTranscriptEntry", () => {
   it("ignores events that are not message_end", () => {
     appendTranscriptEntry(sessionId, tmpDir, { type: "message_start", message: { role: "user" } });
 
-    const content = readFileSync(join(tmpDir, "sessions", sessionId, "transcript.jsonl"), "utf-8");
-    expect(content).toBe("");
+    // File shouldn't be created since nothing was written
+    const transcriptPath = join(tmpDir, "sessions", sessionId, "transcript.jsonl");
+    expect(existsSync(transcriptPath)).toBe(false);
   });
 
   it("appends user messages", () => {
@@ -195,7 +62,16 @@ describe("appendTranscriptEntry", () => {
         api: "openai-responses",
         provider: "openai",
         model: "gpt-test",
-        usage: { totalTokens: 10 },
+        responseModel: "gpt-test-20260305",
+        responseId: "resp-abc123",
+        usage: {
+          input: 100,
+          output: 50,
+          cacheRead: 20,
+          cacheWrite: 10,
+          totalTokens: 180,
+          cost: { input: 0.001, output: 0.002, cacheRead: 0.0001, cacheWrite: 0.0002, total: 0.0033 },
+        },
         stopReason: "toolUse",
         timestamp: 456,
       },
@@ -206,6 +82,16 @@ describe("appendTranscriptEntry", () => {
     expect(parsed.role).toBe("assistant");
     expect(parsed.provider).toBe("openai");
     expect(parsed.model).toBe("gpt-test");
+    expect(parsed.responseModel).toBe("gpt-test-20260305");
+    expect(parsed.responseId).toBe("resp-abc123");
+    expect(parsed.usage).toEqual({
+      input: 100,
+      output: 50,
+      cacheRead: 20,
+      cacheWrite: 10,
+      totalTokens: 180,
+      cost: { input: 0.001, output: 0.002, cacheRead: 0.0001, cacheWrite: 0.0002, total: 0.0033 },
+    });
     expect(parsed.stopReason).toBe("toolUse");
     expect(parsed.content).toEqual([
       { type: "thinking", text: "hmm" },
@@ -215,6 +101,28 @@ describe("appendTranscriptEntry", () => {
     ]);
     expect(JSON.stringify(parsed)).not.toContain("provider-state");
     expect(JSON.stringify(parsed)).not.toContain("base64-data");
+  });
+
+  it("omits usage when not present on assistant message", () => {
+    appendTranscriptEntry(sessionId, tmpDir, {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "hello" }],
+        api: "openai-completions",
+        provider: "poe",
+        model: "test-model",
+        stopReason: "stop",
+        timestamp: 100,
+      },
+    });
+
+    const content = readFileSync(join(tmpDir, "sessions", sessionId, "transcript.jsonl"), "utf-8");
+    const parsed = JSON.parse(content.trim());
+    expect(parsed.role).toBe("assistant");
+    expect(parsed.usage).toBeUndefined();
+    expect(parsed.responseModel).toBeUndefined();
+    expect(parsed.responseId).toBeUndefined();
   });
 
   it("appends tool result messages", () => {

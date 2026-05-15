@@ -155,7 +155,7 @@ export async function interruptAndCascade(
       // `isStreaming` has flipped back to false — a trailing tick may
       // still be flushing event handlers. Poll briefly so callers who
       // rename the session directory immediately afterwards (`/new`,
-      // `/archive`) don't race an in-flight events.jsonl append.
+      // `/archive`) don't race an in-flight transcript.jsonl append.
       await waitForIdle(runner, IDLE_POLL_MS, IDLE_MAX_WAIT_MS);
     }
   }

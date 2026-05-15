@@ -204,7 +204,6 @@ let tmpDir: string;
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "goblin-agent-test-"));
   mkdirSync(join(tmpDir, "sessions", "sess-001"), { recursive: true });
-  writeFileSync(join(tmpDir, "sessions", "sess-001", "events.jsonl"), "");
   writeFileSync(join(tmpDir, "sessions", "sess-001", "transcript.jsonl"), "");
   mkdirSync(join(tmpDir, "workdir"), { recursive: true });
   mkdirSync(join(tmpDir, "goblin"), { recursive: true });
@@ -689,39 +688,6 @@ describe("AgentRunner", () => {
       });
 
       expect(cb.onToolEnd).toHaveBeenCalledWith("bash", false);
-    });
-  });
-
-  describe("events.jsonl", () => {
-    it("appends one line per pi event during a turn", async () => {
-      const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
-      await runner.prompt("hi", cb);
-
-      const events = [
-        { type: "agent_start" },
-        {
-          type: "message_update",
-          message: {},
-          assistantMessageEvent: { type: "text_delta", delta: "ok" },
-        },
-        { type: "agent_end", messages: [] },
-      ];
-
-      for (const ev of events) sessionHolder.emit(ev);
-
-      const content = readFileSync(
-        join(tmpDir, "sessions", "sess-001", "events.jsonl"),
-        "utf-8"
-      );
-      const lines = content.trim().split("\n").filter(Boolean);
-      expect(lines).toHaveLength(events.length);
-
-      for (const line of lines) {
-        const parsed = JSON.parse(line) as Record<string, unknown>;
-        expect(parsed.type).toBeDefined();
-        expect(parsed.ts).toBeDefined();
-      }
     });
   });
 

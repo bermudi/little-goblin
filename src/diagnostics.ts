@@ -3,7 +3,7 @@
  *
  * Two layers:
  *   1. `gatherDiagnostics(deps)` collects what we can from the live runner,
- *      session, subagent runner, and the events.jsonl on disk.
+ *      session, subagent runner, and the transcript.jsonl on disk.
  *   2. `formatDiagnostics(d)` turns the structured snapshot into the
  *      human-readable text we paste back into Telegram.
  *
@@ -14,7 +14,7 @@
 
 import { statSync, readFileSync } from "node:fs";
 import type { SessionState } from "./sessions/types.ts";
-import { eventsPath } from "./sessions/paths.ts";
+import { transcriptPath } from "./sessions/paths.ts";
 import type { AgentRunner } from "./agent/mod.ts";
 import type { SubagentRunner } from "./subagents/mod.ts";
 
@@ -28,12 +28,12 @@ export interface Diagnostics {
   tools: string[] | null;
   /** Number of skills loaded by pi. Currently always `null` — pi exposes no API for this. */
   skillsLoaded: number | null;
-  /** Absolute path to the events.jsonl file. */
-  eventsPath: string;
-  /** Size of events.jsonl in bytes, or `null` if the file is missing/unreadable. */
-  eventsBytes: number | null;
+  /** Absolute path to the transcript.jsonl file. */
+  transcriptPath: string;
+  /** Size of transcript.jsonl in bytes, or `null` if the file is missing/unreadable. */
+  transcriptBytes: number | null;
   /** Line count (excluding trailing empty line), or `null` if unreadable. */
-  eventsLines: number | null;
+  transcriptLines: number | null;
   /** Number of currently-tracked subagents (any status, including completed/cancelled). */
   activeSubagents: number;
   /** Number of subagents whose status is "running". */
@@ -58,23 +58,23 @@ export interface DiagnosticsDeps {
  * Max file size to read into memory for line counting (10 MB).
  * Above this, we report size but skip line count to avoid blocking the event loop.
  */
-const EVENTS_MAX_READ_BYTES = 10_000_000;
+const TRANSCRIPT_MAX_READ_BYTES = 10_000_000;
 
 /**
- * Read the events.jsonl on disk and report size + line count.
+ * Read the transcript.jsonl on disk and report size + line count.
  * Treats ENOENT (and any read error) as "unavailable" rather than throwing —
  * `/debug` is a diagnostics aid, not a critical path.
- * If the file exceeds {@link EVENTS_MAX_READ_BYTES}, lines is returned as `null`
+ * If the file exceeds {@link TRANSCRIPT_MAX_READ_BYTES}, lines is returned as `null`
  * to prevent blocking the event loop on a giant file.
  */
-function readEventsStats(path: string): { bytes: number | null; lines: number | null } {
+function readTranscriptStats(path: string): { bytes: number | null; lines: number | null } {
   try {
     const stat = statSync(path);
-    if (stat.size > EVENTS_MAX_READ_BYTES) {
+    if (stat.size > TRANSCRIPT_MAX_READ_BYTES) {
       return { bytes: stat.size, lines: null };
     }
     const raw = readFileSync(path, "utf-8");
-    // events.jsonl is line-delimited JSON; trailing newline is conventional, so
+    // transcript.jsonl is line-delimited JSON; trailing newline is conventional, so
     // filter empties to avoid an off-by-one on a freshly-created file.
     const lines = raw.split("\n").filter((l) => l.length > 0).length;
     return { bytes: stat.size, lines };
@@ -84,8 +84,8 @@ function readEventsStats(path: string): { bytes: number | null; lines: number | 
 }
 
 export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
-  const path = eventsPath(deps.goblinHome, deps.session.id);
-  const { bytes, lines } = readEventsStats(path);
+  const path = transcriptPath(deps.goblinHome, deps.session.id);
+  const { bytes, lines } = readTranscriptStats(path);
   const subagentList = deps.subagentRunner.list();
 
   return {
@@ -95,9 +95,9 @@ export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
     model: deps.runner?.modelName ?? deps.modelName,
     tools: deps.runner?.getActiveToolNames() ?? null,
     skillsLoaded: deps.runner?.skillsLoaded ?? null,
-    eventsPath: path,
-    eventsBytes: bytes,
-    eventsLines: lines,
+    transcriptPath: path,
+    transcriptBytes: bytes,
+    transcriptLines: lines,
     activeSubagents: subagentList.length,
     runningSubagents: subagentList.filter((s) => s.status === "running").length,
     contextTokens: deps.runner?.contextTokens ?? null,
@@ -138,8 +138,8 @@ export function formatDiagnostics(d: Diagnostics): string {
     `Model: ${d.model}`,
     `Tools: ${fmtTools(d.tools)}`,
     `Skills loaded: ${fmtNum(d.skillsLoaded)}`,
-    `Events: ${d.eventsPath}`,
-    `Events file: ${fmtBytes(d.eventsBytes)}, ${fmtNum(d.eventsLines)} lines`,
+    `Transcript: ${d.transcriptPath}`,
+    `Transcript file: ${fmtBytes(d.transcriptBytes)}, ${fmtNum(d.transcriptLines)} lines`,
     `Subagents: ${d.activeSubagents} tracked, ${d.runningSubagents} running`,
     `Context: ${fmtNum(d.contextTokens)}`,
     `Context files: ${fmtContextFiles(d.contextFiles)}`,

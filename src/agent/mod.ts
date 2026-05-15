@@ -17,7 +17,7 @@ import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { appendEvent, appendTranscriptEntry, dispatchAgentEvent } from "./events.ts";
+import { appendTranscriptEntry, dispatchAgentEvent } from "./events.ts";
 import type { TurnCallbacks } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
 import { workdirPath, createPiServices, piAgentDir } from "../pi-host.ts";
@@ -214,11 +214,10 @@ export class AgentRunner {
   }
 
   /**
-   * Handle AgentSession events, dispatch to callbacks and log to events.jsonl.
+   * Handle AgentSession events, dispatch to callbacks and log to transcript.
    */
   private handleEvent(event: AgentSessionEvent): void {
-    // Append every event to events.jsonl
-    appendEvent(this.sessionId, this.cfg.goblinHome, event);
+    // Append to transcript (compact message-level log)
     appendTranscriptEntry(this.sessionId, this.cfg.goblinHome, event);
 
     if (!this.callbacks) return;

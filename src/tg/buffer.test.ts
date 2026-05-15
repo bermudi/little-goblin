@@ -499,20 +499,19 @@ describe("MessageBuffer", () => {
       expect(m.send[1]?.text).toBe("hello");
     });
 
-    it("lazy-sends placeholder on first onTextDelta if no onStatusUpdate fired", async () => {
+    it("does NOT send placeholder on first onTextDelta — only onStatusUpdate or onToolStart trigger it", async () => {
       const m = makeBot();
       const buffer = new MessageBuffer(m.bot, 1, undefined);
       buffer.onTextDelta("hi");
       await tick();
-      // The status placeholder lands alongside the response. Order may vary
-      // by microtask scheduling, but BOTH must have been sent.
+      // Only the response message is sent; no status placeholder.
       const texts = m.send.map((s) => s.text);
-      expect(texts).toContain("🤔 thinking…");
+      expect(texts).not.toContain("🤔 thinking…");
       expect(texts).toContain("hi");
-      expect(buffer._state().placeholderSent).toBe(true);
+      expect(buffer._state().placeholderSent).toBe(false);
     });
 
-    it("lazy-sends placeholder on first onToolStart if no onStatusUpdate fired", async () => {
+    it("sends placeholder on first onToolStart if no onStatusUpdate fired", async () => {
       const m = makeBot();
       const buffer = new MessageBuffer(m.bot, 1, undefined);
       buffer.onToolStart("bash", {});

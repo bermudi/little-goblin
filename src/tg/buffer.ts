@@ -258,9 +258,8 @@ export class MessageBuffer implements TurnCallbacks {
     this.isStreaming = true;
     this.startChatAction();
     // No status flush per delta — the phase machine only edits the status
-    // on phase transitions. Liveness is conveyed by the chat-action above.
-    // Lazy-send the placeholder if no agent_start arrived first (defensive).
-    if (!this.placeholderSent) this.commitStatus();
+    // on phase transitions (thinking tokens → onStatusUpdate, tools →
+    // onToolStart/onToolEnd). Liveness is conveyed by the chat-action above.
     log.debug("response: delta", {
       deltaLen: delta.length,
       accLen: this.accumulatedText.length,
@@ -339,9 +338,9 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   onStatusUpdate(_message: string): void {
-    // AgentRunner fires onStatusUpdate("thinking...") on agent_start. We
-    // use that as the cue to send the eager placeholder, guaranteeing the
-    // status message exists before any response message can be created.
+    // Fired by thinking_start / thinking_delta events (and compaction).
+    // We use this as the cue to send the eager placeholder, guaranteeing
+    // the status message exists before any response message can be created.
     if (!this.placeholderSent) this.commitStatus();
   }
 
@@ -367,10 +366,9 @@ export class MessageBuffer implements TurnCallbacks {
 
   /**
    * Single entry point for any state-changing status flush: phase
-   * transitions, eager placeholders, lazy fallbacks. Marks the placeholder
-   * as sent (so future entries don't re-trigger the eager path) and fires
-   * exactly one `flushStatus(force=true)`. Visibility "none" suppresses
-   * everything.
+   * transitions and eager placeholders. Marks the placeholder as sent (so
+   * future entries don't re-trigger the eager path) and fires exactly one
+   * `flushStatus(force=true)`. Visibility "none" suppresses everything.
    */
   private commitStatus(): void {
     if (this.visibility === "none") return;

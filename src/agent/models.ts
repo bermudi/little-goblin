@@ -8,7 +8,7 @@
  *   anthropic/<id>  → Direct Anthropic API
  *
  * Each entry picks the best pi-ai `api` dialect for that model family:
- *   - Claude models  → "anthropic" (Messages API, prompt caching)
+ *   - Claude models  → "anthropic-messages" (Messages API, prompt caching)
  *   - GPT/o-series   → "openai-responses" (reasoning summaries)
  *   - Everything else → "openai-completions" (universal fallback)
  *
@@ -91,7 +91,7 @@ function poeAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
     model: {
       id,
       name,
-      api: "anthropic",
+      api: "anthropic-messages",
       provider: "poe",
       baseUrl: POE_ANTHROPIC,
       reasoning: true,
@@ -99,7 +99,7 @@ function poeAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
       cost: ZERO_COST,
       contextWindow: ctx,
       maxTokens: resolveMaxTokens(id),
-    } satisfies Model<"anthropic">,
+    } satisfies Model<"anthropic-messages">,
   };
 }
 
@@ -190,7 +190,7 @@ function directAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
     model: {
       id,
       name,
-      api: "anthropic",
+      api: "anthropic-messages",
       provider: "anthropic",
       baseUrl: ANTHROPIC,
       reasoning: true,
@@ -198,7 +198,7 @@ function directAnthropic(id: string, name: string, ctx = 200_000): ModelEntry {
       cost: ZERO_COST,
       contextWindow: ctx,
       maxTokens: resolveMaxTokens(id),
-    } satisfies Model<"anthropic">,
+    } satisfies Model<"anthropic-messages">,
   };
 }
 

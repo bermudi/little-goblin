@@ -71,7 +71,7 @@ describe("resolveModel", () => {
     const r = resolveModel(makeConfig("anthropic/claude-future-7"));
     expect(r.model.id).toBe("claude-future-7");
     expect(r.model.provider).toBe("anthropic");
-    expect(r.model.api).toBe("anthropic");
+    expect(r.model.api).toBe("anthropic-messages");
     expect(r.apiKey).toBe("ant-key");
   });
 

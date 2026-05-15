@@ -3,8 +3,17 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { executeThink, NO_SESSION_REPLY } from "./think.ts";
+import { executeThink, NO_SESSION_REPLY, ALL_LEVELS } from "./think.ts";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+
+/** All levels — simulates a model that supports every level (e.g. Claude). */
+const FULL_LEVELS = ALL_LEVELS;
+
+/** Off-only — simulates a non-reasoning model. */
+const OFF_ONLY: readonly ThinkingLevel[] = ["off"];
+
+/** No xhigh — simulates a reasoning model that doesn't support xhigh. */
+const NO_XHIGH: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
 function makeDeps(
   overrides: Partial<Parameters<typeof executeThink>[0]> = {},
@@ -13,6 +22,7 @@ function makeDeps(
     hasSession: true,
     rawText: "/think",
     currentLevel: "medium",
+    supportedLevels: FULL_LEVELS,
     setThinkingLevel: () => {},
     ...overrides,
   };
@@ -32,6 +42,21 @@ describe("executeThink", () => {
     expect(result.reply).toContain("off");
     expect(result.reply).toContain("xhigh");
     expect(result.reply).toContain("high ✅");
+  });
+
+  it("only shows levels supported by the model", () => {
+    const result = executeThink(makeDeps({ rawText: "/think", currentLevel: "off", supportedLevels: OFF_ONLY }));
+    expect(result.kind).toBe("list");
+    expect(result.reply).toContain("off ✅");
+    expect(result.reply).not.toContain("xhigh");
+    expect(result.reply).not.toContain("medium");
+  });
+
+  it("omits xhigh when model does not support it", () => {
+    const result = executeThink(makeDeps({ rawText: "/think", currentLevel: "high", supportedLevels: NO_XHIGH }));
+    expect(result.kind).toBe("list");
+    expect(result.reply).toContain("high ✅");
+    expect(result.reply).not.toContain("xhigh");
   });
 
   it("lists levels when argument is only whitespace", () => {
@@ -73,6 +98,15 @@ describe("executeThink", () => {
     const result = executeThink(makeDeps({ rawText: "/think turbo" }));
     expect(result.kind).toBe("bad-level");
     expect(result.reply).toContain("Unknown level");
+  });
+
+  it("rejects a level not supported by the model", () => {
+    const result = executeThink(makeDeps({ rawText: "/think xhigh", supportedLevels: NO_XHIGH }));
+    expect(result.kind).toBe("bad-level");
+    expect(result.reply).toContain("Unknown level");
+    expect(result.reply).toContain("Valid for this model");
+    // The valid levels listed should not include xhigh
+    expect(result.reply).toContain("high");
   });
 
   it("clears override with 'clear'", () => {

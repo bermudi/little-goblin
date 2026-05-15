@@ -19,7 +19,9 @@ import { registerCommands } from "./commands/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "./sessions/mod.ts";
 import { sessionDir } from "./sessions/paths.ts";
 import { AgentRunner, ModelNotCapableError } from "./agent/mod.ts";
-import { resolveModel } from "./agent/models.ts";
+import { resolveModel, type ResolvedModel } from "./agent/models.ts";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 import { interruptAndCascade, DEFAULT_CASCADE_TIMEOUT_MS, type CascadeResult } from "./interrupt.ts";
@@ -31,7 +33,7 @@ import { executeModel } from "./commands/model.ts";
 import { executeCompact } from "./commands/compact.ts";
 import { executeName } from "./commands/name.ts";
 import { executeResume } from "./commands/resume.ts";
-import { executeThink } from "./commands/think.ts";
+import { executeThink, ALL_LEVELS } from "./commands/think.ts";
 import { parseCommand } from "./commands/parse.ts";
 import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./commands/subagents.ts";
 import { HELP_REPLY } from "./commands/help.ts";
@@ -181,6 +183,16 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
   const subagentRunner = new SubagentRunner(cfg, subagentToolFactory);
   const memoryStore = new MemoryStore(cfg.goblinHome);
   const getTopicName = buildGetTopicName(memoryStore);
+
+  /** Resolve the current model for a session, return undefined on failure. */
+  function tryResolveModel(cfg: Config, session: SessionState | null, runner?: AgentRunner): ResolvedModel | undefined {
+    try {
+      const modelName = runner?.modelName ?? session?.modelName ?? cfg.modelName;
+      return resolveModel({ ...cfg, modelName });
+    } catch {
+      return undefined;
+    }
+  }
 
   function createRunner(session: SessionState, locator: ChatLocator, ctx: Context): AgentRunner {
     const chatId = locator.chatId;
@@ -386,12 +398,15 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
         case "/model": {
           let modelResult;
           try {
+            const currentModelResolved = tryResolveModel(cfg, session, existingRunner ?? undefined);
             modelResult = executeModel({
               hasSession: session !== null,
               rawText: rawText ?? "",
               favorites: cfg.favorites,
               cfg,
               currentModelName: existingRunner?.modelName ?? session?.modelName ?? cfg.modelName,
+              currentThinkingLevel: session?.thinkingLevel,
+              currentResolvedModel: currentModelResolved,
               setModelName: (name) => {
                 if (!session) return;
                 manager.setModelName(session.id, name);
@@ -403,6 +418,10 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
                     runners.delete(session.id);
                   }
                 }
+              },
+              onThinkingLevelClamped: (newLevel) => {
+                if (!session) return;
+                manager.setThinkingLevel(session.id, newLevel);
               },
             });
           } catch (err) {
@@ -420,12 +439,16 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
         case "/think": {
           let thinkResult;
           try {
+            const currentModelResolved = tryResolveModel(cfg, session, existingRunner ?? undefined);
+            const supportedLevels = currentModelResolved
+              ? (getSupportedThinkingLevels(currentModelResolved.model) as readonly ThinkingLevel[])
+              : ALL_LEVELS;
             thinkResult = executeThink({
               hasSession: session !== null,
               rawText: rawText ?? "",
               currentLevel:
-                session?.thinkingLevel ??
-                resolveModel({ ...cfg, modelName: session?.modelName ?? cfg.modelName }).thinkingLevel,
+                session?.thinkingLevel ?? currentModelResolved?.thinkingLevel ?? "medium",
+              supportedLevels,
               setThinkingLevel: (level) => {
                 if (!session) return;
                 manager.setThinkingLevel(session.id, level);

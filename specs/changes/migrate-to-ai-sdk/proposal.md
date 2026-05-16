@@ -50,6 +50,6 @@ Replace the pi dependency stack (`@earendil-works/pi-coding-agent`, `@earendil-w
 - **No web UI, no multi-channel.** Goblin lives in Telegram.
 - **No LangChain / LangGraph.** AI SDK is the replacement. Goblin's architecture doesn't need a graph model.
 - **No new tools in this change.** Web search and PDF attachments unlock after the migration; wiring them up is a separate change.
-- **No behavior changes.** The agent should respond the same way before and after. This is a dependency swap, not a feature change.
-- **No changes to the Telegram layer.** grammy stays, message handling stays, β-tools stay.
+- **No behavior changes to agent responses or tool semantics.** The agent should respond the same way before and after. New read-only accessors (`isStreaming`, `modelName`, etc.) are added but do not affect responses. This is a dependency swap, not a feature change.
+- **No changes to Telegram API integration** (grammy stays, message normalization stays, β-tools are mechanically converted to AI SDK format with no behavioral changes).
 - **No multi-user.** Still single-user, homelab.

@@ -36,7 +36,7 @@ The pi stack is replaced by AI SDK's `streamText()` with `maxSteps` for tool loo
 **After:** `AgentRunner.prompt()` → assemble `ModelMessage[]` + tools → `streamText({ model, messages, tools, maxSteps })` → iterate `fullStream` → `dispatchStreamEvent()` → `TurnCallbacks`
 
 The `ModelMessage[]` array is goblin's source of truth for conversation history. It is not managed by any external library. On each turn, goblin:
-1. Loads memory snapshot → prepends as a user message
+1. Loads memory snapshot → prepends as a system message (with `name` field)
 2. Appends the user's prompt
 3. Calls `streamText()` with the full array
 4. Appends `result.response.messages` to the array
@@ -44,7 +44,9 @@ The `ModelMessage[]` array is goblin's source of truth for conversation history.
 
 ### Session persistence
 
-Pi's `SessionManager` is removed. Goblin's existing session filesystem layout (`sessions/<id>/`) stays unchanged. The `transcript.jsonl` format stays the same (JSONL with timestamped entries). Conversation history for resumption is stored as `messages.jsonl` (AI SDK `ModelMessage[]` serialized per line).
+Pi's `SessionManager` is removed. Goblin's existing session filesystem layout (`sessions/<id>/`) is extended with a new file. `transcript.jsonl` stays — its format is unchanged (timestamped JSONL entries for observability). `events.jsonl` (pi's raw event stream) is removed; its role is replaced by `transcript.jsonl` and the new `messages.jsonl`.
+
+Conversation history for resumption is stored as `messages.jsonl` (AI SDK `ModelMessage[]` serialized per line). On process restart, the `ModelMessage[]` array is rebuilt from `messages.jsonl`.
 
 For subagents, the same pattern: `meta.json` for metadata, `messages.jsonl` for conversation history.
 
@@ -143,7 +145,12 @@ Pi's built-in compaction is replaced by goblin's own: call `generateText()` with
 | `src/bot.ts` | Replace `ToolDefinition` import with AI SDK `Tool` type. Replace `TextContent`/`ImageContent` from pi-ai with AI SDK's `CoreMessage` types. Replace `getSupportedThinkingLevels` / `clampThinkingLevel` imports with goblin's own. Remove `ThinkingLevel` from pi-agent-core, use goblin's own type. |
 | `src/commands/model.ts` | Replace pi-agent-core `ThinkingLevel` type and pi-ai `clampThinkingLevel` with goblin's own. |
 | `src/commands/think.ts` | Replace pi-agent-core `ThinkingLevel` type with goblin's own. |
+| `src/commands/think.ts` | Replace pi-agent-core `ThinkingLevel` type with goblin's own. |
 | `src/commands/think.test.ts` | Replace pi-agent-core `ThinkingLevel` type with goblin's own. |
+| `src/subagents/mod.ts` | Update exports for new types (remove pi references). |
+| `src/subagents/test/support.ts` | Replace pi type references with AI SDK types. |
+| `src/subagents/test/guards.suite.ts` | Replace pi type references with AI SDK types. |
+| `src/agent/mod.test.ts` | Replace pi type references (`ImageContent`, `TextContent`) with AI SDK equivalents. |
 | `src/pi-host.ts` | **Deleted.** Path helpers move to `src/paths.ts`. Pi service construction removed. |
 | `package.json` | Remove `@earendil-works/pi-coding-agent`. Add `ai`, `@ai-sdk/openai`, `@ai-sdk/anthropic`. Remove `@sinclair/typebox` if no other consumer. |
 

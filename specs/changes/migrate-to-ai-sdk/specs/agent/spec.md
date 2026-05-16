@@ -47,6 +47,12 @@ The `AgentRunner.prompt()` method SHALL accept a `TurnCallbacks` object (importe
 - **WHEN** AI SDK's `streamText()` resolves (finish event)
 - **THEN** `callbacks.onAgentEnd()` SHALL be called exactly once
 
+#### Scenario: API error during stream
+
+- **WHEN** `streamText()` encounters a network failure, rate limit, or auth error
+- **THEN** `callbacks.onTextDelta()` SHALL be called with an error message prefixed with "❌ error: "
+- **AND** `callbacks.onAgentEnd()` SHALL be called
+
 ### Requirement: Every tool call fires callbacks
 
 The `AgentRunner` MUST NOT filter tool callbacks by name, visibility, or source. Every tool invocation and result from AI SDK SHALL produce a callback invocation.
@@ -86,7 +92,7 @@ The `src/agent/` directory MUST NOT import `grammy` or any `src/tg/*` module. Al
 
 ### Requirement: AgentRunner provides abort
 
-The `AgentRunner` SHALL expose an `abort()` method that aborts the current `streamText()` call via an `AbortController`. The runner SHALL own the `AbortController` and pass its `signal` to each `streamText()` invocation.
+The `AgentRunner` SHALL expose an `abort()` method that aborts the current `streamText()` or `generateText()` call via an `AbortController`. The runner SHALL own the `AbortController` and pass its `signal` to each call.
 
 #### Scenario: Abort during stream
 
@@ -98,6 +104,12 @@ The `AgentRunner` SHALL expose an `abort()` method that aborts the current `stre
 
 - **WHEN** `abort()` is called while no turn is in progress
 - **THEN** the promise SHALL resolve without error
+
+#### Scenario: Abort during compact
+
+- **WHEN** `abort()` is called while `compact()` is in progress
+- **THEN** the in-flight `generateText()` SHALL be cancelled
+- **AND** the `ModelMessage[]` SHALL remain unchanged
 
 ### Requirement: AgentRunner registers the memory write tool
 
@@ -131,13 +143,16 @@ The `TurnCallbacks` interface SHALL be defined in `src/agent/events.ts` with fiv
 
 `AgentRunner` SHALL expose a public `compact(customInstructions?: string)` method that summarizes the conversation history to reclaim context window space. The method SHALL construct a summarization prompt (or use custom instructions), call AI SDK's `generateText()` to produce a summary, and replace the `ModelMessage[]` history with a system message containing the summary.
 
-If the conversation history is empty or too short to compact, the method SHALL throw an error.
+The method SHALL return `{ summary: string, tokensBefore: number }` where `tokensBefore` is the estimated token count of the conversation history before compaction and `summary` is the text produced by `generateText()`.
+
+If the conversation history is empty or too short to compact, the method SHALL throw an error. If the agent is currently streaming, the method SHALL throw an error — compact MUST NOT run concurrently with a turn.
 
 #### Scenario: Compact an active session
 
 - **WHEN** `runner.compact()` is called on a runner with multiple turns of conversation history
 - **THEN** a summarization call SHALL be made via AI SDK
 - **AND** the `ModelMessage[]` SHALL be replaced with a compacted version containing the summary
+- **AND** the return value SHALL include `summary` and `tokensBefore`
 
 #### Scenario: Compact with custom instructions
 
@@ -149,21 +164,26 @@ If the conversation history is empty or too short to compact, the method SHALL t
 - **WHEN** `runner.compact()` is called on a session with minimal history
 - **THEN** the promise SHALL reject with an error
 
+#### Scenario: Compact while streaming
+
+- **WHEN** `runner.compact()` is called while a `streamText()` call is in progress
+- **THEN** the promise SHALL reject with an error
+
 ## REMOVED Requirements
 
 ### Requirement: Shared services point at $GOBLIN_HOME/goblin/
 
 ### Requirement: Pi SessionManager runs in-memory for main goblin sessions
 
+### Requirement: Complete event log written to sessions/<id>/events.jsonl
+
 ## RENAMED Requirements
 
 ### Requirement: AgentRunner owns pi's AgentSession → AgentRunner owns the LLM session
 
-### Requirement: Complete event log written to sessions/<id>/events.jsonl → Complete event log written to sessions/<id>/transcript.jsonl
-
 ### Requirement: In-flight prompts use pi's followUp queueing → In-flight prompts queue in runner
 
-### Requirement: AgentRunner injects memory snapshot as per-turn aside → AgentRunner injects memory snapshot as per-turn user message
+### Requirement: AgentRunner injects memory snapshot as per-turn aside → AgentRunner injects memory snapshot as per-turn system message
 
 ### Requirement: Shared event dispatch function in agent/events.ts → Shared stream event dispatch function in agent/events.ts
 
@@ -173,7 +193,7 @@ If the conversation history is empty or too short to compact, the method SHALL t
 
 ### Requirement: AgentRunner exposes context metadata
 
-The `AgentRunner` SHALL expose read-only accessors for: `isStreaming` (boolean), `modelName` (string), `skillsLoaded` (number or null), and `contextTokens` (number or null, derived from AI SDK usage data).
+The `AgentRunner` SHALL expose read-only accessors for: `isStreaming` (boolean), `modelName` (string), `skillsLoaded` (number or null), and `contextTokens` (number or null).
 
 #### Scenario: Streaming state
 
@@ -184,3 +204,39 @@ The `AgentRunner` SHALL expose read-only accessors for: `isStreaming` (boolean),
 
 - **WHEN** the runner is constructed with a model override
 - **THEN** `modelName` SHALL return the override; otherwise the config default
+
+#### Scenario: Context tokens after a turn
+
+- **WHEN** a `streamText()` call completes with usage `{ promptTokens: 5000, completionTokens: 1200 }`
+- **THEN** `contextTokens` SHALL return `5000`
+
+#### Scenario: Context tokens before first turn
+
+- **WHEN** no `streamText()` call has completed yet
+- **THEN** `contextTokens` SHALL return `null`
+
+### Requirement: Conversation history persisted to messages.jsonl
+
+The `AgentRunner` SHALL persist the `ModelMessage[]` conversation history to `$GOBLIN_HOME/sessions/<sessionId>/messages.jsonl` after each turn completes. Each line SHALL be a single JSON-serialized `ModelMessage`. The file SHALL be appended to (not rewritten) on each turn. On process restart, the `ModelMessage[]` array SHALL be rebuilt by reading all lines from `messages.jsonl`.
+
+#### Scenario: Turn completes
+
+- **WHEN** a `streamText()` call finishes and `result.response.messages` are appended to the in-memory array
+- **THEN** those same messages SHALL be appended as JSONL lines to `messages.jsonl`
+
+#### Scenario: Process restart
+
+- **WHEN** goblin restarts and an `AgentRunner` is created for a session with existing `messages.jsonl`
+- **THEN** the `ModelMessage[]` array SHALL be rebuilt from the file contents
+- **AND** the agent SHALL have full conversation context
+
+#### Scenario: New session
+
+- **WHEN** an `AgentRunner` is created for a session with no `messages.jsonl`
+- **THEN** the `ModelMessage[]` array SHALL be empty
+
+#### Scenario: Corrupted line
+
+- **WHEN** `messages.jsonl` contains a malformed JSON line
+- **THEN** the runner SHALL log a warning with the line number and skip that line
+- **AND** the remaining lines SHALL still be loaded

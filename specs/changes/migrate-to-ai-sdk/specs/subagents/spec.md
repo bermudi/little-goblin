@@ -59,6 +59,27 @@ The subagent runtime SHALL use AI SDK's `fullStream` (for streaming subagents) o
 - **WHEN** a `finish` stream part arrives for a subagent
 - **THEN** `hooks.onEnd()` SHALL be called exactly once
 
+### Requirement: Named subagents load isolated definitions
+
+Named subagents SHALL load their `AGENTS.md` from `~/goblin/agents/<name>/` as the system prompt. The `skills/` directory under the named agent's root SHALL be scanned for `SKILL.md` files; found skills SHALL be appended to the system prompt. No `DefaultResourceLoader` or pi resource loading framework is used — goblin reads files directly.
+
+Parent skills SHALL NOT be inherited — strict isolation. If `AGENTS.md` does not exist, spawn SHALL throw an error. If `skills/` is absent or empty, the system prompt SHALL contain only the `AGENTS.md` content.
+
+#### Scenario: Spawn named subagent with skills
+
+- **WHEN** `spawn_subagent({name: "researcher", prompt: "..."})` is called
+- **AND** `~/goblin/agents/researcher/skills/` contains SKILL.md files
+- **THEN** `~/goblin/agents/researcher/AGENTS.md` SHALL be loaded as system prompt
+- **AND** skill content from `skills/` SHALL be appended to the system prompt
+- **AND** parent's skills SHALL NOT be available
+
+#### Scenario: Named agent with no skills directory
+
+- **WHEN** `spawn_subagent({name: "minimal"})` is called
+- **AND** `~/goblin/agents/minimal/skills/` does not exist
+- **THEN** the system prompt SHALL contain only `AGENTS.md` content
+- **AND** no error SHALL be thrown
+
 ### Requirement: Cancel subagent aborts execution
 
 The `cancel(id)` method SHALL abort the specified subagent's current turn via `AbortController.abort()`.

@@ -85,7 +85,7 @@ Use the scorecard table from the applicable reference file.
 
 ## Ending
 
-The report is the output. No follow-up actions from you. The user reads it and decides what to do next. If the user asks you to fix things, tell them to use apply.
+The report is the output. No follow-up actions from you. The user reads it and decides what to do next. If the user asks you to fix things, tell them to use the fix skill (litespec-fix).
 
 **Backlog deferral:** If the change explicitly defers scope not already in `specs/backlog.md`, suggest adding deferred items to the backlog.
 

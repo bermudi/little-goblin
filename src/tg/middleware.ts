@@ -98,9 +98,16 @@ export function buildAllowlistMiddleware(cfg: Config) {
       return;
     }
 
-    // No @mention — only allowed users in small groups (≤2 members).
+    // No @mention — allowed users get commands through regardless of
+    // group size (slash commands are explicit bot interactions). For
+    // non-command messages, only pass in small groups (≤2 members).
     const userId = ctx.from.id;
     if (cfg.allowedTgUserIds.has(userId)) {
+      const isCommand = (ctx.msg?.entities ?? []).some((e) => e.type === "bot_command");
+      if (isCommand) {
+        await next();
+        return;
+      }
       const count = await getMemberCount(ctx);
       if (count <= 2) {
         await next();

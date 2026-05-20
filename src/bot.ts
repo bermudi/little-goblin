@@ -8,6 +8,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import { log } from "./log.ts";
 import { buildAllowlistMiddleware, locatorFromCtx, MessageBuffer } from "./tg/mod.ts";
+import { prepareUserContent } from "./tg/user-context.ts";
 import {
   createSendVoiceTool,
   createSendPhotoTool,
@@ -624,7 +625,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     });
 
     try {
-      await runner.prompt(text, buffer);
+      await runner.prompt(prepareUserContent(ctx, text), buffer);
     } catch (err) {
       log.error("runner prompt failed", { error: String(err), sessionId: session.id });
     }
@@ -679,7 +680,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     });
 
     try {
-      await runner.prompt(content, buffer);
+      await runner.prompt(prepareUserContent(ctx, content), buffer);
     } catch (err) {
       if (err instanceof ModelNotCapableError) {
         await ctx.reply(`❌ ${err.message}`);
@@ -760,7 +761,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       });
 
       try {
-        await runner.prompt(promptText, buffer);
+        await runner.prompt(prepareUserContent(ctx, promptText), buffer);
       } catch (err) {
         log.error("runner document prompt failed", { error: String(err), sessionId: session.id });
       }
@@ -783,7 +784,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
             : undefined,
       });
       try {
-        await runner.prompt(fallbackCaption, buffer);
+        await runner.prompt(prepareUserContent(ctx, fallbackCaption), buffer);
       } catch (err) {
         log.error("runner document caption prompt failed", { error: String(err), sessionId: session.id });
       }
@@ -853,7 +854,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       });
 
       try {
-        await runner.prompt(promptText, buffer);
+        await runner.prompt(prepareUserContent(ctx, promptText), buffer);
       } catch (err) {
         log.error("runner voice prompt failed", { error: String(err), sessionId: session.id });
       }
@@ -936,7 +937,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       });
 
       try {
-        await runner.prompt(promptText, buffer);
+        await runner.prompt(prepareUserContent(ctx, promptText), buffer);
       } catch (err) {
         log.error("runner audio prompt failed", { error: String(err), sessionId: session.id });
       }
@@ -957,7 +958,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
             : undefined,
       });
       try {
-        await runner.prompt(fallbackCaption, buffer);
+        await runner.prompt(prepareUserContent(ctx, fallbackCaption), buffer);
       } catch (err) {
         log.error("runner audio caption prompt failed", { error: String(err), sessionId: session.id });
       }

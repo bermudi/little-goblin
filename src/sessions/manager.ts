@@ -118,7 +118,7 @@ export class SessionManager {
         if (state) return state;
         log.warn("stale supergroup binding, recreating session", { chatId: loc.chatId, sessionId: existingId });
       }
-      return this.createForChat(loc);
+      return this.createForChat(loc, { isSupergroup: true });
     }
 
     // DM: must have explicit binding

@@ -5,3 +5,5 @@ dist/
 *.log
 bun.lockb
 .DS_Store
+.pi/settings.json
+.pi/npm/

@@ -50,6 +50,12 @@ Curated, agent-controlled persistent memory lives at `$GOBLIN_HOME/memory/`:
 
 This file (`AGENTS.md`) is **not** auto-injected into the system prompt today; that's a separate concern.
 
+## Test conventions
+
+- **Colocated.** `foo.ts` ↔ `foo.test.ts` in the same directory. `bun test` discovers them automatically.
+- **One exception: `src/subagents/`.** Its tests live in `src/subagents/test/*.suite.ts`, bootstrapped from `mod.test.ts`. The reason: `bun:test` `mock.module()` is process-global, so the suites must run under a single mock install. The `.suite.ts` extension prevents bun from auto-discovering them (which would race the mock). If bun ever gets per-file mock scoping, collapse this back to colocated `.test.ts` files.
+- Add `"test": "bun test"` to package.json if it's still missing.
+
 ## Things not to do
 
 - No web UI, no multi-channel, no plugin SDK, no Docker, no k8s

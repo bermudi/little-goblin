@@ -109,7 +109,22 @@ Resolution SHALL occur once during `loadConfig()`. Shell commands SHALL have a 1
 
 ### Requirement: Validate config with Zod schema
 
-The system SHALL validate the fully-resolved config object against a Zod schema. Validation failures SHALL cause a startup error with Zod's formatted error output.
+The system SHALL validate the fully-resolved config object against a Zod schema. Validation failures SHALL cause a startup error with Zod's formatted error output. The `skillSources` field SHALL accept only `"goblin-only"` and `"user"`, defaulting to `"goblin-only"` when absent. The removed value `"auto"` MUST fail config validation.
+
+#### Scenario: skillSources default
+
+- **WHEN** `skillSources` is absent from `goblin.json5`
+- **THEN** the loaded config SHALL use `"goblin-only"`
+
+#### Scenario: valid skillSources values
+
+- **WHEN** `skillSources` is `"goblin-only"` or `"user"`
+- **THEN** config validation SHALL pass
+
+#### Scenario: auto rejected
+
+- **WHEN** `skillSources` is `"auto"`
+- **THEN** config validation SHALL fail
 
 #### Scenario: Invalid model name type
 

@@ -8,7 +8,7 @@ test-only and serves as the safety net for the Phase 2 refactor (if a test
 fails after the refactor, the bug is in the refactor, not in the modules).
 This phase is independently shippable and may land separately from Phase 2.
 
-- [ ] Create `src/agent/poe-validate.test.ts`. Mock `globalThis.fetch` per-test (save and restore in `afterEach`).
+- [x] Create `src/agent/poe-validate.test.ts`. Mock `globalThis.fetch` per-test (save and restore in `afterEach`).
   - Test: non-poe model name (`"openai/gpt-4o"`) → no `fetch` call, no throw
   - Test: poe model with known id (mock `fetch` to return `data: [{id: "Claude-Sonnet-4.6"}]`) → no throw
   - Test: poe model with unknown id and 3 close matches → throws, error message includes `"Did you mean: poe/<s1>, poe/<s2>, poe/<s3>?"`
@@ -18,7 +18,7 @@ This phase is independently shippable and may land separately from Phase 2.
   - Test: poe model, `fetch` returns 200 with `{ data: [] }` → calls `logger.warn` with empty list hint, does not throw
   - Test: non-2xx response (e.g. 401) when API key is invalid → warns, does not throw
   - Verify: `bun test src/agent/poe-validate.test.ts` passes
-- [ ] Create `src/tg/middleware.test.ts`. Build a fake `Context` per-test (a `MockBotApi` with `getChatMemberCount` mock, and a `MockCtx` with `chat`, `from`, `msg`, `me`). Use a `next = mock()` capture.
+- [x] Create `src/tg/middleware.test.ts`. Build a fake `Context` per-test (a `MockBotApi` with `getChatMemberCount` mock, and a `MockCtx` with `chat`, `from`, `msg`, `me`). Use a `next = mock()` capture.
   - Test: DM from allowed user (id in `allowedTgUserIds`) → `next` called once
   - Test: DM from non-allowed user → `next` not called; debug log emitted (spy on `log.debug` if practical, or assert `next.mock.calls.length === 0`)
   - Test: group message with `mention` entity matching `@<botUsername>` from non-allowed user → `next` called
@@ -32,7 +32,7 @@ This phase is independently shippable and may land separately from Phase 2.
   - Test: member-count cache — first call hits `getChatMemberCount`, second call within 5 min reuses cache, third call after TTL refreshes (use `mock.module("node:timers", ...)` or manipulate `Date.now()` with `vi.useFakeTimers()` equivalent; bun:test supports `mock` for `Date.now` via `setSystemTime`)
   - Test: `getChatMemberCount` throws → `next` not called for non-allowed users in groups, but the middleware treats the chat as `Infinity` for allowed-user routing (asserts the allowed-user branch still works after a thrown count)
   - Verify: `bun test src/tg/middleware.test.ts` passes
-- [ ] Create `src/tg/user-context.test.ts`. Build a fake `Context` with `me.username`, `from.first_name`, `from.username`, and controllable `msg.entities` / `msg.caption_entities`. Test `prepareUserContent` and `stripBotMention` (the latter is exported; the former is the public surface).
+- [x] Create `src/tg/user-context.test.ts`. Build a fake `Context` with `me.username`, `from.first_name`, `from.username`, and controllable `msg.entities` / `msg.caption_entities`. Test `prepareUserContent` and `stripBotMention` (the latter is exported; the former is the public surface).
   - Test: text message with no entities → returns `"[From: Daniel (@bermudi)]\nhello"` (or similar canonical form)
   - Test: text message with `from.first_name` only (no username) → returns `"[From: Daniel]\nhello"`
   - Test: text message with no `from` → returns `"[From: unknown]\nhello"`
@@ -43,7 +43,7 @@ This phase is independently shippable and may land separately from Phase 2.
   - Test: content blocks (multimodal) → text blocks stripped of mentions, image blocks preserved, sender prefix prepended
   - Test: empty text after stripping → result is just the prefix
   - Verify: `bun test src/tg/user-context.test.ts` passes
-- [ ] Verify the full suite stays green: `bun test` — 667 + new tests, 0 fail
+- [x] Verify the full suite stays green: `bun test` — 667 + new tests, 0 fail
 
 Implements spec requirements:
 - **Allowlist middleware caches chat member counts with TTL** (telegram)

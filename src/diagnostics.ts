@@ -42,6 +42,8 @@ export interface Diagnostics {
   contextTokens: number | null;
   /** Paths of context files (AGENTS.md, skills) loaded into the session. `null` if uninitialized. */
   contextFiles: string[] | null;
+  /** Bound project directory, or `null` if not set. */
+  projectDir: string | null;
 }
 
 /** Inputs for `gatherDiagnostics`. */
@@ -52,6 +54,8 @@ export interface DiagnosticsDeps {
   goblinHome: string;
   /** Override for `Config.modelName` when no runner exists (e.g. session never primed). */
   modelName: string;
+  /** Bound project directory, or `undefined` if not set. */
+  projectDir?: string;
 }
 
 /**
@@ -102,6 +106,7 @@ export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
     runningSubagents: subagentList.filter((s) => s.status === "running").length,
     contextTokens: deps.runner?.contextTokens ?? null,
     contextFiles: deps.runner?.contextFiles ?? null,
+    projectDir: deps.projectDir ?? null,
   };
 }
 
@@ -143,6 +148,7 @@ export function formatDiagnostics(d: Diagnostics): string {
     `Subagents: ${d.activeSubagents} tracked, ${d.runningSubagents} running`,
     `Context: ${fmtNum(d.contextTokens)}`,
     `Context files: ${fmtContextFiles(d.contextFiles)}`,
+    `Project: ${d.projectDir !== null ? d.projectDir : "(none)"}`,
   ].join("\n");
 }
 

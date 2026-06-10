@@ -36,5 +36,5 @@
 - [x] Run the relevant project test command covering config, pi-host, prompt construction, AgentRunner, startup preflight, and onboarding.
 - [x] Manually smoke-test startup with missing `SOUL.md` and confirm the process fails before Telegram polling with an actionable error.
 - [x] Deterministically verify the main runner passes a `DefaultResourceLoader` a prompt containing `SOUL.md` content, sets `noContextFiles: true`, and does not rely on pi implicit context loading.
-- [ ] Manually smoke-test a configured Goblin with `SOUL.md` and sanity-check that the first reply reflects the deployment identity.
-- [ ] Manually smoke-test a project-bound session and verify only exact `projectDir/AGENTS.md` is included as project guidance.
+- [x] Manually smoke-test a configured Goblin with `SOUL.md` and sanity-check that the first reply reflects the deployment identity.
+- [x] Manually smoke-test a project-bound session and verify only exact `projectDir/AGENTS.md` is included as project guidance.

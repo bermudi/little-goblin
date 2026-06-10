@@ -47,6 +47,7 @@ const baseDiagnostics: Diagnostics = {
   runningSubagents: 0,
   contextTokens: null,
   contextFiles: null,
+  projectDir: null,
 };
 
 describe("formatDiagnostics", () => {
@@ -84,6 +85,7 @@ describe("formatDiagnostics", () => {
     expect(out).toContain("Transcript file: unavailable, unavailable lines");
     expect(out).toContain("Context: unavailable");
     expect(out).toContain("Context files: unavailable");
+    expect(out).toContain("Project: (none)");
   });
 
   it("renders empty tool list distinctly from 'unavailable'", () => {
@@ -103,6 +105,16 @@ describe("formatDiagnostics", () => {
   it("renders empty context files list as '(none)'", () => {
     const out = formatDiagnostics({ ...baseDiagnostics, contextFiles: [] });
     expect(out).toContain("Context files: (none)");
+  });
+
+  it("renders project dir when set", () => {
+    const out = formatDiagnostics({ ...baseDiagnostics, projectDir: "/home/daniel/project" });
+    expect(out).toContain("Project: /home/daniel/project");
+  });
+
+  it("renders null project dir as '(none)'", () => {
+    const out = formatDiagnostics({ ...baseDiagnostics, projectDir: null });
+    expect(out).toContain("Project: (none)");
   });
 
   it("formats bytes with KB and MB scaling", () => {
@@ -198,6 +210,18 @@ describe("gatherDiagnostics", () => {
     });
     expect(d.activeSubagents).toBe(4);
     expect(d.runningSubagents).toBe(2);
+  });
+
+  it("passes projectDir through when provided", () => {
+    const d = gatherDiagnostics({
+      session: makeSession("sess000004"),
+      runner: null,
+      subagentRunner: stubSubagentRunner(),
+      goblinHome: tmpDir,
+      modelName: "m",
+      projectDir: "/home/daniel/project",
+    });
+    expect(d.projectDir).toBe("/home/daniel/project");
   });
 
   it("skillsLoaded and contextTokens remain null (best-effort, not exposed by pi)", () => {

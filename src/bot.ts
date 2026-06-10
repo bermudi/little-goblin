@@ -486,6 +486,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
             subagentRunner,
             goblinHome: cfg.goblinHome,
             modelName: cfg.modelName,
+            projectDir: manager.getProjectDir(locator),
           });
           const debugSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
           await ctx.reply(`${diag}${debugSuffix}`);

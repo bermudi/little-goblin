@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import type { Context } from "grammy";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
@@ -49,7 +48,6 @@ export interface DispatchDeps {
 
 export interface DispatchOpts {
   command: string;
-  ctx: Context;
   deps: DispatchDeps;
   rawText: string;
   locator: ChatLocator;

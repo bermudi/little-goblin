@@ -210,6 +210,25 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     return runner;
   }
 
+  /**
+   * Build a per-turn MessageBuffer. One buffer per prompt so message IDs
+   * stay scoped to this turn. Wires the topic-orphan archival hook: if
+   * Telegram reports "topic not found" while we're streaming into a
+   * topic, archive the orphaned memory scope before the error propagates.
+   */
+  function createMessageBuffer(locator: ChatLocator): MessageBuffer {
+    const topicId = locator.topicId;
+    return new MessageBuffer(bot, locator.chatId, topicId, {
+      visibility: cfg.toolVisibility,
+      onTopicNotFound:
+        topicId !== undefined
+          ? async () => {
+              await memoryStore.archiveOrphan(locator.chatId, topicId);
+            }
+          : undefined,
+    });
+  }
+
   const dispatchDeps: DispatchDeps = {
     manager,
     subagentRunner,
@@ -247,7 +266,6 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
       try {
         const result = await handleCancelCapableCommand({
           command,
-          ctx,
           deps: dispatchDeps,
           rawText: rawText ?? "",
           locator,
@@ -303,16 +321,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     // response). One buffer per turn so message IDs are scoped to this prompt.
     // Wire up orphan archival: if Telegram reports "topic not found", archive
     // the orphaned memory scope before propagating the error.
-    const topicId = locator.topicId;
-    const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-      visibility: cfg.toolVisibility,
-      onTopicNotFound:
-        topicId !== undefined
-          ? async () => {
-              await memoryStore.archiveOrphan(locator.chatId, topicId);
-            }
-          : undefined,
-    });
+    const buffer = createMessageBuffer(locator);
 
     try {
       await runner.prompt(prepareUserContent(ctx, text), buffer);
@@ -358,16 +367,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     }
     content.push({ type: "image", data: photo.data, mimeType: photo.mimeType });
 
-    const topicId = locator.topicId;
-    const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-      visibility: cfg.toolVisibility,
-      onTopicNotFound:
-        topicId !== undefined
-          ? async () => {
-              await memoryStore.archiveOrphan(locator.chatId, topicId);
-            }
-          : undefined,
-    });
+    const buffer = createMessageBuffer(locator);
 
     try {
       await runner.prompt(prepareUserContent(ctx, content), buffer);
@@ -439,16 +439,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
         ? `${caption}\n\n[File \`${escapedName}\` saved to project directory.]`
         : `User uploaded \`${escapedName}\` to the project directory.`;
 
-      const topicId = locator.topicId;
-      const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-        visibility: cfg.toolVisibility,
-        onTopicNotFound:
-          topicId !== undefined
-            ? async () => {
-                await memoryStore.archiveOrphan(locator.chatId, topicId);
-              }
-            : undefined,
-      });
+      const buffer = createMessageBuffer(locator);
 
       try {
         await runner.prompt(prepareUserContent(ctx, promptText), buffer);
@@ -463,16 +454,8 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     // isn't completely lost. If there's no caption either, tell them.
     const fallbackCaption = ctx.msg?.caption;
     if (fallbackCaption) {
-      const topicId = locator.topicId;
-      const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-        visibility: cfg.toolVisibility,
-        onTopicNotFound:
-          topicId !== undefined
-            ? async () => {
-                await memoryStore.archiveOrphan(locator.chatId, topicId);
-              }
-            : undefined,
-      });
+      const buffer = createMessageBuffer(locator);
+
       try {
         await runner.prompt(prepareUserContent(ctx, fallbackCaption), buffer);
       } catch (err) {
@@ -532,16 +515,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
       const escapedName = safeName.replace(/`/g, "'");
       const promptText = `User sent a voice message: \`${escapedName}\` saved to project directory.`;
 
-      const topicId = locator.topicId;
-      const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-        visibility: cfg.toolVisibility,
-        onTopicNotFound:
-          topicId !== undefined
-            ? async () => {
-                await memoryStore.archiveOrphan(locator.chatId, topicId);
-              }
-            : undefined,
-      });
+      const buffer = createMessageBuffer(locator);
 
       try {
         await runner.prompt(prepareUserContent(ctx, promptText), buffer);
@@ -615,16 +589,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
         ? `${caption}\n\n[Audio file \`${escapedName}\` saved to project directory.]`
         : `User uploaded audio \`${escapedName}\` to the project directory.`;
 
-      const topicId = locator.topicId;
-      const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-        visibility: cfg.toolVisibility,
-        onTopicNotFound:
-          topicId !== undefined
-            ? async () => {
-                await memoryStore.archiveOrphan(locator.chatId, topicId);
-              }
-            : undefined,
-      });
+      const buffer = createMessageBuffer(locator);
 
       try {
         await runner.prompt(prepareUserContent(ctx, promptText), buffer);
@@ -637,16 +602,8 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     log.debug("dropping audio: no projectDir");
     const fallbackCaption = ctx.msg?.caption;
     if (fallbackCaption) {
-      const topicId = locator.topicId;
-      const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-        visibility: cfg.toolVisibility,
-        onTopicNotFound:
-          topicId !== undefined
-            ? async () => {
-                await memoryStore.archiveOrphan(locator.chatId, topicId);
-              }
-            : undefined,
-      });
+      const buffer = createMessageBuffer(locator);
+
       try {
         await runner.prompt(prepareUserContent(ctx, fallbackCaption), buffer);
       } catch (err) {

@@ -34,7 +34,7 @@ Architecture lives in `specs/` (litespec). This file is just guardrails.
 
 ## Temporary Notes
 
-[src/bot.ts] is approaching its limit at 291 lines. The single message:text handler is now ~225 lines with a big switch and a lot of nested closures. Each command's body is doing wiring (lookup runner, archive, dispose, delete from map, format reply) that smells dispatchable. I'd extract a handleCommand(command, ctx, deps): Promise<boolean> so bot.ts becomes "wire middleware, route to handler, error-handle." Don't refactor for its own sake, but next time you add a command you'll feel the friction.
+[src/bot.ts] is 704 lines. Phase 2 took the command switch out of `message:text` via `src/commands/dispatch.ts`, but the four file-type handlers (`photo`, `document`, `voice`, `audio`) are still copy-pasted around the `locator → session → runner → download → prompt` shape with projectDir and orphan-archival wiring. `createMessageBuffer(locator)` already collapses the per-turn buffer construction. Next seam: a single `handleFileMessage(ctx, { kind, ... })` that takes the file-download + save + prompt tail, or at minimum a `tryHandleFilePrompt`. Don't extract for its own sake — wait until adding a 5th file-type handler starts to feel like copy-paste.
 
 ## Memory
 

@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Context } from "grammy";
 import type { Config } from "../config.ts";
 import type { CascadeResult } from "../interrupt.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
@@ -90,7 +89,6 @@ async function dispatch(args: {
   return handleCancelCapableCommand({
     command: args.command,
     rawText: args.rawText ?? args.command,
-    ctx: {} as Context,
     deps: harness.deps,
     locator: harness.locator,
     isSupergroup: false,

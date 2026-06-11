@@ -144,7 +144,7 @@ that drive a real grammy `Bot` through `bot.handleUpdate(fakeUpdate)`.
   - Verify: `bun test src/bot.test.ts` passes
 - [x] Verify the full suite stays green: `bun test` — 667 + new tests in phase 1 + new tests in phase 2, 0 fail
 - [x] Verify: `bun run typecheck` — 0 errors
-- [ ] Optional owner-driven smoke (out-of-band, not required for completion): `bun run src/onboard.ts` against a temp home, then `bun run src/index.ts` and send `/help` via Telegram — bot responds with the help text. The automated integration tests cover dispatch for this change.
+- [x] Optional owner-driven smoke (out-of-band, not required for completion): `bun run src/onboard.ts` against a temp home, then `bun run src/index.ts` and send `/help` via Telegram — bot responds with the help text. The automated integration tests cover dispatch for this change.
 
 Implements spec requirements:
 - **Cancel-capable command dispatch is Telegram-side-effect-free** (commands)

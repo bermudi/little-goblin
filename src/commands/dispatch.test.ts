@@ -10,7 +10,7 @@ import type { SubagentRunner } from "../subagents/mod.ts";
 import { cancelReply, formatCascadeTimeoutSuffix } from "./cancel.ts";
 import { HELP_REPLY } from "./help.ts";
 import { SUBAGENT_STUB_REPLY } from "./subagents.ts";
-import { handleCancelCapableCommand, type DispatchDeps, type DispatchResult } from "./dispatch.ts";
+import { handleCancelCapableCommand, type DispatchDeps, type DispatchOpts, type DispatchResult } from "./dispatch.ts";
 
 const dirs: string[] = [];
 
@@ -255,6 +255,22 @@ describe("handleCancelCapableCommand", () => {
 
   it("returns fallthrough for unknown commands", async () => {
     expect(await dispatch({ command: "/foo" })).toEqual({ kind: "fallthrough" });
+  });
+
+  it("DispatchOpts has no ctx field (regression guard)", () => {
+    // If `ctx` ever sneaks back into DispatchOpts, this object literal
+    // fails TypeScript's excess-property check at compile time, and
+    // the runtime check confirms the field is not actually present.
+    const opts: DispatchOpts = {
+      command: "/help",
+      rawText: "/help",
+      deps: makeHarness().deps,
+      locator: { chatId: 1 },
+      isSupergroup: false,
+      session: null,
+      existingRunner: null,
+    };
+    expect("ctx" in opts).toBe(false);
   });
 
   it("appends cascade timeout suffixes to cancel-capable replies", async () => {

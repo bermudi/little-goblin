@@ -156,6 +156,20 @@ async function downloadPhoto(
 }
 
 /**
+ * Reply to the user that they need an active session, and log the drop.
+ * Only pings the user in DMs — in topics, we silently drop to avoid
+ * spamming every topic in a forum with the same prompt. Always logs.
+ */
+export function replyNoActiveSession(ctx: Context, locator: ChatLocator, kind: string): void {
+  if (locator.topicId === undefined) {
+    ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
+      log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
+    });
+  }
+  log.debug(`dropping ${kind}: no session`, { chatId: locator.chatId, topicId: locator.topicId });
+}
+
+/**
  * Build the grammy Bot with middleware and handlers wired up.
  * Exported so main can start the bot.
  */
@@ -183,6 +197,11 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
 
   function createRunner(session: SessionState, locator: ChatLocator, ctx: Context): AgentRunner {
     const chatId = locator.chatId;
+    // Use the raw message_thread_id (NOT locator.topicId) so that
+    // "General" topics in a forum still get a thread-scoped β-tool set.
+    // locator.topicId filters out non-topic messages; that's the right
+    // call for memory scoping (see createMessageBuffer) but wrong for
+    // Telegram API calls, which need the actual thread id.
     const topicId = ctx.message?.message_thread_id;
     const betaTools = getBetaTools(bot, chatId, topicId);
     const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
@@ -217,6 +236,10 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
    * topic, archive the orphaned memory scope before the error propagates.
    */
   function createMessageBuffer(locator: ChatLocator): MessageBuffer {
+    // Use locator.topicId (NOT ctx.message?.message_thread_id) so orphan
+    // archival only fires for "real" forum topics. "General" topics are
+    // DM-like and must not archive a memory scope when their thread
+    // errors out. See createRunner for the inverse trade-off.
     const topicId = locator.topicId;
     return new MessageBuffer(bot, locator.chatId, topicId, {
       visibility: cfg.toolVisibility,
@@ -302,13 +325,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     }
 
     if (!session) {
-      // DM without active session - prompt user to create one
-      if (locator.topicId === undefined) {
-        ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
-          log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
-        });
-      }
-      log.debug("dropping message: no session", { chatId: locator.chatId, topicId: locator.topicId });
+      replyNoActiveSession(ctx, locator, "message");
       return;
     }
 
@@ -341,12 +358,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const isSupergroup = ctx.chat?.type === "supergroup";
     const session = manager.resolve(locator, { isSupergroup });
     if (!session) {
-      if (locator.topicId === undefined) {
-        ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
-          log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
-        });
-      }
-      log.debug("dropping photo: no session", { chatId: locator.chatId, topicId: locator.topicId });
+      replyNoActiveSession(ctx, locator, "photo");
       return;
     }
 
@@ -392,12 +404,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const isSupergroup = ctx.chat?.type === "supergroup";
     const session = manager.resolve(locator, { isSupergroup });
     if (!session) {
-      if (locator.topicId === undefined) {
-        ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
-          log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
-        });
-      }
-      log.debug("dropping document: no session", { chatId: locator.chatId, topicId: locator.topicId });
+      replyNoActiveSession(ctx, locator, "document");
       return;
     }
 
@@ -477,12 +484,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const isSupergroup = ctx.chat?.type === "supergroup";
     const session = manager.resolve(locator, { isSupergroup });
     if (!session) {
-      if (locator.topicId === undefined) {
-        ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
-          log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
-        });
-      }
-      log.debug("dropping voice: no session", { chatId: locator.chatId, topicId: locator.topicId });
+      replyNoActiveSession(ctx, locator, "voice");
       return;
     }
 
@@ -540,12 +542,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const isSupergroup = ctx.chat?.type === "supergroup";
     const session = manager.resolve(locator, { isSupergroup });
     if (!session) {
-      if (locator.topicId === undefined) {
-        ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
-          log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
-        });
-      }
-      log.debug("dropping audio: no session", { chatId: locator.chatId, topicId: locator.topicId });
+      replyNoActiveSession(ctx, locator, "audio");
       return;
     }
 

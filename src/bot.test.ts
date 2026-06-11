@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Context } from "grammy";
 import type { Config } from "./config.ts";
 import type { AgentRunner } from "./agent/mod.ts";
+import { replyNoActiveSession } from "./bot.ts";
 
 const runnerInstances: MockAgentRunner[] = [];
 
@@ -170,6 +172,22 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("replyNoActiveSession", () => {
+  it("replies in DMs without a session", () => {
+    const reply = mock(async () => ({}));
+    const ctx = { reply } as unknown as Context;
+    replyNoActiveSession(ctx, { chatId: 1 }, "text");
+    expect(reply).toHaveBeenCalledWith("No active session. Use /new to start one.");
+  });
+
+  it("does not reply in topics without a session", () => {
+    const reply = mock(async () => ({}));
+    const ctx = { reply } as unknown as Context;
+    replyNoActiveSession(ctx, { chatId: 1, topicId: 42 }, "text");
+    expect(reply).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildBot integration", () => {

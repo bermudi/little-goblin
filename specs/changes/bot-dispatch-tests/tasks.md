@@ -56,7 +56,7 @@ a Telegram-side-effect-free function in `src/commands/dispatch.ts`, refactor `bo
 `message:text` handler to call it, then add high-fidelity integration tests
 that drive a real grammy `Bot` through `bot.handleUpdate(fakeUpdate)`.
 
-- [ ] Create `src/commands/dispatch.ts` exporting:
+- [x] Create `src/commands/dispatch.ts` exporting:
   - `type SideEffect = { kind: "runner-created", session: SessionState, locator: ChatLocator } | { kind: "runner-disposed", sessionId: string } | { kind: "noop" }`
   - `type DispatchResult = { kind: "replied", reply: string, sideEffects: SideEffect[] } | { kind: "fallthrough" }`
   - `type DispatchDeps = { manager: SessionManager; subagentRunner: SubagentRunner; cfg: Config; tryResolveModel: (...) => ResolvedModel | undefined; interruptAndCascade: typeof interruptAndCascade }` — **no** `runnerMap` and **no** `createRunner`; the dispatch returns runner side-effect descriptors, and the handler in `bot.ts` calls the real `createRunner` closure / mutates the runner map when applying them.
@@ -71,7 +71,7 @@ that drive a real grammy `Bot` through `bot.handleUpdate(fakeUpdate)`.
     - All `log.error(...)` calls stay (the dispatch is allowed to log)
     - Default case returns `{ kind: "fallthrough" }`
   - Cascade is invoked as `await deps.interruptAndCascade(opts.existingRunner, deps.subagentRunner, DEFAULT_CASCADE_TIMEOUT_MS, opts.session?.id ?? null)` and the result is held for the cascade-timeout suffix in the reply
-- [ ] Create `src/commands/dispatch.test.ts` with unit tests (no real `Bot`, no `bot.api`). Build a `DispatchDeps` with a real `SessionManager` (via `mkdtempSync` like the existing `integration.test.ts`), a fake `SubagentRunner` (cast through `unknown`), a stubbed `tryResolveModel`, and a stubbed `interruptAndCascade` that returns a deterministic `CascadeResult`.
+- [x] Create `src/commands/dispatch.test.ts` with unit tests (no real `Bot`, no `bot.api`). Build a `DispatchDeps` with a real `SessionManager` (via `mkdtempSync` like the existing `integration.test.ts`), a fake `SubagentRunner` (cast through `unknown`), a stubbed `tryResolveModel`, and a stubbed `interruptAndCascade` that returns a deterministic `CascadeResult`.
   - Test: `/cancel` with active session → result `kind: "replied"`, reply matches `cancelReply({...})` output, no side effects
   - Test: `/cancel` with no session → reply still produced (legacy mode cascade)
   - Test: `/new` with prior session → result contains `runner-disposed` for prior id and `runner-created` for new session
@@ -98,7 +98,7 @@ that drive a real grammy `Bot` through `bot.handleUpdate(fakeUpdate)`.
   - Test: unknown command (e.g. `/foo`) → result `kind: "fallthrough"`, no reply, no side effects
   - Test: cascade timeout surfaces in the reply (pass a `CascadeResult` with `timedOutSubagents: 1` from the stubbed `interruptAndCascade` and assert the reply contains the timeout suffix from `formatCascadeTimeoutSuffix`)
   - Verify: `bun test src/commands/dispatch.test.ts` passes
-- [ ] Refactor `src/bot.ts`'s `message:text` handler:
+- [x] Refactor `src/bot.ts`'s `message:text` handler:
   - Lift `tryResolveModel` (existing closure) to be reachable as a `Deps` field. `createRunner` stays a closure inside `buildBot` (not in `Deps`) — the handler calls it when applying `runner-created` side effects.
   - Build a `deps: DispatchDeps` object once inside `buildBot` and capture it in the `message:text` handler closure.
   - **Resolve session + existingRunner ONCE at the top** of the handler, before the command parse:
@@ -131,7 +131,7 @@ that drive a real grammy `Bot` through `bot.handleUpdate(fakeUpdate)`.
   - Keep all existing error-handling around the dispatch call (try/catch) — if the dispatch itself throws, log and reply "Something went wrong. Please try again."
   - Verify: `bun test` — 667 + new dispatch tests still pass, 0 fail
   - Verify: `bun run typecheck` — no new TS errors
-- [ ] Create `src/bot.test.ts`. Build a `MockBotApi` with mocks for the Telegram API surface used by the selected scenarios (`getFile`, `getChatMemberCount`, `sendMessage`, `editMessageText`, `sendChatAction`, and any media send methods required by runner tools). Build a real `Bot` with `botInfo: { id: 1, username: "goblinbot", is_bot: true, first_name: "goblin" }`. Call `buildBot(cfg)` and replace `bot.api` with the mock after construction. Use `bot.handleUpdate(fakeUpdate)` to drive the first-pass scenarios.
+- [x] Create `src/bot.test.ts`. Build a `MockBotApi` with mocks for the Telegram API surface used by the selected scenarios (`getFile`, `getChatMemberCount`, `sendMessage`, `editMessageText`, `sendChatAction`, and any media send methods required by runner tools). Build a real `Bot` with `botInfo: { id: 1, username: "goblinbot", is_bot: true, first_name: "goblin" }`. Call `buildBot(cfg)` and replace `bot.api` with the mock after construction. Use `bot.handleUpdate(fakeUpdate)` to drive the first-pass scenarios.
   - Test: `/new` through `bot.handleUpdate` creates a session and replies
   - Test: `/archive` through `bot.handleUpdate` disposes/removes the runner and replies
   - Test: `/project <path>` through `bot.handleUpdate` changes project dir and forces runner rebuild/dispose
@@ -142,8 +142,8 @@ that drive a real grammy `Bot` through `bot.handleUpdate(fakeUpdate)`.
   - Test: `/resume <id>` where the bound session IS the resumed session (no-op resume) → `agentRunners` map is replaced: old `AgentRunner.dispose()` is called, new `AgentRunner` is in the map. Pins the FIXED behavior (the 2-line change above). Pre-fix this would have leaked the old runner; post-fix it doesn't.
   - Test: allowlist drops non-allowed user in DM → `ctx.reply` not called, no command runs
   - Verify: `bun test src/bot.test.ts` passes
-- [ ] Verify the full suite stays green: `bun test` — 667 + new tests in phase 1 + new tests in phase 2, 0 fail
-- [ ] Verify: `bun run typecheck` — 0 errors
+- [x] Verify the full suite stays green: `bun test` — 667 + new tests in phase 1 + new tests in phase 2, 0 fail
+- [x] Verify: `bun run typecheck` — 0 errors
 - [ ] Optional owner-driven smoke (out-of-band, not required for completion): `bun run src/onboard.ts` against a temp home, then `bun run src/index.ts` and send `/help` via Telegram — bot responds with the help text. The automated integration tests cover dispatch for this change.
 
 Implements spec requirements:

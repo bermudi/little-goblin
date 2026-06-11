@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { Bot } from "grammy";
@@ -18,30 +17,13 @@ import {
 import { MemoryStore } from "./memory/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "./sessions/mod.ts";
-import { sessionDir } from "./sessions/paths.ts";
 import { AgentRunner, ModelNotCapableError } from "./agent/mod.ts";
 import { resolveModel, type ResolvedModel } from "./agent/models.ts";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
-import { interruptAndCascade, DEFAULT_CASCADE_TIMEOUT_MS, type CascadeResult } from "./interrupt.ts";
-import { cancelReply, formatCascadeTimeoutSuffix } from "./commands/cancel.ts";
-import { executeNew } from "./commands/new.ts";
-import { executeArchive } from "./commands/archive.ts";
-import { executeProject } from "./commands/project.ts";
-import { executeModel } from "./commands/model.ts";
-import { executeCompact } from "./commands/compact.ts";
-import { executeName } from "./commands/name.ts";
-import { executeResume } from "./commands/resume.ts";
-import { executeThink, ALL_LEVELS } from "./commands/think.ts";
+import { interruptAndCascade } from "./interrupt.ts";
 import { parseCommand } from "./commands/parse.ts";
-import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./commands/subagents.ts";
-import { HELP_REPLY } from "./commands/help.ts";
-import { generateDiagnostics } from "./diagnostics.ts";
-
-/** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
-const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact", "/resume", "/name", "/think"]);
+import { handleCancelCapableCommand, type DispatchDeps } from "./commands/dispatch.ts";
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -177,7 +159,11 @@ async function downloadPhoto(
  * Build the grammy Bot with middleware and handlers wired up.
  * Exported so main can start the bot.
  */
-export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner> } {
+interface BuildBotOptions {
+  createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
+}
+
+export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner> } {
   const bot = new Bot(cfg.botToken);
   const manager = new SessionManager(cfg);
   const runners = new Map<string, AgentRunner>();
@@ -199,7 +185,7 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     const chatId = locator.chatId;
     const topicId = ctx.message?.message_thread_id;
     const betaTools = getBetaTools(bot, chatId, topicId);
-    return new AgentRunner({
+    const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
       cfg,
       sessionId: session.id,
       locator,
@@ -210,7 +196,8 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
       modelName: session.modelName,
       thinkingLevel: session.thinkingLevel,
       pendingProjectNotice: manager.consumeProjectNotice(locator),
-    });
+    };
+    return options.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
   }
 
   function getOrCreateRunner(session: SessionState, locator: ChatLocator, ctx: Context): AgentRunner {
@@ -222,6 +209,14 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     log.debug("created runner for session", { sessionId: session.id });
     return runner;
   }
+
+  const dispatchDeps: DispatchDeps = {
+    manager,
+    subagentRunner,
+    cfg,
+    tryResolveModel,
+    interruptAndCascade,
+  };
 
   // Security layer: drop messages from non-allowed users
   bot.use(buildAllowlistMiddleware(cfg));
@@ -249,348 +244,42 @@ export function buildBot(cfg: Config): { bot: Bot; manager: SessionManager; suba
     const rawText = ctx.msg?.text;
     const command = parseCommand(rawText);
     if (command !== null) {
-
-      // Cancel-capable commands abort the active stream and cascade-cancel
-      // every live subagent before executing their own logic. The cascade
-      // returns a summary so /cancel can report honestly (including any
-      // timeouts) instead of relying on a stale pre-interrupt snapshot.
-      let cascade: CascadeResult | null = null;
-      if (CANCEL_CAPABLE_COMMANDS.has(command)) {
-        cascade = await interruptAndCascade(
+      try {
+        const result = await handleCancelCapableCommand({
+          command,
+          ctx,
+          deps: dispatchDeps,
+          rawText: rawText ?? "",
+          locator,
+          isSupergroup,
+          session,
           existingRunner,
-          subagentRunner,
-          DEFAULT_CASCADE_TIMEOUT_MS,
-          session?.id ?? null,
-        );
-      }
-
-      switch (command) {
-        case "/cancel":
-          // S10: If user has no session (session === null), cascade targets
-          // ALL running subagents process-wide (legacy mode). This is by design:
-          // "cancel" means "stop everything" in the user's mental model.
-          await ctx.reply(
-            cancelReply({
-              hasSession: session !== null,
-              cascade: cascade ?? {
-                attemptedMain: false,
-                attemptedSubagents: 0,
-                timedOutMain: false,
-                timedOutSubagents: 0,
-              },
-              cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
-            }),
-          );
-          return;
-        case "/new": {
-          const isSupergroupChat = ctx.chat?.type === "supergroup";
-          // /new is a universal "switch this chat surface to a fresh
-          // session" command: create a fresh session bound to the same
-          // (chat, topic) / supergroup / DM slot. The prior session is
-          // left on disk as an unbound resumable session; /archive is the
-          // explicit "put this away" command.
-          const priorSession = session;
-          let result;
-          try {
-            result = executeNew({
-              createSession: () =>
-                manager.createForChat(locator, { isSupergroup: isSupergroupChat }),
-            });
-          } catch (err) {
-            log.error("new session creation failed", {
-              error: String(err),
-              sessionId: priorSession?.id,
-            });
-            await ctx.reply("Failed to reset session. Please try again.");
-            return;
-          }
-          if (priorSession) {
-            const prior = runners.get(priorSession.id);
-            if (prior) {
-              try {
-                prior.dispose();
-              } finally {
-                runners.delete(priorSession.id);
-              }
-            }
-          }
-          runners.set(result.session.id, createRunner(result.session, locator, ctx));
-          log.debug("created runner for /new session", {
-            sessionId: result.session.id,
-            priorSessionId: priorSession?.id,
-          });
-          // Surface cascade timeouts honestly — the new session is ready
-          // but the user should know if the old stream/subagents stalled.
-          const suffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
-          await ctx.reply(`${result.reply}${suffix}`);
-          return;
-        }
-        case "/archive": {
-          let archiveResult;
-          try {
-            archiveResult = executeArchive({
-              hasSession: session !== null,
-              sessionExists: session !== null && existsSync(sessionDir(cfg.goblinHome, session.id)),
-              archive: () => {
-                // session is guaranteed non-null in this branch (sessionExists implies hasSession)
-                manager.archive(session!.id);
-                // Dispose the runner so its pi AgentSession releases its
-                // subscription before we drop the map entry.
-                const prior = runners.get(session!.id);
-                if (prior) {
-                  try {
-                    prior.dispose();
-                  } finally {
-                    runners.delete(session!.id);
-                  }
-                } else {
-                  runners.delete(session!.id);
-                }
-              },
-            });
-          } catch (err) {
-            log.error("archive failed", {
-              error: String(err),
-              sessionId: session?.id,
-            });
-            await ctx.reply("Failed to archive session. Please try again.");
-            return;
-          }
-          // Topic UI is user-owned (decision 0002 topic-ui-is-user-owned):
-          // /archive moves the session and clears the binding. It MUST NOT
-          // rename, close, or otherwise mutate the topic surface. The next
-          // user message in this topic will auto-create a fresh session.
-          const archiveSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
-          await ctx.reply(`${archiveResult.reply}${archiveSuffix}`);
-          return;
-        }
-        case "/project": {
-          let projectResult;
-          try {
-            projectResult = executeProject({
-              hasSession: session !== null,
-              rawText: rawText ?? "",
-              setProjectDir: (dir) => {
-                if (!session) return;
-                manager.bindProjectDir(locator, dir);
-                // Dispose the runner so next message recreates it with the new directory.
-                const prior = runners.get(session.id);
-                if (prior) {
-                  try {
-                    prior.dispose();
-                  } finally {
-                    runners.delete(session.id);
-                  }
-                }
-              },
-            });
-          } catch (err) {
-            log.error("project failed", {
-              error: String(err),
-              sessionId: session?.id,
-            });
-            await ctx.reply("Failed to set project directory. Please try again.");
-            return;
-          }
-          const projectSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
-          await ctx.reply(`${projectResult.reply}${projectSuffix}`);
-          return;
-        }
-        case "/model": {
-          let modelResult;
-          try {
-            const currentModelResolved = tryResolveModel(cfg, session, existingRunner ?? undefined);
-            modelResult = executeModel({
-              hasSession: session !== null,
-              rawText: rawText ?? "",
-              favorites: cfg.favorites,
-              cfg,
-              currentModelName: existingRunner?.modelName ?? session?.modelName ?? cfg.modelName,
-              currentThinkingLevel: session?.thinkingLevel,
-              currentResolvedModel: currentModelResolved,
-              setModelName: (name) => {
-                if (!session) return;
-                manager.setModelName(session.id, name);
-                const prior = runners.get(session.id);
-                if (prior) {
-                  try {
-                    prior.dispose();
-                  } finally {
-                    runners.delete(session.id);
-                  }
-                }
-              },
-              onThinkingLevelClamped: (newLevel) => {
-                if (!session) return;
-                manager.setThinkingLevel(session.id, newLevel);
-              },
-            });
-          } catch (err) {
-            log.error("model failed", {
-              error: String(err),
-              sessionId: session?.id,
-            });
-            await ctx.reply("Failed to switch model. Please try again.");
-            return;
-          }
-          const modelSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
-          await ctx.reply(`${modelResult.reply}${modelSuffix}`);
-          return;
-        }
-        case "/think": {
-          let thinkResult;
-          try {
-            const currentModelResolved = tryResolveModel(cfg, session, existingRunner ?? undefined);
-            const supportedLevels = currentModelResolved
-              ? (getSupportedThinkingLevels(currentModelResolved.model) as readonly ThinkingLevel[])
-              : ALL_LEVELS;
-            thinkResult = executeThink({
-              hasSession: session !== null,
-              rawText: rawText ?? "",
-              currentLevel:
-                session?.thinkingLevel ?? currentModelResolved?.thinkingLevel ?? "medium",
-              supportedLevels,
-              setThinkingLevel: (level) => {
-                if (!session) return;
-                manager.setThinkingLevel(session.id, level);
-                const prior = runners.get(session.id);
-                if (prior) {
-                  try {
-                    prior.setThinkingLevel(level);
-                  } catch {
-                    /* best-effort */
-                  }
-                }
-              },
-            });
-          } catch (err) {
-            log.error("think failed", {
-              error: String(err),
-              sessionId: session?.id,
-            });
-            await ctx.reply("Failed to set thinking level. Please try again.");
-            return;
-          }
-          const thinkSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
-          await ctx.reply(`${thinkResult.reply}${thinkSuffix}`);
-          return;
-        }
-        case "/debug": {
-          if (!session) {
-            await ctx.reply("No active session.");
-            return;
-          }
-          const diag = generateDiagnostics({
-            session,
-            runner: existingRunner,
-            subagentRunner,
-            goblinHome: cfg.goblinHome,
-            modelName: cfg.modelName,
-            projectDir: manager.getProjectDir(locator),
-          });
-          const debugSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
-          await ctx.reply(`${diag}${debugSuffix}`);
-          return;
-        }
-        case "/compact": {
-          let compactResult;
-          try {
-            compactResult = await executeCompact({
-              hasSession: session !== null,
-              rawText: rawText ?? "",
-              runner: existingRunner,
-            });
-          } catch (err) {
-            log.error("compact failed", {
-              error: String(err),
-              sessionId: session?.id,
-            });
-            await ctx.reply("Failed to compact session. Please try again.");
-            return;
-          }
-          const compactSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
-          await ctx.reply(`${compactResult.reply}${compactSuffix}`);
-          return;
-        }
-        case "/name": {
-          let nameResult;
-          try {
-            nameResult = executeName({
-              hasSession: session !== null,
-              rawText: rawText ?? "",
-              session,
-              setTitle: (title) => {
-                if (!session) return;
-                manager.setTitle(session.id, title);
-              },
-            });
-          } catch (err) {
-            log.error("name failed", {
-              error: String(err),
-              sessionId: session?.id,
-            });
-            await ctx.reply("Failed to name session. Please try again.");
-            return;
-          }
-          const nameSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
-          await ctx.reply(`${nameResult.reply}${nameSuffix}`);
-          return;
-        }
-        case "/resume": {
-          let resumeResult;
-          try {
-            resumeResult = executeResume({
-              rawText: rawText ?? "",
-              sessions: manager.list(),
-              bindSession: (sessionId) => manager.bindExistingToChat(sessionId, locator, { isSupergroup }),
-            });
-          } catch (err) {
-            log.error("resume failed", {
-              error: String(err),
-              sessionId: session?.id,
-            });
-            await ctx.reply("Failed to resume session. Please try again.");
-            return;
-          }
-          if (resumeResult.kind === "resumed") {
-            if (session && session.id !== resumeResult.session.id) {
-              const prior = runners.get(session.id);
+        });
+        if (result.kind !== "fallthrough") {
+          for (const effect of result.sideEffects) {
+            if (effect.kind === "runner-created") {
+              runners.set(effect.session.id, createRunner(effect.session, effect.locator, ctx));
+              log.debug("created runner", { sessionId: effect.session.id });
+            } else if (effect.kind === "runner-disposed") {
+              const prior = runners.get(effect.sessionId);
               if (prior) {
                 try {
                   prior.dispose();
                 } finally {
-                  runners.delete(session.id);
+                  runners.delete(effect.sessionId);
                 }
+              } else {
+                runners.delete(effect.sessionId);
               }
             }
-            runners.set(resumeResult.session.id, createRunner(resumeResult.session, locator, ctx));
-            log.debug("created runner for /resume session", { sessionId: resumeResult.session.id });
           }
-          const resumeSuffix = cascade ? formatCascadeTimeoutSuffix(cascade, DEFAULT_CASCADE_TIMEOUT_MS) : "";
-          await ctx.reply(`${resumeResult.reply}${resumeSuffix}`);
+          await ctx.reply(result.reply);
           return;
         }
-        case "/subagents":
-          await ctx.reply(SUBAGENT_STUB_REPLY);
-          return;
-        case "/cancel_subagent": {
-          const id = parseSubagentId(rawText ?? "");
-          log.debug("/cancel_subagent stub invoked", { id });
-          await ctx.reply(SUBAGENT_STUB_REPLY);
-          return;
-        }
-        case "/revive": {
-          const id = parseSubagentId(rawText ?? "");
-          log.debug("/revive stub invoked", { id });
-          await ctx.reply(SUBAGENT_STUB_REPLY);
-          return;
-        }
-        case "/help":
-          await ctx.reply(HELP_REPLY);
-          return;
-        default:
-          // Unknown /command — fall through to normal agent routing
-          break;
+      } catch (err) {
+        log.error("command dispatch failed", { error: String(err), command, sessionId: session?.id });
+        await ctx.reply("Something went wrong. Please try again.");
+        return;
       }
     }
 

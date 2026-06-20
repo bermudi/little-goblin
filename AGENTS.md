@@ -34,8 +34,6 @@ Architecture lives in `specs/` (litespec). This file is just guardrails.
 
 ## Temporary Notes
 
-[src/bot.ts] is 704 lines. Phase 2 took the command switch out of `message:text` via `src/commands/dispatch.ts`, but the four file-type handlers (`photo`, `document`, `voice`, `audio`) are still copy-pasted around the `locator → session → runner → download → prompt` shape with projectDir and orphan-archival wiring. `createMessageBuffer(locator)` already collapses the per-turn buffer construction. Next seam: a single `handleFileMessage(ctx, { kind, ... })` that takes the file-download + save + prompt tail, or at minimum a `tryHandleFilePrompt`. Don't extract for its own sake — wait until adding a 5th file-type handler starts to feel like copy-paste.
-
 ## Memory
 
 Curated, agent-controlled persistent memory lives at `$GOBLIN_HOME/memory/`:

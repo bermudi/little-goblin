@@ -151,7 +151,7 @@ function photoUpdate(caption = "look") {
   } as const;
 }
 
-function documentUpdate(fileName: string) {
+function documentUpdate(fileName: string, caption?: string) {
   return {
     update_id: 3,
     message: {
@@ -160,6 +160,34 @@ function documentUpdate(fileName: string) {
       chat: { id: 1, type: "private", first_name: "Daniel" },
       from: { id: 1, is_bot: false, first_name: "Daniel", username: "bermudi" },
       document: { file_id: "doc", file_unique_id: "d", file_name: fileName },
+      caption,
+    },
+  } as const;
+}
+
+function voiceUpdate(mimeType = "audio/ogg") {
+  return {
+    update_id: 5,
+    message: {
+      message_id: 5,
+      date: 1,
+      chat: { id: 1, type: "private", first_name: "Daniel" },
+      from: { id: 1, is_bot: false, first_name: "Daniel", username: "bermudi" },
+      voice: { file_id: "voice", file_unique_id: "v", duration: 1, mime_type: mimeType },
+    },
+  } as const;
+}
+
+function audioUpdate(fileName: string, caption?: string) {
+  return {
+    update_id: 6,
+    message: {
+      message_id: 6,
+      date: 1,
+      chat: { id: 1, type: "private", first_name: "Daniel" },
+      from: { id: 1, is_bot: false, first_name: "Daniel", username: "bermudi" },
+      audio: { file_id: "audio", file_unique_id: "a", duration: 1, file_name: fileName },
+      caption,
     },
   } as const;
 }
@@ -246,6 +274,32 @@ describe("buildBot integration", () => {
     expect(content[2]?.type).toBe("image");
   });
 
+  it("document messages save files and prompt the runner", async () => {
+    const built = await makeBot();
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } })) as unknown as typeof fetch;
+    await built.bot.handleUpdate(textUpdate("/new"));
+    await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
+
+    await built.bot.handleUpdate(documentUpdate("notes.txt", "please inspect") as never);
+
+    expect(built.api.api.getFile).toHaveBeenCalledWith("doc");
+    expect(existsSync(join(built.cfg.goblinHome, "notes.txt"))).toBe(true);
+    expect(built.api.sent.at(-1)).toBe("Saved notes.txt.");
+    const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
+    expect(prompt).toBe("[From: Daniel (@bermudi)]\nplease inspect\n\n[File `notes.txt` saved to project directory.]");
+  });
+
+  it("document messages without projectDir forward captions", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+
+    await built.bot.handleUpdate(documentUpdate("notes.txt", "caption only") as never);
+
+    expect(built.api.api.getFile).not.toHaveBeenCalled();
+    const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
+    expect(prompt).toBe("[From: Daniel (@bermudi)]\ncaption only");
+  });
+
   it("document messages reject unsafe filenames", async () => {
     const built = await makeBot();
     globalThis.fetch = mock(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } })) as unknown as typeof fetch;
@@ -255,6 +309,39 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(documentUpdate(".") as never);
 
     expect(built.api.sent.at(-1)).toBe("Rejected: unsafe filename.");
+  });
+
+  it("voice messages save generated files and prompt the runner", async () => {
+    const built = await makeBot();
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } })) as unknown as typeof fetch;
+    await built.bot.handleUpdate(textUpdate("/new"));
+    await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
+
+    await built.bot.handleUpdate(voiceUpdate() as never);
+
+    expect(built.api.api.getFile).toHaveBeenCalledWith("voice");
+    const saved = built.api.sent.at(-1)!;
+    expect(saved.startsWith("Saved voice-")).toBe(true);
+    expect(saved.endsWith(".oga.")).toBe(true);
+    const safeName = saved.slice("Saved ".length, -1);
+    expect(existsSync(join(built.cfg.goblinHome, safeName))).toBe(true);
+    const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
+    expect(prompt).toContain(`User sent a voice message: \`${safeName}\` saved to project directory.`);
+  });
+
+  it("audio messages save files and prompt the runner", async () => {
+    const built = await makeBot();
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } })) as unknown as typeof fetch;
+    await built.bot.handleUpdate(textUpdate("/new"));
+    await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
+
+    await built.bot.handleUpdate(audioUpdate("song.mp3", "listen") as never);
+
+    expect(built.api.api.getFile).toHaveBeenCalledWith("audio");
+    expect(existsSync(join(built.cfg.goblinHome, "song.mp3"))).toBe(true);
+    expect(built.api.sent.at(-1)).toBe("Saved song.mp3.");
+    const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
+    expect(prompt).toBe("[From: Daniel (@bermudi)]\nlisten\n\n[Audio file `song.mp3` saved to project directory.]");
   });
 
   it("/resume of the already-bound session disposes the old runner before replacing it", async () => {

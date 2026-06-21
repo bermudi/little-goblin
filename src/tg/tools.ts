@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { Bot, InputFile } from "grammy";
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { edgeTts, resolveVoiceName, voiceTmpPath } from "../voice.ts";
 
 function jsonResult(value: unknown): {
   content: { type: "text"; text: string }[];
@@ -33,6 +35,49 @@ const sendDocumentSchema = Type.Object({
 const renameTopicSchema = Type.Object({
   title: Type.String({ minLength: 1 }),
 });
+
+const textToSpeechSchema = Type.Object({
+  text: Type.Optional(Type.String()),
+  file: Type.Optional(Type.String()),
+});
+
+type TextToSpeechInput = Static<typeof textToSpeechSchema>;
+
+export function createTextToSpeechTool(opts: { voiceName?: string } = {}): ToolDefinition {
+  return defineTool({
+    name: "text_to_speech",
+    label: "Text to Speech",
+    description: "Convert text to speech using Microsoft Edge TTS. Returns the path to the generated MP3 file. Chain with send_voice to deliver.",
+    parameters: textToSpeechSchema,
+    async execute(_toolCallId, params: TextToSpeechInput) {
+      const source = await resolveTextToSpeechSource(params);
+      if (!source.ok) return jsonResult(source);
+
+      const audioPath = voiceTmpPath();
+      const voiceName = opts.voiceName ?? resolveVoiceName();
+      try {
+        await edgeTts(source.text, voiceName, audioPath);
+        return jsonResult({ ok: true, audioPath });
+      } catch (err) {
+        return jsonResult({ ok: false, error: `TTS generation failed: ${errorMessage(err)}` });
+      }
+    },
+  });
+}
+
+async function resolveTextToSpeechSource(params: TextToSpeechInput): Promise<
+  | { ok: true; text: string }
+  | { ok: false; error: string }
+> {
+  if (params.text !== undefined) return { ok: true, text: params.text };
+  if (params.file === undefined) return { ok: false, error: "either text or file is required" };
+  if (!existsSync(params.file)) return { ok: false, error: `file does not exist: ${params.file}` };
+  try {
+    return { ok: true, text: await readFile(params.file, "utf8") };
+  } catch (err) {
+    return { ok: false, error: `failed to read file: ${errorMessage(err)}` };
+  }
+}
 
 type SendVoiceInput = Static<typeof sendVoiceSchema>;
 

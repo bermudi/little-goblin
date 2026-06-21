@@ -20,22 +20,22 @@ Create `src/voice.ts` with the shared `edgeTts()` function. This phase delivers 
 
 Create the `text_to_speech` tool factory. The tool is wired into `bot.ts` in Phase 4 via `getBetaTools()`. This phase builds and tests the tool factory in isolation.
 
-- [ ] In `src/tg/tools.ts`, add `createTextToSpeechTool(opts?: { voiceName?: string }): ToolDefinition` factory:
+- [x] In `src/tg/tools.ts`, add `createTextToSpeechTool(opts?: { voiceName?: string }): ToolDefinition` factory:
   - Tool name: `"text_to_speech"`, label: `"Text to Speech"`
   - Description: `"Convert text to speech using Microsoft Edge TTS. Returns the path to the generated MP3 file. Chain with send_voice to deliver."`
   - Parameters: `text` (Type.Optional(Type.String())) and `file` (Type.Optional(Type.String())) — at least one required, validated in handler. If both provided, `text` takes precedence.
   - Handler: if neither provided → `{ ok: false, error: "either text or file is required" }`; if `file` provided (and `text` absent), read file contents via `readFile` from `node:fs/promises`; call `edgeTts()` from `src/voice.ts`; return `{ ok: true, audioPath }` or `{ ok: false, error }`
   - Uses `resolveVoiceName()` and `voiceTmpPath()` from `src/voice.ts`; if `opts.voiceName` provided, uses it instead of `resolveVoiceName()`
-- [ ] In `src/tg/tools.ts`, add `"text_to_speech"` to `VISIBILITY_TOOLS.standard` array
-- [ ] In `src/tg/mod.ts`, re-export `createTextToSpeechTool`
-- [ ] Create `src/tg/tools.test.ts` (or add to existing):
+- [x] In `src/tg/tools.ts`, add `"text_to_speech"` to `VISIBILITY_TOOLS.standard` array
+- [x] In `src/tg/mod.ts`, re-export `createTextToSpeechTool`
+- [x] Create `src/tg/tools.test.ts` (or add to existing):
   - Test: tool called with `{ text: "hello" }` → returns `{ ok: true, audioPath }`
   - Test: tool called with `{ file: "/valid/path" }` → reads file, returns audioPath
   - Test: tool called with `{ file: "/nonexistent" }` → returns `{ ok: false, error }`
   - Test: tool called with `{}` → returns `{ ok: false, error: "either text or file is required" }`
   - Test: tool called with both `text` and `file` → `text` wins (precedence)
   - Test: tool created with `{ voiceName: "test-voice" }` → uses override
-- [ ] Verify: `bun test src/tg/tools.test.ts` passes
+- [x] Verify: `bun test src/tg/tools.test.ts` passes
 
 Implements spec requirements:
 - **Text-to-speech tool generates voice from text**

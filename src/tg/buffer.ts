@@ -84,7 +84,7 @@ export const SUMMARY_PREFIX_LEN = 500;
 export const VISIBILITY_TOOLS: Record<string, readonly string[] | "*"> = {
   none: [],
   minimal: ["bash", "write", "edit", "spawn_subagent"],
-  standard: ["bash", "write", "edit", "read", "grep", "spawn_subagent"],
+  standard: ["bash", "write", "edit", "read", "grep", "spawn_subagent", "text_to_speech"],
   verbose: [
     "bash",
     "write",
@@ -92,6 +92,7 @@ export const VISIBILITY_TOOLS: Record<string, readonly string[] | "*"> = {
     "read",
     "grep",
     "spawn_subagent",
+    "text_to_speech",
     "revive_subagent",
     "list_subagents",
   ],

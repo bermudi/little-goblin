@@ -1577,6 +1577,7 @@ describe("MessageBuffer", () => {
         expect(shouldShowTool("bash", "standard")).toBe(true);
         expect(shouldShowTool("read", "standard")).toBe(true);
         expect(shouldShowTool("grep", "standard")).toBe(true);
+        expect(shouldShowTool("text_to_speech", "standard")).toBe(true);
         expect(shouldShowTool("revive_subagent", "standard")).toBe(false);
         expect(shouldShowTool("list_subagents", "standard")).toBe(false);
       });
@@ -1584,6 +1585,7 @@ describe("MessageBuffer", () => {
       it("verbose: shows α + γ (subagent management) tools", () => {
         expect(shouldShowTool("bash", "verbose")).toBe(true);
         expect(shouldShowTool("read", "verbose")).toBe(true);
+        expect(shouldShowTool("text_to_speech", "verbose")).toBe(true);
         expect(shouldShowTool("revive_subagent", "verbose")).toBe(true);
         expect(shouldShowTool("list_subagents", "verbose")).toBe(true);
         expect(shouldShowTool("some_internal_event", "verbose")).toBe(false);

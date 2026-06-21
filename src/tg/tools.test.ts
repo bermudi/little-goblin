@@ -1,10 +1,11 @@
 import { describe, it, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InputFile } from "grammy";
 import type { Bot } from "grammy";
 import {
+  createTextToSpeechTool,
   createSendVoiceTool,
   createSendPhotoTool,
   createSendDocumentTool,
@@ -89,12 +90,12 @@ function makeBot(): MockBot {
   return state;
 }
 
-function withTempFile<T>(name: string, contents: string, fn: (path: string) => T): T {
+async function withTempFile<T>(name: string, contents: string, fn: (path: string) => T | Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "goblin-tools-test-"));
   const path = join(dir, name);
   writeFileSync(path, contents);
   try {
-    return fn(path);
+    return await fn(path);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -104,6 +105,95 @@ function getText(result: { content: { type: string; text?: string }[] }): string
   const first = result.content[0]!;
   return first.type === "text" ? (first.text ?? "") : "";
 }
+
+function parseResult(result: { content: { type: string; text?: string }[] }): Record<string, unknown> {
+  return JSON.parse(getText(result)) as Record<string, unknown>;
+}
+
+function unlinkIfExists(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (err) {
+    if (err instanceof Error && "code" in err && err.code === "ENOENT") return;
+    throw err;
+  }
+}
+
+describe("createTextToSpeechTool", () => {
+  it("has the expected tool metadata and schema", () => {
+    const tool = createTextToSpeechTool();
+    const schema = tool.parameters as { properties?: Record<string, unknown> };
+    expect(tool.name).toBe("text_to_speech");
+    expect(tool.label).toBe("Text to Speech");
+    expect(tool.description).toContain("Convert text to speech");
+    expect(schema.properties).toHaveProperty("text");
+    expect(schema.properties).toHaveProperty("file");
+    expect(schema.properties).not.toHaveProperty("chatId");
+  });
+
+  it("generates speech from text", async () => {
+    const tool = createTextToSpeechTool();
+    const result = parseResult(await tool.execute("call-1", { text: "hello" }, undefined, undefined, {} as never));
+    try {
+      expect(result.ok).toBe(true);
+      expect(typeof result.audioPath).toBe("string");
+      expect(existsSync(result.audioPath as string)).toBe(true);
+    } finally {
+      if (typeof result.audioPath === "string") unlinkIfExists(result.audioPath);
+    }
+  }, 60_000);
+
+  it("generates speech from a file", async () => {
+    const tool = createTextToSpeechTool();
+    await withTempFile("speech.txt", "hello from file", async (path) => {
+      const result = parseResult(await tool.execute("call-1", { file: path }, undefined, undefined, {} as never));
+      try {
+        expect(result.ok).toBe(true);
+        expect(typeof result.audioPath).toBe("string");
+        expect(existsSync(result.audioPath as string)).toBe(true);
+      } finally {
+        if (typeof result.audioPath === "string") unlinkIfExists(result.audioPath);
+      }
+    });
+  }, 60_000);
+
+  it("returns an error for nonexistent files", async () => {
+    const tool = createTextToSpeechTool();
+    const result = parseResult(await tool.execute("call-1", { file: "/nonexistent/file.txt" }, undefined, undefined, {} as never));
+    expect(result).toEqual({ ok: false, error: "file does not exist: /nonexistent/file.txt" });
+  });
+
+  it("returns an error when neither text nor file is provided", async () => {
+    const tool = createTextToSpeechTool();
+    const result = parseResult(await tool.execute("call-1", {}, undefined, undefined, {} as never));
+    expect(result).toEqual({ ok: false, error: "either text or file is required" });
+  });
+
+  it("prefers text over file when both are provided", async () => {
+    const tool = createTextToSpeechTool();
+    const result = parseResult(await tool.execute(
+      "call-1",
+      { text: "hello from text", file: "/nonexistent/file.txt" },
+      undefined,
+      undefined,
+      {} as never,
+    ));
+    try {
+      expect(result.ok).toBe(true);
+      expect(typeof result.audioPath).toBe("string");
+      expect(existsSync(result.audioPath as string)).toBe(true);
+    } finally {
+      if (typeof result.audioPath === "string") unlinkIfExists(result.audioPath);
+    }
+  }, 60_000);
+
+  it("uses the voiceName override", async () => {
+    const tool = createTextToSpeechTool({ voiceName: "test-voice" });
+    const result = parseResult(await tool.execute("call-1", { text: "hello" }, undefined, undefined, {} as never));
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("test-voice");
+  }, 60_000);
+});
 
 describe("createSendVoiceTool", () => {
   it("schema does not expose chatId", () => {

@@ -2,19 +2,19 @@
 
 Create `src/voice.ts` with the shared `edgeTts()` function. This phase delivers the TTS plumbing that both the command and tool will use. No Telegram or agent integration yet.
 
-- [ ] Create `src/voice.ts` exporting:
+- [x] Create `src/voice.ts` exporting:
   - `resolveVoiceName(): string` → single source of truth: `process.env.VOICE_NAME ?? "en-US-EmmaMultilingualNeural"`
   - `voiceTmpPath(): string` → `join(os.tmpdir(), "goblin-voice-" + crypto.randomUUID() + ".mp3")`
   - `edgeTts(text: string, voice: string, outputPath: string): Promise<void>` — writes text to a temp file via `writeFile` from `node:fs/promises`, spawns `uvx edge-tts --file <tmpTextPath> --voice <voice> --write-media <outputPath>` with 30s timeout, deletes temp text file via `unlink` from `node:fs/promises`, throws on non-zero exit. Uses `--file` (not `--text`) to avoid shell escaping and argument-length issues.
   - `assertEdgeTtsAvailable(): Promise<void>` — runs `uvx edge-tts --version` with 10s timeout, throws on failure
-- [ ] Create `src/voice.test.ts`
+- [x] Create `src/voice.test.ts`
   - Unit test: `resolveVoiceName` with and without `VOICE_NAME` set
   - Unit test: `voiceTmpPath` produces unique paths in tmpdir
   - Integration test: `edgeTts` with real `uvx edge-tts` call → produces valid MP3 at outputPath
   - Integration test: `edgeTts` with invalid voice → throws, error includes stderr
   - Unit test: `assertEdgeTtsAvailable` → resolves (assumes edge-tts installed)
   - Unit test: `assertEdgeTtsAvailable` with mocked failed spawn → throws
-- [ ] Verify: `bun test src/voice.test.ts` passes
+- [x] Verify: `bun test src/voice.test.ts` passes
 
 ## Phase 2: text_to_speech β-tool
 

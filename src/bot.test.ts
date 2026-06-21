@@ -13,11 +13,19 @@ class MockAgentRunner {
   static nextPrompt?: (content: unknown, buffer: unknown) => Promise<void>;
 
   readonly sessionId: string;
+  streaming = false;
   readonly prompt = mock(async (content: unknown, buffer: unknown) => {
-    await MockAgentRunner.nextPrompt?.(content, buffer);
+    this.streaming = true;
+    try {
+      await MockAgentRunner.nextPrompt?.(content, buffer);
+    } finally {
+      this.streaming = false;
+    }
   });
   readonly dispose = mock(() => {});
-  readonly abort = mock(async () => true);
+  readonly abort = mock(async () => {
+    this.streaming = false;
+  });
   readonly compact = mock(async () => ({ tokensBefore: 10_000 }));
   readonly setThinkingLevel = mock(() => {});
   readonly getActiveToolNames = mock(() => []);
@@ -30,6 +38,10 @@ class MockAgentRunner {
     this.sessionId = opts.sessionId;
     this.modelName = opts.modelName;
     runnerInstances.push(this);
+  }
+
+  get isStreaming(): boolean {
+    return this.streaming;
   }
 }
 
@@ -192,6 +204,42 @@ function audioUpdate(fileName: string, caption?: string) {
   } as const;
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void; reject: (err: unknown) => void } {
+  let resolve!: () => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timeout = setTimeout(() => resolve(false), ms);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 250;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for condition");
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
+}
+
 beforeEach(() => {
   runnerInstances.length = 0;
   MockAgentRunner.nextPrompt = undefined;
@@ -259,6 +307,112 @@ describe("buildBot integration", () => {
     expect(built.api.sent).toEqual(["No active session. Use /new to start one."]);
   });
 
+  it("text messages release the update handler while the runner is busy", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      await pending.promise;
+    };
+
+    const handled = built.bot.handleUpdate(textUpdate("slow"));
+
+    try {
+      expect(await settlesWithin(handled, 25)).toBe(true);
+    } finally {
+      pending.resolve();
+      await handled;
+    }
+  });
+
+  it("/cancel reaches a runner with a pending prompt", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      await pending.promise;
+    };
+
+    await built.bot.handleUpdate(textUpdate("slow"));
+    const runner = runnerInstances.at(-1)!;
+    await waitFor(() => runner.isStreaming);
+
+    const handled = built.bot.handleUpdate(textUpdate("/cancel"));
+
+    try {
+      expect(await settlesWithin(handled, 25)).toBe(true);
+      expect(runner.abort).toHaveBeenCalled();
+      expect(built.api.sent.at(-1)).toContain("Cancelled");
+    } finally {
+      pending.resolve();
+      await handled;
+    }
+  });
+
+  it("photo messages release the update handler while download is pending", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+    const pending = deferred();
+    globalThis.fetch = mock(async () => {
+      await pending.promise;
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } });
+    }) as unknown as typeof fetch;
+
+    const handled = built.bot.handleUpdate(photoUpdate("slow image") as never);
+
+    try {
+      expect(await settlesWithin(handled, 25)).toBe(true);
+      expect(runnerInstances.at(-1)!.prompt).not.toHaveBeenCalled();
+    } finally {
+      pending.resolve();
+      await handled;
+      await waitFor(() => runnerInstances.at(-1)!.prompt.mock.calls.length === 1);
+    }
+  });
+
+  it("stale media work does not prompt after a runner-disposing command", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+    const pending = deferred();
+    globalThis.fetch = mock(async () => {
+      await pending.promise;
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } });
+    }) as unknown as typeof fetch;
+
+    await built.bot.handleUpdate(photoUpdate("stale image") as never);
+    const staleRunner = runnerInstances.at(-1)!;
+    await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
+    const replacementRunner = runnerInstances.at(-1)!;
+
+    pending.resolve();
+    await flushMicrotasks();
+
+    expect(staleRunner.prompt).not.toHaveBeenCalled();
+    expect(replacementRunner.prompt).not.toHaveBeenCalled();
+  });
+
+  it("text prompts for the same session are serialized", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+    const first = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runnerInstances.at(-1)!.prompt.mock.calls.length === 1) {
+        await first.promise;
+      }
+    };
+
+    await built.bot.handleUpdate(textUpdate("first"));
+    await flushMicrotasks();
+    await built.bot.handleUpdate(textUpdate("second"));
+    await flushMicrotasks();
+
+    const runner = runnerInstances.at(-1)!;
+    expect(runner.prompt).toHaveBeenCalledTimes(1);
+    first.resolve();
+    await flushMicrotasks();
+    expect(runner.prompt).toHaveBeenCalledTimes(2);
+  });
+
   it("photo messages download image content and prompt the runner", async () => {
     const built = await makeBot();
     globalThis.fetch = mock(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } })) as unknown as typeof fetch;
@@ -267,6 +421,7 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(photoUpdate("look") as never);
 
     const runner = runnerInstances.at(-1)!;
+    await waitFor(() => runner.prompt.mock.calls.length === 1);
     expect(built.api.api.getFile).toHaveBeenCalledWith("big");
     const content = runner.prompt.mock.calls[0]![0] as Array<{ type: string; text?: string; data?: string }>;
     expect(content[0]).toEqual({ type: "text", text: "[From: Daniel (@bermudi)]" });
@@ -281,6 +436,7 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
 
     await built.bot.handleUpdate(documentUpdate("notes.txt", "please inspect") as never);
+    await waitFor(() => runnerInstances.at(-1)!.prompt.mock.calls.length === 1);
 
     expect(built.api.api.getFile).toHaveBeenCalledWith("doc");
     expect(existsSync(join(built.cfg.goblinHome, "notes.txt"))).toBe(true);
@@ -294,6 +450,7 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate("/new"));
 
     await built.bot.handleUpdate(documentUpdate("notes.txt", "caption only") as never);
+    await waitFor(() => runnerInstances.at(-1)!.prompt.mock.calls.length === 1);
 
     expect(built.api.api.getFile).not.toHaveBeenCalled();
     const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
@@ -307,6 +464,7 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
 
     await built.bot.handleUpdate(documentUpdate(".") as never);
+    await waitFor(() => built.api.sent.at(-1) === "Rejected: unsafe filename.");
 
     expect(built.api.sent.at(-1)).toBe("Rejected: unsafe filename.");
   });
@@ -318,6 +476,7 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
 
     await built.bot.handleUpdate(voiceUpdate() as never);
+    await waitFor(() => runnerInstances.at(-1)!.prompt.mock.calls.length === 1);
 
     expect(built.api.api.getFile).toHaveBeenCalledWith("voice");
     const saved = built.api.sent.at(-1)!;
@@ -336,6 +495,7 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
 
     await built.bot.handleUpdate(audioUpdate("song.mp3", "listen") as never);
+    await waitFor(() => runnerInstances.at(-1)!.prompt.mock.calls.length === 1);
 
     expect(built.api.api.getFile).toHaveBeenCalledWith("audio");
     expect(existsSync(join(built.cfg.goblinHome, "song.mp3"))).toBe(true);

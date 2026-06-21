@@ -181,6 +181,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   const bot = new Bot(cfg.botToken);
   const manager = new SessionManager(cfg);
   const runners = new Map<string, AgentRunner>();
+  const promptQueues = new Map<string, Promise<void>>();
   const subagentRunner = new SubagentRunner(cfg, subagentToolFactory);
   const memoryStore = new MemoryStore(cfg.goblinHome);
   const getTopicName = buildGetTopicName(memoryStore);
@@ -252,13 +253,55 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     });
   }
 
+  function schedulePrompt(
+    session: SessionState,
+    runner: AgentRunner,
+    run: (isCurrent: () => boolean) => Promise<void>,
+    onError: (err: unknown) => Promise<void> | void,
+  ): void {
+    const isCurrent = (): boolean => runners.get(session.id) === runner;
+    const execute = async (): Promise<void> => {
+      if (!isCurrent()) return;
+      try {
+        await run(isCurrent);
+      } catch (err) {
+        if (!isCurrent()) return;
+        try {
+          await onError(err);
+        } catch (handlerErr) {
+          log.error("prompt error handler failed", { error: String(handlerErr), sessionId: session.id });
+        }
+      }
+    };
+    const prior = promptQueues.get(session.id);
+    const current = prior ? prior.then(execute, execute) : execute();
+    promptQueues.set(session.id, current);
+    void current.finally(() => {
+      if (promptQueues.get(session.id) === current) promptQueues.delete(session.id);
+    });
+  }
+
   type PromptContent = string | (TextContent | ImageContent)[];
   type ActiveTurn = {
     locator: ChatLocator;
     session: SessionState;
     projectDir: string | undefined;
-    prompt: (content: PromptContent, failureLog: string, opts?: { replyModelNotCapable?: boolean }) => Promise<void>;
+    schedule: (
+      run: (runner: AgentRunner, isCurrent: () => boolean) => Promise<void>,
+      failureLog: string,
+      opts?: { replyModelNotCapable?: boolean },
+    ) => void;
+    prompt: (content: PromptContent, failureLog: string, opts?: { replyModelNotCapable?: boolean }) => void;
   };
+
+  async function runPrompt(ctx: Context, locator: ChatLocator, runner: AgentRunner, content: PromptContent): Promise<void> {
+    const buffer = createMessageBuffer(locator);
+    if (typeof content === "string") {
+      await runner.prompt(prepareUserContent(ctx, content), buffer);
+    } else {
+      await runner.prompt(prepareUserContent(ctx, content), buffer);
+    }
+  }
 
   function resolveActiveTurn(ctx: Context, kind: string): ActiveTurn | null {
     const locator = locatorFromCtx(ctx);
@@ -274,29 +317,39 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
       return null;
     }
 
-    return {
+    const turn: ActiveTurn = {
       locator,
       session,
       projectDir: manager.getProjectDir(locator),
-      prompt: async (content, failureLog, opts) => {
+      schedule: (run, failureLog, opts) => {
         const runner = getOrCreateRunner(session, locator, ctx);
-        const buffer = createMessageBuffer(locator);
-        try {
-          if (typeof content === "string") {
-            await runner.prompt(prepareUserContent(ctx, content), buffer);
-          } else {
-            await runner.prompt(prepareUserContent(ctx, content), buffer);
-          }
-        } catch (err) {
-          if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
-            await ctx.reply(`❌ ${err.message}`);
-            return;
-          }
-          const msg = err instanceof Error ? err.message : String(err);
-          log.error(failureLog, { error: msg, sessionId: session.id });
-        }
+        schedulePrompt(
+          session,
+          runner,
+          async (isCurrent) => {
+            await run(runner, isCurrent);
+          },
+          async (err) => {
+            if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
+              await ctx.reply(`❌ ${err.message}`);
+              return;
+            }
+            const msg = err instanceof Error ? err.message : String(err);
+            log.error(failureLog, { error: msg, sessionId: session.id });
+          },
+        );
+      },
+      prompt: (content, failureLog, opts) => {
+        turn.schedule(
+          async (runner) => {
+            await runPrompt(ctx, locator, runner, content);
+          },
+          failureLog,
+          opts,
+        );
       },
     };
+    return turn;
   }
 
   const dispatchDeps: DispatchDeps = {
@@ -349,6 +402,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
               runners.set(effect.session.id, createRunner(effect.session, effect.locator, ctx));
               log.debug("created runner", { sessionId: effect.session.id });
             } else if (effect.kind === "runner-disposed") {
+              promptQueues.delete(effect.sessionId);
               const prior = runners.get(effect.sessionId);
               if (prior) {
                 try {
@@ -387,11 +441,17 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     // the orphaned memory scope before propagating the error.
     const buffer = createMessageBuffer(locator);
 
-    try {
-      await runner.prompt(prepareUserContent(ctx, text), buffer);
-    } catch (err) {
-      log.error("runner prompt failed", { error: String(err), sessionId: session.id });
-    }
+    schedulePrompt(
+      session,
+      runner,
+      async (isCurrent) => {
+        if (!isCurrent()) return;
+        await runner.prompt(prepareUserContent(ctx, text), buffer);
+      },
+      (err) => {
+        log.error("runner prompt failed", { error: String(err), sessionId: session.id });
+      },
+    );
   });
 
   // Wire agent runner for photo messages
@@ -399,22 +459,28 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const turn = resolveActiveTurn(ctx, "photo");
     if (!turn) return;
 
-    // Download the photo from Telegram
-    const photo = await downloadPhoto(ctx, cfg.botToken);
-    if (!photo) {
-      await ctx.reply("Sorry, I couldn't download that image.");
-      return;
-    }
+    turn.schedule(
+      async (runner, isCurrent) => {
+        const photo = await downloadPhoto(ctx, cfg.botToken);
+        if (!isCurrent()) return;
+        if (!photo) {
+          await ctx.reply("Sorry, I couldn't download that image.");
+          return;
+        }
 
-    // Build multimodal content: caption as text, photo as image
-    const caption = ctx.msg?.caption;
-    const content: (TextContent | ImageContent)[] = [];
-    if (caption) {
-      content.push({ type: "text", text: caption });
-    }
-    content.push({ type: "image", data: photo.data, mimeType: photo.mimeType });
+        const caption = ctx.msg?.caption;
+        const content: (TextContent | ImageContent)[] = [];
+        if (caption) {
+          content.push({ type: "text", text: caption });
+        }
+        content.push({ type: "image", data: photo.data, mimeType: photo.mimeType });
 
-    await turn.prompt(content, "runner photo prompt failed", { replyModelNotCapable: true });
+        if (!isCurrent()) return;
+        await runPrompt(ctx, turn.locator, runner, content);
+      },
+      "runner photo prompt failed",
+      { replyModelNotCapable: true },
+    );
   });
 
   // Wire agent runner for document messages (uncompressed images sent as files)
@@ -425,51 +491,57 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const doc = ctx.msg?.document;
     if (!doc?.file_id) return;
 
-    // All documents (including images sent as files) are saved to projectDir.
-    // Only message:photo goes directly to the model as multimodal content.
-    if (turn.projectDir) {
-      const raw = await downloadFileBytes(ctx.api, doc.file_id, cfg.botToken);
-      if (!raw) {
-        await ctx.reply("Sorry, I couldn't download that file.");
-        return;
-      }
+    turn.schedule(
+      async (runner, isCurrent) => {
+        if (turn.projectDir) {
+          const raw = await downloadFileBytes(ctx.api, doc.file_id, cfg.botToken);
+          if (!isCurrent()) return;
+          if (!raw) {
+            await ctx.reply("Sorry, I couldn't download that file.");
+            return;
+          }
 
-      let safeName = basename(doc.file_name || "attachment").trim() || "attachment";
-      if (safeName === "." || safeName === "..") {
-        await ctx.reply("Rejected: unsafe filename.");
-        return;
-      }
-      const destPath = join(turn.projectDir, safeName);
-      try {
-        await writeFile(destPath, raw);
-      } catch (err) {
-        log.error("failed to write attachment to project directory", { error: String(err), destPath });
-        await ctx.reply(`Failed to save ${safeName}.`);
-        return;
-      }
+          let safeName = basename(doc.file_name || "attachment").trim() || "attachment";
+          if (safeName === "." || safeName === "..") {
+            if (isCurrent()) await ctx.reply("Rejected: unsafe filename.");
+            return;
+          }
+          const destPath = join(turn.projectDir, safeName);
+          if (!isCurrent()) return;
+          try {
+            await writeFile(destPath, raw);
+          } catch (err) {
+            log.error("failed to write attachment to project directory", { error: String(err), destPath });
+            if (isCurrent()) await ctx.reply(`Failed to save ${safeName}.`);
+            return;
+          }
 
-      await ctx.reply(`Saved ${safeName}.`);
+          if (!isCurrent()) return;
+          await ctx.reply(`Saved ${safeName}.`);
 
-      // Escape backticks so the file name doesn't break markdown in the prompt
-      const escapedName = safeName.replace(/`/g, "'");
-      const caption = ctx.msg?.caption;
-      const promptText = caption
-        ? `${caption}\n\n[File \`${escapedName}\` saved to project directory.]`
-        : `User uploaded \`${escapedName}\` to the project directory.`;
+          // Escape backticks so the file name doesn't break markdown in the prompt
+          const escapedName = safeName.replace(/`/g, "'");
+          const caption = ctx.msg?.caption;
+          const promptText = caption
+            ? `${caption}\n\n[File \`${escapedName}\` saved to project directory.]`
+            : `User uploaded \`${escapedName}\` to the project directory.`;
 
-      await turn.prompt(promptText, "runner document prompt failed");
-      return;
-    }
+          if (!isCurrent()) return;
+          await runPrompt(ctx, turn.locator, runner, promptText);
+          return;
+        }
 
-    log.debug("dropping document: no projectDir", { mimeType: doc.mime_type, fileName: doc.file_name });
-    // Forward the caption as a text-only prompt so the user's message
-    // isn't completely lost. If there's no caption either, tell them.
-    const fallbackCaption = ctx.msg?.caption;
-    if (fallbackCaption) {
-      await turn.prompt(fallbackCaption, "runner document caption prompt failed");
-    } else {
-      await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
-    }
+        if (!isCurrent()) return;
+        log.debug("dropping document: no projectDir", { mimeType: doc.mime_type, fileName: doc.file_name });
+        const fallbackCaption = ctx.msg?.caption;
+        if (fallbackCaption) {
+          await runPrompt(ctx, turn.locator, runner, fallbackCaption);
+        } else {
+          await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
+        }
+      },
+      "runner document prompt failed",
+    );
   });
 
   // Wire agent runner for voice messages
@@ -480,35 +552,45 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const voice = ctx.msg?.voice;
     if (!voice?.file_id) return;
 
-    if (turn.projectDir) {
-      const raw = await downloadFileBytes(ctx.api, voice.file_id, cfg.botToken);
-      if (!raw) {
-        await ctx.reply("Sorry, I couldn't download that voice message.");
-        return;
-      }
+    turn.schedule(
+      async (runner, isCurrent) => {
+        if (turn.projectDir) {
+          const raw = await downloadFileBytes(ctx.api, voice.file_id, cfg.botToken);
+          if (!isCurrent()) return;
+          if (!raw) {
+            await ctx.reply("Sorry, I couldn't download that voice message.");
+            return;
+          }
 
-      const ext = voice.mime_type === "audio/ogg" ? "oga" : "bin";
-      const safeName = `voice-${Date.now()}.${ext}`;
-      const destPath = join(turn.projectDir, safeName);
-      try {
-        await writeFile(destPath, raw);
-      } catch (err) {
-        log.error("failed to write voice to project directory", { error: String(err), destPath });
-        await ctx.reply(`Failed to save ${safeName}.`);
-        return;
-      }
+          const ext = voice.mime_type === "audio/ogg" ? "oga" : "bin";
+          const safeName = `voice-${Date.now()}.${ext}`;
+          const destPath = join(turn.projectDir, safeName);
+          if (!isCurrent()) return;
+          try {
+            await writeFile(destPath, raw);
+          } catch (err) {
+            log.error("failed to write voice to project directory", { error: String(err), destPath });
+            if (isCurrent()) await ctx.reply(`Failed to save ${safeName}.`);
+            return;
+          }
 
-      await ctx.reply(`Saved ${safeName}.`);
+          if (!isCurrent()) return;
+          await ctx.reply(`Saved ${safeName}.`);
 
-      const escapedName = safeName.replace(/`/g, "'");
-      const promptText = `User sent a voice message: \`${escapedName}\` saved to project directory.`;
+          const escapedName = safeName.replace(/`/g, "'");
+          const promptText = `User sent a voice message: \`${escapedName}\` saved to project directory.`;
 
-      await turn.prompt(promptText, "runner voice prompt failed");
-      return;
-    }
+          if (!isCurrent()) return;
+          await runPrompt(ctx, turn.locator, runner, promptText);
+          return;
+        }
 
-    log.debug("dropping voice: no projectDir");
-    await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
+        if (!isCurrent()) return;
+        log.debug("dropping voice: no projectDir");
+        await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
+      },
+      "runner voice prompt failed",
+    );
   });
 
   // Wire agent runner for audio messages (music files)
@@ -519,51 +601,61 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const audio = ctx.msg?.audio;
     if (!audio?.file_id) return;
 
-    if (turn.projectDir) {
-      const raw = await downloadFileBytes(ctx.api, audio.file_id, cfg.botToken);
-      if (!raw) {
-        await ctx.reply("Sorry, I couldn't download that audio file.");
-        return;
-      }
+    turn.schedule(
+      async (runner, isCurrent) => {
+        if (turn.projectDir) {
+          const raw = await downloadFileBytes(ctx.api, audio.file_id, cfg.botToken);
+          if (!isCurrent()) return;
+          if (!raw) {
+            await ctx.reply("Sorry, I couldn't download that audio file.");
+            return;
+          }
 
-      let safeName = audio.file_name?.trim();
-      if (!safeName) {
-        const title = [audio.performer, audio.title].filter(Boolean).join(" - ");
-        safeName = title ? `${title}.mp3` : `audio-${Date.now()}.mp3`;
-      }
-      safeName = basename(safeName);
-      if (safeName === "." || safeName === "..") {
-        await ctx.reply("Rejected: unsafe filename.");
-        return;
-      }
-      const destPath = join(turn.projectDir, safeName);
-      try {
-        await writeFile(destPath, raw);
-      } catch (err) {
-        log.error("failed to write audio to project directory", { error: String(err), destPath });
-        await ctx.reply(`Failed to save ${safeName}.`);
-        return;
-      }
+          let safeName = audio.file_name?.trim();
+          if (!safeName) {
+            const title = [audio.performer, audio.title].filter(Boolean).join(" - ");
+            safeName = title ? `${title}.mp3` : `audio-${Date.now()}.mp3`;
+          }
+          safeName = basename(safeName);
+          if (safeName === "." || safeName === "..") {
+            if (isCurrent()) await ctx.reply("Rejected: unsafe filename.");
+            return;
+          }
+          const destPath = join(turn.projectDir, safeName);
+          if (!isCurrent()) return;
+          try {
+            await writeFile(destPath, raw);
+          } catch (err) {
+            log.error("failed to write audio to project directory", { error: String(err), destPath });
+            if (isCurrent()) await ctx.reply(`Failed to save ${safeName}.`);
+            return;
+          }
 
-      await ctx.reply(`Saved ${safeName}.`);
+          if (!isCurrent()) return;
+          await ctx.reply(`Saved ${safeName}.`);
 
-      const escapedName = safeName.replace(/`/g, "'");
-      const caption = ctx.msg?.caption;
-      const promptText = caption
-        ? `${caption}\n\n[Audio file \`${escapedName}\` saved to project directory.]`
-        : `User uploaded audio \`${escapedName}\` to the project directory.`;
+          const escapedName = safeName.replace(/`/g, "'");
+          const caption = ctx.msg?.caption;
+          const promptText = caption
+            ? `${caption}\n\n[Audio file \`${escapedName}\` saved to project directory.]`
+            : `User uploaded audio \`${escapedName}\` to the project directory.`;
 
-      await turn.prompt(promptText, "runner audio prompt failed");
-      return;
-    }
+          if (!isCurrent()) return;
+          await runPrompt(ctx, turn.locator, runner, promptText);
+          return;
+        }
 
-    log.debug("dropping audio: no projectDir");
-    const fallbackCaption = ctx.msg?.caption;
-    if (fallbackCaption) {
-      await turn.prompt(fallbackCaption, "runner audio caption prompt failed");
-    } else {
-      await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
-    }
+        if (!isCurrent()) return;
+        log.debug("dropping audio: no projectDir");
+        const fallbackCaption = ctx.msg?.caption;
+        if (fallbackCaption) {
+          await runPrompt(ctx, turn.locator, runner, fallbackCaption);
+        } else {
+          await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
+        }
+      },
+      "runner audio prompt failed",
+    );
   });
 
   // Persist topic names from Telegram service messages so the snapshot

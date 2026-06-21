@@ -6,10 +6,14 @@ import type { Config } from "../config.ts";
 import type { CascadeResult } from "../interrupt.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import type { AgentRunner } from "../agent/mod.ts";
-import type { SubagentRunner } from "../subagents/mod.ts";
+import type { SubagentInfo, SubagentRunner } from "../subagents/mod.ts";
 import { cancelReply, formatCascadeTimeoutSuffix } from "./cancel.ts";
 import { HELP_REPLY } from "./help.ts";
-import { SUBAGENT_STUB_REPLY } from "./subagents.ts";
+import {
+  CANCEL_SUBAGENT_USAGE_REPLY,
+  NO_SUBAGENTS_REPLY,
+  REVIVE_SUBAGENT_USAGE_REPLY,
+} from "./subagents.ts";
 import { handleCancelCapableCommand, type DispatchDeps, type DispatchOpts, type DispatchResult } from "./dispatch.ts";
 
 const dirs: string[] = [];
@@ -53,7 +57,18 @@ function makeRunner(): AgentRunner {
   } as unknown as AgentRunner;
 }
 
-function makeHarness(cascade = baseCascade()): {
+type SubagentRunnerStub = Pick<SubagentRunner, "list" | "cancel" | "revive">;
+
+function makeSubagentRunner(overrides: Partial<SubagentRunnerStub> = {}): SubagentRunner {
+  return {
+    list: mock(() => []),
+    cancel: mock(async () => {}),
+    revive: mock(async () => "revived response"),
+    ...overrides,
+  } as unknown as SubagentRunner;
+}
+
+function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunner()): {
   cfg: Config;
   manager: SessionManager;
   locator: ChatLocator;
@@ -71,7 +86,7 @@ function makeHarness(cascade = baseCascade()): {
     deps: {
       manager,
       cfg,
-      subagentRunner: { list: mock(() => []) } as unknown as SubagentRunner,
+      subagentRunner,
       tryResolveModel: mock(() => undefined),
       interruptAndCascade: interrupt as unknown as DispatchDeps["interruptAndCascade"],
     },
@@ -246,11 +261,89 @@ describe("handleCancelCapableCommand", () => {
     expect(result.reply).toContain("Named sessions:");
   });
 
-  it("handles non-cancel helper commands", async () => {
+  it("handles /help", async () => {
     expect(expectReplied(await dispatch({ command: "/help" })).reply).toBe(HELP_REPLY);
-    expect(expectReplied(await dispatch({ command: "/subagents" })).reply).toBe(SUBAGENT_STUB_REPLY);
-    expect(expectReplied(await dispatch({ command: "/cancel_subagent", rawText: "/cancel_subagent abc" })).reply).toBe(SUBAGENT_STUB_REPLY);
-    expect(expectReplied(await dispatch({ command: "/revive", rawText: "/revive abc" })).reply).toBe(SUBAGENT_STUB_REPLY);
+  });
+
+  it("lists tracked subagents", async () => {
+    const infos: SubagentInfo[] = [{
+      id: "abc",
+      name: "researcher",
+      role: "named",
+      status: "running",
+      spawnedAt: "2026-06-21T00:00:00.000Z",
+      spawnedBy: "session-1",
+    }];
+    const subagentRunner = makeSubagentRunner({
+      list: mock(() => infos),
+    });
+    const harness = makeHarness(baseCascade(), subagentRunner);
+
+    const result = expectReplied(await dispatch({ command: "/subagents", harness }));
+    expect(result.reply).toContain("Tracked subagents:");
+    expect(result.reply).toContain("abc (researcher) — running named");
+  });
+
+  it("reports when no subagents are tracked", async () => {
+    expect(expectReplied(await dispatch({ command: "/subagents" })).reply).toBe(NO_SUBAGENTS_REPLY);
+  });
+
+  it("cancels a subagent by id", async () => {
+    const cancel = mock(async () => {});
+    const subagentRunner = makeSubagentRunner({ cancel });
+    const harness = makeHarness(baseCascade(), subagentRunner);
+
+    const result = expectReplied(await dispatch({ command: "/cancel_subagent", rawText: "/cancel_subagent abc", harness }));
+    expect(result.reply).toBe("Cancelled subagent `abc`.");
+    expect(cancel).toHaveBeenCalledWith("abc");
+  });
+
+  it("rejects /cancel_subagent without an id", async () => {
+    expect(expectReplied(await dispatch({ command: "/cancel_subagent" })).reply).toBe(CANCEL_SUBAGENT_USAGE_REPLY);
+  });
+
+  it("surfaces cancel_subagent failures", async () => {
+    const subagentRunner = makeSubagentRunner({
+      cancel: mock(async () => { throw new Error("Subagent not found"); }),
+    });
+    const harness = makeHarness(baseCascade(), subagentRunner);
+
+    const result = expectReplied(await dispatch({ command: "/cancel_subagent", rawText: "/cancel_subagent missing", harness }));
+    expect(result.reply).toBe("Failed to cancel subagent `missing`: Subagent not found");
+  });
+
+  it("revives a subagent with an explicit prompt", async () => {
+    const revive = mock(async () => "done");
+    const subagentRunner = makeSubagentRunner({ revive });
+    const harness = makeHarness(baseCascade(), subagentRunner);
+
+    const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive abc inspect again", harness }));
+    expect(result.reply).toBe("Revived subagent `abc`:\ndone");
+    expect(revive).toHaveBeenCalledWith("abc", "inspect again");
+  });
+
+  it("rejects /revive without a prompt", async () => {
+    const revive = mock(async () => "");
+    const subagentRunner = makeSubagentRunner({ revive });
+    const harness = makeHarness(baseCascade(), subagentRunner);
+
+    const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive abc", harness }));
+    expect(result.reply).toBe(REVIVE_SUBAGENT_USAGE_REPLY);
+    expect(revive).not.toHaveBeenCalled();
+  });
+
+  it("rejects /revive without an id", async () => {
+    expect(expectReplied(await dispatch({ command: "/revive" })).reply).toBe(REVIVE_SUBAGENT_USAGE_REPLY);
+  });
+
+  it("surfaces revive failures", async () => {
+    const subagentRunner = makeSubagentRunner({
+      revive: mock(async () => { throw new Error("Subagent not found"); }),
+    });
+    const harness = makeHarness(baseCascade(), subagentRunner);
+
+    const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive missing try again", harness }));
+    expect(result.reply).toBe("Failed to revive subagent `missing`: Subagent not found");
   });
 
   it("returns fallthrough for unknown commands", async () => {

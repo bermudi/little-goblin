@@ -19,7 +19,13 @@ import { executeCompact } from "./compact.ts";
 import { executeName } from "./name.ts";
 import { executeResume } from "./resume.ts";
 import { executeThink, ALL_LEVELS } from "./think.ts";
-import { parseSubagentId, SUBAGENT_STUB_REPLY } from "./subagents.ts";
+import {
+  CANCEL_SUBAGENT_USAGE_REPLY,
+  formatSubagentsList,
+  parseReviveSubagentArgs,
+  parseSubagentId,
+  REVIVE_SUBAGENT_USAGE_REPLY,
+} from "./subagents.ts";
 import { HELP_REPLY } from "./help.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
@@ -58,6 +64,10 @@ export interface DispatchOpts {
 
 function replied(reply: string, sideEffects: SideEffect[] = []): DispatchResult {
   return { kind: "replied", reply, sideEffects };
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export async function handleCancelCapableCommand(opts: DispatchOpts): Promise<DispatchResult> {
@@ -236,16 +246,30 @@ export async function handleCancelCapableCommand(opts: DispatchOpts): Promise<Di
       }
     }
     case "/subagents":
-      return replied(SUBAGENT_STUB_REPLY);
+      return replied(formatSubagentsList(subagentRunner.list()));
     case "/cancel_subagent": {
       const id = parseSubagentId(rawText);
-      log.debug("/cancel_subagent stub invoked", { id });
-      return replied(SUBAGENT_STUB_REPLY);
+      if (id === null) return replied(CANCEL_SUBAGENT_USAGE_REPLY);
+      try {
+        await subagentRunner.cancel(id);
+        return replied(`Cancelled subagent \`${id}\`.`);
+      } catch (err) {
+        const message = errorMessage(err);
+        log.error("cancel_subagent failed", { id, error: message });
+        return replied(`Failed to cancel subagent \`${id}\`: ${message}`);
+      }
     }
     case "/revive": {
-      const id = parseSubagentId(rawText);
-      log.debug("/revive stub invoked", { id });
-      return replied(SUBAGENT_STUB_REPLY);
+      const args = parseReviveSubagentArgs(rawText);
+      if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY);
+      try {
+        const result = await subagentRunner.revive(args.id, args.prompt);
+        return replied(result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`);
+      } catch (err) {
+        const message = errorMessage(err);
+        log.error("revive failed", { id: args.id, error: message });
+        return replied(`Failed to revive subagent \`${args.id}\`: ${message}`);
+      }
     }
     case "/help":
       return replied(HELP_REPLY);

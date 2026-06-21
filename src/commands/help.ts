@@ -5,11 +5,8 @@
  * a stable, alphabetically-grouped (by category) plain-text reply so it
  * is easy to scan in Telegram and easy to assert against in tests.
  *
- * Stub commands (`/subagents`, `/cancel_subagent`, `/revive`) are
- * included in the listing — the surface exists today even if the
- * behaviour lives in `subagent-runtime`. Their description hints that
- * they are not yet implemented so the user is not surprised by a
- * "Not implemented" reply.
+ * Subagent commands are backed by the runtime and expose the in-memory
+ * runner surface for listing, cancellation, and revival.
  */
 export const HELP_REPLY = [
   "Commands:",
@@ -25,8 +22,8 @@ export const HELP_REPLY = [
   "/resume <id-or-name> — bind this chat to an existing session",
   "/ping — smoke-test: reply with pong and chat info",
   "/start — start a new session (DMs only)",
-  "/subagents — list live subagents (not implemented yet)",
-  "/cancel_subagent <id> — cancel a single subagent (not implemented yet)",
-  "/revive <id> — revive an archived subagent (not implemented yet)",
+  "/subagents — list tracked subagents",
+  "/cancel_subagent <id> — cancel a single subagent",
+  "/revive <id> <prompt> — revive a persisted subagent with a follow-up prompt",
   "/help — show this list",
 ].join("\n");

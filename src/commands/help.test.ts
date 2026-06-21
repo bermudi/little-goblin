@@ -30,9 +30,9 @@ describe("HELP_REPLY", () => {
     }
   });
 
-  it("flags subagent commands as not yet implemented", () => {
-    // Avoid surprising users who type /subagents and get "Not implemented".
-    expect(HELP_REPLY).toContain("not implemented yet");
+  it("does not advertise implemented subagent commands as stubs", () => {
+    expect(HELP_REPLY).not.toContain("not implemented");
+    expect(HELP_REPLY).toContain("/revive <id> <prompt>");
   });
 
   it("renders as a multi-line string", () => {

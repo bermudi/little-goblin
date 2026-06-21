@@ -161,32 +161,55 @@ The `/debug` command SHALL include the session name in its diagnostics output. `
 - **WHEN** `/debug` is invoked on a session with no `title`
 - **THEN** the output SHALL contain `Session Name: unavailable`
 
-### Requirement: Subagents command surface exists (stub)
+### Requirement: Subagents command lists tracked runner entries
 
-The `/subagents` command SHALL exist and reply with a stub message. Full implementation is in `subagent-runtime` change.
+The `/subagents` command SHALL list subagents currently tracked by the in-process `SubagentRunner`. If none are tracked, it SHALL reply that no subagents are tracked.
 
-#### Scenario: Subagents stub
+#### Scenario: Subagents list
 
-- **WHEN** `/subagents` is sent
-- **THEN** a stub reply "Not implemented" SHALL be shown
+- **WHEN** `/subagents` is sent while subagents are tracked
+- **THEN** the reply SHALL include each tracked subagent id, role, status, spawn time, optional name, and optional spawner id
 
-### Requirement: Cancel subagent command surface exists (stub)
+#### Scenario: No tracked subagents
 
-The `/cancel_subagent <id>` command SHALL exist and reply with a stub message. Full implementation is in `subagent-runtime` change.
+- **WHEN** `/subagents` is sent while no subagents are tracked
+- **THEN** the reply SHALL say `No subagents tracked.`
 
-#### Scenario: Cancel subagent stub
+### Requirement: Cancel subagent command cancels one tracked subagent
+
+The `/cancel_subagent <id>` command SHALL cancel the subagent with the supplied id via `SubagentRunner.cancel()`.
+
+#### Scenario: Cancel subagent
 
 - **WHEN** `/cancel_subagent abc123` is sent
-- **THEN** a stub reply "Not implemented" SHALL be shown
+- **THEN** `SubagentRunner.cancel("abc123")` SHALL be invoked
+- **AND** a success reply SHALL be shown
 
-### Requirement: Revive command surface exists (stub)
+#### Scenario: Cancel subagent without id
 
-The `/revive <id>` command SHALL exist and reply with a stub message. Full implementation is in `subagent-runtime` change.
+- **WHEN** `/cancel_subagent` is sent without an id
+- **THEN** a usage reply SHALL be shown
 
-#### Scenario: Revive stub
+### Requirement: Revive command revives a persisted subagent
 
-- **WHEN** `/revive abc123` is sent
-- **THEN** a stub reply "Not implemented" SHALL be shown
+The `/revive <id> <prompt>` command SHALL revive the subagent with the supplied id via `SubagentRunner.revive()`. The prompt is required because revival sends a follow-up turn into the persisted subagent conversation.
+
+#### Scenario: Revive with explicit prompt
+
+- **WHEN** `/revive abc123 inspect again` is sent
+- **THEN** `SubagentRunner.revive("abc123", "inspect again")` SHALL be invoked
+- **AND** the final subagent response SHALL be included in the reply
+
+#### Scenario: Revive without prompt
+
+- **WHEN** `/revive abc123` is sent without a prompt
+- **THEN** a usage reply SHALL be shown
+- **AND** `SubagentRunner.revive()` MUST NOT be invoked
+
+#### Scenario: Revive without id
+
+- **WHEN** `/revive` is sent without an id
+- **THEN** a usage reply SHALL be shown
 
 ### Requirement: Cancel cascades to all live subagents
 

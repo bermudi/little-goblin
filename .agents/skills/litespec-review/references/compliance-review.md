@@ -28,8 +28,14 @@ Compliance review checks implementation for spec compliance, design adherence, a
 
 ## Heuristics
 
-- **Prefer false negatives.** Only flag what you can verify from reading the code and specs. If you are unsure, do not flag it. A noisy report is worse than a permissive one.
+- **Prefer specificity over silence.** Only flag what you can trace to a concrete code path with file:line anchors. If you cannot trace the issue, move it to an Observations section tagged [unconfirmed] rather than inflating the findings. Untraced findings are worse than no findings — they trigger overcorrection in the fixer.
 - **Every issue needs a specific, actionable recommendation.** "Fix this" is not actionable. "Add input validation in `handler.go:42` per spec requirement R-003" is.
+- **Guard against overcorrection.** Do not flag any of these without a traced code path demonstrating the issue:
+  - **Logic Error** — claiming an algorithm is wrong without a falsifying counterexample (input → expected → actual)
+  - **Added Requirement** — rejecting code for not implementing something the spec doesn't require
+  - **Boundary Error** — asserting off-by-one errors in correct code without showing the exact index mismatch
+  - **Misread Spec** — misinterpreting stated requirements to justify a finding
+  These four patterns account for 87%+ of false negatives in LLM code review. A finding without evidence is noise.
 - **Graceful degradation.** If some artifacts are missing (no design.md, incomplete specs), work with what you have. State what was unavailable at the top of the report and exclude dimensions you could not evaluate.
 - **No speculation.** Do not imagine bugs. Do not flag theoretical risks. Only flag concrete, observable gaps between specs and implementation. (Adversarial scenario construction is adversarial review's job.)
 

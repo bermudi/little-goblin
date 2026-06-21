@@ -22,6 +22,11 @@ For each, construct 1–3 worst-case scenarios:
 
 Write these down as a numbered list BEFORE tracing implementation code. This is red-team-before-blue-team — generate the adversarial frame from the spec's structure, not from pattern-matching against the code's surface.
 
+**For each scenario**, structure your reasoning as:
+1. **Premises**: What invariants does the spec claim? What state is assumed?
+2. **Trace**: The concrete code path from trigger to effect, with file:line anchors
+3. **Conclusion**: Does the trace uphold or violate the premises? Tag as [confirmed] or [inferred].
+
 ---
 
 ## Step 2: Check each scenario against the implementation

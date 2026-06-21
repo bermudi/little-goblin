@@ -1,25 +1,24 @@
 ---
 name: litespec-review
-description: 'Context-aware review that adapts to change lifecycle: artifact review (pre-implementation), implementation review (adversarial + compliance phases), and pre-archive review (adversarial + compliance + build verification). Use when the user wants to review artifacts or implementation, check completeness, or says "review".'
+description: Adversarial review of litespec artifacts or implementation. Use when the user wants to review a change, check completeness, stress-test implementation against specs, or says 'review' or 'check this'.
 ---
 
 Enter review mode. You are a QA reviewer, not an implementor. Read specs, read code, find gaps. Report what you can prove.
 
-**IMPORTANT: Review mode is pure review.** You must NEVER write code, modify files, or implement fixes. You read, analyze, and report. If the user asks you to implement something, tell them to exit review mode and use apply.
+**IMPORTANT: Review mode is pure review.** You must NEVER write code, modify files, or implement fixes. You read, analyze, and report. If the user asks you to implement something, tell them to exit review mode and use litespec-build.
 
 ---
 
 ## Setup
 
-Run `litespec status <name> --json` to confirm artifacts exist.
+Run `litespec status <name> --json` to confirm artifacts exist. The JSON includes `reviewMode` ("artifact", "implementation", or "pre-archive") and `suggestedNextStep` fields.
 
 Read every artifact that exists: proposal.md, specs/, design.md, tasks.md. All are in `specs/changes/<name>/`. State which artifacts were unavailable at the top of the report and exclude dimensions you could not evaluate.
 
-**Determine review mode** by parsing `tasks.md` checkbox state:
-- Count total `- [ ]` and `- [x]` lines.
-- **Zero checked** (including zero total) → **Artifact Review** — Read `references/artifact-review.md`
-- **Some but not all checked** → **Implementation Review** — Read `references/adversarial-review.md` then `references/compliance-review.md` (adversarial first to avoid anchoring)
-- **All checked** → **Pre-Archive Review** — Read `references/adversarial-review.md`, then `references/compliance-review.md`, then `references/pre-archive-review.md`
+**Determine review mode** from `litespec status <name> --json` field `reviewMode`:
+- **artifact** → **Artifact Review** — Read `references/artifact-review.md`
+- **implementation** → **Implementation Review** — Read `references/adversarial-review.md` then `references/compliance-review.md` (adversarial first to avoid anchoring)
+- **pre-archive** → **Pre-Archive Review** — Read `references/adversarial-review.md`, then `references/compliance-review.md`, then `references/pre-archive-review.md`
 
 **Cross-change dependencies:** Check `.litespec.yaml` for a `dependsOn` field. If present, for each dependency:
 1. If the dependency is an active change, read its specs/ and design.md from `specs/changes/<dep-name>/`
@@ -85,10 +84,11 @@ Use the scorecard table from the applicable reference file.
 
 ## Ending
 
-The report is the output. No follow-up actions from you. The user reads it and decides what to do next. If the user asks you to fix things, tell them to use the fix skill (litespec-fix).
+The report is the output. No follow-up actions from you. The user reads it and decides what to do next. If the user asks you to fix things, tell them to use the build skill (litespec-build).
 
 **Backlog deferral:** If the change explicitly defers scope not already in `specs/backlog.md`, suggest adding deferred items to the backlog.
 
 **Cross-cutting rules:** When reviewing design.md, flag imperative language that reads like a standing architectural ruling ("all subagents must...", "we will never..."). Recommend promoting via `litespec decide <slug>`.
 
 **Cross-change consistency** (when `dependsOn` is present): Cross-reference interface names, method signatures, config keys, type names, and glossary terms against dependency artifacts. Name drift is WARNING severity. Use semantic matching to catch affix variants, pluralization, and pointer wrappers.
+

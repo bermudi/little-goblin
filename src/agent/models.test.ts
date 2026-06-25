@@ -13,6 +13,7 @@ function makeConfig(modelName: string): Config {
     openaiApiKey: "oai-key",
     anthropicApiKey: "ant-key",
     zaiApiKey: "zai-key",
+    opencodeApiKey: "oc-key",
   } as unknown as Config;
 }
 
@@ -153,6 +154,60 @@ describe("resolveModel", () => {
       // no zaiApiKey
     } as unknown as Config;
     expect(() => resolveModel(cfg)).toThrow(/ZAI_API_KEY/);
+  });
+
+  // --- opencode-go/ provider ---
+
+  it("resolves opencode-go/glm-5.2 from pi-ai registry with v1 baseUrl", () => {
+    const r = resolveModel(makeConfig("opencode-go/glm-5.2"));
+    expect(r.model.id).toBe("glm-5.2");
+    expect(r.model.provider).toBe("opencode-go");
+    expect(r.model.api).toBe("openai-completions");
+    expect(r.model.baseUrl).toBe("https://opencode.ai/zen/go/v1");
+    expect(r.apiKey).toBe("oc-key");
+  });
+
+  it("resolves opencode-go/minimax-m3 via anthropic-messages endpoint (no /v1)", () => {
+    const r = resolveModel(makeConfig("opencode-go/minimax-m3"));
+    expect(r.model.id).toBe("minimax-m3");
+    expect(r.model.provider).toBe("opencode-go");
+    expect(r.model.api).toBe("anthropic-messages");
+    expect(r.model.baseUrl).toBe("https://opencode.ai/zen/go");
+    expect(r.apiKey).toBe("oc-key");
+  });
+
+  it("resolves opencode-go/kimi-k2.6 from pi-ai registry", () => {
+    const r = resolveModel(makeConfig("opencode-go/kimi-k2.6"));
+    expect(r.model.id).toBe("kimi-k2.6");
+    expect(r.model.provider).toBe("opencode-go");
+    expect(r.model.api).toBe("openai-completions");
+    expect(r.model.baseUrl).toBe("https://opencode.ai/zen/go/v1");
+  });
+
+  it("resolves opencode-go/kimi-k2.7-code (only K2.7 variant in pi-ai registry)", () => {
+    const r = resolveModel(makeConfig("opencode-go/kimi-k2.7-code"));
+    expect(r.model.id).toBe("kimi-k2.7-code");
+    expect(r.model.provider).toBe("opencode-go");
+    expect(r.apiKey).toBe("oc-key");
+  });
+
+  it("resolves an unknown opencode-go/ model via fallback to v1 chat completions", () => {
+    const r = resolveModel(makeConfig("opencode-go/future-model-9"));
+    expect(r.model.id).toBe("future-model-9");
+    expect(r.model.provider).toBe("opencode-go");
+    expect(r.model.api).toBe("openai-completions");
+    expect(r.model.baseUrl).toBe("https://opencode.ai/zen/go/v1");
+    expect(r.apiKey).toBe("oc-key");
+  });
+
+  it("throws when opencode-go API key is missing", () => {
+    const cfg = {
+      modelName: "opencode-go/glm-5.2",
+      botToken: "t",
+      allowedTgUserIds: "1",
+      // no opencodeApiKey
+    } as unknown as Config;
+    expect(() => resolveModel(cfg)).toThrow(/OPENCODE_API_KEY/);
   });
 
   // --- thinkingLevelMap inheritance ---

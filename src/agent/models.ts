@@ -64,7 +64,8 @@ export type ApiKeyEnv =
   | "OPENROUTER_API_KEY"
   | "OPENAI_API_KEY"
   | "ANTHROPIC_API_KEY"
-  | "ZAI_API_KEY";
+  | "ZAI_API_KEY"
+  | "OPENCODE_API_KEY";
 
 export interface ModelEntry {
   model: Model<Api>;
@@ -388,12 +389,78 @@ function zaiPatternMatch(modelName: string): ModelEntry | null {
   return zaiCoding(id);
 }
 
+// --- OpenCode Go subscription ---
+
+/**
+ * OpenCode Go: a curated bundle of open coding models at https://opencode.ai/zen/go.
+ * pi-ai ships a built-in `opencode-go` provider with the canonical model list and
+ * base URLs — openai-completions models live under `/zen/go/v1`, anthropic-messages
+ * models under `/zen/go` (no /v1). We look up the upstream Model when available
+ * so compat flags, baseUrl, and thinkingLevelMap inherit for free.
+ */
+const OPENCODE_GO_V1 = "https://opencode.ai/zen/go/v1";
+
+/**
+ * Lookup a model in pi-ai's built-in `opencode-go` provider registry.
+ * Returns null when no match is found.
+ */
+function lookupOpencodeGoModel(id: string): Model<Api> | null {
+  try {
+    const m = getBuiltinModel("opencode-go", id as never) as Model<Api> | undefined;
+    return m ?? null;
+  } catch { /* not found */ }
+  return null;
+}
+
+function opencodeGo(id: string): ModelEntry {
+  // Prefer pi-ai's built-in entry (correct baseUrl, compat flags, thinkingLevelMap).
+  const upstream = lookupOpencodeGoModel(id);
+  if (upstream) {
+    return {
+      apiKeyEnv: "OPENCODE_API_KEY",
+      thinkingLevel: "medium",
+      model: upstream,
+    };
+  }
+  // Fallback: construct manually. pi-ai's built-in provider is the source of
+  // truth for which api dialect + baseUrl each model uses; without an entry
+  // we default to chat completions at the v1 endpoint (matches the majority
+  // of the catalog — GLM, Kimi, DeepSeek, MiMo) and let /model surface the
+  // mismatch if it ever happens.
+  return {
+    apiKeyEnv: "OPENCODE_API_KEY",
+    thinkingLevel: "medium",
+    model: {
+      id,
+      name: `${id} (OpenCode Go)`,
+      api: "openai-completions",
+      provider: "opencode-go",
+      baseUrl: OPENCODE_GO_V1,
+      compat: { supportsDeveloperRole: false },
+      reasoning: true,
+      input: ["text"] as "text"[],
+      cost: ZERO_COST,
+      contextWindow: 200_000,
+      maxTokens: resolveMaxTokens(id),
+    } satisfies Model<"openai-completions">,
+  };
+}
+
+/** Dynamic fallback for `opencode-go/<id>` — OpenCode Go subscription. */
+function opencodeGoPatternMatch(modelName: string): ModelEntry | null {
+  if (!modelName.startsWith("opencode-go/")) return null;
+  const id = modelName.slice("opencode-go/".length);
+  if (!id) return null;
+  return opencodeGo(id);
+}
+
 const KEY_FIELD: Record<ApiKeyEnv, keyof Config> = {
   POE_API_KEY: "poeApiKey",
   OPENROUTER_API_KEY: "openrouterApiKey",
   OPENAI_API_KEY: "openaiApiKey",
   ANTHROPIC_API_KEY: "anthropicApiKey",
   ZAI_API_KEY: "zaiApiKey",
+  OPENCODE_API_KEY: "opencodeApiKey",
 };
 
 function getApiKey(cfg: Config, env: ApiKeyEnv): string | undefined {
@@ -412,7 +479,8 @@ export function resolveModel(cfg: Config): ResolvedModel {
     openrouterPatternMatch(cfg.modelName) ??
     directOpenAIPatternMatch(cfg.modelName) ??
     directAnthropicPatternMatch(cfg.modelName) ??
-    zaiPatternMatch(cfg.modelName);
+    zaiPatternMatch(cfg.modelName) ??
+    opencodeGoPatternMatch(cfg.modelName);
   if (!entry) {
     const known = Object.keys(MODELS).sort().join(", ");
     throw new Error(

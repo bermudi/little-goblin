@@ -20,6 +20,8 @@ export interface Config {
   anthropicApiKey?: string;
   /** Z.AI Coding Plan API key. Required iff selected model uses it. */
   zaiApiKey?: string;
+  /** OpenCode Go subscription API key. Required iff selected model uses it. */
+  opencodeApiKey?: string;
   goblinHome: string;
   logLevel: "debug" | "info" | "warn" | "error";
   /** Status-line tool visibility level. See `src/tg/buffer.ts`. */
@@ -76,6 +78,7 @@ export function loadConfig(): Config {
     openaiApiKey: cfg.openaiApiKey,
     anthropicApiKey: cfg.anthropicApiKey,
     zaiApiKey: cfg.zaiApiKey,
+    opencodeApiKey: cfg.opencodeApiKey,
     goblinHome,
     logLevel: cfg.logLevel,
     toolVisibility: cfg.toolVisibility,

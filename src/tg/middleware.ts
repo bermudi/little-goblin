@@ -7,8 +7,16 @@ const MEMBER_COUNT_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Whether the message (text or caption) contains an @mention of the bot.
- * Covers both `mention` entities (@username) and `text_mention` entities
- * (inline user tags from Telegram's mention picker).
+ *
+ * Two passes:
+ *   1. Entity pass — `mention` entities (@username) and `text_mention`
+ *      entities (inline user tags from Telegram's mention picker).
+ *      Usernames are case-insensitive on Telegram's side, so we compare
+ *      lowercased.
+ *   2. Plain-text fallback — if the client never resolved the `@handle`
+ *      into an entity (typed/pasted fast, or a non-Telegram-native
+ *      client), there is no entity at all. Match the literal handle in
+ *      the text so a real @mention still wakes the bot.
  */
 function isBotMentioned(ctx: Context): boolean {
   const botId = ctx.me.id;
@@ -19,17 +27,25 @@ function isBotMentioned(ctx: Context): boolean {
   // for media. We need to check both.
   const entities = ctx.msg?.entities ?? ctx.msg?.caption_entities ?? [];
   const text = ctx.msg?.text ?? ctx.msg?.caption ?? "";
+  const lowerUser = botUsername.toLowerCase();
 
-  return entities.some((e) => {
+  if (entities.some((e) => {
     if (e.type === "mention") {
-      const mention = text.slice(e.offset, e.offset + e.length);
-      return mention === `@${botUsername}`;
+      return text.slice(e.offset, e.offset + e.length).toLowerCase() === `@${lowerUser}`;
     }
     if (e.type === "text_mention") {
       return e.user?.id === botId;
     }
     return false;
-  });
+  })) {
+    return true;
+  }
+
+  // Plain-text fallback: @handle present in the text with no resolved
+  // entity. Word-boundary at the end so @goblinbot doesn't match
+  // @goblinbot5000; start-anchored on the @ so we don't pattern-match a
+  // mid-mention substring.
+  return new RegExp(`@${lowerUser.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9A-Za-z_])`, "i").test(text);
 }
 
 /**
@@ -113,10 +129,17 @@ export function buildAllowlistMiddleware(cfg: Config) {
         await next();
         return;
       }
+      const entTypes = (ctx.msg?.entities ?? ctx.msg?.caption_entities ?? []).map((e) => e.type);
+      const rawText = ctx.msg?.text ?? ctx.msg?.caption ?? "";
+      const handleInText = ctx.me.username
+        ? rawText.toLowerCase().includes(`@${ctx.me.username.toLowerCase()}`)
+        : false;
       log.debug("dropping non-mention from allowed user in multi-member group", {
         userId,
         chatId: ctx.chat.id,
         memberCount: count,
+        entityTypes: entTypes,
+        handleInText,
       });
       return;
     }

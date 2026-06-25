@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@earendil-works/pi-coding-agent": "^0.80.2",
     "@sinclair/typebox": "^0.34.49",
     "ai": "^6.0.183",
     "grammy": "^1.30.0",

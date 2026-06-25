@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import {
   AgentSession,
+  AuthStorage,
   DefaultResourceLoader,
   SessionManager,
   createAgentSession,
@@ -20,7 +21,7 @@ import { log } from "../log.ts";
 import { appendTranscriptEntry, dispatchAgentEvent } from "./events.ts";
 import type { TurnCallbacks } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
-import { workdirPath, createPiServices, piAgentDir } from "../pi-host.ts";
+import { workdirPath, createPiServices, piAgentDir, findMostRecentPiSession } from "../pi-host.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import { resolveModel, type ResolvedModel } from "./models.ts";
 import { buildGoblinSystemPrompt } from "./system-prompt.ts";
@@ -86,6 +87,8 @@ export class AgentRunner {
   private _thinkingLevel: ThinkingLevel | undefined;
   private pendingProjectNotice: string | undefined;
   private resolvedModel: ResolvedModel | null = null;
+  /** Pi auth storage — retained so setModel() can register a new provider's key. */
+  private authStorage: AuthStorage | null = null;
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
    * resolve within the cascade timeout. Once set, `isStreaming` reports
@@ -124,12 +127,28 @@ export class AgentRunner {
 
     // Create pi services with goblin paths
     const { authStorage, modelRegistry, settingsManager } = createPiServices(home);
+    this.authStorage = authStorage;
     authStorage.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
 
     const cwd = this.projectDir ?? workdirPath(home);
     const agentDir = piAgentDir(home);
 
-    const sessionManager = SessionManager.continueRecent(cwd, join(sessionDir(home, this.sessionId), "pi"));
+    // Resume the most recent pi session file in this goblin session's private
+    // directory. We deliberately do NOT use SessionManager.continueRecent(),
+    // which filters candidate files by their on-disk `header.cwd` matching the
+    // resolved cwd. Goblin pins the session directory to sessions/<id>/pi (the
+    // dir is the scope), and `cwd` here can differ from a prior session file's
+    // header — e.g. after a /project bind (the old runner was created under a
+    // different cwd) or a /model switch (the recreated runner inherits the
+    // current projectDir). With cwd-gated filtering, resume silently misses and
+    // a fresh empty session is created, losing all conversation history.
+    // Opening the file directly with a cwd override lets history survive across
+    // project and model switches.
+    const piSessionDir = join(sessionDir(home, this.sessionId), "pi");
+    const recent = findMostRecentPiSession(piSessionDir);
+    const sessionManager = recent
+      ? SessionManager.open(recent, piSessionDir, cwd)
+      : SessionManager.create(cwd, piSessionDir);
 
     // Caller-supplied tools first; then memory; then spawn_subagent if wired.
     const tools: ToolDefinition[] = [
@@ -386,7 +405,25 @@ export class AgentRunner {
   }
 
   /**
-   * Set the thinking level for the next turn.
+   * Switch the model in place. On an initialized session this delegates to
+   * pi's `session.setModel()`, which appends a `model_change` entry to the
+   * *same* session file and re-clamps thinking — no dispose, no recreate, no
+   * history loss. Before init it just records the override (applied on first
+   * prompt). Either way `_modelName`/`resolvedModel` track the new model.
+   */
+  async setModel(modelName: string): Promise<void> {
+    const resolved = resolveModel({ ...this.cfg, modelName });
+    this._modelName = modelName;
+    this.resolvedModel = resolved;
+    if (this.session) {
+      // Register the new provider's API key so session.setModel()'s
+      // hasConfiguredAuth check passes for a provider we haven't used yet.
+      this.authStorage?.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
+      await this.session.setModel(resolved.model);
+    }
+  }
+
+  /**
    * If the session is already initialized, applies immediately.
    * Otherwise stores a pending override applied on first prompt().
    * Pass `undefined` to reset to the model's default.

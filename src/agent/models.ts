@@ -14,7 +14,8 @@
  *
  * Extend by adding entries. The registry is explicit — no runtime synthesis.
  */
-import { type Api, type Model, type ThinkingLevelMap, getModel, getModels, getProviders } from "@earendil-works/pi-ai";
+import { type Api, type Model, type ThinkingLevelMap } from "@earendil-works/pi-ai";
+import { getBuiltinModel, getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 
@@ -28,11 +29,11 @@ import type { Config } from "../config.ts";
  * inheriting correct output limits from the upstream model database.
  */
 function resolveMaxTokens(modelId: string, fallback = 8_192): number {
-  const providers = getProviders();
+  const providers = getBuiltinProviders();
 
   // Exact match across all providers
   for (const p of providers) {
-    const m = getModel(p, modelId as never) as Model<Api> | undefined;
+    const m = getBuiltinModel(p, modelId as never) as Model<Api> | undefined;
     if (m) return m.maxTokens;
   }
 
@@ -40,7 +41,7 @@ function resolveMaxTokens(modelId: string, fallback = 8_192): number {
   const stripped = modelId.replace(/-\d{8}$/, "");
   if (stripped !== modelId) {
     for (const p of providers) {
-      const m = getModel(p, stripped as never) as Model<Api> | undefined;
+      const m = getBuiltinModel(p, stripped as never) as Model<Api> | undefined;
       if (m) return m.maxTokens;
     }
   }
@@ -49,7 +50,7 @@ function resolveMaxTokens(modelId: string, fallback = 8_192): number {
   // Avoids ambiguity when e.g. "gpt-5" and "gpt-5-pro" both exist.
   let best: Model<Api> | null = null;
   for (const p of providers) {
-    for (const m of getModels(p)) {
+    for (const m of getBuiltinModels(p)) {
       if (m.id.startsWith(stripped) || stripped.startsWith(m.id)) {
         if (!best || m.id.length > best.id.length) best = m;
       }
@@ -212,7 +213,7 @@ const ZAI_CODING = "https://api.z.ai/api/coding/paas/v4";
  */
 function lookupZaiModel(id: string): Model<"openai-completions"> | null {
   try {
-    const m = getModel("zai", id as never) as Model<Api>;
+    const m = getBuiltinModel("zai", id as never) as Model<Api>;
     if (m?.api === "openai-completions") return m as Model<"openai-completions">;
   } catch { /* not found */ }
   return null;
@@ -228,7 +229,11 @@ function zaiCoding(id: string): ModelEntry {
       model: upstream,
     };
   }
-  // Fallback: construct manually (misses zai-specific compat flags)
+  // Fallback: construct manually. pi-ai's detectCompat auto-fills most zai
+  // flags from provider="zai" / api.z.ai baseUrl (thinkingFormat, etc.), but
+  // `zaiToolStream` defaults to false — every zai entry in pi-ai's registry
+  // sets it true so tool-call deltas stream incrementally. Pin it here so
+  // models not yet upstream (e.g. glm-5.2) match registered ones.
   return {
     apiKeyEnv: "ZAI_API_KEY",
     thinkingLevel: "medium",
@@ -238,6 +243,7 @@ function zaiCoding(id: string): ModelEntry {
       api: "openai-completions",
       provider: "zai",
       baseUrl: ZAI_CODING,
+      compat: { supportsDeveloperRole: false, thinkingFormat: "zai", zaiToolStream: true },
       reasoning: true,
       input: ["text"] as "text"[],
       cost: ZERO_COST,
@@ -280,17 +286,17 @@ export const MODELS: Record<string, ModelEntry> = {
  * for the same model id, the longest-prefix match wins (same as resolveMaxTokens).
  */
 function resolveThinkingLevelMap(modelId: string): ThinkingLevelMap | undefined {
-  const providers = getProviders();
+  const providers = getBuiltinProviders();
 
   for (const p of providers) {
-    const m = getModel(p, modelId as never) as Model<Api> | undefined;
+    const m = getBuiltinModel(p, modelId as never) as Model<Api> | undefined;
     if (m?.thinkingLevelMap) return m.thinkingLevelMap;
   }
 
   const stripped = modelId.replace(/-\d{8}$/, "");
   if (stripped !== modelId) {
     for (const p of providers) {
-      const m = getModel(p, stripped as never) as Model<Api> | undefined;
+      const m = getBuiltinModel(p, stripped as never) as Model<Api> | undefined;
       if (m?.thinkingLevelMap) return m.thinkingLevelMap;
     }
   }
@@ -299,7 +305,7 @@ function resolveThinkingLevelMap(modelId: string): ThinkingLevelMap | undefined 
   // both exist with different maps.
   let best: Model<Api> | null = null;
   for (const p of providers) {
-    for (const m of getModels(p)) {
+    for (const m of getBuiltinModels(p)) {
       if (m.id === stripped || m.id.startsWith(stripped) || stripped.startsWith(m.id)) {
         if (m.thinkingLevelMap && (!best || m.id.length > best.id.length)) best = m;
       }

@@ -5,6 +5,7 @@
  * cross-module import from `subagents/` into `agent/paths.ts`.
  */
 
+import { readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 
@@ -50,6 +51,38 @@ export function piAgentDir(home: string): string {
 /** Path to the AGENTS.md file at goblin home root. */
 export function agentsMdPath(home: string): string {
   return join(home, "AGENTS.md");
+}
+
+/**
+ * Find the most recently modified `.jsonl` session file in `piSessionDir`.
+ *
+ * This mirrors pi's internal `findMostRecentSession` but is cwd-agnostic: it
+ * does NOT filter by the on-disk `header.cwd`, because goblin pins the session
+ * directory to sessions/<id>/pi (the directory is the scope) and the runner's
+ * resolved cwd can legitimately differ from a prior file's header — e.g. after
+ * a /project bind or a /model switch. Cwd-gated filtering (which
+ * SessionManager.continueRecent performs) silently misses in that case and
+ * creates a fresh empty session, losing history.
+ *
+ * Used together with SessionManager.open(file, dir, cwd) to resume history
+ * across project and model switches. Returns null on ENOENT or empty dir.
+ */
+export function findMostRecentPiSession(piSessionDir: string): string | null {
+  if (!existsSync(piSessionDir)) return null;
+  let files: string[];
+  try {
+    files = readdirSync(piSessionDir).filter((f) => f.endsWith(".jsonl"));
+  } catch {
+    return null;
+  }
+  if (files.length === 0) return null;
+  let best: { path: string; mtime: number } | null = null;
+  for (const f of files) {
+    const path = join(piSessionDir, f);
+    const mtime = statSync(path).mtime.getTime();
+    if (!best || mtime > best.mtime) best = { path, mtime };
+  }
+  return best ? best.path : null;
 }
 
 /** Path to the SOUL.md file at goblin home root. */

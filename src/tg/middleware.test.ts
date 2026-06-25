@@ -92,6 +92,59 @@ describe("buildAllowlistMiddleware", () => {
     expect(await run(ctx)).toHaveBeenCalledTimes(1);
   });
 
+  it("passes case-insensitive @mention entities for the bot", async () => {
+    const { ctx } = makeCtx({
+      chat: { id: -1, type: "group" },
+      from: { id: 2, first_name: "Mallory" },
+      text: "hey @GOBLINBOT",
+      entities: [{ type: "mention", offset: 4, length: 10 } as MessageEntity],
+    });
+    expect(await run(ctx)).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a plain-text @handle that the client never resolved into an entity", async () => {
+    const { ctx } = makeCtx({
+      chat: { id: -1, type: "group" },
+      from: { id: 2, first_name: "Mallory" },
+      text: "@goblinbot hola?",
+      entities: [],
+    });
+    expect(await run(ctx)).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a plain-text @handle embedded in larger text with no entity", async () => {
+    const { ctx } = makeCtx({
+      chat: { id: -1, type: "group" },
+      from: { id: 1, first_name: "Daniel" },
+      text: "hola? @goblinbot",
+      entities: [],
+      memberCount: 3,
+    });
+    expect(await run(ctx)).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not false-positive on a longer handle sharing the bot's prefix", async () => {
+    const { ctx } = makeCtx({
+      chat: { id: -1, type: "group" },
+      from: { id: 1, first_name: "Daniel" },
+      text: "@goblinbot5000 hi",
+      entities: [],
+      memberCount: 3,
+    });
+    expect(await run(ctx)).not.toHaveBeenCalled();
+  });
+
+  it("does not false-positive on a different bot's handle", async () => {
+    const { ctx } = makeCtx({
+      chat: { id: -1, type: "group" },
+      from: { id: 1, first_name: "Daniel" },
+      text: "@otherbot hi",
+      entities: [],
+      memberCount: 3,
+    });
+    expect(await run(ctx)).not.toHaveBeenCalled();
+  });
+
   it("passes allowed-user slash commands in large groups without consulting member count", async () => {
     const { ctx, getChatMemberCount } = makeCtx({
       chat: { id: -1, type: "group" },

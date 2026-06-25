@@ -49,6 +49,7 @@ function makeRunner(): AgentRunner {
   return {
     modelName: "poe/GPT-4o",
     compact: mock(async () => ({ tokensBefore: 42_000 })),
+    setModel: mock(async (_name: string) => {}),
     setThinkingLevel: mock(() => {}),
     getActiveToolNames: mock(() => []),
     skillsLoaded: null,
@@ -177,12 +178,25 @@ describe("handleCancelCapableCommand", () => {
     expect(result.sideEffects).toEqual([{ kind: "runner-disposed", sessionId: session.id }]);
   });
 
-  it("/model switches favorites and disposes the runner", async () => {
+  it("/model switches the model in place without disposing the runner", async () => {
     const harness = makeHarness();
     const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+    const runner = makeRunner();
+    const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, runner, harness }));
+    expect(result.reply).toContain("Switched to `poe/GPT-4o`");
+    // No dispose/recreate — the model change is applied to the live session
+    // via setModel(), preserving history in the same pi session file.
+    expect(result.sideEffects).toEqual([]);
+    expect(runner.setModel).toHaveBeenCalledWith("poe/GPT-4o");
+  });
+
+  it("/model without a runner only persists the override", async () => {
+    const harness = makeHarness();
+    const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+    // No runner passed — session exists but runner not yet created.
     const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, harness }));
     expect(result.reply).toContain("Switched to `poe/GPT-4o`");
-    expect(result.sideEffects).toEqual([{ kind: "runner-disposed", sessionId: session.id }]);
+    expect(result.sideEffects).toEqual([]);
   });
 
   it("/model lists favorites without an argument", async () => {

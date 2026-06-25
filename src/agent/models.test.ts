@@ -123,6 +123,28 @@ describe("resolveModel", () => {
     expect(r.apiKey).toBe("zai-key");
   });
 
+  it("zai/ fallback carries zai compat flags (for models not yet in pi-ai)", () => {
+    // glm-future-99 isn't in pi-ai's registry, so it takes the manual fallback.
+    // The fallback must still set zaiToolStream:true like upstream entries —
+    // otherwise tool-call deltas don't stream to Telegram.
+    const r = resolveModel(makeConfig("zai/glm-future-99"));
+    expect((r.model as any).compat?.thinkingFormat).toBe("zai");
+    expect((r.model as any).compat?.zaiToolStream).toBe(true);
+    expect((r.model as any).compat?.supportsDeveloperRole).toBe(false);
+  });
+
+  it("resolves zai/glm-5.2 from the pi-ai registry with upstream compat", () => {
+    const r = resolveModel(makeConfig("zai/glm-5.2"));
+    expect(r.model.id).toBe("glm-5.2");
+    expect(r.model.provider).toBe("zai");
+    expect(r.model.api).toBe("openai-completions");
+    expect(r.apiKey).toBe("zai-key");
+    // Upstream registry carries compat + thinkingLevelMap
+    expect((r.model as any).compat?.thinkingFormat).toBe("zai");
+    expect((r.model as any).compat?.zaiToolStream).toBe(true);
+    expect(r.model.thinkingLevelMap).toBeDefined();
+  });
+
   it("throws when zai API key is missing", () => {
     const cfg = {
       modelName: "zai/glm-5.1",

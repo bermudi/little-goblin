@@ -28,6 +28,7 @@ const sessionHolder = {
   })),
   dispose: mock(() => {}),
   setThinkingLevel: mock((_level: string) => {}),
+  setModel: mock(async (_model: unknown) => {}),
   /** Sequenced call log for asserting ordering across mocks. */
   callOrder: [] as string[],
 
@@ -57,6 +58,9 @@ const sessionHolder = {
     this.setThinkingLevel = mock((_level: string) => {
       sessionHolder.callOrder.push("setThinkingLevel");
     });
+    this.setModel = mock(async (_model: unknown) => {
+      sessionHolder.callOrder.push("setModel");
+    });
   },
 
   emit(event: Record<string, unknown>) {
@@ -85,12 +89,15 @@ const sessionHolder = {
       compact: (customInstructions?: string) => holder.compact(customInstructions),
       dispose: () => holder.dispose(),
       setThinkingLevel: (level: string) => holder.setThinkingLevel(level),
+      setModel: (model: unknown) => holder.setModel(model),
     };
   },
 };
 
 let capturedCreateArgs: unknown[] = [];
 let capturedResourceLoaderArgs: unknown[] = [];
+/** Records each SessionManager factory call: { method, args }. */
+let sessionManagerCalls: { method: string; args: unknown[] }[] = [];
 
 // ---------------------------------------------------------------------------
 // Module mock — hoisted by Bun before any imports below
@@ -121,8 +128,22 @@ mock.module("@earendil-works/pi-coding-agent", () => {
       inMemory: (_obj: unknown) => ({}),
     },
     SessionManager: {
-      inMemory: (_path: string) => ({}),
-      continueRecent: (cwd: string, sessionDir: string) => ({ cwd, sessionDir }),
+      inMemory: (cwd: string) => {
+        sessionManagerCalls.push({ method: "inMemory", args: [cwd] });
+        return {};
+      },
+      continueRecent: (cwd: string, sessionDir: string) => {
+        sessionManagerCalls.push({ method: "continueRecent", args: [cwd, sessionDir] });
+        return { cwd, sessionDir };
+      },
+      create: (cwd: string, sessionDir: string) => {
+        sessionManagerCalls.push({ method: "create", args: [cwd, sessionDir] });
+        return { cwd, sessionDir };
+      },
+      open: (path: string, sessionDir: string, cwd: string) => {
+        sessionManagerCalls.push({ method: "open", args: [path, sessionDir, cwd] });
+        return { path, sessionDir, cwd };
+      },
     },
     createAgentSession: async (opts: unknown) => {
       capturedCreateArgs.push(opts);
@@ -211,6 +232,7 @@ beforeEach(() => {
 
   capturedCreateArgs = [];
   capturedResourceLoaderArgs = [];
+  sessionManagerCalls = [];
   sessionHolder.reset();
 });
 
@@ -233,6 +255,47 @@ describe("AgentRunner", () => {
         cwd: join(tmpDir, "workdir"),
         sessionDir: join(tmpDir, "sessions", "sess-001", "pi"),
       });
+    });
+
+    it("creates a fresh session when no prior pi session file exists", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      const methods = sessionManagerCalls.map((c) => c.method);
+      expect(methods).toContain("create");
+      expect(methods).not.toContain("open");
+      expect(methods).not.toContain("continueRecent");
+    });
+
+    // Regression: a /project bind or /model switch recreates the runner under
+    // a cwd that differs from an existing pi session file's header.cwd. The old
+    // code used SessionManager.continueRecent(), which cwd-gates the resume
+    // lookup and silently missed — producing a blank session that lost all
+    // conversation history. Resume must open the existing file directly with a
+    // cwd override instead.
+    it("resumes prior pi session even when its header cwd differs from projectDir", async () => {
+      const piDir = join(tmpDir, "sessions", "sess-001", "pi");
+      mkdirSync(piDir, { recursive: true });
+      // Prior session file whose header cwd does NOT match the runner's cwd.
+      const staleCwd = "/some/other/project";
+      writeFileSync(
+        join(piDir, "2026-01-01T00-00-00-000Z_old.jsonl"),
+        JSON.stringify({ type: "session", version: 3, id: "old-session", timestamp: "2026-01-01T00:00:00.000Z", cwd: staleCwd }) + "\n",
+        "utf-8",
+      );
+
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, {}, "/home/daniel/build/scribus-card");
+      await runner.prompt("hello", nopCallbacks());
+
+      const methods = sessionManagerCalls.map((c) => c.method);
+      expect(methods).toContain("open");
+      expect(methods).not.toContain("create");
+      expect(methods).not.toContain("continueRecent");
+
+      // The open() call must carry the runner's current cwd as the override,
+      // not the stale header cwd.
+      const openCall = sessionManagerCalls.find((c) => c.method === "open")!;
+      expect(openCall.args[2]).toBe("/home/daniel/build/scribus-card");
     });
   });
 
@@ -448,6 +511,45 @@ describe("AgentRunner", () => {
       runner.setThinkingLevel(undefined);
       // The model default for poe/Claude-Sonnet-4.6 is "high"
       expect(sessionHolder.setThinkingLevel).toHaveBeenCalledWith("high");
+    });
+  });
+
+  describe("setModel (in-place model switch)", () => {
+    beforeEach(() => {
+      capturedCreateArgs = [];
+      sessionHolder.reset();
+    });
+
+    it("delegates to session.setModel() on an initialized runner", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      await runner.setModel("poe/GPT-4o");
+      expect(sessionHolder.setModel).toHaveBeenCalledTimes(1);
+      expect(runner.modelName).toBe("poe/GPT-4o");
+    });
+
+    it("does not recreate the session when switching models", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+      expect(capturedCreateArgs).toHaveLength(1);
+
+      await runner.setModel("poe/GPT-4o");
+      // No new createAgentSession call — the switch is in-place.
+      expect(capturedCreateArgs).toHaveLength(1);
+    });
+
+    it("records the override and defers to init when called before first prompt", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.setModel("poe/GPT-4o");
+      // Not initialized yet → setModel should NOT have been called on a session.
+      expect(sessionHolder.setModel).not.toHaveBeenCalled();
+      expect(runner.modelName).toBe("poe/GPT-4o");
+
+      await runner.prompt("hello", nopCallbacks());
+      // The deferred model is what init resolves; setModel stays uncalled
+      // because the session was created directly under the new model.
+      expect(sessionHolder.setModel).not.toHaveBeenCalled();
     });
   });
 

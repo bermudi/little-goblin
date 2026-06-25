@@ -153,14 +153,25 @@ export async function handleCancelCapableCommand(opts: DispatchOpts): Promise<Di
           currentResolvedModel: currentModelResolved,
           setModelName: (name) => {
             if (!session) return;
+            // Persist the override to state.json. Do NOT dispose the runner:
+            // an in-place model switch (session.setModel) appends a
+            // model_change entry to the same session file, preserving history.
+            // The live setModel() call happens below, after executeModel
+            // confirms the target resolved.
             manager.setModelName(session.id, name);
-            sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
           },
           onThinkingLevelClamped: (newLevel) => {
             if (!session) return;
             manager.setThinkingLevel(session.id, newLevel);
           },
         });
+        // Apply the switch to the live runner in place. Only set/cleared
+        // results change the model; "list"/"bad-*" results do not. "cleared"
+        // reverts to the config default.
+        if ((result.kind === "set" || result.kind === "cleared") && existingRunner) {
+          const targetName = result.kind === "set" ? result.modelName : cfg.modelName;
+          await existingRunner.setModel(targetName);
+        }
         return replied(`${result.reply}${suffix()}`, sideEffects);
       } catch (err) {
         log.error("model failed", { error: String(err), sessionId: session?.id });

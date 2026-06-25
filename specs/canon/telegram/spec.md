@@ -92,7 +92,7 @@ The allowlist middleware SHALL cache the result of `getChatMemberCount(chatId)` 
 The allowlist middleware SHALL route messages according to chat type, user allowlist membership, and the presence of a bot @mention in the message text or caption. The routing rules are:
 
 - DMs (chat type `private`): allowed users only, no exceptions. Non-allowed users are dropped silently.
-- Groups: a bot @mention in `entities` or `caption_entities` is always passed through, for any user.
+- Groups: a bot @mention is always passed through, for any user. A mention is recognized in two ways: (a) a `mention` entity in `entities`/`caption_entities` whose text matches `@<botUsername>` case-insensitively, or a `text_mention` entity whose user id matches `ctx.me.id`; or (b) a plain-text `@<botUsername>` fallback when the client sent the handle without resolving it into an entity. The plain-text match is anchored on `@` and rejects handles that extend the bot's username with additional `[0-9A-Za-z_]` characters (so `@goblinbot` does not match `@goblinbot5000`).
 - Groups (no @mention): an allowed user sending a slash command (an entity with `type === "bot_command"`) is always passed through.
 - Groups (no @mention, not a slash command): an allowed user is passed through only if the group has 2 or fewer members. Otherwise dropped.
 - Groups (no @mention, not a slash command, non-allowed user): dropped.
@@ -111,8 +111,22 @@ The allowlist middleware SHALL route messages according to chat type, user allow
 #### Scenario: Group message with bot @mention
 
 - **WHEN** a message arrives in a non-private chat
-- **AND** the message entities (or caption entities) include a `mention` matching `@<botUsername>` or a `text_mention` matching `ctx.me.id`
+- **AND** the message entities (or caption entities) include a `mention` matching `@<botUsername>` case-insensitively, or a `text_mention` matching `ctx.me.id`
 - **THEN** `next()` SHALL be called regardless of user allowlist membership
+
+#### Scenario: Group message with plain-text @handle and no resolved entity
+
+- **WHEN** a message arrives in a non-private chat
+- **AND** the message contains a literal `@<botUsername>` in text or caption
+- **AND** no `mention`/`text_mention` entity resolves to the bot (the client did not turn the handle into a clickable mention)
+- **THEN** `next()` SHALL be called regardless of user allowlist membership
+
+#### Scenario: Plain-text handle sharing the bot's prefix does not count as a mention
+
+- **WHEN** a message arrives in a non-private chat
+- **AND** the message contains a literal handle that extends `<botUsername>` with additional `[0-9A-Za-z_]` characters (e.g. `@goblinbot5000`)
+- **AND** there is no other mention of the bot
+- **THEN** `next()` SHALL NOT be called on the basis of that text
 
 #### Scenario: Allowed user slash command in large group
 

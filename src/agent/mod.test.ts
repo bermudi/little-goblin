@@ -793,6 +793,188 @@ describe("AgentRunner", () => {
     });
   });
 
+  describe("message_end reconciliation", () => {
+    it("emits correcting delta when streamed text is a truncated prefix of final text", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      // Stream a truncated prefix — the last delta was lost upstream.
+      sessionHolder.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", delta: "🌸 **https://karen-valdez-cards" },
+      });
+      // message_end carries the full text.
+      sessionHolder.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "🌸 **https://karen-valdez-cards.netlify.app**" }],
+          stopReason: "stop",
+        },
+      });
+
+      // The correcting delta should be the missing tail.
+      const deltaCalls = (cb.onTextDelta as ReturnType<typeof mock>).mock.calls;
+      expect(deltaCalls).toHaveLength(2);
+      expect(deltaCalls[0]![0]).toBe("🌸 **https://karen-valdez-cards");
+      expect(deltaCalls[1]![0]).toBe(".netlify.app**");
+    });
+
+    it("does not emit correcting delta when streamed text matches final text", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      sessionHolder.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", delta: "complete response" },
+      });
+      sessionHolder.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "complete response" }],
+          stopReason: "stop",
+        },
+      });
+
+      const deltaCalls = (cb.onTextDelta as ReturnType<typeof mock>).mock.calls;
+      expect(deltaCalls).toHaveLength(1);
+      expect(deltaCalls[0]![0]).toBe("complete response");
+    });
+
+    it("does not emit correcting delta when deltas diverged from final text (corruption)", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      // Deltas delivered different text than the final message — not truncation.
+      sessionHolder.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", delta: "wrong text" },
+      });
+      sessionHolder.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "correct text" }],
+          stopReason: "stop",
+        },
+      });
+
+      const deltaCalls = (cb.onTextDelta as ReturnType<typeof mock>).mock.calls;
+      expect(deltaCalls).toHaveLength(1);
+      expect(deltaCalls[0]![0]).toBe("wrong text");
+    });
+
+    it("resets accumulated text after each assistant message_end (multi-message turn)", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      // First assistant message: complete text, no truncation.
+      sessionHolder.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", delta: "first message" },
+      });
+      sessionHolder.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "first message" }],
+          stopReason: "toolUse",
+        },
+      });
+
+      // Tool execution in between (no text deltas).
+      sessionHolder.emit({ type: "tool_execution_start", toolName: "bash", args: {} });
+      sessionHolder.emit({ type: "tool_execution_end", toolName: "bash", isError: false });
+
+      // Second assistant message: truncated prefix.
+      sessionHolder.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", delta: "second " },
+      });
+      sessionHolder.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "second message" }],
+          stopReason: "stop",
+        },
+      });
+
+      const deltaCalls = (cb.onTextDelta as ReturnType<typeof mock>).mock.calls;
+      // 1st msg: "first message" (no correction)
+      // 2nd msg: "second " + correcting "message"
+      expect(deltaCalls).toHaveLength(3);
+      expect(deltaCalls[0]![0]).toBe("first message");
+      expect(deltaCalls[1]![0]).toBe("second ");
+      expect(deltaCalls[2]![0]).toBe("message");
+    });
+
+    it("ignores message_end on non-assistant messages", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      sessionHolder.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", delta: "partial" },
+      });
+      // A toolResult message_end should not trigger reconciliation or reset.
+      sessionHolder.emit({
+        type: "message_end",
+        message: {
+          role: "toolResult",
+          toolCallId: "tc-1",
+          toolName: "bash",
+          content: [{ type: "text", text: "tool output" }],
+        },
+      });
+
+      const deltaCalls = (cb.onTextDelta as ReturnType<typeof mock>).mock.calls;
+      expect(deltaCalls).toHaveLength(1);
+      expect(deltaCalls[0]![0]).toBe("partial");
+    });
+
+    it("handles multiple text blocks in final message content", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      sessionHolder.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", delta: "part1 " },
+      });
+      sessionHolder.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "internal reasoning" },
+            { type: "text", text: "part1 " },
+            { type: "text", text: "part2" },
+          ],
+          stopReason: "stop",
+        },
+      });
+
+      const deltaCalls = (cb.onTextDelta as ReturnType<typeof mock>).mock.calls;
+      expect(deltaCalls).toHaveLength(2);
+      expect(deltaCalls[0]![0]).toBe("part1 ");
+      expect(deltaCalls[1]![0]).toBe("part2");
+    });
+  });
+
   describe("transcript.jsonl", () => {
     it("appends final message entries for message_end events only", async () => {
       const cb = nopCallbacks();

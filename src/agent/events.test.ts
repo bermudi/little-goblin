@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   appendTranscriptEntry,
   dispatchAgentEvent,
+  extractAssistantText,
   type TurnCallbacks,
 } from "./events.ts";
 
@@ -345,5 +346,81 @@ describe("dispatchAgentEvent", () => {
       dispatchAgentEvent({ type: "some_future_event" } as any, cb);
     }).not.toThrow();
     expect(cb.calls).toEqual([]);
+  });
+});
+
+describe("extractAssistantText", () => {
+  it("returns undefined for non-message_end events", () => {
+    expect(extractAssistantText({ type: "agent_start" })).toBeUndefined();
+    expect(extractAssistantText({ type: "message_update" })).toBeUndefined();
+  });
+
+  it("returns undefined for non-assistant messages", () => {
+    expect(
+      extractAssistantText({
+        type: "message_end",
+        message: { role: "user", content: "hello" },
+      }),
+    ).toBeUndefined();
+    expect(
+      extractAssistantText({
+        type: "message_end",
+        message: { role: "toolResult", content: [{ type: "text", text: "out" }] },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("concatenates all text blocks in order", () => {
+    expect(
+      extractAssistantText({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "hmm" },
+            { type: "text", text: "part1 " },
+            { type: "toolCall", id: "c1", name: "bash", arguments: {} },
+            { type: "text", text: "part2" },
+          ],
+        },
+      }),
+    ).toBe("part1 part2");
+  });
+
+  it("returns string content directly", () => {
+    expect(
+      extractAssistantText({
+        type: "message_end",
+        message: { role: "assistant", content: "plain string content" },
+      }),
+    ).toBe("plain string content");
+  });
+
+  it("returns undefined when content has no text blocks", () => {
+    expect(
+      extractAssistantText({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "only thinking" }],
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when message is missing", () => {
+    expect(extractAssistantText({ type: "message_end" })).toBeUndefined();
+  });
+
+  it("returns undefined for empty text blocks", () => {
+    expect(
+      extractAssistantText({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "" }],
+        },
+      }),
+    ).toBeUndefined();
   });
 });

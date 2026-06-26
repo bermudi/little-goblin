@@ -120,6 +120,36 @@ export function dispatchAgentEvent(event: AgentSessionEvent, callbacks: TurnCall
   }
 }
 
+/**
+ * Extract the concatenated assistant text from a `message_end` event's
+ * `message.content`. Joins every `{ type: "text" }` block in order; ignores
+ * thinking, tool calls, images, and unknown blocks. Returns `undefined` when
+ * the event is not an assistant message_end with text content.
+ *
+ * Used by the runner to reconcile streamed deltas against the final assembled
+ * message — see `handleEvent` in `mod.ts`.
+ */
+export function extractAssistantText(event: object): string | undefined {
+  const e = event as Record<string, unknown>;
+  if (e.type !== "message_end") return undefined;
+  const msg = e.message;
+  if (typeof msg !== "object" || msg === null) return undefined;
+  const m = msg as Record<string, unknown>;
+  if (m.role !== "assistant") return undefined;
+  const content = m.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  let text = "";
+  for (const item of content) {
+    if (typeof item !== "object" || item === null) continue;
+    const block = item as Record<string, unknown>;
+    if (block.type === "text" && typeof block.text === "string") {
+      text += block.text;
+    }
+  }
+  return text.length > 0 ? text : undefined;
+}
+
 function readCompactionTokensBefore(event: AgentSessionEvent): number | undefined {
   const result = (event as { result?: unknown }).result;
   if (typeof result !== "object" || result === null) return undefined;

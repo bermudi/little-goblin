@@ -18,7 +18,7 @@ import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { appendTranscriptEntry, dispatchAgentEvent } from "./events.ts";
+import { appendTranscriptEntry, dispatchAgentEvent, extractAssistantText } from "./events.ts";
 import type { TurnCallbacks } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
 import { workdirPath, createPiServices, piAgentDir, findMostRecentPiSession } from "../pi-host.ts";
@@ -246,6 +246,43 @@ export class AgentRunner {
       const ame = event.assistantMessageEvent;
       if (ame.type === "text_delta") {
         this.accumulatedText += ame.delta;
+      }
+    }
+
+    // Reconciliation: when message_end arrives with the full assembled text,
+    // compare it against the sum of streamed text_deltas for THIS message. If
+    // deltas were lost upstream (provider streaming quirk, proxy merging
+    // content_block_delta, network drop), the accumulated text is a strict
+    // prefix of the final message. Emit a correcting delta for the missing
+    // tail so the Telegram buffer self-heals regardless of what went wrong
+    // upstream.
+    //
+    // The `startsWith` guard means we only patch truncation, never corruption:
+    // if the deltas diverged from the final text, that's a different bug and
+    // we must not silently rewrite what the user already saw.
+    //
+    // `accumulatedText` is reset after each assistant message_end so it tracks
+    // per-message text — matching the per-message `message_end` semantics. A
+    // turn with tool calls produces multiple assistant message_end events; each
+    // carries only that message's text, not the cumulative turn text.
+    if (event.type === "message_end") {
+      const finalText = extractAssistantText(event as object);
+      if (finalText !== undefined) {
+        if (
+          finalText !== this.accumulatedText &&
+          finalText.startsWith(this.accumulatedText)
+        ) {
+          const missing = finalText.slice(this.accumulatedText.length);
+          log.warn("reconciliation: emitting missing text tail", {
+            accLen: this.accumulatedText.length,
+            finalLen: finalText.length,
+            missingLen: missing.length,
+          });
+          this.accumulatedText += missing;
+          this.callbacks.onTextDelta(missing);
+        }
+        // Reset for the next assistant message in this turn.
+        this.accumulatedText = "";
       }
     }
 

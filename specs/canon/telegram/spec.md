@@ -92,10 +92,10 @@ The allowlist middleware SHALL cache the result of `getChatMemberCount(chatId)` 
 The allowlist middleware SHALL route messages according to chat type, user allowlist membership, and the presence of a bot @mention in the message text or caption. The routing rules are:
 
 - DMs (chat type `private`): allowed users only, no exceptions. Non-allowed users are dropped silently.
-- Groups: a bot @mention is always passed through, for any user. A mention is recognized in two ways: (a) a `mention` entity in `entities`/`caption_entities` whose text matches `@<botUsername>` case-insensitively, or a `text_mention` entity whose user id matches `ctx.me.id`; or (b) a plain-text `@<botUsername>` fallback when the client sent the handle without resolving it into an entity. The plain-text match is anchored on `@` and rejects handles that extend the bot's username with additional `[0-9A-Za-z_]` characters (so `@goblinbot` does not match `@goblinbot5000`).
-- Groups (no @mention): an allowed user sending a slash command (an entity with `type === "bot_command"`) is always passed through.
-- Groups (no @mention, not a slash command): an allowed user is passed through only if the group has 2 or fewer members. Otherwise dropped.
-- Groups (no @mention, not a slash command, non-allowed user): dropped.
+- Groups: a bot @mention or a direct reply to a bot message is always passed through, for any user. A mention is recognized in two ways: (a) a `mention` entity in `entities`/`caption_entities` whose text matches `@<botUsername>` case-insensitively, or a `text_mention` entity whose user id matches `ctx.me.id`; or (b) a plain-text `@<botUsername>` fallback when the client sent the handle without resolving it into an entity. The plain-text match is anchored on `@` and rejects handles that extend the bot's username with additional `[0-9A-Za-z_]` characters (so `@goblinbot` does not match `@goblinbot5000`). A direct reply is recognized when `reply_to_message.from.id === ctx.me.id`; a forum topic's anchor message (a `forum_topic_created` service message) is NOT treated as a reply, so ordinary messages in a bot-created topic do not wake the bot.
+- Groups (no @mention, no reply-to-bot): an allowed user sending a slash command (an entity with `type === "bot_command"`) is always passed through.
+- Groups (no @mention, no reply-to-bot, not a slash command): an allowed user is passed through only if the group has 2 or fewer members. Otherwise dropped.
+- Groups (no @mention, no reply-to-bot, not a slash command, non-allowed user): dropped.
 
 #### Scenario: DM from allowed user
 
@@ -127,6 +127,20 @@ The allowlist middleware SHALL route messages according to chat type, user allow
 - **AND** the message contains a literal handle that extends `<botUsername>` with additional `[0-9A-Za-z_]` characters (e.g. `@goblinbot5000`)
 - **AND** there is no other mention of the bot
 - **THEN** `next()` SHALL NOT be called on the basis of that text
+
+#### Scenario: Direct reply to a bot message in group
+
+- **WHEN** a message arrives in a non-private chat
+- **AND** `reply_to_message.from.id === ctx.me.id`
+- **AND** the replied-to message is not a `forum_topic_created` service message
+- **THEN** `next()` SHALL be called regardless of user allowlist membership or group size
+
+#### Scenario: Forum topic anchor message does not count as a reply
+
+- **WHEN** a message arrives in a non-private chat
+- **AND** `reply_to_message` points at the topic anchor (a `forum_topic_created` service message)
+- **AND** there is no @mention of the bot
+- **THEN** `next()` SHALL NOT be called on the basis of the reply
 
 #### Scenario: Allowed user slash command in large group
 

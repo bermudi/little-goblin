@@ -27,6 +27,7 @@ function makeCtx(opts: {
   captionEntities?: MessageEntity[];
   memberCount?: number;
   memberCountError?: unknown;
+  replyToMessage?: { from?: { id: number }; forum_topic_created?: unknown };
 }): { ctx: Context; getChatMemberCount: ReturnType<typeof mock> } {
   const getChatMemberCount = mock(async () => {
     if (opts.memberCountError !== undefined) throw opts.memberCountError;
@@ -37,12 +38,13 @@ function makeCtx(opts: {
       chat: opts.chat,
       from: opts.from,
       me: { id: 99, is_bot: true, first_name: "Goblin", username: "goblinbot" },
-      msg: opts.text !== undefined || opts.caption !== undefined
+      msg: opts.text !== undefined || opts.caption !== undefined || opts.replyToMessage !== undefined
         ? {
             text: opts.text,
             entities: opts.entities,
             caption: opts.caption,
             caption_entities: opts.captionEntities,
+            reply_to_message: opts.replyToMessage,
           }
         : undefined,
       api: { getChatMemberCount },
@@ -141,6 +143,53 @@ describe("buildAllowlistMiddleware", () => {
       text: "@otherbot hi",
       entities: [],
       memberCount: 3,
+    });
+    expect(await run(ctx)).not.toHaveBeenCalled();
+  });
+
+  it("passes a direct reply to a bot message in a large group from any user", async () => {
+    const { ctx, getChatMemberCount } = makeCtx({
+      chat: { id: -1, type: "group" },
+      from: { id: 2, first_name: "Mallory" },
+      text: "what did you mean?",
+      entities: [],
+      memberCount: 5,
+      replyToMessage: { from: { id: 99 } },
+    });
+    expect(await run(ctx)).toHaveBeenCalledTimes(1);
+    expect(getChatMemberCount).not.toHaveBeenCalled();
+  });
+
+  it("passes a direct reply to a bot message from an allowed user without consulting member count", async () => {
+    const { ctx, getChatMemberCount } = makeCtx({
+      chat: { id: -1, type: "group" },
+      from: { id: 1, first_name: "Daniel" },
+      text: "ok",
+      replyToMessage: { from: { id: 99 } },
+      memberCount: 10,
+    });
+    expect(await run(ctx)).toHaveBeenCalledTimes(1);
+    expect(getChatMemberCount).not.toHaveBeenCalled();
+  });
+
+  it("does not wake on a reply to a non-bot message in a large group", async () => {
+    const { ctx } = makeCtx({
+      chat: { id: -1, type: "group" },
+      from: { id: 1, first_name: "Daniel" },
+      text: "ok",
+      memberCount: 5,
+      replyToMessage: { from: { id: 2 } },
+    });
+    expect(await run(ctx)).not.toHaveBeenCalled();
+  });
+
+  it("does not wake on a forum topic anchor (service message) as the reply target", async () => {
+    const { ctx } = makeCtx({
+      chat: { id: -1, type: "supergroup" },
+      from: { id: 1, first_name: "Daniel" },
+      text: "just chatting",
+      memberCount: 5,
+      replyToMessage: { from: { id: 99 }, forum_topic_created: {} },
     });
     expect(await run(ctx)).not.toHaveBeenCalled();
   });

@@ -67,6 +67,51 @@ describe("prepareUserContent", () => {
     expect(stripBotMention(ctx, "@someone hello")).toBe("@someone hello");
   });
 
+  it("strips case-insensitive mention entities", () => {
+    const ctx = makeCtx({
+      from: { id: 1, first_name: "Daniel" },
+      text: "@GOBLINBOT hello",
+      entities: [{ type: "mention", offset: 0, length: 10 } as MessageEntity],
+    });
+    expect(stripBotMention(ctx, "@GOBLINBOT hello")).toBe("hello");
+  });
+
+  it("strips a plain-text @handle with no resolved entity", () => {
+    const ctx = makeCtx({
+      from: { id: 1, first_name: "Daniel" },
+      text: "@goblinbot hello",
+      entities: [],
+    });
+    expect(stripBotMention(ctx, "@goblinbot hello")).toBe("hello");
+  });
+
+  it("strips a plain-text @handle embedded in larger text", () => {
+    const ctx = makeCtx({
+      from: { id: 1, first_name: "Daniel" },
+      text: "hey @goblinbot what's this",
+      entities: [],
+    });
+    expect(stripBotMention(ctx, "hey @goblinbot what's this")).toBe("hey what's this");
+  });
+
+  it("does not strip a longer handle sharing the bot's prefix", () => {
+    const ctx = makeCtx({
+      from: { id: 1, first_name: "Daniel" },
+      text: "@goblinbot5000 hello",
+      entities: [],
+    });
+    expect(stripBotMention(ctx, "@goblinbot5000 hello")).toBe("@goblinbot5000 hello");
+  });
+
+  it("strips a plain-text @handle from a caption with no entities", () => {
+    const ctx = makeCtx({
+      from: { id: 1, first_name: "Daniel" },
+      caption: "@goblinbot see this",
+      captionEntities: [],
+    });
+    expect(stripBotMention(ctx, "@goblinbot see this")).toBe("see this");
+  });
+
   it("strips matching caption mention entities", () => {
     const ctx = makeCtx({
       from: { id: 1, first_name: "Daniel" },

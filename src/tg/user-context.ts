@@ -17,20 +17,25 @@ function senderPrefix(ctx: Context): string {
 }
 
 /**
- * Strip @mentions of the bot from text (both `mention` entities and bare
- * `@botusername` substrings). Handles both text messages and captions.
+ * Strip @mentions of the bot from text. Matches `mention` entities,
+ * `text_mention` entities, and — as a fallback when the client sent the
+ * handle without resolving it into an entity — bare `@botusername`
+ * substrings. Comparisons are case-insensitive. Handles both text
+ * messages and captions.
  */
 export function stripBotMention(ctx: Context, text: string): string {
   const username = ctx.me.username;
   if (!username) return text;
 
+  const lowerUser = username.toLowerCase();
   const entities = ctx.msg?.entities ?? ctx.msg?.caption_entities ?? [];
-  // Collect @mention offsets to strip
+  // Collect @mention offsets to strip (case-insensitive — Telegram
+  // usernames are case-insensitive on the server side).
   const ranges: Array<[number, number]> = [];
   for (const e of entities) {
     if (e.type === "mention") {
       const mention = text.slice(e.offset, e.offset + e.length);
-      if (mention === `@${username}`) {
+      if (mention.toLowerCase() === `@${lowerUser}`) {
         ranges.push([e.offset, e.offset + e.length]);
       }
     }
@@ -39,14 +44,21 @@ export function stripBotMention(ctx: Context, text: string): string {
     }
   }
 
-  if (ranges.length === 0) return text;
-
   // Remove ranges back-to-front to preserve offsets
   let result = text;
-  for (let i = ranges.length - 1; i >= 0; i--) {
-    const [start, end] = ranges[i]!;
-    result = result.slice(0, start) + result.slice(end);
+  if (ranges.length > 0) {
+    for (let i = ranges.length - 1; i >= 0; i--) {
+      const [start, end] = ranges[i]!;
+      result = result.slice(0, start) + result.slice(end);
+    }
+  } else {
+    // Plain-text fallback: strip bare @handle occurrences that the
+    // client never resolved into entities. Same boundary rules as
+    // isBotMentioned — @goblinbot doesn't match @goblinbot5000.
+    const re = new RegExp(`@${lowerUser.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9A-Za-z_])`, "gi");
+    result = result.replace(re, "");
   }
+
   return result.replace(/[ \t]+/g, " ").trim();
 }
 

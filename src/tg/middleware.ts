@@ -49,12 +49,30 @@ function isBotMentioned(ctx: Context): boolean {
 }
 
 /**
+ * Whether the message is a direct reply to a message sent by the bot.
+ * In groups, replying to the bot is an explicit interaction — same as
+ * an @mention — that wakes the bot regardless of who replies.
+ *
+ * In forum topics, Telegram sets `reply_to_message` to the topic's
+ * anchor message even for non-reply messages. That anchor is a service
+ * message (`forum_topic_created`), not a real reply — skip it so every
+ * message in a bot-created topic doesn't accidentally wake the bot.
+ */
+function isReplyToBot(ctx: Context): boolean {
+  const replyTo = ctx.msg?.reply_to_message;
+  if (!replyTo) return false;
+  if ("forum_topic_created" in replyTo) return false;
+  return replyTo.from?.id === ctx.me.id;
+}
+
+/**
  * Build allowlist middleware with group-aware routing:
  *
  *   - DMs: only allowed users.
  *   - Groups with ≤2 members (bot + one allowed user): respond to
  *     everything from that allowed user.
- *   - Groups with >2 members: only respond to @mentions (from anyone).
+ *   - Groups with >2 members: only respond to @mentions or direct
+ *     replies to a bot message (from anyone).
  *
  * Member counts are cached per chat with a 5-minute TTL.
  */
@@ -105,6 +123,18 @@ export function buildAllowlistMiddleware(cfg: Config) {
     // Groups: check @mention first (works for anyone).
     if (isBotMentioned(ctx)) {
       log.debug("allowing @mention in group", {
+        userId: ctx.from.id,
+        username: ctx.from.username,
+        chatId: ctx.chat.id,
+        chatType,
+      });
+      await next();
+      return;
+    }
+
+    // Reply to a bot message — explicit interaction, works for anyone.
+    if (isReplyToBot(ctx)) {
+      log.debug("allowing reply-to-bot in group", {
         userId: ctx.from.id,
         username: ctx.from.username,
         chatId: ctx.chat.id,

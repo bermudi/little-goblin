@@ -385,6 +385,9 @@ describe("handleCancelCapableCommand", () => {
     const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do this", session, runner: makeRunner(false), harness }));
     expect(result.reply).toBe("Running.");
     expect(result.sideEffects).toEqual([{ kind: "queue-prompt", session, text: "do this" }]);
+    // Symmetric with the streaming-variant assertion: /queue is not
+    // cancel-capable, so the interrupt cascade must never fire.
+    expect(harness.interrupt).not.toHaveBeenCalled();
   });
 
   it("/queue without an argument replies usage and enqueues nothing", async () => {

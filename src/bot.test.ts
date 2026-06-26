@@ -438,6 +438,12 @@ describe("buildBot integration", () => {
     try {
       expect(await settlesWithin(handled, 25)).toBe(true);
       expect(runner.followUp).toHaveBeenCalledTimes(1);
+      // Spec: "Steer reaches a busy runner" — no new status message or
+      // response bubble SHALL be created for the steered message. The
+      // steer branch never calls createMessageBuffer; the prompt call
+      // count staying at 1 is the proxy for "no new turn/buffer was
+      // spun up". (createMessageBuffer is not instrumented here, so we
+      // assert the observable consequence instead.)
       expect(runner.prompt).toHaveBeenCalledTimes(1);
     } finally {
       pending.resolve();

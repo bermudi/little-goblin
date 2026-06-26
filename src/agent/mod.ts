@@ -307,7 +307,7 @@ export class AgentRunner {
     if (!this.session) {
       throw new Error("Failed to initialize AgentSession");
     }
-    if (this.session.isStreaming) {
+    if (this.isStreaming) {
       throw new Error("Cannot prompt while streaming; use followUp().");
     }
 
@@ -351,7 +351,7 @@ export class AgentRunner {
     if (!this.session) {
       throw new Error("Cannot steer: session not initialized. Call prompt() first.");
     }
-    if (!this.session.isStreaming) {
+    if (!this.isStreaming) {
       throw new Error("Cannot steer: session is not streaming.");
     }
     const contentForModel = this.normalizeContentForModel(content);

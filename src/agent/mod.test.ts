@@ -753,6 +753,40 @@ describe("AgentRunner", () => {
       // The in-flight turn's callbacks remain intact.
       expect(sessionHolder.sendUserMessage).toHaveBeenCalledTimes(1);
     });
+
+    // Regression: when a prior abort timed out, the runner reports
+    // `isStreaming === false` even though the underlying pi session is
+    // still streaming. The bot layer's steer-vs-idle check uses the
+    // runner's `isStreaming` getter and takes the idle path, calling
+    // `prompt()`. The guard must use the same getter — otherwise the
+    // message is silently dropped (the old guard checked the raw pi
+    // `session.isStreaming` and threw).
+    it("prompt() proceeds after markAbortTimedOut even though pi is still streaming", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("first", nopCallbacks());
+      // pi is still mid-stream, but the abort cascade timed out.
+      sessionHolder.streaming = true;
+      runner.markAbortTimedOut();
+
+      expect(runner.isStreaming).toBe(false);
+
+      // A fresh turn starts instead of throwing — the dead turn is
+      // treated as effectively idle.
+      await runner.prompt("recovery", nopCallbacks());
+      expect(sessionHolder.sendUserMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it("followUp() rejects after markAbortTimedOut even though pi is still streaming", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("first", nopCallbacks());
+      sessionHolder.streaming = true;
+      runner.markAbortTimedOut();
+
+      // A dead turn cannot be steered — consistent with the getter
+      // reporting the runner as not streaming.
+      await expect(runner.followUp("redirect")).rejects.toThrow("Cannot steer: session is not streaming.");
+      expect(sessionHolder.followUp).not.toHaveBeenCalled();
+    });
   });
 
   describe("Poe image-only prompt normalization", () => {

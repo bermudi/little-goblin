@@ -540,6 +540,68 @@ describe("buildBot integration", () => {
     expect(runner.prompt).toHaveBeenCalledTimes(1);
   });
 
+  it("/queue while streaming enqueues behind the running turn without aborting", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
+
+    await built.bot.handleUpdate(textUpdate("slow"));
+    const runner = runnerInstances.at(-1)!;
+    await waitFor(() => runner.isStreaming);
+
+    await built.bot.handleUpdate(textUpdate("/queue then check the tests"));
+    await flushMicrotasks();
+
+    // Acknowledged as queued; the running turn is not aborted and keeps streaming.
+    expect(built.api.sent.at(-1)).toContain("Queued");
+    expect(runner.abort).not.toHaveBeenCalled();
+    expect(runner.isStreaming).toBe(true);
+    // The queued prompt waits behind the running turn — not yet started.
+    expect(runner.prompt).toHaveBeenCalledTimes(1);
+
+    pending.resolve();
+    await flushMicrotasks();
+    // Now the queued prompt runs as a fresh turn.
+    await waitFor(() => runner.prompt.mock.calls.length === 2);
+    const queuedContent = runner.prompt.mock.calls[1]![0] as string;
+    expect(queuedContent).toContain("then check the tests");
+  });
+
+  it("/queue while idle runs immediately and replies Running.", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+
+    await built.bot.handleUpdate(textUpdate("/queue do this now"));
+    await waitFor(() => runnerInstances.at(-1)!.prompt.mock.calls.length === 1);
+
+    expect(built.api.sent.at(-1)).toBe("Running.");
+    const runner = runnerInstances.at(-1)!;
+    expect(runner.abort).not.toHaveBeenCalled();
+    const content = runner.prompt.mock.calls[0]![0] as string;
+    expect(content).toContain("do this now");
+  });
+
+  it("/queue with no argument replies usage and schedules nothing", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+
+    await built.bot.handleUpdate(textUpdate("/queue"));
+    await flushMicrotasks();
+
+    expect(built.api.sent.at(-1)).toBe("Usage: /queue <text>");
+    expect(runnerInstances.at(-1)!.prompt).not.toHaveBeenCalled();
+  });
+
+  it("/queue with no active session replies No active session.", async () => {
+    const built = await makeBot();
+
+    await built.bot.handleUpdate(textUpdate("/queue do something"));
+
+    expect(built.api.sent.at(-1)).toBe("No active session.");
+    expect(runnerInstances).toHaveLength(0);
+  });
+
   it("photo messages download image content and prompt the runner", async () => {
     const built = await makeBot();
     globalThis.fetch = mock(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } })) as unknown as typeof fetch;

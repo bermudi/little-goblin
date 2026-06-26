@@ -14,7 +14,7 @@ import {
   NO_SUBAGENTS_REPLY,
   REVIVE_SUBAGENT_USAGE_REPLY,
 } from "./subagents.ts";
-import { handleCancelCapableCommand, type DispatchDeps, type DispatchOpts, type DispatchResult } from "./dispatch.ts";
+import { handleCancelCapableCommand, type DispatchDeps, type DispatchOpts, type DispatchResult, CANCEL_CAPABLE_COMMANDS } from "./dispatch.ts";
 
 const dirs: string[] = [];
 
@@ -45,7 +45,7 @@ function baseCascade(overrides: Partial<CascadeResult> = {}): CascadeResult {
   };
 }
 
-function makeRunner(): AgentRunner {
+function makeRunner(streaming = false): AgentRunner {
   return {
     modelName: "poe/GPT-4o",
     compact: mock(async () => ({ tokensBefore: 42_000 })),
@@ -55,6 +55,7 @@ function makeRunner(): AgentRunner {
     skillsLoaded: null,
     contextTokens: null,
     contextFiles: null,
+    isStreaming: streaming,
   } as unknown as AgentRunner;
 }
 
@@ -358,6 +359,46 @@ describe("handleCancelCapableCommand", () => {
 
     const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive missing try again", harness }));
     expect(result.reply).toBe("Failed to revive subagent `missing`: Subagent not found");
+  });
+
+  it("/queue is not cancel-capable", () => {
+    expect(CANCEL_CAPABLE_COMMANDS.has("/queue")).toBe(false);
+  });
+
+  it("/help reply includes /queue <text>", async () => {
+    const result = expectReplied(await dispatch({ command: "/help" }));
+    expect(result.reply).toContain("/queue <text>");
+  });
+
+  it("/queue while streaming enqueues a queue-prompt side effect and acknowledges Queued", async () => {
+    const harness = makeHarness();
+    const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+    const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do this after", session, runner: makeRunner(true), harness }));
+    expect(result.reply).toBe("Queued. Will run after the current turn.");
+    expect(result.sideEffects).toEqual([{ kind: "queue-prompt", session, text: "do this after" }]);
+    expect(harness.interrupt).not.toHaveBeenCalled();
+  });
+
+  it("/queue while idle replies Running and emits a queue-prompt side effect", async () => {
+    const harness = makeHarness();
+    const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+    const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do this", session, runner: makeRunner(false), harness }));
+    expect(result.reply).toBe("Running.");
+    expect(result.sideEffects).toEqual([{ kind: "queue-prompt", session, text: "do this" }]);
+  });
+
+  it("/queue without an argument replies usage and enqueues nothing", async () => {
+    const harness = makeHarness();
+    const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+    const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue", session, harness }));
+    expect(result.reply).toBe("Usage: /queue <text>");
+    expect(result.sideEffects).toEqual([]);
+  });
+
+  it("/queue without a session replies No active session.", async () => {
+    const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do something" }));
+    expect(result.reply).toBe("No active session.");
+    expect(result.sideEffects).toEqual([]);
   });
 
   it("returns fallthrough for unknown commands", async () => {

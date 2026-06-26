@@ -66,28 +66,28 @@ Implements spec requirement: **Agent turns do not block unrelated updates** (MOD
 
 Add the `/queue` command as a non-cancel-capable command that serializes text behind the running turn via the existing `promptQueues` mechanism.
 
-- [ ] In `src/commands/dispatch.ts`, extend the `SideEffect` union with `{ kind: "queue-prompt"; session: SessionState; text: string }`
-- [ ] In `src/commands/dispatch.ts`, add a `case "/queue":` to the switch (before `default:`):
+- [x] In `src/commands/dispatch.ts`, extend the `SideEffect` union with `{ kind: "queue-prompt"; session: SessionState; text: string }`
+- [x] In `src/commands/dispatch.ts`, add a `case "/queue":` to the switch (before `default:`):
   - If `!session` → `replied("No active session.")`
   - Parse arg: `rawText.slice("/queue".length).trim()`; if empty → `replied("Usage: /queue <text>")`
   - Push `{ kind: "queue-prompt", session, text: arg }` side effect
   - Ack reply: `existingRunner?.isStreaming ? "Queued. Will run after the current turn." : "Running."` (the turn starts immediately when idle; `bot.ts` does `await ctx.reply(result.reply)` unconditionally, so the reply must never be empty)
-- [ ] Do NOT add `"/queue"` to `CANCEL_CAPABLE_COMMANDS` (line 32)
-- [ ] In `src/bot.ts`, process the `queue-prompt` side effect in the side-effect loop (after the `runner-disposed` branch, ~line 416):
+- [x] Do NOT add `"/queue"` to `CANCEL_CAPABLE_COMMANDS` (line 32)
+- [x] In `src/bot.ts`, process the `queue-prompt` side effect in the side-effect loop (after the `runner-disposed` branch, ~line 416):
   - `getOrCreateRunner(effect.session, locator, ctx)` → `queueRunner`
   - `createMessageBuffer(locator)` → `queueBuffer`
   - `schedulePrompt(effect.session, queueRunner, async (isCurrent) => { if (!isCurrent()) return; await queueRunner.prompt(prepareUserContent(ctx, effect.text), queueBuffer); }, (err) => { log.error("queued prompt failed", { error: String(err), sessionId: effect.session.id }); })`
-- [ ] In `src/commands/help.ts`, add `/queue <text>` to `HELP_REPLY`
-- [ ] Add tests in `src/bot.test.ts`:
+- [x] In `src/commands/help.ts`, add `/queue <text>` to `HELP_REPLY`
+- [x] Add tests in `src/bot.test.ts`:
   - `/queue do this` while streaming → `interruptAndCascade` is NOT called, `runner.abort` is NOT called, `schedulePrompt` is called with the text, reply includes "Queued"
   - `/queue do this` while idle → `schedulePrompt` is called, reply is `"Running."` (work starts immediately)
   - `/queue` with no arg → reply is "Usage: /queue <text>", nothing scheduled
   - `/queue do this` with no session → reply is "No active session.", nothing scheduled
-- [ ] Add tests in `src/commands/dispatch.test.ts`:
+- [x] Add tests in `src/commands/dispatch.test.ts`:
   - `/queue` is not in `CANCEL_CAPABLE_COMMANDS`
   - `/help` reply includes `/queue <text>`
-- [ ] Verify: `bun test` passes (full suite)
-- [ ] Verify: `bun run tsc --noEmit` passes
+- [x] Verify: `bun test` passes (full suite)
+- [x] Verify: `bun run tsc --noEmit` passes
 
 Implements spec requirements:
 - **Queue command enqueues text for the next idle turn** (ADDED, commands)

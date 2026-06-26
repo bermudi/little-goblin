@@ -34,6 +34,7 @@ export const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "
 export type SideEffect =
   | { kind: "runner-created"; session: SessionState; locator: ChatLocator }
   | { kind: "runner-disposed"; sessionId: string }
+  | { kind: "queue-prompt"; session: SessionState; text: string }
   | { kind: "noop" };
 
 export type DispatchResult =
@@ -284,6 +285,14 @@ export async function handleCancelCapableCommand(opts: DispatchOpts): Promise<Di
     }
     case "/help":
       return replied(HELP_REPLY);
+    case "/queue": {
+      if (!session) return replied("No active session.");
+      const arg = rawText.slice("/queue".length).trim();
+      if (arg.length === 0) return replied("Usage: /queue <text>");
+      sideEffects.push({ kind: "queue-prompt", session, text: arg });
+      const ack = existingRunner?.isStreaming ? "Queued. Will run after the current turn." : "Running.";
+      return replied(ack, sideEffects);
+    }
     default:
       return { kind: "fallthrough" };
   }

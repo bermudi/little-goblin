@@ -16,6 +16,7 @@ export const HELP_REPLY = [
   "/project <dir> — bind session to a project directory (or clear with /project)",
   "/model [index] — list favorite models or switch to one",
   "/compact [instructions] — manually compact this session's context",
+  "/queue <text> — enqueue text to run as a fresh turn after the current one settles",
   "/debug — dump session diagnostics",
   "/think [level] — show or set thinking level",
   "/name <name> — name the active session",

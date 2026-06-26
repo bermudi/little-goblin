@@ -413,6 +413,15 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
               } else {
                 runners.delete(effect.sessionId);
               }
+            } else if (effect.kind === "queue-prompt") {
+              const queueRunner = getOrCreateRunner(effect.session, locator, ctx);
+              const queueBuffer = createMessageBuffer(locator);
+              schedulePrompt(effect.session, queueRunner, async (isCurrent) => {
+                if (!isCurrent()) return;
+                await queueRunner.prompt(prepareUserContent(ctx, effect.text), queueBuffer);
+              }, (err) => {
+                log.error("queued prompt failed", { error: String(err), sessionId: effect.session.id });
+              });
             }
           }
           await ctx.reply(result.reply);

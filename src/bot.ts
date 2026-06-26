@@ -435,6 +435,29 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const text = ctx.msg?.text;
     if (!text) return;
 
+    if (runner.isStreaming) {
+      // Steer: inject into the running turn without resetting its buffer.
+      // If the turn ends between the isStreaming check and the followUp call
+      // (a race), followUp throws "not streaming" — fall back to scheduling a
+      // fresh turn so the message is not silently dropped.
+      void runner.followUp(prepareUserContent(ctx, text)).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("not streaming")) {
+          // Race: turn ended mid-steer. Land the message as a fresh turn.
+          const buffer = createMessageBuffer(locator);
+          schedulePrompt(session, runner, async (isCurrent) => {
+            if (!isCurrent()) return;
+            await runner.prompt(prepareUserContent(ctx, text), buffer);
+          }, (err) => {
+            log.error("runner prompt failed (steer race fallback)", { error: String(err), sessionId: session.id });
+          });
+        } else {
+          log.warn("steer failed", { error: msg, sessionId: session.id });
+        }
+      });
+      return;
+    }
+
     // MessageBuffer turns agent events into Telegram UI (status line + streamed
     // response). One buffer per turn so message IDs are scoped to this prompt.
     // Wire up orphan archival: if Telegram reports "topic not found", archive

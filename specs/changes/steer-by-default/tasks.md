@@ -27,7 +27,7 @@ Implements spec requirement: **In-flight prompts use pi's followUp queueing** (M
 
 Wire the bot's `message:text` handler to call `runner.followUp()` when the runner is streaming, instead of unconditionally routing through `promptQueues`. This is the core behavior change.
 
-- [ ] In `src/bot.ts`, modify the `message:text` handler (lines 433-454):
+- [x] In `src/bot.ts`, modify the `message:text` handler (lines 433-454):
   - After `getOrCreateRunner` and the `text` guard, add the steer branch with race fallback (matching `design.md` Decision 1):
     ```typescript
     if (runner.isStreaming) {
@@ -50,15 +50,15 @@ Wire the bot's `message:text` handler to call `runner.followUp()` when the runne
     }
     ```
   - Keep the existing `schedulePrompt` path for the idle case (create buffer, schedule, prompt)
-- [ ] Update `src/bot.test.ts`:
+- [x] Update `src/bot.test.ts`:
   - Add test: text message while `runner.isStreaming === true` → `runner.followUp` is called, `runner.prompt` is NOT called, no new `MessageBuffer` is created, update handler resolves without awaiting the turn
   - Add test: text message while idle → `runner.prompt` is called via `schedulePrompt` (existing behavior preserved)
   - Add test: steer failure (followUp rejects) → logged via `log.warn`, does not crash the handler
   - Add test: steer race — `followUp` rejects with "not streaming" (turn ended mid-steer) → bot falls back to `schedulePrompt` + `runner.prompt` with a fresh `MessageBuffer`, message is not dropped
   - Add test: steer race — `followUp` rejects with a non-"not streaming" error (runner disposed) → logged via `log.warn`, no fallback turn scheduled
   - Update the existing "same-session work remains ordered" test (around line 310): the scenario now expects the second message to steer into the first (call `followUp`), not to wait
-- [ ] Verify: `bun test src/bot.test.ts` passes
-- [ ] Verify: `bun run tsc --noEmit` passes
+- [x] Verify: `bun test src/bot.test.ts` passes
+- [x] Verify: `bun run tsc --noEmit` passes
 
 Implements spec requirement: **Agent turns do not block unrelated updates** (MODIFIED, orchestration capability) — steer branch.
 

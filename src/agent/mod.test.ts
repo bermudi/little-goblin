@@ -156,7 +156,7 @@ mock.module("@earendil-works/pi-coding-agent", () => {
 // Module under test (imported after mock.module so it sees the mock)
 // ---------------------------------------------------------------------------
 
-import { AgentRunner, type TurnCallbacks } from "./mod.ts";
+import { AgentRunner, ModelNotCapableError, type TurnCallbacks } from "./mod.ts";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -398,16 +398,19 @@ describe("AgentRunner", () => {
       ]);
     });
 
-    it("dispatches the aside before followUp on a streaming turn", async () => {
+    it("does NOT inject a memory snapshot on followUp (steer reuses the running turn's snapshot)", async () => {
       seedMemory(tmpDir, { user: "pref-1" });
-      sessionHolder.streaming = true;
       const runner = makeRunner(tmpDir);
-      await runner.prompt("interrupt", nopCallbacks());
+      // Start a turn while idle — this injects the snapshot.
+      await runner.prompt("first", nopCallbacks());
+      const snapshotCallsBefore = sessionHolder.sendCustomMessage.mock.calls.length;
 
-      expect(sessionHolder.callOrder).toEqual([
-        "sendCustomMessage",
-        "followUp",
-      ]);
+      // Steer mid-turn: no additional snapshot should be injected.
+      sessionHolder.streaming = true;
+      await runner.followUp("redirect");
+
+      expect(sessionHolder.sendCustomMessage.mock.calls.length).toBe(snapshotCallsBefore);
+      expect(sessionHolder.followUp).toHaveBeenCalledWith("redirect", undefined);
     });
   });
 
@@ -676,11 +679,79 @@ describe("AgentRunner", () => {
     });
 
     it("calls followUp when isStreaming is true", async () => {
-      sessionHolder.streaming = true;
       const runner = makeRunner(tmpDir);
-      await runner.prompt("interrupt", nopCallbacks());
+      await runner.prompt("first", nopCallbacks());
+      sessionHolder.streaming = true;
+      await runner.followUp("interrupt");
       expect(sessionHolder.followUp).toHaveBeenCalledWith("interrupt", undefined);
-      expect(sessionHolder.sendUserMessage).not.toHaveBeenCalled();
+      expect(sessionHolder.sendUserMessage).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("followUp()", () => {
+    const image: ImageContent = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
+
+    it("steers while streaming without resetting callbacks or injecting a snapshot", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("first", cb);
+      sessionHolder.streaming = true;
+
+      await runner.followUp("actually use the other file");
+
+      expect(sessionHolder.followUp).toHaveBeenCalledWith("actually use the other file", undefined);
+      // followUp must not inject a memory snapshot — the running turn already
+      // received its snapshot at prompt() time.
+      expect(sessionHolder.sendCustomMessage).not.toHaveBeenCalled();
+    });
+
+    it("throws when not streaming", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("first", nopCallbacks());
+
+      await expect(runner.followUp("redirect")).rejects.toThrow("Cannot steer: session is not streaming.");
+      expect(sessionHolder.followUp).not.toHaveBeenCalled();
+    });
+
+    it("throws when session not yet initialized", async () => {
+      const runner = makeRunner(tmpDir);
+
+      await expect(runner.followUp("redirect")).rejects.toThrow("session not initialized");
+      expect(sessionHolder.followUp).not.toHaveBeenCalled();
+    });
+
+    it("throws ModelNotCapableError for image content on an image-incapable model", async () => {
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "zai/glm-4.5", { zaiApiKey: "test-key" });
+      await runner.prompt("first", nopCallbacks());
+      sessionHolder.streaming = true;
+
+      await expect(runner.followUp([image])).rejects.toBeInstanceOf(ModelNotCapableError);
+      expect(sessionHolder.followUp).not.toHaveBeenCalled();
+    });
+
+    it("unpacks multimodal content into session.followUp(text, images) on an image-capable model", async () => {
+      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "poe/kimi-k2.6");
+      await runner.prompt("first", nopCallbacks());
+      sessionHolder.streaming = true;
+
+      const content: (TextContent | ImageContent)[] = [
+        { type: "text", text: "and this image" },
+        image,
+      ];
+      await runner.followUp(content);
+
+      expect(sessionHolder.followUp).toHaveBeenCalledWith("and this image", [image]);
+    });
+
+    it("prompt() throws while streaming instead of clobbering in-flight state", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("first", cb);
+      sessionHolder.streaming = true;
+
+      await expect(runner.prompt("second", nopCallbacks())).rejects.toThrow("Cannot prompt while streaming; use followUp().");
+      // The in-flight turn's callbacks remain intact.
+      expect(sessionHolder.sendUserMessage).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -714,9 +785,10 @@ describe("AgentRunner", () => {
     });
 
     it("uses the default text for Poe chat completion image follow-ups", async () => {
-      sessionHolder.streaming = true;
       const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "poe/kimi-k2.6");
-      await runner.prompt([image], nopCallbacks());
+      await runner.prompt("hi", nopCallbacks());
+      sessionHolder.streaming = true;
+      await runner.followUp([image]);
 
       expect(sessionHolder.followUp).toHaveBeenCalledWith("What do you see in this image?", [image]);
     });

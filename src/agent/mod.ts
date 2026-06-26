@@ -292,6 +292,12 @@ export class AgentRunner {
   /**
    * Send a prompt to the agent. Accepts plain text or multimodal content
    * blocks (text + images). Creates the session lazily on first call.
+   *
+   * Starts a new turn. MUST NOT be called while the runner is streaming —
+   * use `followUp()` to steer a running turn. The guard makes the
+   * steer-vs-new-turn contract explicit: calling `prompt()` on a streaming
+   * runner would clobber the in-flight turn's `this.callbacks` and
+   * `this.accumulatedText`.
    */
   async prompt(
     content: string | (TextContent | ImageContent)[],
@@ -300,6 +306,9 @@ export class AgentRunner {
     await this.init();
     if (!this.session) {
       throw new Error("Failed to initialize AgentSession");
+    }
+    if (this.session.isStreaming) {
+      throw new Error("Cannot prompt while streaming; use followUp().");
     }
 
     this.callbacks = callbacks;
@@ -325,20 +334,35 @@ export class AgentRunner {
     }
 
     const contentForModel = this.normalizeContentForModel(content);
+    await this.session.sendUserMessage(contentForModel);
+  }
 
-    if (this.session.isStreaming) {
-      // followUp API is (text, images?). Unpack content blocks for it.
-      if (typeof contentForModel === "string") {
-        await this.session.followUp(contentForModel);
-      } else {
-        const texts = contentForModel
-          .filter((c): c is TextContent => c.type === "text")
-          .map((c) => c.text);
-        const images = contentForModel.filter((c): c is ImageContent => c.type === "image");
-        await this.session.followUp(texts.join("\n"), images.length > 0 ? images : undefined);
-      }
+  /**
+   * Steer the running turn. Injects `content` into the model's context
+   * mid-turn via pi's `AgentSession.followUp()` without resetting the
+   * in-flight turn's `MessageBuffer` or accumulated text. No memory
+   * snapshot is injected — the snapshot is per-turn, and the running turn
+   * already received its snapshot at `prompt()` time.
+   *
+   * Accepts the same content shape as `prompt`. The bot layer decides
+   * steer-vs-queue; the runner only exposes the two primitives.
+   */
+  async followUp(content: string | (TextContent | ImageContent)[]): Promise<void> {
+    if (!this.session) {
+      throw new Error("Cannot steer: session not initialized. Call prompt() first.");
+    }
+    if (!this.session.isStreaming) {
+      throw new Error("Cannot steer: session is not streaming.");
+    }
+    const contentForModel = this.normalizeContentForModel(content);
+    if (typeof contentForModel === "string") {
+      await this.session.followUp(contentForModel);
     } else {
-      await this.session.sendUserMessage(contentForModel);
+      const texts = contentForModel
+        .filter((c): c is TextContent => c.type === "text")
+        .map((c) => c.text);
+      const images = contentForModel.filter((c): c is ImageContent => c.type === "image");
+      await this.session.followUp(texts.join("\n"), images.length > 0 ? images : undefined);
     }
   }
 

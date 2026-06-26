@@ -98,7 +98,7 @@ Implements spec requirements:
 
 This phase does not change behavior — it reconciles the canon specs with the new code so the canon reflects the shipped behavior. Run after Phases 1-3 are green.
 
-- [ ] Verify the canon specs in `specs/canon/agent/spec.md`, `specs/canon/orchestration/spec.md`, and `specs/canon/commands/spec.md` still match the deltas in `specs/changes/steer-by-default/specs/` (the deltas will be merged at archive time, but confirm no other active change has conflicting modifications to the same requirements)
-- [ ] Check `specs/glossary.md` for terms introduced by this change: "steer" and "queue" (in the dispatch sense). Add entries if they meet the glossary criteria (project-specific meaning, used across artifacts). "Steer" qualifies — it's the project term for `followUp`-based mid-turn injection, distinct from general usage. "Queue" is borderline (common term) but the `/queue` command gives it a specific project meaning.
-- [ ] Run `litespec validate steer-by-default` — confirm no structural issues
+- [x] Verify the canon specs in `specs/canon/agent/spec.md`, `specs/canon/orchestration/spec.md`, and `specs/canon/commands/spec.md` still match the deltas in `specs/changes/steer-by-default/specs/` (the deltas will be merged at archive time, but confirm no other active change has conflicting modifications to the same requirements)
+- [x] Check `specs/glossary.md` for terms introduced by this change: "steer" and "queue" (in the dispatch sense). Add entries if they meet the glossary criteria (project-specific meaning, used across artifacts). "Steer" qualifies — it's the project term for `followUp`-based mid-turn injection, distinct from general usage. "Queue" is borderline (common term) but the `/queue` command gives it a specific project meaning.
+- [x] Run `litespec validate steer-by-default` — confirm no structural issues
 - [ ] Manual smoke test (homelab): send goblin a long task, then send a corrective message mid-turn — confirm the correction is incorporated without waiting for the first turn to finish. Then test `/queue` to confirm serialize-and-wait still works.

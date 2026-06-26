@@ -19,6 +19,7 @@
 - **MessageBuffer**: Implements `TurnCallbacks` to render agent activity as Telegram messages. Manages status phases, streaming edits, and rollover.
 - **named subagent**: A subagent that loads its `AGENTS.md` and `skills/` from `~/goblin/agents/<name>/`. Strictly isolated from parent skills.
 - **pi-coding-agent**: The underlying agent framework that goblin wraps. Provides `AgentSession`, `defineTool`, extension/skill loading. Ships a sample subagent extension (`examples/extensions/subagent/`) that spawns child `pi` processes, but goblin's subagent system is custom-built on the core SDK.
+- **queue**: The `/queue <text>` command enqueues text to run as a fresh turn after the current turn settles, via the per-session promise queue. The explicit opt-out from steer-by-default. Not to be confused with pi's internal `followUp` queue.
 - **product shell**: The small code-owned part of Goblin's system prompt. Contains runtime mechanics and section framing, not deployed identity, user identity, or conversational voice.
 - **project guidance**: The exact `AGENTS.md` from a session's bound `projectDir`, included in the main Goblin system prompt as repository/workspace instructions. Not deployment identity.
 - **resumable session**: A non-archived session directory under `sessions/<id>/`, whether currently bound or unbound. `/resume` searches these sessions.
@@ -28,6 +29,7 @@
 - **SOUL.md**: Required deployment-owned prompt file at `$GOBLIN_HOME/SOUL.md` that defines the main Goblin's conversational identity and voice. Created by onboarding; not hardcoded in source.
 - **stale binding**: A binding whose session directory no longer exists. DMs clear the binding; topics auto-recreate.
 - **status phases**: Three coarse states rendered in the MessageBuffer status line: Thinking, Working, Done. Not per-tool.
+- **steer**: Injecting a user message into a running turn via `AgentRunner.followUp()` → `AgentSession.followUp()`, without resetting the in-flight turn's callbacks or buffer. The default dispatch path for non-command text on a streaming runner. Distinct from queue (serialize-and-wait).
 - **subagent**: An agent spawned by goblin (or another subagent) for focused work. Recursive up to depth 3.
 - **TurnCallbacks**: Interface (`onTextDelta`, `onToolStart`, `onToolEnd`, `onStatusUpdate`, `onAgentEnd`) that bridges the agent layer to the Telegram layer.
 - **unbound session**: A resumable session under `sessions/<id>/` that no current binding points to.

@@ -14,7 +14,7 @@ import {
   NO_SUBAGENTS_REPLY,
   REVIVE_SUBAGENT_USAGE_REPLY,
 } from "./subagents.ts";
-import { handleCancelCapableCommand, type DispatchDeps, type DispatchOpts, type DispatchResult, CANCEL_CAPABLE_COMMANDS } from "./dispatch.ts";
+import { handleCommand, type DispatchDeps, type DispatchOpts, type DispatchResult, CANCEL_CAPABLE_COMMANDS } from "./dispatch.ts";
 
 const dirs: string[] = [];
 
@@ -103,7 +103,7 @@ async function dispatch(args: {
   harness?: ReturnType<typeof makeHarness>;
 }): Promise<DispatchResult> {
   const harness = args.harness ?? makeHarness();
-  return handleCancelCapableCommand({
+  return handleCommand({
     command: args.command,
     rawText: args.rawText ?? args.command,
     deps: harness.deps,
@@ -123,7 +123,7 @@ function expectReplied(result: DispatchResult): Extract<DispatchResult, { kind: 
   return result as Extract<DispatchResult, { kind: "replied" }>;
 }
 
-describe("handleCancelCapableCommand", () => {
+describe("handleCommand", () => {
   it("replies to /cancel with an active session", async () => {
     const harness = makeHarness(baseCascade({ attemptedMain: true }));
     const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });

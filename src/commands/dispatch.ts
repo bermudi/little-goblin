@@ -34,8 +34,7 @@ export const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "
 export type SideEffect =
   | { kind: "runner-created"; session: SessionState; locator: ChatLocator }
   | { kind: "runner-disposed"; sessionId: string }
-  | { kind: "queue-prompt"; session: SessionState; text: string }
-  | { kind: "noop" };
+  | { kind: "queue-prompt"; session: SessionState; text: string };
 
 export type DispatchResult =
   | { kind: "replied"; reply: string; sideEffects: SideEffect[] }
@@ -71,7 +70,7 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function handleCancelCapableCommand(opts: DispatchOpts): Promise<DispatchResult> {
+export async function handleCommand(opts: DispatchOpts): Promise<DispatchResult> {
   const { command, deps, rawText, locator, isSupergroup, session, existingRunner } = opts;
   const { manager, cfg, subagentRunner } = deps;
   const sideEffects: SideEffect[] = [];

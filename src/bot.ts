@@ -23,7 +23,7 @@ import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 import { interruptAndCascade } from "./interrupt.ts";
 import { parseCommand } from "./commands/parse.ts";
-import { handleCancelCapableCommand, type DispatchDeps } from "./commands/dispatch.ts";
+import { handleCommand, type DispatchDeps } from "./commands/dispatch.ts";
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -291,16 +291,63 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
       failureLog: string,
       opts?: { replyModelNotCapable?: boolean },
     ) => void;
-    prompt: (content: PromptContent, failureLog: string, opts?: { replyModelNotCapable?: boolean }) => void;
   };
+
+  function preparePromptContent(ctx: Context, content: PromptContent): PromptContent {
+    if (typeof content === "string") {
+      return prepareUserContent(ctx, content);
+    }
+    return prepareUserContent(ctx, content);
+  }
 
   async function runPrompt(ctx: Context, locator: ChatLocator, runner: AgentRunner, content: PromptContent): Promise<void> {
     const buffer = createMessageBuffer(locator);
-    if (typeof content === "string") {
-      await runner.prompt(prepareUserContent(ctx, content), buffer);
-    } else {
-      await runner.prompt(prepareUserContent(ctx, content), buffer);
-    }
+    await runner.prompt(preparePromptContent(ctx, content), buffer);
+  }
+
+  function scheduleFreshTurn(
+    ctx: Context,
+    locator: ChatLocator,
+    session: SessionState,
+    runner: AgentRunner,
+    content: PromptContent,
+    failureLog: string,
+    opts?: { replyModelNotCapable?: boolean },
+  ): void {
+    const buffer = createMessageBuffer(locator);
+    schedulePrompt(
+      session,
+      runner,
+      async (isCurrent) => {
+        if (!isCurrent()) return;
+        await runner.prompt(preparePromptContent(ctx, content), buffer);
+      },
+      async (err) => {
+        if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
+          await ctx.reply(`❌ ${err.message}`);
+          return;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error(failureLog, { error: msg, sessionId: session.id });
+      },
+    );
+  }
+
+  function steerOrFallbackToFreshTurn(
+    ctx: Context,
+    locator: ChatLocator,
+    session: SessionState,
+    runner: AgentRunner,
+    text: string,
+  ): void {
+    void runner.followUp(prepareUserContent(ctx, text)).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("not streaming")) {
+        scheduleFreshTurn(ctx, locator, session, runner, text, "runner prompt failed (steer race fallback)");
+        return;
+      }
+      log.warn("steer failed", { error: msg, sessionId: session.id });
+    });
   }
 
   function resolveActiveTurn(ctx: Context, kind: string): ActiveTurn | null {
@@ -337,15 +384,6 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
             const msg = err instanceof Error ? err.message : String(err);
             log.error(failureLog, { error: msg, sessionId: session.id });
           },
-        );
-      },
-      prompt: (content, failureLog, opts) => {
-        turn.schedule(
-          async (runner) => {
-            await runPrompt(ctx, locator, runner, content);
-          },
-          failureLog,
-          opts,
         );
       },
     };
@@ -387,7 +425,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const command = parseCommand(rawText);
     if (command !== null) {
       try {
-        const result = await handleCancelCapableCommand({
+        const result = await handleCommand({
           command,
           deps: dispatchDeps,
           rawText: rawText ?? "",
@@ -415,13 +453,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
               }
             } else if (effect.kind === "queue-prompt") {
               const queueRunner = getOrCreateRunner(effect.session, locator, ctx);
-              const queueBuffer = createMessageBuffer(locator);
-              schedulePrompt(effect.session, queueRunner, async (isCurrent) => {
-                if (!isCurrent()) return;
-                await queueRunner.prompt(prepareUserContent(ctx, effect.text), queueBuffer);
-              }, (err) => {
-                log.error("queued prompt failed", { error: String(err), sessionId: effect.session.id });
-              });
+              scheduleFreshTurn(ctx, locator, effect.session, queueRunner, effect.text, "queued prompt failed");
             }
           }
           await ctx.reply(result.reply);
@@ -445,45 +477,11 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     if (!text) return;
 
     if (runner.isStreaming) {
-      // Steer: inject into the running turn without resetting its buffer.
-      // If the turn ends between the isStreaming check and the followUp call
-      // (a race), followUp throws "not streaming" — fall back to scheduling a
-      // fresh turn so the message is not silently dropped.
-      void runner.followUp(prepareUserContent(ctx, text)).catch((err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("not streaming")) {
-          // Race: turn ended mid-steer. Land the message as a fresh turn.
-          const buffer = createMessageBuffer(locator);
-          schedulePrompt(session, runner, async (isCurrent) => {
-            if (!isCurrent()) return;
-            await runner.prompt(prepareUserContent(ctx, text), buffer);
-          }, (err) => {
-            log.error("runner prompt failed (steer race fallback)", { error: String(err), sessionId: session.id });
-          });
-        } else {
-          log.warn("steer failed", { error: msg, sessionId: session.id });
-        }
-      });
+      steerOrFallbackToFreshTurn(ctx, locator, session, runner, text);
       return;
     }
 
-    // MessageBuffer turns agent events into Telegram UI (status line + streamed
-    // response). One buffer per turn so message IDs are scoped to this prompt.
-    // Wire up orphan archival: if Telegram reports "topic not found", archive
-    // the orphaned memory scope before propagating the error.
-    const buffer = createMessageBuffer(locator);
-
-    schedulePrompt(
-      session,
-      runner,
-      async (isCurrent) => {
-        if (!isCurrent()) return;
-        await runner.prompt(prepareUserContent(ctx, text), buffer);
-      },
-      (err) => {
-        log.error("runner prompt failed", { error: String(err), sessionId: session.id });
-      },
-    );
+    scheduleFreshTurn(ctx, locator, session, runner, text, "runner prompt failed");
   });
 
   // Wire agent runner for photo messages

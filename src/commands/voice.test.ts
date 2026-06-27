@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readLastAssistantMessage } from "./voice.ts";
+import type { Bot } from "grammy";
+import { InputFile } from "grammy";
+import { executeVoice, readLastAssistantMessage } from "./voice.ts";
 
 function writeTranscript(home: string, sessionId: string, lines: object[]): void {
   const dir = join(home, "sessions", sessionId);
@@ -82,4 +84,81 @@ describe("readLastAssistantMessage", () => {
     ]);
     expect(await readLastAssistantMessage(home, sessionId)).toBeNull();
   });
+});
+
+describe("executeVoice", () => {
+  let home: string;
+  const sessionId = "sess-voice-exec";
+  const chatId = 42;
+  const topicId = 7;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "goblin-voice-exec-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function writeTranscript(lines: object[]): void {
+    const dir = join(home, "sessions", sessionId);
+    mkdirSync(dir, { recursive: true });
+    const content = lines.map((line) => JSON.stringify(line)).join("\n") + "\n";
+    writeFileSync(join(dir, "transcript.jsonl"), content);
+  }
+
+  function makeBot(sendVoice = mock(async () => ({ message_id: 1 }))): Bot {
+    return { api: { sendVoice } } as unknown as Bot;
+  }
+
+  it("returns no-messages when the transcript has no assistant text", async () => {
+    writeTranscript([{ role: "user", content: "hello" }]);
+    const sendVoice = mock(async () => ({ message_id: 1 }));
+    const result = await executeVoice({ home, sessionId, bot: makeBot(sendVoice), chatId });
+    expect(result).toEqual({ kind: "no-messages" });
+    expect(sendVoice).not.toHaveBeenCalled();
+  });
+
+  it("generates audio and sends a voice message", async () => {
+    writeTranscript([{ role: "assistant", content: "Hello from goblin." }]);
+    const sendVoice = mock(async () => ({ message_id: 99 }));
+    const result = await executeVoice({
+      home,
+      sessionId,
+      bot: makeBot(sendVoice),
+      chatId,
+      topicId,
+    });
+    expect(result).toEqual({ kind: "sent" });
+    expect(sendVoice).toHaveBeenCalledTimes(1);
+    const [calledChatId, file, opts] = sendVoice.mock.calls[0] as [
+      number,
+      InputFile,
+      { message_thread_id?: number },
+    ];
+    expect(calledChatId).toBe(chatId);
+    expect(file).toBeInstanceOf(InputFile);
+    expect(opts).toEqual({ message_thread_id: topicId });
+  }, 60_000);
+
+  it("cleans up the temp mp3 after sending", async () => {
+    writeTranscript([{ role: "assistant", content: "Short line." }]);
+    let capturedPath: string | undefined;
+    const sendVoice = mock(async (_chatId: number, file: InputFile) => {
+      capturedPath = file.filename;
+      return { message_id: 1 };
+    });
+    await executeVoice({ home, sessionId, bot: makeBot(sendVoice), chatId });
+    expect(capturedPath).toBeDefined();
+    expect(existsSync(capturedPath!)).toBe(false);
+  }, 60_000);
+
+  it("returns tts-failed when sendVoice throws", async () => {
+    writeTranscript([{ role: "assistant", content: "Hello." }]);
+    const sendVoice = mock(async () => {
+      throw new Error("network down");
+    });
+    const result = await executeVoice({ home, sessionId, bot: makeBot(sendVoice), chatId });
+    expect(result).toEqual({ kind: "tts-failed", error: "network down" });
+  }, 60_000);
 });

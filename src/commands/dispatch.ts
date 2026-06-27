@@ -1,10 +1,9 @@
 import { existsSync } from "node:fs";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Bot, Context } from "grammy";
+import type { Bot } from "grammy";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import type { MemoryStore } from "../memory/mod.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { ChatLocator, SessionManager, SessionState } from "../sessions/mod.ts";
 import type { AgentRunner } from "../agent/mod.ts";
@@ -32,7 +31,7 @@ import { HELP_REPLY } from "./help.ts";
 import { executeVoice } from "./voice.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
-export const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact", "/resume", "/name", "/think", "/voice", "/v"]);
+export const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact", "/resume", "/name", "/think"]);
 
 export type SideEffect =
   | { kind: "runner-created"; session: SessionState; locator: ChatLocator }
@@ -56,13 +55,6 @@ export interface DispatchDeps {
   interruptAndCascade: typeof interruptAndCascade;
 }
 
-export interface VoiceDispatchCtx {
-  bot: Bot;
-  ctx: Context;
-  memoryStore: MemoryStore;
-  getOrCreateRunner: (session: SessionState, locator: ChatLocator, ctx: Context) => AgentRunner;
-}
-
 export interface DispatchOpts {
   command: string;
   deps: DispatchDeps;
@@ -71,7 +63,7 @@ export interface DispatchOpts {
   isSupergroup: boolean;
   session: SessionState | null;
   existingRunner: AgentRunner | null;
-  voice?: VoiceDispatchCtx;
+  bot?: Bot;
 }
 
 function replied(reply: string, sideEffects: SideEffect[] = []): DispatchResult {
@@ -299,29 +291,23 @@ export async function handleCommand(opts: DispatchOpts): Promise<DispatchResult>
     case "/voice":
     case "/v": {
       if (!session) return replied("No active session. Use /new to start one.");
-      if (!opts.voice) {
-        log.error("voice dispatch context missing");
+      if (!opts.bot) {
+        log.error("voice dispatch bot missing");
         return replied("Voice generation failed: internal error");
       }
       try {
         const voiceResult = await executeVoice({
           home: cfg.goblinHome,
           sessionId: session.id,
-          session,
-          locator,
-          ctx: opts.voice.ctx,
-          msgCtx: {
-            bot: opts.voice.bot,
-            memoryStore: opts.voice.memoryStore,
-            cfg,
-            getOrCreateRunner: opts.voice.getOrCreateRunner,
-          },
+          bot: opts.bot,
+          chatId: locator.chatId,
+          topicId: locator.topicId,
         });
         switch (voiceResult.kind) {
           case "no-messages":
             return replied("No messages to voice yet.");
           case "tts-failed":
-            log.warn("voice TTS failed", { error: voiceResult.error, sessionId: session.id });
+            log.warn("voice failed", { error: voiceResult.error, sessionId: session.id });
             return replied(`Voice generation failed: ${voiceResult.error}`);
           case "sent":
             return { kind: "handled", sideEffects };

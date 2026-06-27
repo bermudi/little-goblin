@@ -21,8 +21,12 @@ export function voiceTmpPath(): string {
 }
 
 export async function edgeTts(text: string, voice: string, outputPath: string): Promise<void> {
+  const spoken = stripEmojis(text);
+  if (spoken.length === 0) {
+    throw new Error("text is empty after stripping emojis");
+  }
   const textPath = join(tmpdir(), `goblin-voice-${randomUUID()}.txt`);
-  await writeFile(textPath, text);
+  await writeFile(textPath, spoken);
   try {
     await runUvxEdgeTts(["--file", textPath, "--voice", voice, "--write-media", outputPath], 30_000);
   } finally {

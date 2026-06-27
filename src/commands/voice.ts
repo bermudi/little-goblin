@@ -1,27 +1,15 @@
 import { readFile, unlink } from "node:fs/promises";
-import type { Bot, Context } from "grammy";
-import type { AgentRunner } from "../agent/mod.ts";
-import type { Config } from "../config.ts";
-import type { MemoryStore } from "../memory/mod.ts";
+import { InputFile } from "grammy";
+import type { Bot } from "grammy";
 import { transcriptPath } from "../sessions/paths.ts";
-import type { ChatLocator, SessionState } from "../sessions/types.ts";
-import { MessageBuffer } from "../tg/buffer.ts";
 import { edgeTts, resolveVoiceName, voiceTmpPath } from "../voice.ts";
-
-export interface VoiceMsgCtx {
-  bot: Bot;
-  memoryStore: MemoryStore;
-  cfg: Config;
-  getOrCreateRunner: (session: SessionState, locator: ChatLocator, ctx: Context) => AgentRunner;
-}
 
 export interface ExecuteVoiceOpts {
   home: string;
   sessionId: string;
-  session: SessionState;
-  locator: ChatLocator;
-  ctx: Context;
-  msgCtx: VoiceMsgCtx;
+  bot: Bot;
+  chatId: number;
+  topicId?: number;
 }
 
 export type VoiceResult =
@@ -72,10 +60,6 @@ export async function readLastAssistantMessage(home: string, sessionId: string):
   return null;
 }
 
-function buildSyntheticPrompt(audioPath: string): string {
-  return `Audio for your last response is at \`${audioPath}\`. Use send_voice to send it to the user. Do not repeat or describe the content — the audio IS the message.`;
-}
-
 export async function executeVoice(opts: ExecuteVoiceOpts): Promise<VoiceResult> {
   const text = await readLastAssistantMessage(opts.home, opts.sessionId);
   if (text === null) {
@@ -83,39 +67,23 @@ export async function executeVoice(opts: ExecuteVoiceOpts): Promise<VoiceResult>
   }
 
   const tmpPath = voiceTmpPath();
-  const voice = resolveVoiceName();
   try {
-    await edgeTts(text, voice, tmpPath);
+    await edgeTts(text, resolveVoiceName(), tmpPath);
+    await opts.bot.api.sendVoice(
+      opts.chatId,
+      new InputFile(tmpPath),
+      opts.topicId !== undefined ? { message_thread_id: opts.topicId } : {},
+    );
+    return { kind: "sent" };
   } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    return { kind: "tts-failed", error };
+  } finally {
     await unlink(tmpPath).catch((unlinkErr: unknown) => {
       if (isNodeError(unlinkErr) && unlinkErr.code === "ENOENT") return;
       throw unlinkErr;
     });
-    const error = err instanceof Error ? err.message : String(err);
-    return { kind: "tts-failed", error };
   }
-
-  const { bot, memoryStore, cfg, getOrCreateRunner } = opts.msgCtx;
-  const { locator, ctx, session } = opts;
-  const topicId = locator.topicId;
-
-  const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
-    visibility: cfg.toolVisibility,
-    onTopicNotFound:
-      topicId !== undefined
-        ? async () => {
-            await memoryStore.archiveOrphan(locator.chatId, topicId);
-          }
-        : undefined,
-    onTurnEnd: () =>
-      unlink(tmpPath).catch((unlinkErr: unknown) => {
-        if (isNodeError(unlinkErr) && unlinkErr.code === "ENOENT") return;
-        throw unlinkErr;
-      }),
-  });
-  const runner = getOrCreateRunner(session, locator, ctx);
-  await runner.prompt(buildSyntheticPrompt(tmpPath), buffer);
-  return { kind: "sent" };
 }
 
 function isNodeError(err: unknown): err is NodeJS.ErrnoException {

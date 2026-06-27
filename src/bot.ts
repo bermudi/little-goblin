@@ -435,7 +435,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
           isSupergroup,
           session,
           existingRunner,
-          voice: { bot, ctx, memoryStore, getOrCreateRunner },
+          bot,
         });
         if (result.kind !== "fallthrough") {
           for (const effect of result.sideEffects) {

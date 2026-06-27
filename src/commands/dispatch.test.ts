@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
@@ -360,6 +360,60 @@ describe("handleCommand", () => {
     const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive missing try again", harness }));
     expect(result.reply).toBe("Failed to revive subagent `missing`: Subagent not found");
   });
+
+  it("/voice is not cancel-capable", () => {
+    expect(CANCEL_CAPABLE_COMMANDS.has("/voice")).toBe(false);
+    expect(CANCEL_CAPABLE_COMMANDS.has("/v")).toBe(false);
+  });
+
+  it("/voice returns handled when voice is sent", async () => {
+    const harness = makeHarness();
+    const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+    const sendVoice = mock(async () => ({ message_id: 1 }));
+    const bot = { api: { sendVoice } } as unknown as import("grammy").Bot;
+    const dir = join(harness.cfg.goblinHome, "sessions", session.id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "transcript.jsonl"),
+      `${JSON.stringify({ role: "assistant", content: "Hi there." })}\n`,
+    );
+    const result = await handleCommand({
+      command: "/voice",
+      rawText: "/voice",
+      deps: harness.deps,
+      locator: harness.locator,
+      isSupergroup: false,
+      session,
+      existingRunner: null,
+      bot,
+    });
+    expect(result.kind).toBe("handled");
+    expect(sendVoice).toHaveBeenCalled();
+  }, 60_000);
+
+  it("/voice does not interrupt the running turn", async () => {
+    const harness = makeHarness();
+    const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+    const sendVoice = mock(async () => ({ message_id: 1 }));
+    const bot = { api: { sendVoice } } as unknown as import("grammy").Bot;
+    const dir = join(harness.cfg.goblinHome, "sessions", session.id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "transcript.jsonl"),
+      `${JSON.stringify({ role: "assistant", content: "Hi." })}\n`,
+    );
+    await handleCommand({
+      command: "/voice",
+      rawText: "/voice",
+      deps: harness.deps,
+      locator: harness.locator,
+      isSupergroup: false,
+      session,
+      existingRunner: makeRunner(true),
+      bot,
+    });
+    expect(harness.interrupt).not.toHaveBeenCalled();
+  }, 60_000);
 
   it("/queue is not cancel-capable", () => {
     expect(CANCEL_CAPABLE_COMMANDS.has("/queue")).toBe(false);

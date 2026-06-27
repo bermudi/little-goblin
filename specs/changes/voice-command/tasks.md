@@ -91,9 +91,9 @@ Implements spec requirements:
 
 Smoke test both flows with real Edge TTS.
 
-- [ ] Verify `uvx edge-tts` is callable from the bot's environment
-- [ ] Manual: send `/voice` with prior assistant response → voice message delivered, temp file cleaned via `onTurnEnd`
-- [ ] Manual: send `/v` → behaves identically to `/voice`
+- [x] Verify `uvx edge-tts` is callable from the bot's environment
+- [x] Manual: send `/voice` with prior assistant response → voice message delivered, temp file cleaned via `onTurnEnd`
+- [x] Manual: send `/v` → behaves identically to `/voice`
 - [ ] Manual: send `/voice` while agent is streaming → stream aborted, last completed message voiced
 - [ ] Manual: set `VOICE_NAME=en-US-AndrewMultilingualNeural` → male voice
 - [ ] Manual: ask model "convert the project README to a voice message" → model calls text_to_speech + send_voice

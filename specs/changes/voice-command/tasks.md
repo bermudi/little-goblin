@@ -47,17 +47,17 @@ Implements spec requirements:
 
 Create `src/commands/voice.ts` with `readLastAssistantMessage` and `executeVoice`. The `/voice` command uses the shared `edgeTts()` utility from Phase 1.
 
-- [ ] Create `src/commands/voice.ts` exporting:
+- [x] Create `src/commands/voice.ts` exporting:
   - `readLastAssistantMessage(home: string, sessionId: string): string | null` — reads transcript.jsonl backwards, finds last assistant entry, extracts text from string or array-of-blocks (skipping non-text types; returns null if all blocks are non-text)
   - `executeVoice(opts): Promise<VoiceResult>` — orchestrates read → `edgeTts()` → `runner.prompt(syntheticPrompt, buffer)` with `onTurnEnd` cleanup
-- [ ] Create `src/commands/voice.test.ts`
+- [x] Create `src/commands/voice.test.ts`
   - Test `readLastAssistantMessage`: one assistant message → returns text
   - Test `readLastAssistantMessage`: multiple messages → most recent assistant, skips user/toolResult
   - Test `readLastAssistantMessage`: array-of-blocks content → concatenates text blocks, skips thinking/toolCall/image
   - Test `readLastAssistantMessage`: all blocks are non-text → returns null
   - Test `readLastAssistantMessage`: no file → returns null
   - Test `readLastAssistantMessage`: no assistant entries → returns null
-- [ ] Verify: `bun test src/commands/voice.test.ts` passes
+- [x] Verify: `bun test src/commands/voice.test.ts` passes
 
 Implements spec requirements:
 - **Voice command converts last assistant message to speech** (read/extract portion)

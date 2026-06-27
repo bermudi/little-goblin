@@ -5,7 +5,7 @@ import type { Config } from "../config.ts";
 import type { MemoryStore } from "../memory/mod.ts";
 import { transcriptPath } from "../sessions/paths.ts";
 import type { ChatLocator, SessionState } from "../sessions/types.ts";
-import { MessageBuffer, type MessageBufferOptions } from "../tg/buffer.ts";
+import { MessageBuffer } from "../tg/buffer.ts";
 import { edgeTts, resolveVoiceName, voiceTmpPath } from "../voice.ts";
 
 export interface VoiceMsgCtx {
@@ -76,10 +76,6 @@ function buildSyntheticPrompt(audioPath: string): string {
   return `Audio for your last response is at \`${audioPath}\`. Use send_voice to send it to the user. Do not repeat or describe the content — the audio IS the message.`;
 }
 
-type MessageBufferOptionsWithTurnEnd = MessageBufferOptions & {
-  onTurnEnd?: () => void | Promise<void>;
-};
-
 export async function executeVoice(opts: ExecuteVoiceOpts): Promise<VoiceResult> {
   const text = await readLastAssistantMessage(opts.home, opts.sessionId);
   if (text === null) {
@@ -103,7 +99,7 @@ export async function executeVoice(opts: ExecuteVoiceOpts): Promise<VoiceResult>
   const { locator, ctx, session } = opts;
   const topicId = locator.topicId;
 
-  const bufferOptions: MessageBufferOptionsWithTurnEnd = {
+  const buffer = new MessageBuffer(bot, locator.chatId, topicId, {
     visibility: cfg.toolVisibility,
     onTopicNotFound:
       topicId !== undefined
@@ -116,9 +112,7 @@ export async function executeVoice(opts: ExecuteVoiceOpts): Promise<VoiceResult>
         if (isNodeError(unlinkErr) && unlinkErr.code === "ENOENT") return;
         throw unlinkErr;
       }),
-  };
-
-  const buffer = new MessageBuffer(bot, locator.chatId, topicId, bufferOptions as MessageBufferOptions);
+  });
   const runner = getOrCreateRunner(session, locator, ctx);
   await runner.prompt(buildSyntheticPrompt(tmpPath), buffer);
   return { kind: "sent" };

@@ -66,18 +66,18 @@ Implements spec requirements:
 
 Register commands, wire the β-tool, add `onTurnEnd` to MessageBuffer, add startup check, and update help text.
 
-- [ ] In `src/tg/buffer.ts`, add optional `onTurnEnd?: () => void | Promise<void>` to `MessageBufferOptions`. In `MessageBuffer.onAgentEnd()`, call `this.onTurnEnd?.()` after final status and response flushes.
-- [ ] In `src/index.ts`, call `assertEdgeTtsAvailable()` before `bot.start()`. On failure, log via `log.warn` (not fatal — bot still works without voice).
-- [ ] In `src/bot.ts`, add `createTextToSpeechTool()` to `getBetaTools()` returned array — this is the single registration point, alongside all other β-tools
-- [ ] In `src/bot.ts`, import `{ executeVoice }` from `"./commands/voice.ts"` and `createTextToSpeechTool` from `"./tg/mod.ts"`
-- [ ] In `src/bot.ts`, add `"/voice"` and `"/v"` to `CANCEL_CAPABLE_COMMANDS`
-- [ ] In `src/bot.ts`, add switch cases for `/voice` and `/v` before `default:`:
+- [x] In `src/tg/buffer.ts`, add optional `onTurnEnd?: () => void | Promise<void>` to `MessageBufferOptions`. In `MessageBuffer.onAgentEnd()`, call `this.onTurnEnd?.()` after final status and response flushes.
+- [x] In `src/index.ts`, call `assertEdgeTtsAvailable()` before `bot.start()`. On failure, log via `log.warn` (not fatal — bot still works without voice).
+- [x] In `src/bot.ts`, add `createTextToSpeechTool()` to `getBetaTools()` returned array — this is the single registration point, alongside all other β-tools
+- [x] In `src/bot.ts`, import `{ executeVoice }` from `"./commands/voice.ts"` and `createTextToSpeechTool` from `"./tg/mod.ts"`
+- [x] In `src/bot.ts`, add `"/voice"` and `"/v"` to `CANCEL_CAPABLE_COMMANDS`
+- [x] In `src/bot.ts`, add switch cases for `/voice` and `/v` before `default:`:
   - Null session → reply and return
   - Call `executeVoice`, handle result kinds (`no-messages`, `tts-failed`, `sent`)
   - On `tts-failed`, log via `log.warn` and reply with `"Voice generation failed: <error>"`
-- [ ] In `src/commands/help.ts`, add `/voice` to `HELP_REPLY` command list
-- [ ] Run `bun test src/commands/integration.test.ts` — no regressions from new CANCEL_CAPABLE_COMMANDS entries
-- [ ] Verify: `bun run src/index.ts` starts without import errors, model sees `text_to_speech` in tools
+- [x] In `src/commands/help.ts`, add `/voice` to `HELP_REPLY` command list
+- [x] Run `bun test src/commands/integration.test.ts` — no regressions from new CANCEL_CAPABLE_COMMANDS entries
+- [x] Verify: `bun run src/index.ts` starts without import errors, model sees `text_to_speech` in tools
 
 Implements spec requirements:
 - **Voice command converts last assistant message to speech** (wiring)

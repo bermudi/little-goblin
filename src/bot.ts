@@ -14,6 +14,7 @@ import {
   createSendDocumentTool,
   createRenameTopicTool,
 } from "./tg/tools.ts";
+import { createTextToSpeechTool } from "./tg/mod.ts";
 import { MemoryStore } from "./memory/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "./sessions/mod.ts";
@@ -58,6 +59,7 @@ function getBetaTools(
     createSendPhotoTool(bot, chatId, topicId),
     createSendDocumentTool(bot, chatId, topicId),
     createRenameTopicTool(bot, chatId, topicId),
+    createTextToSpeechTool(),
   ].filter((t): t is NonNullable<typeof t> => t !== null);
 }
 
@@ -433,6 +435,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
           isSupergroup,
           session,
           existingRunner,
+          voice: { bot, ctx, memoryStore, getOrCreateRunner },
         });
         if (result.kind !== "fallthrough") {
           for (const effect of result.sideEffects) {
@@ -456,6 +459,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
               scheduleFreshTurn(ctx, locator, effect.session, queueRunner, effect.text, "queued prompt failed");
             }
           }
+          if (result.kind === "handled") return;
           await ctx.reply(result.reply);
           return;
         }

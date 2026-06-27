@@ -3,6 +3,7 @@ import { buildBot } from "./bot.ts";
 import { log, initLog } from "./log.ts";
 import { validateModelAtStartup } from "./agent/poe-validate.ts";
 import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
+import { assertEdgeTtsAvailable } from "./voice.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -33,6 +34,14 @@ async function main(): Promise<void> {
     allowedUsers: cfg.allowedTgUserIds.size,
     model: cfg.modelName,
   });
+
+  try {
+    await assertEdgeTtsAvailable();
+  } catch (err) {
+    log.warn("edge-tts not available; voice features disabled", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   // Long-polling. No webhook, no inbound ports.
   await bot.start({

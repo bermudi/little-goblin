@@ -41,6 +41,8 @@ export interface MessageBufferOptions {
    * Used to archive orphaned topic memory scopes.
    */
   onTopicNotFound?: () => void | Promise<void>;
+  /** Called once after the turn's final status and response flushes. */
+  onTurnEnd?: () => void | Promise<void>;
 }
 
 /** Per-tool slot tracking running/completed invocations and error state. */
@@ -193,6 +195,8 @@ export class MessageBuffer implements TurnCallbacks {
 
   /** Called once when a "topic not found" error is detected. */
   private onTopicNotFound: (() => void | Promise<void>) | undefined;
+  /** Called once after the turn's final status and response flushes. */
+  private onTurnEnd: (() => void | Promise<void>) | undefined;
   /** Ensures onTopicNotFound is only called once. */
   private topicNotFoundReported: boolean = false;
 
@@ -251,6 +255,7 @@ export class MessageBuffer implements TurnCallbacks {
       options.clearIntervalFn ??
       ((handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]));
     this.onTopicNotFound = options.onTopicNotFound;
+    this.onTurnEnd = options.onTurnEnd;
   }
 
   onTextDelta(delta: string): void {
@@ -363,6 +368,7 @@ export class MessageBuffer implements TurnCallbacks {
     }
     this.statusFrozen = true;
     void this.flushResponse(true);
+    void Promise.resolve(this.onTurnEnd?.());
   }
 
   /**

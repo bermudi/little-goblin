@@ -18,6 +18,7 @@ describe("HELP_REPLY", () => {
       "/think",
       "/name",
       "/resume",
+      "/voice",
       "/ping",
       "/start",
       "/subagents",

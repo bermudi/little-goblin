@@ -21,6 +21,7 @@ export const HELP_REPLY = [
   "/think [level] — show or set thinking level",
   "/name <name> — name the active session",
   "/resume <id-or-name> — bind this chat to an existing session",
+  "/voice — convert the last assistant message to a voice note",
   "/ping — smoke-test: reply with pong and chat info",
   "/start — start a new session (DMs only)",
   "/subagents — list tracked subagents",

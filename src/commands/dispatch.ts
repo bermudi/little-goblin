@@ -1,8 +1,10 @@
 import { existsSync } from "node:fs";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Bot, Context } from "grammy";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
+import type { MemoryStore } from "../memory/mod.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { ChatLocator, SessionManager, SessionState } from "../sessions/mod.ts";
 import type { AgentRunner } from "../agent/mod.ts";
@@ -27,9 +29,10 @@ import {
   REVIVE_SUBAGENT_USAGE_REPLY,
 } from "./subagents.ts";
 import { HELP_REPLY } from "./help.ts";
+import { executeVoice } from "./voice.ts";
 
 /** Slash-commands that trigger an interrupt + cascade-cancel before executing. */
-export const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact", "/resume", "/name", "/think"]);
+export const CANCEL_CAPABLE_COMMANDS = new Set(["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact", "/resume", "/name", "/think", "/voice", "/v"]);
 
 export type SideEffect =
   | { kind: "runner-created"; session: SessionState; locator: ChatLocator }
@@ -38,6 +41,7 @@ export type SideEffect =
 
 export type DispatchResult =
   | { kind: "replied"; reply: string; sideEffects: SideEffect[] }
+  | { kind: "handled"; sideEffects: SideEffect[] }
   | { kind: "fallthrough" };
 
 export interface DispatchDeps {
@@ -52,6 +56,13 @@ export interface DispatchDeps {
   interruptAndCascade: typeof interruptAndCascade;
 }
 
+export interface VoiceDispatchCtx {
+  bot: Bot;
+  ctx: Context;
+  memoryStore: MemoryStore;
+  getOrCreateRunner: (session: SessionState, locator: ChatLocator, ctx: Context) => AgentRunner;
+}
+
 export interface DispatchOpts {
   command: string;
   deps: DispatchDeps;
@@ -60,6 +71,7 @@ export interface DispatchOpts {
   isSupergroup: boolean;
   session: SessionState | null;
   existingRunner: AgentRunner | null;
+  voice?: VoiceDispatchCtx;
 }
 
 function replied(reply: string, sideEffects: SideEffect[] = []): DispatchResult {
@@ -284,6 +296,41 @@ export async function handleCommand(opts: DispatchOpts): Promise<DispatchResult>
     }
     case "/help":
       return replied(HELP_REPLY);
+    case "/voice":
+    case "/v": {
+      if (!session) return replied("No active session. Use /new to start one.");
+      if (!opts.voice) {
+        log.error("voice dispatch context missing");
+        return replied("Voice generation failed: internal error");
+      }
+      try {
+        const voiceResult = await executeVoice({
+          home: cfg.goblinHome,
+          sessionId: session.id,
+          session,
+          locator,
+          ctx: opts.voice.ctx,
+          msgCtx: {
+            bot: opts.voice.bot,
+            memoryStore: opts.voice.memoryStore,
+            cfg,
+            getOrCreateRunner: opts.voice.getOrCreateRunner,
+          },
+        });
+        switch (voiceResult.kind) {
+          case "no-messages":
+            return replied("No messages to voice yet.");
+          case "tts-failed":
+            log.warn("voice TTS failed", { error: voiceResult.error, sessionId: session.id });
+            return replied(`Voice generation failed: ${voiceResult.error}`);
+          case "sent":
+            return { kind: "handled", sideEffects };
+        }
+      } catch (err) {
+        log.error("voice failed", { error: String(err), sessionId: session.id });
+        return replied(`Voice generation failed: ${errorMessage(err)}`);
+      }
+    }
     case "/queue": {
       if (!session) return replied("No active session.");
       const arg = rawText.slice("/queue".length).trim();

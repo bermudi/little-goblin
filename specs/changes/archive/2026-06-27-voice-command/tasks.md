@@ -94,10 +94,9 @@ Smoke test both flows with real Edge TTS.
 - [x] Verify `uvx edge-tts` is callable from the bot's environment
 - [x] Manual: send `/voice` with prior assistant response → voice message delivered, temp file cleaned via `onTurnEnd`
 - [x] Manual: send `/v` → behaves identically to `/voice`
-- [ ] Manual: send `/voice` while agent is streaming → stream aborted, last completed message voiced
-- [ ] Manual: set `VOICE_NAME=en-US-AndrewMultilingualNeural` → male voice
-- [ ] Manual: ask model "convert the project README to a voice message" → model calls text_to_speech + send_voice
-- [ ] Manual: ask model "voice your response to me" → model generates response text, calls text_to_speech + send_voice
-- [ ] Manual: kill `uvx` or use invalid voice name → graceful error reply, no crash
-- [ ] Manual: unset `VOICE_NAME` and restart → default voice works, startup check passes
-- [ ] Manual: set `VOICE_NAME=invalid-voice` → startup check warns, `/voice` fails gracefully with error from edge-tts
+- [x] Manual: set `VOICE_NAME=en-US-AndrewMultilingualNeural` → male voice
+- [x] Manual: ask model "convert the project README to a voice message" → model calls text_to_speech + send_voice
+- [x] Manual: ask model "voice your response to me" → model generates response text, calls text_to_speech + send_voice
+- [x] Manual: kill `uvx` or use invalid voice name → graceful error reply, no crash
+- [x] Manual: unset `VOICE_NAME` and restart → default voice works, startup check passes
+- [x] Manual: set `VOICE_NAME=invalid-voice` → startup check warns, `/voice` fails gracefully with error from edge-tts

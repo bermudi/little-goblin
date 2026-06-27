@@ -65,4 +65,11 @@
   //   verbose  α + γ tools (revive_subagent, list_subagents)
   //   debug    everything
   toolVisibility: "standard",
+
+  // --- Voice ---
+  // Microsoft Edge TTS voice for /voice and the text_to_speech tool.
+  // Examples: en-US-EmmaMultilingualNeural, en-US-AndrewMultilingualNeural
+  // Can be literal, env var name, or shell command. VOICE_NAME env overrides.
+  // voiceName: "VOICE_NAME",
+  // voiceName: "en-US-AndrewMultilingualNeural",
 }

@@ -133,6 +133,31 @@ describe("loadConfig", () => {
     expect(cfg.skillSources).toBe("goblin-only");
   });
 
+  it("defaults voiceName when not specified", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.voiceName).toBe("en-US-EmmaMultilingualNeural");
+  });
+
+  it("loads voiceName from config file", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      voiceName: "en-US-AndrewMultilingualNeural",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.voiceName).toBe("en-US-AndrewMultilingualNeural");
+  });
+
   it("accepts every valid skillSources value", () => {
     for (const skillSources of ["goblin-only", "user"] as const) {
       const configContent = `{

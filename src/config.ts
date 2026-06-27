@@ -29,6 +29,8 @@ export interface Config {
   skillSources: "goblin-only" | "user";
   /** Favorite model ids for /model switching. */
   favorites: string[];
+  /** Microsoft Edge TTS voice for /voice and text_to_speech. */
+  voiceName: string;
 }
 
 /**
@@ -84,6 +86,7 @@ export function loadConfig(): Config {
     toolVisibility: cfg.toolVisibility,
     skillSources: cfg.skillSources,
     favorites: cfg.favorites ?? [],
+    voiceName: cfg.voiceName,
   });
 
   return config;

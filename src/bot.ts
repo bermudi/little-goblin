@@ -25,6 +25,7 @@ import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/t
 import { interruptAndCascade } from "./interrupt.ts";
 import { parseCommand } from "./commands/parse.ts";
 import { handleCommand, type DispatchDeps } from "./commands/dispatch.ts";
+import { configureVoice } from "./voice.ts";
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -180,6 +181,7 @@ interface BuildBotOptions {
 }
 
 export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner> } {
+  configureVoice(cfg);
   const bot = new Bot(cfg.botToken);
   const manager = new SessionManager(cfg);
   const runners = new Map<string, AgentRunner>();

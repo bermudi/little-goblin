@@ -3,7 +3,7 @@ import { buildBot } from "./bot.ts";
 import { log, initLog } from "./log.ts";
 import { validateModelAtStartup } from "./agent/poe-validate.ts";
 import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
-import { assertEdgeTtsAvailable } from "./voice.ts";
+import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -38,7 +38,8 @@ async function main(): Promise<void> {
   try {
     await assertEdgeTtsAvailable();
   } catch (err) {
-    log.warn("edge-tts not available; voice features disabled", {
+    log.warn("voice check failed; /voice may fail at runtime", {
+      voice: resolveVoiceName(),
       error: err instanceof Error ? err.message : String(err),
     });
   }

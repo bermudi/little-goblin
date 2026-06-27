@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertEdgeTtsAvailable, edgeTts, resolveVoiceName, stripEmojis, voiceTmpPath } from "./voice.ts";
+import { assertEdgeTtsAvailable, edgeTts, resolveVoiceName, resetVoiceConfig, configureVoice, stripEmojis, voiceTmpPath } from "./voice.ts";
 
 const originalVoiceName = process.env.VOICE_NAME;
 const originalPath = process.env.PATH;
@@ -11,6 +11,7 @@ describe("voice", () => {
   beforeEach(() => {
     delete process.env.VOICE_NAME;
     process.env.PATH = originalPath;
+    resetVoiceConfig();
   });
 
   afterEach(() => {
@@ -20,6 +21,7 @@ describe("voice", () => {
       process.env.VOICE_NAME = originalVoiceName;
     }
     process.env.PATH = originalPath;
+    resetVoiceConfig();
   });
 
   it("resolves the default voice name", () => {
@@ -27,6 +29,17 @@ describe("voice", () => {
   });
 
   it("resolves VOICE_NAME when set", () => {
+    process.env.VOICE_NAME = "en-US-AndrewMultilingualNeural";
+    expect(resolveVoiceName()).toBe("en-US-AndrewMultilingualNeural");
+  });
+
+  it("resolves voiceName from config when VOICE_NAME is unset", () => {
+    configureVoice({ voiceName: "en-US-AndrewMultilingualNeural" });
+    expect(resolveVoiceName()).toBe("en-US-AndrewMultilingualNeural");
+  });
+
+  it("prefers VOICE_NAME env over config voiceName", () => {
+    configureVoice({ voiceName: "en-US-EmmaMultilingualNeural" });
     process.env.VOICE_NAME = "en-US-AndrewMultilingualNeural";
     expect(resolveVoiceName()).toBe("en-US-AndrewMultilingualNeural");
   });
@@ -93,9 +106,14 @@ describe("voice", () => {
     }
   }, 60_000);
 
-  it("asserts edge-tts availability", async () => {
+  it("asserts edge-tts availability and the configured voice", async () => {
     await expect(assertEdgeTtsAvailable()).resolves.toBeUndefined();
-  }, 20_000);
+  }, 60_000);
+
+  it("throws when VOICE_NAME is invalid", async () => {
+    process.env.VOICE_NAME = "invalid-voice";
+    await expect(assertEdgeTtsAvailable()).rejects.toThrow(/invalid-voice|voice/i);
+  }, 60_000);
 
   it("throws when uvx cannot be spawned", async () => {
     const emptyPath = mkdtempSync(join(tmpdir(), "goblin-empty-path-"));

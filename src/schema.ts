@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_VOICE_NAME } from "./voice.ts";
 
 /**
  * Zod schema for the JSON5 config file (goblin.json5).
@@ -18,6 +19,8 @@ export const ConfigFileSchema = z.object({
   toolVisibility: z.enum(["none", "minimal", "standard", "verbose", "debug"]).default("standard"),
   skillSources: z.enum(["goblin-only", "user"]).default("goblin-only"),
   favorites: z.array(z.string()).optional(),
+  /** Microsoft Edge TTS voice for /voice and text_to_speech. */
+  voiceName: z.string().default(DEFAULT_VOICE_NAME),
 });
 
 export type ConfigFile = z.infer<typeof ConfigFileSchema>;

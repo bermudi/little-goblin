@@ -6,14 +6,28 @@ import { join } from "node:path";
 
 const DEFAULT_VOICE_NAME = "en-US-EmmaMultilingualNeural";
 
+export { DEFAULT_VOICE_NAME };
+
+let configVoiceName: string | undefined;
+
 type CommandResult = {
   code: number | null;
   signal: NodeJS.Signals | null;
   stderr: string;
 };
 
+/** Apply voice name from goblin.json5. Call once at startup. */
+export function configureVoice(cfg: { voiceName: string }): void {
+  configVoiceName = cfg.voiceName;
+}
+
+/** Clear config voice (tests). */
+export function resetVoiceConfig(): void {
+  configVoiceName = undefined;
+}
+
 export function resolveVoiceName(): string {
-  return process.env.VOICE_NAME ?? DEFAULT_VOICE_NAME;
+  return process.env.VOICE_NAME ?? configVoiceName ?? DEFAULT_VOICE_NAME;
 }
 
 export function voiceTmpPath(): string {
@@ -49,6 +63,16 @@ export async function edgeTts(text: string, voice: string, outputPath: string): 
 
 export async function assertEdgeTtsAvailable(): Promise<void> {
   await runUvxEdgeTts(["--version"], 10_000);
+
+  const outputPath = voiceTmpPath();
+  try {
+    await edgeTts("ok", resolveVoiceName(), outputPath);
+  } finally {
+    await unlink(outputPath).catch((err: unknown) => {
+      if (isNodeError(err) && err.code === "ENOENT") return;
+      throw err;
+    });
+  }
 }
 
 async function runUvxEdgeTts(args: string[], timeoutMs: number): Promise<void> {

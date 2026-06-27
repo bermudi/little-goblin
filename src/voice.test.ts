@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertEdgeTtsAvailable, edgeTts, resolveVoiceName, voiceTmpPath } from "./voice.ts";
+import { assertEdgeTtsAvailable, edgeTts, resolveVoiceName, stripEmojis, voiceTmpPath } from "./voice.ts";
 
 const originalVoiceName = process.env.VOICE_NAME;
 const originalPath = process.env.PATH;
@@ -41,6 +41,15 @@ describe("voice", () => {
     expect(second.endsWith(".mp3")).toBe(true);
   });
 
+  it("strips emoji pictographs and collapses whitespace", () => {
+    expect(stripEmojis("Morning, Daniel! ☀️")).toBe("Morning, Daniel!");
+    expect(stripEmojis("Get some sleep 🌙")).toBe("Get some sleep");
+    expect(stripEmojis("hello 😅 world")).toBe("hello world");
+    expect(stripEmojis("no emoji")).toBe("no emoji");
+    expect(stripEmojis("☀️🌙")).toBe("");
+    expect(stripEmojis("👨‍👩‍👧 family")).toBe("family");
+  });
+
   it("generates a valid MP3 with edge-tts", async () => {
     const outputPath = voiceTmpPath();
     try {
@@ -56,6 +65,24 @@ describe("voice", () => {
       unlinkIfExists(outputPath);
     }
   }, 60_000);
+
+  it("strips emojis before sending text to edge-tts", async () => {
+    const outputPath = voiceTmpPath();
+    try {
+      await edgeTts("Hello from goblin. ☀️", resolveVoiceName(), outputPath);
+      expect(existsSync(outputPath)).toBe(true);
+    } finally {
+      unlinkIfExists(outputPath);
+    }
+  }, 60_000);
+
+  it("throws when text is only emojis", async () => {
+    const outputPath = voiceTmpPath();
+    await expect(edgeTts("😅🌙", resolveVoiceName(), outputPath)).rejects.toThrow(
+      /empty after stripping emojis/i,
+    );
+    unlinkIfExists(outputPath);
+  });
 
   it("throws with stderr when edge-tts receives an invalid voice", async () => {
     const outputPath = voiceTmpPath();

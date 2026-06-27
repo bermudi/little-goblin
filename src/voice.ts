@@ -20,6 +20,16 @@ export function voiceTmpPath(): string {
   return join(tmpdir(), `goblin-voice-${randomUUID()}.mp3`);
 }
 
+/** Remove emoji pictographs and stray joiners before TTS. */
+export function stripEmojis(text: string): string {
+  return text
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\p{Emoji_Modifier}\p{Regional_Indicator}]/gu, "")
+    .replace(/\u200d/gi, "")
+    .replace(/[\ufe0e\ufe0f]/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export async function edgeTts(text: string, voice: string, outputPath: string): Promise<void> {
   const spoken = stripEmojis(text);
   if (spoken.length === 0) {

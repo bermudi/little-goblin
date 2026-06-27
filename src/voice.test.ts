@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertEdgeTtsAvailable, edgeTts, resolveVoiceName, resetVoiceConfig, configureVoice, stripEmojis, voiceTmpPath } from "./voice.ts";
+import { assertEdgeTtsAvailable, edgeTts, resolveVoiceName, resetVoiceConfig, configureVoice, stripEmojis, summarizeEdgeTtsStderr, voiceTmpPath } from "./voice.ts";
 
 const originalVoiceName = process.env.VOICE_NAME;
 const originalPath = process.env.PATH;
@@ -54,6 +54,14 @@ describe("voice", () => {
     expect(second.endsWith(".mp3")).toBe(true);
   });
 
+  it("summarizes edge-tts tracebacks to a short message", () => {
+    const traceback = `Traceback (most recent call last):
+  File "/home/.cache/uv/.../edge_tts/data_classes.py", line 40, in validate_string_param
+    raise ValueError(f"Invalid {param_name} '{param_value}'.")
+ValueError: Invalid voice 'invalid-voice'.`;
+    expect(summarizeEdgeTtsStderr(traceback)).toBe("Invalid voice 'invalid-voice'");
+  });
+
   it("strips emoji pictographs and collapses whitespace", () => {
     expect(stripEmojis("Morning, Daniel! ☀️")).toBe("Morning, Daniel!");
     expect(stripEmojis("Get some sleep 🌙")).toBe("Get some sleep");
@@ -97,10 +105,12 @@ describe("voice", () => {
     unlinkIfExists(outputPath);
   });
 
-  it("throws with stderr when edge-tts receives an invalid voice", async () => {
+  it("throws with a short message when edge-tts receives an invalid voice", async () => {
     const outputPath = voiceTmpPath();
     try {
-      await expect(edgeTts("Hello.", "not-a-real-edge-voice", outputPath)).rejects.toThrow(/not-a-real-edge-voice|voice/i);
+      await expect(edgeTts("Hello.", "not-a-real-edge-voice", outputPath)).rejects.toThrow(
+        "Invalid voice 'not-a-real-edge-voice'",
+      );
     } finally {
       unlinkIfExists(outputPath);
     }
@@ -112,14 +122,14 @@ describe("voice", () => {
 
   it("throws when VOICE_NAME is invalid", async () => {
     process.env.VOICE_NAME = "invalid-voice";
-    await expect(assertEdgeTtsAvailable()).rejects.toThrow(/invalid-voice|voice/i);
+    await expect(assertEdgeTtsAvailable()).rejects.toThrow("Invalid voice 'invalid-voice'");
   }, 60_000);
 
   it("throws when uvx cannot be spawned", async () => {
     const emptyPath = mkdtempSync(join(tmpdir(), "goblin-empty-path-"));
     process.env.PATH = emptyPath;
     try {
-      await expect(assertEdgeTtsAvailable()).rejects.toThrow(/failed to start uvx|uvx edge-tts failed/);
+      await expect(assertEdgeTtsAvailable()).rejects.toThrow(/failed to start uvx/i);
     } finally {
       rmSync(emptyPath, { recursive: true, force: true });
     }

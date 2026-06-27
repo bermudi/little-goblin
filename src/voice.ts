@@ -79,7 +79,35 @@ async function runUvxEdgeTts(args: string[], timeoutMs: number): Promise<void> {
   const result = await runCommand("uvx", ["edge-tts", ...args], timeoutMs);
   if (result.code === 0) return;
   const detail = result.stderr.trim() || formatExit(result);
-  throw new Error(`uvx edge-tts failed: ${detail}`);
+  throw new Error(summarizeEdgeTtsStderr(detail));
+}
+
+/** Turn edge-tts stderr/traceback into a short user-facing message. */
+export function summarizeEdgeTtsStderr(stderr: string): string {
+  const invalidVoice = stderr.match(/Invalid voice '([^']+)'/);
+  if (invalidVoice) return `Invalid voice '${invalidVoice[1]}'`;
+
+  const lines = stderr
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (line.startsWith("File ") || line.startsWith("Traceback")) continue;
+    const colon = line.indexOf(": ");
+    if (colon <= 0) continue;
+    const head = line.slice(0, colon);
+    if (head.endsWith("Error") || head.endsWith("Exception") || head.includes(".")) {
+      return line.slice(colon + 2).trim();
+    }
+  }
+
+  const last = lines.at(-1);
+  if (last !== undefined && !last.startsWith("File ")) return last;
+
+  return stderr.trim() || "edge-tts failed";
 }
 
 function runCommand(command: string, args: string[], timeoutMs: number): Promise<CommandResult> {

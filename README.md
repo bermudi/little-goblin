@@ -71,6 +71,7 @@ Send any of these in Telegram:
 | `/cancel_subagent <id>` | Cancel a subagent. |
 | `/revive <id> <prompt>` | Revive a subagent with a follow-up. |
 | `/cancel` | Abort the current turn (cascades to subagents). |
+| `/voice` | Convert the last assistant message to a voice note. |
 | `/debug` | Dump session diagnostics. |
 | `/ping` | Smoke test. |
 | `/help` | Show the command list. |

@@ -51,6 +51,7 @@ All slash commands are available in DMs and in topics where the bot is reachable
 | `/cancel_subagent <id>` | Cancel a running subagent. |
 | `/revive <id> <prompt>` | Revive a persisted subagent with a follow-up prompt. |
 | `/cancel` | Abort the current turn. Cascades to subagents. |
+| `/voice` | Convert the last assistant message to a voice note (Edge TTS). Shorthand: `/v`. |
 | `/ping` | Smoke test. Replies with pong and chat info. |
 | `/help` | Show the command list. |
 

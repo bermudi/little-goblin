@@ -1,0 +1,595 @@
+import { existsSync } from "node:fs";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Bot, Context } from "grammy";
+import type { Config } from "../config.ts";
+import { log } from "../log.ts";
+import { sessionDir } from "../sessions/paths.ts";
+import type { ChatLocator, SessionManager, SessionState } from "../sessions/mod.ts";
+import type { AgentRunner } from "../agent/mod.ts";
+import type { ResolvedModel } from "../agent/models.ts";
+import type { SubagentRunner } from "../subagents/mod.ts";
+import { DEFAULT_CASCADE_TIMEOUT_MS, interruptAndCascade, type CascadeResult } from "../interrupt.ts";
+import { generateDiagnostics } from "../diagnostics.ts";
+import { cancelReply } from "./cancel.ts";
+import { executeNew } from "./new.ts";
+import { executeArchive } from "./archive.ts";
+import { executeProject } from "./project.ts";
+import { executeModel } from "./model.ts";
+import { executeCompact } from "./compact.ts";
+import { executeName } from "./name.ts";
+import { executeResume } from "./resume.ts";
+import { executeThink, ALL_LEVELS } from "./think.ts";
+import {
+  CANCEL_SUBAGENT_USAGE_REPLY,
+  formatSubagentsList,
+  parseReviveSubagentArgs,
+  parseSubagentId,
+  REVIVE_SUBAGENT_USAGE_REPLY,
+} from "./subagents.ts";
+import { executeVoice } from "./voice.ts";
+import { pingHandler } from "./ping.ts";
+import { buildStartHandler } from "./start.ts";
+
+// ---------------------------------------------------------------------------
+// Shared dispatch types (owned by the registry; re-exported by dispatch.ts)
+// ---------------------------------------------------------------------------
+
+export type SideEffect =
+  | { kind: "runner-created"; session: SessionState; locator: ChatLocator }
+  | { kind: "runner-disposed"; sessionId: string }
+  | { kind: "queue-prompt"; session: SessionState; text: string };
+
+export type DispatchResult =
+  | { kind: "replied"; reply: string; sideEffects: SideEffect[] }
+  | { kind: "handled"; sideEffects: SideEffect[] }
+  | { kind: "fallthrough" };
+
+export interface DispatchDeps {
+  manager: SessionManager;
+  subagentRunner: SubagentRunner;
+  cfg: Config;
+  tryResolveModel: (
+    cfg: Config,
+    session: SessionState | null,
+    runner?: AgentRunner,
+  ) => ResolvedModel | undefined;
+  interruptAndCascade: typeof interruptAndCascade;
+}
+
+export interface DispatchOpts {
+  command: string;
+  deps: DispatchDeps;
+  rawText: string;
+  locator: ChatLocator;
+  isSupergroup: boolean;
+  session: SessionState | null;
+  existingRunner: AgentRunner | null;
+  bot?: Bot;
+}
+
+/**
+ * Context passed to a dispatched command handler. Extends {@link DispatchOpts}
+ * with the cascade result and a suffix builder computed by `handleCommand`
+ * after the cancel-capable interrupt check.
+ */
+export interface CommandContext extends DispatchOpts {
+  cascade: CascadeResult | null;
+  suffix: () => string;
+}
+
+export type CommandHandler = (ctx: CommandContext) => Promise<DispatchResult>;
+
+export type GrammyHandlerFactory = (deps: { manager: SessionManager }) => (ctx: Context) => Promise<void>;
+
+// ---------------------------------------------------------------------------
+// CommandDef
+// ---------------------------------------------------------------------------
+
+export interface CommandDef {
+  /** Canonical name without leading slash, e.g. "cancel". */
+  name: string;
+  /** Human-readable description shown in /help and the Telegram menu. */
+  description: string;
+  /** Alternative names (without slash). */
+  aliases?: readonly string[];
+  /** Argument placeholder shown in help, e.g. "<name>" or "[index]". */
+  argsHint?: string;
+  /** True if the command triggers interrupt + cascade-cancel before executing. */
+  cancelCapable?: boolean;
+  /** Dispatched from the message:text handler. Mutually exclusive with grammyHandler. */
+  handler?: CommandHandler;
+  /** Registered via bot.command(). Mutually exclusive with handler. */
+  grammyHandler?: GrammyHandlerFactory;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers shared by handlers
+// ---------------------------------------------------------------------------
+
+function replied(reply: string, sideEffects: SideEffect[] = []): DispatchResult {
+  return { kind: "replied", reply, sideEffects };
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// ---------------------------------------------------------------------------
+// Handler functions — one per dispatched command. These wrap the existing
+// execute* helpers and carry over the side-effect logic from the former
+// dispatch.ts switch verbatim.
+// ---------------------------------------------------------------------------
+
+const cancelHandler: CommandHandler = async ({ session, cascade }) => replied(cancelReply({
+  hasSession: session !== null,
+  cascade: cascade ?? { attemptedMain: false, attemptedSubagents: 0, timedOutMain: false, timedOutSubagents: 0 },
+  cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
+}));
+
+const newHandler: CommandHandler = async ({ deps, locator, isSupergroup, session, suffix }) => {
+  const { manager } = deps;
+  const sideEffects: SideEffect[] = [];
+  const priorSession = session;
+  try {
+    const result = executeNew({
+      createSession: () => manager.createForChat(locator, { isSupergroup }),
+    });
+    if (priorSession) sideEffects.push({ kind: "runner-disposed", sessionId: priorSession.id });
+    sideEffects.push({ kind: "runner-created", session: result.session, locator });
+    return replied(`${result.reply}${suffix()}`, sideEffects);
+  } catch (err) {
+    log.error("new session creation failed", { error: String(err), sessionId: priorSession?.id });
+    return replied("Failed to reset session. Please try again.");
+  }
+};
+
+const archiveHandler: CommandHandler = async ({ deps, session, suffix }) => {
+  const { manager, cfg } = deps;
+  const sideEffects: SideEffect[] = [];
+  try {
+    const result = executeArchive({
+      hasSession: session !== null,
+      sessionExists: session !== null && existsSync(sessionDir(cfg.goblinHome, session.id)),
+      archive: () => {
+        manager.archive(session!.id);
+        sideEffects.push({ kind: "runner-disposed", sessionId: session!.id });
+      },
+    });
+    return replied(`${result.reply}${suffix()}`, sideEffects);
+  } catch (err) {
+    log.error("archive failed", { error: String(err), sessionId: session?.id });
+    return replied("Failed to archive session. Please try again.");
+  }
+};
+
+const projectHandler: CommandHandler = async ({ deps, locator, session, rawText, suffix }) => {
+  const { manager } = deps;
+  const sideEffects: SideEffect[] = [];
+  try {
+    const result = executeProject({
+      hasSession: session !== null,
+      rawText,
+      setProjectDir: (dir) => {
+        if (!session) return;
+        manager.bindProjectDir(locator, dir);
+        sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
+      },
+    });
+    return replied(`${result.reply}${suffix()}`, sideEffects);
+  } catch (err) {
+    log.error("project failed", { error: String(err), sessionId: session?.id });
+    return replied("Failed to set project directory. Please try again.");
+  }
+};
+
+const modelHandler: CommandHandler = async ({ deps, session, existingRunner, rawText, suffix }) => {
+  const { manager, cfg } = deps;
+  const sideEffects: SideEffect[] = [];
+  try {
+    const currentModelResolved = deps.tryResolveModel(cfg, session, existingRunner ?? undefined);
+    const result = executeModel({
+      hasSession: session !== null,
+      rawText,
+      favorites: cfg.favorites,
+      cfg,
+      currentModelName: existingRunner?.modelName ?? session?.modelName ?? cfg.modelName,
+      currentThinkingLevel: session?.thinkingLevel,
+      currentResolvedModel: currentModelResolved,
+      setModelName: (name) => {
+        if (!session) return;
+        manager.setModelName(session.id, name);
+      },
+      onThinkingLevelClamped: (newLevel) => {
+        if (!session) return;
+        manager.setThinkingLevel(session.id, newLevel);
+      },
+    });
+    if ((result.kind === "set" || result.kind === "cleared") && existingRunner) {
+      const targetName = result.kind === "set" ? result.modelName : cfg.modelName;
+      await existingRunner.setModel(targetName);
+    }
+    return replied(`${result.reply}${suffix()}`, sideEffects);
+  } catch (err) {
+    log.error("model failed", { error: String(err), sessionId: session?.id });
+    return replied("Failed to switch model. Please try again.");
+  }
+};
+
+const thinkHandler: CommandHandler = async ({ deps, session, existingRunner, rawText, suffix }) => {
+  const { manager, cfg } = deps;
+  try {
+    const currentModelResolved = deps.tryResolveModel(cfg, session, existingRunner ?? undefined);
+    const supportedLevels = currentModelResolved
+      ? (getSupportedThinkingLevels(currentModelResolved.model) as readonly ThinkingLevel[])
+      : ALL_LEVELS;
+    const result = executeThink({
+      hasSession: session !== null,
+      rawText,
+      currentLevel: session?.thinkingLevel ?? currentModelResolved?.thinkingLevel ?? "medium",
+      supportedLevels,
+      setThinkingLevel: (level) => {
+        if (!session) return;
+        manager.setThinkingLevel(session.id, level);
+        try { existingRunner?.setThinkingLevel(level); } catch { /* best-effort */ }
+      },
+    });
+    return replied(`${result.reply}${suffix()}`);
+  } catch (err) {
+    log.error("think failed", { error: String(err), sessionId: session?.id });
+    return replied("Failed to set thinking level. Please try again.");
+  }
+};
+
+const debugHandler: CommandHandler = async ({ deps, locator, session, existingRunner, suffix }) => {
+  const { manager, cfg, subagentRunner } = deps;
+  if (!session) return replied("No active session.");
+  const diag = generateDiagnostics({
+    session,
+    runner: existingRunner,
+    subagentRunner,
+    goblinHome: cfg.goblinHome,
+    modelName: cfg.modelName,
+    projectDir: manager.getProjectDir(locator),
+  });
+  return replied(`${diag}${suffix()}`);
+};
+
+const compactHandler: CommandHandler = async ({ session, existingRunner, rawText, suffix }) => {
+  try {
+    const result = await executeCompact({ hasSession: session !== null, rawText, runner: existingRunner });
+    return replied(`${result.reply}${suffix()}`);
+  } catch (err) {
+    log.error("compact failed", { error: String(err), sessionId: session?.id });
+    return replied("Failed to compact session. Please try again.");
+  }
+};
+
+const nameHandler: CommandHandler = async ({ deps, session, rawText, suffix }) => {
+  const { manager } = deps;
+  try {
+    const result = executeName({
+      hasSession: session !== null,
+      rawText,
+      session,
+      setTitle: (title) => {
+        if (!session) return;
+        manager.setTitle(session.id, title);
+      },
+    });
+    return replied(`${result.reply}${suffix()}`);
+  } catch (err) {
+    log.error("name failed", { error: String(err), sessionId: session?.id });
+    return replied("Failed to name session. Please try again.");
+  }
+};
+
+const resumeHandler: CommandHandler = async ({ deps, locator, isSupergroup, session, rawText, suffix }) => {
+  const { manager } = deps;
+  const sideEffects: SideEffect[] = [];
+  try {
+    const result = executeResume({
+      rawText,
+      sessions: manager.list(),
+      bindSession: (sessionId) => manager.bindExistingToChat(sessionId, locator, { isSupergroup }),
+    });
+    if (result.kind === "resumed") {
+      if (session) sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
+      sideEffects.push({ kind: "runner-created", session: result.session, locator });
+    }
+    return replied(`${result.reply}${suffix()}`, sideEffects);
+  } catch (err) {
+    log.error("resume failed", { error: String(err), sessionId: session?.id });
+    return replied("Failed to resume session. Please try again.");
+  }
+};
+
+const subagentsHandler: CommandHandler = async ({ deps }) => {
+  return replied(formatSubagentsList(deps.subagentRunner.list()));
+};
+
+const cancelSubagentHandler: CommandHandler = async ({ deps, rawText }) => {
+  const id = parseSubagentId(rawText);
+  if (id === null) return replied(CANCEL_SUBAGENT_USAGE_REPLY);
+  try {
+    await deps.subagentRunner.cancel(id);
+    return replied(`Cancelled subagent \`${id}\`.`);
+  } catch (err) {
+    const message = errorMessage(err);
+    log.error("cancel_subagent failed", { id, error: message });
+    return replied(`Failed to cancel subagent \`${id}\`: ${message}`);
+  }
+};
+
+const reviveHandler: CommandHandler = async ({ deps, rawText }) => {
+  const args = parseReviveSubagentArgs(rawText);
+  if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY);
+  try {
+    const result = await deps.subagentRunner.revive(args.id, args.prompt);
+    return replied(result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`);
+  } catch (err) {
+    const message = errorMessage(err);
+    log.error("revive failed", { id: args.id, error: message });
+    return replied(`Failed to revive subagent \`${args.id}\`: ${message}`);
+  }
+};
+
+const helpHandler: CommandHandler = async () => replied(helpReply());
+
+const voiceHandler: CommandHandler = async ({ deps, session, locator, bot }) => {
+  if (!session) return replied("No active session. Use /new to start one.");
+  if (!bot) {
+    log.error("voice dispatch bot missing");
+    return replied("Voice generation failed: internal error");
+  }
+  try {
+    const voiceResult = await executeVoice({
+      home: deps.cfg.goblinHome,
+      sessionId: session.id,
+      bot,
+      chatId: locator.chatId,
+      topicId: locator.topicId,
+    });
+    switch (voiceResult.kind) {
+      case "no-messages":
+        return replied("No messages to voice yet.");
+      case "tts-failed":
+        log.warn("voice failed", { error: voiceResult.error, sessionId: session.id });
+        return replied(`Voice generation failed: ${voiceResult.error}`);
+      case "sent":
+        return { kind: "handled", sideEffects: [] };
+    }
+  } catch (err) {
+    log.error("voice failed", { error: String(err), sessionId: session.id });
+    return replied(`Voice generation failed: ${errorMessage(err)}`);
+  }
+};
+
+const queueHandler: CommandHandler = async ({ session, existingRunner, rawText }) => {
+  if (!session) return replied("No active session.");
+  const arg = rawText.slice("/queue".length).trim();
+  if (arg.length === 0) return replied("Usage: /queue <text>");
+  const sideEffects: SideEffect[] = [{ kind: "queue-prompt", session, text: arg }];
+  const ack = existingRunner?.isStreaming ? "Queued. Will run after the current turn." : "Running.";
+  return replied(ack, sideEffects);
+};
+
+// ---------------------------------------------------------------------------
+// grammy handler factories
+// ---------------------------------------------------------------------------
+
+const pingGrammyFactory: GrammyHandlerFactory = () => pingHandler;
+const startGrammyFactory: GrammyHandlerFactory = ({ manager }) => buildStartHandler(manager);
+
+// ---------------------------------------------------------------------------
+// COMMAND_REGISTRY — the single source of truth
+// ---------------------------------------------------------------------------
+
+export const COMMAND_REGISTRY: readonly CommandDef[] = [
+  {
+    name: "cancel",
+    description: "abort the current turn (cascades to subagents)",
+    cancelCapable: true,
+    handler: cancelHandler,
+  },
+  {
+    name: "new",
+    description: "reset this chat: archive the current session and start a fresh one",
+    cancelCapable: true,
+    handler: newHandler,
+  },
+  {
+    name: "archive",
+    description: "archive the active session",
+    cancelCapable: true,
+    handler: archiveHandler,
+  },
+  {
+    name: "project",
+    argsHint: "<dir>",
+    description: "bind session to a project directory (or clear with /project)",
+    cancelCapable: true,
+    handler: projectHandler,
+  },
+  {
+    name: "model",
+    argsHint: "[index]",
+    description: "list favorite models or switch to one",
+    cancelCapable: true,
+    handler: modelHandler,
+  },
+  {
+    name: "compact",
+    argsHint: "[instructions]",
+    description: "manually compact this session's context",
+    cancelCapable: true,
+    handler: compactHandler,
+  },
+  {
+    name: "debug",
+    description: "dump session diagnostics",
+    cancelCapable: true,
+    handler: debugHandler,
+  },
+  {
+    name: "think",
+    argsHint: "[level]",
+    description: "show or set thinking level",
+    cancelCapable: true,
+    handler: thinkHandler,
+  },
+  {
+    name: "name",
+    argsHint: "<name>",
+    description: "name the active session",
+    cancelCapable: true,
+    handler: nameHandler,
+  },
+  {
+    name: "resume",
+    argsHint: "<id-or-name>",
+    description: "bind this chat to an existing session",
+    cancelCapable: true,
+    handler: resumeHandler,
+  },
+  {
+    name: "subagents",
+    description: "list tracked subagents",
+    handler: subagentsHandler,
+  },
+  {
+    name: "cancel_subagent",
+    argsHint: "<id>",
+    description: "cancel a single subagent",
+    handler: cancelSubagentHandler,
+  },
+  {
+    name: "revive",
+    argsHint: "<id> <prompt>",
+    description: "revive a persisted subagent with a follow-up prompt",
+    handler: reviveHandler,
+  },
+  {
+    name: "help",
+    description: "show this list",
+    handler: helpHandler,
+  },
+  {
+    name: "voice",
+    aliases: ["v"],
+    description: "convert the last assistant message to a voice note",
+    handler: voiceHandler,
+  },
+  {
+    name: "queue",
+    argsHint: "<text>",
+    description: "enqueue text to run as a fresh turn after the current one settles",
+    handler: queueHandler,
+  },
+  {
+    name: "ping",
+    description: "smoke-test: reply with pong and chat info",
+    grammyHandler: pingGrammyFactory,
+  },
+  {
+    name: "start",
+    description: "start a new session (DMs only)",
+    grammyHandler: startGrammyFactory,
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Derived lookups — rebuilt once at module load
+// ---------------------------------------------------------------------------
+
+function buildLookup(): Map<string, CommandDef> {
+  const lookup = new Map<string, CommandDef>();
+  for (const def of COMMAND_REGISTRY) {
+    lookup.set(def.name, def);
+    for (const alias of def.aliases ?? []) {
+      lookup.set(alias, def);
+    }
+  }
+  return lookup;
+}
+
+const LOOKUP: ReadonlyMap<string, CommandDef> = buildLookup();
+
+/**
+ * Resolve a command token (with or without leading slash) to its CommandDef.
+ * Returns null for unknown commands.
+ */
+export function resolveCommand(token: string): CommandDef | null {
+  if (!token) return null;
+  const key = token.startsWith("/") ? token.slice(1) : token;
+  return LOOKUP.get(key) ?? null;
+}
+
+/** Set of "/<name>" and "/<alias>" for every cancel-capable def. */
+export const CANCEL_CAPABLE_COMMANDS: Set<string> = new Set(
+  COMMAND_REGISTRY
+    .filter((def) => def.cancelCapable)
+    .flatMap((def) => [def.name, ...(def.aliases ?? [])].map((n) => `/${n}`)),
+);
+
+/**
+ * Build the /help reply text from the registry. One line per def:
+ *   /<name><args> — <description>
+ * where <args> is a leading space plus argsHint if present, otherwise empty.
+ */
+export function helpReply(): string {
+  const lines = ["Commands:"];
+  for (const def of COMMAND_REGISTRY) {
+    const args = def.argsHint ? ` ${def.argsHint}` : "";
+    lines.push(`/${def.name}${args} — ${def.description}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Telegram BotCommand name sanitization: lowercase, hyphens → underscores,
+ * truncated to 32 chars, must match ^[a-z][a-z0-9_]{0,31}$.
+ */
+function sanitizeTelegramName(name: string): string | null {
+  const sanitized = name.toLowerCase().replace(/-/g, "_").slice(0, 32);
+  return /^[a-z][a-z0-9_]{0,31}$/.test(sanitized) ? sanitized : null;
+}
+
+/**
+ * Derive the BotCommand[] payload for setMyCommands from the registry.
+ * Aliases are excluded — one menu entry per canonical command.
+ * Descriptions are truncated to 256 chars (Telegram's limit).
+ */
+export function telegramBotCommands(): { command: string; description: string }[] {
+  const result: { command: string; description: string }[] = [];
+  for (const def of COMMAND_REGISTRY) {
+    const command = sanitizeTelegramName(def.name);
+    if (!command) {
+      log.warn("command name fails Telegram sanitization; excluded from menu", { name: def.name });
+      continue;
+    }
+    const description = def.description.slice(0, 256);
+    result.push({ command, description });
+  }
+  return result;
+}
+
+/**
+ * Populate Telegram's `/` autocomplete menu from the registry.
+ *
+ * Best-effort: on failure, calls `warn` with the error and resolves — the
+ * bot continues starting. Commands still dispatch via the `message:text`
+ * handler regardless of whether the menu is populated.
+ */
+export async function syncTelegramMenu(
+  api: { setMyCommands: (commands: { command: string; description: string }[]) => Promise<unknown> },
+  warn: (message: string, context?: Record<string, unknown>) => void,
+): Promise<void> {
+  try {
+    await api.setMyCommands(telegramBotCommands());
+  } catch (err) {
+    warn("setMyCommands failed; / autocomplete menu may be stale", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}

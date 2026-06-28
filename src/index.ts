@@ -4,6 +4,7 @@ import { log, initLog } from "./log.ts";
 import { validateModelAtStartup } from "./agent/poe-validate.ts";
 import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
 import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
+import { syncTelegramMenu } from "./commands/registry.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -43,6 +44,11 @@ async function main(): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+
+  // Populate Telegram's / autocomplete menu from the command registry.
+  // Best-effort: a failure does not prevent the bot from starting —
+  // commands still dispatch via the message:text handler.
+  await syncTelegramMenu(bot.api, log.warn);
 
   // Long-polling. No webhook, no inbound ports.
   await bot.start({

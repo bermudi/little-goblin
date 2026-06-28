@@ -1,8 +1,7 @@
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import type { ChatLocator } from "./types.ts";
 import { topicSettingsPath } from "./paths.ts";
+import { atomicWrite } from "../fs.ts";
 import { log } from "../log.ts";
 
 /**
@@ -50,11 +49,7 @@ export function loadTopicSettings(home: string): TopicSettingsFile {
  * Save topic settings atomically (write to unique tmp, then rename).
  */
 export function saveTopicSettings(home: string, settings: TopicSettingsFile): void {
-  const finalPath = topicSettingsPath(home);
-  const tmpPath = join(home, `.topic-settings.${randomUUID().slice(0, 8)}.tmp`);
-
-  writeFileSync(tmpPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
-  renameSync(tmpPath, finalPath);
+  atomicWrite(topicSettingsPath(home), JSON.stringify(settings, null, 2) + "\n");
 }
 
 /**

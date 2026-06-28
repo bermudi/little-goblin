@@ -1,7 +1,7 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import type { SessionState } from "./types.ts";
-import { sessionDir, statePath } from "./paths.ts";
+import { statePath } from "./paths.ts";
+import { atomicWrite } from "../fs.ts";
 
 /**
  * Load session state from disk.
@@ -24,13 +24,5 @@ export function loadState(home: string, id: string): SessionState | null {
  * Save session state atomically (write to tmp, then rename).
  */
 export function saveState(home: string, state: SessionState): void {
-  const dir = sessionDir(home, state.id);
-  mkdirSync(dir, { recursive: true });
-
-  const finalPath = statePath(home, state.id);
-  const tmpPath = join(dir, `.state-${state.id}.tmp`);
-
-  writeFileSync(tmpPath, JSON.stringify(state, null, 2) + "\n", "utf-8");
-  // Atomic rename on POSIX
-  renameSync(tmpPath, finalPath);
+  atomicWrite(statePath(home, state.id), JSON.stringify(state, null, 2) + "\n");
 }

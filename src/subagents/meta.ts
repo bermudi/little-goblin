@@ -13,8 +13,9 @@
  * to a concrete path — see the note above the function.
  */
 
-import { existsSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { atomicWrite } from "../fs.ts";
 import {
   genericSubagentDir,
   genericSubagentMetaPath,
@@ -25,21 +26,11 @@ import {
 import type { SubagentInstance, SubagentMeta } from "./types.ts";
 
 /**
- * Write JSON to disk via tmp + rename so a crash mid-write doesn't leave
- * a partial meta.json behind.
+ * Write JSON to disk atomically (tmp + fsync + rename) so a crash mid-write
+ * doesn't leave a partial meta.json behind. See `src/fs.ts` for details.
  */
 export function writeMetaAtomic(path: string, meta: SubagentMeta): void {
-  // tmp file lives in the same directory as the target so the rename is
-  // atomic on the same filesystem.
-  const tmp = `${dirname(path)}/.meta.${meta.id}.${Date.now()}.tmp`;
-  try {
-    writeFileSync(tmp, JSON.stringify(meta, null, 2));
-    renameSync(tmp, path);
-  } catch (err) {
-    // Best-effort cleanup of the temp file.
-    try { unlinkSync(tmp); } catch { /* already gone or never created */ }
-    throw err;
-  }
+  atomicWrite(path, JSON.stringify(meta, null, 2));
 }
 
 /**

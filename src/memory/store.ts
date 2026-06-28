@@ -5,11 +5,10 @@ import {
   readFileSync,
   renameSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
-import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { dirname, join, relative } from "node:path";
+import { atomicWrite } from "../fs.ts";
 import { log } from "../log.ts";
 import { archiveTopicPath, memoryDir, scopeMemoryPath, userPath } from "./paths.ts";
 import { scopeTag, type MemoryScope } from "./scope.ts";
@@ -321,12 +320,7 @@ export class MemoryStore {
   }
 
   private write(scope: MemoryScope | "user", contents: string): void {
-    const finalPath = pathFor(this.home, scope);
-    const dir = dirname(finalPath);
-    mkdirSync(dir, { recursive: true });
-    const tmpPath = join(dir, `.${scope === "user" ? "user" : "memory"}.md.${randomBytes(6).toString("hex")}.tmp`);
-    writeFileSync(tmpPath, contents, "utf-8");
-    renameSync(tmpPath, finalPath);
+    atomicWrite(pathFor(this.home, scope), contents);
   }
 
   private commit(action: MutateAction, scope: MemoryScope | "user"): void {

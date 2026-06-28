@@ -1,8 +1,7 @@
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import type { BindingsFile } from "./types.ts";
 import { configPath } from "./paths.ts";
+import { atomicWrite } from "../fs.ts";
 
 const DEFAULT_BINDINGS: BindingsFile = {
   dm: {},
@@ -30,13 +29,9 @@ export function loadBindings(home: string): BindingsFile {
 }
 
 /**
- * Save bindings atomically (write to unique tmp, then rename).
- * Unique tmp name prevents clobber in any future concurrent scenario.
+ * Save bindings atomically via `atomicWrite` (tmp + fsync + rename with
+ * symlink resolution). See `src/fs.ts`.
  */
 export function saveBindings(home: string, bindings: BindingsFile): void {
-  const finalPath = pathFor(home);
-  const tmpPath = join(home, `.config.${randomUUID().slice(0, 8)}.tmp`);
-
-  writeFileSync(tmpPath, JSON.stringify(bindings, null, 2) + "\n", "utf-8");
-  renameSync(tmpPath, finalPath);
+  atomicWrite(pathFor(home), JSON.stringify(bindings, null, 2) + "\n");
 }

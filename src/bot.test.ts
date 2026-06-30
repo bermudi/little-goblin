@@ -64,6 +64,7 @@ function makeConfig(): Config {
     logLevel: "error",
     toolVisibility: "standard",
     skillSources: "goblin-only",
+    voiceName: "en-US-AriaNeural",
     favorites: [],
   };
 }
@@ -396,155 +397,10 @@ describe("buildBot integration", () => {
     expect(replacementRunner.prompt).not.toHaveBeenCalled();
   });
 
-  it("overlapping same-session text is steered into the running turn", async () => {
-    const built = await makeBot();
-    await built.bot.handleUpdate(textUpdate("/new"));
-    const first = deferred();
-    MockAgentRunner.nextPrompt = async () => {
-      if (runnerInstances.at(-1)!.prompt.mock.calls.length === 1) {
-        await first.promise;
-      }
-    };
-
-    await built.bot.handleUpdate(textUpdate("first"));
-    await flushMicrotasks();
-    const runner = runnerInstances.at(-1)!;
-    await waitFor(() => runner.isStreaming);
-
-    await built.bot.handleUpdate(textUpdate("second"));
-    await flushMicrotasks();
-
-    // The second message steers into the running turn, not enqueued.
-    expect(runner.followUp).toHaveBeenCalledTimes(1);
-    expect(runner.prompt).toHaveBeenCalledTimes(1);
-
-    first.resolve();
-    await flushMicrotasks();
-    // Still only one prompt — the steer didn't create a new turn.
-    expect(runner.prompt).toHaveBeenCalledTimes(1);
-  });
-
-  it("text message while streaming steers via followUp without awaiting the turn", async () => {
-    const built = await makeBot();
-    await built.bot.handleUpdate(textUpdate("/new"));
-    const pending = deferred();
-    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
-
-    await built.bot.handleUpdate(textUpdate("slow"));
-    const runner = runnerInstances.at(-1)!;
-    await waitFor(() => runner.isStreaming);
-
-    const handled = built.bot.handleUpdate(textUpdate("steer this"));
-    try {
-      expect(await settlesWithin(handled, 25)).toBe(true);
-      expect(runner.followUp).toHaveBeenCalledTimes(1);
-      // Spec: "Steer reaches a busy runner" — no new status message or
-      // response bubble SHALL be created for the steered message. The
-      // steer branch never calls createMessageBuffer; the prompt call
-      // count staying at 1 is the proxy for "no new turn/buffer was
-      // spun up". (createMessageBuffer is not instrumented here, so we
-      // assert the observable consequence instead.)
-      expect(runner.prompt).toHaveBeenCalledTimes(1);
-    } finally {
-      pending.resolve();
-      await handled;
-    }
-  });
-
-  it("text message while idle prompts via schedulePrompt (existing behavior preserved)", async () => {
-    const built = await makeBot();
-    await built.bot.handleUpdate(textUpdate("/new"));
-
-    await built.bot.handleUpdate(textUpdate("hello"));
-    await waitFor(() => runnerInstances.at(-1)!.prompt.mock.calls.length === 1);
-
-    const runner = runnerInstances.at(-1)!;
-    expect(runner.prompt).toHaveBeenCalledTimes(1);
-    expect(runner.followUp).not.toHaveBeenCalled();
-  });
-
-  it("steer failure (non-'not streaming') does not crash the handler", async () => {
-    const built = await makeBot();
-    await built.bot.handleUpdate(textUpdate("/new"));
-    const pending = deferred();
-    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
-    MockAgentRunner.nextFollowUp = async () => {
-      throw new Error("session disposed");
-    };
-
-    await built.bot.handleUpdate(textUpdate("slow"));
-    const runner = runnerInstances.at(-1)!;
-    await waitFor(() => runner.isStreaming);
-
-    const handled = built.bot.handleUpdate(textUpdate("steer this"));
-    try {
-      expect(await settlesWithin(handled, 25)).toBe(true);
-      expect(runner.followUp).toHaveBeenCalledTimes(1);
-      expect(runner.prompt).toHaveBeenCalledTimes(1);
-    } finally {
-      pending.resolve();
-      await handled;
-    }
-  });
-
-  it("steer race: followUp rejects with 'not streaming' falls back to a fresh turn", async () => {
-    const built = await makeBot();
-    await built.bot.handleUpdate(textUpdate("/new"));
-    const pending = deferred();
-    MockAgentRunner.nextPrompt = async () => {
-      if (runnerInstances.at(-1)!.prompt.mock.calls.length === 1) {
-        await pending.promise;
-      }
-    };
-    MockAgentRunner.nextFollowUp = async () => {
-      throw new Error("Cannot steer: session is not streaming.");
-    };
-
-    await built.bot.handleUpdate(textUpdate("slow"));
-    const runner = runnerInstances.at(-1)!;
-    await waitFor(() => runner.isStreaming);
-
-    await built.bot.handleUpdate(textUpdate("steer this"));
-    await flushMicrotasks();
-
-    expect(runner.followUp).toHaveBeenCalledTimes(1);
-    // The fallback is queued behind the still-running first turn.
-    expect(runner.prompt).toHaveBeenCalledTimes(1);
-
-    pending.resolve();
-    await flushMicrotasks();
-    // Now the fallback prompt runs as a fresh turn.
-    expect(runner.prompt).toHaveBeenCalledTimes(2);
-  });
-
-  it("steer race: non-'not streaming' error logs and does not schedule a fallback", async () => {
-    const built = await makeBot();
-    await built.bot.handleUpdate(textUpdate("/new"));
-    const pending = deferred();
-    MockAgentRunner.nextPrompt = async () => {
-      if (runnerInstances.at(-1)!.prompt.mock.calls.length === 1) {
-        await pending.promise;
-      }
-    };
-    MockAgentRunner.nextFollowUp = async () => {
-      throw new Error("session disposed");
-    };
-
-    await built.bot.handleUpdate(textUpdate("slow"));
-    const runner = runnerInstances.at(-1)!;
-    await waitFor(() => runner.isStreaming);
-
-    await built.bot.handleUpdate(textUpdate("steer this"));
-    await flushMicrotasks();
-
-    expect(runner.followUp).toHaveBeenCalledTimes(1);
-    expect(runner.prompt).toHaveBeenCalledTimes(1);
-
-    pending.resolve();
-    await flushMicrotasks();
-    // No fallback turn scheduled even after the first settles.
-    expect(runner.prompt).toHaveBeenCalledTimes(1);
-  });
+  // Steer-vs-queue, steer-race fallback, and idle-prompt behavior are covered
+  // at the intake seam in src/tg/intake.test.ts. This suite keeps the
+  // adapter-level end-to-end cases: command replies, media saving, allowlist,
+  // and the nonblocking "update handler resolves before work settles" timing.
 
   it("/queue while streaming enqueues behind the running turn without aborting", async () => {
     const built = await makeBot();

@@ -1,31 +1,22 @@
-import { writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
 import { Bot } from "grammy";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import { log } from "./log.ts";
-import { buildAllowlistMiddleware, locatorFromCtx, MessageBuffer } from "./tg/mod.ts";
+import { buildAllowlistMiddleware, locatorFromCtx } from "./tg/mod.ts";
 import { prepareUserContent } from "./tg/user-context.ts";
-import {
-  createSendVoiceTool,
-  createSendPhotoTool,
-  createSendDocumentTool,
-  createRenameTopicTool,
-} from "./tg/tools.ts";
-import { createTextToSpeechTool } from "./tg/mod.ts";
 import { MemoryStore } from "./memory/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
-import { SessionManager, type ChatLocator, type SessionState } from "./sessions/mod.ts";
-import { AgentRunner, ModelNotCapableError } from "./agent/mod.ts";
-import { resolveModel, type ResolvedModel } from "./agent/models.ts";
+import { SessionManager, type ChatLocator } from "./sessions/mod.ts";
+import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
-import { interruptAndCascade } from "./interrupt.ts";
-import { parseCommand } from "./commands/parse.ts";
-import { handleCommand, type DispatchDeps } from "./commands/dispatch.ts";
 import { configureVoice } from "./voice.ts";
+import {
+  createTelegramIntake,
+  replyNoActiveSession as replyNoActiveSessionForMessage,
+  type PromptContent,
+  type TelegramIntakeMessage,
+} from "./tg/intake.ts";
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -42,120 +33,19 @@ const subagentToolFactory: SubagentToolFactory = (
   createReviveSubagentTool(runner, onStatusUpdate),
 ];
 
-function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number) => Promise<string | null> {
-  return async (chatId, topicId) => {
-    const { description } = store.read({ topic: { chatId, topicId } });
-    return description ?? null;
+function intakeMessageFromCtx(ctx: Context): TelegramIntakeMessage {
+  return {
+    locator: locatorFromCtx(ctx),
+    isSupergroup: ctx.chat?.type === "supergroup",
+    threadId: ctx.message?.message_thread_id,
+    reply: async (text) => {
+      await ctx.reply(text);
+    },
+    prepare: (content: PromptContent): PromptContent => {
+      if (typeof content === "string") return prepareUserContent(ctx, content);
+      return prepareUserContent(ctx, content);
+    },
   };
-}
-
-/** Create the standard β‑tools for a chat surface. */
-function getBetaTools(
-  bot: Bot,
-  chatId: number,
-  topicId?: number,
-): ToolDefinition[] {
-  return [
-    createSendVoiceTool(bot, chatId, topicId),
-    createSendPhotoTool(bot, chatId, topicId),
-    createSendDocumentTool(bot, chatId, topicId),
-    createRenameTopicTool(bot, chatId, topicId),
-    createTextToSpeechTool(),
-  ].filter((t): t is NonNullable<typeof t> => t !== null);
-}
-
-/** Telegram Bot API max download size (20 MB). */
-const MAX_FILE_BYTES = 20 * 1024 * 1024;
-
-/**
- * Download a Telegram file by file_id and return the raw bytes.
- * Returns null on any failure.
- */
-async function downloadFileBytes(
-  api: Bot["api"],
-  fileId: string,
-  botToken: string,
-): Promise<Uint8Array | null> {
-  try {
-    const file = await api.getFile(fileId);
-    if (!file.file_path) return null;
-
-    // Encode path segments defensively; Telegram paths are typically
-    // well-formed but the spec doesn't guarantee ASCII-only.
-    const encodedPath = file.file_path
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/");
-
-    const resp = await fetch(
-      `https://api.telegram.org/file/bot${botToken}/${encodedPath}`,
-      { signal: AbortSignal.timeout(30_000) },
-    );
-
-    if (!resp.ok) {
-      log.warn("failed to download file: bad status", { fileId, status: resp.status });
-      return null;
-    }
-
-    // Reject files that exceed Telegram's Bot API download limit
-    const contentLength = resp.headers.get("content-length");
-    if (contentLength !== null) {
-      const bytes = Number(contentLength);
-      if (!Number.isFinite(bytes) || bytes > MAX_FILE_BYTES) {
-        log.warn("file too large", { fileId, contentLength: bytes, maxBytes: MAX_FILE_BYTES });
-        return null;
-      }
-    }
-
-    const raw = new Uint8Array(await resp.arrayBuffer());
-    if (raw.byteLength > MAX_FILE_BYTES) {
-      log.warn("file too large (post-download)", { fileId, byteLength: raw.byteLength, maxBytes: MAX_FILE_BYTES });
-      return null;
-    }
-    return raw;
-  } catch (err) {
-    // Never log String(err) — the URL embeds the bot token and fetch
-    // errors can include the full URL in their message.
-    log.warn("failed to download file", { fileId, code: (err as { code?: string }).code });
-    return null;
-  }
-}
-
-/**
- * Download a Telegram file by file_id and return it as base64-encoded data
- * suitable for pi's ImageContent. Returns null on any failure.
- */
-async function downloadFile(
-  api: Bot["api"],
-  fileId: string,
-  botToken: string,
-  mimeType = "image/jpeg",
-): Promise<{ data: string; mimeType: string } | null> {
-  const raw = await downloadFileBytes(api, fileId, botToken);
-  if (!raw) return null;
-
-  // Chunk base64 encoding to avoid call-stack overflow on large payloads
-  const CHUNK = 48 * 1024; // multiple of 3 for clean base64 grouping
-  let data = "";
-  for (let i = 0; i < raw.length; i += CHUNK) {
-    const slice = raw.subarray(i, i + CHUNK);
-    data += btoa(String.fromCharCode(...slice));
-  }
-  return { data, mimeType };
-}
-
-/**
- * Download the largest photo from a Telegram photo message.
- * Returns null on any failure.
- */
-async function downloadPhoto(
-  ctx: Context,
-  botToken: string,
-): Promise<{ data: string; mimeType: string } | null> {
-  const photoSizes = ctx.msg?.photo;
-  if (!photoSizes || photoSizes.length === 0) return null;
-  const largest = photoSizes[photoSizes.length - 1]!;
-  return downloadFile(ctx.api, largest.file_id, botToken);
 }
 
 /**
@@ -164,12 +54,15 @@ async function downloadPhoto(
  * spamming every topic in a forum with the same prompt. Always logs.
  */
 export function replyNoActiveSession(ctx: Context, locator: ChatLocator, kind: string): void {
-  if (locator.topicId === undefined) {
-    ctx.reply("No active session. Use /new to start one.").catch((err: unknown) => {
-      log.error("failed to send session prompt", { error: String(err), chatId: locator.chatId });
-    });
-  }
-  log.debug(`dropping ${kind}: no session`, { chatId: locator.chatId, topicId: locator.topicId });
+  replyNoActiveSessionForMessage({
+    locator,
+    isSupergroup: ctx.chat?.type === "supergroup",
+    threadId: ctx.message?.message_thread_id,
+    reply: async (text) => {
+      await ctx.reply(text);
+    },
+    prepare: (content) => content,
+  }, locator, kind);
 }
 
 /**
@@ -185,548 +78,76 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   const bot = new Bot(cfg.botToken);
   const manager = new SessionManager(cfg);
   const runners = new Map<string, AgentRunner>();
-  const promptQueues = new Map<string, Promise<void>>();
   const subagentRunner = new SubagentRunner(cfg, subagentToolFactory);
   const memoryStore = new MemoryStore(cfg.goblinHome);
-  const getTopicName = buildGetTopicName(memoryStore);
-
-  /** Resolve the current model for a session, return undefined on failure. */
-  function tryResolveModel(cfg: Config, session: SessionState | null, runner?: AgentRunner): ResolvedModel | undefined {
-    try {
-      const modelName = runner?.modelName ?? session?.modelName ?? cfg.modelName;
-      return resolveModel({ ...cfg, modelName });
-    } catch {
-      return undefined;
-    }
-  }
-
-  function createRunner(session: SessionState, locator: ChatLocator, ctx: Context): AgentRunner {
-    const chatId = locator.chatId;
-    // Use the raw message_thread_id (NOT locator.topicId) so that
-    // "General" topics in a forum still get a thread-scoped β-tool set.
-    // locator.topicId filters out non-topic messages; that's the right
-    // call for memory scoping (see createMessageBuffer) but wrong for
-    // Telegram API calls, which need the actual thread id.
-    const topicId = ctx.message?.message_thread_id;
-    const betaTools = getBetaTools(bot, chatId, topicId);
-    const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
-      cfg,
-      sessionId: session.id,
-      locator,
-      customTools: betaTools,
-      subagentRunner,
-      getTopicName,
-      projectDir: manager.getProjectDir(locator),
-      modelName: session.modelName,
-      thinkingLevel: session.thinkingLevel,
-      pendingProjectNotice: manager.consumeProjectNotice(locator),
-    };
-    return options.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
-  }
-
-  function getOrCreateRunner(session: SessionState, locator: ChatLocator, ctx: Context): AgentRunner {
-    const existing = runners.get(session.id);
-    if (existing) return existing;
-
-    const runner = createRunner(session, locator, ctx);
-    runners.set(session.id, runner);
-    log.debug("created runner for session", { sessionId: session.id });
-    return runner;
-  }
-
-  /**
-   * Build a per-turn MessageBuffer. One buffer per prompt so message IDs
-   * stay scoped to this turn. Wires the topic-orphan archival hook: if
-   * Telegram reports "topic not found" while we're streaming into a
-   * topic, archive the orphaned memory scope before the error propagates.
-   */
-  function createMessageBuffer(locator: ChatLocator): MessageBuffer {
-    // Use locator.topicId (NOT ctx.message?.message_thread_id) so orphan
-    // archival only fires for "real" forum topics. "General" topics are
-    // DM-like and must not archive a memory scope when their thread
-    // errors out. See createRunner for the inverse trade-off.
-    const topicId = locator.topicId;
-    return new MessageBuffer(bot, locator.chatId, topicId, {
-      visibility: cfg.toolVisibility,
-      onTopicNotFound:
-        topicId !== undefined
-          ? async () => {
-              await memoryStore.archiveOrphan(locator.chatId, topicId);
-            }
-          : undefined,
-    });
-  }
-
-  function schedulePrompt(
-    session: SessionState,
-    runner: AgentRunner,
-    run: (isCurrent: () => boolean) => Promise<void>,
-    onError: (err: unknown) => Promise<void> | void,
-  ): void {
-    const isCurrent = (): boolean => runners.get(session.id) === runner;
-    const execute = async (): Promise<void> => {
-      if (!isCurrent()) return;
-      try {
-        await run(isCurrent);
-      } catch (err) {
-        if (!isCurrent()) return;
-        try {
-          await onError(err);
-        } catch (handlerErr) {
-          log.error("prompt error handler failed", { error: String(handlerErr), sessionId: session.id });
-        }
-      }
-    };
-    const prior = promptQueues.get(session.id);
-    const current = prior ? prior.then(execute, execute) : execute();
-    promptQueues.set(session.id, current);
-    void current.finally(() => {
-      if (promptQueues.get(session.id) === current) promptQueues.delete(session.id);
-    });
-  }
-
-  type PromptContent = string | (TextContent | ImageContent)[];
-  type ActiveTurn = {
-    locator: ChatLocator;
-    session: SessionState;
-    projectDir: string | undefined;
-    schedule: (
-      run: (runner: AgentRunner, isCurrent: () => boolean) => Promise<void>,
-      failureLog: string,
-      opts?: { replyModelNotCapable?: boolean },
-    ) => void;
-  };
-
-  function preparePromptContent(ctx: Context, content: PromptContent): PromptContent {
-    if (typeof content === "string") {
-      return prepareUserContent(ctx, content);
-    }
-    return prepareUserContent(ctx, content);
-  }
-
-  async function runPrompt(ctx: Context, locator: ChatLocator, runner: AgentRunner, content: PromptContent): Promise<void> {
-    const buffer = createMessageBuffer(locator);
-    await runner.prompt(preparePromptContent(ctx, content), buffer);
-  }
-
-  function scheduleFreshTurn(
-    ctx: Context,
-    locator: ChatLocator,
-    session: SessionState,
-    runner: AgentRunner,
-    content: PromptContent,
-    failureLog: string,
-    opts?: { replyModelNotCapable?: boolean },
-  ): void {
-    const buffer = createMessageBuffer(locator);
-    schedulePrompt(
-      session,
-      runner,
-      async (isCurrent) => {
-        if (!isCurrent()) return;
-        await runner.prompt(preparePromptContent(ctx, content), buffer);
-      },
-      async (err) => {
-        if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
-          await ctx.reply(`❌ ${err.message}`);
-          return;
-        }
-        const msg = err instanceof Error ? err.message : String(err);
-        log.error(failureLog, { error: msg, sessionId: session.id });
-      },
-    );
-  }
-
-  function steerOrFallbackToFreshTurn(
-    ctx: Context,
-    locator: ChatLocator,
-    session: SessionState,
-    runner: AgentRunner,
-    text: string,
-  ): void {
-    void runner.followUp(prepareUserContent(ctx, text)).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("not streaming")) {
-        scheduleFreshTurn(ctx, locator, session, runner, text, "runner prompt failed (steer race fallback)");
-        return;
-      }
-      log.warn("steer failed", { error: msg, sessionId: session.id });
-    });
-  }
-
-  function resolveActiveTurn(ctx: Context, kind: string): ActiveTurn | null {
-    const locator = locatorFromCtx(ctx);
-    if (!locator) {
-      log.debug(`dropping ${kind}: no locator`);
-      return null;
-    }
-
-    const isSupergroup = ctx.chat?.type === "supergroup";
-    const session = manager.resolve(locator, { isSupergroup });
-    if (!session) {
-      replyNoActiveSession(ctx, locator, kind);
-      return null;
-    }
-
-    const turn: ActiveTurn = {
-      locator,
-      session,
-      projectDir: manager.getProjectDir(locator),
-      schedule: (run, failureLog, opts) => {
-        const runner = getOrCreateRunner(session, locator, ctx);
-        schedulePrompt(
-          session,
-          runner,
-          async (isCurrent) => {
-            await run(runner, isCurrent);
-          },
-          async (err) => {
-            if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
-              await ctx.reply(`❌ ${err.message}`);
-              return;
-            }
-            const msg = err instanceof Error ? err.message : String(err);
-            log.error(failureLog, { error: msg, sessionId: session.id });
-          },
-        );
-      },
-    };
-    return turn;
-  }
-
-  const dispatchDeps: DispatchDeps = {
+  const intake = createTelegramIntake({
+    cfg,
+    bot,
     manager,
     subagentRunner,
-    cfg,
-    tryResolveModel,
-    interruptAndCascade,
-  };
+    memoryStore,
+    agentRunners: runners,
+    createAgentRunner: options.createAgentRunner,
+  });
 
-  // Security layer: drop messages from non-allowed users
   bot.use(buildAllowlistMiddleware(cfg));
-
-  // Command handlers
   registerCommands(bot, manager);
 
-  // Wire agent runner for text messages
   bot.on("message:text", async (ctx: Context) => {
-    const locator = locatorFromCtx(ctx);
-    if (!locator) {
-      log.debug("dropping message: no locator");
-      return;
-    }
-
-    // Resolve session (non-creating) early so command handlers can see
-    // current runner state without forcing creation for slash-only flows.
-    const isSupergroup = ctx.chat?.type === "supergroup";
-    const session = manager.resolve(locator, { isSupergroup });
-    const existingRunner = session ? runners.get(session.id) ?? null : null;
-
-    // Command routing: known slash-commands handled here before normal
-    // agent routing so they work even without an active session. Unknown
-    // slash-commands fall through to normal agent routing.
-    const rawText = ctx.msg?.text;
-    const command = parseCommand(rawText);
-    if (command !== null) {
-      try {
-        const result = await handleCommand({
-          command,
-          deps: dispatchDeps,
-          rawText: rawText ?? "",
-          locator,
-          isSupergroup,
-          session,
-          existingRunner,
-          bot,
-        });
-        if (result.kind !== "fallthrough") {
-          for (const effect of result.sideEffects) {
-            if (effect.kind === "runner-created") {
-              runners.set(effect.session.id, createRunner(effect.session, effect.locator, ctx));
-              log.debug("created runner", { sessionId: effect.session.id });
-            } else if (effect.kind === "runner-disposed") {
-              promptQueues.delete(effect.sessionId);
-              const prior = runners.get(effect.sessionId);
-              if (prior) {
-                try {
-                  prior.dispose();
-                } finally {
-                  runners.delete(effect.sessionId);
-                }
-              } else {
-                runners.delete(effect.sessionId);
-              }
-            } else if (effect.kind === "queue-prompt") {
-              const queueRunner = getOrCreateRunner(effect.session, locator, ctx);
-              scheduleFreshTurn(ctx, locator, effect.session, queueRunner, effect.text, "queued prompt failed");
-            }
-          }
-          if (result.kind === "handled") return;
-          await ctx.reply(result.reply);
-          return;
-        }
-      } catch (err) {
-        log.error("command dispatch failed", { error: String(err), command, sessionId: session?.id });
-        await ctx.reply("Something went wrong. Please try again.");
-        return;
-      }
-    }
-
-    if (!session) {
-      replyNoActiveSession(ctx, locator, "message");
-      return;
-    }
-
-    const runner = getOrCreateRunner(session, locator, ctx);
-
-    const text = ctx.msg?.text;
-    if (!text) return;
-
-    if (runner.isStreaming) {
-      steerOrFallbackToFreshTurn(ctx, locator, session, runner, text);
-      return;
-    }
-
-    scheduleFreshTurn(ctx, locator, session, runner, text, "runner prompt failed");
+    await intake.handleText(intakeMessageFromCtx(ctx), ctx.msg?.text);
   });
 
-  // Wire agent runner for photo messages
   bot.on("message:photo", async (ctx: Context) => {
-    const turn = resolveActiveTurn(ctx, "photo");
-    if (!turn) return;
-
-    turn.schedule(
-      async (runner, isCurrent) => {
-        const photo = await downloadPhoto(ctx, cfg.botToken);
-        if (!isCurrent()) return;
-        if (!photo) {
-          await ctx.reply("Sorry, I couldn't download that image.");
-          return;
-        }
-
-        const caption = ctx.msg?.caption;
-        const content: (TextContent | ImageContent)[] = [];
-        if (caption) {
-          content.push({ type: "text", text: caption });
-        }
-        content.push({ type: "image", data: photo.data, mimeType: photo.mimeType });
-
-        if (!isCurrent()) return;
-        await runPrompt(ctx, turn.locator, runner, content);
-      },
-      "runner photo prompt failed",
-      { replyModelNotCapable: true },
-    );
+    const fileIds = ctx.msg?.photo?.map((photo) => photo.file_id) ?? [];
+    await intake.handlePhoto(intakeMessageFromCtx(ctx), ctx.api, fileIds, ctx.msg?.caption);
   });
 
-  // Wire agent runner for document messages (uncompressed images sent as files)
   bot.on("message:document", async (ctx: Context) => {
-    const turn = resolveActiveTurn(ctx, "document");
-    if (!turn) return;
-
     const doc = ctx.msg?.document;
     if (!doc?.file_id) return;
-
-    turn.schedule(
-      async (runner, isCurrent) => {
-        if (turn.projectDir) {
-          const raw = await downloadFileBytes(ctx.api, doc.file_id, cfg.botToken);
-          if (!isCurrent()) return;
-          if (!raw) {
-            await ctx.reply("Sorry, I couldn't download that file.");
-            return;
-          }
-
-          let safeName = basename(doc.file_name || "attachment").trim() || "attachment";
-          if (safeName === "." || safeName === "..") {
-            if (isCurrent()) await ctx.reply("Rejected: unsafe filename.");
-            return;
-          }
-          const destPath = join(turn.projectDir, safeName);
-          if (!isCurrent()) return;
-          try {
-            await writeFile(destPath, raw);
-          } catch (err) {
-            log.error("failed to write attachment to project directory", { error: String(err), destPath });
-            if (isCurrent()) await ctx.reply(`Failed to save ${safeName}.`);
-            return;
-          }
-
-          if (!isCurrent()) return;
-          await ctx.reply(`Saved ${safeName}.`);
-
-          // Escape backticks so the file name doesn't break markdown in the prompt
-          const escapedName = safeName.replace(/`/g, "'");
-          const caption = ctx.msg?.caption;
-          const promptText = caption
-            ? `${caption}\n\n[File \`${escapedName}\` saved to project directory.]`
-            : `User uploaded \`${escapedName}\` to the project directory.`;
-
-          if (!isCurrent()) return;
-          await runPrompt(ctx, turn.locator, runner, promptText);
-          return;
-        }
-
-        if (!isCurrent()) return;
-        log.debug("dropping document: no projectDir", { mimeType: doc.mime_type, fileName: doc.file_name });
-        const fallbackCaption = ctx.msg?.caption;
-        if (fallbackCaption) {
-          await runPrompt(ctx, turn.locator, runner, fallbackCaption);
-        } else {
-          await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
-        }
-      },
-      "runner document prompt failed",
-    );
+    await intake.handleDocument(intakeMessageFromCtx(ctx), ctx.api, {
+      fileId: doc.file_id,
+      fileName: doc.file_name,
+      mimeType: doc.mime_type,
+      caption: ctx.msg?.caption,
+    });
   });
 
-  // Wire agent runner for voice messages
   bot.on("message:voice", async (ctx: Context) => {
-    const turn = resolveActiveTurn(ctx, "voice");
-    if (!turn) return;
-
     const voice = ctx.msg?.voice;
     if (!voice?.file_id) return;
-
-    turn.schedule(
-      async (runner, isCurrent) => {
-        if (turn.projectDir) {
-          const raw = await downloadFileBytes(ctx.api, voice.file_id, cfg.botToken);
-          if (!isCurrent()) return;
-          if (!raw) {
-            await ctx.reply("Sorry, I couldn't download that voice message.");
-            return;
-          }
-
-          const ext = voice.mime_type === "audio/ogg" ? "oga" : "bin";
-          const safeName = `voice-${Date.now()}.${ext}`;
-          const destPath = join(turn.projectDir, safeName);
-          if (!isCurrent()) return;
-          try {
-            await writeFile(destPath, raw);
-          } catch (err) {
-            log.error("failed to write voice to project directory", { error: String(err), destPath });
-            if (isCurrent()) await ctx.reply(`Failed to save ${safeName}.`);
-            return;
-          }
-
-          if (!isCurrent()) return;
-          await ctx.reply(`Saved ${safeName}.`);
-
-          const escapedName = safeName.replace(/`/g, "'");
-          const promptText = `User sent a voice message: \`${escapedName}\` saved to project directory.`;
-
-          if (!isCurrent()) return;
-          await runPrompt(ctx, turn.locator, runner, promptText);
-          return;
-        }
-
-        if (!isCurrent()) return;
-        log.debug("dropping voice: no projectDir");
-        await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
-      },
-      "runner voice prompt failed",
-    );
+    await intake.handleVoice(intakeMessageFromCtx(ctx), ctx.api, {
+      fileId: voice.file_id,
+      mimeType: voice.mime_type,
+    });
   });
 
-  // Wire agent runner for audio messages (music files)
   bot.on("message:audio", async (ctx: Context) => {
-    const turn = resolveActiveTurn(ctx, "audio");
-    if (!turn) return;
-
     const audio = ctx.msg?.audio;
     if (!audio?.file_id) return;
-
-    turn.schedule(
-      async (runner, isCurrent) => {
-        if (turn.projectDir) {
-          const raw = await downloadFileBytes(ctx.api, audio.file_id, cfg.botToken);
-          if (!isCurrent()) return;
-          if (!raw) {
-            await ctx.reply("Sorry, I couldn't download that audio file.");
-            return;
-          }
-
-          let safeName = audio.file_name?.trim();
-          if (!safeName) {
-            const title = [audio.performer, audio.title].filter(Boolean).join(" - ");
-            safeName = title ? `${title}.mp3` : `audio-${Date.now()}.mp3`;
-          }
-          safeName = basename(safeName);
-          if (safeName === "." || safeName === "..") {
-            if (isCurrent()) await ctx.reply("Rejected: unsafe filename.");
-            return;
-          }
-          const destPath = join(turn.projectDir, safeName);
-          if (!isCurrent()) return;
-          try {
-            await writeFile(destPath, raw);
-          } catch (err) {
-            log.error("failed to write audio to project directory", { error: String(err), destPath });
-            if (isCurrent()) await ctx.reply(`Failed to save ${safeName}.`);
-            return;
-          }
-
-          if (!isCurrent()) return;
-          await ctx.reply(`Saved ${safeName}.`);
-
-          const escapedName = safeName.replace(/`/g, "'");
-          const caption = ctx.msg?.caption;
-          const promptText = caption
-            ? `${caption}\n\n[Audio file \`${escapedName}\` saved to project directory.]`
-            : `User uploaded audio \`${escapedName}\` to the project directory.`;
-
-          if (!isCurrent()) return;
-          await runPrompt(ctx, turn.locator, runner, promptText);
-          return;
-        }
-
-        if (!isCurrent()) return;
-        log.debug("dropping audio: no projectDir");
-        const fallbackCaption = ctx.msg?.caption;
-        if (fallbackCaption) {
-          await runPrompt(ctx, turn.locator, runner, fallbackCaption);
-        } else {
-          await ctx.reply("No project directory is set. Use /project <path> to enable file saving.");
-        }
-      },
-      "runner audio prompt failed",
-    );
+    await intake.handleAudio(intakeMessageFromCtx(ctx), ctx.api, {
+      fileId: audio.file_id,
+      fileName: audio.file_name,
+      performer: audio.performer,
+      title: audio.title,
+      caption: ctx.msg?.caption,
+    });
   });
 
-  // Persist topic names from Telegram service messages so the snapshot
-  // and memory index can show human-readable names instead of bare IDs.
   bot.on("message:forum_topic_created", async (ctx: Context) => {
-    const chatId = ctx.chat?.id;
-    const topic = ctx.msg?.forum_topic_created;
-    const threadId = ctx.msg?.message_thread_id;
-    if (chatId === undefined || topic === undefined || threadId === undefined) return;
-    try {
-      await memoryStore.setDescription(
-        { topic: { chatId, topicId: threadId } },
-        topic.name,
-      );
-    } catch {
-      // Silently ignore — bot may lack admin rights to read the topic,
-      // or the scope directory may not exist yet. The name will be
-      // captured on the next rename or when the agent sets a description.
-    }
+    await intake.handleTopicDescription(
+      ctx.chat?.id,
+      ctx.msg?.message_thread_id,
+      ctx.msg?.forum_topic_created?.name,
+    );
   });
 
   bot.on("message:forum_topic_edited", async (ctx: Context) => {
-    const chatId = ctx.chat?.id;
-    const edit = ctx.msg?.forum_topic_edited;
-    const threadId = ctx.msg?.message_thread_id;
-    if (chatId === undefined || edit === undefined || threadId === undefined) return;
-    if (edit.name === undefined) return; // icon-only change
-    try {
-      await memoryStore.setDescription(
-        { topic: { chatId, topicId: threadId } },
-        edit.name,
-      );
-    } catch {
-      // Same silent-ignore rationale as forum_topic_created.
-    }
+    await intake.handleTopicDescription(
+      ctx.chat?.id,
+      ctx.msg?.message_thread_id,
+      ctx.msg?.forum_topic_edited?.name,
+    );
   });
 
   bot.catch((err) => {

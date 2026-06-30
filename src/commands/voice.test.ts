@@ -107,7 +107,9 @@ describe("executeVoice", () => {
     writeFileSync(join(dir, "transcript.jsonl"), content);
   }
 
-  function makeBot(sendVoice = mock(async () => ({ message_id: 1 }))): Bot {
+  type SendVoiceMock = ReturnType<typeof mock<(chatId: number, file: InputFile, opts?: { message_thread_id?: number }) => Promise<{ message_id: number }>>>;
+
+  function makeBot(sendVoice: SendVoiceMock = mock(async () => ({ message_id: 1 }))): Bot {
     return { api: { sendVoice } } as unknown as Bot;
   }
 
@@ -131,7 +133,9 @@ describe("executeVoice", () => {
     });
     expect(result).toEqual({ kind: "sent" });
     expect(sendVoice).toHaveBeenCalledTimes(1);
-    const [calledChatId, file, opts] = sendVoice.mock.calls[0] as [
+    const call = sendVoice.mock.calls[0];
+    expect(call).toBeDefined();
+    const [calledChatId, file, opts] = call as unknown as [
       number,
       InputFile,
       { message_thread_id?: number },

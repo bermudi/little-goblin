@@ -29,6 +29,7 @@ function makeTestConfig(home: string): Config {
     logLevel: "info",
     toolVisibility: "standard",
     skillSources: "goblin-only",
+    voiceName: "en-US-AriaNeural",
     favorites: [],
   };
 }

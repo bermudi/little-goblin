@@ -240,6 +240,7 @@ describe("ensureGoblinHome", () => {
       logLevel: "info" as const,
       toolVisibility: "standard" as const,
       skillSources: "goblin-only" as const,
+      voiceName: "en-US-AriaNeural",
       favorites: [],
     };
 

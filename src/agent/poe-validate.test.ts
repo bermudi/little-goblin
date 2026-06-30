@@ -14,6 +14,7 @@ function makeConfig(modelName: string): Config {
     logLevel: "error",
     toolVisibility: "standard",
     skillSources: "goblin-only",
+    voiceName: "en-US-AriaNeural",
     favorites: [],
   };
 }

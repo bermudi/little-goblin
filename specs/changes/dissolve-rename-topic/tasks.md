@@ -8,8 +8,8 @@
 
 ## Phase 2: Spec deletion
 
-- [ ] Remove the "Rename topic tool renames forum topics" requirement and all its scenarios from `specs/canon/beta-tools/spec.md`
-- [ ] Remove `rename_topic` / `createRenameTopicTool` references from the "Bot.ts instantiates tools per session" requirement scenarios in `specs/canon/beta-tools/spec.md` (lines ~148-160)
+- [x] Remove the "Rename topic tool renames forum topics" requirement and all its scenarios from `specs/canon/beta-tools/spec.md`
+- [x] Remove `rename_topic` / `createRenameTopicTool` references from the "Bot.ts instantiates tools per session" requirement scenarios in `specs/canon/beta-tools/spec.md` (lines ~148-160)
 
 ## Phase 3: Test deletion
 

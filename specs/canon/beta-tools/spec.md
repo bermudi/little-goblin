@@ -27,12 +27,6 @@ Every β tool's `parameters` schema SHALL NOT contain `chatId`, `messageId`, or 
 - **THEN** `properties` SHALL contain `voiceFile` and optionally `caption`
 - **AND** `properties` SHALL NOT contain `chatId`
 
-#### Scenario: Rename topic schema for DMs
-
-- **WHEN** `createRenameTopicTool(bot, 123456, undefined)` is called for a DM
-- **THEN** it SHALL return `null` (no tool created)
-- **AND** no schema exists for this tool in that session
-
 ### Requirement: Factories accept grammy bot instance
 
 Every β tool factory SHALL accept a `Bot` instance as its first parameter, used to access `bot.api` methods within the tool handler.
@@ -49,11 +43,6 @@ Each tool SHALL reject calls with missing required parameters. Validation is enf
 #### Scenario: Send voice missing file
 
 - **WHEN** `send_voice` is called with `{}` (no voiceFile)
-- **THEN** the tool SHALL return a validation error indicating the missing parameter
-
-#### Scenario: Rename topic missing title
-
-- **WHEN** `rename_topic` is called with `{}`
 - **THEN** the tool SHALL return a validation error indicating the missing parameter
 
 ### Requirement: Tools handle Telegram API errors
@@ -114,21 +103,6 @@ When a Telegram API call fails, the tool handler SHALL catch the error and retur
 - **THEN** it SHALL return `null` (no tool created)
 - **AND** no schema exists for this tool in that session
 
-### Requirement: Rename topic tool renames forum topics
-
-`createRenameTopicTool(bot, chatId, topicId)` SHALL return a tool named `"rename_topic"` that renames a forum topic. If `topicId` is undefined, it SHALL return `null`.
-
-#### Scenario: Rename in topic
-
-- **WHEN** called with `topicId = 5`
-- **AND** the tool is called with `{title: "New Topic Name"}`
-- **THEN** `bot.api.editForumTopic(chatId, topicId, { name: "New Topic Name" })` SHALL be invoked
-
-#### Scenario: Called for DM (no topic)
-
-- **WHEN** called with `topicId = undefined`
-- **THEN** it SHALL return `null`
-
 ### Requirement: Chat action tool sets typing status
 
 `createChatActionTool(bot, chatId)` SHALL return a tool named `"chat_action"` that sets a chat action (typing, uploading_photo, etc.).
@@ -151,12 +125,10 @@ When a Telegram API call fails, the tool handler SHALL catch the error and retur
 
 - **WHEN** a message is received in a DM
 - **THEN** `createSendVoiceTool`, `createSendPhotoTool`, `createSendDocumentTool`, `createChatActionTool` SHALL be created with the session's `chatId`
-- **AND** `createRenameTopicTool` SHALL return `null` (no topic in DMs)
 
 #### Scenario: Topic session tool creation
 
 - **WHEN** a message is received in a topic
-- **THEN** `createRenameTopicTool(bot, chatId, topicId)` SHALL return a tool (not `null`)
 - **AND** all other tools SHALL be created with the session's `chatId`
 
 #### Scenario: Tools passed to AgentRunner

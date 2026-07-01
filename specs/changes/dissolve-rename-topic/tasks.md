@@ -13,7 +13,8 @@
 
 ## Phase 3: Test deletion
 
-- [ ] Remove the `rename_topic` describe block from `src/tg/tools.test.ts` (lines ~417-473) and any imports it alone used
+- [x] Remove the `rename_topic` describe block from `src/tg/tools.test.ts` (lines ~417-473) and any imports it alone used
+- [x] Also remove the `rename_topic` test in `src/tg/intake.test.ts` ("uses thread id for topic tools while buffers stay locator-scoped", lines ~279-323) — the proposal's scope item 4 named only `tools.test.ts`, but this test asserts `createRenameTopicTool` is registered and `editForumTopic` is called, so it must go too for the suite to pass
 
 ## Phase 4: Verify
 

@@ -9,7 +9,6 @@ import {
   createSendVoiceTool,
   createSendPhotoTool,
   createSendDocumentTool,
-  createRenameTopicTool,
 } from "./tools.ts";
 
 interface SendCall {
@@ -18,23 +17,15 @@ interface SendCall {
   other: { caption?: string } | undefined;
 }
 
-interface RenameTopicCall {
-  chatId: number | string;
-  topicId: number;
-  title: string;
-}
-
 interface MockBot {
   bot: Bot;
   voice: SendCall[];
   photo: SendCall[];
   document: SendCall[];
-  renames: RenameTopicCall[];
   failNext: {
     voice?: unknown;
     photo?: unknown;
     document?: unknown;
-    rename?: unknown;
   };
   nextMessageId: number;
 }
@@ -43,13 +34,11 @@ function makeBot(): MockBot {
   const voice: SendCall[] = [];
   const photo: SendCall[] = [];
   const document: SendCall[] = [];
-  const renames: RenameTopicCall[] = [];
   const state: MockBot = {
     bot: undefined as unknown as Bot,
     voice,
     photo,
     document,
-    renames,
     failNext: {},
     nextMessageId: 100,
   };
@@ -71,19 +60,6 @@ function makeBot(): MockBot {
       sendVoice: handleSend(voice, "voice"),
       sendPhoto: handleSend(photo, "photo"),
       sendDocument: handleSend(document, "document"),
-      editForumTopic: async (
-        chatId: number | string,
-        topicId: number,
-        other: { name?: string },
-      ) => {
-        if (state.failNext.rename !== undefined) {
-          const err = state.failNext.rename;
-          state.failNext.rename = undefined;
-          throw err;
-        }
-        renames.push({ chatId, topicId, title: other.name ?? "" });
-        return true;
-      },
     },
   } as unknown as Bot;
   state.bot = bot;
@@ -411,63 +387,5 @@ describe("createSendDocumentTool", () => {
       expect(parsed.error).toContain("Telegram API error");
       expect(parsed.error).toContain("file too large");
     });
-  });
-});
-
-describe("createRenameTopicTool", () => {
-  it("returns null when topicId is undefined (DM)", () => {
-    const { bot } = makeBot();
-    expect(createRenameTopicTool(bot, 123, undefined)).toBeNull();
-  });
-
-  it("returns a ToolDefinition when topicId is provided", () => {
-    const { bot } = makeBot();
-    const tool = createRenameTopicTool(bot, 123, 5);
-    expect(tool).not.toBeNull();
-    expect(tool!.name).toBe("rename_topic");
-  });
-
-  it("schema does not expose chatId or topicId", () => {
-    const { bot } = makeBot();
-    const tool = createRenameTopicTool(bot, 123, 5)!;
-    const schema = tool.parameters as { properties?: Record<string, unknown> };
-    expect(schema.properties).not.toHaveProperty("chatId");
-    expect(schema.properties).not.toHaveProperty("topicId");
-    expect(schema.properties).toHaveProperty("title");
-  });
-
-  it("calls bot.api.editForumTopic with bound chatId and topicId", async () => {
-    const mock = makeBot();
-    const tool = createRenameTopicTool(mock.bot, 123, 5)!;
-    const result = await tool.execute(
-      "call-1",
-      { title: "New Topic Name" },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(mock.renames).toHaveLength(1);
-    const call = mock.renames[0]!;
-    expect(call.chatId).toBe(123);
-    expect(call.topicId).toBe(5);
-    expect(call.title).toBe("New Topic Name");
-    expect(JSON.parse(getText(result))).toEqual({ ok: true });
-  });
-
-  it("returns structured error when bot.api.editForumTopic throws", async () => {
-    const mock = makeBot();
-    mock.failNext.rename = new Error("not admin");
-    const tool = createRenameTopicTool(mock.bot, 123, 5)!;
-    const result = await tool.execute(
-      "call-1",
-      { title: "Whatever" },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    const parsed = JSON.parse(getText(result));
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain("Telegram API error");
-    expect(parsed.error).toContain("not admin");
   });
 });

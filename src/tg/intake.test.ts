@@ -279,50 +279,6 @@ describe("Telegram intake", () => {
     expect(staleRunner.prompt).not.toHaveBeenCalled();
   });
 
-  it("uses thread id for topic tools while buffers stay locator-scoped", async () => {
-    const cfg = makeConfig();
-    const manager = new SessionManager(cfg);
-    const agentRunners = new Map<string, AgentRunner>();
-    const bufferLocators: ChatLocator[] = [];
-    const editForumTopic = mock(async () => true);
-    const bot = fakeBot(editForumTopic);
-    let renameTool: { execute: (toolCallId: string, params: { title: string }) => Promise<unknown> } | undefined;
-    const intake = createTelegramIntake({
-      cfg,
-      bot,
-      manager,
-      subagentRunner: new SubagentRunner(cfg),
-      memoryStore: new MemoryStore(cfg.goblinHome),
-      agentRunners,
-      createMessageBuffer: (locator) => {
-        bufferLocators.push(locator);
-        return {} as MessageBuffer;
-      },
-      createAgentRunner: (opts) => {
-        const runner = new MockAgentRunner(opts);
-        runners.push(runner);
-        const found = opts.customTools.find((tool) => tool.name === "rename_topic");
-        if (found) {
-          renameTool = found as unknown as { execute: (toolCallId: string, params: { title: string }) => Promise<unknown> };
-        }
-        return runner as unknown as AgentRunner;
-      },
-    });
-    const message = makeMessage([], {
-      locator: { chatId: -100, topicId: 42 },
-      isSupergroup: true,
-      threadId: 7,
-    });
-
-    await intake.handleText(message, "/new");
-    await intake.handleText(message, "hello");
-    await waitFor(() => runners[0]!.prompt.mock.calls.length === 1);
-    await renameTool?.execute("tool-call", { title: "Renamed" });
-
-    expect(bufferLocators).toEqual([{ chatId: -100, topicId: 42 }]);
-    expect(editForumTopic).toHaveBeenCalledWith(-100, 7, { name: "Renamed" });
-  });
-
   it("handles document fallback without a project directory", async () => {
     const { intake } = makeHarness();
     const replies: string[] = [];

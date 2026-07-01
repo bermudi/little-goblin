@@ -14,7 +14,6 @@ import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import {
-  createRenameTopicTool,
   createSendDocumentTool,
   createSendPhotoTool,
   createSendVoiceTool,
@@ -90,7 +89,6 @@ function getBetaTools(
     createSendVoiceTool(bot, chatId, topicId),
     createSendPhotoTool(bot, chatId, topicId),
     createSendDocumentTool(bot, chatId, topicId),
-    createRenameTopicTool(bot, chatId, topicId),
     createTextToSpeechTool(),
   ].filter((t): t is NonNullable<typeof t> => t !== null);
 }

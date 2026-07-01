@@ -32,10 +32,6 @@ const sendDocumentSchema = Type.Object({
   caption: Type.Optional(Type.String()),
 });
 
-const renameTopicSchema = Type.Object({
-  title: Type.String({ minLength: 1 }),
-});
-
 const textToSpeechSchema = Type.Object({
   text: Type.Optional(Type.String()),
   file: Type.Optional(Type.String()),
@@ -169,30 +165,5 @@ export function createSendDocumentTool(bot: Bot, chatId: number, topicId?: numbe
   });
 }
 
-type RenameTopicInput = Static<typeof renameTopicSchema>;
-
-export function createRenameTopicTool(
-  bot: Bot,
-  chatId: number,
-  topicId: number | undefined,
-): ToolDefinition | null {
-  if (topicId === undefined) return null;
-  return defineTool({
-    name: "rename_topic",
-    label: "Rename Topic",
-    description: "Rename the active forum topic.",
-    parameters: renameTopicSchema,
-    async execute(_toolCallId, params: RenameTopicInput) {
-      try {
-        // grammy / Telegram Bot API exposes topic renaming via editForumTopic
-        // with a `name` field, not a hypothetical setForumTopicTitle.
-        await bot.api.editForumTopic(chatId, topicId, { name: params.title });
-        return jsonResult({ ok: true });
-      } catch (err) {
-        return jsonResult({ ok: false, error: `Telegram API error: ${errorMessage(err)}` });
-      }
-    },
-  });
-}
 
 

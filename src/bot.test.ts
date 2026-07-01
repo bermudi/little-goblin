@@ -376,59 +376,11 @@ describe("buildBot integration", () => {
     }
   });
 
-  it("stale media work does not prompt after a runner-disposing command", async () => {
-    const built = await makeBot();
-    await built.bot.handleUpdate(textUpdate("/new"));
-    const pending = deferred();
-    globalThis.fetch = mock(async () => {
-      await pending.promise;
-      return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } });
-    }) as unknown as typeof fetch;
-
-    await built.bot.handleUpdate(photoUpdate("stale image") as never);
-    const staleRunner = runnerInstances.at(-1)!;
-    await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
-    const replacementRunner = runnerInstances.at(-1)!;
-
-    pending.resolve();
-    await flushMicrotasks();
-
-    expect(staleRunner.prompt).not.toHaveBeenCalled();
-    expect(replacementRunner.prompt).not.toHaveBeenCalled();
-  });
-
-  // Steer-vs-queue, steer-race fallback, and idle-prompt behavior are covered
-  // at the intake seam in src/tg/intake.test.ts. This suite keeps the
-  // adapter-level end-to-end cases: command replies, media saving, allowlist,
-  // and the nonblocking "update handler resolves before work settles" timing.
-
-  it("/queue while streaming enqueues behind the running turn without aborting", async () => {
-    const built = await makeBot();
-    await built.bot.handleUpdate(textUpdate("/new"));
-    const pending = deferred();
-    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
-
-    await built.bot.handleUpdate(textUpdate("slow"));
-    const runner = runnerInstances.at(-1)!;
-    await waitFor(() => runner.isStreaming);
-
-    await built.bot.handleUpdate(textUpdate("/queue then check the tests"));
-    await flushMicrotasks();
-
-    // Acknowledged as queued; the running turn is not aborted and keeps streaming.
-    expect(built.api.sent.at(-1)).toContain("Queued");
-    expect(runner.abort).not.toHaveBeenCalled();
-    expect(runner.isStreaming).toBe(true);
-    // The queued prompt waits behind the running turn — not yet started.
-    expect(runner.prompt).toHaveBeenCalledTimes(1);
-
-    pending.resolve();
-    await flushMicrotasks();
-    // Now the queued prompt runs as a fresh turn.
-    await waitFor(() => runner.prompt.mock.calls.length === 2);
-    const queuedContent = runner.prompt.mock.calls[1]![0] as string;
-    expect(queuedContent).toContain("then check the tests");
-  });
+  // Steer-vs-queue, steer-race fallback, stale-runner-after-dispose, and
+  // idle-prompt behavior are covered at the intake seam in
+  // src/tg/intake.test.ts. This suite keeps the adapter-level end-to-end
+  // cases: command replies, media saving, allowlist, /queue reply-text, and
+  // the nonblocking "update handler resolves before work settles" timing.
 
   it("/queue while idle runs immediately and replies Running.", async () => {
     const built = await makeBot();

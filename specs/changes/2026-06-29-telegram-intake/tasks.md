@@ -35,15 +35,17 @@ Implements spec requirements:
 - [x] Covers: command creation + idle prompt + streaming steer; runner-disposing side effects; `/queue` serialization; no-session DM-vs-topic; stale-runner photo drop; topic-tool scoping; document fallback without `projectDir`
 - [x] `bun test src/tg/intake.test.ts` green (7/7)
 
-## Phase 4: Prune redundant bot.test.ts coverage (open)
+## Phase 4: Prune redundant bot.test.ts coverage
 
 `bot.test.ts` still drives 29 integration tests through `built.bot.handleUpdate(...)`. Several now duplicate coverage that `intake.test.ts` provides more cheaply at the seam. Prune the redundant cases; keep a thin end-to-end safety net through the adapter.
 
-- [ ] Audit `bot.test.ts` for cases whose behavior is fully covered by `intake.test.ts` (steer, `/queue`, stale-runner, no-session reply, runner-disposing side effects)
-- [ ] Remove the redundant cases; keep at least one end-to-end text + one end-to-end media case proving the adapter delegates correctly
-- [ ] Verify `bun test src/bot.test.ts` and full suite remain green
+- [x] Audit `bot.test.ts` for cases whose behavior is fully covered by `intake.test.ts` (steer, `/queue`, stale-runner, no-session reply, runner-disposing side effects)
+- [x] Remove the redundant cases; keep at least one end-to-end text + one end-to-end media case proving the adapter delegates correctly
+- [x] Verify `bun test src/bot.test.ts` and full suite remain green
+
+Pruned two cases fully covered at the intake seam: "stale media work does not prompt after a runner-disposing command" (intake.test.ts:259) and "/queue while streaming enqueues behind the running turn" (intake.test.ts:223). Kept 21 tests: the nonblocking-update-handler timing cases (unique adapter coverage), the `/queue` reply-text cases (idle/no-arg/no-session — adapter replies not asserted at intake), the photo/document/voice/audio save cases (e2e media coverage), and the command/allowlist/orphan cases. 888 pass / 0 fail.
 
 ## Phase 5: Verification
 
-- [x] `bun test` full suite green (894 pass / 0 fail at adoption time)
+- [x] `bun test` full suite green (894 pass / 0 fail at adoption time; 888 pass / 0 fail post-prune)
 - [ ] `bun run src/index.ts` boots and polls without errors (manual, post-prune)

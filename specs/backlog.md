@@ -4,6 +4,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 
 ## Deferred
 
+- **PDF/video native model ingestion — gated on a stack change (decision 0005).** PDFs and video cannot reach the model through the pi-routed stack: pi-ai's content union is closed at `TextContent | ImageContent`. Two changes were opened and found too costly: `multimodal-native-pdf` (pi-ai `bun patch` surgery — unmaintainable) and `migrate-to-ai-sdk` (complete 8-capability stack rewrite — nuclear). Reopen against a new foundation when **either** pi-ai ships native document support **or** goblin independently migrates off pi. Workaround until then: `pdftotext` extraction; images via existing `ImageContent` path. Original proposals retained in git history.
 - v1.1: cascade cancel — abort child subagents when parent session is cancelled / disposed
 - v1.1: approval-required tool mode (allowlist + inline-keyboard approvals)
 - v1.1: user-facing named subagent invocation (slash command `/researcher` or topic-to-agent binding)
@@ -22,6 +23,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 
 ## Open Questions
 
+- **Dynamic Poe model resolution — shelved (using Poe less).** Replace static Poe model entries with dynamic resolution from Poe's `GET /v1/models` catalog: accurate `input` modalities (so non-vision models don't crash on image sends), `contextWindow`, `maxTokens`, and `cost`. Goblin already fetches the catalog at startup for validation and throws it away. Reopen when Poe becomes a primary provider again; until then the static registry is tolerable. Original proposal in git history.
 - ~~Which pi-coding-agent release to pin?~~ Resolved: ^0.67.x caret is fine. ToolDefinition fields we use are stable; re-evaluate at ^0.68 or ^1.0 cutover.
 - STT provider when v2 voice lands — Whisper local vs. Poe/OpenRouter audio endpoint.
 - Named subagent user-facing invocation (v1.1 design): slash per agent (`/researcher`), generic dispatcher (`/agent researcher …`), or Telegram topic binding?

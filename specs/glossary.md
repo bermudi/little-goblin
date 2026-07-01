@@ -5,6 +5,7 @@
 - **archived session**: A session moved under `sessions/archive/<id>/`. Archive clears bindings and removes the session from normal resolution and resume lookup.
 - **binding**: Maps a `ChatLocator` to a session ID. Stored in `config.json`. DMs have at most one; topics have exactly one (auto-created).
 - **bound session**: The session currently mapped from a `ChatLocator` by a binding. This is the session that handles the next message on that Telegram surface.
+- **capability**: A tool, mode, or posture of the one assistant — not a sibling product. Project-directory mode is a capability: when a chat surface is bound to a `projectDir`, goblin remains the personal assistant with a project coat on; the "remote pi" utility is a side effect of starting in a custom `cwd` and letting pi auto-load skills + `AGENTS.md`. Surface affordances (reactions, file delivery) are likewise capabilities, not an "admin bot" product. Canon uses this term in spec titles (e.g. `Capability: AgentRunner Project Directory Support`). See decision 0004.
 - **canon**: The set of accepted, implemented specs in `specs/canon/`. Each subdirectory is one domain module.
 - **ChatLocator**: A discriminated key — `{ chatId }` for DMs, `{ chatId, topicId }` for forum topics — used to resolve which session handles a message.
 - **defrag**: Agent-driven consolidation of memory files when they approach the character cap. Not a system operation.

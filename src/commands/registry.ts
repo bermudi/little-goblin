@@ -20,6 +20,7 @@ import { executeCompact } from "./compact.ts";
 import { executeName } from "./name.ts";
 import { executeResume } from "./resume.ts";
 import { executeThink, ALL_LEVELS } from "./think.ts";
+import { parseCommandArg } from "./parse.ts";
 import {
   CANCEL_SUBAGENT_USAGE_REPLY,
   formatSubagentsList,
@@ -367,7 +368,7 @@ const voiceHandler: CommandHandler = async ({ deps, session, locator, bot }) => 
 
 const queueHandler: CommandHandler = async ({ session, existingRunner, rawText }) => {
   if (!session) return replied("No active session.");
-  const arg = rawText.slice("/queue".length).trim();
+  const arg = parseCommandArg(rawText);
   if (arg.length === 0) return replied("Usage: /queue <text>");
   const sideEffects: SideEffect[] = [{ kind: "queue-prompt", session, text: arg }];
   const ack = existingRunner?.isStreaming ? "Queued. Will run after the current turn." : "Running.";

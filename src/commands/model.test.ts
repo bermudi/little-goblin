@@ -77,6 +77,31 @@ describe("executeModel", () => {
     expect(result.reply).toContain("2. poe/B");
   });
 
+  it("lists favorites when @bot suffix is present with no argument", () => {
+    // Regression: Telegram clients in groups/topics append @bot to commands.
+    // /model@bot with no arg must list, not error with "Unknown MODEL_NAME".
+    const result = executeModel(makeDeps({
+      rawText: "/model@bermudi_little_goblin_bot",
+      favorites: ["poe/A", "poe/B"],
+      cfg: makeConfig(["poe/A", "poe/B"]),
+      currentModelName: "poe/A",
+    }));
+    expect(result.kind).toBe("list");
+  });
+
+  it("switches by index when @bot suffix is present", () => {
+    const setModelName = mock();
+    const result = executeModel(makeDeps({
+      rawText: "/model@bermudi_little_goblin_bot 1",
+      favorites: ["poe/Claude-Sonnet-4.6"],
+      cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
+      currentModelName: "poe/Claude-Sonnet-4.6",
+      setModelName,
+    }));
+    expect(result.kind).toBe("set");
+    expect(setModelName).toHaveBeenCalledWith("poe/Claude-Sonnet-4.6");
+  });
+
   it("switches to a valid model by index", () => {
     const setModelName = mock();
     const result = executeModel(makeDeps({

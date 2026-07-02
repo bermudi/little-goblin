@@ -9,6 +9,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { parseCommandArg } from "./parse.ts";
 
 export interface ProjectCommandDeps {
   /** True iff a session was resolvable for this chat. */
@@ -49,9 +50,10 @@ export function executeProject(deps: ProjectCommandDeps): ProjectCommandResult {
     return { kind: "no-session", reply: NO_SESSION_REPLY };
   }
 
-  // Extract everything after the command prefix, preserving spaces in paths.
-  const arg = deps.rawText.replace(/^\/project\s+/, "").trim();
-  if (arg === "" || arg === "/project") {
+  // Argument string (after `/project` or `/project@bot`), with internal
+  // spaces preserved for paths that contain them.
+  const arg = parseCommandArg(deps.rawText);
+  if (arg === "") {
     return { kind: "missing-arg", reply: MISSING_ARG_REPLY };
   }
 

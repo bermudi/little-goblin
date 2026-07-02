@@ -9,6 +9,7 @@ import { resolveModel, type ResolvedModel } from "../agent/models.ts";
 import type { Config } from "../config.ts";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import { parseCommandArg } from "./parse.ts";
 
 export interface ModelCommandDeps {
   /** True iff a session was resolvable for this chat. */
@@ -127,10 +128,10 @@ export function executeModel(deps: ModelCommandDeps): ModelCommandResult {
     return { kind: "no-session", reply: NO_SESSION_REPLY };
   }
 
-  const arg = deps.rawText.replace(/^\/model\s+/, "").trim();
+  const arg = parseCommandArg(deps.rawText);
 
   // No argument → list favorites
-  if (arg === "" || arg === "/model") {
+  if (arg === "") {
     if (deps.favorites.length === 0) {
       return { kind: "no-favorites", reply: NO_FAVORITES_REPLY };
     }

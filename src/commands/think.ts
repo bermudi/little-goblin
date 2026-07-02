@@ -6,6 +6,7 @@
  */
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { parseCommandArg } from "./parse.ts";
 
 /** All known thinking levels in ascending order. */
 export const ALL_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -61,10 +62,10 @@ export function executeThink(deps: ThinkCommandDeps): ThinkCommandResult {
     return { kind: "no-session", reply: NO_SESSION_REPLY };
   }
 
-  const arg = deps.rawText.replace(/^\/think\s+/, "").trim();
+  const arg = parseCommandArg(deps.rawText);
 
   // No argument → list levels
-  if (arg === "" || arg === "/think") {
+  if (arg === "") {
     return { kind: "list", reply: formatList(deps.currentLevel, deps.supportedLevels) };
   }
 

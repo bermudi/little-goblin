@@ -123,7 +123,7 @@ The visibility-to-tool mapping SHALL be:
 
 ### Requirement: Chat action refreshed while active
 
-The buffer SHALL call `bot.api.sendChatAction` every ~4 seconds while a turn is active.
+The buffer SHALL call `bot.api.sendChatAction` every ~4 seconds while a turn is active. The first call SHALL fire at turn start (on the `agent_start`-driven `onStatusUpdate`), so the typing indicator appears before the first text delta even on plain-text turns that produce no thinking block.
 
 #### Scenario: Long-running turn
 
@@ -147,7 +147,7 @@ All buffer operations SHALL be wrapped in try/catch. Errors SHALL be logged and 
 
 ### Requirement: Status placeholder sent eagerly on agent_start
 
-The buffer SHALL send a placeholder status message on the first agent event of a turn (received via `onStatusUpdate("thinking...")` from `agent_start`, or as a fallback the first `onToolStart` / `onTextDelta`). The status message SHALL be sent strictly before any response message, guaranteeing deterministic position above the response in the chat.
+The buffer SHALL send a placeholder status message on the first agent event of a turn — `agent_start`, which the event dispatcher maps to `onStatusUpdate("thinking...")`. This fires exactly once per turn before any model call, so the placeholder appears even on plain-text turns where the model emits no thinking block and no tools. The status message SHALL be sent strictly before any response message, guaranteeing deterministic position above the response in the chat.
 
 #### Scenario: Eager placeholder on agent_start
 
@@ -155,6 +155,12 @@ The buffer SHALL send a placeholder status message on the first agent event of a
 - **AND** visibility is not "none"
 - **THEN** the buffer SHALL send a status message with the rendered "thinking" phase
 - **AND** the status `message_id` SHALL be tracked before any response message is created
+
+#### Scenario: Plain-text turn still shows the placeholder
+
+- **WHEN** a turn produces no thinking block and no tool calls (only assistant text)
+- **THEN** the buffer SHALL still send the placeholder on `agent_start`
+- **AND** SHALL start the typing chat-action before the first text delta arrives
 
 #### Scenario: Status precedes response
 

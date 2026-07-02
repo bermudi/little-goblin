@@ -397,6 +397,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
 
     expect(events).toEqual([
       `${prefix}thinking...`,
+      `${prefix}thinking...`,
       `${prefix}tool: bash`,
       `${prefix}tool ok: bash`,
     ]);
@@ -474,7 +475,10 @@ describe("SubagentRunner — status prefix propagation", () => {
       assistantMessageEvent: { type: "thinking_delta", delta: "hmm" },
     });
 
-    expect(events).toEqual([`🧠 ${handle.id.slice(0, 8)} thinking...`]);
+    expect(events).toEqual([
+      `🧠 ${handle.id.slice(0, 8)} thinking...`,
+      `🧠 ${handle.id.slice(0, 8)} thinking...`,
+    ]);
   });
 
   it("prefixes named subagent status with 🧠 and agent name", async () => {
@@ -505,6 +509,7 @@ describe("SubagentRunner — status prefix propagation", () => {
     });
 
     expect(events).toEqual([
+      "🧠 researcher thinking...",
       "🧠 researcher thinking...",
       "🧠 researcher tool: read",
     ]);

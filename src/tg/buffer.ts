@@ -344,9 +344,13 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   onStatusUpdate(_message: string): void {
-    // Fired by thinking_start / thinking_delta events (and compaction).
-    // We use this as the cue to send the eager placeholder, guaranteeing
-    // the status message exists before any response message can be created.
+    // Fired by agent_start (turn start), thinking_start / thinking_delta,
+    // and compaction. We use this as the cue to send the eager placeholder,
+    // guaranteeing the status message exists before any response message
+    // can be created. Starting the chat-action here (not just in
+    // onTextDelta) means the typing indicator shows from turn start even
+    // on plain-text turns where no thinking block arrives.
+    this.startChatAction();
     if (!this.placeholderSent) this.commitStatus();
   }
 

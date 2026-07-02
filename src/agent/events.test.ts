@@ -170,10 +170,13 @@ describe("dispatchAgentEvent", () => {
     };
   }
 
-  it("does not fire onStatusUpdate on agent_start", () => {
+  it("fires onStatusUpdate(\"thinking...\") on agent_start", () => {
+    // agent_start is the turn-start cue that covers plain-text turns where
+    // no thinking block and no tools arrive — the placeholder + typing
+    // indicator must fire before the model streams.
     const cb = mockCallbacks();
     dispatchAgentEvent({ type: "agent_start" } as any, cb);
-    expect(cb.calls).toEqual([]);
+    expect(cb.calls).toEqual(["onStatusUpdate:thinking..."]);
   });
 
   it("fires onStatusUpdate(\"thinking...\") on thinking_start", () => {

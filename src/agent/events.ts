@@ -54,6 +54,12 @@ interface TranscriptEntry {
 export function dispatchAgentEvent(event: AgentSessionEvent, callbacks: TurnCallbacks): void {
   switch (event.type) {
     case "agent_start":
+      // Fires once at the top of every turn (pi-agent-core runAgentLoop),
+      // before any model call. This is the turn-start cue for the
+      // "🤔 thinking…" placeholder + typing indicator — covering plain-text
+      // turns where the model emits no thinking block and no tools. Without
+      // it, those turns show neither feedback until the first text token.
+      callbacks.onStatusUpdate("thinking...");
       break;
 
     case "message_update": {

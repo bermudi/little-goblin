@@ -3,6 +3,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import type { MemoryStore, StoreResult } from "./store.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
 import { VALID_NAME_RE } from "../subagents/named-agents.ts";
+import { checkDescriptionSafety, checkMemorySafety } from "./safety.ts";
 
 const targetSchema = Type.Union([
   Type.Literal("memory"),
@@ -88,6 +89,18 @@ function jsonResult(value: unknown): {
   return textResult(JSON.stringify(value));
 }
 
+/**
+ * Throw a safety error through the existing tool error path when a safety
+ * check fails. The error message names the matched reason so the agent can
+ * react without seeing the sensitive value.
+ */
+function assertSafe(check: () => { ok: boolean; reason?: string; message?: string }): void {
+  const r = check();
+  if (!r.ok) {
+    throw new Error(`memory_write rejected by safety filter: ${r.reason ?? "unknown"} (${r.message ?? "no detail"})`);
+  }
+}
+
 function summarize(action: MemoryWriteAction, target: MemoryTarget): string {
   switch (action) {
     case "add":
@@ -168,6 +181,7 @@ export function createMemoryWriteTool(args: {
           if (params.content.length === 0) {
             throw new Error("memory_write.add requires non-empty `content`");
           }
+          assertSafe(() => checkMemorySafety(params.content!));
           result = await args.store.add(scope, params.content);
           break;
         }
@@ -178,6 +192,7 @@ export function createMemoryWriteTool(args: {
           if (params.content === undefined) {
             throw new Error("memory_write.replace requires `content`");
           }
+          assertSafe(() => checkMemorySafety(params.content!));
           result = await args.store.replace(scope, params.old_text, params.content);
           break;
         }
@@ -192,6 +207,7 @@ export function createMemoryWriteTool(args: {
           if (params.content === undefined) {
             throw new Error("memory_write.rewrite requires `content`");
           }
+          assertSafe(() => checkMemorySafety(params.content!));
           result = await args.store.rewrite(scope, params.content);
           break;
         }
@@ -199,6 +215,7 @@ export function createMemoryWriteTool(args: {
           if (params.description === undefined) {
             throw new Error("memory_write.set_description requires `description`");
           }
+          assertSafe(() => checkDescriptionSafety(params.description!));
           result = await args.store.setDescription(scope, params.description);
           break;
         }

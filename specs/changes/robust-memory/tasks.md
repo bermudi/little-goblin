@@ -2,11 +2,11 @@
 
 ## Phase 1: Add memory safety filtering
 
-- [ ] Add `src/memory/safety.ts` with deterministic checks for secret-like tokens, private keys, password/cookie assignments, Telegram bot tokens, high-risk identifiers, tiny fragments, and description-line safety. Covers: `Memory safety filter rejects secrets and sensitive identifiers`.
-- [ ] Add `redactPreview()` so rejected content can be logged/quarantined without copying the sensitive value. Covers: `Quarantine stores rejected memory candidates outside snapshots`.
-- [ ] Wire `checkMemorySafety()` into `src/memory/tool.ts` for `add`, `replace`, `rewrite`, and `set_description`; failed checks must throw through the existing tool error path before any store mutation. Covers modified: `memory tool exposes add, replace, remove`.
-- [ ] Add `src/memory/safety.test.ts` and extend `src/memory/tool.test.ts` for accepted safe content and rejected unsafe explicit writes with unchanged files and no git commits.
-- [ ] Run `bun test src/memory` and `bun run typecheck`.
+- [x] Add `src/memory/safety.ts` with deterministic checks for secret-like tokens, private keys, password/cookie assignments, Telegram bot tokens, high-risk identifiers, tiny fragments, and description-line safety. Covers: `Memory safety filter rejects secrets and sensitive identifiers`.
+- [x] Add `redactPreview()` so rejected content can be logged/quarantined without copying the sensitive value. Covers: `Quarantine stores rejected memory candidates outside snapshots`.
+- [x] Wire `checkMemorySafety()` into `src/memory/tool.ts` for `add`, `replace`, `rewrite`, and `set_description`; failed checks must throw through the existing tool error path before any store mutation. Covers modified: `memory tool exposes add, replace, remove`.
+- [x] Add `src/memory/safety.test.ts` and extend `src/memory/tool.test.ts` for accepted safe content and rejected unsafe explicit writes with unchanged files and no git commits.
+- [x] Run `bun test src/memory` and `bun run typecheck`.
 
 Commit: `phase 1: add memory safety filtering`
 

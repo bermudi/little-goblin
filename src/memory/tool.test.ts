@@ -271,7 +271,7 @@ describe("memory tool", () => {
     await expect(
       writeTool.execute(
         "call-5",
-        { action: "add", target: "user", content: "bb" },
+        { action: "add", target: "user", content: "bbb" },
         undefined,
         undefined,
         NULL_CTX,
@@ -292,7 +292,7 @@ describe("memory tool", () => {
           action: "replace",
           target: "memory",
           old_text: "alpha",
-          content: "X",
+          content: "replacement content",
         },
         undefined,
         undefined,
@@ -343,5 +343,90 @@ describe("memory tool", () => {
     );
     expect(textOf(r)).toContain("rewrote");
     expect(store.readBody(active)).toBe("brand new content");
+  });
+
+  describe("safety filter on explicit writes", () => {
+    it("rejects add with a token and does not write or commit", async () => {
+      const target = { topic: { chatId: -100, topicId: 42 } };
+      await expect(
+        writeTool.execute(
+          "call-unsafe-add",
+          { action: "add", target: "memory", content: "Bearer abcdefghijklmnop1234567890" },
+          undefined,
+          undefined,
+          NULL_CTX,
+        ),
+      ).rejects.toThrow(/safety filter/);
+      expect(store.readBody(target)).toBe("");
+    });
+
+    it("rejects replace with a password and does not modify the existing entry", async () => {
+      const target = { topic: { chatId: -100, topicId: 42 } };
+      await store.add(target, "safe existing entry");
+      const before = store.readBody(target);
+      await expect(
+        writeTool.execute(
+          "call-unsafe-replace",
+          {
+            action: "replace",
+            target: "memory",
+            old_text: "safe existing entry",
+            content: "password: hunter2",
+          },
+          undefined,
+          undefined,
+          NULL_CTX,
+        ),
+      ).rejects.toThrow(/safety filter/);
+      expect(store.readBody(target)).toBe(before);
+    });
+
+    it("rejects rewrite with a token and leaves user.md unchanged", async () => {
+      writeFileSync(userPath(tmp), "original user content", "utf-8");
+      const before = readFileSync(userPath(tmp), "utf-8");
+      await expect(
+        writeTool.execute(
+          "call-unsafe-rewrite",
+          { action: "rewrite", target: "user", content: "password: hunter2" },
+          undefined,
+          undefined,
+          NULL_CTX,
+        ),
+      ).rejects.toThrow(/safety filter/);
+      expect(readFileSync(userPath(tmp), "utf-8")).toBe(before);
+    });
+
+    it("rejects set_description with a token and does not update frontmatter", async () => {
+      const target = { topic: { chatId: -100, topicId: 42 } };
+      await store.setDescription(target, "safe description");
+      const before = store.read(target);
+      await expect(
+        writeTool.execute(
+          "call-unsafe-description",
+          {
+            action: "set_description",
+            target: "memory",
+            description: "api_key: abc123def456",
+          },
+          undefined,
+          undefined,
+          NULL_CTX,
+        ),
+      ).rejects.toThrow(/safety filter/);
+      expect(store.read(target)).toEqual(before);
+    });
+
+    it("accepts a safe add and persists it", async () => {
+      const target = { topic: { chatId: -100, topicId: 42 } };
+      const r = await writeTool.execute(
+        "call-safe-add",
+        { action: "add", target: "memory", content: "User prefers terse summaries." },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      expect(textOf(r)).toContain("added");
+      expect(store.readBody(target)).toBe("User prefers terse summaries.");
+    });
   });
 });

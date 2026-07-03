@@ -53,9 +53,9 @@ Commit: `phase 5: preserve subagent reflection boundary`
 
 ## Phase 6: Mark snapshots as stale-prone
 
-- [ ] Update `src/memory/snapshot.ts` so every non-null snapshot includes guardrail text after `[goblin memory snapshot]` stating memory may be stale/incomplete and current context overrides memory. Covers: `Snapshot marks memory as auxiliary and possibly stale`.
-- [ ] Update snapshot and AgentRunner tests that assert exact snapshot content/order.
-- [ ] Run `bun test src/memory/snapshot.test.ts src/agent/mod.test.ts src/subagents/test/memory.suite.ts` and `bun run typecheck`.
+- [x] Update `src/memory/snapshot.ts` so every non-null snapshot includes guardrail text after `[goblin memory snapshot]` stating memory may be stale/incomplete and current context overrides memory. Covers: `Snapshot marks memory as auxiliary and possibly stale`.
+- [x] Update snapshot and AgentRunner tests that assert exact snapshot content/order.
+- [x] Run `bun test src/memory/snapshot.test.ts src/agent/mod.test.ts src/subagents/test/memory.suite.ts` and `bun run typecheck`.
 
 Commit: `phase 6: mark memory snapshots as auxiliary`
 

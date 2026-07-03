@@ -383,6 +383,9 @@ describe("AgentRunner", () => {
       expect(p.customType).toBe("goblin.memory.snapshot");
       expect(typeof p.content).toBe("string");
       expect(p.content.startsWith("[goblin memory snapshot]")).toBe(true);
+      // Stale-prone guardrail is present on every non-null snapshot.
+      expect(p.content).toContain("stale or incomplete");
+      expect(p.content).toContain("override memory");
     });
 
     it("renders `(empty)` for the absent file when only one is populated", async () => {

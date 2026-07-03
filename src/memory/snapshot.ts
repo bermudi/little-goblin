@@ -10,6 +10,8 @@ import type { ActiveScope, MemoryScope } from "./scope.ts";
  *
  * Spec contract (`specs/memory/spec.md`):
  *  - text begins with `[goblin memory snapshot]`
+ *  - guardrail text follows the header stating memory may be stale/incomplete
+ *    and current context overrides memory
  *  - both `## memory.md` and `## user.md` sections present, in that order
  *  - empty individual files render as the literal `(empty)` body
  */
@@ -19,6 +21,16 @@ export interface MemorySnapshotPayload {
   display: false;
   details: undefined;
 }
+
+/**
+ * Guardrail text emitted immediately after the snapshot header on every
+ * non-null snapshot. Marks memory as auxiliary and possibly stale, and
+ * reminds the agent that current context overrides memory.
+ *
+ * Spec: `Snapshot marks memory as auxiliary and possibly stale`.
+ */
+export const SNAPSHOT_GUARDRAIL =
+  "Memory may be stale or incomplete. Current user messages, recent tool results, and explicit instructions override memory.";
 
 export interface FormatSnapshotArgs {
   store: MemoryStore;
@@ -55,6 +67,7 @@ async function formatScopedSnapshot(args: FormatSnapshotArgs): Promise<MemorySna
 
   const sections = [
     "[goblin memory snapshot]",
+    SNAPSHOT_GUARDRAIL,
     `## scope\n${await formatScope(args.activeScope, args.includePersona, args.getTopicName)}`,
     `## user.md\n${formatBody(userBody)}`,
     `## memory.md\n${formatBody(memoryBody)}`,

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
-import { formatSnapshot } from "./snapshot.ts";
+import { formatSnapshot, SNAPSHOT_GUARDRAIL } from "./snapshot.ts";
 import { memoryDir } from "./paths.ts";
 
 describe("formatSnapshot", () => {
@@ -28,6 +28,26 @@ describe("formatSnapshot", () => {
         includeAgents: true,
       }),
     ).resolves.toBeNull();
+  });
+
+  it("includes the stale-prone guardrail after the header on every non-null snapshot", async () => {
+    await store.add("general", "fact-A");
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+      includeAgents: true,
+    });
+
+    expect(snap).not.toBeNull();
+    const text = snap!.content;
+    expect(text.startsWith("[goblin memory snapshot]")).toBe(true);
+    // Guardrail appears immediately after the header, before any section.
+    const headerEnd = "[goblin memory snapshot]".length;
+    const guardrailStart = text.indexOf(SNAPSHOT_GUARDRAIL);
+    expect(guardrailStart).toBe(headerEnd + 2); // "\n\n" separator
+    expect(guardrailStart).toBeLessThan(text.indexOf("## scope"));
+    expect(text).toContain("stale or incomplete");
+    expect(text).toContain("override memory");
   });
 
   it("renders a topic-bound snapshot with peer topics in the index", async () => {

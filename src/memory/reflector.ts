@@ -278,17 +278,27 @@ function normalizeText(s: string): string {
 }
 
 /**
- * Find the index of an existing entry that is a near-duplicate of the
- * candidate summary. Returns -1 when no match is found.
+ * Find the existing entry that is a near-duplicate of the candidate
+ * summary. Returns the matched index and whether the existing body should
+ * be preserved (kept as-is) instead of being overwritten by the candidate
+ * summary. Returns null when no match is found.
  *
  * Matching is deterministic:
  * 1. Exact normalized match.
  * 2. One normalized text contains the other.
  * 3. Jaccard word-overlap ratio exceeds the near-duplicate threshold.
+ *
+ * `preserveExistingBody` is true on a containment match where the existing
+ * body is the longer/containing text. Overwriting a detailed entry with a
+ * shorter near-duplicate summary would silently lose detail, so the
+ * longer text is kept and only entry metadata is refreshed.
  */
-function findNearDuplicate(summary: string, entries: string[]): number {
+function findNearDuplicate(
+  summary: string,
+  entries: string[],
+): { index: number; preserveExistingBody: boolean } | null {
   const normalizedSummary = normalizeText(summary);
-  if (normalizedSummary.length === 0) return -1;
+  if (normalizedSummary.length === 0) return null;
   const summaryWords = new Set(normalizedSummary.split(" "));
 
   for (let i = 0; i < entries.length; i++) {
@@ -297,10 +307,13 @@ function findNearDuplicate(summary: string, entries: string[]): number {
     if (normalizedBody.length === 0) continue;
 
     // Exact match.
-    if (normalizedBody === normalizedSummary) return i;
-    // Containment.
+    if (normalizedBody === normalizedSummary) {
+      return { index: i, preserveExistingBody: false };
+    }
+    // Containment: preserve the longer text.
     if (normalizedBody.includes(normalizedSummary) || normalizedSummary.includes(normalizedBody)) {
-      return i;
+      const preserveExistingBody = normalizedBody.length > normalizedSummary.length;
+      return { index: i, preserveExistingBody };
     }
     // Jaccard word overlap.
     const bodyWords = new Set(normalizedBody.split(" "));
@@ -309,9 +322,11 @@ function findNearDuplicate(summary: string, entries: string[]): number {
       if (bodyWords.has(w)) intersection++;
     }
     const union = summaryWords.size + bodyWords.size - intersection;
-    if (union > 0 && intersection / union > NEAR_DUPLICATE_THRESHOLD) return i;
+    if (union > 0 && intersection / union > NEAR_DUPLICATE_THRESHOLD) {
+      return { index: i, preserveExistingBody: false };
+    }
   }
-  return -1;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -608,76 +623,71 @@ export class MemoryReflector {
    * the existing entry (preserving original `created_at` and
    * `source_session`, updating `updated_at` and `updated_source_session`).
    * Distinct candidates append as new entries.
+   *
+   * The read-consolidate-write runs atomically under the scope lock via
+   * `store.consolidate`, so an explicit `memory_write` (or a second
+   * reflection pass) landing on the same scope between the read and the
+   * write cannot be silently overwritten by a stale body.
    */
   private async consolidateAndWrite(
     candidate: Candidate,
     scope: MemoryScope | "user",
   ): Promise<void> {
-    const body = this.store.read(scope).body;
-    const entries = body.length === 0 ? [] : body.split(DELIMITER);
     const now = new Date().toISOString();
-    const matchIndex = findNearDuplicate(candidate.summary, entries);
+    const result = await this.store.consolidate(scope, (currentBody) => {
+      const entries = currentBody.length === 0 ? [] : currentBody.split(DELIMITER);
+      const match = findNearDuplicate(candidate.summary, entries);
 
-    if (matchIndex !== -1) {
-      const existing = entries[matchIndex]!;
-      const parsed = parseEntryMetadata(existing);
-      let metadata: EntryMetadata;
-      if (parsed !== null) {
-        // Preserve original creation provenance; update the rest.
-        metadata = {
-          category: candidate.category,
-          confidence: candidate.confidence,
-          created_at: parsed.metadata.created_at,
-          updated_at: now,
-          source_session: parsed.metadata.source_session,
-          updated_source_session: candidate.source.sessionId,
-          source_role: parsed.metadata.source_role,
-        };
-      } else {
-        // Legacy entry without metadata — wrap with full metadata.
-        metadata = {
-          category: candidate.category,
-          confidence: candidate.confidence,
-          created_at: now,
-          updated_at: now,
-          source_session: candidate.source.sessionId,
-          updated_source_session: candidate.source.sessionId,
-          source_role: candidate.source.sourceRole,
-        };
+      if (match !== null) {
+        const existing = entries[match.index]!;
+        const parsed = parseEntryMetadata(existing);
+        let metadata: EntryMetadata;
+        if (parsed !== null) {
+          // Preserve original creation provenance; update the rest.
+          metadata = {
+            category: candidate.category,
+            confidence: candidate.confidence,
+            created_at: parsed.metadata.created_at,
+            updated_at: now,
+            source_session: parsed.metadata.source_session,
+            updated_source_session: candidate.source.sessionId,
+            source_role: parsed.metadata.source_role,
+          };
+        } else {
+          // Legacy entry without metadata — wrap with full metadata.
+          metadata = {
+            category: candidate.category,
+            confidence: candidate.confidence,
+            created_at: now,
+            updated_at: now,
+            source_session: candidate.source.sessionId,
+            updated_source_session: candidate.source.sessionId,
+            source_role: candidate.source.sourceRole,
+          };
+        }
+        // On a containment match where the existing body is the longer
+        // text, keep it and only refresh metadata — do not let a shorter
+        // near-duplicate summary overwrite a more detailed entry.
+        const bodyText = match.preserveExistingBody
+          ? stripEntryMetadata(existing)
+          : candidate.summary;
+        entries[match.index] = formatReflectedEntry(metadata, bodyText);
+        return entries.join(DELIMITER);
       }
-      entries[matchIndex] = formatReflectedEntry(metadata, candidate.summary);
-      const newBody = entries.join(DELIMITER);
-      const result = await this.store.rewrite(scope, newBody);
-      if (!result.ok) {
-        // Cap overflow or other write failure — quarantine for review
-        // instead of silently dropping the candidate.
-        appendQuarantine({
-          goblinHome: this.home,
-          sourceSession: candidate.source.sessionId,
-          targetScope: scopeTag(scope),
-          category: candidate.category,
-          reason: "review",
-          content: candidate.summary,
-        });
-        log.warn("memory reflection: consolidation rewrite failed; quarantined for review", {
-          scope: scopeTag(scope),
-          error: result.error,
-        });
-      }
-      return;
-    }
 
-    // Distinct candidate — append as a new entry.
-    const metadata: EntryMetadata = {
-      category: candidate.category,
-      confidence: candidate.confidence,
-      created_at: now,
-      updated_at: now,
-      source_session: candidate.source.sessionId,
-      source_role: candidate.source.sourceRole,
-    };
-    const entry = formatReflectedEntry(metadata, candidate.summary);
-    const result = await this.store.add(scope, entry);
+      // Distinct candidate — append as a new entry.
+      const metadata: EntryMetadata = {
+        category: candidate.category,
+        confidence: candidate.confidence,
+        created_at: now,
+        updated_at: now,
+        source_session: candidate.source.sessionId,
+        source_role: candidate.source.sourceRole,
+      };
+      const entry = formatReflectedEntry(metadata, candidate.summary);
+      return currentBody.length === 0 ? entry : currentBody + DELIMITER + entry;
+    });
+
     if (!result.ok) {
       // Cap overflow or other write failure — quarantine for review
       // instead of silently dropping the candidate.
@@ -689,7 +699,7 @@ export class MemoryReflector {
         reason: "review",
         content: candidate.summary,
       });
-      log.warn("memory reflection: append failed; quarantined for review", {
+      log.warn("memory reflection: consolidation write failed; quarantined for review", {
         scope: scopeTag(scope),
         error: result.error,
       });

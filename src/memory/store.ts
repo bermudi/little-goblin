@@ -150,6 +150,28 @@ export class MemoryStore {
     return this.mutate(scope, "rewrite", ({ description }) => ({ description, body }));
   }
 
+  /**
+   * Atomic read-modify-write for callers that must compute the next body
+   * from the current body under the scope lock. The callback receives the
+   * current body and returns the new body. Cap checking, writing, and git
+   * versioning happen inside `mutate`, so the callback's view of the body
+   * cannot be invalidated by a concurrent write to the same scope.
+   *
+   * Used by the memory reflector, which previously read the body unlocked
+   * and then called `rewrite`/`add` — a TOCTOU window in which an explicit
+   * `memory_write` (or a second reflection pass) landing between the
+   * unlocked read and the locked write was silently overwritten.
+   */
+  async consolidate(
+    scope: StoreScope,
+    fn: (currentBody: string) => string,
+  ): Promise<StoreResult> {
+    return this.mutate(scope, "rewrite", ({ body, description }) => ({
+      description,
+      body: fn(body),
+    }));
+  }
+
   async setDescription(scope: StoreScope, description: string): Promise<StoreResult> {
     const trimmed = description.trim();
     if (trimmed.includes("\n")) {

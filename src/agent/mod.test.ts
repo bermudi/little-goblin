@@ -1428,5 +1428,63 @@ describe("AgentRunner", () => {
       const text = (payload as { content: string }).content;
       expect(text).toContain("User prefers terse engineering summaries.");
     });
+
+    // Spec: "System prompt unchanged across reflection writes". The snapshot
+    // is injected via sendCustomMessage, never via the system prompt, so the
+    // value `_baseSystemPrompt` held at AgentSession creation MUST remain
+    // unchanged across reflection writes and subsequent turns. The mock
+    // session does not expose `state.systemPrompt`/`_baseSystemPrompt`, so
+    // we assert the equivalent: the resource loader (which receives the
+    // system prompt) is constructed exactly once, the session is not
+    // recreated, and the post-reflection turn's snapshot is delivered via
+    // sendCustomMessage with deliverAs:nextTurn — not via any system-prompt
+    // path.
+    it("system prompt is unchanged across reflection writes", async () => {
+      const candidate: Candidate = {
+        target: "user",
+        category: "preference",
+        confidence: 0.9,
+        summary: "User prefers terse engineering summaries.",
+        source: { sessionId: "sess-001", lineRange: [0, 0], sourceRole: "user" },
+      };
+      const extractor: CandidateExtractor = () => [candidate];
+      const reflector = makeReflector(tmpDir, extractor);
+
+      const runner = makeRunner(
+        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, reflector,
+      );
+      await runner.prompt("I prefer terse summaries", nopCallbacks());
+
+      // Capture the system prompt supplied at AgentSession creation.
+      expect(capturedResourceLoaderArgs).toHaveLength(1);
+      const baseSystemPrompt = (capturedResourceLoaderArgs[0] as { systemPrompt: string }).systemPrompt;
+      expect(capturedCreateArgs).toHaveLength(1);
+
+      seedCursorAtZero(tmpDir);
+      writeTranscriptEntry(tmpDir, "I prefer terse summaries");
+
+      // Complete the turn — agent_end schedules a reflection pass that
+      // writes to user.md on disk.
+      sessionHolder.emit({ type: "agent_end", messages: [] });
+      await reflector.awaitSettled("sess-001");
+
+      const userMd = readFileSync(join(tmpDir, "memory", "user.md"), "utf-8");
+      expect(userMd).toContain("User prefers terse engineering summaries.");
+
+      // A subsequent turn must not recreate the session or resource loader
+      // — the system prompt is frozen from creation.
+      sessionHolder.sendCustomMessage.mockClear();
+      await runner.prompt("next message", nopCallbacks());
+
+      expect(capturedCreateArgs).toHaveLength(1);
+      expect(capturedResourceLoaderArgs).toHaveLength(1);
+      expect((capturedResourceLoaderArgs[0] as { systemPrompt: string }).systemPrompt).toBe(baseSystemPrompt);
+
+      // The post-reflection snapshot is delivered via sendCustomMessage
+      // (deliverAs:nextTurn), not via the system prompt.
+      expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
+      const [, opts] = sessionHolder.sendCustomMessage.mock.calls[0]!;
+      expect((opts as { deliverAs?: string }).deliverAs).toBe("nextTurn");
+    });
   });
 });

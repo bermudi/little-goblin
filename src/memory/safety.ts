@@ -85,11 +85,15 @@ export function checkDescriptionSafety(description: string): SafetyResult {
  * logs. The preview never copies the sensitive value; it shows structural
  * shape and length only.
  *
- * Two redaction passes:
+ * Three redaction passes:
  * 1. Values after secret-assignment operators (`key: value`, `key = value`)
  *    are replaced regardless of length, so short passwords like "hunter2"
  *    do not leak.
- * 2. Long alphanumeric runs (>= 8 chars) are replaced with `[redacted:N]`.
+ * 2. Sensitive identifier patterns (credit-card numbers, SSNs) are masked
+ *    regardless of length, so space/dash-grouped digit runs like
+ *    "4111 1111 1111 1111" — each group below the alphanumeric-run
+ *    threshold — do not leak into the quarantine audit file.
+ * 3. Long alphanumeric runs (>= 8 chars) are replaced with `[redacted:N]`.
  */
 export function redactPreview(content: string, maxLen = 80): string {
   // Pass 1: redact values after secret-assignment operators regardless of
@@ -98,7 +102,14 @@ export function redactPreview(content: string, maxLen = 80): string {
     /\b(password|passwd|pwd|secret|token|api[_-]?key|api[_-]?secret|access[_-]?token|auth|cookie|set-cookie)\b\s*[:=]\s*(\S+)/gi,
     (_m, key: string, _value: string) => `${key}[redacted:value]`,
   );
-  // Pass 2: redact long alphanumeric runs (>= 8 chars).
+  // Pass 2: redact sensitive identifier patterns (credit-card numbers,
+  // SSNs) regardless of length. These are caught by the safety filter but
+  // would otherwise survive the alphanumeric-run pass when grouped with
+  // spaces or dashes (each group is below the 8-char threshold).
+  redacted = redacted
+    .replace(/\b(?:\d[ -]?){13,19}\d\b/g, (m) => `[redacted:${m.length}]`)
+    .replace(/\b\d{3}-\d{2}-\d{4}\b/g, (m) => `[redacted:${m.length}]`);
+  // Pass 3: redact long alphanumeric runs (>= 8 chars).
   redacted = redacted
     .replace(/[A-Za-z0-9_\-]{8,}/g, (m) => `[redacted:${m.length}]`)
     .replace(/\s+/g, " ")

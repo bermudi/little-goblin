@@ -168,5 +168,26 @@ describe("memory safety filter", () => {
       const preview = redactPreview(`Bearer ${secret}`);
       expect(preview).not.toContain(secret);
     });
+
+    it("redacts space-separated credit-card numbers", () => {
+      const card = "4111 1111 1111 1111";
+      const preview = redactPreview(`card ${card}`);
+      expect(preview).not.toContain(card);
+      expect(preview).not.toContain("4111");
+      expect(preview).toContain("[redacted:");
+    });
+
+    it("redacts contiguous credit-card numbers", () => {
+      const card = "4111111111111111";
+      const preview = redactPreview(`card ${card}`);
+      expect(preview).not.toContain(card);
+    });
+
+    it("redacts dash-separated SSN-like patterns", () => {
+      const ssn = "123-45-6789";
+      const preview = redactPreview(`ssn ${ssn}`);
+      expect(preview).not.toContain(ssn);
+      expect(preview).toContain("[redacted:");
+    });
   });
 });

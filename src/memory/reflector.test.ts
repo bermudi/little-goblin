@@ -626,6 +626,99 @@ describe("MemoryReflector", () => {
       expect(entries).toHaveLength(2);
       expect(body).toContain("the project uses Bun");
     });
+
+    // S7: a shorter near-duplicate candidate must not overwrite a longer,
+    // more detailed existing entry. The existing body is preserved and only
+    // entry metadata is refreshed.
+    it("preserves the longer existing body when a shorter candidate is a near-duplicate", async () => {
+      const detailed = "I prefer concise summaries with test output evidence";
+      await store.add(
+        "user",
+        "<!-- memory: category=preference confidence=0.8 created_at=2026-07-01T00:00:00.000Z updated_at=2026-07-01T00:00:00.000Z source_session=s_old source_role=user -->\n" +
+          detailed,
+      );
+
+      appendTranscript(tmp, "s1", [
+        { role: "user", text: "I prefer concise summaries" },
+      ]);
+      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+
+      const reflector = new MemoryReflector({
+        goblinHome: tmp,
+        store,
+        extractor: fixedExtractor([
+          makeCandidate({
+            target: "user",
+            category: "preference",
+            confidence: 0.85,
+            summary: "I prefer concise summaries",
+            source: { sessionId: "s_new", lineRange: [0, 0], sourceRole: "user" },
+          }),
+        ]),
+      });
+      await reflector.reflect("s1", GENERAL_SCOPE);
+
+      const body = store.read("user").body;
+      const entries = body.split("\n§\n");
+      expect(entries).toHaveLength(1);
+      // The detailed body is preserved — not truncated to the shorter summary.
+      expect(body).toContain(detailed);
+      // Metadata was still refreshed.
+      const parsed = parseEntryMetadata(entries[0]!);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.metadata.updated_source_session).toBe("s_new");
+      expect(parsed!.metadata.updated_at).not.toBe("2026-07-01T00:00:00.000Z");
+    });
+
+    // S3: consolidation must run atomically under the scope lock so an
+    // explicit write landing between the reflector's read and write is not
+    // silently overwritten. We simulate the race by interleaving an
+    // explicit store.add inside the consolidate callback window — the
+    // explicit write commits first, then the reflector's consolidate reads
+    // the post-write body under the lock and preserves it.
+    it("does not lose an explicit write that lands before the locked consolidate read", async () => {
+      await store.add("user", "I prefer concise summaries");
+
+      appendTranscript(tmp, "s1", [
+        { role: "user", text: "the project uses Bun" },
+      ]);
+      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+
+      // Patch the store's consolidate to inject an explicit write before
+      // the locked read-modify-write runs. If the reflector held a stale
+      // unlocked snapshot, the explicit entry would be overwritten.
+      const originalConsolidate = store.consolidate.bind(store);
+      let injected = false;
+      store.consolidate = async (scope, fn) => {
+        if (!injected) {
+          injected = true;
+          // An explicit memory_write lands on the same scope before the
+          // reflector's locked read.
+          await store.add("user", "explicit fact from the user turn");
+        }
+        return originalConsolidate(scope, fn);
+      };
+
+      const reflector = new MemoryReflector({
+        goblinHome: tmp,
+        store,
+        extractor: fixedExtractor([
+          makeCandidate({
+            target: "user",
+            category: "project_fact",
+            confidence: 0.8,
+            summary: "the project uses Bun",
+          }),
+        ]),
+      });
+      await reflector.reflect("s1", GENERAL_SCOPE);
+
+      const body = store.read("user").body;
+      // The explicit write survives — not silently overwritten.
+      expect(body).toContain("explicit fact from the user turn");
+      // The reflected candidate is also present.
+      expect(body).toContain("the project uses Bun");
+    });
   });
 
   // -------------------------------------------------------------------------

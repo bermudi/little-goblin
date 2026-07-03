@@ -84,11 +84,22 @@ export function checkDescriptionSafety(description: string): SafetyResult {
  * Produce a redacted preview of rejected content suitable for quarantine
  * logs. The preview never copies the sensitive value; it shows structural
  * shape and length only.
+ *
+ * Two redaction passes:
+ * 1. Values after secret-assignment operators (`key: value`, `key = value`)
+ *    are replaced regardless of length, so short passwords like "hunter2"
+ *    do not leak.
+ * 2. Long alphanumeric runs (>= 8 chars) are replaced with `[redacted:N]`.
  */
 export function redactPreview(content: string, maxLen = 80): string {
-  // Replace any run of "secret-looking" characters with a placeholder.
-  // We redact generously: alphanumeric runs of length >= 8 become `[redacted:N]`.
-  const redacted = content
+  // Pass 1: redact values after secret-assignment operators regardless of
+  // value length, so short passwords like "hunter2" do not leak.
+  let redacted = content.replace(
+    /\b(password|passwd|pwd|secret|token|api[_-]?key|api[_-]?secret|access[_-]?token|auth|cookie|set-cookie)\b\s*[:=]\s*(\S+)/gi,
+    (_m, key: string, _value: string) => `${key}[redacted:value]`,
+  );
+  // Pass 2: redact long alphanumeric runs (>= 8 chars).
+  redacted = redacted
     .replace(/[A-Za-z0-9_\-]{8,}/g, (m) => `[redacted:${m.length}]`)
     .replace(/\s+/g, " ")
     .trim();

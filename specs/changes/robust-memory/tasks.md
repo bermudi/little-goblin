@@ -12,11 +12,11 @@ Commit: `phase 1: add memory safety filtering`
 
 ## Phase 2: Add metadata entries and quarantine
 
-- [ ] Add `src/memory/entry.ts` to format and parse metadata-bearing Markdown entries while preserving legacy plain entries. Covers: `Memory entries carry provenance metadata`.
-- [ ] Add `src/memory/quarantine.ts` to append redacted JSONL records at `$GOBLIN_HOME/memory/quarantine.jsonl` with timestamp, source session, target scope, category, reason, and preview. Covers: `Quarantine stores rejected memory candidates outside snapshots`.
-- [ ] Ensure `formatSnapshot`, `memory_read`, and `memory_read_index` continue to ignore quarantine by construction; add regression tests proving quarantine alone does not produce a snapshot or index entry.
-- [ ] Add tests for metadata formatting/parsing, legacy entry passthrough, quarantine append, and redacted preview storage.
-- [ ] Run `bun test src/memory` and `bun run typecheck`.
+- [x] Add `src/memory/entry.ts` to format and parse metadata-bearing Markdown entries while preserving legacy plain entries. Covers: `Memory entries carry provenance metadata`.
+- [x] Add `src/memory/quarantine.ts` to append redacted JSONL records at `$GOBLIN_HOME/memory/quarantine.jsonl` with timestamp, source session, target scope, category, reason, and preview. Covers: `Quarantine stores rejected memory candidates outside snapshots`.
+- [x] Ensure `formatSnapshot`, `memory_read`, and `memory_read_index` continue to ignore quarantine by construction; add regression tests proving quarantine alone does not produce a snapshot or index entry.
+- [x] Add tests for metadata formatting/parsing, legacy entry passthrough, quarantine append, and redacted preview storage.
+- [x] Run `bun test src/memory` and `bun run typecheck`.
 
 Commit: `phase 2: add memory metadata and quarantine`
 

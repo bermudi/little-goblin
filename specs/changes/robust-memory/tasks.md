@@ -35,11 +35,11 @@ Commit: `phase 3: add memory reflection pipeline`
 
 ## Phase 4: Schedule reflection from AgentRunner
 
-- [ ] Instantiate or inject `MemoryReflector` in `src/agent/mod.ts` and schedule a fire-and-log reflection pass when main-agent `agent_end` is observed. Covers: `AgentRunner schedules background memory reflection after completed turns`.
-- [ ] Pass the runner's `sessionId`, `cfg.goblinHome`, and `activeScope` into the reflection pass so automatic writes target only `user.md` or the active main-agent scope. Covers: `Reflection uses scoped memory context`.
-- [ ] Ensure `followUp()` does not schedule an independent reflection pass and that reflection errors do not reject `prompt()` or crash the event handler.
-- [ ] Extend `src/agent/mod.test.ts` for scheduling after completed prompt turns, no independent scheduling for steer events, reflection errors logged/swallowed, and reflected writes visible to a subsequent snapshot. Covers modified: `AgentRunner injects memory snapshot as per-turn aside`.
-- [ ] Run `bun test src/agent/mod.test.ts src/memory` and `bun run typecheck`.
+- [x] Instantiate or inject `MemoryReflector` in `src/agent/mod.ts` and schedule a fire-and-log reflection pass when main-agent `agent_end` is observed. Covers: `AgentRunner schedules background memory reflection after completed turns`.
+- [x] Pass the runner's `sessionId`, `cfg.goblinHome`, and `activeScope` into the reflection pass so automatic writes target only `user.md` or the active main-agent scope. Covers: `Reflection uses scoped memory context`.
+- [x] Ensure `followUp()` does not schedule an independent reflection pass and that reflection errors do not reject `prompt()` or crash the event handler.
+- [x] Extend `src/agent/mod.test.ts` for scheduling after completed prompt turns, no independent scheduling for steer events, reflection errors logged/swallowed, and reflected writes visible to a subsequent snapshot. Covers modified: `AgentRunner injects memory snapshot as per-turn aside`.
+- [x] Run `bun test src/agent/mod.test.ts src/memory` and `bun run typecheck`.
 
 Commit: `phase 4: schedule main-agent memory reflection`
 

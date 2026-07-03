@@ -161,6 +161,12 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { ChatLocator } from "../sessions/types.ts";
+import { MemoryStore } from "../memory/store.ts";
+import {
+  MemoryReflector,
+  type Candidate,
+  type CandidateExtractor,
+} from "../memory/reflector.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -204,6 +210,7 @@ function makeRunner(
   projectDir?: string,
   pendingProjectNotice?: string,
   thinkingLevel?: string,
+  memoryReflector?: MemoryReflector,
 ) {
   return new AgentRunner({
     cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }), ...configOverrides },
@@ -214,6 +221,7 @@ function makeRunner(
     projectDir,
     pendingProjectNotice,
     thinkingLevel: thinkingLevel as never,
+    memoryReflector,
   });
 }
 
@@ -1285,6 +1293,137 @@ describe("AgentRunner", () => {
       // The tool exists and was registered — the delegating callback is
       // captured inside the tool's closure. Integration testing of the
       // full callback chain is covered by the subagent mod.test.ts suite.
+    });
+  });
+
+  describe("memory reflection scheduling", () => {
+    /** Helper: create a reflector backed by a real store on tmpDir. */
+    function makeReflector(
+      home: string,
+      extractor?: CandidateExtractor,
+    ): MemoryReflector {
+      const store = new MemoryStore(home);
+      return new MemoryReflector({ goblinHome: home, store, extractor });
+    }
+
+    /** Pre-seed a reflection cursor at processedLines=0 so the first pass processes all transcript entries. */
+    function seedCursorAtZero(home: string): void {
+      writeFileSync(
+        join(home, "sessions", "sess-001", "memory-reflection.json"),
+        JSON.stringify({ processedLines: 0, lastReflectedAt: new Date().toISOString() }) + "\n",
+        "utf-8",
+      );
+    }
+
+    /** Write a single user transcript entry. */
+    function writeTranscriptEntry(home: string, text: string): void {
+      writeFileSync(
+        join(home, "sessions", "sess-001", "transcript.jsonl"),
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          role: "user",
+          content: [{ type: "text", text }],
+        }) + "\n",
+        "utf-8",
+      );
+    }
+
+    it("schedules a reflection pass after agent_end on a completed prompt turn", async () => {
+      const reflector = makeReflector(tmpDir);
+      const scheduleSpy = mock((_sessionId: string, _scope: unknown) => {});
+      reflector.scheduleReflection = scheduleSpy as never;
+
+      const runner = makeRunner(
+        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, reflector,
+      );
+      await runner.prompt("hello", nopCallbacks());
+
+      sessionHolder.emit({ type: "agent_end", messages: [] });
+
+      expect(scheduleSpy).toHaveBeenCalledTimes(1);
+      expect(scheduleSpy).toHaveBeenCalledWith(
+        "sess-001",
+        expect.objectContaining({ chatId: 123, topicScope: "general" }),
+      );
+    });
+
+    it("does not schedule an independent reflection pass for followUp (steer)", async () => {
+      const reflector = makeReflector(tmpDir);
+      const scheduleSpy = mock((_sessionId: string, _scope: unknown) => {});
+      reflector.scheduleReflection = scheduleSpy as never;
+
+      const runner = makeRunner(
+        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, reflector,
+      );
+      await runner.prompt("first", nopCallbacks());
+      sessionHolder.streaming = true;
+      await runner.followUp("redirect");
+
+      // followUp steers the running turn — no agent_end is emitted, so no
+      // reflection is scheduled for the steer itself.
+      expect(scheduleSpy).not.toHaveBeenCalled();
+    });
+
+    it("reflection errors are logged and swallowed, not thrown to the event handler", async () => {
+      const throwingExtractor: CandidateExtractor = () => {
+        throw new Error("extractor blew up");
+      };
+      const reflector = makeReflector(tmpDir, throwingExtractor);
+
+      const runner = makeRunner(
+        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, reflector,
+      );
+      await runner.prompt("hello", nopCallbacks());
+
+      seedCursorAtZero(tmpDir);
+      writeTranscriptEntry(tmpDir, "I prefer terse answers");
+
+      // Emitting agent_end should not throw even though reflection fails.
+      sessionHolder.emit({ type: "agent_end", messages: [] });
+      await reflector.awaitSettled("sess-001");
+
+      // The cursor should NOT have advanced — a failed pass retries the
+      // same range on the next schedule.
+      const cursor = JSON.parse(
+        readFileSync(join(tmpDir, "sessions", "sess-001", "memory-reflection.json"), "utf-8"),
+      );
+      expect(cursor.processedLines).toBe(0);
+    });
+
+    it("reflected writes are visible in a subsequent turn's snapshot", async () => {
+      const candidate: Candidate = {
+        target: "user",
+        category: "preference",
+        confidence: 0.9,
+        summary: "User prefers terse engineering summaries.",
+        source: { sessionId: "sess-001", lineRange: [0, 0], sourceRole: "user" },
+      };
+      const extractor: CandidateExtractor = () => [candidate];
+      const reflector = makeReflector(tmpDir, extractor);
+
+      const runner = makeRunner(
+        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, reflector,
+      );
+      await runner.prompt("I prefer terse summaries", nopCallbacks());
+
+      seedCursorAtZero(tmpDir);
+      writeTranscriptEntry(tmpDir, "I prefer terse summaries");
+
+      // Complete the turn — agent_end schedules reflection.
+      sessionHolder.emit({ type: "agent_end", messages: [] });
+      await reflector.awaitSettled("sess-001");
+
+      // The reflected entry should now be in user.md.
+      const userMd = readFileSync(join(tmpDir, "memory", "user.md"), "utf-8");
+      expect(userMd).toContain("User prefers terse engineering summaries.");
+
+      // Next turn's snapshot should include the reflected entry.
+      sessionHolder.sendCustomMessage.mockClear();
+      await runner.prompt("next message", nopCallbacks());
+      expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
+      const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
+      const text = (payload as { content: string }).content;
+      expect(text).toContain("User prefers terse engineering summaries.");
     });
   });
 });

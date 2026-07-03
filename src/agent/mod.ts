@@ -33,6 +33,7 @@ import {
   formatSnapshot,
   resolveActiveScope,
 } from "../memory/mod.ts";
+import { MemoryReflector } from "../memory/reflector.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
 import type { ChatLocator } from "../sessions/types.ts";
 import type { ActiveScope } from "../memory/mod.ts";
@@ -53,6 +54,13 @@ export interface AgentRunnerOptions {
   thinkingLevel?: ThinkingLevel;
   /** Queued notice to inject as context on the first prompt. Consumed once. */
   pendingProjectNotice?: string;
+  /**
+   * Memory reflector to use for background reflection after completed turns.
+   * When absent, a default `MemoryReflector` is constructed from `cfg.goblinHome`
+   * and the runner's `MemoryStore`. Tests inject a custom instance to control
+   * candidate extraction and observe reflection state.
+   */
+  memoryReflector?: MemoryReflector;
 }
 
 /** Thrown when the resolved model does not support the content types present in a prompt. */
@@ -79,6 +87,7 @@ export class AgentRunner {
   private accumulatedText: string = "";
   private callbacks: TurnCallbacks | null = null;
   private memoryStore: MemoryStore;
+  private memoryReflector: MemoryReflector;
   private activeScope: ActiveScope;
   private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
   private topicNameCache = new Map<string, string | null>();
@@ -112,6 +121,8 @@ export class AgentRunner {
     this.pendingProjectNotice = opts.pendingProjectNotice;
     // Construction is cheap (no I/O); the directory is created lazily on first write.
     this.memoryStore = new MemoryStore(opts.cfg.goblinHome);
+    this.memoryReflector = opts.memoryReflector ??
+      new MemoryReflector({ goblinHome: opts.cfg.goblinHome, store: this.memoryStore });
   }
 
   /**
@@ -287,6 +298,16 @@ export class AgentRunner {
     }
 
     dispatchAgentEvent(event, this.callbacks);
+
+    // Schedule a fire-and-log background memory reflection pass after a
+    // completed main-agent turn. Reflection reads the transcript tail after
+    // a persisted cursor and never blocks the turn path — errors are caught
+    // inside the reflector and logged, never thrown here. followUp() steers
+    // a running turn without emitting an independent agent_end, so no
+    // separate reflection pass is scheduled for steers.
+    if (event.type === "agent_end") {
+      this.memoryReflector.scheduleReflection(this.sessionId, this.activeScope);
+    }
   }
 
   /**

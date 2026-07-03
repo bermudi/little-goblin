@@ -10,7 +10,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 - v1.1: user-facing named subagent invocation (slash command `/researcher` or topic-to-agent binding)
 - v1.x: mixed-provider routing (`selectModel(task)`), per-subagent model override
 - ~~v1.x: subagent memory access~~ — resolved by `scoped-memory` (anonymous subagents inherit parent active scope; named subagents get a three-tier model with persona memory).
-- v1.x: PII redaction in memory writes — explicit redaction pipeline before persisting curated entries (health, finance, identifiers). Out of scope of `scoped-memory`. Needs a design pass on rule sources, false-positive handling, and whether the agent or the store does the filtering.
+- ~~v1.x: PII redaction in memory writes~~ — resolved by `robust-memory` (deterministic safety filter shared by explicit `memory_write` and the reflection pipeline; rejects secrets/identifiers, quarantines rejected candidates).
 - v2.x: per-chat isolation for `general` memory — today `memory/general/memory.md` is shared across DMs and every supergroup-no-topic surface. If multi-chat usage stops being single-user, switch to `memory/general/<chatId>/memory.md`. Single consumer (`MemoryStore` scope resolver) so the change is local.
 - v1.x: auto-archive / auto-prune daemons
 - v1.x: self-hosted Telegram Bot API server (`telegram-bot-api`) to lift file download limit from 20 MB → 2 GB. Needs `botApiUrl` config option and local infra (single Go binary). Blocked until a real >20 MB file arrives.

@@ -61,8 +61,8 @@ Commit: `phase 6: mark memory snapshots as auxiliary`
 
 ## Phase 7: Graduate backlog and run full validation
 
-- [ ] Remove the `v1.x: PII redaction in memory writes` line from `specs/backlog.md`; this change now owns that work.
-- [ ] Run full validation: `litespec validate robust-memory`, `bun test`, and `bun run typecheck`.
-- [ ] Manually inspect `git diff` for accidental memory content leakage, over-broad filters, and any changes outside the planned files.
+- [x] Remove the `v1.x: PII redaction in memory writes` line from `specs/backlog.md`; this change now owns that work.
+- [x] Run full validation: `litespec validate robust-memory`, `bun test`, and `bun run typecheck`.
+- [x] Manually inspect `git diff` for accidental memory content leakage, over-broad filters, and any changes outside the planned files.
 
 Commit: `phase 7: finalize robust memory proposal`

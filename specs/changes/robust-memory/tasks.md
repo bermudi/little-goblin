@@ -22,14 +22,14 @@ Commit: `phase 2: add memory metadata and quarantine`
 
 ## Phase 3: Add reflection cursor and candidate pipeline
 
-- [ ] Add `src/memory/reflector.ts` with a `MemoryReflector` class that reads `sessions/<id>/transcript.jsonl`, reads/writes `sessions/<id>/memory-reflection.json`, and processes only transcript entries after the cursor. Covers: `Reflection cursor prevents duplicate processing`.
-- [ ] Implement first-observation cursor seeding before later completed turns are reflected: existing sessions with no cursor start at the current transcript end, not line 0; newly completed work after the seeded cursor remains eligible. Covers: `Reflection cursor prevents duplicate processing`.
-- [ ] Add an in-process per-session reflection scheduler/lock that coalesces overlapping schedules into at most one follow-up pass. Covers: `Reflection cursor prevents duplicate processing`.
-- [ ] Implement deterministic candidate extraction for explicit user preferences, corrections, decisions, project facts, gotchas, and conventions from recent transcript entries. Covers: `Reflection uses scoped memory context`.
-- [ ] Run every candidate through procedural-noise filtering and `checkMemorySafety()`; safe candidates continue, low-confidence/unsafe/review-worthy candidates append to quarantine with redacted previews, and obvious noise may be skipped. Covers: `Memory safety filter rejects secrets and sensitive identifiers`, `Reflection filters procedural noise before persistence`, and `Quarantine stores rejected memory candidates outside snapshots`.
-- [ ] Implement consolidation that compares candidates against the target file and uses `replace`/`rewrite` for near-duplicates or updates, preserving original `source_session` and recording `updated_source_session`; otherwise `add`. Covers: `Reflection candidates consolidate with existing entries`.
-- [ ] Add `src/memory/reflector.test.ts` for first-observation cursor seeding, cursor skip after restart, retry when cursor is not advanced, overlapping schedule coalescing, unsafe candidate quarantine, low-confidence quarantine, procedural-noise skip, safe candidate write, and duplicate consolidation.
-- [ ] Run `bun test src/memory` and `bun run typecheck`.
+- [x] Add `src/memory/reflector.ts` with a `MemoryReflector` class that reads `sessions/<id>/transcript.jsonl`, reads/writes `sessions/<id>/memory-reflection.json`, and processes only transcript entries after the cursor. Covers: `Reflection cursor prevents duplicate processing`.
+- [x] Implement first-observation cursor seeding before later completed turns are reflected: existing sessions with no cursor start at the current transcript end, not line 0; newly completed work after the seeded cursor remains eligible. Covers: `Reflection cursor prevents duplicate processing`.
+- [x] Add an in-process per-session reflection scheduler/lock that coalesces overlapping schedules into at most one follow-up pass. Covers: `Reflection cursor prevents duplicate processing`.
+- [x] Implement deterministic candidate extraction for explicit user preferences, corrections, decisions, project facts, gotchas, and conventions from recent transcript entries. Covers: `Reflection uses scoped memory context`.
+- [x] Run every candidate through procedural-noise filtering and `checkMemorySafety()`; safe candidates continue, low-confidence/unsafe/review-worthy candidates append to quarantine with redacted previews, and obvious noise may be skipped. Covers: `Memory safety filter rejects secrets and sensitive identifiers`, `Reflection filters procedural noise before persistence`, and `Quarantine stores rejected memory candidates outside snapshots`.
+- [x] Implement consolidation that compares candidates against the target file and uses `replace`/`rewrite` for near-duplicates or updates, preserving original `source_session` and recording `updated_source_session`; otherwise `add`. Covers: `Reflection candidates consolidate with existing entries`.
+- [x] Add `src/memory/reflector.test.ts` for first-observation cursor seeding, cursor skip after restart, retry when cursor is not advanced, overlapping schedule coalescing, unsafe candidate quarantine, low-confidence quarantine, procedural-noise skip, safe candidate write, and duplicate consolidation.
+- [x] Run `bun test src/memory` and `bun run typecheck`.
 
 Commit: `phase 3: add memory reflection pipeline`
 

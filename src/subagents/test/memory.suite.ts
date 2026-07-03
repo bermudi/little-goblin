@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import {
   MemoryStore,
   createMemoryReadIndexTool,
@@ -255,5 +255,79 @@ describe("SubagentRunner — scoped memory", () => {
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await anonHandle.result;
+  });
+
+  /**
+   * Recursively collect every path under `root` whose basename matches `name`.
+   * Returns relative paths for readable assertion failures.
+   */
+  function findFilesNamed(root: string, name: string): string[] {
+    if (!existsSync(root)) return [];
+    const hits: string[] = [];
+    for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+      if (entry.isFile() && entry.name === name) {
+        hits.push(relative(root, join(entry.parentPath, entry.name)));
+      }
+    }
+    return hits;
+  }
+
+  it("subagent agent_end does not schedule memory reflection", async () => {
+    // Pre-seed a topic memory file so a reflector (if one were wired) would
+    // have a target to write to. The point is that no reflector runs.
+    mkdirSync(join(tmp, "memory", "topics", "-100123", "42"), { recursive: true });
+    writeFileSync(join(tmp, "memory", "topics", "-100123", "42", "memory.md"), "topic memory");
+    writeFileSync(join(tmp, "memory", "user.md"), "user memory");
+
+    const handle = await runner.spawn({
+      prompt: "remember, I prefer concise summaries with test output",
+      activeScope: TOPIC_SCOPE,
+    });
+    await flush();
+
+    // Emit agent_end — a main-agent runner would schedule reflection here.
+    // A subagent must not.
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+    // Drain any microtasks a hypothetical fire-and-log pass would queue.
+    await flush();
+    await flush();
+
+    // No reflection cursor should exist anywhere under $GOBLIN_HOME.
+    expect(findFilesNamed(tmp, "memory-reflection.json")).toEqual([]);
+    // No quarantine file should have been created by automatic reflection.
+    expect(existsSync(join(tmp, "memory", "quarantine.jsonl"))).toBe(false);
+    // Trusted memory files are untouched — no automatic writes happened.
+    expect(
+      readFileSync(join(tmp, "memory", "topics", "-100123", "42", "memory.md"), "utf-8"),
+    ).toBe("topic memory");
+    expect(readFileSync(join(tmp, "memory", "user.md"), "utf-8")).toBe("user memory");
+  });
+
+  it("named subagent persona memory changes only via explicit memory_write", async () => {
+    mkdirSync(join(tmp, "memory", "agents", "researcher"), { recursive: true });
+    writeFileSync(join(tmp, "memory", "agents", "researcher", "memory.md"), "persona memory");
+    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
+    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
+
+    const handle = await runner.spawn({
+      prompt: "remember, I prefer concise summaries with test output",
+      name: "researcher",
+      activeScope: TOPIC_SCOPE,
+    });
+    await flush();
+
+    // Complete the named subagent WITHOUT calling memory_write({target:"agent"}).
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+    await flush();
+    await flush();
+
+    // Persona memory must be unchanged — automatic reflection never ran.
+    expect(
+      readFileSync(join(tmp, "memory", "agents", "researcher", "memory.md"), "utf-8"),
+    ).toBe("persona memory");
+    // No reflection cursor anywhere under $GOBLIN_HOME.
+    expect(findFilesNamed(tmp, "memory-reflection.json")).toEqual([]);
   });
 });

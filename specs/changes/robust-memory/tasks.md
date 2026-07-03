@@ -45,9 +45,9 @@ Commit: `phase 4: schedule main-agent memory reflection`
 
 ## Phase 5: Preserve subagent boundaries
 
-- [ ] Verify `src/subagents/execution.ts` does not instantiate or schedule `MemoryReflector`; avoid implementation changes unless needed for test injection. Covers: `Background reflection excludes subagent transcripts`.
-- [ ] Extend `src/subagents/test/memory.suite.ts` to assert subagent `agent_end` does not schedule reflection and named-agent persona memory changes only via explicit `memory_write`.
-- [ ] Run `bun test src/subagents/mod.test.ts src/subagents/test/memory.suite.ts src/memory` and `bun run typecheck`.
+- [x] Verify `src/subagents/execution.ts` does not instantiate or schedule `MemoryReflector`; avoid implementation changes unless needed for test injection. Covers: `Background reflection excludes subagent transcripts`.
+- [x] Extend `src/subagents/test/memory.suite.ts` to assert subagent `agent_end` does not schedule reflection and named-agent persona memory changes only via explicit `memory_write`.
+- [x] Run `bun test src/subagents/mod.test.ts src/subagents/test/memory.suite.ts src/memory` and `bun run typecheck`.
 
 Commit: `phase 5: preserve subagent reflection boundary`
 

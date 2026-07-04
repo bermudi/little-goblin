@@ -1,7 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { Bot } from "grammy";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
@@ -14,14 +13,10 @@ import { interruptAndCascade } from "../interrupt.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
-import {
-  createSendDocumentTool,
-  createSendPhotoTool,
-  createSendVoiceTool,
-} from "./tools.ts";
-import { createTextToSpeechTool, MessageBuffer } from "./mod.ts";
+import { TurnDispatcher, type PromptContent } from "./turn-dispatcher.ts";
+import type { MessageBuffer } from "./mod.ts";
 
-export type PromptContent = string | (TextContent | ImageContent)[];
+export type { PromptContent };
 
 export interface TelegramIntakeMessage {
   locator: ChatLocator | null;
@@ -51,7 +46,7 @@ export interface TelegramAudioInput {
   caption?: string;
 }
 
-interface TelegramIntakeOptions {
+export interface TelegramIntakeOptions {
   cfg: Config;
   bot: Bot;
   manager: SessionManager;
@@ -73,26 +68,6 @@ type ActiveTurn = {
     opts?: { replyModelNotCapable?: boolean },
   ) => void;
 };
-
-function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number) => Promise<string | null> {
-  return async (chatId, topicId) => {
-    const { description } = store.read({ topic: { chatId, topicId } });
-    return description ?? null;
-  };
-}
-
-function getBetaTools(
-  bot: Bot,
-  chatId: number,
-  topicId?: number,
-): ToolDefinition[] {
-  return [
-    createSendVoiceTool(bot, chatId, topicId),
-    createSendPhotoTool(bot, chatId, topicId),
-    createSendDocumentTool(bot, chatId, topicId),
-    createTextToSpeechTool(),
-  ].filter((t): t is NonNullable<typeof t> => t !== null);
-}
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
@@ -180,9 +155,17 @@ export function replyNoActiveSession(message: TelegramIntakeMessage, locator: Ch
 
 export function createTelegramIntake(options: TelegramIntakeOptions) {
   const { cfg, bot, manager, subagentRunner, memoryStore } = options;
-  const runners = options.agentRunners;
-  const promptQueues = options.promptQueues ?? new Map<string, Promise<void>>();
-  const getTopicName = buildGetTopicName(memoryStore);
+  const dispatcher = new TurnDispatcher({
+    cfg,
+    bot,
+    manager,
+    subagentRunner,
+    memoryStore,
+    agentRunners: options.agentRunners,
+    promptQueues: options.promptQueues,
+    createAgentRunner: options.createAgentRunner,
+    createMessageBuffer: options.createMessageBuffer,
+  });
 
   function tryResolveModel(cfg: Config, session: SessionState | null, runner?: AgentRunner): ResolvedModel | undefined {
     try {
@@ -191,82 +174,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     } catch {
       return undefined;
     }
-  }
-
-  function createRunner(session: SessionState, locator: ChatLocator, message: TelegramIntakeMessage): AgentRunner {
-    const chatId = locator.chatId;
-    const topicId = message.threadId;
-    const betaTools = getBetaTools(bot, chatId, topicId);
-    const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
-      cfg,
-      sessionId: session.id,
-      locator,
-      customTools: betaTools,
-      subagentRunner,
-      getTopicName,
-      projectDir: manager.getProjectDir(locator),
-      modelName: session.modelName,
-      thinkingLevel: session.thinkingLevel,
-      pendingProjectNotice: manager.consumeProjectNotice(locator),
-    };
-    return options.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
-  }
-
-  function getOrCreateRunner(session: SessionState, locator: ChatLocator, message: TelegramIntakeMessage): AgentRunner {
-    const existing = runners.get(session.id);
-    if (existing) return existing;
-
-    const runner = createRunner(session, locator, message);
-    runners.set(session.id, runner);
-    log.debug("created runner for session", { sessionId: session.id });
-    return runner;
-  }
-
-  function createMessageBuffer(locator: ChatLocator): MessageBuffer {
-    if (options.createMessageBuffer) return options.createMessageBuffer(locator);
-    const topicId = locator.topicId;
-    return new MessageBuffer(bot, locator.chatId, topicId, {
-      visibility: cfg.toolVisibility,
-      onTopicNotFound:
-        topicId !== undefined
-          ? async () => {
-              await memoryStore.archiveOrphan(locator.chatId, topicId);
-            }
-          : undefined,
-    });
-  }
-
-  function schedulePrompt(
-    session: SessionState,
-    runner: AgentRunner,
-    run: (isCurrent: () => boolean) => Promise<void>,
-    onError: (err: unknown) => Promise<void> | void,
-  ): void {
-    const isCurrent = (): boolean => runners.get(session.id) === runner;
-    const execute = async (): Promise<void> => {
-      if (!isCurrent()) return;
-      try {
-        await run(isCurrent);
-      } catch (err) {
-        if (!isCurrent()) return;
-        try {
-          await onError(err);
-        } catch (handlerErr) {
-          log.error("prompt error handler failed", { error: String(handlerErr), sessionId: session.id });
-        }
-      }
-    };
-    const prior = promptQueues.get(session.id);
-    const current = prior ? prior.then(execute, execute) : execute();
-    promptQueues.set(session.id, current);
-    void current.finally(() => {
-      if (promptQueues.get(session.id) === current) promptQueues.delete(session.id);
-    });
-  }
-
-  async function runPrompt(message: TelegramIntakeMessage, locator: ChatLocator, runner: AgentRunner, content: PromptContent): Promise<void> {
-    const buffer = createMessageBuffer(locator);
-    await runner.prompt(message.prepare(content), buffer);
   }
 
   function scheduleFreshTurn(
@@ -278,8 +185,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     failureLog: string,
     opts?: { replyModelNotCapable?: boolean },
   ): void {
-    const buffer = createMessageBuffer(locator);
-    schedulePrompt(
+    const buffer = dispatcher.createMessageBuffer(locator);
+    dispatcher.schedulePrompt(
       session,
       runner,
       async (isCurrent) => {
@@ -306,22 +213,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   function applySideEffects(sideEffects: SideEffect[], message: TelegramIntakeMessage, locator: ChatLocator): void {
     for (const effect of sideEffects) {
       if (effect.kind === "runner-created") {
-        runners.set(effect.session.id, createRunner(effect.session, effect.locator, message));
-        log.debug("created runner", { sessionId: effect.session.id });
+        dispatcher.setRunner(effect.session, effect.locator, message.threadId);
       } else if (effect.kind === "runner-disposed") {
-        promptQueues.delete(effect.sessionId);
-        const prior = runners.get(effect.sessionId);
-        if (prior) {
-          try {
-            prior.dispose();
-          } finally {
-            runners.delete(effect.sessionId);
-          }
-        } else {
-          runners.delete(effect.sessionId);
-        }
+        dispatcher.disposeRunner(effect.sessionId);
       } else if (effect.kind === "queue-prompt") {
-        const queueRunner = getOrCreateRunner(effect.session, locator, message);
+        const queueRunner = dispatcher.getOrCreateRunner(effect.session, locator, message.threadId);
         scheduleFreshTurn(message, locator, effect.session, queueRunner, effect.text, "queued prompt failed");
       }
     }
@@ -345,7 +241,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     rawText: string,
     command: string,
   ): void {
-    schedulePrompt(
+    dispatcher.schedulePrompt(
       session,
       runner,
       async (isCurrent) => {
@@ -353,7 +249,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // Re-resolve the runner: a queued `/new` or `/resume` in the same
         // chain may have swapped it. If it's gone, the turn's session is no
         // longer bound here, so drop the deferred command.
-        const currentRunner = runners.get(session.id);
+        const currentRunner = dispatcher.runners.get(session.id);
         if (!currentRunner) return;
         const result = await handleCommand({
           command,
@@ -415,8 +311,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       session,
       projectDir: manager.getProjectDir(locator),
       schedule: (run, failureLog, opts) => {
-        const runner = getOrCreateRunner(session, locator, message);
-        schedulePrompt(
+        const runner = dispatcher.getOrCreateRunner(session, locator, message.threadId);
+        dispatcher.schedulePrompt(
           session,
           runner,
           async (isCurrent) => {
@@ -443,6 +339,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     interruptAndCascade,
   };
 
+  async function runPrompt(message: TelegramIntakeMessage, locator: ChatLocator, runner: AgentRunner, content: PromptContent): Promise<void> {
+    const buffer = dispatcher.createMessageBuffer(locator);
+    await runner.prompt(message.prepare(content), buffer);
+  }
+
   async function handleText(message: TelegramIntakeMessage, rawText: string | undefined): Promise<void> {
     const locator = message.locator;
     if (!locator) {
@@ -451,7 +352,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     }
 
     const session = manager.resolve(locator, { isSupergroup: message.isSupergroup });
-    const existingRunner = session ? runners.get(session.id) ?? null : null;
+    const existingRunner = session ? dispatcher.runners.get(session.id) ?? null : null;
     const command = parseCommand(rawText);
     if (command !== null) {
       const def = resolveCommand(command);
@@ -496,7 +397,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       return;
     }
 
-    const runner = getOrCreateRunner(session, locator, message);
+    const runner = dispatcher.getOrCreateRunner(session, locator, message.threadId);
     if (!rawText) return;
 
     if (runner.isStreaming) {
@@ -710,5 +611,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     handleVoice,
     handleAudio,
     handleTopicDescription,
+    dispatcher,
   };
 }

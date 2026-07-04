@@ -542,4 +542,48 @@ describe("Telegram intake", () => {
     // The canned error reply arrives after the turn settles.
     expect(replies.at(-1)).toBe("Failed to switch model. Please try again.");
   });
+
+  it("shares per-session ordering between /queue and scheduled dispatch", async () => {
+    // The dispatcher extraction requirement: Telegram `/queue` prompts and
+    // scheduler-dispatched prompts must serialize through the same per-session
+    // chain so a due scheduled turn cannot start while a queued prompt is in
+    // flight. We drive both paths through the same dispatcher instance.
+    const { intake, manager } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const pending = deferred();
+    const order: string[] = [];
+    MockAgentRunner.nextPrompt = async (content) => {
+      // Record the arrival order of each prompt's content.
+      order.push(typeof content === "string" ? content : "[parts]");
+      if (order.length === 1) await pending.promise;
+    };
+
+    await intake.handleText(message, "/new");
+    const session = manager.list()[0]!;
+    const dispatcher = intake.dispatcher;
+
+    // 1. Start a slow Telegram turn.
+    await intake.handleText(message, "first (telegram)");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    // 2. Queue a /queue prompt behind it (Telegram path).
+    await intake.handleText(message, "/queue second (queued)");
+    await flushMicrotasks();
+
+    // 3. Enqueue a scheduled turn on the SAME dispatcher (scheduler path).
+    dispatcher.enqueueScheduledTurn(session, { chatId: 1 }, "third (scheduled)");
+    await flushMicrotasks();
+
+    // Only the first turn has started; the other two wait on the chain.
+    expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
+
+    pending.resolve();
+    await waitFor(() => runners[0]!.prompt.mock.calls.length === 3);
+
+    // Both paths serialized through the same chain in enqueue order.
+    expect(order[0]).toBe("[prepared] first (telegram)");
+    expect(order[1]).toBe("[prepared] second (queued)");
+    expect(order[2]).toBe("third (scheduled)");
+  });
 });

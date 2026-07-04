@@ -23,11 +23,11 @@
 
 ## Phase 3: Extract shared turn dispatcher
 
-- [ ] Create `src/tg/turn-dispatcher.ts` to own AgentRunner creation, MessageBuffer creation, runner disposal, and per-session fresh-turn queues for `Scheduler dispatches due turns through the per-session queue`.
-- [ ] Refactor `src/tg/intake.ts` to use the shared dispatcher while preserving text, media, command, and `/queue` behavior.
-- [ ] Update `src/tg/intake.test.ts` for the dispatcher extraction and shared ordering proof.
-- [ ] Run `bun test src/tg/intake.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Create `src/tg/turn-dispatcher.ts` to own AgentRunner creation, MessageBuffer creation, runner disposal, and per-session fresh-turn queues for `Scheduler dispatches due turns through the per-session queue`.
+- [x] Refactor `src/tg/intake.ts` to use the shared dispatcher while preserving text, media, command, and `/queue` behavior.
+- [x] Update `src/tg/intake.test.ts` for the dispatcher extraction and shared ordering proof.
+- [x] Run `bun test src/tg/intake.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 4: Add schedule command
 

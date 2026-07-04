@@ -62,9 +62,9 @@ Call `setMyCommands` once at startup with the registry-derived payload. This is 
   }
   ```
 - [x] Verify: `bun run src/index.ts` starts without errors; `setMyCommands` call fires (check logs for warning on failure)
-- [ ] Manual: open Telegram, type `/` in a DM with the bot — autocomplete menu shows the commands
-- [ ] Manual: `/help` reply text unchanged from before the refactor
-- [ ] Manual: `/v` still aliases `/voice` (voice note generated)
-- [ ] Manual: `/cancel` still interrupts an active turn
+- [x] Manual: open Telegram, type `/` in a DM with the bot — autocomplete menu shows the commands
+- [x] Manual: `/help` reply text unchanged from before the refactor
+- [x] Manual: `/v` still aliases `/voice` (voice note generated)
+- [x] Manual: `/cancel` still interrupts an active turn
 
 Implements spec requirement: **Telegram command menu is populated at startup**

@@ -48,4 +48,4 @@ Pruned two cases fully covered at the intake seam: "stale media work does not pr
 ## Phase 5: Verification
 
 - [x] `bun test` full suite green (894 pass / 0 fail at adoption time; 888 pass / 0 fail post-prune)
-- [ ] `bun run src/index.ts` boots and polls without errors (manual, post-prune)
+- [x] `bun run src/index.ts` boots and polls without errors (manual, post-prune)

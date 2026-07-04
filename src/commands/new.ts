@@ -11,9 +11,9 @@
  * operation and produces the reply text. Keeping side effects injectable
  * keeps the test surface trivial.
  *
- * Interrupt + cascade-cancel for an active stream happens *before* this
- * helper runs (see `interruptAndCascade` in `src/interrupt.ts`); /new
- * is registered in `CANCEL_CAPABLE_COMMANDS`.
+ * `/new` is a queue-timing command: if a turn is in flight, it defers
+ * behind it (so the runner is idle and the prior session's transcript is
+ * complete) before this helper runs. See `CommandTiming` in `registry.ts`.
  */
 
 import type { SessionState } from "../sessions/types.ts";

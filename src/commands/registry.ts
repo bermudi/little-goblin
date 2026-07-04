@@ -9,7 +9,7 @@ import type { ChatLocator, SessionManager, SessionState } from "../sessions/mod.
 import type { AgentRunner } from "../agent/mod.ts";
 import type { ResolvedModel } from "../agent/models.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
-import { DEFAULT_CASCADE_TIMEOUT_MS, interruptAndCascade, type CascadeResult } from "../interrupt.ts";
+import { DEFAULT_CASCADE_TIMEOUT_MS, interruptAndCascade } from "../interrupt.ts";
 import { generateDiagnostics } from "../diagnostics.ts";
 import { cancelReply } from "./cancel.ts";
 import { executeNew } from "./new.ts";
@@ -69,23 +69,32 @@ export interface DispatchOpts {
   bot?: Bot;
 }
 
-/**
- * Context passed to a dispatched command handler. Extends {@link DispatchOpts}
- * with the cascade result and a suffix builder computed by `handleCommand`
- * after the cancel-capable interrupt check.
- */
-export interface CommandContext extends DispatchOpts {
-  cascade: CascadeResult | null;
-  suffix: () => string;
-}
-
-export type CommandHandler = (ctx: CommandContext) => Promise<DispatchResult>;
+export type CommandHandler = (opts: DispatchOpts) => Promise<DispatchResult>;
 
 export type GrammyHandlerFactory = (deps: { manager: SessionManager }) => (ctx: Context) => Promise<void>;
 
 // ---------------------------------------------------------------------------
 // CommandDef
 // ---------------------------------------------------------------------------
+
+/**
+ * When a command runs relative to an in-flight turn.
+ *
+ * - `"instant"` — runs immediately, never touches the in-flight turn. Used by
+ *   read-only commands (lists, diagnostics) and commands whose effect is
+ *   independent of the runner's streaming state.
+ * - `"queue"` — if the runner is streaming, the command is deferred: the user
+ *   gets an instant "Queued." ack, and the command runs (with a follow-up
+ *   reply) once the turn settles naturally. If the runner is idle, runs
+ *   immediately. Used by state-mutating commands whose effects want the
+ *   runner idle (model switch, project rebind, archive, etc.).
+ * - `"interrupt"` — aborts the in-flight turn via `interruptAndCascade` before
+ *   running. Reserved for `/cancel`, whose entire semantics is "stop now."
+ *
+ * A function form lets a single command vary its timing by argument — e.g.
+ * `/model` (list) is instant, `/model 2` (switch) is queue.
+ */
+export type CommandTiming = "instant" | "queue" | "interrupt";
 
 export interface CommandDef {
   /** Canonical name without leading slash, e.g. "cancel". */
@@ -96,8 +105,11 @@ export interface CommandDef {
   aliases?: readonly string[];
   /** Argument placeholder shown in help, e.g. "<name>" or "[index]". */
   argsHint?: string;
-  /** True if the command triggers interrupt + cascade-cancel before executing. */
-  cancelCapable?: boolean;
+  /**
+   * When this command runs relative to an in-flight turn. Defaults to
+   * `"instant"`. See {@link CommandTiming}.
+   */
+  timing?: CommandTiming | ((rawText: string) => CommandTiming);
   /** Dispatched from the message:text handler. Mutually exclusive with grammyHandler. */
   handler?: CommandHandler;
   /** Registered via bot.command(). Mutually exclusive with handler. */
@@ -122,13 +134,24 @@ function errorMessage(err: unknown): string {
 // dispatch.ts switch verbatim.
 // ---------------------------------------------------------------------------
 
-const cancelHandler: CommandHandler = async ({ session, cascade }) => replied(cancelReply({
-  hasSession: session !== null,
-  cascade: cascade ?? { attemptedMain: false, attemptedSubagents: 0, timedOutMain: false, timedOutSubagents: 0 },
-  cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
-}));
+const cancelHandler: CommandHandler = async ({ deps, session, existingRunner }) => {
+  // /cancel is the sole interrupter: it aborts the in-flight turn itself,
+  // rather than relying on a dispatch pre-check. The cascade result drives
+  // the honest reply ("Cancelled." vs "Nothing to cancel." vs timeout suffix).
+  const cascade = await deps.interruptAndCascade(
+    existingRunner,
+    deps.subagentRunner,
+    DEFAULT_CASCADE_TIMEOUT_MS,
+    session?.id ?? null,
+  );
+  return replied(cancelReply({
+    hasSession: session !== null,
+    cascade,
+    cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
+  }));
+};
 
-const newHandler: CommandHandler = async ({ deps, locator, isSupergroup, session, suffix }) => {
+const newHandler: CommandHandler = async ({ deps, locator, isSupergroup, session }) => {
   const { manager } = deps;
   const sideEffects: SideEffect[] = [];
   const priorSession = session;
@@ -138,14 +161,14 @@ const newHandler: CommandHandler = async ({ deps, locator, isSupergroup, session
     });
     if (priorSession) sideEffects.push({ kind: "runner-disposed", sessionId: priorSession.id });
     sideEffects.push({ kind: "runner-created", session: result.session, locator });
-    return replied(`${result.reply}${suffix()}`, sideEffects);
+    return replied(result.reply, sideEffects);
   } catch (err) {
     log.error("new session creation failed", { error: String(err), sessionId: priorSession?.id });
     return replied("Failed to reset session. Please try again.");
   }
 };
 
-const archiveHandler: CommandHandler = async ({ deps, session, suffix }) => {
+const archiveHandler: CommandHandler = async ({ deps, session }) => {
   const { manager, cfg } = deps;
   const sideEffects: SideEffect[] = [];
   try {
@@ -157,14 +180,14 @@ const archiveHandler: CommandHandler = async ({ deps, session, suffix }) => {
         sideEffects.push({ kind: "runner-disposed", sessionId: session!.id });
       },
     });
-    return replied(`${result.reply}${suffix()}`, sideEffects);
+    return replied(result.reply, sideEffects);
   } catch (err) {
     log.error("archive failed", { error: String(err), sessionId: session?.id });
     return replied("Failed to archive session. Please try again.");
   }
 };
 
-const projectHandler: CommandHandler = async ({ deps, locator, session, rawText, suffix }) => {
+const projectHandler: CommandHandler = async ({ deps, locator, session, rawText }) => {
   const { manager } = deps;
   const sideEffects: SideEffect[] = [];
   try {
@@ -177,14 +200,14 @@ const projectHandler: CommandHandler = async ({ deps, locator, session, rawText,
         sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
       },
     });
-    return replied(`${result.reply}${suffix()}`, sideEffects);
+    return replied(result.reply, sideEffects);
   } catch (err) {
     log.error("project failed", { error: String(err), sessionId: session?.id });
     return replied("Failed to set project directory. Please try again.");
   }
 };
 
-const modelHandler: CommandHandler = async ({ deps, session, existingRunner, rawText, suffix }) => {
+const modelHandler: CommandHandler = async ({ deps, session, existingRunner, rawText }) => {
   const { manager, cfg } = deps;
   const sideEffects: SideEffect[] = [];
   try {
@@ -210,14 +233,14 @@ const modelHandler: CommandHandler = async ({ deps, session, existingRunner, raw
       const targetName = result.kind === "set" ? result.modelName : cfg.modelName;
       await existingRunner.setModel(targetName);
     }
-    return replied(`${result.reply}${suffix()}`, sideEffects);
+    return replied(result.reply, sideEffects);
   } catch (err) {
     log.error("model failed", { error: String(err), sessionId: session?.id });
     return replied("Failed to switch model. Please try again.");
   }
 };
 
-const thinkHandler: CommandHandler = async ({ deps, session, existingRunner, rawText, suffix }) => {
+const thinkHandler: CommandHandler = async ({ deps, session, existingRunner, rawText }) => {
   const { manager, cfg } = deps;
   try {
     const currentModelResolved = deps.tryResolveModel(cfg, session, existingRunner ?? undefined);
@@ -235,14 +258,14 @@ const thinkHandler: CommandHandler = async ({ deps, session, existingRunner, raw
         try { existingRunner?.setThinkingLevel(level); } catch { /* best-effort */ }
       },
     });
-    return replied(`${result.reply}${suffix()}`);
+    return replied(result.reply);
   } catch (err) {
     log.error("think failed", { error: String(err), sessionId: session?.id });
     return replied("Failed to set thinking level. Please try again.");
   }
 };
 
-const debugHandler: CommandHandler = async ({ deps, locator, session, existingRunner, suffix }) => {
+const debugHandler: CommandHandler = async ({ deps, locator, session, existingRunner }) => {
   const { manager, cfg, subagentRunner } = deps;
   if (!session) return replied("No active session.");
   const diag = generateDiagnostics({
@@ -253,20 +276,20 @@ const debugHandler: CommandHandler = async ({ deps, locator, session, existingRu
     modelName: cfg.modelName,
     projectDir: manager.getProjectDir(locator),
   });
-  return replied(`${diag}${suffix()}`);
+  return replied(diag);
 };
 
-const compactHandler: CommandHandler = async ({ session, existingRunner, rawText, suffix }) => {
+const compactHandler: CommandHandler = async ({ session, existingRunner, rawText }) => {
   try {
     const result = await executeCompact({ hasSession: session !== null, rawText, runner: existingRunner });
-    return replied(`${result.reply}${suffix()}`);
+    return replied(result.reply);
   } catch (err) {
     log.error("compact failed", { error: String(err), sessionId: session?.id });
     return replied("Failed to compact session. Please try again.");
   }
 };
 
-const nameHandler: CommandHandler = async ({ deps, session, rawText, suffix }) => {
+const nameHandler: CommandHandler = async ({ deps, session, rawText }) => {
   const { manager } = deps;
   try {
     const result = executeName({
@@ -278,14 +301,14 @@ const nameHandler: CommandHandler = async ({ deps, session, rawText, suffix }) =
         manager.setTitle(session.id, title);
       },
     });
-    return replied(`${result.reply}${suffix()}`);
+    return replied(result.reply);
   } catch (err) {
     log.error("name failed", { error: String(err), sessionId: session?.id });
     return replied("Failed to name session. Please try again.");
   }
 };
 
-const resumeHandler: CommandHandler = async ({ deps, locator, isSupergroup, session, rawText, suffix }) => {
+const resumeHandler: CommandHandler = async ({ deps, locator, isSupergroup, session, rawText }) => {
   const { manager } = deps;
   const sideEffects: SideEffect[] = [];
   try {
@@ -298,7 +321,7 @@ const resumeHandler: CommandHandler = async ({ deps, locator, isSupergroup, sess
       if (session) sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
       sideEffects.push({ kind: "runner-created", session: result.session, locator });
     }
-    return replied(`${result.reply}${suffix()}`, sideEffects);
+    return replied(result.reply, sideEffects);
   } catch (err) {
     log.error("resume failed", { error: String(err), sessionId: session?.id });
     return replied("Failed to resume session. Please try again.");
@@ -382,6 +405,15 @@ const queueHandler: CommandHandler = async ({ session, existingRunner, rawText }
 const pingGrammyFactory: GrammyHandlerFactory = () => pingHandler;
 const startGrammyFactory: GrammyHandlerFactory = ({ manager }) => buildStartHandler(manager);
 
+/**
+ * Timing predicate for argument-conditional commands: instant with no
+ * argument (list/show), queue with an argument (mutate). Used by `/model`
+ * and `/think`.
+ */
+function instantUnlessArg(rawText: string): CommandTiming {
+  return parseCommandArg(rawText) === "" ? "instant" : "queue";
+}
+
 // ---------------------------------------------------------------------------
 // COMMAND_REGISTRY — the single source of truth
 // ---------------------------------------------------------------------------
@@ -390,111 +422,119 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
   {
     name: "cancel",
     description: "abort the current turn (cascades to subagents)",
-    cancelCapable: true,
+    timing: "interrupt",
     handler: cancelHandler,
   },
   {
     name: "new",
     description: "reset this chat: archive the current session and start a fresh one",
-    cancelCapable: true,
+    timing: "queue",
     handler: newHandler,
   },
   {
     name: "archive",
     description: "archive the active session",
-    cancelCapable: true,
+    timing: "queue",
     handler: archiveHandler,
   },
   {
     name: "project",
     argsHint: "<dir>",
     description: "bind session to a project directory (or clear with /project)",
-    cancelCapable: true,
+    timing: "queue",
     handler: projectHandler,
   },
   {
     name: "model",
     argsHint: "[index]",
     description: "list favorite models or switch to one",
-    cancelCapable: true,
+    timing: instantUnlessArg,
     handler: modelHandler,
   },
   {
     name: "compact",
     argsHint: "[instructions]",
     description: "manually compact this session's context",
-    cancelCapable: true,
+    timing: "queue",
     handler: compactHandler,
   },
   {
     name: "debug",
     description: "dump session diagnostics",
-    cancelCapable: true,
+    timing: "instant",
     handler: debugHandler,
   },
   {
     name: "think",
     argsHint: "[level]",
     description: "show or set thinking level",
-    cancelCapable: true,
+    timing: instantUnlessArg,
     handler: thinkHandler,
   },
   {
     name: "name",
     argsHint: "<name>",
     description: "name the active session",
-    cancelCapable: true,
+    timing: "instant",
     handler: nameHandler,
   },
   {
     name: "resume",
     argsHint: "<id-or-name>",
     description: "bind this chat to an existing session",
-    cancelCapable: true,
+    timing: "queue",
     handler: resumeHandler,
   },
   {
     name: "subagents",
     description: "list tracked subagents",
+    timing: "instant",
     handler: subagentsHandler,
   },
   {
     name: "cancel_subagent",
     argsHint: "<id>",
     description: "cancel a single subagent",
+    timing: "instant",
     handler: cancelSubagentHandler,
   },
   {
     name: "revive",
     argsHint: "<id> <prompt>",
     description: "revive a persisted subagent with a follow-up prompt",
+    timing: "instant",
     handler: reviveHandler,
   },
   {
     name: "help",
     description: "show this list",
+    timing: "instant",
     handler: helpHandler,
   },
   {
     name: "voice",
     aliases: ["v"],
     description: "convert the last assistant message to a voice note",
+    timing: "instant",
     handler: voiceHandler,
   },
   {
     name: "queue",
     argsHint: "<text>",
     description: "enqueue text to run as a fresh turn after the current one settles",
+    timing: "instant",
     handler: queueHandler,
   },
   {
     name: "ping",
     description: "smoke-test: reply with pong and chat info",
+    timing: "instant",
     grammyHandler: pingGrammyFactory,
   },
   {
     name: "start",
     description: "start a new session (DMs only)",
+    timing: "instant",
     grammyHandler: startGrammyFactory,
   },
 ];
@@ -526,12 +566,16 @@ export function resolveCommand(token: string): CommandDef | null {
   return LOOKUP.get(key) ?? null;
 }
 
-/** Set of "/<name>" and "/<alias>" for every cancel-capable def. */
-export const CANCEL_CAPABLE_COMMANDS: Set<string> = new Set(
-  COMMAND_REGISTRY
-    .filter((def) => def.cancelCapable)
-    .flatMap((def) => [def.name, ...(def.aliases ?? [])].map((n) => `/${n}`)),
-);
+/**
+ * Resolve the timing of a command for a given rawText. Function-form timing
+ * (e.g. `/model` is instant with no arg, queue with an arg) is evaluated; a
+ * null def defaults to `"instant"`.
+ */
+export function resolveTiming(def: CommandDef | null, rawText: string): CommandTiming {
+  if (!def) return "instant";
+  if (typeof def.timing === "function") return def.timing(rawText);
+  return def.timing ?? "instant";
+}
 
 /**
  * Build the /help reply text from the registry. One line per def:

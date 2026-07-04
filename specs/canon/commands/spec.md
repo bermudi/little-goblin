@@ -4,13 +4,55 @@
 
 ### Requirement: Register command handlers on bot
 
-The system SHALL register command handlers in two locations: pure-helper commands (`/ping`, `/start`) via grammy's `bot.command()` middleware in `registerCommands()`, and session-affecting commands (`/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help`) inline in the `message:text` handler in `bot.ts` so they share interrupt semantics and can run even when no session is bound.
+The system SHALL register command handlers in two locations: pure-helper commands (`/ping`, `/start`) via grammy's `bot.command()` middleware in `registerCommands()`, and session-affecting commands (`/cancel`, `/new`, `/archive`, `/debug`, `/subagents`, `/cancel_subagent`, `/revive`, `/help`) inline in the `message:text` handler in `bot.ts` so they share timing semantics and can run even when no session is bound.
 
 #### Scenario: Bot initialized
 
 - **WHEN** `registerCommands()` is called with a Bot instance and SessionManager
 - **THEN** it SHALL register handlers for `/ping` and `/start` only
 - **AND** session-affecting commands SHALL be routed by `bot.ts`'s `message:text` handler
+
+### Requirement: Command timing classification
+
+Every command in `COMMAND_REGISTRY` SHALL declare a `timing` on its `CommandDef`, resolved by `resolveTiming(def, rawText)` into one of three values. Timing decides when a command runs relative to an in-flight turn:
+
+- **`instant`** — runs immediately, regardless of streaming state. Used by read-only commands (`/model` and `/think` with no argument, `/debug`, `/name`, `/subagents`, `/cancel_subagent`, `/revive`, `/help`, `/voice`, `/queue`, `/ping`, `/start`). Never aborts or defers.
+- **`queue`** — if the runner is streaming, the command is deferred: the user receives an instant `"Queued. Will run after this turn."` ack, and the command re-dispatches (and sends its follow-up reply) once the turn settles naturally via the per-session prompt queue. If the runner is idle, runs immediately. Used by state-mutating commands whose effects want the runner idle: `/new`, `/archive`, `/project`, `/model <arg>`, `/compact`, `/think <arg>`, `/resume`.
+- **`interrupt`** — aborts the in-flight turn via `interruptAndCascade` before executing. Reserved for `/cancel`, whose entire semantics is "stop the current turn now."
+
+A function-valued `timing` lets a single command vary by argument: `/model` and `/think` are `instant` with no argument (list/show) and `queue` with an argument (mutate).
+
+#### Scenario: Read-only command while streaming
+
+- **WHEN** an instant-timing command (e.g. `/model` with no argument) is sent while goblin is streaming
+- **THEN** the reply SHALL be sent immediately
+- **AND** the running turn SHALL NOT be aborted or deferred
+
+#### Scenario: State-mutating command while streaming
+
+- **WHEN** a queue-timing command (e.g. `/model 2`, `/archive`, `/project <dir>`) is sent while goblin is streaming
+- **THEN** an instant `"Queued. Will run after this turn."` ack SHALL be sent
+- **AND** the command SHALL be deferred behind the current turn via the per-session prompt queue
+- **AND** once the turn settles, the command SHALL re-dispatch and send a follow-up reply (e.g. `"Switched to \`poe/...\`"`, `"Session archived"`)
+- **AND** the running turn SHALL NOT be aborted
+
+#### Scenario: State-mutating command while idle
+
+- **WHEN** a queue-timing command is sent while goblin is idle
+- **THEN** it SHALL execute immediately and reply with its result
+
+#### Scenario: Argument-conditional timing
+
+- **WHEN** `/model` is sent with no argument
+- **THEN** it SHALL be instant-timing (list favorites)
+- **WHEN** `/model 2` is sent
+- **THEN** it SHALL be queue-timing (switch model)
+- **AND** the same rule SHALL apply to `/think` (no arg = instant, with arg = queue)
+
+#### Scenario: Deferred command respects staleness
+
+- **WHEN** a deferred command's turn settles but the runner has since been swapped (e.g. by a `/new` arriving mid-turn)
+- **THEN** the deferred command SHALL be a no-op (the `isCurrent()` gate drops it)
 
 ### Requirement: Implement /ping command
 
@@ -66,12 +108,13 @@ The system SHALL handle cases where chat context cannot be determined for `/star
 
 ### Requirement: Cancel command aborts current turn immediately
 
-The `/cancel` command SHALL call `AgentRunner.abort()` immediately, cancelling any in-flight streaming or tool execution.
+`/cancel` is the sole interrupt-timing command. It SHALL call `interruptAndCascade` itself (not via a dispatch pre-check), which calls `AgentRunner.abort()` and cascades to live subagents, cancelling any in-flight streaming or tool execution. Its reply is computed from the cascade result for honest reporting.
 
 #### Scenario: Cancel during streaming
 
 - **WHEN** `/cancel` is sent while goblin is streaming
-- **THEN** `runner.abort()` SHALL be called
+- **THEN** `runner.abort()` SHALL be called (via `interruptAndCascade`)
+- **AND** live subagents SHALL be aborted (cascade)
 - **AND** a "Cancelled" reply SHALL be sent
 
 #### Scenario: Cancel when idle
@@ -87,27 +130,27 @@ The `/cancel` command SHALL call `AgentRunner.abort()` immediately, cancelling a
 
 ### Requirement: New command resets the chat to a fresh session
 
-The `/new` command SHALL cancel any active turn, archive the chat's current session if one exists, create a fresh session bound to the same chat surface (DM, forum topic, or supergroup), and switch to it. The forum topic title MUST NOT be modified — the topic surface is user-owned per decision `topic-ui-is-user-owned` (0002).
+The `/new` command is queue-timing. If a turn is in flight, it SHALL defer behind it (acking "Queued.") so the prior session's transcript is complete before being archived. It SHALL archive the chat's current session if one exists, create a fresh session bound to the same chat surface (DM, forum topic, or supergroup), and switch to it. The forum topic title MUST NOT be modified — the topic surface is user-owned per decision `topic-ui-is-user-owned` (0002).
 
 #### Scenario: New during active turn
 
 - **WHEN** `/new` is sent while streaming
-- **THEN** the current turn SHALL be aborted (with cascade to subagents)
-- **AND** the existing session SHALL be archived
+- **THEN** the command SHALL be deferred behind the current turn (not aborted)
+- **AND** the existing session SHALL be archived once the turn settles
 - **AND** a new session SHALL be created and bound to the same chat surface
-- **AND** a reply SHALL include the new session ID
+- **AND** an instant "Queued." ack SHALL be sent, followed by the result reply after the turn
 
 #### Scenario: New when idle with prior session
 
 - **WHEN** `/new` is sent while idle and a session is already bound to the chat
-- **THEN** the existing session SHALL be archived without abort
+- **THEN** the existing session SHALL be archived
 - **AND** a new session SHALL be created and bound to the same chat surface
 - **AND** a reply SHALL include the new session ID
 
 #### Scenario: New in a forum topic
 
 - **WHEN** `/new` is sent in a forum topic
-- **THEN** the active turn SHALL be aborted (if streaming, with cascade to subagents)
+- **THEN** if streaming, the command SHALL defer behind the turn
 - **AND** the topic's existing session SHALL be archived
 - **AND** a fresh session SHALL be created and bound to the same `(chat, topic)`
 - **AND** the topic title MUST NOT be modified
@@ -119,15 +162,15 @@ The `/new` command SHALL cancel any active turn, archive the chat's current sess
 - **THEN** a new session SHALL be created (no archive step, since there is nothing to archive)
 - **AND** a reply SHALL include the new session ID
 
-### Requirement: Archive command cancels and archives session
+### Requirement: Archive command queues and archives session
 
-The `/archive` command SHALL cancel any active turn, move the current session to `sessions/archive/`, and clear the binding. The forum topic surface MUST NOT be mutated (no rename, no close, no icon change) — the topic is user-owned per decision `topic-ui-is-user-owned` (0002).
+The `/archive` command is queue-timing. If a turn is in flight, it SHALL defer behind it (acking "Queued.") so the transcript writer is quiescent before the session directory is renamed. It SHALL move the current session to `sessions/archive/`, and clear the binding. The forum topic surface MUST NOT be mutated (no rename, no close, no icon change) — the topic is user-owned per decision `topic-ui-is-user-owned` (0002).
 
 #### Scenario: Archive during streaming
 
 - **WHEN** `/archive` is sent while streaming
-- **THEN** the current turn SHALL be aborted (with cascade to subagents)
-- **AND** the session SHALL be archived
+- **THEN** the command SHALL be deferred behind the current turn (not aborted)
+- **AND** the session SHALL be archived once the turn settles
 
 #### Scenario: Archive in topic does not mutate topic UI
 
@@ -147,9 +190,9 @@ The `/archive` command SHALL cancel any active turn, move the current session to
 - **WHEN** `/archive` is sent in a DM with no active session
 - **THEN** a "No active session to archive" reply SHALL be sent
 
-### Requirement: Debug command cancels and dumps diagnostics
+### Requirement: Debug command dumps diagnostics
 
-The `/debug` command SHALL include the session name in its diagnostics output. `gatherDiagnostics` SHALL extract `deps.session.title ?? null` into a new `sessionName` field on the `Diagnostics` type. `formatDiagnostics` SHALL render `Session Name: <name>` immediately after `Session: <id>` when the name is present, and `Session Name: unavailable` when absent.
+The `/debug` command is instant-timing: it runs immediately regardless of streaming state and does not abort or defer the current turn. It SHALL include the session name in its diagnostics output. `gatherDiagnostics` SHALL extract `deps.session.title ?? null` into a new `sessionName` field on the `Diagnostics` type. `formatDiagnostics` SHALL render `Session Name: <name>` immediately after `Session: <id>` when the name is present, and `Session Name: unavailable` when absent.
 
 #### Scenario: Named session
 
@@ -213,7 +256,7 @@ The `/revive <id> <prompt>` command SHALL revive the subagent with the supplied 
 
 ### Requirement: Cancel cascades to all live subagents
 
-All cancel-capable commands (`/cancel`, `/new`, `/archive`, `/debug`, `/voice`, `/v`) SHALL abort all live subagents in addition to the main agent.
+`/cancel` is the sole interrupt-timing command; it SHALL abort all live subagents in addition to the main agent. No other command cascades — state-mutating commands (`/new`, `/archive`, `/project`, `/model <arg>`, `/compact`, `/think <arg>`, `/resume`) defer behind the turn instead of aborting, and subagents continue running until they finish or the session is disposed.
 
 #### Scenario: Cancel kills parent and subagents
 
@@ -227,27 +270,21 @@ All cancel-capable commands (`/cancel`, `/new`, `/archive`, `/debug`, `/voice`, 
 - **WHEN** `/cancel` is sent while goblin is streaming with no subagents
 - **THEN** only the main agent SHALL be aborted (cascade is a no-op)
 
-#### Scenario: /new cascades before creating session
+### Requirement: State-mutating commands queue behind the current turn
 
-- **WHEN** `/new` is sent while subagents are running
-- **THEN** all subagents SHALL be aborted before creating the new session
-- **AND** no orphan subagents SHALL reference the old session
-
-### Requirement: Commands use interrupt semantics not queue
-
-All session-affecting commands (`/new`, `/archive`, `/debug`, `/voice`, `/v`) SHALL cancel any active stream before executing.
+Queue-timing commands (`/new`, `/archive`, `/project`, `/model <arg>`, `/compact`, `/think <arg>`, `/resume`) SHALL defer behind an in-flight turn rather than aborting it. The deferral uses the existing per-session prompt queue (`prior.then(execute, execute)` chaining), so queued continuations run strictly after the turn settles in either outcome — at which point the runner is idle, the transcript writer is quiescent, and state mutations (model switch, project rebind, archive rename, compact) are safe by construction. If an earlier queued continuation swaps out the runner, later continuations for the stale runner SHALL be dropped by the current-runner guard. `/cancel` is the sole exception: it interrupts.
 
 #### Scenario: Rapid command spam
 
-- **WHEN** `/new` then `/archive` sent in quick succession
-- **THEN** each SHALL execute immediately, cancelling prior activity
-- **AND** the session SHALL be in `sessions/archive/`
-- **AND** the binding SHALL be cleared
-- **AND** no runner SHALL be active for that chat
+- **WHEN** `/new` then `/archive` are sent in quick succession while a turn is streaming
+- **THEN** each SHALL defer behind the turn (not abort it)
+- **AND** once the turn settles, `/new` SHALL execute first and bind a fresh session
+- **AND** `/archive` SHALL be dropped because its captured runner is no longer current
+- **AND** the fresh session SHALL remain bound
 
 ### Requirement: Cascade cancel is bounded by a timeout
 
-The cascade SHALL bound each individual `abort()`/`cancel()` call by a per-call timeout (default 5 seconds). A target whose abort does not resolve within the timeout SHALL be left alone (no kill-9 fallback per non-goal) but SHALL be reported in the cascade summary so the user-facing reply is honest about what may still be running.
+`/cancel`'s cascade (invoked via `interruptAndCascade`) SHALL bound each individual `abort()`/`cancel()` call by a per-call timeout (default 5 seconds). A target whose abort does not resolve within the timeout SHALL be left alone (no kill-9 fallback per non-goal) but SHALL be reported in the cascade summary so the user-facing reply is honest about what may still be running.
 
 #### Scenario: Stuck subagent does not block the command
 
@@ -274,7 +311,7 @@ The `/help` command SHALL reply with a list of all available commands.
 
 ### Requirement: Name command persists bound session title
 
-The `/name <name>` command SHALL cancel any active turn, require a bound session, and persist the provided name as the bound session's `SessionState.title`.
+The `/name <name>` command SHALL use instant timing, require a bound session, and persist the provided name as the bound session's `SessionState.title`.
 
 If no session is bound to the chat, the reply SHALL be "No active session to name."
 
@@ -298,7 +335,7 @@ If no name is provided, the reply SHALL be "Usage: /name <session name>".
 
 ### Requirement: Resume command binds chat to an existing resumable session
 
-The `/resume <id-or-name>` command SHALL cancel any active turn, find an existing resumable session by exact ID, unique ID prefix, or exact title, and bind the current Telegram surface to that session.
+The `/resume <id-or-name>` command SHALL use queue timing, find an existing resumable session by exact ID, unique ID prefix, or exact title, and bind the current Telegram surface to that session.
 
 The command SHALL NOT archive, delete, or mutate the previously bound session. If switching away from an in-memory runner, the old runner SHALL be disposed so future messages use the resumed session's runner.
 
@@ -363,19 +400,21 @@ Archived sessions under `sessions/archive/` SHALL NOT be considered by `/resume`
 - **AND** no resumable session has a title
 - **THEN** the reply SHALL say no named sessions exist yet
 
-### Requirement: Name and resume are cancel-capable commands
+### Requirement: Name and resume use the timing classification
 
-The `/name` and `/resume` commands SHALL be added to the cancel-capable command set in `bot.ts`, giving them the same interrupt semantics as `/model`, `/debug`, `/archive`, `/new`, `/compact`, and `/cancel`.
+The `/name` command is instant-timing: it runs immediately regardless of streaming state and does not abort or defer the turn. The `/resume` command is queue-timing: if a turn is in flight, it defers behind it (acking "Queued.") so the old session's transcript is complete and the runner is idle before the binding changes.
 
 #### Scenario: Resume during active turn
 
 - **WHEN** `/resume <target>` is sent while the agent is streaming
-- **THEN** the current turn SHALL be aborted with cascade before the binding changes
+- **THEN** the command SHALL be deferred behind the current turn (not aborted)
+- **AND** the binding SHALL change once the turn settles
 
 #### Scenario: Name during active turn
 
 - **WHEN** `/name <name>` is sent while the agent is streaming
-- **THEN** the current turn SHALL be aborted with cascade before the title changes
+- **THEN** the title SHALL be set immediately (instant-timing)
+- **AND** the running turn SHALL NOT be aborted or deferred
 
 ### Requirement: Help command lists name and resume
 
@@ -406,7 +445,7 @@ The `/new` command SHALL create a fresh session bound to the same chat surface. 
 
 ### Requirement: Compact command triggers manual context compaction
 
-The `/compact` command SHALL cancel any active turn (cancel-capable, same semantics as `/model` and `/debug`), invoke `AgentRunner.compact()`, and reply with the result. Optional trailing text SHALL be forwarded as `customInstructions` to pi's compaction (e.g. `/compact focus on the database schema decisions`).
+The `/compact` command is queue-timing. If a turn is in flight, it SHALL defer behind it (acking "Queued.") so the runner is idle before compaction rewrites the transcript. It SHALL invoke `AgentRunner.compact()`, and reply with the result. Optional trailing text SHALL be forwarded as `customInstructions` to pi's compaction (e.g. `/compact focus on the database schema decisions`).
 
 If no session is bound to the chat, the reply SHALL be "No active session to compact."
 
@@ -424,8 +463,9 @@ If compaction succeeds, the reply SHALL include `tokensBefore` from the result (
 #### Scenario: Compact during active turn
 
 - **WHEN** `/compact` is sent while the agent is streaming
-- **THEN** the current turn SHALL be aborted (with cascade to subagents)
-- **AND** `runner.compact()` SHALL be called after the abort completes
+- **THEN** the command SHALL be deferred behind the current turn (not aborted)
+- **AND** an instant "Queued." ack SHALL be sent
+- **AND** `runner.compact()` SHALL be called once the turn settles
 - **AND** a reply SHALL be sent with the compaction result
 
 #### Scenario: Compact with custom instructions
@@ -443,54 +483,46 @@ If compaction succeeds, the reply SHALL include `tokensBefore` from the result (
 - **WHEN** `/compact` is sent in a DM with no active session
 - **THEN** a reply SHALL say `"No active session to compact."`
 
-### Requirement: Compact command is registered as a cancel-capable command
+### Requirement: Command dispatch is Telegram-side-effect-free
 
-The `/compact` command SHALL be added to the `CANCEL_CAPABLE_COMMANDS` set in `bot.ts`, giving it the same interrupt semantics as `/model`, `/debug`, `/archive`, `/new`, and `/cancel`.
+The command dispatch in `bot.ts`'s `message:text` handler SHALL be implemented as `handleCommand(opts: DispatchOpts): Promise<DispatchResult>` exported from `src/commands/dispatch.ts`. Timing classification (`resolveTiming`) decides whether a command runs immediately, defers behind an in-flight turn (queue-timing), or interrupts it (interrupt-timing, `/cancel` only) — this decision happens in the caller (`intake.ts`) *before* `handleCommand` is invoked. `handleCommand` itself is timing-agnostic: it resolves the command's `CommandDef` and delegates to its handler. `/cancel`'s handler calls `interruptAndCascade` itself; no other handler interrupts.
 
-#### Scenario: Cancel-capable set includes /compact
-
-- **WHEN** the bot is initialized
-- **THEN** `CANCEL_CAPABLE_COMMANDS` SHALL contain `"/compact"`
-
-### Requirement: Cancel-capable command dispatch is Telegram-side-effect-free
-
-The cancel-capable command switch in `bot.ts`'s `message:text` handler SHALL be implemented as `handleCancelCapableCommand(opts: DispatchOpts): Promise<DispatchResult>` exported from `src/commands/dispatch.ts`. The function may call command executors that mutate session state through `SessionManager`, but it MUST NOT mutate the grammy `Context`, MUST NOT call `bot.api.*` methods, MUST NOT receive or touch the `agentRunners` map, and MUST NOT call `runner.dispose()` on any existing runner. It returns a structured result describing the Telegram replies and runner lifecycle side effects the caller must apply.
+The function may call command executors that mutate session state through `SessionManager`, but it MUST NOT mutate the grammy `Context`, MUST NOT call `bot.api.*` methods, MUST NOT receive or touch the `agentRunners` map, and MUST NOT call `runner.dispose()` on any existing runner. It returns a structured result describing the Telegram replies and runner lifecycle side effects the caller must apply.
 
 #### Scenario: Dispatch takes deps as a parameter
 
-- **WHEN** `handleCancelCapableCommand` is invoked
-- **THEN** it SHALL receive a `Deps` object that includes the `manager`, `subagentRunner`, `cfg`, and a `tryResolveModel` helper
-- **AND** it SHALL receive an `interruptAndCascade` reference that can be overridden in tests
-- **AND** the `Deps` object SHALL be the only way the function reaches into the bot's wiring state
+- **WHEN** `handleCommand` is invoked
+- **THEN** it SHALL receive a `DispatchDeps` object that includes the `manager`, `subagentRunner`, `cfg`, a `tryResolveModel` helper, and an `interruptAndCascade` reference that can be overridden in tests
+- **AND** the `DispatchDeps` object SHALL be the only way the function reaches into the bot's wiring state
 
 #### Scenario: Dispatch returns side effects, not direct mutations
 
-- **WHEN** `handleCancelCapableCommand` is invoked with a cancel-capable command (e.g. `/new`, `/archive`, `/model`)
+- **WHEN** `handleCommand` is invoked with a command (e.g. `/new`, `/archive`, `/model`)
 - **THEN** the returned `DispatchResult.reply` SHALL be the text to send back to the user
 - **AND** the returned `DispatchResult.sideEffects` SHALL describe runner-map mutations the caller must perform (e.g. `runner-created`, `runner-disposed`)
 - **AND** the function itself SHALL NOT mutate `runners`, SHALL NOT call `runner.dispose()`, and SHALL NOT send a `ctx.reply` — the caller does that
 
 #### Scenario: Unknown command returns fallthrough
 
-- **WHEN** `handleCancelCapableCommand` is invoked with a command that is not in its switch
+- **WHEN** `handleCommand` is invoked with a command that has no handler (or is unknown)
 - **THEN** the returned `DispatchResult.kind` SHALL be `"fallthrough"`
 - **AND** the caller SHALL continue to normal agent routing
 
-#### Scenario: Cascade interrupt is observable from dispatch
+#### Scenario: Only /cancel invokes the cascade
 
-- **WHEN** `handleCancelCapableCommand` is invoked for a cancel-capable command
-- **THEN** it SHALL call the injected `interruptAndCascade` with the existing runner (if any), the subagent runner, the cascade timeout, and the session id
-- **AND** the cascade `CascadeResult` SHALL be available to the command executor for honest timeout reporting in the reply text
+- **WHEN** `handleCommand` is invoked for `/cancel`
+- **THEN** the handler SHALL call the injected `interruptAndCascade` with the existing runner (if any), the subagent runner, the cascade timeout, and the session id
+- **AND** no other command handler SHALL call `interruptAndCascade`
 
 #### Scenario: Dispatch is testable in isolation
 
-- **WHEN** a unit test constructs a `Deps` bundle with fake `manager`, fake `subagentRunner`, and a stubbed `interruptAndCascade`
-- **THEN** `handleCancelCapableCommand` SHALL execute the dispatch logic without requiring a real grammy `Bot` instance, a real `SubagentRunner`, or any `bot.api.*` calls
+- **WHEN** a unit test constructs a `DispatchDeps` bundle with fake `manager`, fake `subagentRunner`, and a stubbed `interruptAndCascade`
+- **THEN** `handleCommand` SHALL execute the dispatch logic without requiring a real grammy `Bot` instance, a real `SubagentRunner`, or any `bot.api.*` calls
 - **AND** the test SHALL assert on the returned `DispatchResult` (reply text and side-effect list)
 
 ### Requirement: Queue command enqueues text for the next idle turn
 
-The `/queue <text>` command SHALL enqueue the supplied text via the per-session promise queue so it runs as a fresh turn via `AgentRunner.prompt()` only after the current turn (and any prior queued work) settles. It SHALL NOT abort the running turn. It is NOT a cancel-capable command.
+The `/queue <text>` command is instant-timing. It SHALL enqueue the supplied text via the per-session promise queue so it runs as a fresh turn via `AgentRunner.prompt()` only after the current turn (and any prior queued work) settles. It SHALL NOT abort the running turn.
 
 If no `<text>` is supplied, the reply SHALL be `"Usage: /queue <text>"` and nothing SHALL be enqueued.
 
@@ -523,9 +555,9 @@ If the runner is idle when `/queue` is handled, the supplied text SHALL run imme
 - **THEN** the reply SHALL be `"No active session."`
 - **AND** nothing SHALL be enqueued
 
-### Requirement: Queue command is not cancel-capable
+### Requirement: Queue command does not interrupt the running turn
 
-The `/queue` command SHALL NOT be a member of `CANCEL_CAPABLE_COMMANDS`. It SHALL NOT abort the running turn or cascade to subagents. It appends to the per-session queue behind the running turn, it does not interrupt it.
+The `/queue` command SHALL NOT abort the running turn or cascade to subagents. It appends to the per-session queue behind the running turn, it does not interrupt it.
 
 #### Scenario: Queue does not abort a running turn
 
@@ -546,7 +578,7 @@ The `/help` command SHALL list `/queue <text>` in the available command list.
 
 ### Requirement: Voice command converts last assistant message to speech
 
-The `/voice` and `/v` commands SHALL read the most recent assistant message from the session's `transcript.jsonl`, generate an MP3 voice file via Microsoft Edge TTS, and feed a synthetic prompt to the model instructing it to call `send_voice` with the generated audio path. The command SHALL be cancel-capable — it interrupts any active stream and cascades to subagents before executing.
+The `/voice` and `/v` commands SHALL read the most recent assistant message from the session's `transcript.jsonl`, generate an MP3 voice file via Microsoft Edge TTS, and feed a synthetic prompt to the model instructing it to call `send_voice` with the generated audio path. The command is instant-timing: it runs immediately and does not abort or defer the current turn.
 
 #### Scenario: Voice command with a prior assistant message
 
@@ -561,7 +593,7 @@ The `/voice` and `/v` commands SHALL read the most recent assistant message from
 #### Scenario: Voice command during active stream
 
 - **WHEN** `/voice` is sent while the agent is streaming
-- **THEN** the current stream SHALL be aborted with cascade to subagents
+- **THEN** the running turn SHALL NOT be aborted (instant-timing)
 - **AND** the last completed assistant message (from the transcript, not the in-progress partial) SHALL be used
 - **AND** voice generation SHALL proceed as in the idle case
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import {
   COMMAND_REGISTRY,
   resolveCommand,
-  CANCEL_CAPABLE_COMMANDS,
+  resolveTiming,
   helpReply,
   telegramBotCommands,
   syncTelegramMenu,
@@ -29,12 +29,9 @@ describe("COMMAND_REGISTRY structure", () => {
     }
   });
 
-  it("all cancelCapable defs have a handler (not grammyHandler)", () => {
+  it("every def declares timing", () => {
     for (const def of COMMAND_REGISTRY) {
-      if (def.cancelCapable) {
-        expect(def.handler).toBeDefined();
-        expect(def.grammyHandler).toBeUndefined();
-      }
+      expect(def.timing).toBeDefined();
     }
   });
 });
@@ -61,42 +58,46 @@ describe("resolveCommand", () => {
   });
 });
 
-describe("CANCEL_CAPABLE_COMMANDS", () => {
-  it("includes the expected cancel-capable commands", () => {
-    const expected = ["/cancel", "/new", "/archive", "/project", "/model", "/debug", "/compact", "/resume", "/name", "/think"];
-    for (const cmd of expected) {
-      expect(CANCEL_CAPABLE_COMMANDS.has(cmd)).toBe(true);
+describe("resolveTiming", () => {
+  it("/cancel is the sole interrupt-timing command", () => {
+    expect(resolveTiming(resolveCommand("/cancel"), "")).toBe("interrupt");
+    // No other command interrupts.
+    for (const def of COMMAND_REGISTRY) {
+      if (def.name === "cancel") continue;
+      // Static-timing commands: assert directly. Predicate-timing commands
+      // (model, think): assert their non-interrupt cases below.
+      if (typeof def.timing === "function") continue;
+      expect(def.timing ?? "instant").not.toBe("interrupt");
     }
   });
 
-  it("excludes /voice and /v", () => {
-    expect(CANCEL_CAPABLE_COMMANDS.has("/voice")).toBe(false);
-    expect(CANCEL_CAPABLE_COMMANDS.has("/v")).toBe(false);
-  });
-
-  it("excludes /queue", () => {
-    expect(CANCEL_CAPABLE_COMMANDS.has("/queue")).toBe(false);
-  });
-
-  it("excludes non-dispatched commands", () => {
-    expect(CANCEL_CAPABLE_COMMANDS.has("/ping")).toBe(false);
-    expect(CANCEL_CAPABLE_COMMANDS.has("/start")).toBe(false);
-    expect(CANCEL_CAPABLE_COMMANDS.has("/help")).toBe(false);
-    expect(CANCEL_CAPABLE_COMMANDS.has("/subagents")).toBe(false);
-    expect(CANCEL_CAPABLE_COMMANDS.has("/cancel_subagent")).toBe(false);
-    expect(CANCEL_CAPABLE_COMMANDS.has("/revive")).toBe(false);
-  });
-
-  it("every entry resolves to a cancelCapable def (aliases cascade correctly)", () => {
-    // If a cancel-capable def gets an alias, the alias MUST appear in
-    // CANCEL_CAPABLE_COMMANDS and resolveCommand of it MUST return a
-    // cancelCapable def — otherwise handleCommand would skip the cascade
-    // for the alias but run it for the canonical name.
-    for (const token of CANCEL_CAPABLE_COMMANDS) {
-      const def = resolveCommand(token);
-      expect(def).not.toBeNull();
-      expect(def?.cancelCapable).toBe(true);
+  it("state-mutating commands are queue-timing", () => {
+    for (const name of ["/new", "/archive", "/project", "/compact", "/resume"]) {
+      expect(resolveTiming(resolveCommand(name), name)).toBe("queue");
     }
+  });
+
+  it("/model is instant with no arg, queue with an arg", () => {
+    expect(resolveTiming(resolveCommand("/model"), "/model")).toBe("instant");
+    expect(resolveTiming(resolveCommand("/model"), "/model@bot")).toBe("instant");
+    expect(resolveTiming(resolveCommand("/model"), "/model 2")).toBe("queue");
+    expect(resolveTiming(resolveCommand("/model"), "/model poe/gpt-5")).toBe("queue");
+  });
+
+  it("/think is instant with no arg, queue with an arg", () => {
+    expect(resolveTiming(resolveCommand("/think"), "/think")).toBe("instant");
+    expect(resolveTiming(resolveCommand("/think"), "/think high")).toBe("queue");
+  });
+
+  it("read-only commands are instant", () => {
+    for (const name of ["/debug", "/name foo", "/subagents", "/help", "/queue x", "/voice"]) {
+      const token = name.split(" ")[0]!;
+      expect(resolveTiming(resolveCommand(token), name)).toBe("instant");
+    }
+  });
+
+  it("unknown commands default to instant", () => {
+    expect(resolveTiming(null, "/bogus")).toBe("instant");
   });
 });
 

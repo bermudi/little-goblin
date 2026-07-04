@@ -1,9 +1,11 @@
 /**
  * /cancel command response logic.
  *
- * The actual abort + cascade is performed by `interruptAndCascade`
- * (see `src/interrupt.ts`); this helper consumes its `CascadeResult`
- * and produces the reply text.
+ * `/cancel` is the sole interrupt-timing command: it aborts the in-flight
+ * turn itself (via `interruptAndCascade`, called from its own handler in
+ * `registry.ts`) and consumes the resulting `CascadeResult` to produce the
+ * reply text. No other command interrupts — state-mutating commands queue
+ * behind the turn instead.
  *
  * States:
  *   - nothing was running (no session AND no live subagents) → "Nothing to cancel."
@@ -38,10 +40,10 @@ export function cancelReply(args: CancelReplyArgs): string {
 }
 
 /**
- * Shared honest-timeout suffix for cancel-capable commands.
- * Returns "" when nothing timed out, otherwise a leading-space suffix
- * like ` (the main agent and 2 subagents didn't respond in 5s and may still be running.)`
- * suitable for appending to any base reply.
+ * Honest-timeout suffix appended to `/cancel`'s reply. Returns "" when
+ * nothing timed out, otherwise a leading-space suffix like
+ * ` (the main agent and 2 subagents didn't respond in 5s and may still be running.)`
+ * Only `/cancel` ever produces a cascade, so only `/cancel` ever appends this.
  */
 export function formatCascadeTimeoutSuffix(
   cascade: CascadeResult,

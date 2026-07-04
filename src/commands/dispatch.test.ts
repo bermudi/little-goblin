@@ -14,7 +14,7 @@ import {
   NO_SUBAGENTS_REPLY,
   REVIVE_SUBAGENT_USAGE_REPLY,
 } from "./subagents.ts";
-import { handleCommand, type DispatchDeps, type DispatchOpts, type DispatchResult, CANCEL_CAPABLE_COMMANDS } from "./dispatch.ts";
+import { handleCommand, type DispatchDeps, type DispatchOpts, type DispatchResult } from "./dispatch.ts";
 
 const dirs: string[] = [];
 
@@ -125,18 +125,27 @@ function expectReplied(result: DispatchResult): Extract<DispatchResult, { kind: 
 }
 
 describe("handleCommand", () => {
-  it("replies to /cancel with an active session", async () => {
-    const harness = makeHarness(baseCascade({ attemptedMain: true }));
+  it("replies to /cancel with an active session and invokes the cascade itself", async () => {
+    const cascade = baseCascade({ attemptedMain: true });
+    const harness = makeHarness(cascade);
     const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
-    const result = expectReplied(await dispatch({ command: "/cancel", session, runner: makeRunner(), harness }));
+    const runner = makeRunner(true); // streaming → cascade attempts the main runner
+    const result = expectReplied(await dispatch({ command: "/cancel", session, runner, harness }));
 
-    expect(result.reply).toBe(cancelReply({ hasSession: true, cascade: baseCascade({ attemptedMain: true }), cascadeTimeoutMs: 5_000 }));
+    expect(result.reply).toBe(cancelReply({ hasSession: true, cascade, cascadeTimeoutMs: 5_000 }));
     expect(result.sideEffects).toEqual([]);
+    // /cancel is self-contained: it calls interruptAndCascade, not a dispatch pre-check.
+    expect(harness.interrupt).toHaveBeenCalledWith(runner, expect.any(Object), 5_000, session.id);
   });
 
-  it("replies to /cancel without a session", async () => {
-    const result = expectReplied(await dispatch({ command: "/cancel" }));
+  it("replies to /cancel without a session (no cascade attempted)", async () => {
+    const cascade = baseCascade();
+    const harness = makeHarness(cascade);
+    const result = expectReplied(await dispatch({ command: "/cancel", harness }));
     expect(result.reply).toBe("Nothing to cancel.");
+    // Still invokes the cascade (with null session id) — but nothing was running,
+    // so the reply reflects "Nothing to cancel."
+    expect(harness.interrupt).toHaveBeenCalledWith(null, expect.any(Object), 5_000, null);
   });
 
   it("/new with a prior session disposes prior and creates a new runner", async () => {
@@ -362,11 +371,6 @@ describe("handleCommand", () => {
     expect(result.reply).toBe("Failed to revive subagent `missing`: Subagent not found");
   });
 
-  it("/voice is not cancel-capable", () => {
-    expect(CANCEL_CAPABLE_COMMANDS.has("/voice")).toBe(false);
-    expect(CANCEL_CAPABLE_COMMANDS.has("/v")).toBe(false);
-  });
-
   it("/voice returns handled when voice is sent", async () => {
     const harness = makeHarness();
     const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
@@ -415,10 +419,6 @@ describe("handleCommand", () => {
     });
     expect(harness.interrupt).not.toHaveBeenCalled();
   }, 60_000);
-
-  it("/queue is not cancel-capable", () => {
-    expect(CANCEL_CAPABLE_COMMANDS.has("/queue")).toBe(false);
-  });
 
   it("/help reply includes /queue <text>", async () => {
     const result = expectReplied(await dispatch({ command: "/help" }));
@@ -479,10 +479,19 @@ describe("handleCommand", () => {
     expect("ctx" in opts).toBe(false);
   });
 
-  it("appends cascade timeout suffixes to cancel-capable replies", async () => {
+  it("/cancel appends cascade timeout suffixes when subagents time out", async () => {
     const cascade = baseCascade({ attemptedSubagents: 1, timedOutSubagents: 1 });
     const harness = makeHarness(cascade);
-    const result = expectReplied(await dispatch({ command: "/new", harness }));
+    const result = expectReplied(await dispatch({ command: "/cancel", harness }));
     expect(result.reply).toContain(formatCascadeTimeoutSuffix(cascade, 5_000));
+  });
+
+  it("only /cancel ever cascades — state-mutating commands do not", async () => {
+    // Regression guard: before the timing refactor, /new (and 8 others) ran
+    // interruptAndCascade from a dispatch pre-check. Now only /cancel does.
+    // Drive a /new through dispatch with a cascade mock and confirm it's untouched.
+    const harness = makeHarness();
+    await dispatch({ command: "/new", harness });
+    expect(harness.interrupt).not.toHaveBeenCalled();
   });
 });

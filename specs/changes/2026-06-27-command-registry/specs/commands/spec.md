@@ -4,14 +4,14 @@
 
 ### Requirement: Command registry is single source of truth
 
-The system SHALL maintain a single `COMMAND_REGISTRY: readonly CommandDef[]` in `src/commands/registry.ts` as the source of truth for every slash command. Each `CommandDef` SHALL carry: canonical `name` (without leading slash), `description`, optional `aliases`, optional `argsHint`, `cancelCapable` flag, and exactly one of `handler` (a `CommandHandler` dispatched from the `message:text` path) or `grammyHandler` (a factory producing a grammy command handler registered via `bot.command()`).
+The system SHALL maintain a single `COMMAND_REGISTRY: readonly CommandDef[]` in `src/commands/registry.ts` as the source of truth for every slash command. Each `CommandDef` SHALL carry: canonical `name` (without leading slash), `description`, optional `aliases`, optional `argsHint`, a `timing` classification, and exactly one of `handler` (a `CommandHandler` dispatched from the `message:text` path) or `grammyHandler` (a factory producing a grammy command handler registered via `bot.command()`).
 
 Every consumer of the command set SHALL derive its data from `COMMAND_REGISTRY`:
 
 - `HELP_REPLY` SHALL be built from each def's `name`, `argsHint`, and `description`.
-- `CANCEL_CAPABLE_COMMANDS` SHALL be the set of `"/" + name` and `"/" + alias` for every def with `cancelCapable: true`.
+- `resolveTiming()` SHALL derive instant, queue, or interrupt behavior from each def's `timing` field.
 - `registerCommands()` SHALL iterate the `grammy` defs and call `bot.command(name, grammyHandler(...))` for each.
-- `handleCommand()` SHALL resolve the command token via `resolveCommand()`, run the cancel-capable cascade if the def is `cancelCapable`, and call `def.handler(...)`.
+- `handleCommand()` SHALL resolve the command token via `resolveCommand()` and call `def.handler(...)` for dispatched commands.
 - The Telegram `setMyCommands` payload SHALL be derived from the registry.
 
 Adding a new command SHALL require exactly one `CommandDef` entry. Adding an alias SHALL require only extending the `aliases` tuple on the existing `CommandDef`. No other file SHALL need editing for either operation (beyond the handler implementation itself for a new command).
@@ -20,7 +20,7 @@ Adding a new command SHALL require exactly one `CommandDef` entry. Adding an ali
 
 - **WHEN** a new slash command `/foo` is added
 - **THEN** exactly one `CommandDef` entry SHALL be added to `COMMAND_REGISTRY`
-- **AND** `HELP_REPLY`, `CANCEL_CAPABLE_COMMANDS` (if cancel-capable), `registerCommands()` (if grammy), `handleCommand()` dispatch, and the Telegram menu SHALL all reflect the new command without any further edits
+- **AND** `HELP_REPLY`, `resolveTiming()`, `registerCommands()` (if grammy), `handleCommand()` dispatch, and the Telegram menu SHALL all reflect the new command without any further edits
 
 #### Scenario: Adding an alias is one tuple edit
 
@@ -40,7 +40,7 @@ Adding a new command SHALL require exactly one `CommandDef` entry. Adding an ali
 
 - **WHEN** `COMMAND_REGISTRY` is loaded
 - **THEN** every def SHALL have exactly one of `handler` or `grammyHandler`
-- **AND** a def with `cancelCapable: true` SHALL have a `handler` (not `grammyHandler`), because cancel-capable commands dispatch from the `message:text` path
+- **AND** every def SHALL declare a `timing` classification
 
 #### Scenario: Resolve command by name or alias
 
@@ -70,7 +70,7 @@ The system SHALL call `bot.api.setMyCommands()` once at startup with a `BotComma
 
 ### Requirement: Register command handlers on bot
 
-The system SHALL register command handlers in two locations, both derived from `COMMAND_REGISTRY` in `src/commands/registry.ts`: pure-helper commands (`/ping`, `/start` — defs with a `grammyHandler`) via grammy's `bot.command()` middleware in `registerCommands()`, and session-affecting commands (defs with a `handler`) inline in the `message:text` handler in `bot.ts` so they share interrupt semantics and can run even when no session is bound. `registerCommands()` SHALL iterate the `grammy` defs and call `bot.command(name, grammyHandler(...))` for each — no command name SHALL be hardcoded in `registerCommands()`.
+The system SHALL register command handlers in two locations, both derived from `COMMAND_REGISTRY` in `src/commands/registry.ts`: pure-helper commands (`/ping`, `/start` — defs with a `grammyHandler`) via grammy's `bot.command()` middleware in `registerCommands()`, and session-affecting commands (defs with a `handler`) inline in the `message:text` handler in `bot.ts` so they share timing semantics and can run even when no session is bound. `registerCommands()` SHALL iterate the `grammy` defs and call `bot.command(name, grammyHandler(...))` for each — no command name SHALL be hardcoded in `registerCommands()`.
 
 #### Scenario: Bot initialized
 
@@ -98,9 +98,9 @@ The `/help` command SHALL reply with a list of all available commands. The reply
 - **WHEN** `/help` is sent
 - **THEN** the reply SHALL include `/queue <text>`
 
-### Requirement: Cancel-capable command dispatch is Telegram-side-effect-free
+### Requirement: Command dispatch is Telegram-side-effect-free
 
-The command dispatch in `bot.ts`'s `message:text` handler SHALL be implemented as `handleCommand(opts: DispatchOpts): Promise<DispatchResult>` exported from `src/commands/dispatch.ts`. The function SHALL resolve the command token via `resolveCommand()` from `src/commands/registry.ts`; if no def matches or the def has no `handler` (i.e. a grammy-only def), it SHALL return `{ kind: "fallthrough" }`. For cancel-capable defs, it SHALL run `interruptAndCascade` before calling `def.handler(...)`. The function may call command executors that mutate session state through `SessionManager`, but it MUST NOT mutate the grammy `Context`, MUST NOT call `bot.api.*` methods, MUST NOT receive or touch the `agentRunners` map, and MUST NOT call `runner.dispose()` on any existing runner. It returns a structured result describing the Telegram replies and runner lifecycle side effects the caller must apply.
+The command dispatch in `bot.ts`'s `message:text` handler SHALL be implemented as `handleCommand(opts: DispatchOpts): Promise<DispatchResult>` exported from `src/commands/dispatch.ts`. The function SHALL resolve the command token via `resolveCommand()` from `src/commands/registry.ts`; if no def matches or the def has no `handler` (i.e. a grammy-only def), it SHALL return `{ kind: "fallthrough" }`. `/cancel` SHALL own its own interrupt cascade inside its handler; dispatch itself SHALL call `def.handler(...)` without a timing pre-check. The function may call command executors that mutate session state through `SessionManager`, but it MUST NOT mutate the grammy `Context`, MUST NOT call `bot.api.*` methods, MUST NOT receive or touch the `agentRunners` map, and MUST NOT call `runner.dispose()` on any existing runner. It returns a structured result describing the Telegram replies and runner lifecycle side effects the caller must apply.
 
 #### Scenario: Dispatch takes deps as a parameter
 
@@ -111,7 +111,7 @@ The command dispatch in `bot.ts`'s `message:text` handler SHALL be implemented a
 
 #### Scenario: Dispatch returns side effects, not direct mutations
 
-- **WHEN** `handleCommand` is invoked with a cancel-capable command (e.g. `/new`, `/archive`, `/model`)
+- **WHEN** `handleCommand` is invoked with a dispatched command (e.g. `/new`, `/archive`, `/model`)
 - **THEN** the returned `DispatchResult.reply` SHALL be the text to send back to the user
 - **AND** the returned `DispatchResult.sideEffects` SHALL describe runner-map mutations the caller must perform (e.g. `runner-created`, `runner-disposed`)
 - **AND** the function itself SHALL NOT mutate `runners`, SHALL NOT call `runner.dispose()`, and SHALL NOT send a `ctx.reply` — the caller does that
@@ -122,11 +122,11 @@ The command dispatch in `bot.ts`'s `message:text` handler SHALL be implemented a
 - **THEN** the returned `DispatchResult.kind` SHALL be `"fallthrough"`
 - **AND** the caller SHALL continue to normal agent routing
 
-#### Scenario: Cascade interrupt is observable from dispatch
+#### Scenario: Cancel owns cascade interrupt
 
-- **WHEN** `handleCommand` is invoked for a cancel-capable command
-- **THEN** it SHALL call the injected `interruptAndCascade` with the existing runner (if any), the subagent runner, the cascade timeout, and the session id
-- **AND** the cascade `CascadeResult` SHALL be available to the command handler for honest timeout reporting in the reply text
+- **WHEN** `handleCommand` is invoked for `/cancel`
+- **THEN** the `/cancel` handler SHALL call the injected `interruptAndCascade` with the existing runner (if any), the subagent runner, the cascade timeout, and the session id
+- **AND** the cascade `CascadeResult` SHALL be used for honest timeout reporting in the reply text
 
 #### Scenario: Dispatch is testable in isolation
 
@@ -136,7 +136,7 @@ The command dispatch in `bot.ts`'s `message:text` handler SHALL be implemented a
 
 ### Requirement: Cancel cascades to all live subagents
 
-All cancel-capable commands — defined as the set of `CommandDef` entries with `cancelCapable: true` in `COMMAND_REGISTRY` — SHALL abort all live subagents in addition to the main agent. The specific command names in this set SHALL NOT be hardcoded in any spec or source file outside `COMMAND_REGISTRY`; the set is derived solely from the registry.
+`/cancel` is the sole interrupt-timing command; it SHALL abort all live subagents in addition to the main agent. No other command cascades — state-mutating commands defer behind the turn instead of aborting.
 
 #### Scenario: Cancel kills parent and subagents
 
@@ -150,43 +150,45 @@ All cancel-capable commands — defined as the set of `CommandDef` entries with 
 - **WHEN** `/cancel` is sent while goblin is streaming with no subagents
 - **THEN** only the main agent SHALL be aborted (cascade is a no-op)
 
-#### Scenario: /new cascades before creating session
+#### Scenario: State-mutating commands do not cascade
 
 - **WHEN** `/new` is sent while subagents are running
-- **THEN** all subagents SHALL be aborted before creating the new session
-- **AND** no orphan subagents SHALL reference the old session
+- **THEN** `/new` SHALL defer behind the active turn rather than cascading cancellation
+- **AND** subagents SHALL continue until they finish or the session is disposed
 
-### Requirement: Commands use interrupt semantics not queue
+### Requirement: State-mutating commands queue behind the current turn
 
-All cancel-capable commands — defined as the set of `CommandDef` entries with `cancelCapable: true` in `COMMAND_REGISTRY` — SHALL cancel any active stream before executing. The specific command names in this set SHALL NOT be hardcoded in any spec or source file outside `COMMAND_REGISTRY`; the set is derived solely from the registry.
+Queue-timing commands SHALL defer behind an in-flight turn rather than aborting it. If an earlier queued continuation swaps out the runner, later continuations for the stale runner SHALL be dropped by the current-runner guard. `/cancel` is the sole exception: it interrupts.
 
 #### Scenario: Rapid command spam
 
-- **WHEN** `/new` then `/archive` sent in quick succession
-- **THEN** each SHALL execute immediately, cancelling prior activity
-- **AND** the session SHALL be in `sessions/archive/`
-- **AND** the binding SHALL be cleared
-- **AND** no runner SHALL be active for that chat
+- **WHEN** `/new` then `/archive` are sent in quick succession while a turn is streaming
+- **THEN** each SHALL defer behind the turn (not abort it)
+- **AND** once the turn settles, `/new` SHALL execute first and bind a fresh session
+- **AND** `/archive` SHALL be dropped because its captured runner is no longer current
+- **AND** the fresh session SHALL remain bound
 
-### Requirement: Compact command is registered as a cancel-capable command
+### Requirement: Command timing classification
 
-The `/compact` command SHALL be a cancel-capable command — i.e. its `CommandDef` in `COMMAND_REGISTRY` SHALL have `cancelCapable: true`, so it appears in the registry-derived `CANCEL_CAPABLE_COMMANDS` set and receives the same interrupt semantics as `/model`, `/debug`, `/archive`, `/new`, and `/cancel`. The set SHALL NOT be hardcoded in `bot.ts`; it is derived solely from `COMMAND_REGISTRY` in `src/commands/registry.ts`.
+Every command in `COMMAND_REGISTRY` SHALL declare when it runs relative to an in-flight turn: `instant`, `queue`, or `interrupt`. `/compact` SHALL be queue-timing, so it defers behind an active turn instead of aborting it.
 
-#### Scenario: Cancel-capable set includes /compact
+#### Scenario: Compact is queue-timing
 
 - **WHEN** the bot is initialized
-- **THEN** `CANCEL_CAPABLE_COMMANDS` SHALL contain `"/compact"`
+- **THEN** `/compact` SHALL resolve to queue timing
 
-### Requirement: Name and resume are cancel-capable commands
+### Requirement: Name and resume use the timing classification
 
-The `/name` and `/resume` commands SHALL be cancel-capable commands — i.e. their `CommandDef` entries in `COMMAND_REGISTRY` SHALL have `cancelCapable: true`, so they appear in the registry-derived `CANCEL_CAPABLE_COMMANDS` set and receive the same interrupt semantics as `/model`, `/debug`, `/archive`, `/new`, `/compact`, and `/cancel`. The set SHALL NOT be hardcoded in `bot.ts`; it is derived solely from `COMMAND_REGISTRY` in `src/commands/registry.ts`.
+The `/name` command SHALL be instant-timing: it runs immediately regardless of streaming state and does not abort or defer the turn. The `/resume` command SHALL be queue-timing: if a turn is in flight, it defers behind it so the old session's transcript is complete and the runner is idle before the binding changes.
 
 #### Scenario: Resume during active turn
 
 - **WHEN** `/resume <target>` is sent while the agent is streaming
-- **THEN** the current turn SHALL be aborted with cascade before the binding changes
+- **THEN** the command SHALL be deferred behind the current turn (not aborted)
+- **AND** the binding SHALL change once the turn settles
 
 #### Scenario: Name during active turn
 
 - **WHEN** `/name <name>` is sent while the agent is streaming
-- **THEN** the current turn SHALL be aborted with cascade before the title changes
+- **THEN** the title SHALL be set immediately (instant-timing)
+- **AND** the running turn SHALL NOT be aborted or deferred

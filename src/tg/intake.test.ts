@@ -34,6 +34,7 @@ class MockAgentRunner {
   readonly followUp = mock(async (content: unknown) => {
     await MockAgentRunner.nextFollowUp?.(content);
   });
+  readonly setModel = mock(async (_name: string) => {});
   readonly dispose = mock(() => {});
   readonly abort = mock(async () => {
     this.streaming = false;
@@ -353,5 +354,192 @@ describe("Telegram intake", () => {
 
     // No fresh turn scheduled even after the first settles.
     expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues a state-mutating command behind an in-flight turn and runs it after", async () => {
+    // /model <n> is queue-timing: while streaming, it acks "Queued." and
+    // defers; once the turn settles it runs and sends the follow-up reply.
+    const cfg = makeConfig();
+    cfg.favorites = ["poe/GPT-4o"];
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const slow = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
+    };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    // Sanity: the turn is in flight.
+    expect(runners[0]!.isStreaming).toBe(true);
+
+    await intake.handleText(message, "/model 1");
+    await flushMicrotasks();
+
+    // Instant ack; the switch has NOT happened yet (runner still on old model).
+    expect(replies.at(-1)).toBe("Queued. Will run after this turn.");
+
+    // Release the turn. The deferred command re-dispatches and replies.
+    slow.resolve();
+    await waitFor(() => replies.at(-1)!.startsWith("Switched to"));
+    expect(replies.at(-1)).toContain("Switched to `poe/GPT-4o`");
+  });
+
+  it("runs an instant-timing command (read-only) while a turn is streaming", async () => {
+    // /model with no arg is instant: it lists favorites without touching the turn.
+    const cfg = makeConfig();
+    cfg.favorites = ["poe/GPT-4o"];
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const slow = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
+    };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    await intake.handleText(message, "/model");
+    await flushMicrotasks();
+
+    // The list reply lands instantly; the turn is still streaming, untouched.
+    expect(replies.at(-1)).toContain("Favorites:");
+    expect(runners[0]!.isStreaming).toBe(true);
+
+    slow.resolve();
+    await flushMicrotasks();
+  });
+
+  it("/cancel interrupts an in-flight turn rather than queueing", async () => {
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const slow = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
+    };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    await intake.handleText(message, "/cancel");
+    await flushMicrotasks();
+
+    // /cancel aborted the turn (MockAgentRunner.abort flips streaming false)
+    // and replied — no "Queued." ack.
+    expect(runners[0]!.abort).toHaveBeenCalledTimes(1);
+    expect(replies.at(-1)).toBe("Cancelled.");
+    expect(runners[0]!.isStreaming).toBe(false);
+
+    slow.resolve();
+    await flushMicrotasks();
+  });
+
+  it("orphans a later-deferred command when an earlier /new swaps the runner", async () => {
+    // When /new queues before /model, /new swaps out S1's runner before the
+    // deferred /model continuation runs. The isCurrent() guard then drops
+    // /model — setModel is not called and no "Switched to" reply arrives.
+    // This pins the documented behavior so a future change to stale-runner
+    // orphaning is intentional.
+    const cfg = makeConfig();
+    cfg.favorites = ["poe/GPT-4o"];
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const slow = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
+    };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    // /new FIRST: queues and will dispose S1 when it runs.
+    await intake.handleText(message, "/new");
+    await flushMicrotasks();
+    // /model SECOND: queues behind /new on the same chain.
+    await intake.handleText(message, "/model 1");
+    await flushMicrotasks();
+
+    slow.resolve();
+    await waitFor(() => replies.at(-1)!.includes("Created new session"));
+
+    // /new swapped the runner; the stale deferred /model never executed.
+    expect(runners[0]!.setModel).not.toHaveBeenCalled();
+    expect(replies.some((r) => r.startsWith("Switched to"))).toBe(false);
+  });
+
+  it("runs deferred commands in arrival order when the chain is intact", async () => {
+    // Inverse of the orphan test: when /model queues before /new, the chain
+    // preserves arrival order — /model runs first (S1 still current) and
+    // succeeds, THEN /new runs and creates S2. No command is dropped.
+    const cfg = makeConfig();
+    cfg.favorites = ["poe/GPT-4o"];
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const slow = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
+    };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    await intake.handleText(message, "/model 1");
+    await flushMicrotasks();
+    await intake.handleText(message, "/new");
+    await flushMicrotasks();
+
+    slow.resolve();
+    // /model succeeds first, then /new creates the second session.
+    await waitFor(() => replies.filter((r) => r.startsWith("Switched to")).length === 1);
+    await waitFor(() => replies.filter((r) => r.includes("Created new session")).length === 2);
+
+    expect(runners[0]!.setModel).toHaveBeenCalledTimes(1);
+    expect(replies.some((r) => r.startsWith("Switched to `poe/GPT-4o`"))).toBe(true);
+  });
+
+  it("surfaces a deferred command's handler failure as the canned reply", async () => {
+    // modelHandler catches internal errors and returns a canned "Failed to
+    // switch model." reply via the normal replied path — the deferred dispatch
+    // delivers it as the follow-up. This confirms deferred failures don't
+    // silently drop; the user sees the handler's error reply after the turn.
+    const cfg = makeConfig();
+    cfg.favorites = ["poe/GPT-4o"];
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const slow = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
+    };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    // setModel rejects; modelHandler's try/catch converts it to a canned reply.
+    runners[0]!.setModel.mockImplementationOnce(async () => {
+      throw new Error("provider key rejected");
+    });
+
+    await intake.handleText(message, "/model 1");
+    await flushMicrotasks();
+    expect(replies.at(-1)).toBe("Queued. Will run after this turn.");
+
+    slow.resolve();
+    await waitFor(() => replies.at(-1)!.startsWith("Failed"));
+
+    // The canned error reply arrives after the turn settles.
+    expect(replies.at(-1)).toBe("Failed to switch model. Please try again.");
   });
 });

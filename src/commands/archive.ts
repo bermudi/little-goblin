@@ -12,8 +12,9 @@
  *     `sessions/<id>/` is gone       → "Session already archived."
  *   - normal path                    → call archive(), reply success
  *
- * Interrupt + cascade-cancel for an active stream happens *before* this
- * helper runs; `/archive` is in `CANCEL_CAPABLE_COMMANDS`.
+ * `/archive` is a queue-timing command: if a turn is in flight, it defers
+ * behind it (so the runner is idle and the transcript writer is quiescent)
+ * before this helper runs. See `CommandTiming` in `registry.ts`.
  */
 
 export interface ArchiveCommandDeps {

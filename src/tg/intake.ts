@@ -9,6 +9,7 @@ import { AgentRunner, ModelNotCapableError } from "../agent/mod.ts";
 import { resolveModel, type ResolvedModel } from "../agent/models.ts";
 import { handleCommand, type DispatchDeps } from "../commands/dispatch.ts";
 import { parseCommand } from "../commands/parse.ts";
+import { resolveCommand, resolveTiming, type SideEffect } from "../commands/registry.ts";
 import { interruptAndCascade } from "../interrupt.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
@@ -296,6 +297,89 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     );
   }
 
+  /**
+   * Apply the side effects returned by `handleCommand`. Shared between the
+   * immediate-dispatch path and the deferred (queued-behind-turn) path so the
+   * semantics stay identical: create runners, dispose runners (severing their
+   * prompt queue chain), or enqueue a fresh prompt.
+   */
+  function applySideEffects(sideEffects: SideEffect[], message: TelegramIntakeMessage, locator: ChatLocator): void {
+    for (const effect of sideEffects) {
+      if (effect.kind === "runner-created") {
+        runners.set(effect.session.id, createRunner(effect.session, effect.locator, message));
+        log.debug("created runner", { sessionId: effect.session.id });
+      } else if (effect.kind === "runner-disposed") {
+        promptQueues.delete(effect.sessionId);
+        const prior = runners.get(effect.sessionId);
+        if (prior) {
+          try {
+            prior.dispose();
+          } finally {
+            runners.delete(effect.sessionId);
+          }
+        } else {
+          runners.delete(effect.sessionId);
+        }
+      } else if (effect.kind === "queue-prompt") {
+        const queueRunner = getOrCreateRunner(effect.session, locator, message);
+        scheduleFreshTurn(message, locator, effect.session, queueRunner, effect.text, "queued prompt failed");
+      }
+    }
+  }
+
+  /**
+   * Defer a state-mutating command behind the current turn. Hooks into the
+   * same per-session `schedulePrompt` chain that serializes prompts, so the
+   * command runs strictly after the in-flight turn settles (success or error)
+   * and the runner is idle. The user has already received an instant "Queued."
+   * ack; this re-dispatches the command once idle and sends the follow-up reply.
+   *
+   * The `isCurrent()` staleness gate makes this a no-op if the runner gets
+   * swapped (e.g. by a `/new` arriving mid-turn) before the deferred work runs.
+   */
+  function scheduleDeferredCommand(
+    message: TelegramIntakeMessage,
+    locator: ChatLocator,
+    session: SessionState,
+    runner: AgentRunner,
+    rawText: string,
+    command: string,
+  ): void {
+    schedulePrompt(
+      session,
+      runner,
+      async (isCurrent) => {
+        if (!isCurrent()) return;
+        // Re-resolve the runner: a queued `/new` or `/resume` in the same
+        // chain may have swapped it. If it's gone, the turn's session is no
+        // longer bound here, so drop the deferred command.
+        const currentRunner = runners.get(session.id);
+        if (!currentRunner) return;
+        const result = await handleCommand({
+          command,
+          deps: dispatchDeps,
+          rawText,
+          locator,
+          isSupergroup: message.isSupergroup,
+          session,
+          existingRunner: currentRunner,
+          bot,
+        });
+        if (!isCurrent()) return;
+        // Queue-timing commands always have a handler, so fallthrough is
+        // impossible here — but narrow for the typechecker regardless.
+        if (result.kind === "fallthrough") return;
+        applySideEffects(result.sideEffects, message, locator);
+        if (result.kind === "replied") await message.reply(result.reply);
+      },
+      async (err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error("deferred command failed", { error: msg, command, sessionId: session.id });
+        await message.reply(`/${command} failed after the turn: ${msg}`).catch(() => {});
+      },
+    );
+  }
+
   function steerOrFallbackToFreshTurn(
     message: TelegramIntakeMessage,
     locator: ChatLocator,
@@ -370,6 +454,19 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const existingRunner = session ? runners.get(session.id) ?? null : null;
     const command = parseCommand(rawText);
     if (command !== null) {
+      const def = resolveCommand(command);
+      const timing = resolveTiming(def, rawText ?? "");
+
+      // Queue-timing commands defer behind an in-flight turn so the runner is
+      // idle when they mutate state (model switch, project rebind, archive,
+      // compact, etc.). Interrupt-timing (/cancel) and instant-timing
+      // commands run immediately regardless of streaming state.
+      if (timing === "queue" && session && existingRunner?.isStreaming) {
+        await message.reply("Queued. Will run after this turn.");
+        scheduleDeferredCommand(message, locator, session, existingRunner, rawText ?? "", command);
+        return;
+      }
+
       try {
         const result = await handleCommand({
           command,
@@ -382,27 +479,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           bot,
         });
         if (result.kind !== "fallthrough") {
-          for (const effect of result.sideEffects) {
-            if (effect.kind === "runner-created") {
-              runners.set(effect.session.id, createRunner(effect.session, effect.locator, message));
-              log.debug("created runner", { sessionId: effect.session.id });
-            } else if (effect.kind === "runner-disposed") {
-              promptQueues.delete(effect.sessionId);
-              const prior = runners.get(effect.sessionId);
-              if (prior) {
-                try {
-                  prior.dispose();
-                } finally {
-                  runners.delete(effect.sessionId);
-                }
-              } else {
-                runners.delete(effect.sessionId);
-              }
-            } else if (effect.kind === "queue-prompt") {
-              const queueRunner = getOrCreateRunner(effect.session, locator, message);
-              scheduleFreshTurn(message, locator, effect.session, queueRunner, effect.text, "queued prompt failed");
-            }
-          }
+          applySideEffects(result.sideEffects, message, locator);
           if (result.kind === "handled") return;
           await message.reply(result.reply);
           return;

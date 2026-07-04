@@ -19,6 +19,13 @@ The intake module SHALL transcribe Telegram voice messages with the configured G
 - **THEN** intake SHALL prompt the runner with the transcript
 - **AND** SHALL NOT reply with `No project directory is set. Use /project <path> to enable file saving.`
 
+#### Scenario: Voice message with missing mimeType defaults to audio/ogg
+
+- **WHEN** a Telegram voice update arrives with no `voice.mimeType`
+- **AND** Groq transcription succeeds
+- **THEN** intake SHALL default the mime type to `audio/ogg` and proceed with transcription
+- **AND** SHALL NOT reject the message or reply with an error solely due to the missing mime type
+
 #### Scenario: Empty transcript is not prompted
 
 - **WHEN** the ASR module returns `{ ok: true, text: "" }` (successful HTTP response with empty or whitespace-only transcript)
@@ -57,12 +64,7 @@ For sessions with a bound `projectDir`, voice intake SHALL preserve the existing
 
 For document, voice, and audio updates on a session with a bound `projectDir`, the intake module SHALL download the file, normalize its name, and write it into the project directory. Names SHALL be reduced with `basename`; document and audio names that normalize to `.` or `..` SHALL be rejected with a reply. Voice files SHALL be named `voice-<timestamp>.<ext>` derived from the mime type (`audio/ogg` → `oga`, else `bin`). After saving, intake SHALL reply with the saved name. Documents and audio SHALL prompt the runner with the caption or saved-file description as before. Voice SHALL prompt the runner with a Groq ASR transcript plus a saved-file note when transcription succeeds. On a session without a `projectDir`, document and audio behavior is unchanged; voice SHALL use Groq ASR when configured and SHALL only reply with a setup/failure message when transcription cannot run.
 
-#### Scenario: Document saved with caption
-
-- **WHEN** a document update arrives on a session with a `projectDir` and a caption
-- **THEN** intake SHALL write the file under its normalized name
-- **AND** SHALL reply `Saved <name>.`
-- **AND** SHALL prompt the runner with the caption followed by a note that the file was saved
+> **Note:** The document and audio scenarios below are restated canon (existing implemented behavior) and are not modified by this change. Only the voice-specific scenarios are new.
 
 #### Scenario: Voice saved with transcript
 
@@ -77,26 +79,3 @@ For document, voice, and audio updates on a session with a bound `projectDir`, t
 - **AND** Groq transcription succeeds
 - **THEN** intake SHALL prompt the runner with `[Voice message transcript]` and the transcript
 - **AND** SHALL NOT require project-file saving
-
-#### Scenario: Audio without a file name derives one
-
-- **WHEN** an audio update arrives with no `file_name` but a performer and title
-- **THEN** intake SHALL derive `<performer> - <title>.mp3`
-
-#### Scenario: Unsafe document name is rejected
-
-- **WHEN** a document name normalizes to `.` or `..`
-- **THEN** intake SHALL reply `Rejected: unsafe filename.`
-- **AND** SHALL NOT write a file
-
-#### Scenario: Document without projectDir but with caption
-
-- **WHEN** a document update arrives on a session with no `projectDir` and a caption
-- **THEN** intake SHALL prompt the runner with the caption
-- **AND** SHALL NOT reply with the no-`projectDir` message
-
-#### Scenario: Media without projectDir or caption
-
-- **WHEN** a document or audio update arrives on a session with no `projectDir` and no caption
-- **THEN** intake SHALL reply `No project directory is set. Use /project <path> to enable file saving.`
-- **AND** SHALL NOT prompt the runner

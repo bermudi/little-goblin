@@ -81,7 +81,7 @@ Relates to `Groq ASR configuration`.
 
 ### `src/config.ts`
 
-Extend `Config` with `groqApiKey?: string` and `asrModel`. Populate both from parsed config.
+Extend `Config` with `groqApiKey?: string` and `asrModel`. Populate both from parsed config. `groqApiKey` is resolved through the existing config loader's env-reference resolution (`resolveConfigValue`): if `goblin.json5` contains `groqApiKey: "GROQ_API_KEY"`, the loader resolves it from `process.env.GROQ_API_KEY` before validation. No new resolution code is needed.
 
 Relates to `Groq ASR configuration` and `Groq ASR setup failure does not block startup`.
 
@@ -125,7 +125,7 @@ New behavior:
 
 - download bytes before both ASR and optional saving;
 - return a setup reply if `cfg.groqApiKey` is absent;
-- call the ASR module with `cfg.groqApiKey`, `cfg.asrModel`, `voice.mimeType`, and downloaded bytes;
+- call the ASR module with `cfg.groqApiKey`, `cfg.asrModel`, `voice.mimeType`, and downloaded bytes; if `voice.mimeType` is absent, default to `audio/ogg` (Telegram voice messages are OGG Opus by default);
 - on `{ ok: false, error }`, reply that the voice message could not be transcribed (without echoing secrets);
 - on `{ ok: true, text }` where `text` is empty or whitespace-only, reply that no speech was detected (intake owns the empty-text check, not ASR);
 - on `{ ok: true, text }` with non-empty text, build transcript prompt for no-projectDir sessions;

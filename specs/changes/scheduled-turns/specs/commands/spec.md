@@ -4,7 +4,7 @@
 
 ### Requirement: Schedule command manages explicit scheduled turns
 
-The `/schedule` command SHALL manage explicit scheduled turns for the active session. It SHALL support `list`, `at`, `every`, `remove`, `pause`, and `resume` subcommands. Creating or mutating schedules SHALL require an active session. The command SHALL be instant-timing because it only mutates the schedule store and does not touch the in-flight runner.
+The `/schedule` command SHALL manage explicit scheduled turns for the active session. It SHALL support `list`, `at`, `in`, `every`, `remove`, `pause`, and `resume` subcommands. Creating or mutating schedules SHALL require an active session. The command SHALL be instant-timing because it only mutates the schedule store and does not touch the in-flight runner.
 
 #### Scenario: Schedule one-shot prompt
 
@@ -48,6 +48,18 @@ The `/schedule` command SHALL manage explicit scheduled turns for the active ses
 - **THEN** Goblin SHALL reply that no matching schedule was found
 - **AND** SHALL NOT modify the schedule
 
+#### Scenario: Pause of schedule owned by another session
+
+- **WHEN** `/schedule pause abc123` is sent and schedule `abc123` exists but belongs to a different session
+- **THEN** Goblin SHALL reply that no matching schedule was found
+- **AND** SHALL NOT modify the schedule
+
+#### Scenario: Resume of schedule owned by another session
+
+- **WHEN** `/schedule resume abc123` is sent and schedule `abc123` exists but belongs to a different session
+- **THEN** Goblin SHALL reply that no matching schedule was found
+- **AND** SHALL NOT modify the schedule
+
 #### Scenario: Schedule requires active session
 
 - **WHEN** `/schedule list` or `/schedule every 1h hello` is sent in a DM with no active session
@@ -72,6 +84,18 @@ The `/schedule` command SHALL accept a small documented set of time expressions:
 
 - **WHEN** `/schedule at 2000-01-01T00:00:00Z check backups` is sent
 - **THEN** Goblin SHALL reject the schedule as being in the past
+
+#### Scenario: Invalid ISO timestamp rejected
+
+- **WHEN** `/schedule at not-a-timestamp check backups` is sent
+- **THEN** Goblin SHALL reply with usage information
+- **AND** SHALL NOT create a schedule
+
+#### Scenario: Invalid relative duration rejected
+
+- **WHEN** `/schedule in soon stretch your legs` is sent
+- **THEN** Goblin SHALL reply with usage information
+- **AND** SHALL NOT create a schedule
 
 ### Requirement: Schedule command manages heartbeat
 

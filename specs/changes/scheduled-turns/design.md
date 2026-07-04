@@ -160,7 +160,7 @@ Create schedule types:
 
 - `ScheduleKind = "once" | "recurring" | "heartbeat"`
 - `ScheduleState = "enabled" | "disabled" | "completed"`
-- `ScheduledTurn`
+- `ScheduledTurn` — full field list: `id: string`, `sessionId: string`, `locator: ChatLocator`, `kind: ScheduleKind`, `prompt: string | null` (null for heartbeat; user text for once/recurring), `enabled: boolean`, `nextRunAt: string` (ISO-8601), `intervalMs?: number` (recurring/heartbeat only), `createdAt: string` (ISO-8601), `lastRun?: LastRunStatus`
 - `ScheduleStoreFile`
 - `LastRunStatus = { at: string; outcome: "ok" | "binding-mismatch" | "archived" | "error"; message?: string }`
 

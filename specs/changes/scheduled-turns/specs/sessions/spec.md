@@ -4,7 +4,7 @@
 
 ### Requirement: Persist scheduled turn definitions
 
-The system SHALL persist scheduled turn definitions in a JSON file under `GOBLIN_HOME` using atomic write semantics. Each schedule SHALL contain an id, session id, captured `ChatLocator`, kind, prompt text, enabled state, next run timestamp, optional recurrence interval, creation timestamp, and optional last-run metadata. The schedule store MUST NOT live inside an individual session directory, because schedules need to be discoverable at startup before any runner is created.
+The system SHALL persist scheduled turn definitions in a JSON file under `GOBLIN_HOME` using atomic write semantics. Each schedule SHALL contain an id, session id, captured `ChatLocator`, kind, enabled state, next run timestamp, optional recurrence interval, creation timestamp, and optional last-run metadata. One-shot and recurring schedules SHALL additionally store user-supplied prompt text; heartbeat schedules SHALL store no user prompt text (the heartbeat prompt is a system-owned constant defined in the scheduler loop). The schedule store MUST NOT live inside an individual session directory, because schedules need to be discoverable at startup before any runner is created.
 
 #### Scenario: One-shot schedule persisted
 

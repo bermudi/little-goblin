@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "./manager.ts";
@@ -380,6 +380,85 @@ describe("SessionManager", () => {
 
     it("throws when session does not exist", () => {
       expect(() => manager.bindExistingToChat("nonexistent", { chatId: 1 })).toThrow(/session not found/);
+    });
+  });
+
+  describe("peekBinding", () => {
+    it("returns the bound session id and state for a DM", () => {
+      const loc: ChatLocator = { chatId: 42 };
+      const created = manager.createForChat(loc);
+
+      const peeked = manager.peekBinding(loc);
+      expect(peeked).not.toBeNull();
+      expect(peeked!.sessionId).toBe(created.id);
+      expect(peeked!.state.id).toBe(created.id);
+    });
+
+    it("returns null on missing binding (DM with no session)", () => {
+      expect(manager.peekBinding({ chatId: 999 })).toBeNull();
+    });
+
+    it("returns null for an unbound topic locator without auto-creating", () => {
+      const loc: ChatLocator = { chatId: 5, topicId: 9 };
+      expect(manager.peekBinding(loc)).toBeNull();
+
+      // Critical: peekBinding MUST NOT auto-create. Assert no session
+      // subdirectory and no binding entries appeared (manager.init() creates
+      // the empty sessions/ dir, so we check its contents).
+      expect(readdirSync(join(tmpDir, "sessions"))).toEqual([]);
+      expect(existsSync(join(tmpDir, "config.json"))).toBe(false);
+    });
+
+    it("returns the bound session for a topic locator without mutating", () => {
+      const loc: ChatLocator = { chatId: 5, topicId: 9 };
+      const created = manager.createForChat(loc);
+
+      const peeked = manager.peekBinding(loc);
+      expect(peeked!.sessionId).toBe(created.id);
+
+      // Second peek is idempotent — no new sessions created
+      const peeked2 = manager.peekBinding(loc);
+      expect(peeked2!.sessionId).toBe(created.id);
+    });
+
+    it("returns null for a supergroup locator without auto-creating", () => {
+      const loc: ChatLocator = { chatId: 777 };
+      expect(manager.peekBinding(loc)).toBeNull();
+      expect(readdirSync(join(tmpDir, "sessions"))).toEqual([]);
+    });
+
+    it("returns null when the bound state is missing (archived session)", () => {
+      const loc: ChatLocator = { chatId: 42 };
+      const created = manager.createForChat(loc);
+      manager.archive(created.id);
+
+      // Archive clears the DM binding, so peekBinding sees nothing.
+      expect(manager.peekBinding(loc)).toBeNull();
+    });
+
+    it("returns null when binding exists but state.json is missing", () => {
+      const loc: ChatLocator = { chatId: 42 };
+      const created = manager.createForChat(loc);
+      // Leave the binding intact, delete state.json to simulate a dangling binding
+      unlinkSync(join(tmpDir, "sessions", created.id, "state.json"));
+
+      expect(manager.peekBinding(loc)).toBeNull();
+    });
+
+    it("does not auto-create on stale topic binding (unlike resolve)", () => {
+      const loc: ChatLocator = { chatId: 100, topicId: 7 };
+      const created = manager.createForChat(loc);
+      unlinkSync(join(tmpDir, "sessions", created.id, "state.json"));
+
+      // peekBinding must return null and MUST NOT recreate the session.
+      expect(manager.peekBinding(loc)).toBeNull();
+
+      // The topic binding still references the old (now-stateless) session,
+      // and no new session directory was created — only the original (now
+      // stateless) dir remains.
+      const config = JSON.parse(readFileSync(join(tmpDir, "config.json"), "utf-8")) as BindingsFile;
+      expect(config.topics?.["100"]?.["7"]).toBe(created.id);
+      expect(readdirSync(join(tmpDir, "sessions"))).toEqual([created.id]);
     });
   });
 });

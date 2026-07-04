@@ -2,17 +2,17 @@
 
 ## Phase 1: Add schedule store
 
-- [ ] Add `schedulesPath(home)` to `src/sessions/paths.ts` returning `join(home, "schedules.json")` for `Persist scheduled turn definitions`.
-- [ ] Add `peekBinding(loc)` to `src/sessions/manager.ts` — non-mutating binding read for `Scheduled turns stay bound to their captured session surface`.
-- [ ] Add `src/sessions/manager.test.ts` coverage for `peekBinding` returning bound state, returning null on missing binding, and not auto-creating for topic/supergroup locators.
-- [ ] Create `src/scheduler/types.ts` with schedule, heartbeat, and last-run status types (including `LastRunStatus = { at: string; outcome: "ok" | "binding-mismatch" | "archived" | "error"; message?: string }`) for `Persist scheduled turn definitions`.
-- [ ] Create `src/scheduler/store.ts` backed by `schedulesPath(home)` with atomic load/save and missing/malformed-file handling.
-- [ ] Implement create/list/remove/pause/resume, heartbeat enable/disable/status, and due-claim operations in `ScheduleStore`.
-- [ ] Implement `makeScheduleId()` reusing the `randomUUID().replace(/-/g, "").slice(0, 10)` scheme from `makeSessionId`.
-- [ ] Add `src/scheduler/store.test.ts` coverage for persistence, missing/malformed files, ownership checks, heartbeat defaults, due claiming, and id generation.
-- [ ] Export store and types from `src/scheduler/mod.ts`.
-- [ ] Run `bun test src/scheduler/store.test.ts src/sessions/manager.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Add `schedulesPath(home)` to `src/sessions/paths.ts` returning `join(home, "schedules.json")` for `Persist scheduled turn definitions`.
+- [x] Add `peekBinding(loc)` to `src/sessions/manager.ts` — non-mutating binding read for `Scheduled turns stay bound to their captured session surface`.
+- [x] Add `src/sessions/manager.test.ts` coverage for `peekBinding` returning bound state, returning null on missing binding, and not auto-creating for topic/supergroup locators.
+- [x] Create `src/scheduler/types.ts` with schedule, heartbeat, and last-run status types (including `LastRunStatus = { at: string; outcome: "ok" | "binding-mismatch" | "archived" | "error"; message?: string }`) for `Persist scheduled turn definitions`.
+- [x] Create `src/scheduler/store.ts` backed by `schedulesPath(home)` with atomic load/save and missing/malformed-file handling.
+- [x] Implement create/list/remove/pause/resume, heartbeat enable/disable/status, and due-claim operations in `ScheduleStore`.
+- [x] Implement `makeScheduleId()` reusing the `randomUUID().replace(/-/g, "").slice(0, 10)` scheme from `makeSessionId`.
+- [x] Add `src/scheduler/store.test.ts` coverage for persistence, missing/malformed files, ownership checks, heartbeat defaults, due claiming, and id generation.
+- [x] Export store and types from `src/scheduler/mod.ts`.
+- [x] Run `bun test src/scheduler/store.test.ts src/sessions/manager.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 2: Add schedule time parsing
 

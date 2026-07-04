@@ -27,3 +27,7 @@ export function configPath(home: string): string {
 export function topicSettingsPath(home: string): string {
   return join(home, "topic-settings.json");
 }
+
+export function schedulesPath(home: string): string {
+  return join(home, "schedules.json");
+}

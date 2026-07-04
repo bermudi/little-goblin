@@ -297,6 +297,37 @@ export class SessionManager {
   }
 
   /**
+   * Non-mutating read of the binding for a locator. Returns the currently
+   * bound session id and state without auto-creating, unlike `resolve()`.
+   *
+   * Used by the scheduler to validate that a captured schedule still targets
+   * its captured session surface before dispatch. The scheduler MUST use this
+   * method, never `resolve()`, because `resolve()` auto-creates sessions for
+   * topic and supergroup locators when the binding is stale or absent.
+   *
+   * Returns null when the locator is unbound or the bound state is missing
+   * (e.g. the session was archived, which clears the binding and moves state).
+   */
+  peekBinding(loc: ChatLocator): { sessionId: string; state: SessionState } | null {
+    const bindings = loadBindings(this.home);
+    const chatKey = String(loc.chatId);
+
+    let boundId: string | undefined;
+    if (loc.topicId !== undefined) {
+      boundId = bindings.topics?.[chatKey]?.[String(loc.topicId)];
+    } else {
+      // Topicless locator: check DM then supergroup. A chat is either a DM or
+      // a supergroup in practice, so checking both is unambiguous.
+      boundId = bindings.dm?.[chatKey] ?? bindings.supergroups?.[chatKey];
+    }
+
+    if (!boundId) return null;
+    const state = loadState(this.home, boundId);
+    if (!state) return null;
+    return { sessionId: boundId, state };
+  }
+
+  /**
    * List all sessions by scanning the sessions directory.
    */
   list(): SessionState[] {

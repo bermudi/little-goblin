@@ -41,11 +41,11 @@
 
 ## Phase 5: Add scheduler loop
 
-- [ ] Create `src/scheduler/loop.ts` with start/stop lifecycle, 60-second tick interval constant, due claiming one at a time, binding validation via `SessionManager.peekBinding` (never `resolve()`), stale schedule disablement with `LastRunStatus`, dispatch through the shared turn dispatcher, and logged tick errors.
-- [ ] Define the heartbeat prompt constant (prefixed with `[heartbeat]`) in `src/scheduler/loop.ts`.
-- [ ] Add `src/scheduler/loop.test.ts` for due dispatch, busy-session queueing, overlapping ticks, one-shot completion, recurring advancement, stale bindings, archived-session skip without recreation, tick errors, heartbeat prompt content, and stop behavior.
-- [ ] Run `bun test src/scheduler/loop.test.ts src/scheduler/store.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Create `src/scheduler/loop.ts` with start/stop lifecycle, 60-second tick interval constant, due claiming one at a time, binding validation via `SessionManager.peekBinding` (never `resolve()`), stale schedule disablement with `LastRunStatus`, dispatch through the shared turn dispatcher, and logged tick errors.
+- [x] Define the heartbeat prompt constant (prefixed with `[heartbeat]`) in `src/scheduler/loop.ts`.
+- [x] Add `src/scheduler/loop.test.ts` for due dispatch, busy-session queueing, overlapping ticks, one-shot completion, recurring advancement, stale bindings, archived-session skip without recreation, tick errors, heartbeat prompt content, and stop behavior.
+- [x] Run `bun test src/scheduler/loop.test.ts src/scheduler/store.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 6: Wire scheduler lifecycle
 

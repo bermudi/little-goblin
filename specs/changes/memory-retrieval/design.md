@@ -17,7 +17,7 @@ The new search flow is:
 
 Agent registration stays in `AgentRunner.init()`, where memory tools are currently appended after caller-supplied tools. The new tool is added between `memory_read_index` and `memory_write` so the model sees read/index/search before write.
 
-Prompt-time relevant memory is optional and bounded. `AgentRunner.prompt()` can pass the current user text into `formatSnapshot(...)`. The formatter can call the same lexical search helper and append a `## relevant memory` section when matches exist. Follow-up steering remains unchanged: it does not inject a new snapshot.
+Prompt-time relevant memory is optional and bounded. `AgentRunner.prompt()` can pass the current user text into `formatSnapshot(...)`. The formatter SHALL call the same lexical search helper and append a `## relevant memory` section when matches exist. Follow-up steering remains unchanged: it does not inject a new snapshot.
 
 Reflection category expansion is local to the existing deterministic extractor and metadata parser. The storage format remains the same HTML metadata comment plus human-readable body.
 
@@ -137,7 +137,7 @@ Add a `memorySearchSchema` and `createMemorySearchTool(...)`. The tool should ac
 - `limit?: number`
 - `all_chats?: boolean`
 
-The tool should call `searchMemoryEntries(...)` with the active scope and return JSON. It should reject empty/whitespace-only queries with a validation or tool error.
+The tool should call `searchMemoryEntries(...)` with the active scope and return JSON. It SHALL reject empty/whitespace-only queries with a validation error.
 
 Relates to `Memory reads support cross-scope retrieval`.
 

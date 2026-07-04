@@ -66,7 +66,7 @@ Memory search SHALL default to searching `user.md`, the active scope, the curren
 #### Scenario: Cross-chat search opt-in
 
 - **WHEN** `memory_search({query: "deployment", all_chats: true})` is called
-- **THEN** the search MAY include topic scopes from any chat
+- **THEN** the search SHALL include topic scopes from any chat
 - **AND** each result SHALL identify its source scope
 - **AND** persona scope eligibility rules SHALL remain unchanged by `all_chats`
 
@@ -86,7 +86,7 @@ The `## relevant memory` section SHALL skip any entry whose display text already
 #### Scenario: Prompt-specific relevant memory included
 
 - **WHEN** a new prompt mentions a phrase that matches an entry in another same-chat topic scope
-- **THEN** the snapshot MAY include a `## relevant memory` section with the matching entry and scope id
+- **THEN** the snapshot SHALL include a `## relevant memory` section with the matching entry and scope id
 - **AND** the active `## memory.md` section SHALL still contain only the active scope's body
 
 #### Scenario: No query omits relevant memory
@@ -142,6 +142,8 @@ The reflection pipeline SHALL support `commitment` and `standing_order` entry ca
 ### Requirement: Memory reads support cross-scope retrieval
 
 The `memory_read` tool SHALL accept an optional `scope` argument as a discriminated union. The accepted values are absent or `"active"`, `"general"`, `{topic: {chatId, topicId}}`, and `{agent: {name}}`. The `scope` argument SHALL NOT be a free-form string path. The `memory_read_index` tool SHALL return an object with three fields: `general` (the `general` scope's description, or `null` if unset), `topics` (an array of topic scopes with their IDs, best-effort Telegram names, and descriptions), and `agents` (an array of named-agent persona scopes with their names and descriptions, only when called by the main goblin agent). It MUST NOT include archived or orphaned scopes.
+
+> **Note:** The `memory_read` and `memory_read_index` behavior above is restated canon (existing implemented behavior) and is not modified by this change. It is included here as context for the new `memory_search` addition. Only the `memory_search` paragraph and its scenarios below are new in this change.
 
 The system SHALL additionally expose a `memory_search` tool for ranked entry-level retrieval. `memory_search` SHALL accept a text query, optional `limit`, and optional `all_chats` boolean. Unlike `memory_read`, `memory_search` returns ranked entries rather than whole file bodies.
 

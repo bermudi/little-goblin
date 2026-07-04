@@ -90,7 +90,7 @@ describe("resolveTiming", () => {
   });
 
   it("read-only commands are instant", () => {
-    for (const name of ["/debug", "/name foo", "/subagents", "/help", "/queue x", "/voice"]) {
+    for (const name of ["/debug", "/name foo", "/subagents", "/help", "/queue x", "/voice", "/schedule list", "/schedule every 1h hi"]) {
       const token = name.split(" ")[0]!;
       expect(resolveTiming(resolveCommand(token), name)).toBe("instant");
     }
@@ -123,6 +123,7 @@ describe("helpReply", () => {
       "/cancel_subagent",
       "/revive",
       "/help",
+      "/schedule",
     ];
     for (const cmd of required) {
       expect(reply).toContain(cmd);
@@ -131,6 +132,10 @@ describe("helpReply", () => {
 
   it("includes /queue <text>", () => {
     expect(reply).toContain("/queue <text>");
+  });
+
+  it("includes /schedule <subcommand>", () => {
+    expect(reply).toContain("/schedule <list|at|in|every|remove|pause|resume|heartbeat ...>");
   });
 
   it("includes /revive <id> <prompt>", () => {

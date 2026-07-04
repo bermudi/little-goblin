@@ -25,6 +25,7 @@ describe("HELP_REPLY", () => {
       "/cancel_subagent",
       "/revive",
       "/help",
+      "/schedule",
     ];
     for (const cmd of required) {
       expect(HELP_REPLY).toContain(cmd);

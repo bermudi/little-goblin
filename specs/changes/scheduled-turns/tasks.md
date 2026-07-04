@@ -31,13 +31,13 @@
 
 ## Phase 4: Add schedule command
 
-- [ ] Create `src/commands/schedule.ts` with pure helpers for `list`, `at`, `in`, `every`, `remove`, `pause`, `resume`, and `heartbeat` subcommands.
-- [ ] Extend `DispatchDeps` and `COMMAND_REGISTRY` in `src/commands/registry.ts` with instant-timing `/schedule <subcommand>`.
-- [ ] Pass `ScheduleStore` into command dispatch from `src/tg/intake.ts`.
-- [ ] Add `src/commands/schedule.test.ts` for all subcommands, active-session requirement, invalid time expressions, ownership checks, and heartbeat behavior.
-- [ ] Update registry/help tests to include `/schedule <subcommand>`.
-- [ ] Run `bun test src/commands/schedule.test.ts src/commands/registry.test.ts src/commands/help.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Create `src/commands/schedule.ts` with pure helpers for `list`, `at`, `in`, `every`, `remove`, `pause`, `resume`, and `heartbeat` subcommands.
+- [x] Extend `DispatchDeps` and `COMMAND_REGISTRY` in `src/commands/registry.ts` with instant-timing `/schedule <subcommand>`.
+- [x] Pass `ScheduleStore` into command dispatch from `src/tg/intake.ts`.
+- [x] Add `src/commands/schedule.test.ts` for all subcommands, active-session requirement, invalid time expressions, ownership checks, and heartbeat behavior.
+- [x] Update registry/help tests to include `/schedule <subcommand>`.
+- [x] Run `bun test src/commands/schedule.test.ts src/commands/registry.test.ts src/commands/help.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 5: Add scheduler loop
 

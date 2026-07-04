@@ -31,6 +31,8 @@ import {
 import { executeVoice } from "./voice.ts";
 import { pingHandler } from "./ping.ts";
 import { buildStartHandler } from "./start.ts";
+import { buildScheduleDeps, executeSchedule } from "./schedule.ts";
+import type { ScheduleStore } from "../scheduler/store.ts";
 
 // ---------------------------------------------------------------------------
 // Shared dispatch types (owned by the registry; re-exported by dispatch.ts)
@@ -56,6 +58,12 @@ export interface DispatchDeps {
     runner?: AgentRunner,
   ) => ResolvedModel | undefined;
   interruptAndCascade: typeof interruptAndCascade;
+  /**
+   * Schedule store for `/schedule`. Optional so callers that don't wire
+   * scheduling (e.g. unit tests of other commands) still satisfy the type.
+   * The `/schedule` handler returns a usage reply when this is absent.
+   */
+  scheduleStore?: ScheduleStore;
 }
 
 export interface DispatchOpts {
@@ -398,6 +406,17 @@ const queueHandler: CommandHandler = async ({ session, existingRunner, rawText }
   return replied(ack, sideEffects);
 };
 
+const scheduleHandler: CommandHandler = async ({ deps, session, locator, rawText }) => {
+  // `/schedule` is instant-timing: it only mutates the schedule store and does
+  // not touch the in-flight runner, so it never defers behind a streaming turn.
+  if (!deps.scheduleStore) {
+    return replied("Scheduling is not available.");
+  }
+  if (!session) return replied("No active session. Use /new to start one.");
+  const depsForSchedule = buildScheduleDeps(deps.scheduleStore, session, locator, Date.now());
+  return replied(executeSchedule(depsForSchedule, rawText));
+};
+
 // ---------------------------------------------------------------------------
 // grammy handler factories
 // ---------------------------------------------------------------------------
@@ -524,6 +543,13 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
     description: "enqueue text to run as a fresh turn after the current one settles",
     timing: "instant",
     handler: queueHandler,
+  },
+  {
+    name: "schedule",
+    argsHint: "<list|at|in|every|remove|pause|resume|heartbeat ...>",
+    description: "manage scheduled turns and heartbeat for this session",
+    timing: "instant",
+    handler: scheduleHandler,
   },
   {
     name: "ping",

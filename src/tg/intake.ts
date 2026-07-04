@@ -15,6 +15,7 @@ import { SessionManager, type ChatLocator, type SessionState } from "../sessions
 import { SubagentRunner } from "../subagents/mod.ts";
 import { TurnDispatcher, type PromptContent } from "./turn-dispatcher.ts";
 import type { MessageBuffer } from "./mod.ts";
+import type { ScheduleStore } from "../scheduler/store.ts";
 
 export type { PromptContent };
 
@@ -56,6 +57,8 @@ export interface TelegramIntakeOptions {
   promptQueues?: Map<string, Promise<void>>;
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
   createMessageBuffer?: (locator: ChatLocator) => MessageBuffer;
+  /** Shared schedule store for `/schedule`. Wired in Phase 6 (bot.ts). */
+  scheduleStore?: ScheduleStore;
 }
 
 type ActiveTurn = {
@@ -337,6 +340,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     cfg,
     tryResolveModel,
     interruptAndCascade,
+    scheduleStore: options.scheduleStore,
   };
 
   async function runPrompt(message: TelegramIntakeMessage, locator: ChatLocator, runner: AgentRunner, content: PromptContent): Promise<void> {

@@ -16,10 +16,10 @@
 
 ## Phase 2: Add schedule time parsing
 
-- [ ] Create `src/scheduler/time.ts` for duration parsing, relative `in <duration>`, ISO `at`, past-time rejection, and reply formatting for `Schedule command parses bounded time expressions`.
-- [ ] Add `src/scheduler/time.test.ts` coverage for valid durations, invalid durations, relative one-shot times, absolute ISO timestamps, and past timestamps.
-- [ ] Run `bun test src/scheduler/time.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Create `src/scheduler/time.ts` for duration parsing, relative `in <duration>`, ISO `at`, past-time rejection, and reply formatting for `Schedule command parses bounded time expressions`.
+- [x] Add `src/scheduler/time.test.ts` coverage for valid durations, invalid durations, relative one-shot times, absolute ISO timestamps, and past timestamps.
+- [x] Run `bun test src/scheduler/time.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 3: Extract shared turn dispatcher
 

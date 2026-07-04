@@ -18,7 +18,7 @@
 
 ## Phase 4: Verify
 
-- [ ] `bun test` full suite green
-- [ ] `litespec validate dissolve-rename-topic` passes
-- [ ] Confirm `handleTopicDescription` and the `forum_topic_*` handlers in `bot.ts` are untouched (they are M1 observation, not M3 mutation)
-- [ ] Grep confirms zero remaining references to `rename_topic` / `createRenameTopicTool` in `src/` and `specs/canon/`
+- [x] `bun test` full suite green
+- [x] `litespec validate dissolve-rename-topic` passes
+- [x] Confirm `handleTopicDescription` and the `forum_topic_*` handlers in `bot.ts` are untouched (they are M1 observation, not M3 mutation)
+- [x] Grep confirms zero remaining references to `rename_topic` / `createRenameTopicTool` in `src/` and `specs/canon/`

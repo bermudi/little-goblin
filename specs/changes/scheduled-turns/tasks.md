@@ -49,10 +49,10 @@
 
 ## Phase 6: Wire scheduler lifecycle
 
-- [ ] Update `src/bot.ts` to construct and share `ScheduleStore` and the turn dispatcher with Telegram intake and scheduler setup.
-- [ ] Update `src/index.ts` to start the scheduler after `manager.init()` and stop it during graceful shutdown.
-- [ ] Verify wiring by checking that `src/index.ts` constructs exactly one `ScheduleStore`, passes it to both intake and the scheduler loop, and calls `scheduler.stop()` in the SIGTERM/SIGINT handler before `bot.stop()`.
-- [ ] Update `specs/backlog.md`: if the scheduled-turn substrate is deemed to satisfy the auto-archive/auto-prune daemon prerequisite, annotate that item; otherwise leave it unchanged.
-- [ ] Run `litespec validate scheduled-turns`.
-- [ ] Run `bun test`.
-- [ ] Run `bun run typecheck`.
+- [x] Update `src/bot.ts` to construct and share `ScheduleStore` and the turn dispatcher with Telegram intake and scheduler setup.
+- [x] Update `src/index.ts` to start the scheduler after `manager.init()` and stop it during graceful shutdown.
+- [x] Verify wiring by checking that `src/index.ts` constructs exactly one `ScheduleStore`, passes it to both intake and the scheduler loop, and calls `scheduler.stop()` in the SIGTERM/SIGINT handler before `bot.stop()`.
+- [x] Update `specs/backlog.md`: if the scheduled-turn substrate is deemed to satisfy the auto-archive/auto-prune daemon prerequisite, annotate that item; otherwise leave it unchanged.
+- [x] Run `litespec validate scheduled-turns`.
+- [x] Run `bun test`.
+- [x] Run `bun run typecheck`.

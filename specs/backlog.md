@@ -12,7 +12,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 - ~~v1.x: subagent memory access~~ — resolved by `scoped-memory` (anonymous subagents inherit parent active scope; named subagents get a three-tier model with persona memory).
 - ~~v1.x: PII redaction in memory writes~~ — resolved by `robust-memory` (deterministic safety filter shared by explicit `memory_write` and the reflection pipeline; rejects secrets/identifiers, quarantines rejected candidates).
 - v2.x: per-chat isolation for `general` memory — today `memory/general/memory.md` is shared across DMs and every supergroup-no-topic surface. If multi-chat usage stops being single-user, switch to `memory/general/<chatId>/memory.md`. Single consumer (`MemoryStore` scope resolver) so the change is local.
-- v1.x: auto-archive / auto-prune daemons
+- v1.x: auto-archive / auto-prune daemons — the scheduler substrate (`ScheduleStore` + `SchedulerLoop` from `scheduled-turns`) now exists and could host an ambient archive/prune job as another `ScheduledTurn` kind, but the daemon itself (policy, what to prune, retention) remains unimplemented.
 - v1.x: cron syntax and natural-language date parsing for `/schedule` — deferred from `scheduled-turns` v1, which ships only ISO-8601 `at`, `in <duration>`, and integer `m`/`h`/`d` durations.
 - v2.x: distributed/multi-process scheduler — `scheduled-turns` v1 is single-process only; cross-process locking on `schedules.json` is a future concern if multiple Goblin processes ever share a home directory.
 - v1.x: self-hosted Telegram Bot API server (`telegram-bot-api`) to lift file download limit from 20 MB → 2 GB. Needs `botApiUrl` config option and local infra (single Go binary). Blocked until a real >20 MB file arrives.

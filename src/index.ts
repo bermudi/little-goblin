@@ -5,6 +5,7 @@ import { validateModelAtStartup } from "./agent/poe-validate.ts";
 import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
 import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
 import { syncTelegramMenu } from "./commands/registry.ts";
+import { SchedulerLoop } from "./scheduler/loop.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -12,12 +13,21 @@ async function main(): Promise<void> {
   ensureGoblinHome(cfg);
   await preflightGoblinPromptFiles({ home: cfg.goblinHome, warn: log.warn });
   await validateModelAtStartup(cfg, log);
-  const { bot, manager, subagentRunner, agentRunners } = buildBot(cfg);
+  const { bot, manager, subagentRunner, agentRunners, scheduleStore, dispatcher } = buildBot(cfg);
   manager.init();
+
+  // Scheduler: start after manager.init() so bindings/state are available for
+  // peekBinding validation. Shares the same ScheduleStore and TurnDispatcher
+  // as Telegram intake, so scheduled turns serialize through the same
+  // per-session queue as /queue and media prompts.
+  const scheduler = new SchedulerLoop({ store: scheduleStore, manager, dispatcher });
+  scheduler.start();
 
   // Graceful shutdown. grammy's start() resolves when stop() is called.
   const shutdown = async (signal: string): Promise<void> => {
     log.info(`received ${signal}, stopping bot`);
+    // Stop the scheduler first so no new due schedules dispatch during shutdown.
+    scheduler.stop();
     // Dispose subagents first (cancels running ones, releases sessions).
     await subagentRunner.dispose();
     // Dispose agent runners (releases pi sessions).

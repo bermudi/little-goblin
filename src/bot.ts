@@ -11,12 +11,14 @@ import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 import { configureVoice } from "./voice.ts";
+import { ScheduleStore } from "./scheduler/store.ts";
 import {
   createTelegramIntake,
   replyNoActiveSession as replyNoActiveSessionForMessage,
   type PromptContent,
   type TelegramIntakeMessage,
 } from "./tg/intake.ts";
+import type { TurnDispatcher } from "./tg/turn-dispatcher.ts";
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -73,13 +75,17 @@ interface BuildBotOptions {
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
 }
 
-export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner> } {
+export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner>; scheduleStore: ScheduleStore; dispatcher: TurnDispatcher } {
   configureVoice(cfg);
   const bot = new Bot(cfg.botToken);
   const manager = new SessionManager(cfg);
   const runners = new Map<string, AgentRunner>();
   const subagentRunner = new SubagentRunner(cfg, subagentToolFactory);
   const memoryStore = new MemoryStore(cfg.goblinHome);
+  // One shared schedule store: `/schedule` mutates it from the command path,
+  // and the scheduler loop reads/claims from it. Constructed here so both
+  // intake and the loop (wired in index.ts) share a single instance.
+  const scheduleStore = new ScheduleStore(cfg.goblinHome);
   const intake = createTelegramIntake({
     cfg,
     bot,
@@ -88,6 +94,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     memoryStore,
     agentRunners: runners,
     createAgentRunner: options.createAgentRunner,
+    scheduleStore,
   });
 
   bot.use(buildAllowlistMiddleware(cfg));
@@ -158,5 +165,5 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     });
   });
 
-  return { bot, manager, subagentRunner, agentRunners: runners };
+  return { bot, manager, subagentRunner, agentRunners: runners, scheduleStore, dispatcher: intake.dispatcher };
 }

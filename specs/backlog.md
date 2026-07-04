@@ -13,6 +13,8 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 - ~~v1.x: PII redaction in memory writes~~ — resolved by `robust-memory` (deterministic safety filter shared by explicit `memory_write` and the reflection pipeline; rejects secrets/identifiers, quarantines rejected candidates).
 - v2.x: per-chat isolation for `general` memory — today `memory/general/memory.md` is shared across DMs and every supergroup-no-topic surface. If multi-chat usage stops being single-user, switch to `memory/general/<chatId>/memory.md`. Single consumer (`MemoryStore` scope resolver) so the change is local.
 - v1.x: auto-archive / auto-prune daemons
+- v1.x: cron syntax and natural-language date parsing for `/schedule` — deferred from `scheduled-turns` v1, which ships only ISO-8601 `at`, `in <duration>`, and integer `m`/`h`/`d` durations.
+- v2.x: distributed/multi-process scheduler — `scheduled-turns` v1 is single-process only; cross-process locking on `schedules.json` is a future concern if multiple Goblin processes ever share a home directory.
 - v1.x: self-hosted Telegram Bot API server (`telegram-bot-api`) to lift file download limit from 20 MB → 2 GB. Needs `botApiUrl` config option and local infra (single Go binary). Blocked until a real >20 MB file arrives.
 - v2: voice-note-first workflow (STT + TTS)
 - v2: skills for common homelab services shipped in repo
@@ -20,6 +22,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 - v1.x: render `onStatusUpdate` events in the MessageBuffer status line (e.g. "🧠 Researcher analyzing…"). Hook is already implemented as a no-op stub in `src/tg/buffer.ts`; rendering deferred until subagents land. Split out of `message-buffer-streaming`.
 - v1.x: end-to-end smoke test of `/cancel`, `/new`, `/archive`, `/debug`, `/help`, and subagent command stubs in both DM and forum-topic surfaces. Deferred from `session-commands-cancel` phase 8; unit tests cover helpers but the grammy ↔ SessionManager ↔ AgentRunner integration path still needs a manual walk-through.
 - v1.x: rate limiting — beta tools operate in "YOLO mode". No client-side rate limiting; we rely on Telegram's server-side limits and return errors to the LLM.
+- glossary: `memory_search`, `standing order`, `commitment` — deferred from `memory-retrieval` and `scheduled-turns` until wording stabilizes across both proposals.
 
 ## Open Questions
 

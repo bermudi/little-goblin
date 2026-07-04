@@ -1,0 +1,52 @@
+# workspace-layout — Tasks
+
+## Phase 1: Update path helpers
+
+- [ ] Update `src/sessions/paths.ts`: `sessionsDir` → `state/sessions/`, `configPath` → `state/bindings.json`, `topicSettingsPath` → `state/topic-settings.json`, `schedulesPath` → `state/schedules.json`.
+- [ ] Update `src/pi-host.ts`: `workdirPath` → `scratch/workdir/`, `piAgentDir` → `state/pi/`, `agentsMdPath` → `workspace/AGENTS.md`, `soulMdPath` → `workspace/SOUL.md`. Add new `skillsPath(home)` helper returning `join(home, "workspace", "skills")`.
+- [ ] Update `src/memory/paths.ts`: `memoryDir` → `state/memory/`.
+- [ ] Update `src/subagents/paths.ts`: `subagentsRoot` → `scratch/subagents/`, `namedAgentsRoot` → `workspace/agents/`.
+- [ ] Update inline path construction in `src/agent/mod.ts` line 206: `join(home, "skills")` → `skillsPath(home)` (import from `pi-host.ts`).
+- [ ] Update inline path construction in `src/subagents/named-agents.ts` line 93: `join(home, "skills")` → `skillsPath(home)` (import from `pi-host.ts`).
+- [ ] Update error message strings in `src/agent/system-prompt.ts`: `$GOBLIN_HOME/SOUL.md` → `$GOBLIN_HOME/workspace/SOUL.md`, `$GOBLIN_HOME/AGENTS.md` → `$GOBLIN_HOME/workspace/AGENTS.md`.
+- [ ] Verify `src/subagents/runner.ts` has no inline `join(home, ...)` path construction; all paths resolve through `src/subagents/paths.ts` helpers.
+- [ ] Run `bun test src/sessions/paths.test.ts src/memory/paths.test.ts src/pi-host.test.ts` to verify path helper unit tests pass (these test the helpers directly).
+
+## Phase 2: Update ensureGoblinHome and migration
+
+- [ ] Rewrite `ensureGoblinHome()` in `src/config.ts` with three-phase approach: (1) create top-level groups (`workspace/`, `state/`, `scratch/`); (2) run migration loop; (3) create remaining subdirectories (`workspace/skills/`, `workspace/agents/`, `state/sessions/`, `state/memory/`, `state/pi/`, `scratch/workdir/`, `scratch/subagents/`). Remove the old `pi-agent/` → `goblin/` migration.
+- [ ] Add migration loop: for each legacy→new path pair, if old exists and new doesn't, `renameSync(old, new)`. If both exist, log warning and skip. Critical: migration-target subdirs must NOT be pre-created before migration runs.
+- [ ] Update `src/config.test.ts`: update directory creation assertions for the new tree; add migration tests (fresh install, legacy install with directories, legacy install with files, already-migrated, conflict, legacy directory migration despite top-level groups existing).
+- [ ] Run `bun test src/config.test.ts`.
+
+## Phase 3: Update bindings and topic-settings
+
+- [ ] Update `src/sessions/bindings.ts`: temp file name `.config.<rand>.tmp` → `.bindings.<rand>.tmp` (if hardcoded). Verify `pathFor` uses `configPath` from `paths.ts`.
+- [ ] Update `src/sessions/topic-settings.ts`: verify path uses `topicSettingsPath` from `paths.ts`. Update temp file naming if hardcoded.
+- [ ] Run `bun test src/sessions/manager.test.ts src/sessions/topic-settings.test.ts`.
+
+## Phase 4: Update onboard
+
+- [ ] Update `src/onboard.ts`: if onboarding writes `SOUL.md` or `AGENTS.md`, update write paths to `workspace/SOUL.md` and `workspace/AGENTS.md`.
+- [ ] Run `bun test src/onboard.test.ts`.
+
+## Phase 5: Update test fixtures with inline paths
+
+- [ ] Update `src/agent/mod.test.ts`: replace `join(home, "memory")` → `join(home, "state", "memory")`, `join(home, "sessions", ...)` → `join(home, "state", "sessions", ...)`, `join(home, "skills")` → `join(home, "workspace", "skills")`.
+- [ ] Update `src/subagents/test/support.ts`: `join(home, "workdir")` → `join(home, "scratch", "workdir")`, `join(home, "goblin")` → `join(home, "state", "pi")`.
+- [ ] Update `src/subagents/test/memory.suite.ts`: `join(tmp, "memory", ...)` → `join(tmp, "state", "memory", ...)`.
+- [ ] Update `src/memory/reflector.test.ts`: `join(home, "sessions", sessionId)` → `join(home, "state", "sessions", sessionId)`.
+- [ ] Update `src/commands/voice.test.ts`: `join(home, "sessions", sessionId)` → `join(home, "state", "sessions", sessionId)`.
+- [ ] Update `src/bot.test.ts`: any inline path references to `sessions/`, `memory/`, `workdir/`, `goblin/` root-level dirs.
+- [ ] Update `src/commands/integration.test.ts`: `cfg.goblinHome, "sessions"` → `cfg.goblinHome, "state", "sessions"`.
+- [ ] Update `src/commands/dispatch.test.ts`: `harness.cfg.goblinHome, "sessions"` → `harness.cfg.goblinHome, "state", "sessions"`.
+- [ ] Update `src/tg/intake.test.ts`: any inline path references.
+- [ ] Run `bun test` for the full suite to catch remaining inline paths.
+
+## Phase 6: Update AGENTS.md, glossary, and verify
+
+- [ ] Update `AGENTS.md` (repo root): `$GOBLIN_HOME/memory/` → `$GOBLIN_HOME/state/memory/` in the Memory section. Update any other path references. Extend the guardrail exception list to include `config.ts` for `ensureGoblinHome`-owned startup mutation.
+- [ ] Update `specs/glossary.md`: rewrite every path-bearing term to the new layout. Terms to update: `binding` (`config.json` → `state/bindings.json`), `SOUL.md` (`$GOBLIN_HOME/SOUL.md` → `$GOBLIN_HOME/workspace/SOUL.md`), `memory.md / user.md` (`$GOBLIN_HOME/memory/` → `$GOBLIN_HOME/state/memory/`), `named subagent` (`~/goblin/agents/<name>/` → `~/goblin/workspace/agents/<name>/`), `persona memory` (`agents/<name>/memory.md` → `workspace/agents/<name>/memory.md` note: the file itself moves under `state/memory/`), `archived session` / `resumable session` / `unbound session` (`sessions/<id>/` → `state/sessions/<id>/`), `workdir` (`sessions/<id>/workdir/` → `state/sessions/<id>/workdir/`).
+- [ ] Run `bun test` full suite — all tests must pass.
+- [ ] Run `bun run src/index.ts` against a test `$GOBLIN_HOME` with legacy paths to verify migration works end-to-end.
+- [ ] Verify the new directory tree is created correctly on a fresh `$GOBLIN_HOME`.

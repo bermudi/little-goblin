@@ -15,4 +15,5 @@
 - [ ] Add heartbeat dispatch integration test: HEARTBEAT.md exists, heartbeat is due, dispatched prompt contains file content with `[heartbeat]` prefix.
 - [ ] Add heartbeat dispatch integration test: HEARTBEAT.md absent, heartbeat is due, dispatched prompt is the constant.
 - [ ] Add test: edit HEARTBEAT.md between ticks, verify next heartbeat uses updated content.
+- [ ] Update `AGENTS.md` (repo root): document the workspace prompt file read exception per decision `workspace-prompt-file-reads` (0009) — read-only access to `workspace/` prompt files via path helpers is permitted alongside the existing `config.ts` exception (0007).
 - [ ] Run `bun test` full suite.

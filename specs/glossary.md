@@ -11,6 +11,7 @@
 - **defrag**: Agent-driven consolidation of memory files when they approach the character cap. Not a system operation.
 - **goblin** aka **main agent**: The AI bot. Single user, single process. Lives in Telegram.
 - **GOBLIN_HOME**: Root data directory (default `~/goblin`). Holds sessions, memory, skills, config, and agent definitions.
+- **HEARTBEAT.md**: Optional user-editable workspace prompt file at `$GOBLIN_HOME/workspace/HEARTBEAT.md` that sources the heartbeat prompt. Sibling to `SOUL.md` and `AGENTS.md`. If absent, empty, or whitespace-only, the system falls back to the built-in `HEARTBEAT_PROMPT` constant. Read at dispatch time (each heartbeat wake), not at schedule creation, so edits take effect on the next heartbeat without restart.
 - **locator**: Shorthand for `ChatLocator`.
 - **memory.md / user.md**: Curated memory files under `$GOBLIN_HOME/memory/`. Agent-maintained, character-capped, git-versioned. Not raw chat logs. After the `scoped-memory` change, `memory.md` exists once per scope (general / topic / named-agent persona); `user.md` remains a single global file.
 - **memory scope**: The unit memory is keyed by. One of: `general` (singleton — DMs and supergroup-no-topic), a topic scope identified by `(chatId, topicId)`, or a named-agent persona scope identified by `<name>`. Each scope owns an independent `memory.md` with its own 4000-character cap.

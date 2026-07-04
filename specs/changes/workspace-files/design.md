@@ -30,6 +30,10 @@ processOne(schedule)
 
 `resolveHeartbeatPrompt` lives in `src/scheduler/loop.ts` because it closes over the `HEARTBEAT_PROMPT` constant which is defined there; the path helper `heartbeatMdPath` still lives in `src/pi-host.ts` to keep path canonicalization centralized with the other prompt-file path helpers.
 
+### AGENTS.md guardrail exception for workspace prompt file reads
+
+The AGENTS.md guardrail restricts `$GOBLIN_HOME` access to `SessionManager`, `MemoryStore`, and `paths.ts`. `resolveHeartbeatPrompt` reads `workspace/HEARTBEAT.md` directly from `src/scheduler/loop.ts`, which is outside these modules. This is governed by architectural decision `workspace-prompt-file-reads` (0009), which exempts read-only access to user-authored `workspace/` prompt files (`SOUL.md`, `AGENTS.md`, `HEARTBEAT.md`, and future prompt files) from the guardrail, subject to: (1) path construction via path-helper modules, (2) read-only access, (3) fail-loud error propagation, (4) the exemption covers only `workspace/` prompt files, not `state/` or `scratch/`. This decision also covers the existing `src/agent/system-prompt.ts` reads of `SOUL.md` and `AGENTS.md`, which already follow this pattern. The AGENTS.md guardrail exception SHALL be documented as part of the implementation (see decision 0009).
+
 ## Decisions
 
 ### HEARTBEAT.md is global, not per-session
@@ -68,7 +72,7 @@ Constraints: the constant stays in `src/scheduler/loop.ts` as the fallback. It i
 
 Chosen: unlike `SOUL.md` (which has a startup preflight that throws `MissingSoulError`), HEARTBEAT.md has no preflight check. The file is optional.
 
-Why: `SOUL.md` is required — goblin cannot start without it. HEARTBEAT.md is optional — heartbeat is opt-in and has a constant fallback. A preflight warning would fire on every install that doesn't use heartbeat, which is noise.
+Why: `SOUL.md` is required — goblin cannot start without it. HEARTBEAT.md is optional — heartbeat is opt-in and has a constant fallback. A preflight warning would fire on every install that doesn't use heartbeat, which is noise. This is an instance of the standing architectural ruling `optional-prompt-files-skip-preflight` (decision 0010): optional workspace prompt files do not get preflight checks; only required prompt files do.
 
 ## File Changes
 

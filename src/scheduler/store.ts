@@ -63,7 +63,18 @@ export function saveStore(home: string, store: ScheduleStoreFile): void {
  * owns it. Cross-session mutations return null/false rather than throwing.
  */
 export class ScheduleStore {
-  constructor(private readonly home: string) {}
+  private readonly generateId: () => string;
+
+  constructor(
+    private readonly home: string,
+    /**
+     * Optional id generator, primarily for tests that need to force collisions
+     * to exercise `freshId`'s fallback path. Defaults to `makeScheduleId`.
+     */
+    generateId: () => string = makeScheduleId,
+  ) {
+    this.generateId = generateId;
+  }
 
   private read(): ScheduleStoreFile {
     return loadStore(this.home);
@@ -249,6 +260,11 @@ export class ScheduleStore {
     const store = this.read();
     const s = store.schedules.find((x) => x.id === id && x.sessionId === sessionId);
     if (!s) return null;
+    // Terminal-state guard: a completed one-shot has run its single
+    // occurrence. Refuse any further lifecycle transition so `/schedule list`
+    // keeps displaying `completed` (the list requirement) rather than silently
+    // rewriting it to `disabled` via `/schedule pause`.
+    if (s.state === "completed" && state !== "completed") return s;
     s.state = state;
     s.enabled = state === "enabled";
     this.write(store);
@@ -312,6 +328,11 @@ export class ScheduleStore {
   /**
    * Record the outcome of a dispatched schedule. Used by the scheduler after
    * dispatch (or after a stale-binding skip) to persist last-run metadata.
+   *
+   * Terminal-state guard: a completed one-shot keeps `state: "completed"` even
+   * when a binding mismatch or archived outcome is recorded after the fact —
+   * the occurrence already ran, so the diagnostic outcome updates `lastRun`
+   * without rewriting the terminal lifecycle label.
    */
   recordRun(id: string, status: LastRunStatus): void {
     const store = this.read();
@@ -320,18 +341,19 @@ export class ScheduleStore {
     s.lastRun = status;
     if (status.outcome === "binding-mismatch" || status.outcome === "archived") {
       s.enabled = false;
-      s.state = "disabled";
+      if (s.state !== "completed") s.state = "disabled";
     }
     this.write(store);
   }
 
   /**
    * Generate a unique id, retrying on the astronomically unlikely collision.
+   * After 8 collisions, fall back to a longer slice to guarantee uniqueness.
    */
   private freshId(store: ScheduleStoreFile): string {
     const existing = new Set(store.schedules.map((s) => s.id));
     for (let attempt = 0; attempt < 8; attempt++) {
-      const id = makeScheduleId();
+      const id = this.generateId();
       if (!existing.has(id)) return id;
     }
     // Extremely unlikely; fall back to a longer slice to guarantee uniqueness.

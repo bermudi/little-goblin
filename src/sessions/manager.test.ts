@@ -200,6 +200,33 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("isArchived", () => {
+    it("returns true for a session archived via archive()", () => {
+      const created = manager.createForChat({ chatId: 1 });
+      expect(manager.isArchived(created.id)).toBe(false);
+      manager.archive(created.id);
+      expect(manager.isArchived(created.id)).toBe(true);
+    });
+
+    it("returns false for a live session", () => {
+      const created = manager.createForChat({ chatId: 1 });
+      expect(manager.isArchived(created.id)).toBe(false);
+    });
+
+    it("returns false for an unknown id (never existed)", () => {
+      expect(manager.isArchived("never-existed")).toBe(false);
+    });
+
+    it("returns false for a session whose dir was removed without archive", () => {
+      // Manually deleting a session dir (not via archive) MUST NOT be labeled
+      // archived — the scheduler distinguishes archived (cleared binding +
+      // moved dir) from a generic mismatch. This pins the precise semantics.
+      const created = manager.createForChat({ chatId: 1 });
+      rmSync(join(tmpDir, "sessions", created.id), { recursive: true, force: true });
+      expect(manager.isArchived(created.id)).toBe(false);
+    });
+  });
+
   describe("list", () => {
     it("returns empty array when no sessions", () => {
       expect(manager.list()).toEqual([]);

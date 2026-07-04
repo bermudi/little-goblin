@@ -207,6 +207,24 @@ describe("ScheduleStore", () => {
       expect(resumed!.state).toBe("completed");
       expect(resumed!.enabled).toBe(false);
     });
+
+    it("pause on a completed one-shot keeps it completed (terminal-state guard)", () => {
+      // A completed one-shot has run its single occurrence; `/schedule pause`
+      // MUST NOT rewrite its terminal state to disabled — the list requirement
+      // expects completed one-shots to display `completed`.
+      const created = store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "once",
+        nextRunAt: PAST_ISO,
+      });
+      store.claimDue(created.id, NOW_ISO); // marks completed
+
+      const paused = store.pause("sess-a", created.id);
+      expect(paused!.state).toBe("completed");
+      expect(paused!.enabled).toBe(false);
+    });
   });
 
   describe("heartbeat defaults", () => {
@@ -436,6 +454,43 @@ describe("ScheduleStore", () => {
     it("no-ops on a missing id", () => {
       expect(() => store.recordRun("nope", { at: NOW_ISO, outcome: "ok" })).not.toThrow();
     });
+
+    it("preserves completed state when recording binding-mismatch on a one-shot", () => {
+      // Terminal-state guard: a one-shot that was claimed (completed) and then
+      // discovers a binding mismatch keeps `completed` — the occurrence ran.
+      // The mismatch is recorded in lastRun as a diagnostic, not a lifecycle
+      // transition.
+      const created = store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "once",
+        nextRunAt: PAST_ISO,
+      });
+      store.claimDue(created.id, NOW_ISO); // marks completed
+      store.recordRun(created.id, { at: NOW_ISO, outcome: "binding-mismatch" });
+
+      const after = store.getForSession("sess-a", created.id);
+      expect(after!.state).toBe("completed");
+      expect(after!.enabled).toBe(false);
+      expect(after!.lastRun!.outcome).toBe("binding-mismatch");
+    });
+
+    it("preserves completed state when recording archived on a one-shot", () => {
+      const created = store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "once",
+        nextRunAt: PAST_ISO,
+      });
+      store.claimDue(created.id, NOW_ISO); // marks completed
+      store.recordRun(created.id, { at: NOW_ISO, outcome: "archived" });
+
+      const after = store.getForSession("sess-a", created.id);
+      expect(after!.state).toBe("completed");
+      expect(after!.lastRun!.outcome).toBe("archived");
+    });
   });
 
   describe("locator capture", () => {
@@ -448,6 +503,77 @@ describe("ScheduleStore", () => {
         nextRunAt: FUTURE_ISO,
       });
       expect(created.locator).toEqual({ chatId: 200 });
+    });
+  });
+
+  describe("id generation / collision fallback", () => {
+    it("returns the generated id when there is no collision", () => {
+      const generated: string[] = [];
+      const s = new ScheduleStore(tmpDir, () => {
+        generated.push("aaaaaaaaaa");
+        return "aaaaaaaaaa";
+      });
+      const created = s.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "x",
+        nextRunAt: FUTURE_ISO,
+      });
+      expect(created.id).toBe("aaaaaaaaaa");
+    });
+
+    it("retries on collision and uses the first non-colliding id", () => {
+      // First create seeds an existing id, then the second store's generator
+      // returns the existing id once (collision) before yielding a fresh one.
+      const seed = new ScheduleStore(tmpDir, () => "seedid0000");
+      seed.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "first",
+        nextRunAt: FUTURE_ISO,
+      });
+
+      let call = 0;
+      const colliding = new ScheduleStore(tmpDir, () => {
+        call++;
+        return call === 1 ? "seedid0000" : "freshid001";
+      });
+      const created = colliding.create({
+        sessionId: "sess-b",
+        locator: LOC,
+        kind: "once",
+        prompt: "second",
+        nextRunAt: FUTURE_ISO,
+      });
+      expect(created.id).toBe("freshid001");
+      expect(call).toBe(2); // one collision, one success
+    });
+
+    it("falls back to a longer id after exhausting collision retries", () => {
+      // Seed an existing id, then force the generator to always collide.
+      const seed = new ScheduleStore(tmpDir, () => "seedid0000");
+      seed.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "first",
+        nextRunAt: FUTURE_ISO,
+      });
+
+      const alwaysCollide = new ScheduleStore(tmpDir, () => "seedid0000");
+      const created = alwaysCollide.create({
+        sessionId: "sess-b",
+        locator: LOC,
+        kind: "once",
+        prompt: "second",
+        nextRunAt: FUTURE_ISO,
+      });
+      // After 8 collisions the fallback yields a 16-char id (not the colliding
+      // 10-char one), guaranteed unique against the seeded record.
+      expect(created.id).toHaveLength(16);
+      expect(created.id).not.toBe("seedid0000");
     });
   });
 });

@@ -586,4 +586,45 @@ describe("Telegram intake", () => {
     expect(order[1]).toBe("[prepared] second (queued)");
     expect(order[2]).toBe("third (scheduled)");
   });
+
+  it("aborts a scheduled turn whose runner was swapped before it started", async () => {
+    // Stale-runner guard on the scheduled-turn path: enqueue a scheduled turn
+    // behind a slow in-flight turn, then dispose the runner (as /new would)
+    // before the queued scheduled turn starts. The isCurrent() guard must
+    // abort the scheduled turn without producing side effects — the scheduled
+    // prompt never reaches the disposed runner.
+    const { intake, manager, agentRunners } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      await pending.promise; // keep the first turn in flight
+    };
+
+    await intake.handleText(message, "/new");
+    const session = manager.list()[0]!;
+    const dispatcher = intake.dispatcher;
+    const firstRunner = runners[0]!;
+
+    // Start a slow turn, then enqueue a scheduled turn behind it.
+    await intake.handleText(message, "slow");
+    await waitFor(() => firstRunner.isStreaming);
+    dispatcher.enqueueScheduledTurn(session, { chatId: 1 }, "scheduled prompt");
+    await flushMicrotasks();
+
+    // Swap the runner out (as /new does) before the scheduled turn starts.
+    dispatcher.disposeRunner(session.id);
+    expect(agentRunners.has(session.id)).toBe(false);
+
+    // Release the in-flight turn. The queued scheduled turn wakes, sees its
+    // runner is no longer current, and aborts.
+    pending.resolve();
+    await flushMicrotasks();
+
+    // The scheduled prompt never ran on the disposed runner.
+    expect(firstRunner.prompt).toHaveBeenCalledTimes(1);
+    expect(firstRunner.prompt.mock.calls[0]![0]).toBe("[prepared] slow");
+    // No new runner was created for the scheduled turn (isCurrent() aborted).
+    expect(dispatcher.runners.has(session.id)).toBe(false);
+  });
 });

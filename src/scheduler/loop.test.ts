@@ -344,6 +344,36 @@ describe("SchedulerLoop", () => {
       expect(after!.lastRun!.outcome).toBe("archived");
       expect(dispatcher.calls).toHaveLength(0);
     });
+
+    it("labels a deleted-but-not-archived session as binding-mismatch, not archived", async () => {
+      // Pattern C precision: only sessions archived via archive() get the
+      // "archived" outcome. A session whose dir was removed manually (or that
+      // simply never existed for the captured locator) is a binding-mismatch.
+      const loc: ChatLocator = { chatId: 100 };
+      const session = manager.createForChat(loc);
+      const created = store.create({
+        sessionId: session.id,
+        locator: loc,
+        kind: "recurring",
+        prompt: "x",
+        nextRunAt: new Date(NOW_MS - 1000).toISOString(),
+        intervalMs: 3600_000,
+      });
+      // Simulate deletion without archive: clear the DM binding and remove the
+      // dir directly, so peekBinding returns null and isArchived is false.
+      const { rmSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      rmSync(join(tmpDir, "sessions", session.id), { recursive: true, force: true });
+      // The DM binding in config.json still references the deleted session;
+      // peekBinding reads binding + loadState, finds state missing → null.
+
+      await makeLoop().tick();
+
+      const after = store.getForSession(session.id, created.id);
+      expect(after!.enabled).toBe(false);
+      expect(after!.lastRun!.outcome).toBe("binding-mismatch");
+      expect(dispatcher.calls).toHaveLength(0);
+    });
   });
 
   describe("tick errors", () => {
@@ -383,6 +413,40 @@ describe("SchedulerLoop", () => {
       });
       await healthy.tick();
       expect(dispatcher.calls).toHaveLength(1);
+    });
+
+    it("records an error lastRun when dispatch throws synchronously", async () => {
+      // Pattern B: a synchronous throw from enqueueScheduledTurn must not
+      // leave the claimed schedule with a stale/absent lastRun. The schedule
+      // was already claimed (one-shot completed, recurring advanced) before
+      // dispatch; the throw records outcome "error" so the record reflects
+      // reality.
+      const loc: ChatLocator = { chatId: 100 };
+      const session = manager.createForChat(loc);
+      const created = store.create({
+        sessionId: session.id,
+        locator: loc,
+        kind: "recurring",
+        prompt: "x",
+        nextRunAt: new Date(NOW_MS - 1000).toISOString(),
+        intervalMs: 3600_000,
+      });
+
+      const throwingDispatcher: SchedulerDispatcher = {
+        enqueueScheduledTurn: () => {
+          throw new Error("sync boom");
+        },
+      };
+      const loop = new SchedulerLoop({ store, manager, dispatcher: throwingDispatcher, clock: clock.clock });
+
+      await expect(loop.tick()).resolves.toBeUndefined();
+
+      const after = store.getForSession(session.id, created.id);
+      expect(after!.lastRun).toBeDefined();
+      expect(after!.lastRun!.outcome).toBe("error");
+      expect(after!.lastRun!.message).toContain("sync boom");
+      // The recurring schedule was advanced before the throw (not re-due now).
+      expect(new Date(after!.nextRunAt).getTime()).toBeGreaterThan(NOW_MS);
     });
   });
 

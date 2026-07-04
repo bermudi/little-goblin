@@ -431,6 +431,22 @@ describe("buildScheduleDeps + ScheduleStore (integration)", () => {
     expect(executeSchedule(deps, `/schedule pause ${id}`)).toBe(`No matching schedule \`${id}\`.`);
   });
 
+  it("ownership: resume returns no-match for a foreign-owned schedule", () => {
+    store.create({
+      sessionId: "sess-b",
+      locator: { chatId: 999 },
+      kind: "once",
+      prompt: "foreign",
+      nextRunAt: FUTURE_ISO,
+    });
+    const sessionA = makeSession("sess-a");
+    const deps = buildScheduleDeps(store, sessionA, LOC, NOW);
+    const id = store.listBySession("sess-b")[0]!.id;
+    expect(executeSchedule(deps, `/schedule resume ${id}`)).toBe(`No matching schedule \`${id}\`.`);
+    // The foreign schedule is untouched.
+    expect(store.listBySession("sess-b")).toHaveLength(1);
+  });
+
   it("heartbeat on enables a real heartbeat record in the store", () => {
     const session = makeSession();
     const deps = buildScheduleDeps(store, session, LOC, NOW);

@@ -84,6 +84,23 @@ export class SessionManager {
   }
 
   /**
+   * Precisely determine whether a session was archived via `archive()` — i.e.
+   * its directory now lives under `sessions/archive/<id>/`. This is a single
+   * `existsSync`, not a directory scan, so it is cheap to call per due
+   * schedule.
+   *
+   * Used by the scheduler to distinguish the "archived" outcome (binding
+   * cleared by `archive()`) from a generic "binding-mismatch" (rebound or
+   * deleted-without-archive). A session whose dir was removed manually (not
+   * via archive) returns false here — the scheduler labels that
+   * "binding-mismatch" instead, matching the spec's "archived" scenario
+   * definition.
+   */
+  isArchived(sessionId: string): boolean {
+    return existsSync(join(sessionsDir(this.home), "archive", sessionId));
+  }
+
+  /**
    * Resolve a chat locator to an active session.
    * - Topic messages: auto-create on first resolve (topic = session)
    * - Supergroups: auto-create on first resolve (supergroup = session)

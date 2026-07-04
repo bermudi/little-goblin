@@ -187,31 +187,41 @@ export class SchedulerLoop {
 
     // Binding is valid: dispatch the prompt as a fresh turn. The dispatcher
     // serializes through the per-session queue, so a scheduled turn waits
-    // behind any in-flight turn. Prompt failures are logged inside the
-    // dispatcher; we record an "ok" outcome regardless because the dispatch
-    // itself succeeded (the per-session queue accepted the work).
-    this.dispatcher.enqueueScheduledTurn(peeked.state, schedule.locator, prompt, (err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.store.recordRun(schedule.id, {
-        at: new Date(this.clock.now()).toISOString(),
-        outcome: "error",
-        message: msg,
+    // behind any in-flight turn. Async prompt failures are reported via the
+    // onError callback (records outcome: "error"). A synchronous throw from
+    // enqueueScheduledTurn (a dispatcher bug) would otherwise leave the
+    // schedule claimed with no last-run status, so we catch, record "error",
+    // and re-throw — the outer tick catch logs it and future ticks continue.
+    try {
+      this.dispatcher.enqueueScheduledTurn(peeked.state, schedule.locator, prompt, (err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.store.recordRun(schedule.id, {
+          at: new Date(this.clock.now()).toISOString(),
+          outcome: "error",
+          message: msg,
+        });
       });
-    });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.store.recordRun(schedule.id, { at: nowIso, outcome: "error", message: msg });
+      log.error("scheduler dispatch threw synchronously", {
+        id: schedule.id,
+        error: msg,
+      });
+      throw err;
+    }
     this.store.recordRun(schedule.id, { at: nowIso, outcome: "ok" });
   }
 
   /**
-   * Heuristic: was this session archived? Archive moves the session dir under
-   * `sessions/archive/<id>/` and clears bindings, so `peekBinding` returns
-   * null. We treat the absence of a binding as "archived" when the session
-   * can no longer be loaded by id either. This is best-effort diagnostics —
-   * the scheduler disables on either outcome.
+   * Precisely check whether the captured session was archived via
+   * `manager.archive()` (binding cleared + dir moved). A manually-deleted
+   * session dir is NOT archived, so the scheduler labels it "binding-mismatch"
+   * — matching the spec's archived-scenario definition. Delegates to
+   * `SessionManager.isArchived`, a single `existsSync` rather than the O(n×m)
+   * `manager.list()` scan the prior heuristic used.
    */
   private isArchived(sessionId: string): boolean {
-    // peekBinding already failed to resolve; if we also can't find the state
-    // via the manager, the session is gone (archived or deleted).
-    const state = this.manager.list().find((s) => s.id === sessionId);
-    return state === undefined;
+    return this.manager.isArchived(sessionId);
   }
 }

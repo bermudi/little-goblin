@@ -62,13 +62,25 @@ describe("resolveConfigValue", () => {
     expect(resolveConfigValue("!   ")).toBeUndefined();
   });
 
-  it("differentiates env var from literal with same name", () => {
-    // When env var exists
+  it("differentiates env var from unresolved env-style name", () => {
+    // When the env var exists, resolve to its value.
     process.env.TEST_VAR_NAME = "env_value";
     expect(resolveConfigValue("TEST_VAR_NAME")).toBe("env_value");
 
-    // When env var doesn't exist, treat as literal
+    // When an env-style name (ASCII upper-snake) is NOT set, resolve to
+    // undefined so optional keys (e.g. groqApiKey: "GROQ_API_KEY") don't
+    // leak the literal into Config.
     delete process.env.TEST_VAR_NAME;
-    expect(resolveConfigValue("TEST_VAR_NAME")).toBe("TEST_VAR_NAME");
+    expect(resolveConfigValue("TEST_VAR_NAME")).toBeUndefined();
+  });
+
+  it("treats non-env-style literals as literals even when unset", () => {
+    // Lowercase / mixed / symbolic values are not env-style names, so they
+    // pass through unchanged regardless of whether an env var is set.
+    expect(resolveConfigValue("hello")).toBe("hello");
+    expect(resolveConfigValue("poe/Claude-Sonnet-4.6")).toBe("poe/Claude-Sonnet-4.6");
+    expect(resolveConfigValue("123:token")).toBe("123:token");
+    // Single uppercase char is too short to be an env-style name.
+    expect(resolveConfigValue("X")).toBe("X");
   });
 });

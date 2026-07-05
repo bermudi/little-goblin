@@ -21,6 +21,10 @@ export const ConfigFileSchema = z.object({
   favorites: z.array(z.string()).optional(),
   /** Microsoft Edge TTS voice for /voice and text_to_speech. */
   voiceName: z.string().default(DEFAULT_VOICE_NAME),
+  /** Groq API key for voice-note ASR. Optional resolved string. */
+  groqApiKey: z.string().optional(),
+  /** Groq Whisper model for voice-note ASR. */
+  asrModel: z.enum(["whisper-large-v3-turbo", "whisper-large-v3"]).default("whisper-large-v3-turbo"),
 });
 
 export type ConfigFile = z.infer<typeof ConfigFileSchema>;

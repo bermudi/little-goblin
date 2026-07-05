@@ -2,11 +2,11 @@
 
 ## Phase 1: Add ASR config
 
-- [ ] Add `groqApiKey` and `asrModel` to `src/schema.ts` for `Groq ASR configuration`.
-- [ ] Extend `Config` in `src/config.ts` with `groqApiKey?: string` and `asrModel`.
-- [ ] Add config tests for default model, valid override, invalid model rejection, and key resolution.
-- [ ] Run `bun test src/config.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Add `groqApiKey` and `asrModel` to `src/schema.ts` for `Groq ASR configuration`.
+- [x] Extend `Config` in `src/config.ts` with `groqApiKey?: string` and `asrModel`.
+- [x] Add config tests for default model, valid override, invalid model rejection, and key resolution.
+- [x] Run `bun test src/config.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 2: Add Groq transcription
 

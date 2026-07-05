@@ -227,6 +227,85 @@ describe("loadConfig", () => {
     const cfg = loadConfig();
     expect(Object.isFrozen(cfg)).toBe(true);
   });
+
+  it("defaults asrModel to whisper-large-v3-turbo when not specified", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.asrModel).toBe("whisper-large-v3-turbo");
+  });
+
+  it("loads asrModel override from config file", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      asrModel: "whisper-large-v3",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.asrModel).toBe("whisper-large-v3");
+  });
+
+  it("rejects an invalid asrModel value", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      asrModel: "whisper-1",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    expect(() => loadConfig()).toThrow("Config validation failed");
+  });
+
+  it("resolves groqApiKey from environment", () => {
+    process.env.GROQ_API_KEY = "groq-secret";
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      groqApiKey: "GROQ_API_KEY",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.groqApiKey).toBe("groq-secret");
+    delete process.env.GROQ_API_KEY;
+  });
+
+  it("leaves groqApiKey unset when the env reference is unresolved", () => {
+    delete process.env.GROQ_API_KEY;
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      groqApiKey: "GROQ_API_KEY",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    // Unresolved env-style name must NOT leak the literal into Config.
+    expect(cfg.groqApiKey).toBeUndefined();
+  });
+
+  it("starts successfully when groqApiKey is absent", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.groqApiKey).toBeUndefined();
+  });
 });
 
 describe("ensureGoblinHome", () => {

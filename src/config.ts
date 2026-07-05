@@ -31,6 +31,14 @@ export interface Config {
   favorites: string[];
   /** Microsoft Edge TTS voice for /voice and text_to_speech. */
   voiceName: string;
+  /** Groq API key for voice-note ASR. Undefined when not configured. */
+  groqApiKey?: string;
+  /**
+   * Groq Whisper model for voice-note ASR. Optional on the interface so
+   * hand-built test fixtures stay valid; `loadConfig` always populates it from
+   * the schema default (`whisper-large-v3-turbo`).
+   */
+  asrModel?: "whisper-large-v3-turbo" | "whisper-large-v3";
 }
 
 /**
@@ -87,6 +95,8 @@ export function loadConfig(): Config {
     skillSources: cfg.skillSources,
     favorites: cfg.favorites ?? [],
     voiceName: cfg.voiceName,
+    groqApiKey: cfg.groqApiKey,
+    asrModel: cfg.asrModel,
   });
 
   return config;

@@ -6,6 +6,7 @@ import type { Context } from "grammy";
 import type { Config } from "./config.ts";
 import type { AgentRunner } from "./agent/mod.ts";
 import { replyNoActiveSession } from "./bot.ts";
+import { memoryDir } from "./memory/paths.ts";
 
 const runnerInstances: MockAgentRunner[] = [];
 
@@ -536,7 +537,7 @@ describe("buildBot integration", () => {
   it("archives orphaned topic memory when Telegram reports topic not found", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(topicTextUpdate("/new") as never);
-    const topicMemoryDir = join(built.cfg.goblinHome, "memory", "topics", "-100", "42");
+    const topicMemoryDir = join(memoryDir(built.cfg.goblinHome), "topics", "-100", "42");
     mkdirSync(topicMemoryDir, { recursive: true });
     writeFileSync(join(topicMemoryDir, "memory.md"), "orphaned memory");
     built.api.failTopicNotFound();
@@ -548,7 +549,7 @@ describe("buildBot integration", () => {
 
     await built.bot.handleUpdate(topicTextUpdate("hello") as never);
 
-    expect(existsSync(join(built.cfg.goblinHome, "memory", "archive", "topics", "-100", "42", "memory.md"))).toBe(true);
+    expect(existsSync(join(memoryDir(built.cfg.goblinHome), "archive", "topics", "-100", "42", "memory.md"))).toBe(true);
   });
 
   it("allowlist drops non-allowed DMs before commands run", async () => {

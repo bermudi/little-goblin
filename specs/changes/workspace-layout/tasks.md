@@ -35,16 +35,16 @@
 
 ## Phase 5: Update test fixtures with inline paths
 
-- [ ] Update `src/agent/mod.test.ts`: replace `join(home, "memory")` → `join(home, "state", "memory")`, `join(home, "sessions", ...)` → `join(home, "state", "sessions", ...)`, `join(home, "skills")` → `join(home, "workspace", "skills")`.
-- [ ] Update `src/subagents/test/support.ts`: `join(home, "workdir")` → `join(home, "scratch", "workdir")`, `join(home, "goblin")` → `join(home, "state", "pi")`.
-- [ ] Update `src/subagents/test/memory.suite.ts`: `join(tmp, "memory", ...)` → `join(tmp, "state", "memory", ...)`.
-- [ ] Update `src/memory/reflector.test.ts`: `join(home, "sessions", sessionId)` → `join(home, "state", "sessions", sessionId)`.
-- [ ] Update `src/commands/voice.test.ts`: `join(home, "sessions", sessionId)` → `join(home, "state", "sessions", sessionId)`.
-- [ ] Update `src/bot.test.ts`: any inline path references to `sessions/`, `memory/`, `workdir/`, `goblin/` root-level dirs.
-- [ ] Update `src/commands/integration.test.ts`: `cfg.goblinHome, "sessions"` → `cfg.goblinHome, "state", "sessions"`.
-- [ ] Update `src/commands/dispatch.test.ts`: `harness.cfg.goblinHome, "sessions"` → `harness.cfg.goblinHome, "state", "sessions"`.
-- [ ] Update `src/tg/intake.test.ts`: any inline path references.
-- [ ] Run `bun test` for the full suite to catch remaining inline paths.
+- [x] Update `src/agent/mod.test.ts`: replace `join(home, "memory")` → `join(home, "state", "memory")`, `join(home, "sessions", ...)` → `join(home, "state", "sessions", ...)`, `join(home, "skills")` → `join(home, "workspace", "skills")`.
+- [x] Update `src/subagents/test/support.ts`: `join(home, "workdir")` → `join(home, "scratch", "workdir")`, `join(home, "goblin")` → `join(home, "state", "pi")`.
+- [x] Update `src/subagents/test/memory.suite.ts`: `join(tmp, "memory", ...)` → `join(tmp, "state", "memory", ...)`.
+- [x] Update `src/memory/reflector.test.ts`: `join(home, "sessions", sessionId)` → `join(home, "state", "sessions", sessionId)`.
+- [x] Update `src/commands/voice.test.ts`: `join(home, "sessions", sessionId)` → `join(home, "state", "sessions", sessionId)`.
+- [x] Update `src/bot.test.ts`: any inline path references to `sessions/`, `memory/`, `workdir/`, `goblin/` root-level dirs.
+- [x] Update `src/commands/integration.test.ts`: `cfg.goblinHome, "sessions"` → `cfg.goblinHome, "state", "sessions"`.
+- [x] Update `src/commands/dispatch.test.ts`: `harness.cfg.goblinHome, "sessions"` → `harness.cfg.goblinHome, "state", "sessions"`.
+- [x] Update `src/tg/intake.test.ts`: any inline path references. _(No inline old-path refs found — intake.test.ts routes through helpers / uses no path literals.)_
+- [x] Run `bun test` for the full suite to catch remaining inline paths. _(Also swept files the design inventory missed: src/agent/events.test.ts, src/agent/system-prompt.test.ts, src/diagnostics.test.ts, src/scheduler/loop.test.ts, src/scheduler/store.test.ts, src/subagents/test/revive.suite.ts, src/subagents/test/spawn.suite.ts — all routed through path helpers. Full suite: 1164 pass / 0 fail.)_
 
 ## Phase 6: Update AGENTS.md, glossary, and verify
 

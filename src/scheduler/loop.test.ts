@@ -362,8 +362,8 @@ describe("SchedulerLoop", () => {
       // Simulate deletion without archive: clear the DM binding and remove the
       // dir directly, so peekBinding returns null and isArchived is false.
       const { rmSync } = await import("node:fs");
-      const { join } = await import("node:path");
-      rmSync(join(tmpDir, "sessions", session.id), { recursive: true, force: true });
+      const { sessionDir } = await import("../sessions/paths.ts");
+      rmSync(sessionDir(tmpDir, session.id), { recursive: true, force: true });
       // The DM binding in config.json still references the deleted session;
       // peekBinding reads binding + loadState, finds state missing → null.
 

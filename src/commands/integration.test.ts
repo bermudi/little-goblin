@@ -17,7 +17,7 @@ import { executeNew } from "./new.ts";
 import { executeArchive } from "./archive.ts";
 import { executeName } from "./name.ts";
 import { executeResume } from "./resume.ts";
-import { sessionDir } from "../sessions/paths.ts";
+import { sessionDir, sessionsDir } from "../sessions/paths.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -78,7 +78,7 @@ describe("rapid command spam integration", () => {
 
     // Final state: session is in archive/
     expect(existsSync(sessionDir(cfg.goblinHome, sessionId))).toBe(false);
-    expect(existsSync(join(cfg.goblinHome, "sessions", "archive", sessionId))).toBe(true);
+    expect(existsSync(join(sessionsDir(cfg.goblinHome), "archive", sessionId))).toBe(true);
 
     // Final state: binding is cleared (DM returns null on resolve)
     const afterArchive = manager.resolve(locator);
@@ -103,7 +103,7 @@ describe("rapid command spam integration", () => {
 
     // First is unbound but still resumable, second is bound.
     expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
-    expect(existsSync(join(cfg.goblinHome, "sessions", "archive", firstId))).toBe(false);
+    expect(existsSync(join(sessionsDir(cfg.goblinHome), "archive", firstId))).toBe(false);
     expect(existsSync(sessionDir(cfg.goblinHome, secondId))).toBe(true);
     expect(manager.resolve(locator)?.id).toBe(secondId);
 
@@ -117,7 +117,7 @@ describe("rapid command spam integration", () => {
 
     // Only second is archived; first remains resumable but unbound.
     expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
-    expect(existsSync(join(cfg.goblinHome, "sessions", "archive", secondId))).toBe(true);
+    expect(existsSync(join(sessionsDir(cfg.goblinHome), "archive", secondId))).toBe(true);
     expect(manager.resolve(locator)).toBeNull();
   });
 

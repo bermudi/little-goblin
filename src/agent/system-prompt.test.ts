@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   GOBLIN_PRODUCT_SHELL,
   MissingSoulError,
   buildGoblinSystemPrompt,
   preflightGoblinPromptFiles,
 } from "./system-prompt.ts";
+import { agentsMdPath, soulMdPath } from "../pi-host.ts";
 
 describe("GOBLIN_PRODUCT_SHELL", () => {
   it("contains approved runtime mechanics without deployed identity fallback", () => {
@@ -27,6 +28,8 @@ describe("preflightGoblinPromptFiles", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-prompt-preflight-test-"));
+    // SOUL.md/AGENTS.md live under workspace/ — ensure the parent exists.
+    mkdirSync(dirname(soulMdPath(tmpDir)), { recursive: true });
   });
 
   afterEach(() => {
@@ -40,7 +43,7 @@ describe("preflightGoblinPromptFiles", () => {
 
   it("warns when deployment AGENTS is missing but SOUL exists", async () => {
     const warnings: string[] = [];
-    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
+    writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
 
     await preflightGoblinPromptFiles({
       home: tmpDir,
@@ -52,8 +55,8 @@ describe("preflightGoblinPromptFiles", () => {
 
   it("continues quietly when SOUL and deployment AGENTS exist", async () => {
     const warnings: string[] = [];
-    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
-    writeFileSync(join(tmpDir, "AGENTS.md"), "deployment rules\n", "utf-8");
+    writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
+    writeFileSync(agentsMdPath(tmpDir), "deployment rules\n", "utf-8");
 
     await preflightGoblinPromptFiles({
       home: tmpDir,
@@ -69,6 +72,8 @@ describe("buildGoblinSystemPrompt", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-system-prompt-test-"));
+    // SOUL.md/AGENTS.md live under workspace/ — ensure the parent exists.
+    mkdirSync(dirname(soulMdPath(tmpDir)), { recursive: true });
   });
 
   afterEach(() => {
@@ -79,8 +84,8 @@ describe("buildGoblinSystemPrompt", () => {
   it("includes required SOUL, optional deployment AGENTS, product shell, and exact project AGENTS", async () => {
     const projectDir = join(tmpDir, "project");
     mkdirSync(projectDir);
-    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
-    writeFileSync(join(tmpDir, "AGENTS.md"), "deployment rules\n", "utf-8");
+    writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
+    writeFileSync(agentsMdPath(tmpDir), "deployment rules\n", "utf-8");
     writeFileSync(join(projectDir, "AGENTS.md"), "project rules\n", "utf-8");
 
     const prompt = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
@@ -101,7 +106,7 @@ describe("buildGoblinSystemPrompt", () => {
   it("continues when optional deployment and project AGENTS files are missing", async () => {
     const projectDir = join(tmpDir, "project");
     mkdirSync(projectDir);
-    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
+    writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
 
     const prompt = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
 
@@ -117,7 +122,7 @@ describe("buildGoblinSystemPrompt", () => {
     const projectDir = join(parentDir, "project");
     mkdirSync(globalDir);
     mkdirSync(projectDir, { recursive: true });
-    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
+    writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
     writeFileSync(join(globalDir, "AGENTS.md"), "global rules\n", "utf-8");
     writeFileSync(join(parentDir, "AGENTS.md"), "ancestor rules\n", "utf-8");
     writeFileSync(join(projectDir, "CLAUDE.md"), "compat rules\n", "utf-8");
@@ -134,8 +139,8 @@ describe("buildGoblinSystemPrompt", () => {
   });
 
   it("propagates non-ENOENT read failures for required SOUL.md without wrapping in MissingSoulError", async () => {
-    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
-    chmodSync(join(tmpDir, "SOUL.md"), 0o000);
+    writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
+    chmodSync(soulMdPath(tmpDir), 0o000);
 
     // Must reject with the underlying error, not MissingSoulError.
     try {
@@ -148,9 +153,9 @@ describe("buildGoblinSystemPrompt", () => {
   });
 
   it("propagates non-ENOENT read failures for optional deployment AGENTS.md", async () => {
-    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
-    writeFileSync(join(tmpDir, "AGENTS.md"), "deployment rules\n", "utf-8");
-    chmodSync(join(tmpDir, "AGENTS.md"), 0o000);
+    writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
+    writeFileSync(agentsMdPath(tmpDir), "deployment rules\n", "utf-8");
+    chmodSync(agentsMdPath(tmpDir), 0o000);
 
     await expect(buildGoblinSystemPrompt({ home: tmpDir })).rejects.toThrow();
   });
@@ -158,7 +163,7 @@ describe("buildGoblinSystemPrompt", () => {
   it("propagates non-ENOENT read failures for optional project AGENTS.md", async () => {
     const projectDir = join(tmpDir, "project");
     mkdirSync(projectDir);
-    writeFileSync(join(tmpDir, "SOUL.md"), "soul identity\n", "utf-8");
+    writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
     writeFileSync(join(projectDir, "AGENTS.md"), "project rules\n", "utf-8");
     chmodSync(join(projectDir, "AGENTS.md"), 0o000);
 

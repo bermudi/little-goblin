@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Config } from "../config.ts";
 import type { CascadeResult } from "../interrupt.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
+import { sessionDir } from "../sessions/paths.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { SubagentInfo, SubagentRunner } from "../subagents/mod.ts";
 import { cancelReply, formatCascadeTimeoutSuffix } from "./cancel.ts";
@@ -376,7 +377,7 @@ describe("handleCommand", () => {
     const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
     const sendVoice = mock(async () => ({ message_id: 1 }));
     const bot = { api: { sendVoice } } as unknown as import("grammy").Bot;
-    const dir = join(harness.cfg.goblinHome, "sessions", session.id);
+    const dir = sessionDir(harness.cfg.goblinHome, session.id);
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, "transcript.jsonl"),
@@ -401,7 +402,7 @@ describe("handleCommand", () => {
     const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
     const sendVoice = mock(async () => ({ message_id: 1 }));
     const bot = { api: { sendVoice } } as unknown as import("grammy").Bot;
-    const dir = join(harness.cfg.goblinHome, "sessions", session.id);
+    const dir = sessionDir(harness.cfg.goblinHome, session.id);
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, "transcript.jsonl"),

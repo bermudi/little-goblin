@@ -13,6 +13,7 @@ import {
 } from "./reflector.ts";
 import { quarantinePath } from "./quarantine.ts";
 import { memoryDir } from "./paths.ts";
+import { sessionDir, transcriptPath } from "../sessions/paths.ts";
 import { parseEntryMetadata } from "./entry.ts";
 import type { ActiveScope } from "./scope.ts";
 
@@ -41,9 +42,9 @@ function makeTranscriptLine(
 }
 
 function appendTranscript(home: string, sessionId: string, entries: Array<{ role: string; text: string }>): void {
-  const dir = join(home, "sessions", sessionId);
+  const dir = sessionDir(home, sessionId);
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, "transcript.jsonl");
+  const path = transcriptPath(home, sessionId);
   let content = "";
   try {
     content = readFileSync(path, "utf-8");
@@ -59,7 +60,7 @@ function appendTranscript(home: string, sessionId: string, entries: Array<{ role
 }
 
 function writeCursor(home: string, sessionId: string, cursor: ReflectionCursor): void {
-  const dir = join(home, "sessions", sessionId);
+  const dir = sessionDir(home, sessionId);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, "memory-reflection.json"),
@@ -71,7 +72,7 @@ function writeCursor(home: string, sessionId: string, cursor: ReflectionCursor):
 function readCursor(home: string, sessionId: string): ReflectionCursor | null {
   try {
     const raw = readFileSync(
-      join(home, "sessions", sessionId, "memory-reflection.json"),
+      join(sessionDir(home, sessionId), "memory-reflection.json"),
       "utf-8",
     );
     return JSON.parse(raw) as ReflectionCursor;

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { SubagentRunner, type SubagentToolFactory } from "../mod.ts";
+import { skillsPath, workdirPath } from "../../pi-host.ts";
 import {
   MAX_SUBAGENT_DEPTH,
   type SubagentMeta,
@@ -302,7 +302,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     const captured = getCapturedCreateArgs();
     expect(captured).toHaveLength(1);
     const opts = captured[0] as Record<string, unknown>;
-    expect(opts.cwd).toBe(join(tmp, "workdir"));
+    expect(opts.cwd).toBe(workdirPath(tmp));
     expect(Array.isArray(opts.customTools)).toBe(true);
     expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
       "memory_read",
@@ -313,7 +313,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
 
     const loader = opts.resourceLoader as { options: Record<string, unknown> } | undefined;
     expect(loader).toBeDefined();
-    expect((loader!.options.additionalSkillPaths as string[])[0]).toBe(join(tmp, "skills"));
+    expect((loader!.options.additionalSkillPaths as string[])[0]).toBe(skillsPath(tmp));
   });
 
   it("for named subagents, builds a DefaultResourceLoader pinned to the agent's skills dir", async () => {

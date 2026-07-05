@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { sessionDir, transcriptPath } from "../sessions/paths.ts";
+import { agentsMdPath, piAgentDir, skillsPath, soulMdPath, workdirPath } from "../pi-host.ts";
+import { memoryDir } from "../memory/paths.ts";
 
 // ---------------------------------------------------------------------------
 // Shared mutable state — captured by the module mock closure
@@ -233,11 +236,13 @@ let tmpDir: string;
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "goblin-agent-test-"));
-  mkdirSync(join(tmpDir, "sessions", "sess-001"), { recursive: true });
-  writeFileSync(join(tmpDir, "sessions", "sess-001", "transcript.jsonl"), "");
-  mkdirSync(join(tmpDir, "workdir"), { recursive: true });
-  mkdirSync(join(tmpDir, "goblin"), { recursive: true });
-  writeFileSync(join(tmpDir, "SOUL.md"), "test goblin identity\n", "utf-8");
+  mkdirSync(sessionDir(tmpDir, "sess-001"), { recursive: true });
+  writeFileSync(transcriptPath(tmpDir, "sess-001"), "");
+  mkdirSync(workdirPath(tmpDir), { recursive: true });
+  mkdirSync(piAgentDir(tmpDir), { recursive: true });
+  // SOUL.md lives under workspace/ — ensure the parent exists before writing.
+  mkdirSync(dirname(soulMdPath(tmpDir)), { recursive: true });
+  writeFileSync(soulMdPath(tmpDir), "test goblin identity\n", "utf-8");
 
   capturedCreateArgs = [];
   capturedResourceLoaderArgs = [];
@@ -261,8 +266,8 @@ describe("AgentRunner", () => {
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
       expect(opts.sessionManager).toEqual({
-        cwd: join(tmpDir, "workdir"),
-        sessionDir: join(tmpDir, "sessions", "sess-001", "pi"),
+        cwd: workdirPath(tmpDir),
+        sessionDir: join(sessionDir(tmpDir, "sess-001"), "pi"),
       });
     });
 
@@ -283,7 +288,7 @@ describe("AgentRunner", () => {
     // conversation history. Resume must open the existing file directly with a
     // cwd override instead.
     it("resumes prior pi session even when its header cwd differs from projectDir", async () => {
-      const piDir = join(tmpDir, "sessions", "sess-001", "pi");
+      const piDir = join(sessionDir(tmpDir, "sess-001"), "pi");
       mkdirSync(piDir, { recursive: true });
       // Prior session file whose header cwd does NOT match the runner's cwd.
       const staleCwd = "/some/other/project";
@@ -349,19 +354,19 @@ describe("AgentRunner", () => {
         undefined,
         {},
       );
-      expect(readFileSync(join(tmpDir, "memory", "topics", "-100", "42", "memory.md"), "utf-8")).toBe("topic fact");
+      expect(readFileSync(join(memoryDir(tmpDir), "topics", "-100", "42", "memory.md"), "utf-8")).toBe("topic fact");
     });
   });
 
   describe("per-turn memory aside", () => {
     function seedMemory(home: string, files: { memory?: string; user?: string }): void {
-      mkdirSync(join(home, "memory"), { recursive: true });
+      mkdirSync(memoryDir(home), { recursive: true });
       if (files.memory !== undefined) {
-        mkdirSync(join(home, "memory", "general"), { recursive: true });
-        writeFileSync(join(home, "memory", "general", "memory.md"), files.memory, "utf-8");
+        mkdirSync(join(memoryDir(home), "general"), { recursive: true });
+        writeFileSync(join(memoryDir(home), "general", "memory.md"), files.memory, "utf-8");
       }
       if (files.user !== undefined) {
-        writeFileSync(join(home, "memory", "user.md"), files.user, "utf-8");
+        writeFileSync(join(memoryDir(home), "user.md"), files.user, "utf-8");
       }
     }
 
@@ -447,9 +452,9 @@ describe("AgentRunner", () => {
 
     it("does not recreate session when memory content changes between turns", async () => {
       // Seed initial memory
-      mkdirSync(join(tmpDir, "memory", "general"), { recursive: true });
-      writeFileSync(join(tmpDir, "memory", "general", "memory.md"), "initial", "utf-8");
-      writeFileSync(join(tmpDir, "memory", "user.md"), "user pref", "utf-8");
+      mkdirSync(join(memoryDir(tmpDir), "general"), { recursive: true });
+      writeFileSync(join(memoryDir(tmpDir), "general", "memory.md"), "initial", "utf-8");
+      writeFileSync(join(memoryDir(tmpDir), "user.md"), "user pref", "utf-8");
 
       const runner = makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
@@ -459,7 +464,7 @@ describe("AgentRunner", () => {
       const callCountAfterFirst = capturedCreateArgs.length;
 
       // Modify memory between turns
-      writeFileSync(join(tmpDir, "memory", "general", "memory.md"), "modified content", "utf-8");
+      writeFileSync(join(memoryDir(tmpDir), "general", "memory.md"), "modified content", "utf-8");
 
       // Second prompt should NOT recreate the session
       await runner.prompt("second", nopCallbacks());
@@ -603,7 +608,7 @@ describe("AgentRunner", () => {
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
-      expect(opts.cwd).toBe(join(tmpDir, "workdir"));
+      expect(opts.cwd).toBe(workdirPath(tmpDir));
     });
 
     it("passes piAgentDir as agentDir", async () => {
@@ -611,7 +616,7 @@ describe("AgentRunner", () => {
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
-      expect(opts.agentDir).toBe(join(tmpDir, "goblin"));
+      expect(opts.agentDir).toBe(piAgentDir(tmpDir));
     });
   });
 
@@ -623,7 +628,7 @@ describe("AgentRunner", () => {
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
       expect(loaderOpts.noSkills).toBe(true);
       expect(loaderOpts.noContextFiles).toBe(true);
-      expect(loaderOpts.additionalSkillPaths).toEqual([join(tmpDir, "skills")]);
+      expect(loaderOpts.additionalSkillPaths).toEqual([skillsPath(tmpDir)]);
       expect(loaderOpts.systemPrompt).toContain("test goblin identity");
     });
 
@@ -634,14 +639,14 @@ describe("AgentRunner", () => {
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
       expect("noSkills" in loaderOpts).toBe(false);
       expect(loaderOpts.noContextFiles).toBe(true);
-      expect(loaderOpts.additionalSkillPaths).toEqual([join(tmpDir, "skills")]);
+      expect(loaderOpts.additionalSkillPaths).toEqual([skillsPath(tmpDir)]);
       expect(loaderOpts.systemPrompt).toContain("test goblin identity");
     });
   });
 
   describe("Goblin system prompt resource loader", () => {
     it("passes the constructed system prompt through the resource loader", async () => {
-      writeFileSync(join(tmpDir, "AGENTS.md"), "deployment operating rules\n", "utf-8");
+      writeFileSync(agentsMdPath(tmpDir), "deployment operating rules\n", "utf-8");
       const runner = makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
@@ -669,8 +674,8 @@ describe("AgentRunner", () => {
     });
 
     it("does not concatenate memory snapshots into the system prompt", async () => {
-      mkdirSync(join(tmpDir, "memory", "general"), { recursive: true });
-      writeFileSync(join(tmpDir, "memory", "general", "memory.md"), "fresh memory fact", "utf-8");
+      mkdirSync(join(memoryDir(tmpDir), "general"), { recursive: true });
+      writeFileSync(join(memoryDir(tmpDir), "general", "memory.md"), "fresh memory fact", "utf-8");
 
       const runner = makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
@@ -1123,7 +1128,7 @@ describe("AgentRunner", () => {
       });
 
       const content = readFileSync(
-        join(tmpDir, "sessions", "sess-001", "transcript.jsonl"),
+        transcriptPath(tmpDir, "sess-001"),
         "utf-8",
       );
       const lines = content.trim().split("\n").filter(Boolean);
@@ -1191,12 +1196,12 @@ describe("AgentRunner", () => {
       });
 
       // Seed memory with topics so getTopicName gets invoked
-      mkdirSync(join(tmpDir, "memory", "topics", "-100"), { recursive: true });
-      mkdirSync(join(tmpDir, "memory", "topics", "-100", "42"), { recursive: true });
-      mkdirSync(join(tmpDir, "memory", "topics", "-100", "7"), { recursive: true });
-      writeFileSync(join(tmpDir, "memory", "topics", "-100", "42", "memory.md"), "fact-42", "utf-8");
-      writeFileSync(join(tmpDir, "memory", "topics", "-100", "7", "memory.md"), "fact-7", "utf-8");
-      writeFileSync(join(tmpDir, "memory", "user.md"), "user pref", "utf-8");
+      mkdirSync(join(memoryDir(tmpDir), "topics", "-100"), { recursive: true });
+      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "42"), { recursive: true });
+      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "7"), { recursive: true });
+      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "42", "memory.md"), "fact-42", "utf-8");
+      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "7", "memory.md"), "fact-7", "utf-8");
+      writeFileSync(join(memoryDir(tmpDir), "user.md"), "user pref", "utf-8");
 
       const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 }, getTopicName);
 
@@ -1222,11 +1227,11 @@ describe("AgentRunner", () => {
         return null; // Always returns null
       });
 
-      mkdirSync(join(tmpDir, "memory", "topics", "-100", "42"), { recursive: true });
-      mkdirSync(join(tmpDir, "memory", "topics", "-100", "7"), { recursive: true });
-      writeFileSync(join(tmpDir, "memory", "topics", "-100", "42", "memory.md"), "fact-42", "utf-8");
-      writeFileSync(join(tmpDir, "memory", "topics", "-100", "7", "memory.md"), "fact-7", "utf-8");
-      writeFileSync(join(tmpDir, "memory", "user.md"), "user pref", "utf-8");
+      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "42"), { recursive: true });
+      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "7"), { recursive: true });
+      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "42", "memory.md"), "fact-42", "utf-8");
+      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "7", "memory.md"), "fact-7", "utf-8");
+      writeFileSync(join(memoryDir(tmpDir), "user.md"), "user pref", "utf-8");
 
       const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 }, getTopicName);
 
@@ -1312,7 +1317,7 @@ describe("AgentRunner", () => {
     /** Pre-seed a reflection cursor at processedLines=0 so the first pass processes all transcript entries. */
     function seedCursorAtZero(home: string): void {
       writeFileSync(
-        join(home, "sessions", "sess-001", "memory-reflection.json"),
+        join(sessionDir(home, "sess-001"), "memory-reflection.json"),
         JSON.stringify({ processedLines: 0, lastReflectedAt: new Date().toISOString() }) + "\n",
         "utf-8",
       );
@@ -1321,7 +1326,7 @@ describe("AgentRunner", () => {
     /** Write a single user transcript entry. */
     function writeTranscriptEntry(home: string, text: string): void {
       writeFileSync(
-        join(home, "sessions", "sess-001", "transcript.jsonl"),
+        transcriptPath(home, "sess-001"),
         JSON.stringify({
           ts: new Date().toISOString(),
           role: "user",
@@ -1388,7 +1393,7 @@ describe("AgentRunner", () => {
       // The cursor should NOT have advanced — a failed pass retries the
       // same range on the next schedule.
       const cursor = JSON.parse(
-        readFileSync(join(tmpDir, "sessions", "sess-001", "memory-reflection.json"), "utf-8"),
+        readFileSync(join(sessionDir(tmpDir, "sess-001"), "memory-reflection.json"), "utf-8"),
       );
       expect(cursor.processedLines).toBe(0);
     });
@@ -1417,7 +1422,7 @@ describe("AgentRunner", () => {
       await reflector.awaitSettled("sess-001");
 
       // The reflected entry should now be in user.md.
-      const userMd = readFileSync(join(tmpDir, "memory", "user.md"), "utf-8");
+      const userMd = readFileSync(join(memoryDir(tmpDir), "user.md"), "utf-8");
       expect(userMd).toContain("User prefers terse engineering summaries.");
 
       // Next turn's snapshot should include the reflected entry.
@@ -1468,7 +1473,7 @@ describe("AgentRunner", () => {
       sessionHolder.emit({ type: "agent_end", messages: [] });
       await reflector.awaitSettled("sess-001");
 
-      const userMd = readFileSync(join(tmpDir, "memory", "user.md"), "utf-8");
+      const userMd = readFileSync(join(memoryDir(tmpDir), "user.md"), "utf-8");
       expect(userMd).toContain("User prefers terse engineering summaries.");
 
       // A subsequent turn must not recreate the session or resource loader

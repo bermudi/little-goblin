@@ -8,6 +8,7 @@ import {
   extractAssistantText,
   type TurnCallbacks,
 } from "./events.ts";
+import { sessionDir, transcriptPath } from "../sessions/paths.ts";
 
 describe("appendTranscriptEntry", () => {
   let tmpDir: string;
@@ -16,8 +17,7 @@ describe("appendTranscriptEntry", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-transcript-test-"));
     sessionId = "test-session-123";
-    const sessionDir = join(tmpDir, "sessions", sessionId);
-    mkdirSync(sessionDir, { recursive: true });
+    mkdirSync(sessionDir(tmpDir, sessionId), { recursive: true });
   });
 
   afterEach(() => {
@@ -28,8 +28,7 @@ describe("appendTranscriptEntry", () => {
     appendTranscriptEntry(sessionId, tmpDir, { type: "message_start", message: { role: "user" } });
 
     // File shouldn't be created since nothing was written
-    const transcriptPath = join(tmpDir, "sessions", sessionId, "transcript.jsonl");
-    expect(existsSync(transcriptPath)).toBe(false);
+    expect(existsSync(transcriptPath(tmpDir, sessionId))).toBe(false);
   });
 
   it("appends user messages", () => {
@@ -39,7 +38,7 @@ describe("appendTranscriptEntry", () => {
       message: { role: "user", content: "hello goblin", timestamp: 123 },
     });
 
-    const content = readFileSync(join(tmpDir, "sessions", sessionId, "transcript.jsonl"), "utf-8");
+    const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
     const parsed = JSON.parse(content.trim());
     expect(parsed).toEqual({
       ts: "2026-05-07T20:00:00.000Z",
@@ -78,7 +77,7 @@ describe("appendTranscriptEntry", () => {
       },
     });
 
-    const content = readFileSync(join(tmpDir, "sessions", sessionId, "transcript.jsonl"), "utf-8");
+    const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
     const parsed = JSON.parse(content.trim());
     expect(parsed.role).toBe("assistant");
     expect(parsed.provider).toBe("openai");
@@ -118,7 +117,7 @@ describe("appendTranscriptEntry", () => {
       },
     });
 
-    const content = readFileSync(join(tmpDir, "sessions", sessionId, "transcript.jsonl"), "utf-8");
+    const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
     const parsed = JSON.parse(content.trim());
     expect(parsed.role).toBe("assistant");
     expect(parsed.usage).toBeUndefined();
@@ -140,7 +139,7 @@ describe("appendTranscriptEntry", () => {
       },
     });
 
-    const content = readFileSync(join(tmpDir, "sessions", sessionId, "transcript.jsonl"), "utf-8");
+    const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
     const parsed = JSON.parse(content.trim());
     expect(parsed).toEqual({
       ts: expect.any(String),

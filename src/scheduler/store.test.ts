@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ScheduleStore, makeScheduleId, loadStore } from "./store.ts";
 import { schedulesPath } from "../sessions/paths.ts";
 import type { ChatLocator } from "../sessions/types.ts";
@@ -32,6 +32,7 @@ describe("ScheduleStore", () => {
     });
 
     it("warns and loads empty on malformed JSON", () => {
+      mkdirSync(dirname(schedulesPath(tmpDir)), { recursive: true });
       writeFileSync(schedulesPath(tmpDir), "{not json");
       const loaded = loadStore(tmpDir);
       expect(loaded.schedules).toEqual([]);

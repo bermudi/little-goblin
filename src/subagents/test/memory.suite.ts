@@ -8,6 +8,7 @@ import {
   createMemoryWriteTool,
   type ActiveScope,
 } from "../../memory/mod.ts";
+import { memoryDir } from "../../memory/paths.ts";
 import { SubagentRunner } from "../mod.ts";
 import { namedAgentAgentsMdPath, namedAgentDir } from "../paths.ts";
 import {
@@ -65,7 +66,7 @@ describe("SubagentRunner — scoped memory", () => {
     });
 
     expect(
-      readFileSync(join(tmp, "memory", "topics", "-100123", "42", "memory.md"), "utf-8"),
+      readFileSync(join(memoryDir(tmp), "topics", "-100123", "42", "memory.md"), "utf-8"),
     ).toBe("topic fact");
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
@@ -103,10 +104,10 @@ describe("SubagentRunner — scoped memory", () => {
     });
 
     expect(
-      readFileSync(join(tmp, "memory", "agents", "researcher", "memory.md"), "utf-8"),
+      readFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "utf-8"),
     ).toBe("persona fact");
     expect(
-      readFileSync(join(tmp, "memory", "topics", "-100123", "42", "memory.md"), "utf-8"),
+      readFileSync(join(memoryDir(tmp), "topics", "-100123", "42", "memory.md"), "utf-8"),
     ).toBe("topic fact");
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
@@ -185,8 +186,8 @@ describe("SubagentRunner — scoped memory", () => {
 
   it("named subagents cannot discover peer persona scopes via memory_read_index", async () => {
     // Set up: create another named agent's persona
-    mkdirSync(join(tmp, "memory", "agents", "writer"), { recursive: true });
-    writeFileSync(join(tmp, "memory", "agents", "writer", "memory.md"), "writer persona");
+    mkdirSync(join(memoryDir(tmp), "agents", "writer"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "agents", "writer", "memory.md"), "writer persona");
     mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
 
@@ -217,11 +218,11 @@ describe("SubagentRunner — scoped memory", () => {
   });
 
   it("sends named-subagent snapshots with the persona section only for named agents", async () => {
-    mkdirSync(join(tmp, "memory", "topics", "-100123", "42"), { recursive: true });
-    writeFileSync(join(tmp, "memory", "topics", "-100123", "42", "memory.md"), "topic memory");
-    writeFileSync(join(tmp, "memory", "user.md"), "user memory");
-    mkdirSync(join(tmp, "memory", "agents", "researcher"), { recursive: true });
-    writeFileSync(join(tmp, "memory", "agents", "researcher", "memory.md"), "persona memory");
+    mkdirSync(join(memoryDir(tmp), "topics", "-100123", "42"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "topics", "-100123", "42", "memory.md"), "topic memory");
+    writeFileSync(join(memoryDir(tmp), "user.md"), "user memory");
+    mkdirSync(join(memoryDir(tmp), "agents", "researcher"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "persona memory");
     mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
 
@@ -275,9 +276,9 @@ describe("SubagentRunner — scoped memory", () => {
   it("subagent agent_end does not schedule memory reflection", async () => {
     // Pre-seed a topic memory file so a reflector (if one were wired) would
     // have a target to write to. The point is that no reflector runs.
-    mkdirSync(join(tmp, "memory", "topics", "-100123", "42"), { recursive: true });
-    writeFileSync(join(tmp, "memory", "topics", "-100123", "42", "memory.md"), "topic memory");
-    writeFileSync(join(tmp, "memory", "user.md"), "user memory");
+    mkdirSync(join(memoryDir(tmp), "topics", "-100123", "42"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "topics", "-100123", "42", "memory.md"), "topic memory");
+    writeFileSync(join(memoryDir(tmp), "user.md"), "user memory");
 
     const handle = await runner.spawn({
       prompt: "remember, I prefer concise summaries with test output",
@@ -296,17 +297,17 @@ describe("SubagentRunner — scoped memory", () => {
     // No reflection cursor should exist anywhere under $GOBLIN_HOME.
     expect(findFilesNamed(tmp, "memory-reflection.json")).toEqual([]);
     // No quarantine file should have been created by automatic reflection.
-    expect(existsSync(join(tmp, "memory", "quarantine.jsonl"))).toBe(false);
+    expect(existsSync(join(memoryDir(tmp), "quarantine.jsonl"))).toBe(false);
     // Trusted memory files are untouched — no automatic writes happened.
     expect(
-      readFileSync(join(tmp, "memory", "topics", "-100123", "42", "memory.md"), "utf-8"),
+      readFileSync(join(memoryDir(tmp), "topics", "-100123", "42", "memory.md"), "utf-8"),
     ).toBe("topic memory");
-    expect(readFileSync(join(tmp, "memory", "user.md"), "utf-8")).toBe("user memory");
+    expect(readFileSync(join(memoryDir(tmp), "user.md"), "utf-8")).toBe("user memory");
   });
 
   it("named subagent persona memory changes only via explicit memory_write", async () => {
-    mkdirSync(join(tmp, "memory", "agents", "researcher"), { recursive: true });
-    writeFileSync(join(tmp, "memory", "agents", "researcher", "memory.md"), "persona memory");
+    mkdirSync(join(memoryDir(tmp), "agents", "researcher"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "persona memory");
     mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
 
@@ -325,7 +326,7 @@ describe("SubagentRunner — scoped memory", () => {
 
     // Persona memory must be unchanged — automatic reflection never ran.
     expect(
-      readFileSync(join(tmp, "memory", "agents", "researcher", "memory.md"), "utf-8"),
+      readFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "utf-8"),
     ).toBe("persona memory");
     // No reflection cursor anywhere under $GOBLIN_HOME.
     expect(findFilesNamed(tmp, "memory-reflection.json")).toEqual([]);

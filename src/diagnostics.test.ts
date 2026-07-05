@@ -9,6 +9,7 @@ import {
   type Diagnostics,
 } from "./diagnostics.ts";
 import type { SessionState } from "./sessions/types.ts";
+import { sessionDir, transcriptPath } from "./sessions/paths.ts";
 import type { SubagentRunner } from "./subagents/mod.ts";
 import type { AgentRunner } from "./agent/mod.ts";
 import type { SubagentInfo } from "./subagents/types.ts";
@@ -148,9 +149,9 @@ describe("gatherDiagnostics", () => {
 
   it("reports transcript.jsonl size + line count when the file exists", () => {
     const session = makeSession("sess000001");
-    const dir = join(tmpDir, "sessions", session.id);
+    const dir = sessionDir(tmpDir, session.id);
     mkdirSync(dir, { recursive: true });
-    const transcriptFile = join(dir, "transcript.jsonl");
+    const transcriptFile = transcriptPath(tmpDir, session.id);
     writeFileSync(transcriptFile, '{"a":1}\n{"a":2}\n{"a":3}\n');
 
     const d = gatherDiagnostics({

@@ -5,12 +5,13 @@ import { join } from "node:path";
 import type { Bot } from "grammy";
 import { InputFile } from "grammy";
 import { executeVoice, readLastAssistantMessage } from "./voice.ts";
+import { sessionDir, transcriptPath } from "../sessions/paths.ts";
 
 function writeTranscript(home: string, sessionId: string, lines: object[]): void {
-  const dir = join(home, "sessions", sessionId);
+  const dir = sessionDir(home, sessionId);
   mkdirSync(dir, { recursive: true });
   const content = lines.map((line) => JSON.stringify(line)).join("\n") + "\n";
-  writeFileSync(join(dir, "transcript.jsonl"), content);
+  writeFileSync(transcriptPath(home, sessionId), content);
 }
 
 describe("readLastAssistantMessage", () => {
@@ -101,10 +102,10 @@ describe("executeVoice", () => {
   });
 
   function writeTranscript(lines: object[]): void {
-    const dir = join(home, "sessions", sessionId);
+    const dir = sessionDir(home, sessionId);
     mkdirSync(dir, { recursive: true });
     const content = lines.map((line) => JSON.stringify(line)).join("\n") + "\n";
-    writeFileSync(join(dir, "transcript.jsonl"), content);
+    writeFileSync(transcriptPath(home, sessionId), content);
   }
 
   type SendVoiceMock = ReturnType<typeof mock<(chatId: number, file: InputFile, opts?: { message_thread_id?: number }) => Promise<{ message_id: number }>>>;

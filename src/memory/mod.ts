@@ -2,6 +2,7 @@ export { MemoryStore, type StoreResult } from "./store.ts";
 export {
   createMemoryReadIndexTool,
   createMemoryReadTool,
+  createMemorySearchTool,
   createMemoryWriteTool,
 } from "./tool.ts";
 export { formatSnapshot, type MemorySnapshotPayload } from "./snapshot.ts";

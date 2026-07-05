@@ -4,6 +4,7 @@ import type { MemoryStore, StoreResult } from "./store.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
 import { VALID_NAME_RE } from "../subagents/named-agents.ts";
 import { checkDescriptionSafety, checkMemorySafety } from "./safety.ts";
+import { personaPolicyFor, searchMemoryEntries, type PersonaPolicy } from "./search.ts";
 
 const targetSchema = Type.Union([
   Type.Literal("memory"),
@@ -27,6 +28,12 @@ const memoryReadIndexSchema = Type.Object({
   all_chats: Type.Optional(Type.Boolean()),
 });
 
+const memorySearchSchema = Type.Object({
+  query: Type.String(),
+  limit: Type.Optional(Type.Number()),
+  all_chats: Type.Optional(Type.Boolean()),
+});
+
 const memoryWriteSchema = Type.Object({
   action: Type.Union([
     Type.Literal("add"),
@@ -43,10 +50,12 @@ const memoryWriteSchema = Type.Object({
 
 type MemoryReadInput = Static<typeof memoryReadSchema>;
 type MemoryReadIndexInput = Static<typeof memoryReadIndexSchema>;
+type MemorySearchInput = Static<typeof memorySearchSchema>;
 type MemoryWriteInput = Static<typeof memoryWriteSchema>;
 
 const READ_DESCRIPTION = "Read scoped goblin memory without modifying files.";
 const READ_INDEX_DESCRIPTION = "List available scoped goblin memories and their descriptions.";
+const SEARCH_DESCRIPTION = "Search curated goblin memory entries lexically and return ranked matches across the current chat's scopes.";
 const WRITE_DESCRIPTION = `Curate persistent goblin memory.
 
 Targets:
@@ -65,6 +74,7 @@ If a write would overflow the cap, the call fails and you must consolidate befor
 
 const READ_PROMPT_SNIPPET = "memory_read: read scoped memory.md, user.md, or named agent memory.";
 const READ_INDEX_PROMPT_SNIPPET = "memory_read_index: discover other memory scopes by description.";
+const SEARCH_PROMPT_SNIPPET = "memory_search: ranked lexical recall across the current chat's memory scopes.";
 const WRITE_PROMPT_SNIPPET = "memory_write: persist or revise curated facts in the active memory scope.";
 
 const WRITE_PROMPT_GUIDELINES = [
@@ -154,6 +164,51 @@ export function createMemoryReadIndexTool(args: {
           getTopicName: args.getTopicName,
         }),
       );
+    },
+  });
+}
+
+/**
+ * Build the persona-eligibility policy for a memory_search caller from the
+ * tool-wiring flags. Mirrors memory_read_index gating: the main goblin agent
+ * (no namedAgent) searches all persona scopes; a named subagent searches only
+ * its own; anonymous subagents search none.
+ */
+function resolveSearchPersonaPolicy(
+  activeScope: ActiveScope,
+  includeAgents: boolean,
+): PersonaPolicy {
+  if (!includeAgents) return { kind: "none" };
+  return personaPolicyFor(activeScope);
+}
+
+export function createMemorySearchTool(args: {
+  store: MemoryStore;
+  activeScope: ActiveScope;
+  includeAgents: boolean;
+}): ToolDefinition {
+  return defineTool({
+    name: "memory_search",
+    label: "Memory Search",
+    description: SEARCH_DESCRIPTION,
+    promptSnippet: SEARCH_PROMPT_SNIPPET,
+    promptGuidelines: [],
+    parameters: memorySearchSchema,
+    async execute(_toolCallId, params: MemorySearchInput) {
+      const query = params.query.trim();
+      if (query.length === 0) {
+        throw new Error("memory_search requires a non-empty `query`");
+      }
+      const persona = resolveSearchPersonaPolicy(args.activeScope, args.includeAgents);
+      const output = await searchMemoryEntries({
+        store: args.store,
+        activeScope: args.activeScope,
+        persona,
+        query: params.query,
+        limit: params.limit,
+        allChats: params.all_chats,
+      });
+      return jsonResult(output);
     },
   });
 }

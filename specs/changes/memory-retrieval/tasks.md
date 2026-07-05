@@ -9,11 +9,11 @@
 
 ## Phase 2: Add memory_search tool
 
-- [ ] Add `createMemorySearchTool` and schema validation to `src/memory/tool.ts` for `Memory reads support cross-scope retrieval`.
-- [ ] Export the search tool and types from `src/memory/mod.ts`.
-- [ ] Add tool tests for default same-chat scope boundaries, `all_chats`, empty query rejection, invalid limit clamping, persona scope eligibility (main agent vs named subagent vs anonymous), and entry-level results.
-- [ ] Run `bun test src/memory/tool.test.ts src/memory/search.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Add `createMemorySearchTool` and schema validation to `src/memory/tool.ts` for `Memory reads support cross-scope retrieval`.
+- [x] Export the search tool and types from `src/memory/mod.ts`.
+- [x] Add tool tests for default same-chat scope boundaries, `all_chats`, empty query rejection, invalid limit clamping, persona scope eligibility (main agent vs named subagent vs anonymous), and entry-level results.
+- [x] Run `bun test src/memory/tool.test.ts src/memory/search.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 3: Register memory_search in AgentRunner
 

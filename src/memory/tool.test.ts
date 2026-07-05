@@ -6,6 +6,7 @@ import { MemoryStore } from "./store.ts";
 import {
   createMemoryReadIndexTool,
   createMemoryReadTool,
+  createMemorySearchTool,
   createMemoryWriteTool,
 } from "./tool.ts";
 import { memoryDir, scopeMemoryPath, userPath } from "./paths.ts";
@@ -41,6 +42,7 @@ describe("memory tool", () => {
   let readTool: ReturnType<typeof createMemoryReadTool>;
   let readIndexTool: ReturnType<typeof createMemoryReadIndexTool>;
   let writeTool: ReturnType<typeof createMemoryWriteTool>;
+  let searchTool: ReturnType<typeof createMemorySearchTool>;
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "goblin-memory-tool-"));
@@ -53,6 +55,7 @@ describe("memory tool", () => {
       includeAgents: true,
     });
     writeTool = createMemoryWriteTool({ store, activeScope: TOPIC_SCOPE });
+    searchTool = createMemorySearchTool({ store, activeScope: TOPIC_SCOPE, includeAgents: true });
   });
 
   afterEach(() => {
@@ -427,6 +430,141 @@ describe("memory tool", () => {
       );
       expect(textOf(r)).toContain("added");
       expect(store.readBody(target)).toBe("User prefers terse summaries.");
+    });
+  });
+
+  describe("memory_search tool", () => {
+    type SearchOut = {
+      query: string;
+      searchedScopes: number;
+      results: Array<{ scope: string; target: string; text: string; score: number; metadata: unknown }>;
+    };
+
+    function searchJson(r: Awaited<ReturnType<ReturnType<typeof createMemorySearchTool>["execute"]>>): SearchOut {
+      return JSON.parse(textOf(r)) as SearchOut;
+    }
+
+    it("exposes the canonical name and schema", () => {
+      expect(searchTool.name).toBe("memory_search");
+      expect(searchTool.parameters).toBeDefined();
+    });
+
+    it("returns ranked entry-level results from same-chat scopes by default", async () => {
+      await store.add({ topic: { chatId: -100, topicId: 42 } }, "active homelab backups note");
+      await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer homelab backups note");
+      await store.add({ topic: { chatId: -200, topicId: 9 } }, "other chat backups note");
+
+      const r = await searchTool.execute("call-search", { query: "homelab backups" }, undefined, undefined, NULL_CTX);
+      const out = searchJson(r);
+      expect(out.results.length).toBe(2);
+      const scopes = out.results.map((x) => x.scope).sort();
+      expect(scopes).toEqual(["topics/-100/42", "topics/-100/7"]);
+      // Each result carries the entry body, not the whole file.
+      expect(out.results[0]!.text).toContain("homelab backups note");
+    });
+
+    it("includes other-chat topic scopes when all_chats is true", async () => {
+      await store.add({ topic: { chatId: -100, topicId: 42 } }, "active backups note");
+      await store.add({ topic: { chatId: -200, topicId: 9 } }, "other chat backups note");
+
+      const r = await searchTool.execute(
+        "call-search-all",
+        { query: "backups", all_chats: true },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      const out = searchJson(r);
+      expect(out.results.map((x) => x.scope).sort()).toEqual(["topics/-100/42", "topics/-200/9"]);
+    });
+
+    it("rejects an empty/whitespace-only query without scanning", async () => {
+      await store.add({ topic: { chatId: -100, topicId: 42 } }, "active note");
+      await expect(
+        searchTool.execute("call-empty", { query: "   " }, undefined, undefined, NULL_CTX),
+      ).rejects.toThrow(/non-empty/);
+      await expect(
+        searchTool.execute("call-empty-str", { query: "" }, undefined, undefined, NULL_CTX),
+      ).rejects.toThrow(/non-empty/);
+    });
+
+    it("clamps an invalid limit (0) to the default of 10", async () => {
+      for (let i = 0; i < 12; i++) {
+        await store.add({ topic: { chatId: -100, topicId: 42 } }, `backups entry number ${i}`);
+      }
+      const r = await searchTool.execute(
+        "call-limit-zero",
+        { query: "backups", limit: 0 },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      expect(searchJson(r).results.length).toBe(10);
+    });
+
+    it("clamps a limit over 50 down to 50", async () => {
+      const r = await searchTool.execute(
+        "call-limit-huge",
+        { query: "backups", limit: 999 },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      // No data, but the call must not throw on a huge limit.
+      expect(searchJson(r).results).toEqual([]);
+    });
+
+    it("main agent (includeAgents=true, no namedAgent) searches all persona scopes", async () => {
+      await store.add({ agent: { name: "researcher" } }, "researcher persona backups note");
+      await store.add({ agent: { name: "writer" } }, "writer persona backups note");
+
+      const r = await searchTool.execute(
+        "call-main-persona",
+        { query: "backups" },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      const scopes = searchJson(r).results.map((x) => x.scope).sort();
+      expect(scopes).toEqual(["agents/researcher", "agents/writer"]);
+    });
+
+    it("named subagent (includeAgents=true, namedAgent set) searches only its own persona", async () => {
+      await store.add({ agent: { name: "researcher" } }, "researcher persona backups note");
+      await store.add({ agent: { name: "writer" } }, "writer persona backups note");
+      const namedSearch = createMemorySearchTool({
+        store,
+        activeScope: NAMED_AGENT_SCOPE,
+        includeAgents: true,
+      });
+
+      const r = await namedSearch.execute(
+        "call-named-persona",
+        { query: "backups" },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      const scopes = searchJson(r).results.map((x) => x.scope);
+      expect(scopes).toEqual(["agents/researcher"]);
+    });
+
+    it("anonymous subagent (includeAgents=false) searches no persona scopes", async () => {
+      await store.add({ agent: { name: "researcher" } }, "researcher persona backups note");
+      const anonSearch = createMemorySearchTool({
+        store,
+        activeScope: TOPIC_SCOPE,
+        includeAgents: false,
+      });
+
+      const r = await anonSearch.execute(
+        "call-anon-persona",
+        { query: "backups" },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      expect(searchJson(r).results.map((x) => x.scope)).not.toContain("agents/researcher");
     });
   });
 });

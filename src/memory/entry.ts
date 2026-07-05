@@ -20,7 +20,9 @@ export type EntryCategory =
   | "project_fact"
   | "decision"
   | "gotcha"
-  | "convention";
+  | "convention"
+  | "commitment"
+  | "standing_order";
 
 export type EntrySourceRole = "user" | "assistant" | "tool" | "system";
 
@@ -102,6 +104,8 @@ const CATEGORIES: readonly EntryCategory[] = [
   "decision",
   "gotcha",
   "convention",
+  "commitment",
+  "standing_order",
 ] as const;
 
 const ROLES: readonly EntrySourceRole[] = [

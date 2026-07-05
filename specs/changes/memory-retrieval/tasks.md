@@ -34,10 +34,10 @@
 
 ## Phase 5: Add explicit commitment categories
 
-- [ ] Extend `EntryCategory` parsing/formatting in `src/memory/entry.ts` with `commitment` and `standing_order`.
-- [ ] Add deterministic reflection rules for explicit commitment and standing-order phrasing in `src/memory/reflector.ts`.
-- [ ] Add tests for new categories, explicit extraction, and vague-intent non-extraction.
-- [ ] Run `bun test src/memory/entry.test.ts src/memory/reflector.test.ts`.
-- [ ] Run `litespec validate memory-retrieval`.
-- [ ] Run `bun test`.
-- [ ] Run `bun run typecheck`.
+- [x] Extend `EntryCategory` parsing/formatting in `src/memory/entry.ts` with `commitment` and `standing_order`.
+- [x] Add deterministic reflection rules for explicit commitment and standing-order phrasing in `src/memory/reflector.ts`.
+- [x] Add tests for new categories, explicit extraction, and vague-intent non-extraction.
+- [x] Run `bun test src/memory/entry.test.ts src/memory/reflector.test.ts`.
+- [x] Run `litespec validate memory-retrieval`.
+- [x] Run `bun test`.
+- [x] Run `bun run typecheck`.

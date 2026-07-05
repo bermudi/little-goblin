@@ -129,6 +129,8 @@ const USER_SCOPE_BOOST = 800;
 const AGENT_SCOPE_BOOST = 200;
 const CATEGORY_BOOST: Partial<Record<EntryMetadata["category"], number>> = {
   decision: 90,
+  commitment: 90,
+  standing_order: 85,
   convention: 80,
   gotcha: 70,
   preference: 60,

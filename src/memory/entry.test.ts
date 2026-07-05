@@ -100,6 +100,24 @@ describe("memory entry metadata", () => {
       expect(parseEntryMetadata(entry)).toBeNull();
     });
 
+    it("round-trips a commitment category entry", () => {
+      const meta: EntryMetadata = { ...BASE_METADATA, category: "commitment" };
+      const entry = formatReflectedEntry(meta, "I commit to reviewing invoices every Friday.");
+      const parsed = parseEntryMetadata(entry);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.metadata.category).toBe("commitment");
+      expect(parsed!.body).toBe("I commit to reviewing invoices every Friday.");
+    });
+
+    it("round-trips a standing_order category entry", () => {
+      const meta: EntryMetadata = { ...BASE_METADATA, category: "standing_order" };
+      const entry = formatReflectedEntry(meta, "standing order: remind me to check backups weekly");
+      const parsed = parseEntryMetadata(entry);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.metadata.category).toBe("standing_order");
+      expect(parsed!.body).toBe("standing order: remind me to check backups weekly");
+    });
+
     it("returns null for an unknown source_role", () => {
       const entry = formatReflectedEntry(BASE_METADATA, "body").replace(
         "source_role=user",

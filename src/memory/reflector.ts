@@ -138,6 +138,28 @@ interface ExtractionRule {
 
 const EXTRACTION_RULES: ExtractionRule[] = [
   {
+    category: "commitment",
+    confidence: 0.85,
+    target: "memory",
+    patterns: [
+      /\bI commit(?:ment)? to\b/i,
+      /\bI promise to\b/i,
+      /\bI will (?:make sure to|ensure|always)\b/i,
+      /\bcommitment:\s/i,
+    ],
+  },
+  {
+    category: "standing_order",
+    confidence: 0.85,
+    target: "memory",
+    patterns: [
+      /\bstanding order:\s/i,
+      /\brecurring reminder:\s/i,
+      /\balways (?:remind me to|check|verify)\b/i,
+      /\bevery\s+\w+\s+(?:remind me to|I(?:'ll| will)\s+(?:check|verify|review))\b/i,
+    ],
+  },
+  {
     category: "preference",
     confidence: 0.8,
     target: "user",

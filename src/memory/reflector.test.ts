@@ -765,6 +765,56 @@ describe("MemoryReflector", () => {
       expect(candidates[0]!.category).toBe("convention");
     });
 
+    it("extracts an explicit commitment", () => {
+      const entries = [makeTranscriptLine("user", "I commit to reviewing invoices every Friday", 0)];
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]!.category).toBe("commitment");
+      expect(candidates[0]!.target).toBe("memory");
+      expect(candidates[0]!.confidence).toBeGreaterThan(0.5);
+    });
+
+    it("extracts an explicit commitment from 'commitment:' phrasing", () => {
+      const entries = [makeTranscriptLine("user", "commitment: ship the release notes by Monday", 0)];
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]!.category).toBe("commitment");
+    });
+
+    it("extracts an explicit standing order", () => {
+      const entries = [makeTranscriptLine("user", "standing order: remind me to check backups weekly", 0)];
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]!.category).toBe("standing_order");
+      expect(candidates[0]!.target).toBe("memory");
+      expect(candidates[0]!.confidence).toBeGreaterThan(0.5);
+    });
+
+    it("extracts a standing order from 'always remind me to' phrasing", () => {
+      const entries = [makeTranscriptLine("user", "always remind me to renew the domain", 0)];
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]!.category).toBe("standing_order");
+    });
+
+    it("does NOT infer a commitment from vague intent", () => {
+      const entries = [makeTranscriptLine("user", "I should probably check backups sometime", 0)];
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const durable = candidates.filter(
+        (c) => c.category === "commitment" || c.category === "standing_order",
+      );
+      expect(durable).toHaveLength(0);
+    });
+
+    it("does NOT infer a commitment from an ordinary task request", () => {
+      const entries = [makeTranscriptLine("user", "can you check the backups later?", 0)];
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const durable = candidates.filter(
+        (c) => c.category === "commitment" || c.category === "standing_order",
+      );
+      expect(durable).toHaveLength(0);
+    });
+
     it("extracts a correction as a preference", () => {
       const entries = [makeTranscriptLine("user", "no, actually I meant concise summaries", 0)];
       const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });

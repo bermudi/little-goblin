@@ -14,7 +14,7 @@ function pathFor(home: string): string {
 }
 
 /**
- * Load the root config.json (bindings). Returns default if missing.
+ * Load the root bindings file (state/bindings.json). Returns default if missing.
  */
 export function loadBindings(home: string): BindingsFile {
   try {

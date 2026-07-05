@@ -5,7 +5,7 @@ import { atomicWrite } from "../fs.ts";
 import { log } from "../log.ts";
 
 /**
- * Per-chat-surface settings persisted in $GOBLIN_HOME/topic-settings.json.
+ * Per-chat-surface settings persisted in $GOBLIN_HOME/state/topic-settings.json.
  * Keys are stringified chatId/topicId numbers.
  */
 export interface TopicSettingsFile {

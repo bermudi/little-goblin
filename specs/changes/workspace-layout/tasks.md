@@ -24,9 +24,9 @@
 
 ## Phase 3: Update bindings and topic-settings
 
-- [ ] Update `src/sessions/bindings.ts`: temp file name `.config.<rand>.tmp` → `.bindings.<rand>.tmp` (if hardcoded). Verify `pathFor` uses `configPath` from `paths.ts`.
-- [ ] Update `src/sessions/topic-settings.ts`: verify path uses `topicSettingsPath` from `paths.ts`. Update temp file naming if hardcoded.
-- [ ] Run `bun test src/sessions/manager.test.ts src/sessions/topic-settings.test.ts`.
+- [x] Update `src/sessions/bindings.ts`: temp file name `.config.<rand>.tmp` → `.bindings.<rand>.tmp` (if hardcoded). Verify `pathFor` uses `configPath` from `paths.ts`.
+- [x] Update `src/sessions/topic-settings.ts`: verify path uses `topicSettingsPath` from `paths.ts`. Update temp file naming if hardcoded.
+- [x] Run `bun test src/sessions/manager.test.ts src/sessions/topic-settings.test.ts`.
 
 ## Phase 4: Update onboard
 

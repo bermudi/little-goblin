@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ChatLocator } from "./types.ts";
 import {
   loadTopicSettings,
@@ -36,6 +36,9 @@ describe("topic-settings", () => {
         dm: {},
         supergroups: {},
       };
+      // writeFileSync needs the parent dir; saveTopicSettings would also work
+      // but the point here is to place a file for loadTopicSettings to read.
+      mkdirSync(dirname(topicSettingsPath(tmpDir)), { recursive: true });
       writeFileSync(topicSettingsPath(tmpDir), JSON.stringify(data), "utf-8");
 
       const settings = loadTopicSettings(tmpDir);
@@ -43,6 +46,7 @@ describe("topic-settings", () => {
     });
 
     it("returns default when file contains invalid JSON", () => {
+      mkdirSync(dirname(topicSettingsPath(tmpDir)), { recursive: true });
       writeFileSync(topicSettingsPath(tmpDir), "not json {{{", "utf-8");
 
       const settings = loadTopicSettings(tmpDir);
@@ -67,11 +71,9 @@ describe("topic-settings", () => {
       const data: TopicSettingsFile = { topics: {}, dm: {}, supergroups: {} };
       saveTopicSettings(tmpDir, data);
 
-      // Only topic-settings.json should exist, no .tmp files
-      const files = [...(function* () {
-        const entries = require("fs").readdirSync(tmpDir);
-        for (const f of entries) yield f;
-      })()];
+      // Only topic-settings.json should exist in its directory, no .tmp files
+      const dir = dirname(topicSettingsPath(tmpDir));
+      const files = readdirSync(dir);
       expect(files).toEqual(["topic-settings.json"]);
     });
   });

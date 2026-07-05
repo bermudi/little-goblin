@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { SessionManager } from "./manager.ts";
 import type { Config } from "../config.ts";
 import type { ChatLocator, BindingsFile } from "./types.ts";
-import { topicSettingsPath } from "./paths.ts";
+import { configPath, sessionDir, sessionsDir, statePath, transcriptPath, topicSettingsPath } from "./paths.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -69,7 +69,7 @@ describe("SessionManager", () => {
       // Create initial session
       const first = manager.createForChat(loc);
       // Delete state.json but leave binding intact
-      unlinkSync(join(tmpDir, "sessions", first.id, "state.json"));
+      unlinkSync(statePath(tmpDir, first.id));
 
       // Resolve should auto-create new session and update binding
       const second = manager.resolve(loc);
@@ -78,14 +78,14 @@ describe("SessionManager", () => {
       expect(second!.chatId).toBe(123456);
       expect(second!.topicId).toBe(7);
 
-      // Verify binding was updated in config.json
-      const configRaw = readFileSync(join(tmpDir, "config.json"), "utf-8");
+      // Verify binding was updated in state/bindings.json
+      const configRaw = readFileSync(configPath(tmpDir), "utf-8");
       const config = JSON.parse(configRaw) as BindingsFile;
       expect(config.topics?.["123456"]?.["7"]).toBe(second!.id);
 
       // Orphaned session dir should still exist (sessions persist forever)
-      expect(existsSync(join(tmpDir, "sessions", first.id))).toBe(true);
-      expect(existsSync(join(tmpDir, "sessions", second!.id))).toBe(true);
+      expect(existsSync(sessionDir(tmpDir, first.id))).toBe(true);
+      expect(existsSync(sessionDir(tmpDir, second!.id))).toBe(true);
     });
 
     it("clears stale DM binding when state.json is missing", () => {
@@ -93,14 +93,14 @@ describe("SessionManager", () => {
       // Create initial session
       const first = manager.createForChat(loc);
       // Delete state.json but leave binding intact
-      unlinkSync(join(tmpDir, "sessions", first.id, "state.json"));
+      unlinkSync(statePath(tmpDir, first.id));
 
       // Resolve should clear binding and return null
       const resolved = manager.resolve(loc);
       expect(resolved).toBeNull();
 
-      // Verify binding was cleared in config.json
-      const configRaw = readFileSync(join(tmpDir, "config.json"), "utf-8");
+      // Verify binding was cleared in state/bindings.json
+      const configRaw = readFileSync(configPath(tmpDir), "utf-8");
       const config = JSON.parse(configRaw) as BindingsFile;
       expect(config.dm?.["123456"]).toBeUndefined();
     });
@@ -119,7 +119,7 @@ describe("SessionManager", () => {
     it("creates empty transcript.jsonl", () => {
       const loc: ChatLocator = { chatId: 123456 };
       const state = manager.createForChat(loc);
-      expect(existsSync(join(tmpDir, "sessions", state.id, "transcript.jsonl"))).toBe(true);
+      expect(existsSync(transcriptPath(tmpDir, state.id))).toBe(true);
     });
 
     it("rebinding DM creates new session without deleting old", () => {
@@ -128,8 +128,8 @@ describe("SessionManager", () => {
       const second = manager.createForChat(loc);
       expect(first.id).not.toBe(second.id);
       // Both sessions should still exist on disk
-      expect(existsSync(join(tmpDir, "sessions", first.id, "state.json"))).toBe(true);
-      expect(existsSync(join(tmpDir, "sessions", second.id, "state.json"))).toBe(true);
+      expect(existsSync(statePath(tmpDir, first.id))).toBe(true);
+      expect(existsSync(statePath(tmpDir, second.id))).toBe(true);
     });
   });
 
@@ -149,14 +149,14 @@ describe("SessionManager", () => {
     it("moves session dir to sessions/archive/<id>/ and clears DM binding", () => {
       const loc: ChatLocator = { chatId: 123456 };
       const created = manager.createForChat(loc);
-      expect(existsSync(join(tmpDir, "sessions", created.id, "state.json"))).toBe(true);
+      expect(existsSync(statePath(tmpDir, created.id))).toBe(true);
 
       manager.archive(created.id);
 
-      expect(existsSync(join(tmpDir, "sessions", created.id))).toBe(false);
-      expect(existsSync(join(tmpDir, "sessions", "archive", created.id, "state.json"))).toBe(true);
+      expect(existsSync(sessionDir(tmpDir, created.id))).toBe(false);
+      expect(existsSync(join(sessionsDir(tmpDir), "archive", created.id, "state.json"))).toBe(true);
 
-      const config = JSON.parse(readFileSync(join(tmpDir, "config.json"), "utf-8")) as BindingsFile;
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
       expect(config.dm?.["123456"]).toBeUndefined();
     });
 
@@ -166,7 +166,7 @@ describe("SessionManager", () => {
 
       manager.archive(created.id);
 
-      const config = JSON.parse(readFileSync(join(tmpDir, "config.json"), "utf-8")) as BindingsFile;
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
       expect(config.topics?.["999"]).toBeUndefined();
     });
 
@@ -176,7 +176,7 @@ describe("SessionManager", () => {
 
       manager.archive(created.id);
 
-      const config = JSON.parse(readFileSync(join(tmpDir, "config.json"), "utf-8")) as BindingsFile;
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
       expect(config.supergroups?.["555"]).toBeUndefined();
     });
 
@@ -222,7 +222,7 @@ describe("SessionManager", () => {
       // archived — the scheduler distinguishes archived (cleared binding +
       // moved dir) from a generic mismatch. This pins the precise semantics.
       const created = manager.createForChat({ chatId: 1 });
-      rmSync(join(tmpDir, "sessions", created.id), { recursive: true, force: true });
+      rmSync(sessionDir(tmpDir, created.id), { recursive: true, force: true });
       expect(manager.isArchived(created.id)).toBe(false);
     });
   });
@@ -402,7 +402,7 @@ describe("SessionManager", () => {
 
       expect(rebound.id).toBe(first.id);
       expect(manager.resolve({ chatId: 2 })?.id).toBe(first.id);
-      expect(existsSync(join(tmpDir, "sessions", second.id, "state.json"))).toBe(true);
+      expect(existsSync(statePath(tmpDir, second.id))).toBe(true);
     });
 
     it("throws when session does not exist", () => {
@@ -432,8 +432,8 @@ describe("SessionManager", () => {
       // Critical: peekBinding MUST NOT auto-create. Assert no session
       // subdirectory and no binding entries appeared (manager.init() creates
       // the empty sessions/ dir, so we check its contents).
-      expect(readdirSync(join(tmpDir, "sessions"))).toEqual([]);
-      expect(existsSync(join(tmpDir, "config.json"))).toBe(false);
+      expect(readdirSync(sessionsDir(tmpDir))).toEqual([]);
+      expect(existsSync(configPath(tmpDir))).toBe(false);
     });
 
     it("returns the bound session for a topic locator without mutating", () => {
@@ -451,7 +451,7 @@ describe("SessionManager", () => {
     it("returns null for a supergroup locator without auto-creating", () => {
       const loc: ChatLocator = { chatId: 777 };
       expect(manager.peekBinding(loc)).toBeNull();
-      expect(readdirSync(join(tmpDir, "sessions"))).toEqual([]);
+      expect(readdirSync(sessionsDir(tmpDir))).toEqual([]);
     });
 
     it("returns null when the bound state is missing (archived session)", () => {
@@ -467,7 +467,7 @@ describe("SessionManager", () => {
       const loc: ChatLocator = { chatId: 42 };
       const created = manager.createForChat(loc);
       // Leave the binding intact, delete state.json to simulate a dangling binding
-      unlinkSync(join(tmpDir, "sessions", created.id, "state.json"));
+      unlinkSync(statePath(tmpDir, created.id));
 
       expect(manager.peekBinding(loc)).toBeNull();
     });
@@ -475,7 +475,7 @@ describe("SessionManager", () => {
     it("does not auto-create on stale topic binding (unlike resolve)", () => {
       const loc: ChatLocator = { chatId: 100, topicId: 7 };
       const created = manager.createForChat(loc);
-      unlinkSync(join(tmpDir, "sessions", created.id, "state.json"));
+      unlinkSync(statePath(tmpDir, created.id));
 
       // peekBinding must return null and MUST NOT recreate the session.
       expect(manager.peekBinding(loc)).toBeNull();
@@ -483,9 +483,9 @@ describe("SessionManager", () => {
       // The topic binding still references the old (now-stateless) session,
       // and no new session directory was created — only the original (now
       // stateless) dir remains.
-      const config = JSON.parse(readFileSync(join(tmpDir, "config.json"), "utf-8")) as BindingsFile;
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
       expect(config.topics?.["100"]?.["7"]).toBe(created.id);
-      expect(readdirSync(join(tmpDir, "sessions"))).toEqual([created.id]);
+      expect(readdirSync(sessionsDir(tmpDir))).toEqual([created.id]);
     });
   });
 });

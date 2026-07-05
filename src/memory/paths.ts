@@ -6,10 +6,10 @@ import type { MemoryScope } from "./scope.ts";
  */
 
 /**
- * Path to the memory directory at $GOBLIN_HOME/memory/.
+ * Path to the memory directory at $GOBLIN_HOME/state/memory/.
  */
 export function memoryDir(home: string): string {
-  return join(home, "memory");
+  return join(home, "state", "memory");
 }
 
 function topicScopeDir(home: string, chatId: number, topicId: number): string {

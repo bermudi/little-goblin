@@ -19,7 +19,7 @@ export class MissingSoulError extends Error {
 
   constructor(path: string) {
     super(
-      `Missing required Goblin prompt file: ${path}. Run onboarding or create SOUL.md in $GOBLIN_HOME.`,
+      `Missing required Goblin prompt file: ${path}. Run onboarding or create SOUL.md in $GOBLIN_HOME/workspace/.`,
     );
     this.name = "MissingSoulError";
     this.path = path;
@@ -84,7 +84,7 @@ export async function preflightGoblinPromptFiles(
     if (isNodeErrnoException(err) && err.code === "ENOENT") {
       opts.warn("optional Goblin prompt file missing", {
         path: deploymentAgentsPath,
-        note: "Create AGENTS.md in $GOBLIN_HOME for deployment operating rules.",
+        note: "Create AGENTS.md in $GOBLIN_HOME/workspace/ for deployment operating rules.",
       });
       return;
     }

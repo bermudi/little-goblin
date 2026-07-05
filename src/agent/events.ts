@@ -1,6 +1,6 @@
 import { openSync, closeSync, writeSync } from "node:fs";
-import { join } from "node:path";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { transcriptPath } from "../sessions/paths.ts";
 
 /** Callbacks for turn events */
 export interface TurnCallbacks {
@@ -261,5 +261,5 @@ function transcriptEntryFromEvent(event: object): TranscriptEntry | null {
 export function appendTranscriptEntry(sessionId: string, home: string, event: object): void {
   const entry = transcriptEntryFromEvent(event);
   if (entry === null) return;
-  appendJsonl(join(home, "sessions", sessionId, "transcript.jsonl"), entry);
+  appendJsonl(transcriptPath(home, sessionId), entry);
 }

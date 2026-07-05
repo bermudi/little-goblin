@@ -21,7 +21,7 @@ export interface PiServices {
 }
 
 /**
- * Construct pi's infrastructure services with paths under `$GOBLIN_HOME/goblin/`.
+ * Construct pi's infrastructure services with paths under `$GOBLIN_HOME/state/pi/`.
  *
  * Stateless — returns new instances on every call. Caching is the caller's
  * responsibility.
@@ -40,17 +40,22 @@ export function createPiServices(home: string): PiServices {
 
 /** Path to the workdir directory for sandboxed execution. */
 export function workdirPath(home: string): string {
-  return join(home, "workdir");
+  return join(home, "scratch", "workdir");
 }
 
-/** Path to the goblin directory for pi-ai configuration. */
+/** Path to the pi directory for pi-ai configuration (auth.json, models.json). */
 export function piAgentDir(home: string): string {
-  return join(home, "goblin");
+  return join(home, "state", "pi");
 }
 
-/** Path to the AGENTS.md file at goblin home root. */
+/** Path to the AGENTS.md file in the goblin workspace. */
 export function agentsMdPath(home: string): string {
-  return join(home, "AGENTS.md");
+  return join(home, "workspace", "AGENTS.md");
+}
+
+/** Path to goblin's skills directory in the goblin workspace. */
+export function skillsPath(home: string): string {
+  return join(home, "workspace", "skills");
 }
 
 /**
@@ -85,7 +90,7 @@ export function findMostRecentPiSession(piSessionDir: string): string | null {
   return best ? best.path : null;
 }
 
-/** Path to the SOUL.md file at goblin home root. */
+/** Path to the SOUL.md file in the goblin workspace. */
 export function soulMdPath(home: string): string {
-  return join(home, "SOUL.md");
+  return join(home, "workspace", "SOUL.md");
 }

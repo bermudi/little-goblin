@@ -6,34 +6,34 @@ describe("memory paths", () => {
   const home = "/tmp/goblin";
 
   it("resolves the memory root", () => {
-    expect(memoryDir(home)).toBe(join(home, "memory"));
+    expect(memoryDir(home)).toBe(join(home, "state", "memory"));
   });
 
   it("resolves user.md globally", () => {
-    expect(userPath(home)).toBe(join(home, "memory", "user.md"));
+    expect(userPath(home)).toBe(join(home, "state", "memory", "user.md"));
   });
 
   it("resolves the general scope", () => {
     expect(scopeMemoryPath(home, "general")).toBe(
-      join(home, "memory", "general", "memory.md"),
+      join(home, "state", "memory", "general", "memory.md"),
     );
   });
 
   it("resolves topic scopes by chat id and topic id", () => {
     expect(scopeMemoryPath(home, { topic: { chatId: -100123, topicId: 42 } })).toBe(
-      join(home, "memory", "topics", "-100123", "42", "memory.md"),
+      join(home, "state", "memory", "topics", "-100123", "42", "memory.md"),
     );
   });
 
   it("resolves named-agent persona scopes", () => {
     expect(scopeMemoryPath(home, { agent: { name: "researcher" } })).toBe(
-      join(home, "memory", "agents", "researcher", "memory.md"),
+      join(home, "state", "memory", "agents", "researcher", "memory.md"),
     );
   });
 
   it("mirrors topic scopes under archive", () => {
     expect(archiveTopicPath(home, -100123, 42)).toBe(
-      join(home, "memory", "archive", "topics", "-100123", "42"),
+      join(home, "state", "memory", "archive", "topics", "-100123", "42"),
     );
   });
 });

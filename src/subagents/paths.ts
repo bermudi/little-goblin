@@ -2,25 +2,27 @@
  * Filesystem layout for the subagent runtime.
  *
  *   ~/goblin/
- *   ├── subagents/                # generic subagent instances
- *   │   └── <id>/
- *   │       ├── session.jsonl     # pi session (filename actually timestamped)
- *   │       └── meta.json
- *   └── agents/                   # named agent definitions (phase 3)
- *       └── <name>/
- *           ├── AGENTS.md
- *           ├── skills/
- *           └── instances/
- *               └── <id>/
- *                   ├── session.jsonl
- *                   └── meta.json
+ *   ├── scratch/
+ *   │   └── subagents/            # generic subagent instances
+ *   │       └── <id>/
+ *   │           ├── session.jsonl # pi session (filename actually timestamped)
+ *   │           └── meta.json
+ *   └── workspace/
+ *       └── agents/               # named agent definitions (phase 3)
+ *           └── <name>/
+ *               ├── AGENTS.md
+ *               ├── skills/
+ *               └── instances/
+ *                   └── <id>/
+ *                       ├── session.jsonl
+ *                       └── meta.json
  */
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 export function subagentsRoot(home: string): string {
-  return join(home, "subagents");
+  return join(home, "scratch", "subagents");
 }
 
 export function genericSubagentDir(home: string, id: string): string {
@@ -32,7 +34,7 @@ export function genericSubagentMetaPath(home: string, id: string): string {
 }
 
 export function namedAgentsRoot(home: string): string {
-  return join(home, "agents");
+  return join(home, "workspace", "agents");
 }
 
 export function namedAgentDir(home: string, name: string): string {
@@ -56,7 +58,7 @@ export function namedAgentInstanceMetaPath(home: string, name: string, id: strin
 }
 
 /**
- * List all valid named agents in ~/goblin/agents/.
+ * List all valid named agents in ~/goblin/workspace/agents/.
  * A directory is considered a named agent if it contains AGENTS.md.
  */
 export function listNamedAgents(home: string): string[] {

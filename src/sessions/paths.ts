@@ -5,7 +5,7 @@ import { join } from "node:path";
  */
 
 export function sessionsDir(home: string): string {
-  return join(home, "sessions");
+  return join(home, "state", "sessions");
 }
 
 export function sessionDir(home: string, id: string): string {
@@ -21,13 +21,13 @@ export function transcriptPath(home: string, id: string): string {
 }
 
 export function configPath(home: string): string {
-  return join(home, "config.json");
+  return join(home, "state", "bindings.json");
 }
 
 export function topicSettingsPath(home: string): string {
-  return join(home, "topic-settings.json");
+  return join(home, "state", "topic-settings.json");
 }
 
 export function schedulesPath(home: string): string {
-  return join(home, "schedules.json");
+  return join(home, "state", "schedules.json");
 }

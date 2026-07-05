@@ -21,7 +21,7 @@ import { log } from "../log.ts";
 import { appendTranscriptEntry, dispatchAgentEvent, extractAssistantText } from "./events.ts";
 import type { TurnCallbacks } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
-import { workdirPath, createPiServices, piAgentDir, findMostRecentPiSession } from "../pi-host.ts";
+import { workdirPath, createPiServices, piAgentDir, skillsPath, findMostRecentPiSession } from "../pi-host.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import { resolveModel, type ResolvedModel } from "./models.ts";
 import { buildGoblinSystemPrompt } from "./system-prompt.ts";
@@ -203,7 +203,7 @@ export class AgentRunner {
       settingsManager,
       systemPrompt,
       noContextFiles: true,
-      additionalSkillPaths: [join(home, "skills")],
+      additionalSkillPaths: [skillsPath(home)],
       ...(this.cfg.skillSources === "goblin-only" ? { noSkills: true } : {}),
     });
     await resourceLoader.reload();

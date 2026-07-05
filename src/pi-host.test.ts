@@ -1,31 +1,37 @@
 import { describe, it, expect } from "bun:test";
 import { join } from "node:path";
-import { workdirPath, piAgentDir, agentsMdPath, soulMdPath } from "./pi-host.ts";
+import { workdirPath, piAgentDir, agentsMdPath, soulMdPath, skillsPath } from "./pi-host.ts";
 
 describe("pi-host path helpers", () => {
   const fixtureHome = "/home/goblin";
 
   describe("workdirPath", () => {
-    it("returns workdir subdirectory", () => {
-      expect(workdirPath(fixtureHome)).toBe(join(fixtureHome, "workdir"));
+    it("returns scratch/workdir subdirectory", () => {
+      expect(workdirPath(fixtureHome)).toBe(join(fixtureHome, "scratch", "workdir"));
     });
   });
 
   describe("piAgentDir", () => {
-    it("returns goblin subdirectory", () => {
-      expect(piAgentDir(fixtureHome)).toBe(join(fixtureHome, "goblin"));
+    it("returns state/pi subdirectory", () => {
+      expect(piAgentDir(fixtureHome)).toBe(join(fixtureHome, "state", "pi"));
     });
   });
 
   describe("agentsMdPath", () => {
-    it("returns AGENTS.md at home root", () => {
-      expect(agentsMdPath(fixtureHome)).toBe(join(fixtureHome, "AGENTS.md"));
+    it("returns AGENTS.md in workspace", () => {
+      expect(agentsMdPath(fixtureHome)).toBe(join(fixtureHome, "workspace", "AGENTS.md"));
     });
   });
 
   describe("soulMdPath", () => {
-    it("returns SOUL.md at home root", () => {
-      expect(soulMdPath(fixtureHome)).toBe(join(fixtureHome, "SOUL.md"));
+    it("returns SOUL.md in workspace", () => {
+      expect(soulMdPath(fixtureHome)).toBe(join(fixtureHome, "workspace", "SOUL.md"));
+    });
+  });
+
+  describe("skillsPath", () => {
+    it("returns skills directory in workspace", () => {
+      expect(skillsPath(fixtureHome)).toBe(join(fixtureHome, "workspace", "skills"));
     });
   });
 });

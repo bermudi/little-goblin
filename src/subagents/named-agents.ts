@@ -12,13 +12,12 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   DefaultResourceLoader,
   type ResourceLoader,
   type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { piAgentDir } from "../pi-host.ts";
+import { piAgentDir, skillsPath } from "../pi-host.ts";
 import { namedAgentAgentsMdPath, namedAgentDir, namedAgentSkillsDir } from "./paths.ts";
 import type { NamedAgentDefinition, SubagentRole } from "./types.ts";
 
@@ -90,7 +89,7 @@ export async function buildResourceLoader(opts: {
       cwd,
       agentDir: piAgentDir(home),
       settingsManager,
-      additionalSkillPaths: [join(home, "skills")],
+      additionalSkillPaths: [skillsPath(home)],
     });
     await loader.reload();
     return loader;

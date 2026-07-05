@@ -133,88 +133,85 @@ Onboarding SHALL create `$GOBLIN_HOME/SOUL.md` and `$GOBLIN_HOME/AGENTS.md` when
 
 ### Requirement: Agent turns do not block unrelated updates
 
-The Telegram intake module (`src/tg/intake.ts`) SHALL schedule normal agent work without waiting for the work promise to settle, so one busy agent turn or slow media pre-processing step does not hold grammy's global update handling path. `src/bot.ts` SHALL remain a thin grammy adapter: its `bot.on(...)` handlers SHALL delegate to intake methods and SHALL NOT own scheduling, steer, or queue logic themselves. Scheduled work SHALL stop before user-visible side effects when its runner is no longer the active runner for that session.
+The Telegram intake module (`src/tg/intake.ts`) SHALL schedule normal agent work without waiting for the work promise to settle, so one busy agent turn or slow media pre-processing step does not hold grammy's global update handling path. `src/bot.ts` SHALL remain a thin grammy adapter: its `bot.on(...)` handlers SHALL delegate to intake methods and SHALL NOT own scheduling, steer, queue, media-download, ASR, or scheduled-turn dispatch logic themselves. Scheduled work SHALL stop before user-visible side effects when its runner is no longer the active runner for that session.
 
-For non-command text messages on a session whose runner is currently streaming, intake SHALL steer the message into the running turn via `AgentRunner.followUp()` rather than enqueue it. The update handler SHALL resolve as soon as the `followUp` call is dispatched (it does not await the turn's completion). The in-flight `MessageBuffer` continues to render the same turn; no new status line or response bubble is created for the steered message itself.
+For non-command text messages on a session whose runner is currently streaming, intake SHALL steer the message into the running turn via `AgentRunner.followUp()` rather than enqueue it. For `/queue <text>`, media messages, and scheduler-dispatched prompts, work SHALL serialize via the per-session promise queue as fresh turns.
 
-If the turn ends between the `isStreaming` check and the `followUp` call (a race), `followUp` SHALL throw an error containing "not streaming" and intake SHALL fall back to scheduling a fresh turn via `schedulePrompt` + `AgentRunner.prompt()` with a new `MessageBuffer`. The message MUST NOT be silently dropped — it lands as a new turn instead of a steer.
+#### Scenario: Scheduler work is not Telegram update work
 
-For non-command text messages on a session whose runner is idle, intake SHALL schedule a new turn via `AgentRunner.prompt()`. Same-session turns that do not overlap (the runner is idle when the next message arrives) SHALL remain ordered: the second SHALL NOT start until the first settles.
+- **WHEN** a due scheduled prompt is dispatched
+- **THEN** no grammy update handler SHALL be required
+- **AND** unrelated Telegram updates SHALL continue to be handled while the scheduled turn runs
 
-For `/queue <text>` commands, intake SHALL serialize the supplied text via the per-session promise queue so it runs as a fresh turn only after the current turn (and any prior queued work) settles. This is the only path that uses the queue for text.
-
-Media messages (photo, document, voice, audio) SHALL serialize via the per-session promise queue regardless of streaming state, because `followUp` is text-only.
-
-#### Scenario: Busy turn releases the update handler
-
-- **GIVEN** an active session whose runner prompt remains pending
-- **WHEN** a non-command text message is handled
-- **THEN** the Telegram update handler SHALL resolve before the runner prompt settles
-
-#### Scenario: Steer reaches a busy runner
+#### Scenario: Scheduled turn while streaming serializes
 
 - **GIVEN** an active session whose runner is streaming
-- **WHEN** a non-command text message is handled for that session
-- **THEN** intake SHALL call `runner.followUp(text)` without awaiting the turn's completion
-- **AND** the in-flight `MessageBuffer` SHALL continue to render the same turn
-- **AND** no new status message or response bubble SHALL be created for the steered message
+- **WHEN** a scheduled prompt becomes due for that session
+- **THEN** the scheduled prompt SHALL be enqueued via the per-session promise queue
+- **AND** SHALL NOT start until the current turn and prior queued work settle
 
-#### Scenario: Steer race falls back to a fresh turn
+### Requirement: Scheduler dispatches due turns through the per-session queue
 
-- **GIVEN** an active session whose runner is streaming when intake checks `isStreaming`
-- **WHEN** the turn ends between the `isStreaming` check and the `runner.followUp(text)` call
-- **THEN** `followUp` SHALL throw an error containing "not streaming"
-- **AND** intake SHALL fall back to `schedulePrompt` + `runner.prompt(text, newBuffer)` so the message runs as a fresh turn
-- **AND** the message SHALL NOT be silently dropped
+The system SHALL run a single-process scheduler loop after session manager initialization and before or alongside Telegram long-polling. The scheduler SHALL poll the schedule store for due enabled schedules at a 60-second default interval, claim each due schedule one at a time within a tick before dispatch, and enqueue the scheduled prompt as a fresh turn through the same per-session queue used by `/queue` and media prompts.
 
-#### Scenario: Cancel reaches a busy runner
+#### Scenario: Due schedule queues fresh turn
 
-- **GIVEN** an active session whose runner prompt remains pending
-- **WHEN** `/cancel` is handled for that session
-- **THEN** the command SHALL reach the active runner and reply without waiting for the pending prompt to settle
+- **GIVEN** an enabled schedule whose `nextRunAt` is in the past
+- **AND** its captured session remains bound to its captured locator
+- **WHEN** the scheduler ticks
+- **THEN** it SHALL enqueue the schedule's prompt as a fresh turn for that session
+- **AND** SHALL NOT call `AgentRunner.followUp()`
 
-#### Scenario: Slow media pre-processing releases the update handler
+#### Scenario: Busy session waits behind current turn
 
-- **GIVEN** an active session whose media download remains pending
-- **WHEN** a media message is handled
-- **THEN** the Telegram update handler SHALL resolve before the media download settles
+- **GIVEN** a due schedule for a session whose runner is currently streaming
+- **WHEN** the scheduler ticks
+- **THEN** the scheduled prompt SHALL wait behind the in-flight turn via the per-session prompt queue
+- **AND** SHALL run as a fresh turn after prior queued work settles
 
-#### Scenario: Stale media work does not side-effect
+#### Scenario: Overlapping ticks do not double-dispatch
 
-- **GIVEN** an active session whose scheduled media download remains pending
-- **WHEN** a runner-disposing command replaces the session runner before the download finishes
-- **THEN** the stale media work SHALL NOT save files, reply, or prompt the replaced runner after the download returns
+- **GIVEN** a schedule is due
+- **WHEN** two scheduler ticks overlap
+- **THEN** at most one tick SHALL claim and dispatch that due occurrence
 
-#### Scenario: Overlapping same-session text is steered
+#### Scenario: One-shot schedule disables after run
 
-- **GIVEN** an active session whose runner is idle
-- **WHEN** a non-command text message arrives, starts a turn, and a second non-command text message arrives while the first turn is still streaming
-- **THEN** the second message SHALL be steered into the running turn via `followUp` (not enqueued as a separate turn)
+- **WHEN** a one-shot schedule is successfully claimed for dispatch
+- **THEN** it SHALL be disabled or marked complete before the prompt runs
+- **AND** it SHALL NOT run again on the next tick
 
-#### Scenario: Non-overlapping same-session turns remain ordered
+#### Scenario: Recurring schedule advances before dispatch
 
-- **GIVEN** an active session whose first turn has settled (runner is idle again)
-- **WHEN** a second non-command text message arrives for the same session
-- **THEN** the second SHALL start as a fresh turn via `AgentRunner.prompt()`
-- **AND** it SHALL NOT start before the first turn settles (the per-session promise queue enforces ordering)
+- **WHEN** a recurring schedule is successfully claimed for dispatch
+- **THEN** its `nextRunAt` SHALL advance by its interval before the prompt runs
+- **AND** a later tick SHALL not dispatch the same occurrence again
 
-#### Scenario: /queue serializes behind a running turn
+#### Scenario: Stale runner guard aborts scheduled turn
 
-- **GIVEN** an active session whose runner is streaming
-- **WHEN** `/queue do this after you finish` is handled
-- **THEN** the supplied text SHALL be enqueued via the per-session promise queue
-- **AND** it SHALL NOT start until the current turn and any prior queued work settle
-- **AND** it SHALL run as a fresh turn via `AgentRunner.prompt()` (with a new `MessageBuffer` and memory snapshot)
+- **GIVEN** a scheduled prompt is enqueued for a session via the shared turn dispatcher
+- **AND** the runner for that session is replaced (e.g. by `/new` or `/resume`) before the queued turn starts
+- **WHEN** the queued turn begins
+- **THEN** the dispatcher SHALL detect the stale runner and abort before producing user-visible side effects
+- **AND** SHALL NOT send the scheduled prompt to the old runner
 
-#### Scenario: /queue when idle runs immediately
+### Requirement: Scheduler lifecycle follows bot lifecycle
 
-- **GIVEN** an active session whose runner is idle
-- **WHEN** `/queue do this` is handled
-- **THEN** the supplied text SHALL run as a fresh turn via `AgentRunner.prompt()` without waiting
+The scheduler SHALL start during main startup after `SessionManager.init()` and SHALL stop during graceful shutdown before process exit. Scheduler failures SHALL be logged and SHALL NOT crash the bot unless initialization itself throws before the loop starts.
 
-#### Scenario: Media message while streaming serializes
+#### Scenario: Scheduler starts after manager init
 
-- **GIVEN** an active session whose runner is streaming
-- **WHEN** a photo message is handled
-- **THEN** the photo download and prompt SHALL be enqueued via the per-session promise queue
-- **AND** it SHALL NOT start until the current turn settles
+- **WHEN** `main()` starts Goblin
+- **THEN** `manager.init()` SHALL complete before the scheduler loop starts
+
+#### Scenario: Scheduler stops on SIGTERM
+
+- **WHEN** the process receives SIGTERM
+- **THEN** the scheduler SHALL be stopped before process exit
+- **AND** no new due schedules SHALL be dispatched after stop begins
+
+#### Scenario: Tick error logged
+
+- **WHEN** a scheduler tick encounters an unexpected error
+- **THEN** the error SHALL be logged
+- **AND** future ticks SHALL continue

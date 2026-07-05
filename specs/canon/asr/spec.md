@@ -1,6 +1,6 @@
 # asr
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Groq ASR provider transcribes audio bytes
 

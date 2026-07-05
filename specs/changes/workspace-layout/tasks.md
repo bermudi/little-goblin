@@ -17,10 +17,10 @@
 
 ## Phase 2: Update ensureGoblinHome and migration
 
-- [ ] Rewrite `ensureGoblinHome()` in `src/config.ts` with three-phase approach: (1) create top-level groups (`workspace/`, `state/`, `scratch/`); (2) run migration loop; (3) create remaining subdirectories (`workspace/skills/`, `workspace/agents/`, `state/sessions/`, `state/memory/`, `state/pi/`, `scratch/workdir/`, `scratch/subagents/`). Remove the old `pi-agent/` → `goblin/` migration.
-- [ ] Add migration loop: for each legacy→new path pair, if old exists and new doesn't, `renameSync(old, new)`. If both exist, log warning and skip. Critical: migration-target subdirs must NOT be pre-created before migration runs.
-- [ ] Update `src/config.test.ts`: update directory creation assertions for the new tree; add migration tests (fresh install, legacy install with directories, legacy install with files, already-migrated, conflict, legacy directory migration despite top-level groups existing, partial-failure propagation — a `renameSync` that throws (e.g. cross-device) MUST propagate and stop startup rather than being swallowed or partially retried).
-- [ ] Run `bun test src/config.test.ts`.
+- [x] Rewrite `ensureGoblinHome()` in `src/config.ts` with three-phase approach: (1) create top-level groups (`workspace/`, `state/`, `scratch/`); (2) run migration loop; (3) create remaining subdirectories (`workspace/skills/`, `workspace/agents/`, `state/sessions/`, `state/memory/`, `state/pi/`, `scratch/workdir/`, `scratch/subagents/`). Remove the old `pi-agent/` → `goblin/` migration.
+- [x] Add migration loop: for each legacy→new path pair, if old exists and new doesn't, `renameSync(old, new)`. If both exist, log warning and skip. Critical: migration-target subdirs must NOT be pre-created before migration runs.
+- [x] Update `src/config.test.ts`: update directory creation assertions for the new tree; add migration tests (fresh install, legacy install with directories, legacy install with files, already-migrated, conflict, legacy directory migration despite top-level groups existing, partial-failure propagation — a `renameSync` that throws (e.g. cross-device) MUST propagate and stop startup rather than being swallowed or partially retried).
+- [x] Run `bun test src/config.test.ts`.
 
 ## Phase 3: Update bindings and topic-settings
 

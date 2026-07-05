@@ -4,6 +4,11 @@ import { join } from "node:path";
 import JSON5 from "json5";
 import { ConfigFileSchema } from "./schema.ts";
 import { resolveConfigValue } from "./resolve-value.ts";
+import { log } from "./log.ts";
+import { configPath, schedulesPath, sessionsDir, topicSettingsPath } from "./sessions/paths.ts";
+import { agentsMdPath, piAgentDir, skillsPath, soulMdPath, workdirPath } from "./pi-host.ts";
+import { memoryDir } from "./memory/paths.ts";
+import { namedAgentsRoot, subagentsRoot } from "./subagents/paths.ts";
 
 export interface Config {
   botToken: string;
@@ -131,17 +136,93 @@ function resolveValue(value: unknown): unknown {
 /**
  * Ensure GOBLIN_HOME directory exists with required subdirectories.
  * Call once at startup before any consumer tries to use the paths.
+ *
+ * Three phases, in order:
+ *   1. Create the three top-level group directories (workspace/, state/,
+ *      scratch/). Migration-target subdirectories are NOT created here —
+ *      pre-creating them would make the "new path does not exist" guard skip
+ *      every directory migration on legacy installs.
+ *   2. Run the migration loop: for each legacy→new path pair, if the legacy
+ *      path exists and the new path does not, `renameSync(old, new)`. If both
+ *      exist, log a warning and skip (operator resolves). If a `renameSync`
+ *      throws (e.g. cross-device), the error propagates and startup stops
+ *      (fail loud, per AGENTS.md).
+ *   3. Create remaining migration-target subdirectories that still don't
+ *      exist (fresh install or legacy install where the legacy path was
+ *      absent).
+ *
+ * Per decision `config-startup-filesystem-mutation` (0007), this function is
+ * exempt from the AGENTS.md "Don't touch $GOBLIN_HOME" guardrail for
+ * directory creation and migration `renameSync`. Per decision
+ * `path-helper-only-path-construction` (0008), all path construction here goes
+ * through the path-helper modules.
  */
 export function ensureGoblinHome(cfg: Config): void {
-  // Migrate legacy pi-agent/ → goblin/ (one-time rename).
-  const legacyDir = join(cfg.goblinHome, "pi-agent");
-  const newDir = join(cfg.goblinHome, "goblin");
-  if (existsSync(legacyDir) && !existsSync(newDir)) {
-    renameSync(legacyDir, newDir);
+  const home = cfg.goblinHome;
+
+  // Phase 1: top-level group directories only. Do NOT create migration
+  // targets (state/sessions, state/memory, state/pi, scratch/workdir, …)
+  // before the migration loop runs.
+  const groups = [
+    home,
+    join(home, "workspace"),
+    join(home, "state"),
+    join(home, "scratch"),
+  ];
+  for (const dir of groups) {
+    mkdirSync(dir, { recursive: true });
   }
 
-  const dirs = [cfg.goblinHome, join(cfg.goblinHome, "sessions"), join(cfg.goblinHome, "skills"), join(cfg.goblinHome, "workdir"), newDir, join(cfg.goblinHome, "agents"), join(cfg.goblinHome, "subagents")];
-  for (const dir of dirs) {
+  // Phase 2: migrate legacy root-level paths to their new locations.
+  // Order does not matter — every legacy path is at the home root and every
+  // new path is under one of the three group dirs, so no pair aliases another.
+  // The legacy pi-agent/ → goblin/ migration is superseded: pi-agent/ now
+  // migrates directly to state/pi/, and a pre-existing goblin/ also migrates
+  // to state/pi/ (whichever is present).
+  const legacyPiAgent = join(home, "pi-agent");
+  const legacyGoblin = join(home, "goblin");
+  const migrations: Array<{ oldPath: string; newPath: string }> = [
+    { oldPath: join(home, "sessions"), newPath: sessionsDir(home) },
+    { oldPath: join(home, "config.json"), newPath: configPath(home) },
+    { oldPath: join(home, "topic-settings.json"), newPath: topicSettingsPath(home) },
+    { oldPath: join(home, "schedules.json"), newPath: schedulesPath(home) },
+    { oldPath: join(home, "memory"), newPath: memoryDir(home) },
+    { oldPath: legacyGoblin, newPath: piAgentDir(home) },
+    { oldPath: legacyPiAgent, newPath: piAgentDir(home) },
+    { oldPath: join(home, "workdir"), newPath: workdirPath(home) },
+    { oldPath: join(home, "subagents"), newPath: subagentsRoot(home) },
+    { oldPath: join(home, "agents"), newPath: namedAgentsRoot(home) },
+    { oldPath: join(home, "skills"), newPath: skillsPath(home) },
+    { oldPath: join(home, "SOUL.md"), newPath: soulMdPath(home) },
+    { oldPath: join(home, "AGENTS.md"), newPath: agentsMdPath(home) },
+  ];
+  for (const { oldPath, newPath } of migrations) {
+    if (!existsSync(oldPath)) continue;
+    if (existsSync(newPath)) {
+      log.warn("migration skipped: both legacy and new path exist; operator must resolve", {
+        oldPath,
+        newPath,
+      });
+      continue;
+    }
+    // renameSync is atomic on the same filesystem. A throw (e.g. cross-device)
+    // propagates and stops startup — fail loud, no partial retry.
+    renameSync(oldPath, newPath);
+  }
+
+  // Phase 3: create remaining migration-target subdirectories. Covers fresh
+  // installs (no legacy paths to migrate) and legacy installs where a given
+  // legacy path was absent.
+  const subdirs = [
+    sessionsDir(home),
+    memoryDir(home),
+    piAgentDir(home),
+    workdirPath(home),
+    subagentsRoot(home),
+    namedAgentsRoot(home),
+    skillsPath(home),
+  ];
+  for (const dir of subdirs) {
     mkdirSync(dir, { recursive: true });
   }
 }

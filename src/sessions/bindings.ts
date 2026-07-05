@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { BindingsFile } from "./types.ts";
 import { configPath } from "./paths.ts";
 import { atomicWrite } from "../fs.ts";
+import { log } from "../log.ts";
 
 const DEFAULT_BINDINGS: BindingsFile = {
   dm: {},
@@ -17,11 +18,16 @@ function pathFor(home: string): string {
  * Load the root bindings file (state/bindings.json). Returns default if missing.
  */
 export function loadBindings(home: string): BindingsFile {
+  const path = pathFor(home);
   try {
-    const raw = readFileSync(pathFor(home), "utf-8");
+    const raw = readFileSync(path, "utf-8");
     return JSON.parse(raw) as BindingsFile;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      return structuredClone(DEFAULT_BINDINGS);
+    }
+    if (e instanceof SyntaxError) {
+      log.warn("malformed bindings.json, returning default", { path, error: String(e) });
       return structuredClone(DEFAULT_BINDINGS);
     }
     throw e;

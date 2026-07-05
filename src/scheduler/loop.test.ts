@@ -269,6 +269,60 @@ describe("SchedulerLoop", () => {
 
       expect(dispatcher.calls).toHaveLength(1);
     });
+
+    it("dispatches a one-shot missed during downtime exactly once after restart", async () => {
+      const loc: ChatLocator = { chatId: 100 };
+      const session = manager.createForChat(loc);
+      const created = store.create({
+        sessionId: session.id,
+        locator: loc,
+        kind: "once",
+        prompt: "missed once",
+        nextRunAt: new Date(NOW_MS - 3600_000).toISOString(),
+      });
+      const restartedStore = new ScheduleStore(tmpDir);
+      const restartedManager = new SessionManager(makeTestConfig(tmpDir));
+      restartedManager.init();
+      const restartedLoop = new SchedulerLoop({ store: restartedStore, manager: restartedManager, dispatcher, clock: clock.clock });
+
+      await restartedLoop.tick();
+      await restartedLoop.tick();
+
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.content).toBe("missed once");
+      const after = restartedStore.getForSession(session.id, created.id);
+      expect(after!.state).toBe("completed");
+      expect(after!.enabled).toBe(false);
+      expect(after!.lastRun!.outcome).toBe("ok");
+    });
+
+    it("catches up a recurring schedule missed during downtime without replaying every missed interval", async () => {
+      const loc: ChatLocator = { chatId: 100 };
+      const session = manager.createForChat(loc);
+      const created = store.create({
+        sessionId: session.id,
+        locator: loc,
+        kind: "recurring",
+        prompt: "missed recurring",
+        nextRunAt: new Date(NOW_MS - 3 * 3600_000).toISOString(),
+        intervalMs: 3600_000,
+      });
+      const restartedStore = new ScheduleStore(tmpDir);
+      const restartedManager = new SessionManager(makeTestConfig(tmpDir));
+      restartedManager.init();
+      const restartedLoop = new SchedulerLoop({ store: restartedStore, manager: restartedManager, dispatcher, clock: clock.clock });
+
+      await restartedLoop.tick();
+      await restartedLoop.tick();
+
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.content).toBe("missed recurring");
+      const after = restartedStore.getForSession(session.id, created.id);
+      expect(after!.state).toBe("enabled");
+      expect(after!.enabled).toBe(true);
+      expect(after!.nextRunAt).toBe(new Date(NOW_MS + 3600_000).toISOString());
+      expect(after!.lastRun!.outcome).toBe("ok");
+    });
   });
 
   describe("stale bindings", () => {

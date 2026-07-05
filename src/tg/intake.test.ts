@@ -8,6 +8,8 @@ import type { AgentRunner } from "../agent/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
+import { SchedulerLoop, type SchedulerClock } from "../scheduler/loop.ts";
+import { ScheduleStore } from "../scheduler/store.ts";
 import {
   createTelegramIntake,
   replyNoActiveSession,
@@ -190,6 +192,13 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     if (Date.now() >= deadline) throw new Error("timed out waiting for condition");
     await new Promise<void>((resolve) => setTimeout(resolve, 1));
   }
+}
+
+function fixedClock(now: number): SchedulerClock {
+  return {
+    now: () => now,
+    setInterval: () => ({ clear: () => {} }),
+  };
 }
 
 beforeEach(() => {
@@ -617,6 +626,52 @@ describe("Telegram intake", () => {
     expect(order[0]).toBe("[prepared] first (telegram)");
     expect(order[1]).toBe("[prepared] second (queued)");
     expect(order[2]).toBe("third (scheduled)");
+  });
+
+  it("queues a scheduler tick behind an active Telegram turn for the same session", async () => {
+    const cfg = makeConfig();
+    const { intake, manager } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const now = Date.parse("2026-07-04T12:00:00Z");
+    const store = new ScheduleStore(cfg.goblinHome);
+    const pending = deferred();
+    const order: string[] = [];
+    MockAgentRunner.nextPrompt = async (content) => {
+      order.push(typeof content === "string" ? content : "[parts]");
+      if (order.length === 1) await pending.promise;
+    };
+
+    await intake.handleText(message, "/new");
+    const session = manager.list()[0]!;
+    const schedule = store.create({
+      sessionId: session.id,
+      locator: { chatId: 1 },
+      kind: "once",
+      prompt: "scheduled while busy",
+      nextRunAt: new Date(now - 1000).toISOString(),
+    });
+    const loop = new SchedulerLoop({
+      store,
+      manager,
+      dispatcher: intake.dispatcher,
+      clock: fixedClock(now),
+    });
+
+    await intake.handleText(message, "active telegram turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    await loop.tick();
+    await flushMicrotasks();
+
+    expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["[prepared] active telegram turn"]);
+    expect(store.getForSession(session.id, schedule.id)!.lastRun?.outcome).toBe("ok");
+
+    pending.resolve();
+    await waitFor(() => runners[0]!.prompt.mock.calls.length === 2);
+
+    expect(order).toEqual(["[prepared] active telegram turn", "scheduled while busy"]);
   });
 
   it("aborts a scheduled turn whose runner was swapped before it started", async () => {

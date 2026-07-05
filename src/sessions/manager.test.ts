@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "./manager.ts";
@@ -103,6 +103,43 @@ describe("SessionManager", () => {
       const configRaw = readFileSync(configPath(tmpDir), "utf-8");
       const config = JSON.parse(configRaw) as BindingsFile;
       expect(config.dm?.["123456"]).toBeUndefined();
+    });
+
+    it("auto-recreates topic session when state.json is malformed", () => {
+      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
+      const first = manager.createForChat(loc);
+      writeFileSync(statePath(tmpDir, first.id), "{ bad json", "utf-8");
+
+      const second = manager.resolve(loc);
+      expect(second).not.toBeNull();
+      expect(second!.id).not.toBe(first.id);
+      expect(second!.chatId).toBe(123456);
+      expect(second!.topicId).toBe(7);
+
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
+      expect(config.topics?.["123456"]?.["7"]).toBe(second!.id);
+    });
+
+    it("clears DM binding when state.json is malformed", () => {
+      const loc: ChatLocator = { chatId: 123456 };
+      const first = manager.createForChat(loc);
+      writeFileSync(statePath(tmpDir, first.id), "{ bad json", "utf-8");
+
+      expect(manager.resolve(loc)).toBeNull();
+
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
+      expect(config.dm?.["123456"]).toBeUndefined();
+    });
+
+    it("treats malformed bindings.json as empty bindings", () => {
+      writeFileSync(configPath(tmpDir), "{ bad json", "utf-8");
+
+      expect(manager.resolve({ chatId: 123456 })).toBeNull();
+
+      const topic = manager.resolve({ chatId: 123456, topicId: 7 });
+      expect(topic).not.toBeNull();
+      expect(topic!.chatId).toBe(123456);
+      expect(topic!.topicId).toBe(7);
     });
   });
 

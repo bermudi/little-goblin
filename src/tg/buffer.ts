@@ -735,6 +735,11 @@ export class MessageBuffer implements TurnCallbacks {
             });
           } catch (err) {
             await this.handleResponseError(err);
+            if (force && this.responseMessageId === undefined && this.accumulatedText.length > 0) {
+              const msg = await this.bot.api.sendMessage(this.chatId, this.accumulatedText, this.withThread());
+              this.responseMessageId = msg.message_id;
+              this.lastRenderedResponseText = this.accumulatedText;
+            }
           }
         })();
         this.editingResponse = inFlight;
@@ -850,16 +855,15 @@ export class MessageBuffer implements TurnCallbacks {
 
     if (code === 429) {
       // Honor `retry_after` (seconds) so we don't keep slamming the API and
-      // making the server angrier. Push the relevant throttle clock forward
-      // by retry_after; the next flush in that window will short-circuit at
-      // the throttle check.
+      // making the server angrier. Store the synthetic "last edit" time that
+      // makes the next flush eligible exactly when retry_after expires.
       const retryAfterSec = e?.parameters?.retry_after;
       if (retryAfterSec && retryAfterSec > 0) {
         const until = this.now() + retryAfterSec * 1000;
         if (kind === "response") {
-          this.lastResponseEditTime = Math.max(this.lastResponseEditTime, until);
+          this.lastResponseEditTime = Math.max(this.lastResponseEditTime, until - this.responseThrottleMs);
         } else {
-          this.lastEditTime = Math.max(this.lastEditTime, until);
+          this.lastEditTime = Math.max(this.lastEditTime, until - this.statusThrottleMs);
         }
       }
       log.warn(`${kind} edit rate-limited, backing off`, {

@@ -928,6 +928,101 @@ describe("MessageBuffer", () => {
       expect(m.send[1]?.text).toBe("hi!");
     });
 
+    it("recovers from a deleted response message on the final agent-end flush", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        ...STATUS_OFF,
+      });
+
+      buffer.onTextDelta("draft");
+      await tick();
+      expect(buffer._state().responseMessageId).toBe(101);
+
+      t = 1050;
+      m.failNext.edit = {
+        error_code: 400,
+        description: "Bad Request: message to edit not found",
+      };
+      buffer.onTextDelta(" final");
+      buffer.onAgentEnd();
+      await tick();
+      await tick();
+
+      expect(m.send.length).toBe(2);
+      expect(m.send[1]?.text).toBe("draft final");
+      expect(buffer._state().responseMessageId).toBe(102);
+      expect(buffer._state().isStreaming).toBe(false);
+    });
+
+    it("keeps the response message after a mid-stream 429 and retries latest text after backoff", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        ...STATUS_OFF,
+      });
+
+      buffer.onTextDelta("hi");
+      await tick();
+      expect(buffer._state().responseMessageId).toBe(101);
+
+      t = 1500;
+      m.failNext.edit = {
+        error_code: 429,
+        description: "Too Many Requests: retry later",
+        parameters: { retry_after: 2 },
+      };
+      buffer.onTextDelta(" there");
+      await tick();
+
+      expect(buffer._state().responseMessageId).toBe(101);
+      expect(buffer._state().lastResponseEditTime).toBe(3300);
+      expect(m.edit.length).toBe(0);
+
+      t = 2500;
+      await buffer.flushResponse();
+      expect(m.edit.length).toBe(0);
+
+      t = 3600;
+      buffer.onTextDelta("!");
+      await tick();
+      expect(m.edit.length).toBe(1);
+      expect(m.edit[0]?.text).toBe("hi there!");
+    });
+
+    it("survives an unknown mid-stream edit failure and finalizes with full text", async () => {
+      let t = 1000;
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        now: () => t,
+        ...STATUS_OFF,
+      });
+
+      buffer.onTextDelta("partial");
+      await tick();
+      expect(buffer._state().responseMessageId).toBe(101);
+
+      t = 1500;
+      m.failNext.edit = new Error("network down");
+      buffer.onTextDelta(" after failure");
+      await tick();
+      expect(buffer._state().responseMessageId).toBe(101);
+      expect(m.edit.length).toBe(0);
+
+      t = 1600;
+      buffer.onTextDelta(" done");
+      buffer.onAgentEnd();
+      await tick();
+      await tick();
+
+      const lastEdit = m.edit[m.edit.length - 1];
+      expect(lastEdit?.messageId).toBe(101);
+      expect(lastEdit?.text).toBe("partial after failure done");
+      expect(buffer._state().isStreaming).toBe(false);
+    });
+
     it("does not throw out of flushResponse on unknown errors", async () => {
       const m = makeBot();
       m.failNext.send = new Error("boom");

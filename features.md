@@ -7,7 +7,7 @@ Little Goblin is a Telegram-native personal AI agent. It is built for a single o
 ```sh
 bun install
 cp .env.example .env
-bun run onboard        # creates $GOBLIN_HOME/goblin.json5 + SOUL.md/AGENTS.md
+bun run onboard        # creates $GOBLIN_HOME/goblin.json5 + workspace/SOUL.md/AGENTS.md
 bun run src/index.ts   # or: bun run dev
 ```
 
@@ -22,7 +22,7 @@ Everything happens inside a **session**. A session is identified by `(chat, topi
 - **Supergroup without topics** — one shared session for the whole group.
 - **Plain group** — not supported. Use a supergroup with forum topics for group work.
 
-Sessions persist in `$GOBLIN_HOME/sessions/<id>/`. Each session has:
+Sessions persist in `$GOBLIN_HOME/state/sessions/<id>/`. Each session has:
 
 - `state.json` — session metadata, model override, thinking level, title, archived flag.
 - `events.jsonl` — append-only log of the conversation and tool events.
@@ -105,7 +105,7 @@ These are injected per chat surface and can be used by the agent when it wants t
 
 ## Memory
 
-Goblin keeps curated, agent-controlled persistent memory in `$GOBLIN_HOME/memory/`:
+Goblin keeps curated, agent-controlled persistent memory in `$GOBLIN_HOME/state/memory/`:
 
 | Target | Cap | Purpose |
 |--------|-----|---------|
@@ -114,7 +114,7 @@ Goblin keeps curated, agent-controlled persistent memory in `$GOBLIN_HOME/memory
 | `agent` | 2000 chars | Named subagent persona memory. |
 | `general` | 4000 chars | Fallback memory for surfaces without a topic scope. |
 
-Memory is injected as a per-turn aside, so the frozen system prompt stays cacheable. Every successful memory write is committed to a git repo at `$GOBLIN_HOME/memory/.git` with subject `memory: <action> in <target>`.
+Memory is injected as a per-turn aside, so the frozen system prompt stays cacheable. Every successful memory write is committed to a git repo at `$GOBLIN_HOME/state/memory/.git` with subject `memory: <action> in <target>`.
 
 The agent can read memory from other scopes (`general`, another topic, a named agent) via `memory_read` with an explicit scope, and discover them via `memory_read_index`.
 
@@ -123,7 +123,7 @@ The agent can read memory from other scopes (`general`, another topic, a named a
 Spawn subagents to do focused work in the background:
 
 - **Generic subagents** inherit the parent context and can use goblin’s skills.
-- **Named subagents** are recipes in `$GOBLIN_HOME/agents/<name>/` with their own `AGENTS.md` and isolated `skills/` directory.
+- **Named subagents** are recipes in `$GOBLIN_HOME/workspace/agents/<name>/` with their own `AGENTS.md` and isolated `skills/` directory.
 - Recursive spawning up to **depth 3**.
 - Default timeout: **10 minutes**.
 - Subagents are headless: they run through the same agent code but do not talk to Telegram directly. Results come back to the parent turn.
@@ -189,7 +189,7 @@ Key options:
 | `favorites` | Model IDs available to `/model`. |
 | `logLevel` | `debug`, `info`, `warn`, `error`. |
 | `toolVisibility` | Status-line detail level. |
-| `skillSources` | `goblin-only` (use only repo skills) or `user` (also discover `$GOBLIN_HOME/skills/`). |
+| `skillSources` | `goblin-only` (use only repo skills) or `user` (also discover `$GOBLIN_HOME/workspace/skills/`). |
 
 All string values support three forms:
 
@@ -199,7 +199,7 @@ All string values support three forms:
 
 ## Identity and prompt files
 
-Onboarding creates two deployment-owned prompt files in `$GOBLIN_HOME`:
+Onboarding creates two deployment-owned prompt files in `$GOBLIN_HOME/workspace/`:
 
 - `SOUL.md` — the conversational identity and voice (required). Missing at startup is fatal.
 - `AGENTS.md` — deployment operating rules (optional). Missing at startup produces a warning.

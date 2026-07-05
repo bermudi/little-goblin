@@ -502,6 +502,47 @@ describe("AgentRunner", () => {
       expect(sessionHolder.sendCustomMessage.mock.calls.length).toBe(snapshotCallsBefore);
       expect(sessionHolder.followUp).toHaveBeenCalledWith("redirect", undefined);
     });
+
+    it("injects a ## relevant memory section when the prompt text matches another scope", async () => {
+      // Active general scope + a peer topic in the same chat that matches the prompt.
+      mkdirSync(join(memoryDir(tmpDir), "general"), { recursive: true });
+      writeFileSync(join(memoryDir(tmpDir), "general", "memory.md"), "general note", "utf-8");
+      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "7"), { recursive: true });
+      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "7", "memory.md"), "peer backups note", "utf-8");
+
+      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      await runner.prompt("tell me about backups", nopCallbacks());
+
+      const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
+      const text = (payload as { content: string }).content;
+      expect(text).toContain("## relevant memory");
+      expect(text).toContain("- [topics/-100/7] peer backups note");
+    });
+
+    it("omits ## relevant memory when the prompt text has no matches", async () => {
+      mkdirSync(join(memoryDir(tmpDir), "general"), { recursive: true });
+      writeFileSync(join(memoryDir(tmpDir), "general", "memory.md"), "general note", "utf-8");
+
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello world", nopCallbacks());
+
+      const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
+      const text = (payload as { content: string }).content;
+      expect(text).not.toContain("## relevant memory");
+    });
+
+    it("steer text never produces a relevant-memory section (no snapshot on followUp)", async () => {
+      seedMemory(tmpDir, { user: "pref-1" });
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("first", nopCallbacks());
+      const callsBefore = sessionHolder.sendCustomMessage.mock.calls.length;
+
+      sessionHolder.streaming = true;
+      await runner.followUp("backups");
+
+      // No new snapshot at all — relevant memory is never computed for a steer.
+      expect(sessionHolder.sendCustomMessage.mock.calls.length).toBe(callsBefore);
+    });
   });
 
   describe("lazy pi creation", () => {

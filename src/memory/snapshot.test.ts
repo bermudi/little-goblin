@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
 import { formatSnapshot, SNAPSHOT_GUARDRAIL } from "./snapshot.ts";
 import { memoryDir } from "./paths.ts";
+import type { ActiveScope } from "./scope.ts";
 
 describe("formatSnapshot", () => {
   let tmp: string;
@@ -189,5 +190,133 @@ describe("formatSnapshot", () => {
     const text = snap!.content;
     expect(text).toContain("## other scopes");
     expect(text).toContain("- general — general notes");
+  });
+
+  describe("relevant memory (prompt text)", () => {
+    const topicScope: ActiveScope = { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null };
+
+    it("omits ## relevant memory when no prompt text is supplied", async () => {
+      await store.add({ topic: { chatId: -100123, topicId: 7 } }, "peer backups note");
+      await store.add({ topic: { chatId: -100123, topicId: 42 } }, "active note");
+
+      const snap = await formatSnapshot({ store, activeScope: topicScope, includeAgents: true });
+
+      expect(snap).not.toBeNull();
+      expect(snap!.content).not.toContain("## relevant memory");
+    });
+
+    it("omits ## relevant memory when prompt text is whitespace-only", async () => {
+      await store.add({ topic: { chatId: -100123, topicId: 7 } }, "peer backups note");
+      await store.add({ topic: { chatId: -100123, topicId: 42 } }, "active note");
+
+      const snap = await formatSnapshot({
+        store,
+        activeScope: topicScope,
+        includeAgents: true,
+        promptText: "   ",
+      });
+
+      expect(snap).not.toBeNull();
+      expect(snap!.content).not.toContain("## relevant memory");
+    });
+
+    it("includes ## relevant memory with scope id when the prompt matches another same-chat scope", async () => {
+      await store.add({ topic: { chatId: -100123, topicId: 7 } }, "peer backups note");
+      await store.add({ topic: { chatId: -100123, topicId: 42 } }, "active note");
+
+      const snap = await formatSnapshot({
+        store,
+        activeScope: topicScope,
+        includeAgents: true,
+        promptText: "tell me about backups",
+      });
+
+      expect(snap).not.toBeNull();
+      const text = snap!.content;
+      expect(text).toContain("## relevant memory");
+      expect(text).toContain("- [topics/-100123/7] peer backups note");
+      // Active scope body is still rendered separately.
+      expect(text).toContain("## memory.md\nactive note");
+    });
+
+    it("places ## relevant memory between ## memory.md and ## other scopes", async () => {
+      await store.add({ topic: { chatId: -100123, topicId: 7 } }, "peer backups note");
+      await store.add({ topic: { chatId: -100123, topicId: 42 } }, "active note");
+      await store.setDescription({ topic: { chatId: -100123, topicId: 11 } }, "another scope");
+      await store.add({ topic: { chatId: -100123, topicId: 11 } }, "other note");
+
+      const snap = await formatSnapshot({
+        store,
+        activeScope: topicScope,
+        includeAgents: true,
+        promptText: "backups",
+      });
+
+      expect(snap).not.toBeNull();
+      const text = snap!.content;
+      const memIdx = text.indexOf("## memory.md");
+      const relIdx = text.indexOf("## relevant memory");
+      const otherIdx = text.indexOf("## other scopes");
+      expect(relIdx).toBeGreaterThan(memIdx);
+      expect(relIdx).toBeLessThan(otherIdx);
+    });
+
+    it("bounds relevant memory to 3 entries by default", async () => {
+      // Seed 5 same-chat peer topics that all match the query.
+      for (let i = 0; i < 5; i++) {
+        await store.add({ topic: { chatId: -100123, topicId: 100 + i } }, `backups note ${i}`);
+      }
+      await store.add({ topic: { chatId: -100123, topicId: 42 } }, "active note");
+
+      const snap = await formatSnapshot({
+        store,
+        activeScope: topicScope,
+        includeAgents: true,
+        promptText: "backups",
+      });
+
+      expect(snap).not.toBeNull();
+      const relSection = snap!.content.split("## relevant memory\n")[1]!.split("\n\n")[0]!;
+      expect(relSection.split("\n").length).toBe(3);
+    });
+
+    it("clamps relevantLimit to a maximum of 5", async () => {
+      for (let i = 0; i < 8; i++) {
+        await store.add({ topic: { chatId: -100123, topicId: 200 + i } }, `backups note ${i}`);
+      }
+      await store.add({ topic: { chatId: -100123, topicId: 42 } }, "active note");
+
+      const snap = await formatSnapshot({
+        store,
+        activeScope: topicScope,
+        includeAgents: true,
+        promptText: "backups",
+        relevantLimit: 50,
+      });
+
+      expect(snap).not.toBeNull();
+      const relSection = snap!.content.split("## relevant memory\n")[1]!.split("\n\n")[0]!;
+      expect(relSection.split("\n").length).toBe(5);
+    });
+
+    it("deduplicates entries that verbatim-match the active ## memory.md body", async () => {
+      // The active scope and a peer scope share the same entry text.
+      await store.add({ topic: { chatId: -100123, topicId: 42 } }, "backups run nightly");
+      await store.add({ topic: { chatId: -100123, topicId: 7 } }, "backups run nightly");
+      await store.add({ topic: { chatId: -100123, topicId: 8 } }, "backups run weekly");
+
+      const snap = await formatSnapshot({
+        store,
+        activeScope: topicScope,
+        includeAgents: true,
+        promptText: "backups",
+      });
+
+      expect(snap).not.toBeNull();
+      const relSection = snap!.content.split("## relevant memory\n")[1]!.split("\n\n")[0]!;
+      // The peer verbatim-duplicate is dropped; the distinct weekly entry stays.
+      expect(relSection).toContain("topics/-100123/8");
+      expect(relSection).not.toContain("topics/-100123/7");
+    });
   });
 });

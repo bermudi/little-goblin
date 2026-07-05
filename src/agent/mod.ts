@@ -75,6 +75,20 @@ export class ModelNotCapableError extends Error {
 }
 
 /**
+ * Extract prompt text for snapshot relevant-memory scoring. Plain-string
+ * prompts pass through; multimodal prompts contribute the concatenation of
+ * their text blocks. Image-only prompts yield an empty string (no text to
+ * score against).
+ */
+function extractPromptText(content: string | (TextContent | ImageContent)[]): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((c): c is TextContent => c.type === "text")
+    .map((c) => c.text)
+    .join("\n");
+}
+
+/**
  * AgentRunner wraps a pi AgentSession for a single goblin session.
  * Manages lazy initialization and event dispatch.
  */
@@ -345,12 +359,17 @@ export class AgentRunner {
 
     // Inject the curated memory snapshot as a per-turn aside.
     // Pi queues it and flushes alongside the next user message; the system
-    // prompt stays frozen, preserving the provider prefix cache.
+    // prompt stays frozen, preserving the provider prefix cache. When prompt
+    // text is available it drives a bounded `## relevant memory` section so
+    // the snapshot can surface related entries from other scopes. Steers do
+    // not pass prompt text and so never inject a relevant-memory section.
+    const promptText = extractPromptText(content);
     const aside = await formatSnapshot({
       store: this.memoryStore,
       activeScope: this.activeScope,
       includeAgents: true,
       getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
+      promptText,
     });
     if (aside !== null) {
       await this.session.sendCustomMessage(aside, { deliverAs: "nextTurn" });

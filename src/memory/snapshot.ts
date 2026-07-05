@@ -1,5 +1,6 @@
 import { MemoryStore } from "./store.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
+import { personaPolicyFor, searchMemoryEntries, type PersonaPolicy } from "./search.ts";
 
 /**
  * Per-turn memory aside.
@@ -38,6 +39,17 @@ export interface FormatSnapshotArgs {
   includePersona?: { name: string };
   includeAgents: boolean;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
+  /**
+   * Current prompt text. When supplied and non-empty, the snapshot appends a
+   * bounded `## relevant memory` section with lexically-ranked entries from
+   * the snapshot's scopes. Omitted on follow-up steers.
+   */
+  promptText?: string;
+  /**
+   * Cap on the number of relevant-memory entries. Defaults to 3, clamped to a
+   * maximum of 5. Has no effect when `promptText` is absent.
+   */
+  relevantLimit?: number;
 }
 
 export async function formatSnapshot(
@@ -56,15 +68,25 @@ async function formatScopedSnapshot(args: FormatSnapshotArgs): Promise<MemorySna
       : args.store.read({ agent: { name: args.includePersona.name } }).body;
   const otherScopes = await formatOtherScopes(args);
 
+  // Relevant memory is computed only when prompt text is supplied. It is
+  // omitted from follow-up steers (the caller does not pass prompt text).
+  const relevantLines = args.promptText !== undefined && args.promptText.trim().length > 0
+    ? await formatRelevantMemory(args, memoryBody)
+    : [];
+
   if (
     memoryBody.length === 0 &&
     userBody.length === 0 &&
     (personaBody === undefined || personaBody.length === 0) &&
-    otherScopes.length === 0
+    otherScopes.length === 0 &&
+    relevantLines.length === 0
   ) {
     return null;
   }
 
+  // Section order: scope, user.md, memory.md, relevant memory, agent persona,
+  // other scopes. Relevant memory sits between memory.md and the persona/
+  // other-scopes sections so the active body stays primary.
   const sections = [
     "[goblin memory snapshot]",
     SNAPSHOT_GUARDRAIL,
@@ -72,6 +94,9 @@ async function formatScopedSnapshot(args: FormatSnapshotArgs): Promise<MemorySna
     `## user.md\n${formatBody(userBody)}`,
     `## memory.md\n${formatBody(memoryBody)}`,
   ];
+  if (relevantLines.length > 0) {
+    sections.push(`## relevant memory\n${relevantLines.join("\n")}`);
+  }
   if (personaBody !== undefined) {
     sections.push(`## agent persona\n${formatBody(personaBody)}`);
   }
@@ -85,6 +110,53 @@ async function formatScopedSnapshot(args: FormatSnapshotArgs): Promise<MemorySna
     display: false,
     details: undefined,
   };
+}
+
+const DEFAULT_RELEVANT_LIMIT = 3;
+const MAX_RELEVANT_LIMIT = 5;
+
+/**
+ * Build the `## relevant memory` section lines for the current prompt. Runs
+ * the lexical search helper against the snapshot's scopes (same chat plus
+ * eligible persona scopes), drops any result whose display text already
+ * appears verbatim in the active `## memory.md` body, and bounds the result
+ * count to the configured limit (default 3, max 5). Returns an empty array
+ * when there are no matches after dedup.
+ */
+async function formatRelevantMemory(
+  args: FormatSnapshotArgs,
+  activeMemoryBody: string,
+): Promise<string[]> {
+  const persona: PersonaPolicy = args.includePersona !== undefined
+    ? { kind: "own", name: args.includePersona.name }
+    : personaPolicyFor(args.activeScope);
+  const requested = args.relevantLimit ?? DEFAULT_RELEVANT_LIMIT;
+  const limit = Math.min(Math.max(1, requested), MAX_RELEVANT_LIMIT);
+
+  const out = await searchMemoryEntries({
+    store: args.store,
+    activeScope: args.activeScope,
+    persona,
+    query: args.promptText ?? "",
+    limit: 50, // fetch a wide net, then dedup + bound
+  });
+
+  const activeBodySet = new Set(splitEntries(activeMemoryBody));
+  const lines: string[] = [];
+  for (const r of out.results) {
+    // Verbatim dedup against the active scope's body: skip any result whose
+    // display text already appears as an entry in `## memory.md`.
+    if (activeBodySet.has(r.text)) continue;
+    lines.push(`- [${r.scope}] ${r.text}`);
+    if (lines.length >= limit) break;
+  }
+  return lines;
+}
+
+/** Split a memory body into individual entry texts by the `\n§\n` delimiter. */
+function splitEntries(body: string): string[] {
+  if (body.length === 0) return [];
+  return body.split("\n§\n");
 }
 
 function activeMemoryScopeFor(activeScope: ActiveScope): MemoryScope {

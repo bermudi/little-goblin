@@ -25,12 +25,12 @@
 
 ## Phase 4: Add prompt-relevant snapshot memory
 
-- [ ] Extend `formatSnapshot` to accept optional prompt text and append bounded `## relevant memory` for `Snapshot may include relevant memory`.
-- [ ] Implement verbatim dedup against the active `## memory.md` body and the full section order (`## scope`, `## user.md`, `## memory.md`, `## relevant memory`, `## other scopes`).
-- [ ] Pass prompt text from `AgentRunner.prompt()` for string and text-block prompts without changing `followUp()` snapshot behavior.
-- [ ] Add snapshot and agent tests for relevant-memory inclusion, omission without prompt text, bounded output (default 3, max 5), verbatim dedup of active scope, section order, and no snapshot injection on follow-up.
-- [ ] Run `bun test src/memory/snapshot.test.ts src/agent/mod.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Extend `formatSnapshot` to accept optional prompt text and append bounded `## relevant memory` for `Snapshot may include relevant memory`.
+- [x] Implement verbatim dedup against the active `## memory.md` body and the full section order (`## scope`, `## user.md`, `## memory.md`, `## relevant memory`, `## other scopes`).
+- [x] Pass prompt text from `AgentRunner.prompt()` for string and text-block prompts without changing `followUp()` snapshot behavior.
+- [x] Add snapshot and agent tests for relevant-memory inclusion, omission without prompt text, bounded output (default 3, max 5), verbatim dedup of active scope, section order, and no snapshot injection on follow-up.
+- [x] Run `bun test src/memory/snapshot.test.ts src/agent/mod.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 5: Add explicit commitment categories
 

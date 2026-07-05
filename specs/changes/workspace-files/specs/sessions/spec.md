@@ -8,6 +8,8 @@ The system SHALL represent heartbeat as an explicit session-scoped schedule kind
 
 At dispatch time, the heartbeat prompt body SHALL be sourced from `$GOBLIN_HOME/workspace/HEARTBEAT.md` if that file exists. If the file is absent, the system SHALL fall back to the system-owned constant prompt defined in the scheduler loop. The heartbeat schedule record SHALL store no user prompt text; the prompt is resolved from the file (or constant) at dispatch time, not captured at schedule creation time. When the file is present, the system SHALL prepend `[heartbeat] ` to the file's content. When the file is absent, the system SHALL use the system-owned constant as-is, which already includes the `[heartbeat]` prefix. In both cases, the dispatched prompt SHALL begin with exactly one `[heartbeat]` marker.
 
+When the file is present and non-empty, trailing whitespace SHALL be stripped from the file content before prepending the marker; leading whitespace SHALL be preserved (the user may intend an indented first line as part of the body). A file that contains only whitespace SHALL be treated as empty and the system SHALL fall back to the constant.
+
 #### Scenario: Heartbeat default disabled
 
 - **WHEN** a new session is created
@@ -22,7 +24,7 @@ At dispatch time, the heartbeat prompt body SHALL be sourced from `$GOBLIN_HOME/
 
 - **WHEN** a heartbeat schedule is due and the session remains bound
 - **AND** `$GOBLIN_HOME/workspace/HEARTBEAT.md` exists with content
-- **THEN** the scheduler SHALL dispatch a fresh turn with `[heartbeat]` prepended to the file's content
+- **THEN** the scheduler SHALL dispatch a fresh turn with `[heartbeat]` prepended to the file's content (trailing whitespace stripped, leading whitespace preserved)
 - **AND** the prompt SHALL be distinguishable from user-authored text
 
 #### Scenario: Heartbeat due turn with HEARTBEAT.md absent
@@ -53,3 +55,12 @@ At dispatch time, the heartbeat prompt body SHALL be sourced from `$GOBLIN_HOME/
 - **AND** `$GOBLIN_HOME/workspace/HEARTBEAT.md` exists but cannot be read for a reason other than `ENOENT`
 - **THEN** the scheduler SHALL propagate the error rather than fall back to the constant
 - **AND** the heartbeat turn SHALL NOT be dispatched
+- **AND** the error SHALL be isolated to this schedule: other due schedules in the same tick SHALL still be processed (the failing schedule does not claim, so it remains due; a persistent read error retries on every tick until the operator fixes the file, but does not starve unrelated schedules)
+
+#### Scenario: Failing schedule does not starve other due schedules
+
+- **GIVEN** two schedules are due in the same tick
+- **AND** the first schedule's processing throws (e.g. a heartbeat whose `HEARTBEAT.md` cannot be read for a non-ENOENT reason, or a synchronous dispatcher bug)
+- **WHEN** the scheduler runs the tick
+- **THEN** the scheduler SHALL log the failure and continue processing the remaining due schedules in the same tick
+- **AND** the failed schedule's error SHALL NOT abort the tick loop or skip later due schedules

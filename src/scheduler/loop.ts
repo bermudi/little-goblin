@@ -37,6 +37,11 @@ export const HEARTBEAT_PROMPT =
  * `HEARTBEAT_PROMPT` constant is returned as-is — it already includes the
  * `[heartbeat]` prefix, so no double-prefixing occurs on the fallback
  * path. Non-ENOENT read errors propagate (fail loud, per AGENTS.md).
+ *
+ * Whitespace contract: leading whitespace is preserved (the user may
+ * intend it as part of the body, e.g. an indented first line); only
+ * trailing whitespace is stripped. The emptiness check uses `trim()` so a
+ * file of only whitespace falls back to the constant.
  */
 export function resolveHeartbeatPrompt(home: string): string {
   let raw: string;
@@ -46,9 +51,8 @@ export function resolveHeartbeatPrompt(home: string): string {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return HEARTBEAT_PROMPT;
     throw e;
   }
-  const body = raw.trim();
-  if (body.length === 0) return HEARTBEAT_PROMPT;
-  return `[heartbeat] ${body}`;
+  if (raw.trim().length === 0) return HEARTBEAT_PROMPT;
+  return `[heartbeat] ${raw.trimEnd()}`;
 }
 
 /**
@@ -157,8 +161,22 @@ export class SchedulerLoop {
     try {
       const nowIso = new Date(this.clock.now()).toISOString();
       const due = this.store.listDue(nowIso);
+      // Each schedule is processed in isolation: a throw from one schedule
+      // (e.g. a non-ENOENT HEARTBEAT.md read error, a synchronous dispatcher
+      // bug) MUST NOT skip the remaining due schedules in this tick. Without
+      // this, a mis-permissioned heartbeat — which re-dues every tick because
+      // it is resolved before claimDue — would starve every other schedule
+      // until an operator fixes the file.
       for (const schedule of due) {
-        await this.processOne(schedule, nowIso);
+        try {
+          await this.processOne(schedule, nowIso);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.error("scheduler schedule failed within tick", {
+            id: schedule.id,
+            error: msg,
+          });
+        }
       }
     } catch (err) {
       // A tick error MUST NOT crash the bot or stop future ticks.
@@ -223,7 +241,8 @@ export class SchedulerLoop {
     // onError callback (records outcome: "error"). A synchronous throw from
     // enqueueScheduledTurn (a dispatcher bug) would otherwise leave the
     // schedule claimed with no last-run status, so we catch, record "error",
-    // and re-throw — the outer tick catch logs it and future ticks continue.
+    // and re-throw — the per-schedule catch in tick() logs it, the remaining
+    // due schedules in this tick still run, and future ticks continue.
     try {
       this.dispatcher.enqueueScheduledTurn(peeked.state, schedule.locator, prompt, (err) => {
         const msg = err instanceof Error ? err.message : String(err);

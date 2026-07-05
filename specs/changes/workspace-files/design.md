@@ -58,7 +58,25 @@ Chosen: the dispatched prompt always begins with exactly one `[heartbeat]` marke
 
 Why: the scheduled-turns spec requires the prefix to "make the prompt distinguishable from user-authored text at the agent layer and in transcripts." The constant already bakes in the prefix; prepending again would produce `[heartbeat] [heartbeat] ...`.
 
-Constraints: the user writes the *body* of the heartbeat prompt in HEARTBEAT.md; the system owns the prefix. The file content should not itself start with `[heartbeat]` — the system adds it.
+Constraints: the user writes the *body* of the heartbeat prompt in HEARTBEAT.md; the system owns the prefix. The file content should not itself start with `[heartbeat]` — the system adds it. Defending against a user-authored `[heartbeat]` prefix in the file is the user's responsibility, not the system's: the spec's "begins with exactly one marker" guarantee is satisfied by the single system-prepended marker.
+
+### Trailing whitespace stripped, leading whitespace preserved
+
+Chosen: when the file is present and non-empty, `resolveHeartbeatPrompt` returns `[heartbeat] ${raw.trimEnd()}`. Leading whitespace is preserved; only trailing whitespace (including trailing blank lines) is stripped. The emptiness check uses `raw.trim().length === 0` so a file of only whitespace falls back to the constant.
+
+Why: trailing blank lines are almost always an editor artifact and would otherwise produce a prompt that trails whitespace into the agent layer. Leading whitespace, by contrast, can be intentional (an indented first line, a code-block-style body), and stripping it would silently rewrite user intent.
+
+Constraints: the spec's "Heartbeat due turn with HEARTBEAT.md present" scenario states this contract explicitly so design and implementation share one source of truth.
+
+### Per-schedule error isolation in the tick loop
+
+Chosen: `tick()` wraps each schedule's `processOne` call in its own try/catch. A throw from one schedule is logged with the schedule id and the loop continues to the next due schedule. The outer tick-level catch remains as a last resort (for throws from `listDue` itself or the iteration machinery).
+
+Why: `processOne` resolves the heartbeat prompt *before* calling `claimDue`. A non-ENOENT read error on `HEARTBEAT.md` (e.g. a permissions regression) therefore throws without claiming, so the heartbeat stays due and re-fails on every tick. Before this change, that throw propagated to the tick-level catch and aborted the entire tick, skipping every other due schedule. In a single-user homelab that means a mis-permissioned heartbeat — which never clears on its own — would indefinitely delay every other schedule (`/schedule in 5m remind me to deploy`, recurring check-ins, etc.) by one tick at a time until an operator fixes the file. Per-schedule isolation contains the blast radius to the failing schedule alone.
+
+The same isolation also covers the pre-existing synchronous-dispatcher-throw pattern (`processOne` re-throws after recording an "error" outcome); that throw now stops only its own schedule rather than the whole tick.
+
+Constraints: this does not change "fail loud" semantics — the error is still surfaced (via `log.error`) and the failing schedule still retries on the next tick. It only prevents collateral damage to unrelated schedules. A tick-level fatal error (e.g. `listDue` throwing on a corrupt `schedules.json`) still aborts the tick as before.
 
 ### HEARTBEAT.md is optional with constant fallback
 
@@ -83,14 +101,15 @@ Why: `SOUL.md` is required — goblin cannot start without it. HEARTBEAT.md is o
 
 ### `src/scheduler/loop.ts`
 
-- Add `resolveHeartbeatPrompt(home: string): string` that reads `heartbeatMdPath(home)`. If the file is present and non-empty (after `trim()`), returns `[heartbeat] ${content.trimEnd()}`. If the file is absent (ENOENT) or empty/whitespace-only, returns `HEARTBEAT_PROMPT` (the constant, which already includes the `[heartbeat]` prefix). Non-ENOENT read errors propagate.
+- Add `resolveHeartbeatPrompt(home: string): string` that reads `heartbeatMdPath(home)`. If the file is present and non-empty (i.e. `raw.trim().length > 0`), returns `[heartbeat] ${raw.trimEnd()}` (trailing whitespace stripped, leading whitespace preserved). If the file is absent (ENOENT) or empty/whitespace-only, returns `HEARTBEAT_PROMPT` (the constant, which already includes the `[heartbeat]` prefix). Non-ENOENT read errors propagate.
 - In `processOne()`, replace `isHeartbeat ? HEARTBEAT_PROMPT : schedule.prompt` with `isHeartbeat ? resolveHeartbeatPrompt(this.home) : schedule.prompt`.
+- In `tick()`, wrap each schedule's `processOne` call in its own try/catch so a throw from one schedule (heartbeat read error, synchronous dispatcher bug) is logged and the loop continues to the next due schedule. The outer tick-level catch remains for fatal errors (e.g. `listDue` throwing).
 - The `SchedulerLoop` constructor already receives `home` (or can derive it from the store). Verify the home path is available; if not, pass it through the constructor.
 - Relates to: `Heartbeat schedule is explicit and session-scoped`.
 
 ### `src/scheduler/loop.test.ts`
 
-- Add tests for: HEARTBEAT.md present (file content used with prefix), HEARTBEAT.md absent (constant fallback with exactly one `[heartbeat]` marker), HEARTBEAT.md edited between ticks (new content used on next tick), HEARTBEAT.md empty/whitespace-only (falls back to constant), non-ENOENT read error propagates.
+- Add tests for: HEARTBEAT.md present (file content used with prefix, leading whitespace preserved, trailing whitespace stripped), HEARTBEAT.md absent (constant fallback with exactly one `[heartbeat]` marker), HEARTBEAT.md edited between ticks (new content used on next tick), HEARTBEAT.md empty/whitespace-only (falls back to constant), non-ENOENT read error propagates, a failing heartbeat schedule does not starve other due schedules in the same tick.
 - Relates to: `Heartbeat schedule is explicit and session-scoped`.
 
 ### `src/pi-host.test.ts` (or `src/agent/system-prompt.test.ts` if that's where pi-host path tests live)

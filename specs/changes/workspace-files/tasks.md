@@ -17,3 +17,16 @@
 - [x] Add test: edit HEARTBEAT.md between ticks, verify next heartbeat uses updated content.
 - [x] Update `AGENTS.md` (repo root): document the workspace prompt file read exception per decision `workspace-prompt-file-reads` (0009) — read-only access to `workspace/` prompt files via path helpers is permitted alongside the existing `config.ts` exception (0007).
 - [x] Run `bun test` full suite.
+
+## Phase 3: Pre-archive review remediation
+
+- [x] Align `resolveHeartbeatPrompt` trimming to the design: empty-check via `trim()`, body via `trimEnd()` (preserve leading whitespace, strip trailing). (Review S6.)
+- [x] State the whitespace contract in the sessions spec ("Heartbeat due turn with HEARTBEAT.md present" scenario + requirement body).
+- [x] Add per-schedule error isolation in `SchedulerLoop.tick()` so a throw from one schedule (heartbeat read error, synchronous dispatcher bug) does not skip the remaining due schedules in the tick. (Review S3.)
+- [x] Add "Failing schedule does not starve other due schedules" scenario to the sessions spec; extend "HEARTBEAT.md read error other than ENOENT" with an isolation clause.
+- [x] Document per-schedule error isolation as a design decision.
+- [x] Add test: leading whitespace preserved by `resolveHeartbeatPrompt`.
+- [x] Add integration test: heartbeat read failure isolated, other due schedules still dispatch in the same tick.
+- [x] Add integration test: synchronous dispatcher throw isolated, later due schedule still runs.
+- [x] Run `bun run typecheck`, `bun test`, and `litespec validate workspace-files`.
+

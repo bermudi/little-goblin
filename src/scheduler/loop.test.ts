@@ -545,6 +545,15 @@ describe("SchedulerLoop", () => {
       );
     });
 
+    it("preserves leading whitespace in the file content", () => {
+      // The user may intend an indented first line; only trailing whitespace
+      // is stripped. Spec: "Heartbeat due turn with HEARTBEAT.md present".
+      writeHeartbeat(tmpDir, "  \tCheck the build; if red, ping me.  \n");
+      expect(resolveHeartbeatPrompt(tmpDir)).toBe(
+        "[heartbeat]   \tCheck the build; if red, ping me.",
+      );
+    });
+
     it("falls back to the constant when HEARTBEAT.md is absent (exactly one [heartbeat] marker)", () => {
       // tmpDir has no workspace/HEARTBEAT.md.
       expect(resolveHeartbeatPrompt(tmpDir)).toBe(HEARTBEAT_PROMPT);
@@ -651,6 +660,113 @@ describe("SchedulerLoop", () => {
 
       expect(dispatcher.calls).toHaveLength(2);
       expect(dispatcher.calls[1]!.content).toBe("[heartbeat] second body");
+    });
+  });
+
+  describe("heartbeat read failure isolation", () => {
+    it("does not starve other due schedules when HEARTBEAT.md read throws non-ENOENT", async () => {
+      // Spec: "Failing schedule does not starve other due schedules". A
+      // heartbeat whose HEARTBEAT.md cannot be read (non-ENOENT) throws inside
+      // processOne before claimDue; without per-schedule isolation that throw
+      // would abort the tick and skip every later due schedule. We force the
+      // failure by pointing the loop's `home` at a path where workspace/ resolves
+      // under a non-directory, then assert a co-due one-shot still dispatches.
+      const heartbeatLoc: ChatLocator = { chatId: 100 };
+      const heartbeatSession = manager.createForChat(heartbeatLoc);
+      store.setHeartbeat({
+        sessionId: heartbeatSession.id,
+        locator: heartbeatLoc,
+        enabled: true,
+        now: new Date(NOW_MS - 1800_000).toISOString(), // due now
+      });
+
+      // A second, unrelated schedule also due in this tick.
+      const otherLoc: ChatLocator = { chatId: 200 };
+      const otherSession = manager.createForChat(otherLoc);
+      store.create({
+        sessionId: otherSession.id,
+        locator: otherLoc,
+        kind: "once",
+        prompt: "deploy reminder",
+        nextRunAt: new Date(NOW_MS - 1000).toISOString(),
+      });
+
+      // Break heartbeatMdPath(home): make `home/workspace/HEARTBEAT.md` resolve
+      // under a non-directory so readFileSync throws ENOTDIR (not ENOENT).
+      const blockingFile = join(tmpDir, "blocking");
+      writeFileSync(blockingFile, "x", "utf-8");
+      const loop = new SchedulerLoop({
+        store,
+        manager,
+        dispatcher,
+        clock: clock.clock,
+        // `home` only feeds resolveHeartbeatPrompt; store/manager use tmpDir.
+        home: blockingFile,
+      });
+
+      // The tick must not reject, the heartbeat must not dispatch, and the
+      // unrelated one-shot must still go through.
+      await expect(loop.tick()).resolves.toBeUndefined();
+
+      const dispatched = dispatcher.calls.map((c) => c.content);
+      expect(dispatched).not.toContain("[heartbeat]");
+      expect(dispatched).toEqual(["deploy reminder"]);
+
+      // The heartbeat was never claimed (resolve throws before claimDue), so it
+      // is still due on the next tick — retrying until the operator fixes it.
+      const heartbeatSchedules = store.listDue(new Date(NOW_MS).toISOString());
+      expect(heartbeatSchedules.some((s) => s.kind === "heartbeat")).toBe(true);
+    });
+
+    it("isolates a synchronous dispatcher throw so later due schedules still run", async () => {
+      // Same fault-isolation property, exercised via the pre-existing
+      // synchronous-dispatcher-throw path (processOne re-throws after recording
+      // an "error" outcome). The throw must stop only its own schedule.
+      const firstLoc: ChatLocator = { chatId: 100 };
+      const firstSession = manager.createForChat(firstLoc);
+      store.create({
+        sessionId: firstSession.id,
+        locator: firstLoc,
+        kind: "once",
+        prompt: "first (will throw)",
+        nextRunAt: new Date(NOW_MS - 2000).toISOString(),
+      });
+      const secondLoc: ChatLocator = { chatId: 200 };
+      const secondSession = manager.createForChat(secondLoc);
+      store.create({
+        sessionId: secondSession.id,
+        locator: secondLoc,
+        kind: "once",
+        prompt: "second (should still run)",
+        nextRunAt: new Date(NOW_MS - 1000).toISOString(),
+      });
+
+      // A recording dispatcher that throws on the first dispatch attempt only,
+      // so whichever schedule is processed first fails and the second must
+      // still run. This makes the test robust to listDue ordering.
+      let firstSeen = false;
+      const mixedDispatcher: SchedulerDispatcher = {
+        enqueueScheduledTurn(session, locator, content) {
+          if (!firstSeen) {
+            firstSeen = true;
+            throw new Error("boom on first");
+          }
+          dispatcher.enqueueScheduledTurn(session, locator, content);
+        },
+      };
+      const loop = new SchedulerLoop({
+        store,
+        manager,
+        dispatcher: mixedDispatcher,
+        clock: clock.clock,
+        home: tmpDir,
+      });
+
+      await expect(loop.tick()).resolves.toBeUndefined();
+
+      // The first schedule threw; the second still dispatched.
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.content).toBe("second (should still run)");
     });
   });
 

@@ -30,8 +30,8 @@
 
 ## Phase 4: Update onboard
 
-- [ ] Update `src/onboard.ts`: if onboarding writes `SOUL.md` or `AGENTS.md`, update write paths to `workspace/SOUL.md` and `workspace/AGENTS.md`.
-- [ ] Run `bun test src/onboard.test.ts`.
+- [x] Update `src/onboard.ts`: if onboarding writes `SOUL.md` or `AGENTS.md`, update write paths to `workspace/SOUL.md` and `workspace/AGENTS.md`.
+- [x] Run `bun test src/onboard.test.ts`.
 
 ## Phase 5: Update test fixtures with inline paths
 

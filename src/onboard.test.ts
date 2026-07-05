@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { main, parseIdList, buildConfig } from "./onboard.ts";
 import { DEFAULT_AGENTS_TEMPLATE, buildSoulTemplate, createMissingPromptFiles } from "./onboard.ts";
+import { agentsMdPath, soulMdPath } from "./pi-host.ts";
 
 describe("onboard", () => {
   let tempDir: string;
@@ -28,8 +29,10 @@ describe("onboard", () => {
   it("exits when config already exists", async () => {
     // Create existing config
     writeFileSync(join(tempDir, "goblin.json5"), "{}");
-    writeFileSync(join(tempDir, "SOUL.md"), "existing soul\n");
-    writeFileSync(join(tempDir, "AGENTS.md"), "existing agents\n");
+    // SOUL.md/AGENTS.md live under workspace/ — ensure the parent exists.
+    mkdirSync(dirname(soulMdPath(tempDir)), { recursive: true });
+    writeFileSync(soulMdPath(tempDir), "existing soul\n");
+    writeFileSync(agentsMdPath(tempDir), "existing agents\n");
 
     let exited = false;
     const originalExit = process.exit;
@@ -61,6 +64,8 @@ describe("onboard helpers", () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "goblin-onboard-helper-test-"));
+    // SOUL.md/AGENTS.md live under workspace/ — pre-creating them needs the parent.
+    mkdirSync(dirname(soulMdPath(tempDir)), { recursive: true });
   });
 
   afterEach(() => {
@@ -72,42 +77,42 @@ describe("onboard helpers", () => {
       const result = createMissingPromptFiles(tempDir, "Moss");
 
       expect(result).toEqual({ createdSoul: true, createdAgents: true });
-      expect(readFileSync(join(tempDir, "SOUL.md"), "utf-8")).toBe(buildSoulTemplate("Moss"));
-      expect(readFileSync(join(tempDir, "AGENTS.md"), "utf-8")).toBe(DEFAULT_AGENTS_TEMPLATE);
+      expect(readFileSync(soulMdPath(tempDir), "utf-8")).toBe(buildSoulTemplate("Moss"));
+      expect(readFileSync(agentsMdPath(tempDir), "utf-8")).toBe(DEFAULT_AGENTS_TEMPLATE);
     });
 
     it("does not overwrite existing prompt files", () => {
-      writeFileSync(join(tempDir, "SOUL.md"), "existing soul\n");
-      writeFileSync(join(tempDir, "AGENTS.md"), "existing agents\n");
+      writeFileSync(soulMdPath(tempDir), "existing soul\n");
+      writeFileSync(agentsMdPath(tempDir), "existing agents\n");
 
       const result = createMissingPromptFiles(tempDir, "Moss");
 
       expect(result).toEqual({ createdSoul: false, createdAgents: false });
-      expect(readFileSync(join(tempDir, "SOUL.md"), "utf-8")).toBe("existing soul\n");
-      expect(readFileSync(join(tempDir, "AGENTS.md"), "utf-8")).toBe("existing agents\n");
+      expect(readFileSync(soulMdPath(tempDir), "utf-8")).toBe("existing soul\n");
+      expect(readFileSync(agentsMdPath(tempDir), "utf-8")).toBe("existing agents\n");
     });
 
     it("warns when AGENTS.md exists without SOUL.md and does not copy AGENTS content", () => {
       const warnings: string[] = [];
-      writeFileSync(join(tempDir, "AGENTS.md"), "old identity from agents\n");
+      writeFileSync(agentsMdPath(tempDir), "old identity from agents\n");
 
       const result = createMissingPromptFiles(tempDir, "Moss", (message) => warnings.push(message));
 
       expect(result).toEqual({ createdSoul: true, createdAgents: false });
       expect(warnings[0]).toContain("Existing AGENTS.md found without SOUL.md");
-      expect(readFileSync(join(tempDir, "SOUL.md"), "utf-8")).toContain("# Moss");
-      expect(readFileSync(join(tempDir, "SOUL.md"), "utf-8")).not.toContain("old identity from agents");
-      expect(readFileSync(join(tempDir, "AGENTS.md"), "utf-8")).toBe("old identity from agents\n");
+      expect(readFileSync(soulMdPath(tempDir), "utf-8")).toContain("# Moss");
+      expect(readFileSync(soulMdPath(tempDir), "utf-8")).not.toContain("old identity from agents");
+      expect(readFileSync(agentsMdPath(tempDir), "utf-8")).toBe("old identity from agents\n");
     });
 
     it("can create only missing AGENTS.md without touching existing SOUL.md", () => {
-      writeFileSync(join(tempDir, "SOUL.md"), "existing soul\n");
+      writeFileSync(soulMdPath(tempDir), "existing soul\n");
 
       const result = createMissingPromptFiles(tempDir, "Ignored");
 
       expect(result).toEqual({ createdSoul: false, createdAgents: true });
-      expect(readFileSync(join(tempDir, "SOUL.md"), "utf-8")).toBe("existing soul\n");
-      expect(existsSync(join(tempDir, "AGENTS.md"))).toBe(true);
+      expect(readFileSync(soulMdPath(tempDir), "utf-8")).toBe("existing soul\n");
+      expect(existsSync(agentsMdPath(tempDir))).toBe(true);
     });
   });
 

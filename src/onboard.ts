@@ -3,7 +3,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ConfigFileSchema } from "./schema.ts";
 import { agentsMdPath, soulMdPath } from "./pi-host.ts";
 
@@ -171,6 +171,9 @@ export function createMissingPromptFiles(
   let createdSoul = false;
   let createdAgents = false;
   mkdirSync(home, { recursive: true });
+  // SOUL.md and AGENTS.md live under workspace/; ensure that parent exists
+  // before the writeFileSync calls (home alone is not enough on a fresh tree).
+  mkdirSync(dirname(soulPath), { recursive: true });
   if (!hasSoul) {
     writeFileSync(soulPath, buildSoulTemplate(agentName), { flag: "wx" });
     createdSoul = true;

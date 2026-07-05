@@ -99,6 +99,38 @@ function fakeApi(): Bot["api"] {
   } as unknown as Bot["api"];
 }
 
+/**
+ * Install a `globalThis.fetch` mock that serves both the Telegram file download
+ * (api.telegram.org) and the Groq ASR endpoint (api.groq.com). Returns the
+ * Groq handler so a test can customize the transcription response.
+ */
+function installVoiceFetch(opts: {
+  audio?: Uint8Array;
+  groqStatus?: number;
+  groqBody?: string;
+  groqText?: string;
+  groqError?: Error;
+}): { groqCalls: number; downloadCalls: number } {
+  const audio = opts.audio ?? new Uint8Array([1, 2, 3, 4]);
+  const stats = { groqCalls: 0, downloadCalls: 0 };
+  globalThis.fetch = mock(async (input: string | URL | Request, _init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("api.telegram.org")) {
+      stats.downloadCalls += 1;
+      return new Response(audio, { headers: { "content-length": String(audio.byteLength) } });
+    }
+    if (url.includes("api.groq.com")) {
+      stats.groqCalls += 1;
+      if (opts.groqError) throw opts.groqError;
+      const status = opts.groqStatus ?? 200;
+      const body = opts.groqBody ?? JSON.stringify({ text: opts.groqText ?? "hello from voice" });
+      return new Response(body, { status, headers: { "content-type": "application/json" } });
+    }
+    return new Response("", { status: 404 });
+  }) as unknown as typeof fetch;
+  return stats;
+}
+
 function makeHarness(cfg = makeConfig()): IntakeHarness {
   const manager = new SessionManager(cfg);
   const agentRunners = new Map<string, AgentRunner>();
@@ -626,5 +658,147 @@ describe("Telegram intake", () => {
     expect(firstRunner.prompt.mock.calls[0]![0]).toBe("[prepared] slow");
     // No new runner was created for the scheduled turn (isCurrent() aborted).
     expect(dispatcher.runners.has(session.id)).toBe(false);
+  });
+
+  it("transcribes a voice message into a transcript prompt without a projectDir", async () => {
+    const cfg = makeConfig();
+    cfg.groqApiKey = "groq-key";
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    installVoiceFetch({ groqText: "take out the trash" });
+
+    await intake.handleText(message, "/new");
+    await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
+    await waitFor(() => runners[0]!.prompt.mock.calls.length === 1);
+
+    expect(runners[0]!.prompt.mock.calls[0]![0]).toBe(
+      "[prepared] [Voice message transcript]\ntake out the trash",
+    );
+    // No setup/failure reply on a clean transcription without projectDir.
+    expect(replies.some((r) => r.includes("Groq ASR is not configured"))).toBe(false);
+    expect(replies.some((r) => r.includes("couldn't transcribe"))).toBe(false);
+    expect(replies.some((r) => r.startsWith("Saved voice-"))).toBe(false);
+  });
+
+  it("saves the voice file and prompts with transcript + saved-file note when projectDir is bound", async () => {
+    const cfg = makeConfig();
+    cfg.groqApiKey = "groq-key";
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    installVoiceFetch({ groqText: "hello project" });
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, `/project ${cfg.goblinHome}`);
+    await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
+    await waitFor(() => {
+      const last = runners.at(-1)!;
+      return last.prompt.mock.calls.length === 1;
+    });
+
+    const runner = runners.at(-1)!;
+    const promptArg = runner.prompt.mock.calls[0]![0] as string;
+    expect(promptArg).toContain("[Voice message transcript]\nhello project");
+    // Saved-file note names the voice file with its .oga extension.
+    expect(promptArg).toMatch(/\[Voice file `voice-\d+\.oga` saved to project directory\.\]/);
+    expect(replies.some((r) => /^Saved voice-\d+\.oga\.$/.test(r))).toBe(true);
+  });
+
+  it("replies with a setup message when groqApiKey is absent and does not prompt", async () => {
+    // makeConfig() has no groqApiKey by default.
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    installVoiceFetch({});
+
+    await intake.handleText(message, "/new");
+    await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
+    await flushMicrotasks();
+
+    expect(replies.some((r) => r.includes("Groq ASR is not configured"))).toBe(true);
+    expect(runners[0]!.prompt).not.toHaveBeenCalled();
+  });
+
+  it("replies that the voice could not be transcribed on ASR failure and does not prompt", async () => {
+    const cfg = makeConfig();
+    cfg.groqApiKey = "groq-key";
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    installVoiceFetch({ groqStatus: 500, groqBody: '{"error":"internal"}' });
+
+    await intake.handleText(message, "/new");
+    await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
+    await flushMicrotasks();
+
+    expect(replies.some((r) => r.includes("couldn't transcribe"))).toBe(true);
+    // The raw error body is not surfaced.
+    expect(replies.some((r) => r.includes("internal"))).toBe(false);
+    expect(runners[0]!.prompt).not.toHaveBeenCalled();
+  });
+
+  it("replies that no speech was detected on an empty transcript and does not prompt", async () => {
+    const cfg = makeConfig();
+    cfg.groqApiKey = "groq-key";
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    installVoiceFetch({ groqText: "   " });
+
+    await intake.handleText(message, "/new");
+    await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
+    await flushMicrotasks();
+
+    expect(replies.some((r) => r.includes("No speech was detected"))).toBe(true);
+    expect(runners[0]!.prompt).not.toHaveBeenCalled();
+  });
+
+  it("defaults a missing mimeType to audio/ogg and still transcribes", async () => {
+    const cfg = makeConfig();
+    cfg.groqApiKey = "groq-key";
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const stats = installVoiceFetch({ groqText: "no mime given" });
+
+    await intake.handleText(message, "/new");
+    // No mimeType on the voice input.
+    await intake.handleVoice(message, fakeApi(), { fileId: "v1" });
+    await waitFor(() => runners[0]!.prompt.mock.calls.length === 1);
+
+    expect(stats.groqCalls).toBe(1);
+    expect(runners[0]!.prompt.mock.calls[0]![0]).toContain("[Voice message transcript]\nno mime given");
+  });
+
+  it("does not save, reply, or prompt stale voice work after a runner-disposing command", async () => {
+    const cfg = makeConfig();
+    cfg.groqApiKey = "groq-key";
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    // Block the Groq call so the work is in-flight when the runner is swapped.
+    const pending = deferred();
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("api.telegram.org")) {
+        return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } });
+      }
+      await pending.promise; // hold transcription open
+      return new Response(JSON.stringify({ text: "stale" }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await intake.handleText(message, "/new");
+    await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
+    const staleRunner = runners[0]!;
+
+    // Swap the runner out (as /new does) before transcription settles.
+    await intake.handleText(message, "/new");
+
+    pending.resolve();
+    await flushMicrotasks();
+
+    expect(staleRunner.dispose).toHaveBeenCalledTimes(1);
+    expect(staleRunner.prompt).not.toHaveBeenCalled();
   });
 });

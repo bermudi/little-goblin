@@ -18,12 +18,12 @@
 
 ## Phase 3: Wire voice intake
 
-- [ ] Update `handleVoice` in `src/tg/intake.ts` to call Groq ASR for `Voice intake transcribes Telegram voice messages`.
-- [ ] Preserve project-file saving and saved-file prompt notes for `Voice intake preserves project file saving`.
-- [ ] Keep all voice download, ASR, save, reply, and prompt work inside the existing scheduled media task for `Agent turns do not block unrelated updates`.
-- [ ] Update `src/tg/intake.test.ts` for no-projectDir transcription, projectDir save+transcript, missing key, ASR failure, empty transcript, and stale-runner behavior.
-- [ ] Run `bun test src/tg/intake.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Update `handleVoice` in `src/tg/intake.ts` to call Groq ASR for `Voice intake transcribes Telegram voice messages`.
+- [x] Preserve project-file saving and saved-file prompt notes for `Voice intake preserves project file saving`.
+- [x] Keep all voice download, ASR, save, reply, and prompt work inside the existing scheduled media task for `Agent turns do not block unrelated updates`.
+- [x] Update `src/tg/intake.test.ts` for no-projectDir transcription, projectDir save+transcript, missing key, ASR failure, empty transcript, and stale-runner behavior.
+- [x] Run `bun test src/tg/intake.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 4: Refresh backlog
 

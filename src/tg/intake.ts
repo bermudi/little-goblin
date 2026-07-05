@@ -14,6 +14,7 @@ import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { TurnDispatcher, type PromptContent } from "./turn-dispatcher.ts";
+import { transcribeWithGroq } from "../asr/mod.ts";
 import type { MessageBuffer } from "./mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 
@@ -499,15 +500,55 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     turn.schedule(
       async (runner, isCurrent) => {
-        if (turn.projectDir) {
-          const raw = await downloadFileBytes(api, voice.fileId, cfg.botToken);
+        // Groq ASR setup gate: missing key fails at use time with a clear
+        // message rather than at startup. Checked inside the scheduled task so
+        // the reply respects the stale-runner guard and stays non-blocking.
+        if (!cfg.groqApiKey) {
           if (!isCurrent()) return;
-          if (!raw) {
-            await message.reply("Sorry, I couldn't download that voice message.");
-            return;
-          }
+          await message.reply("Groq ASR is not configured. Add a Groq API key to transcribe voice messages.");
+          return;
+        }
 
-          const ext = voice.mimeType === "audio/ogg" ? "oga" : "bin";
+        // One download serves both ASR and optional project-file saving, so a
+        // failure here short-circuits before either side effect.
+        const raw = await downloadFileBytes(api, voice.fileId, cfg.botToken);
+        if (!isCurrent()) return;
+        if (!raw) {
+          if (isCurrent()) await message.reply("Sorry, I couldn't download that voice message.");
+          return;
+        }
+
+        // Telegram voice messages are OGG Opus; default to audio/ogg when the
+        // field is absent rather than rejecting the message.
+        const mimeType = voice.mimeType ?? "audio/ogg";
+        const asrResult = await transcribeWithGroq({
+          audioBytes: raw,
+          mimeType,
+          model: cfg.asrModel ?? "whisper-large-v3-turbo",
+          apiKey: cfg.groqApiKey,
+        });
+        if (!isCurrent()) return;
+
+        if (!asrResult.ok) {
+          // Transport/API failure only; the sanitized error carries no secrets.
+          if (isCurrent()) await message.reply("Sorry, I couldn't transcribe that voice message.");
+          return;
+        }
+
+        // Intake owns the semantic empty-text check: a successful HTTP response
+        // with no speech is not an ASR failure.
+        if (asrResult.text.length === 0) {
+          if (isCurrent()) await message.reply("No speech was detected in that voice message.");
+          return;
+        }
+
+        // Transcription succeeded with text. Build the transcript prompt.
+        let promptText = `[Voice message transcript]\n${asrResult.text}`;
+
+        // Preserve the original voice-file saving behavior for project-bound
+        // sessions and append a saved-file note alongside the transcript.
+        if (turn.projectDir) {
+          const ext = mimeType === "audio/ogg" ? "oga" : "bin";
           const safeName = `voice-${Date.now()}.${ext}`;
           const destPath = join(turn.projectDir, safeName);
           if (!isCurrent()) return;
@@ -523,16 +564,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           await message.reply(`Saved ${safeName}.`);
 
           const escapedName = safeName.replace(/`/g, "'");
-          const promptText = `User sent a voice message: \`${escapedName}\` saved to project directory.`;
-
-          if (!isCurrent()) return;
-          await runPrompt(message, turn.locator, runner, promptText);
-          return;
+          promptText = `[Voice message transcript]\n${asrResult.text}\n\n[Voice file \`${escapedName}\` saved to project directory.]`;
         }
 
         if (!isCurrent()) return;
-        log.debug("dropping voice: no projectDir");
-        await message.reply("No project directory is set. Use /project <path> to enable file saving.");
+        await runPrompt(message, turn.locator, runner, promptText);
       },
       "runner voice prompt failed",
     );

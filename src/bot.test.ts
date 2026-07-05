@@ -112,9 +112,10 @@ function makeApi() {
   };
 }
 
-async function makeBot() {
+async function makeBot(cfgPatch: Partial<Config> = {}) {
   const { buildBot } = await import("./bot.ts");
-  const cfg = makeConfig();
+  const base = makeConfig();
+  const cfg: Config = Object.freeze({ ...base, ...cfgPatch });
   const built = buildBot(cfg, {
     createAgentRunner: (opts) => new MockAgentRunner(opts) as unknown as AgentRunner,
   });
@@ -472,9 +473,21 @@ describe("buildBot integration", () => {
     expect(built.api.sent.at(-1)).toBe("Rejected: unsafe filename.");
   });
 
-  it("voice messages save generated files and prompt the runner", async () => {
-    const built = await makeBot();
-    globalThis.fetch = mock(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } })) as unknown as typeof fetch;
+  it("voice messages transcribe, save the original file, and prompt the runner", async () => {
+    // Voice intake now routes through Groq ASR: the Telegram download and the
+    // Groq transcription call share globalThis.fetch, distinguished by URL.
+    const built = await makeBot({ groqApiKey: "groq-key" });
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("api.telegram.org")) {
+        return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } });
+      }
+      // Groq ASR endpoint.
+      return new Response(JSON.stringify({ text: "the transcript text" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
     await built.bot.handleUpdate(textUpdate("/new"));
     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
 
@@ -488,7 +501,8 @@ describe("buildBot integration", () => {
     const safeName = saved.slice("Saved ".length, -1);
     expect(existsSync(join(built.cfg.goblinHome, safeName))).toBe(true);
     const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
-    expect(prompt).toContain(`User sent a voice message: \`${safeName}\` saved to project directory.`);
+    expect(prompt).toContain("[Voice message transcript]\nthe transcript text");
+    expect(prompt).toContain(`[Voice file \`${safeName}\` saved to project directory.]`);
   });
 
   it("audio messages save files and prompt the runner", async () => {

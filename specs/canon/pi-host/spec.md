@@ -4,13 +4,13 @@
 
 ### Requirement: Pi-host module provides shared pi service construction
 
-The `src/pi-host.ts` module SHALL export a `PiServices` type and a `createPiServices(home: string): PiServices` function that returns `{ authStorage: AuthStorage, modelRegistry: ModelRegistry, settingsManager: SettingsManager }` configured to use `$GOBLIN_HOME/goblin/` as the pi configuration directory.
+The `src/pi-host.ts` module SHALL export a `PiServices` type and a `createPiServices(home: string): PiServices` function that returns `{ authStorage: AuthStorage, modelRegistry: ModelRegistry, settingsManager: SettingsManager }` configured to use `$GOBLIN_HOME/state/pi/` as the pi configuration directory.
 
 #### Scenario: Services created with correct paths
 
 - **WHEN** `createPiServices("/home/user/goblin")` is called
-- **THEN** the returned `authStorage` SHALL point at `/home/user/goblin/goblin/auth.json`
-- **AND** the returned `modelRegistry` SHALL point at `/home/user/goblin/goblin/models.json`
+- **THEN** the returned `authStorage` SHALL point at `/home/user/goblin/state/pi/auth.json`
+- **AND** the returned `modelRegistry` SHALL point at `/home/user/goblin/state/pi/models.json`
 - **AND** the returned `settingsManager` SHALL be an in-memory instance with empty defaults
 
 #### Scenario: Idempotent — same home, same result
@@ -25,7 +25,9 @@ The `src/pi-host.ts` module SHALL export path helper functions `workdirPath(home
 #### Scenario: Path helpers available
 
 - **WHEN** a consumer imports `{ workdirPath, piAgentDir, agentsMdPath }` from `pi-host.ts`
-- **THEN** each SHALL return the same paths previously defined in `src/agent/paths.ts`
+- **THEN** `workdirPath(home)` SHALL resolve to `$GOBLIN_HOME/scratch/workdir/`
+- **AND** `piAgentDir(home)` SHALL resolve to `$GOBLIN_HOME/state/pi/`
+- **AND** `agentsMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/AGENTS.md`
 
 ### Requirement: Pi-host module has no dependency on agent or subagent modules
 
@@ -38,13 +40,14 @@ The `src/pi-host.ts` module MUST NOT import from `src/agent/` or `src/subagents/
 
 ### Requirement: Pi-host exposes Goblin prompt file paths
 
-The `src/pi-host.ts` module SHALL expose canonical path helpers for Goblin-owned prompt files under `$GOBLIN_HOME`, including `agentsMdPath(home)` and `soulMdPath(home)`.
+The `src/pi-host.ts` module SHALL expose canonical path helpers for Goblin-owned prompt files under `$GOBLIN_HOME/workspace/`, including `agentsMdPath(home)`, `soulMdPath(home)`, and `heartbeatMdPath(home)`.
 
 #### Scenario: Prompt path helpers available
 
 - **WHEN** a consumer imports Goblin prompt path helpers from `src/pi-host.ts`
-- **THEN** `agentsMdPath(home)` SHALL resolve to `$GOBLIN_HOME/AGENTS.md`
-- **AND** `soulMdPath(home)` SHALL resolve to `$GOBLIN_HOME/SOUL.md`
+- **THEN** `agentsMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/AGENTS.md`
+- **AND** `soulMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/SOUL.md`
+- **AND** `heartbeatMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/HEARTBEAT.md`
 
 ### Requirement: Prompt file reads fail loud except optional missing files
 
@@ -52,12 +55,12 @@ Goblin prompt file loading SHALL fail when required files are missing or unreada
 
 #### Scenario: Required SOUL missing
 
-- **WHEN** `$GOBLIN_HOME/SOUL.md` does not exist
+- **WHEN** `$GOBLIN_HOME/workspace/SOUL.md` does not exist
 - **THEN** prompt construction SHALL fail
 
 #### Scenario: Optional AGENTS missing
 
-- **WHEN** `$GOBLIN_HOME/AGENTS.md` does not exist
+- **WHEN** `$GOBLIN_HOME/workspace/AGENTS.md` does not exist
 - **THEN** prompt construction SHALL continue without that file
 
 #### Scenario: Optional project AGENTS missing
@@ -72,10 +75,10 @@ Goblin prompt file loading SHALL fail when required files are missing or unreada
 
 ### Requirement: Prompt validation uses a shared error contract
 
-Startup preflight and the main `AgentRunner` prompt-construction path SHALL use the same prompt-file validation semantics for required `SOUL.md`. Missing `SOUL.md` SHALL produce an actionable configuration error that tells the operator to run onboarding or create `SOUL.md`.
+Startup preflight and the main `AgentRunner` prompt-construction path SHALL use the same prompt-file validation semantics for required `SOUL.md`. Missing `SOUL.md` SHALL produce an actionable configuration error that tells the operator to run onboarding or create `SOUL.md` in `$GOBLIN_HOME/workspace/`.
 
 #### Scenario: Startup and runner share missing SOUL semantics
 
-- **WHEN** `$GOBLIN_HOME/SOUL.md` is missing
+- **WHEN** `$GOBLIN_HOME/workspace/SOUL.md` is missing
 - **THEN** startup preflight and main runner prompt construction SHALL both report the missing required prompt file as a configuration error
-- **AND** both paths SHALL include guidance to run onboarding or create `SOUL.md`
+- **AND** both paths SHALL include guidance to run onboarding or create `SOUL.md` in `$GOBLIN_HOME/workspace/`

@@ -56,12 +56,25 @@ The system SHALL apply defaults for optional fields not present in the config fi
 
 ### Requirement: Ensure GOBLIN_HOME directory structure
 
-The system SHALL create required subdirectories under `GOBLIN_HOME` at startup.
+The system SHALL create required subdirectories under `GOBLIN_HOME` at startup, organized into three top-level groups: `workspace/` (user-authored prompt files and skills), `state/` (machine-managed state), and `scratch/` (ephemeral subagent workspace).
+
+The following directories SHALL exist after startup completes:
+
+- `workspace/` — prompt files and skills
+- `workspace/skills/` — goblin's pi skills
+- `workspace/agents/` — named agent definitions
+- `state/` — machine-managed state
+- `state/sessions/` — session directories
+- `state/memory/` — agent-curated memory tree
+- `state/pi/` — pi auth and model registry
+- `scratch/` — ephemeral workspace
+- `scratch/workdir/` — shared subagent cwd
+- `scratch/subagents/` — subagent instance directories
 
 #### Scenario: First run with empty GOBLIN_HOME
 
 - **WHEN** `ensureGoblinHome()` is called with a fresh directory
-- **THEN** it SHALL create `GOBLIN_HOME/`, `GOBLIN_HOME/sessions/`, and `GOBLIN_HOME/skills/` directories
+- **THEN** it SHALL create `workspace/`, `workspace/skills/`, `workspace/agents/`, `state/`, `state/sessions/`, `state/memory/`, `state/pi/`, `scratch/`, `scratch/workdir/`, and `scratch/subagents/` directories
 
 #### Scenario: Directories already exist
 
@@ -163,7 +176,7 @@ The system SHALL parse the config file using JSON5, supporting comments, trailin
 
 The config file SHALL accept an optional `skillSources` field controlling where goblin's main agent discovers pi skills. The field SHALL accept one of three string values:
 
-- `"goblin-only"` (default) — only `$GOBLIN_HOME/skills/` is available.
+- `"goblin-only"` (default) — only `$GOBLIN_HOME/workspace/skills/` is available.
 - `"user"` — goblin skills plus the user's personal skills from `~/.agents/skills/` and cwd ancestor `.agents/skills/` directories.
 - `"auto"` — pi's full default auto-discovery (cwd ancestor walk, user home dirs, packages).
 

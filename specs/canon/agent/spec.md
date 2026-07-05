@@ -41,21 +41,21 @@ Every `AgentRunner` SHALL pass `cwd = workdirPath($GOBLIN_HOME)` to `createAgent
 #### Scenario: Runner created
 
 - **WHEN** an `AgentRunner` is instantiated in any session
-- **THEN** pi's `AgentSession` SHALL run with cwd `$GOBLIN_HOME/workdir/`
+- **THEN** pi's `AgentSession` SHALL run with cwd `$GOBLIN_HOME/scratch/workdir/`
 
-### Requirement: Shared services point at $GOBLIN_HOME/goblin/
+### Requirement: Shared services point at $GOBLIN_HOME/state/pi/
 
-The `AgentRunner` SHALL obtain pi's `AuthStorage`, `ModelRegistry`, and `SettingsManager` from the `createPiServices()` function exported by `src/pi-host.ts`. `AuthStorage` and `ModelRegistry` SHALL be configured to read from and write to `$GOBLIN_HOME/goblin/` so authentication and model configuration persist across restarts and are shared by every session. `SettingsManager` SHALL be an in-memory instance with empty defaults.
+The `AgentRunner` SHALL obtain pi's `AuthStorage`, `ModelRegistry`, and `SettingsManager` from the `createPiServices()` function exported by `src/pi-host.ts`. `AuthStorage` and `ModelRegistry` SHALL be configured to read from and write to `$GOBLIN_HOME/state/pi/` so authentication and model configuration persist across restarts and are shared by every session. `SettingsManager` SHALL be an in-memory instance with empty defaults.
 
 #### Scenario: AuthStorage location
 
 - **WHEN** an `AgentRunner` is created
-- **THEN** pi's `AuthStorage` SHALL use `$GOBLIN_HOME/goblin/auth.json`
+- **THEN** pi's `AuthStorage` SHALL use `$GOBLIN_HOME/state/pi/auth.json`
 
 #### Scenario: Two sessions share the auth file path
 
 - **WHEN** two `AgentRunner` instances are created in two different sessions
-- **THEN** each runner's `AuthStorage` SHALL point at the same `$GOBLIN_HOME/goblin/auth.json` path
+- **THEN** each runner's `AuthStorage` SHALL point at the same `$GOBLIN_HOME/state/pi/auth.json` path
 
 #### Scenario: Services obtained from pi-host
 
@@ -70,11 +70,11 @@ The `AgentRunner` SHALL pass `SessionManager.inMemory()` to `createAgentSession(
 #### Scenario: No pi session files written
 
 - **WHEN** a goblin turn completes
-- **THEN** no JSONL file SHALL be created by pi in `$GOBLIN_HOME/workdir/` or anywhere pi-managed
+- **THEN** no JSONL file SHALL be created by pi in `$GOBLIN_HOME/scratch/workdir/` or anywhere pi-managed
 
 ### Requirement: Complete event log written to sessions/<id>/events.jsonl
 
-The `AgentRunner` SHALL subscribe to pi's `AgentSession` events and append every event as a JSON object on its own line to `$GOBLIN_HOME/sessions/<sessionId>/events.jsonl`. No event type is filtered out.
+The `AgentRunner` SHALL subscribe to pi's `AgentSession` events and append every event as a JSON object on its own line to `$GOBLIN_HOME/state/sessions/<sessionId>/events.jsonl`. No event type is filtered out.
 
 #### Scenario: Text delta event
 
@@ -313,29 +313,22 @@ The `TurnCallbacks` interface SHALL be defined in `src/agent/events.ts` with its
 
 The `AgentRunner` SHALL construct its `DefaultResourceLoader` based on the `skillSources` config field:
 
-- `"goblin-only"` — `noSkills: true`, `additionalSkillPaths: ["$GOBLIN_HOME/skills/"]`. Only goblin's own skills directory is available.
-- `"user"` — `noSkills: false`, `additionalSkillPaths: ["$GOBLIN_HOME/skills/"]`. Pi's default auto-discovery runs (which includes `~/.agents/skills/` and cwd ancestor `.agents/skills/` dirs), plus goblin's skills.
-- `"auto"` — no `DefaultResourceLoader` is provided. Pi creates its own using full default discovery.
+- `"goblin-only"` — `noSkills: true`, `additionalSkillPaths: ["$GOBLIN_HOME/workspace/skills/"]`. Only goblin's own skills directory is available.
+- `"user"` — `noSkills: false`, `additionalSkillPaths: ["$GOBLIN_HOME/workspace/skills/"]`. Pi's default auto-discovery runs (which includes `~/.agents/skills/` and cwd ancestor `.agents/skills/` dirs), plus goblin's skills.
 
-In all modes, `agentDir` SHALL be `$GOBLIN_HOME/goblin/` so pi's global resource lookups stay isolated from `~/.pi/agent/`.
+In all modes, `agentDir` SHALL be `$GOBLIN_HOME/state/pi/` so pi's global resource lookups stay isolated from `~/.pi/agent/`.
 
 #### Scenario: goblin-only mode (default)
 
 - **WHEN** `skillSources` is `"goblin-only"` or absent
-- **THEN** the `DefaultResourceLoader` SHALL be constructed with `noSkills: true` and `additionalSkillPaths: ["$GOBLIN_HOME/skills/"]`
+- **THEN** the `DefaultResourceLoader` SHALL be constructed with `noSkills: true` and `additionalSkillPaths: ["$GOBLIN_HOME/workspace/skills/"]`
 - **AND** skills from `~/.agents/skills/` SHALL NOT be available to the agent
 
 #### Scenario: user mode
 
 - **WHEN** `skillSources` is `"user"`
-- **THEN** the `DefaultResourceLoader` SHALL be constructed with `noSkills: false` and `additionalSkillPaths: ["$GOBLIN_HOME/skills/"]`
+- **THEN** the `DefaultResourceLoader` SHALL be constructed with `noSkills: false` and `additionalSkillPaths: ["$GOBLIN_HOME/workspace/skills/"]`
 - **AND** skills from `~/.agents/skills/` and cwd ancestor `.agents/skills/` directories SHALL be available to the agent
-
-#### Scenario: auto mode
-
-- **WHEN** `skillSources` is `"auto"`
-- **THEN** no `resourceLoader` SHALL be passed to `createAgentSession`
-- **AND** pi's full default auto-discovery SHALL run (cwd walk, user dirs, packages)
 
 ### Requirement: AgentRunner exposes compact()
 
@@ -379,32 +372,32 @@ The main `AgentRunner` SHALL construct an explicit system prompt in its lazy ses
 
 #### Scenario: Missing SOUL fails
 
-- **WHEN** `$GOBLIN_HOME/SOUL.md` is missing
+- **WHEN** `$GOBLIN_HOME/workspace/SOUL.md` is missing
 - **AND** the main `AgentRunner` attempts to construct the prompt
 - **THEN** initialization SHALL fail with a configuration error
 
 ### Requirement: SOUL provides deployment identity and voice
 
-The main Goblin system prompt SHALL include `$GOBLIN_HOME/SOUL.md` as the required deployment-owned identity and voice source. Runtime code MUST NOT inject a separate conversational agent name, user name, or private persona.
+The main Goblin system prompt SHALL include `$GOBLIN_HOME/workspace/SOUL.md` as the required deployment-owned identity and voice source. Runtime code MUST NOT inject a separate conversational agent name, user name, or private persona.
 
 #### Scenario: SOUL included
 
-- **WHEN** `$GOBLIN_HOME/SOUL.md` contains a deployed agent identity
+- **WHEN** `$GOBLIN_HOME/workspace/SOUL.md` contains a deployed agent identity
 - **THEN** the constructed system prompt SHALL include that content
 - **AND** the runtime SHALL NOT add another agent name from config or source code
 
 ### Requirement: Deployment AGENTS provides optional operating rules
 
-The main Goblin system prompt SHALL include `$GOBLIN_HOME/AGENTS.md` when it exists. Missing `$GOBLIN_HOME/AGENTS.md` SHALL NOT block `AgentRunner` initialization.
+The main Goblin system prompt SHALL include `$GOBLIN_HOME/workspace/AGENTS.md` when it exists. Missing `$GOBLIN_HOME/workspace/AGENTS.md` SHALL NOT block `AgentRunner` initialization.
 
 #### Scenario: AGENTS exists
 
-- **WHEN** `$GOBLIN_HOME/AGENTS.md` exists
+- **WHEN** `$GOBLIN_HOME/workspace/AGENTS.md` exists
 - **THEN** the constructed system prompt SHALL include it as deployment operating rules
 
 #### Scenario: AGENTS missing
 
-- **WHEN** `$GOBLIN_HOME/AGENTS.md` is missing
+- **WHEN** `$GOBLIN_HOME/workspace/AGENTS.md` is missing
 - **THEN** prompt construction SHALL continue using `SOUL.md` and the product shell
 
 ### Requirement: Product shell contains runtime mechanics only

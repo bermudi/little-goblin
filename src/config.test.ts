@@ -1,11 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { writeFileSync, mkdirSync, rmSync, existsSync, chmodSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { writeFileSync, rmSync, existsSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, ensureGoblinHome } from "./config.ts";
 import { clearResolveCache } from "./resolve-value.ts";
-import { log } from "./log.ts";
 
 describe("loadConfig", () => {
   let tempDir: string;
@@ -359,13 +358,9 @@ describe("ensureGoblinHome", () => {
     for (const sub of EXPECTED_DIRS) {
       expect(existsSync(join(tempDir, sub)), `expected ${sub} to exist`).toBe(true);
     }
-    // No legacy root-level dirs leak on a fresh install.
-    for (const legacy of ["sessions", "memory", "workdir", "goblin", "agents", "subagents", "skills"]) {
-      expect(existsSync(join(tempDir, legacy)), `legacy ${legacy} should not exist`).toBe(false);
-    }
   });
 
-  it("is idempotent (already-migrated tree is untouched)", () => {
+  it("is idempotent (existing tree is untouched)", () => {
     ensureGoblinHome(homeConfig(tempDir));
     // A sentinel file inside state/sessions proves the second run doesn't wipe it.
     const sentinel = join(tempDir, "state", "sessions", "sentinel");
@@ -376,123 +371,6 @@ describe("ensureGoblinHome", () => {
     expect(existsSync(sentinel)).toBe(true);
     for (const sub of EXPECTED_DIRS) {
       expect(existsSync(join(tempDir, sub))).toBe(true);
-    }
-  });
-
-  it("migrates legacy root-level directories to their new locations", () => {
-    // Populate legacy layout with content that must survive the move.
-    mkdirSync(join(tempDir, "sessions", "abc"), { recursive: true });
-    writeFileSync(join(tempDir, "sessions", "abc", "state.json"), "{}");
-    mkdirSync(join(tempDir, "memory", "general"), { recursive: true });
-    writeFileSync(join(tempDir, "memory", "general", "memory.md"), "notes");
-    mkdirSync(join(tempDir, "agents", "researcher"), { recursive: true });
-    writeFileSync(join(tempDir, "agents", "researcher", "AGENTS.md"), "prompt");
-    mkdirSync(join(tempDir, "subagents"));
-    mkdirSync(join(tempDir, "skills"));
-    mkdirSync(join(tempDir, "workdir"));
-    mkdirSync(join(tempDir, "goblin"));
-    writeFileSync(join(tempDir, "goblin", "auth.json"), "{}");
-
-    ensureGoblinHome(homeConfig(tempDir));
-
-    // Legacy content now lives under the new tree.
-    expect(existsSync(join(tempDir, "state", "sessions", "abc", "state.json"))).toBe(true);
-    expect(existsSync(join(tempDir, "state", "memory", "general", "memory.md"))).toBe(true);
-    expect(existsSync(join(tempDir, "workspace", "agents", "researcher", "AGENTS.md"))).toBe(true);
-    expect(existsSync(join(tempDir, "state", "pi", "auth.json"))).toBe(true);
-    // Legacy root-level paths are gone (renameSync, not copy).
-    for (const legacy of ["sessions", "memory", "agents", "subagents", "skills", "workdir", "goblin"]) {
-      expect(existsSync(join(tempDir, legacy)), `legacy ${legacy} should be gone`).toBe(false);
-    }
-    // All expected dirs still present.
-    for (const sub of EXPECTED_DIRS) {
-      expect(existsSync(join(tempDir, sub))).toBe(true);
-    }
-  });
-
-  it("migrates legacy root-level files (config.json, schedules.json, SOUL.md, AGENTS.md)", () => {
-    writeFileSync(join(tempDir, "config.json"), "{}");
-    writeFileSync(join(tempDir, "schedules.json"), "[]");
-    writeFileSync(join(tempDir, "SOUL.md"), "soul");
-    writeFileSync(join(tempDir, "AGENTS.md"), "rules");
-    writeFileSync(join(tempDir, "topic-settings.json"), "{}");
-
-    ensureGoblinHome(homeConfig(tempDir));
-
-    expect(existsSync(join(tempDir, "state", "bindings.json"))).toBe(true);
-    expect(existsSync(join(tempDir, "state", "schedules.json"))).toBe(true);
-    expect(existsSync(join(tempDir, "state", "topic-settings.json"))).toBe(true);
-    expect(existsSync(join(tempDir, "workspace", "SOUL.md"))).toBe(true);
-    expect(existsSync(join(tempDir, "workspace", "AGENTS.md"))).toBe(true);
-    // Legacy files gone.
-    for (const f of ["config.json", "schedules.json", "topic-settings.json", "SOUL.md", "AGENTS.md"]) {
-      expect(existsSync(join(tempDir, f)), `legacy ${f} should be gone`).toBe(false);
-    }
-  });
-
-  it("migrates legacy pi-agent/ directly to state/pi/", () => {
-    mkdirSync(join(tempDir, "pi-agent"));
-    writeFileSync(join(tempDir, "pi-agent", "auth.json"), "{}");
-
-    ensureGoblinHome(homeConfig(tempDir));
-
-    expect(existsSync(join(tempDir, "state", "pi", "auth.json"))).toBe(true);
-    expect(existsSync(join(tempDir, "pi-agent"))).toBe(false);
-  });
-
-  it("migrates legacy directories even when top-level groups already exist", () => {
-    // Simulate a partially-initialized home: the group dirs exist (e.g. from a
-    // prior aborted run or a manual mkdir) but legacy content is still at root.
-    mkdirSync(join(tempDir, "workspace"));
-    mkdirSync(join(tempDir, "state"));
-    mkdirSync(join(tempDir, "scratch"));
-    mkdirSync(join(tempDir, "sessions", "abc"), { recursive: true });
-    writeFileSync(join(tempDir, "sessions", "abc", "state.json"), "{}");
-
-    ensureGoblinHome(homeConfig(tempDir));
-
-    expect(existsSync(join(tempDir, "state", "sessions", "abc", "state.json"))).toBe(true);
-    expect(existsSync(join(tempDir, "sessions"))).toBe(false);
-  });
-
-  it("warns and skips when both legacy and new paths exist", () => {
-    const warnSpy = spyOn(log, "warn").mockImplementation(() => {});
-    // Legacy file at root AND new file already in place.
-    writeFileSync(join(tempDir, "config.json"), "legacy");
-    mkdirSync(join(tempDir, "state"), { recursive: true });
-    writeFileSync(join(tempDir, "state", "bindings.json"), "new");
-
-    ensureGoblinHome(homeConfig(tempDir));
-
-    // Both still present — neither overwritten.
-    expect(existsSync(join(tempDir, "config.json"))).toBe(true);
-    expect(existsSync(join(tempDir, "state", "bindings.json"))).toBe(true);
-    expect(
-      warnSpy.mock.calls.some(
-        (c) => typeof c[0] === "string" && c[0].includes("migration skipped"),
-      ),
-    ).toBe(true);
-    warnSpy.mockRestore();
-  });
-
-  it("propagates renameSync failures instead of swallowing them", () => {
-    // Force a real OS-level rename failure: legacy `sessions/` exists and
-    // `state/sessions` does not (so the migration guard tries to rename), but
-    // `state/` is read-only, so renameSync throws EACCES. This proves
-    // migration errors stop startup (fail loud) rather than being swallowed
-    // or partially retried.
-    mkdirSync(join(tempDir, "sessions", "abc"), { recursive: true });
-    writeFileSync(join(tempDir, "sessions", "abc", "state.json"), "{}");
-    mkdirSync(join(tempDir, "state"), { recursive: true });
-    chmodSync(join(tempDir, "state"), 0o500);
-
-    try {
-      expect(() => ensureGoblinHome(homeConfig(tempDir))).toThrow();
-      // Legacy path is still there — migration did not silently complete.
-      expect(existsSync(join(tempDir, "sessions"))).toBe(true);
-    } finally {
-      // Restore writability so afterEach's rmSync can clean up.
-      chmodSync(join(tempDir, "state"), 0o700);
     }
   });
 });

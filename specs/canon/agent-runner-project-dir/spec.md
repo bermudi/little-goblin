@@ -66,10 +66,10 @@ When a main Goblin session is bound to a project directory, only the exact file 
 
 ### Requirement: Project AGENTS does not replace deployment voice
 
-Project guidance SHALL supplement the deployed Goblin prompt. It MUST NOT replace `$GOBLIN_HOME/SOUL.md` or become the deployed conversational identity.
+Project guidance SHALL supplement the deployed Goblin prompt. It MUST NOT replace `$GOBLIN_HOME/workspace/SOUL.md` or become the deployed conversational identity.
 
 #### Scenario: Project and SOUL both exist
 
-- **WHEN** both `$GOBLIN_HOME/SOUL.md` and `projectDir/AGENTS.md` exist
+- **WHEN** both `$GOBLIN_HOME/workspace/SOUL.md` and `projectDir/AGENTS.md` exist
 - **THEN** the constructed system prompt SHALL include both sections
 - **AND** section scoping SHALL define project guidance as repository/workspace instructions rather than deployment voice

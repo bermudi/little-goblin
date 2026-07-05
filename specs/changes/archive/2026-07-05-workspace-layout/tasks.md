@@ -12,7 +12,7 @@
 - [x] Verify `src/subagents/runner.ts` has no inline `join(home, ...)` path construction; all paths resolve through `src/subagents/paths.ts` helpers.
 - [x] Update expected path strings in `src/memory/paths.test.ts`: `memoryDir` assertions now expect `state/memory/` prefix; derived helpers (`scopeMemoryPath`, `userPath`, `archiveTopicPath`) propagate — verify their assertions too.
 - [x] Update expected path strings in `src/pi-host.test.ts`: `workdirPath` → `scratch/workdir/`, `piAgentDir` → `state/pi/`, `agentsMdPath` → `workspace/AGENTS.md`, `soulMdPath` → `workspace/SOUL.md`. Add assertion for new `skillsPath(home)` → `workspace/skills/`.
-- [ ] Note: `src/sessions/paths.test.ts` and `src/subagents/paths.test.ts` do not currently exist. If path-helper unit tests are added for these modules during implementation, they MUST assert the new paths (`state/sessions/`, `state/bindings.json`, `state/topic-settings.json`, `state/schedules.json` for sessions; `scratch/subagents/`, `workspace/agents/` for subagents).
+- [x] Note: `src/sessions/paths.test.ts` and `src/subagents/paths.test.ts` do not currently exist. If path-helper unit tests are added for these modules during implementation, they MUST assert the new paths (`state/sessions/`, `state/bindings.json`, `state/topic-settings.json`, `state/schedules.json` for sessions; `scratch/subagents/`, `workspace/agents/` for subagents).
 - [x] Run `bun test src/memory/paths.test.ts src/pi-host.test.ts` to verify path helper unit tests pass (these test the helpers directly).
 
 ## Phase 2: Update ensureGoblinHome and migration

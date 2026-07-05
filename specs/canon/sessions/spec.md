@@ -57,8 +57,8 @@ The system SHALL detect and clear stale DM bindings (where state.json is missing
 #### Scenario: Stale DM binding
 
 - **WHEN** `resolve()` is called for a DM with a binding
-- **AND** the bound session's state.json is missing
-- **THEN** it SHALL log a warning, remove the binding from config.json, and return `null`
+- **AND** the bound session's `state.json` is missing
+- **THEN** it SHALL log a warning, remove the binding from `state/bindings.json`, and return `null`
 
 ### Requirement: Handle stale bindings for topics by recreating
 
@@ -83,13 +83,13 @@ The system SHALL write session state using atomic write (tmp file + rename) to p
 
 ### Requirement: Persist bindings atomically
 
-The system SHALL write config.json (bindings) using atomic write with unique temp names.
+The system SHALL write `state/bindings.json` (session bindings) using atomic write with unique temp names.
 
 #### Scenario: Bindings saved
 
 - **WHEN** `saveBindings()` is called
-- **THEN** it SHALL write to a temp file with name `.config.<random8chars>.tmp`
-- **AND** rename the temp file to `config.json` atomically
+- **THEN** it SHALL write to a temp file with name `.bindings.<random8chars>.tmp` in `state/`
+- **AND** rename the temp file to `state/bindings.json` atomically
 
 ### Requirement: Create session filesystem layout
 
@@ -98,7 +98,7 @@ The system SHALL create the complete filesystem structure when creating a sessio
 #### Scenario: Session created
 
 - **WHEN** `createForChat()` is called
-- **THEN** it SHALL create: `sessions/<id>/` directory, `sessions/<id>/workdir/` directory, `sessions/<id>/events.jsonl` (empty), `sessions/<id>/transcript.jsonl` (empty), and `sessions/<id>/state.json`
+- **THEN** it SHALL create: `state/sessions/<id>/` directory, `state/sessions/<id>/workdir/` directory, `state/sessions/<id>/events.jsonl` (empty), `state/sessions/<id>/transcript.jsonl` (empty), and `state/sessions/<id>/state.json`
 
 ### Requirement: Write transcript entries on message completion
 
@@ -166,7 +166,7 @@ The session manager SHALL allow setting or clearing `SessionState.title` for an 
 #### Scenario: Title set
 
 - **WHEN** `setTitle(sessionId, "memory refactor")` is called for an existing session
-- **THEN** `sessions/<id>/state.json` SHALL contain `"title": "memory refactor"`
+- **THEN** `state/sessions/<id>/state.json` SHALL contain `"title": "memory refactor"`
 - **AND** resolving that session SHALL return the updated title
 
 #### Scenario: Missing session title update
@@ -196,7 +196,7 @@ The session manager SHALL allow binding an existing resumable session to a DM, s
 
 ### Requirement: Session rebinding leaves old session resumable
 
-When creating a new session for a DM that already has one, the old session SHALL remain under `sessions/<old-id>/` as an unbound resumable session.
+When creating a new session for a DM that already has one, the old session SHALL remain under `state/sessions/<old-id>/` as an unbound resumable session.
 
 #### Scenario: DM session rebound
 
@@ -207,35 +207,35 @@ When creating a new session for a DM that already has one, the old session SHALL
 
 ### Requirement: List resumable sessions excludes archive
 
-The session list SHALL include unbound sessions and exclude archived sessions under `sessions/archive/<id>/`.
+The session list SHALL include unbound sessions and exclude archived sessions under `state/sessions/archive/<id>/`.
 
 #### Scenario: List sessions
 
 - **WHEN** `list()` is called
-- **THEN** it SHALL return all `SessionState` objects found directly under the sessions directory
+- **THEN** it SHALL return all `SessionState` objects found directly under the `state/sessions/` directory
 - **AND** unbound sessions SHALL be included
 - **AND** archived sessions SHALL be excluded
 
 ### Requirement: Topic settings file
 
-The system SHALL maintain a `topic-settings.json` file under `$GOBLIN_HOME` that stores per-chat-surface settings including `projectDir`.
+The system SHALL maintain a `state/topic-settings.json` file under `$GOBLIN_HOME` that stores per-chat-surface settings including `projectDir`.
 
 #### Scenario: Load topic settings
 
 - **WHEN** `loadTopicSettings()` is called
-- **AND** `topic-settings.json` exists
+- **AND** `state/topic-settings.json` exists
 - **THEN** it SHALL return the parsed settings
 
 #### Scenario: Default topic settings
 
 - **WHEN** `loadTopicSettings()` is called
-- **AND** `topic-settings.json` does not exist
+- **AND** `state/topic-settings.json` does not exist
 - **THEN** it SHALL return an empty default structure
 
 #### Scenario: Malformed topic settings
 
 - **WHEN** `loadTopicSettings()` is called
-- **AND** `topic-settings.json` exists but contains invalid JSON
+- **AND** `state/topic-settings.json` exists but contains invalid JSON
 - **THEN** it SHALL return an empty default structure
 - **AND** it SHOULD log a warning
 
@@ -295,13 +295,13 @@ The `SessionManager` SHALL provide a `bindProjectDir(locator, projectDir)` metho
 
 ### Requirement: Topic settings atomic write
 
-`topic-settings.json` SHALL be written using atomic write (tmp file + rename).
+`state/topic-settings.json` SHALL be written using atomic write (tmp file + rename).
 
 #### Scenario: Save topic settings
 
 - **WHEN** `saveTopicSettings()` is called
-- **THEN** it SHALL write to a temp file with a random suffix
-- **AND** rename it to `topic-settings.json` atomically
+- **THEN** it SHALL write to a temp file with a random suffix in `state/`
+- **AND** rename it to `state/topic-settings.json` atomically
 
 ### Requirement: Persist scheduled turn definitions
 
@@ -356,6 +356,10 @@ A scheduled turn SHALL run only when the captured session id is still the active
 
 The system SHALL represent heartbeat as an explicit session-scoped schedule kind. Heartbeat SHALL be disabled by default. Enabling heartbeat without an interval SHALL use a 30-minute interval. The heartbeat prompt SHALL be generated by the system, prefixed with the literal marker `[heartbeat]`, and SHALL ask Goblin whether there is anything useful, timely, or important to say for the current session; it MUST NOT claim a user asked a new question. The `[heartbeat]` prefix SHALL make the prompt distinguishable from user-authored text at the agent layer and in transcripts.
 
+At dispatch time, the heartbeat prompt body SHALL be sourced from `$GOBLIN_HOME/workspace/HEARTBEAT.md` if that file exists. If the file is absent, the system SHALL fall back to the system-owned constant prompt defined in the scheduler loop. The heartbeat schedule record SHALL store no user prompt text; the prompt is resolved from the file (or constant) at dispatch time, not captured at schedule creation time. When the file is present, the system SHALL prepend `[heartbeat] ` to the file's content. When the file is absent, the system SHALL use the system-owned constant as-is, which already includes the `[heartbeat]` prefix. In both cases, the dispatched prompt SHALL begin with exactly one `[heartbeat]` marker.
+
+When the file is present and non-empty, trailing whitespace SHALL be stripped from the file content before prepending the marker; leading whitespace SHALL be preserved (the user may intend an indented first line as part of the body). A file that contains only whitespace SHALL be treated as empty and the system SHALL fall back to the constant.
+
 #### Scenario: Heartbeat default disabled
 
 - **WHEN** a new session is created
@@ -366,8 +370,47 @@ The system SHALL represent heartbeat as an explicit session-scoped schedule kind
 - **WHEN** the user enables heartbeat without specifying an interval
 - **THEN** the schedule store SHALL contain an enabled heartbeat schedule for that session with `intervalMs = 1800000`
 
-#### Scenario: Heartbeat due turn
+#### Scenario: Heartbeat due turn with HEARTBEAT.md present
 
 - **WHEN** a heartbeat schedule is due and the session remains bound
-- **THEN** the scheduler SHALL dispatch a fresh turn with the heartbeat prompt
+- **AND** `$GOBLIN_HOME/workspace/HEARTBEAT.md` exists with content
+- **THEN** the scheduler SHALL dispatch a fresh turn with `[heartbeat]` prepended to the file's content (trailing whitespace stripped, leading whitespace preserved)
 - **AND** the prompt SHALL be distinguishable from user-authored text
+
+#### Scenario: Heartbeat due turn with HEARTBEAT.md absent
+
+- **WHEN** a heartbeat schedule is due and the session remains bound
+- **AND** `$GOBLIN_HOME/workspace/HEARTBEAT.md` does not exist
+- **THEN** the scheduler SHALL dispatch a fresh turn with the system-owned constant prompt
+- **AND** the prompt SHALL begin with exactly one `[heartbeat]` marker (the constant already includes the prefix; no additional prefix is prepended)
+
+#### Scenario: HEARTBEAT.md edits take effect on next heartbeat
+
+- **GIVEN** heartbeat is enabled and a heartbeat turn has run with the current HEARTBEAT.md content
+- **WHEN** the user edits `$GOBLIN_HOME/workspace/HEARTBEAT.md`
+- **AND** the next heartbeat schedule becomes due
+- **THEN** the scheduler SHALL read the file at dispatch time and use the updated content
+- **AND** no restart SHALL be required
+
+#### Scenario: HEARTBEAT.md is empty or whitespace-only
+
+- **WHEN** a heartbeat schedule is due and the session remains bound
+- **AND** `$GOBLIN_HOME/workspace/HEARTBEAT.md` exists but is empty or contains only whitespace
+- **THEN** the scheduler SHALL fall back to the system-owned constant prompt
+- **AND** the dispatched prompt SHALL begin with exactly one `[heartbeat]` marker
+
+#### Scenario: HEARTBEAT.md read error other than ENOENT
+
+- **WHEN** a heartbeat schedule is due and the session remains bound
+- **AND** `$GOBLIN_HOME/workspace/HEARTBEAT.md` exists but cannot be read for a reason other than `ENOENT`
+- **THEN** the scheduler SHALL propagate the error rather than fall back to the constant
+- **AND** the heartbeat turn SHALL NOT be dispatched
+- **AND** the error SHALL be isolated to this schedule: other due schedules in the same tick SHALL still be processed (the failing schedule does not claim, so it remains due; a persistent read error retries on every tick until the operator fixes the file, but does not starve unrelated schedules)
+
+#### Scenario: Failing schedule does not starve other due schedules
+
+- **GIVEN** two schedules are due in the same tick
+- **AND** the first schedule's processing throws (e.g. a heartbeat whose `HEARTBEAT.md` cannot be read for a non-ENOENT reason, or a synchronous dispatcher bug)
+- **WHEN** the scheduler runs the tick
+- **THEN** the scheduler SHALL log the failure and continue processing the remaining due schedules in the same tick
+- **AND** the failed schedule's error SHALL NOT abort the tick loop or skip later due schedules

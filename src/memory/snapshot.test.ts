@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
 import { formatSnapshot, SNAPSHOT_GUARDRAIL } from "./snapshot.ts";
-import { memoryDir } from "./paths.ts";
-import type { ActiveScope } from "./scope.ts";
+import { memoryDir, scopeMemoryPath } from "./paths.ts";
+import type { ActiveScope, MemoryScope } from "./scope.ts";
+import { formatReflectedEntry, type EntryMetadata } from "./entry.ts";
 
 describe("formatSnapshot", () => {
   let tmp: string;
@@ -317,6 +318,43 @@ describe("formatSnapshot", () => {
       // The peer verbatim-duplicate is dropped; the distinct weekly entry stays.
       expect(relSection).toContain("topics/-100123/8");
       expect(relSection).not.toContain("topics/-100123/7");
+    });
+
+    it("deduplicates a reflected active-scope entry against its stripped peer form", async () => {
+      // Active scope holds a reflected entry whose body text matches a peer
+      // scope's plain entry. Without metadata stripping, the raw active entry
+      // ("<!-- memory: ... -->\nbackups run nightly") would fail the verbatim
+      // check against the stripped search text ("backups run nightly") and
+      // reappear under `## relevant memory`.
+      const activeScope: MemoryScope = { topic: { chatId: -100123, topicId: 42 } };
+      const meta: EntryMetadata = {
+        category: "decision",
+        confidence: 0.9,
+        created_at: "2025-01-01T00:00:00Z",
+        updated_at: "2025-01-02T00:00:00Z",
+        source_session: "s_test",
+        source_role: "user",
+      };
+      const activePath = scopeMemoryPath(tmp, activeScope);
+      mkdirSync(dirname(activePath), { recursive: true });
+      writeFileSync(activePath, formatReflectedEntry(meta, "backups run nightly"), "utf-8");
+      // Peer scope holds the same body as a plain entry.
+      await store.add({ topic: { chatId: -100123, topicId: 7 } }, "backups run nightly");
+      await store.add({ topic: { chatId: -100123, topicId: 8 } }, "backups run weekly");
+
+      const snap = await formatSnapshot({
+        store,
+        activeScope: topicScope,
+        includeAgents: true,
+        promptText: "backups",
+      });
+
+      expect(snap).not.toBeNull();
+      const relSection = snap!.content.split("## relevant memory\n")[1]!.split("\n\n")[0]!;
+      // The reflected active entry is deduplicated against the active body;
+      // the distinct weekly entry still appears.
+      expect(relSection).toContain("topics/-100123/8");
+      expect(relSection).not.toContain("backups run nightly");
     });
   });
 });

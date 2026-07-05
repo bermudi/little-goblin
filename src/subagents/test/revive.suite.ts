@@ -98,6 +98,7 @@ describe("SubagentRunner.revive", () => {
     expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
       "memory_read",
       "memory_read_index",
+      "memory_search",
       "memory_write",
     ]);
     expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("second turn");

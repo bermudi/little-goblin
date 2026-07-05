@@ -18,3 +18,4 @@ export {
   type ActiveScope,
   type MemoryScope,
 } from "./scope.ts";
+export type { PersonaPolicy } from "./search.ts";

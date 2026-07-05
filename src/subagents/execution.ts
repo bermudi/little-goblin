@@ -26,6 +26,7 @@ import {
   MemoryStore,
   createMemoryReadIndexTool,
   createMemoryReadTool,
+  createMemorySearchTool,
   createMemoryWriteTool,
   formatSnapshot,
 } from "../memory/mod.ts";
@@ -131,6 +132,19 @@ async function _runInstanceInner(
         store: memoryStore,
         activeScope: instance.activeScope,
         includeAgents: false,
+      }),
+      // memory_search mirrors memory_read_index gating but with finer persona
+      // control: a named subagent searches its own persona scope; an anonymous
+      // subagent searches none. See spec scenario "Named subagent searches
+      // own persona only".
+      createMemorySearchTool({
+        store: memoryStore,
+        activeScope: instance.activeScope,
+        includeAgents: false,
+        persona:
+          instance.role === "named" && instance.name !== null
+            ? { kind: "own", name: instance.name }
+            : { kind: "none" },
       }),
       createMemoryWriteTool({ store: memoryStore, activeScope: instance.activeScope }),
     ],

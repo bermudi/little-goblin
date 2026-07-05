@@ -186,6 +186,15 @@ export function createMemorySearchTool(args: {
   store: MemoryStore;
   activeScope: ActiveScope;
   includeAgents: boolean;
+  /**
+   * Explicit persona-eligibility policy. When supplied, overrides the
+   * `(activeScope, includeAgents)` derivation. Used by the subagent path,
+   * which needs finer control than the boolean: a named subagent searches
+   * its own persona scope (`{kind: "own", name}`) while an anonymous
+   * subagent searches none (`{kind: "none"}`) — see spec scenario
+   * "Named subagent searches own persona only".
+   */
+  persona?: PersonaPolicy;
 }): ToolDefinition {
   return defineTool({
     name: "memory_search",
@@ -199,7 +208,7 @@ export function createMemorySearchTool(args: {
       if (query.length === 0) {
         throw new Error("memory_search requires a non-empty `query`");
       }
-      const persona = resolveSearchPersonaPolicy(args.activeScope, args.includeAgents);
+      const persona = args.persona ?? resolveSearchPersonaPolicy(args.activeScope, args.includeAgents);
       const output = await searchMemoryEntries({
         store: args.store,
         activeScope: args.activeScope,

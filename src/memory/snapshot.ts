@@ -1,6 +1,11 @@
 import { MemoryStore } from "./store.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
-import { personaPolicyFor, searchMemoryEntries, type PersonaPolicy } from "./search.ts";
+import {
+  personaPolicyFor,
+  searchMemoryEntries,
+  stripEntryMetadata,
+  type PersonaPolicy,
+} from "./search.ts";
 
 /**
  * Per-turn memory aside.
@@ -141,7 +146,12 @@ async function formatRelevantMemory(
     limit: 50, // fetch a wide net, then dedup + bound
   });
 
-  const activeBodySet = new Set(splitEntries(activeMemoryBody));
+  // Build the dedup set from the active scope's body. Strip reflected-entry
+  // metadata so a reflected active entry (whose search display text omits the
+  // metadata comment) is matched against its stripped form, not the raw
+  // metadata-wrapped form. Otherwise reflected active entries would fail the
+  // verbatim check and reappear under `## relevant memory`.
+  const activeBodySet = new Set(splitEntries(activeMemoryBody).map(stripEntryMetadata));
   const lines: string[] = [];
   for (const r of out.results) {
     // Verbatim dedup against the active scope's body: skip any result whose

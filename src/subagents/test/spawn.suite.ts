@@ -307,6 +307,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
       "memory_read",
       "memory_read_index",
+      "memory_search",
       "memory_write",
     ]);
     expect(opts.sessionManager).toBeDefined();
@@ -658,6 +659,7 @@ describe("SubagentRunner — recursive tool injection", () => {
     expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
       "memory_read",
       "memory_read_index",
+      "memory_search",
       "memory_write",
     ]);
 

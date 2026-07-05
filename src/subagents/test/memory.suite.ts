@@ -331,4 +331,107 @@ describe("SubagentRunner — scoped memory", () => {
     // No reflection cursor anywhere under $GOBLIN_HOME.
     expect(findFilesNamed(tmp, "memory-reflection.json")).toEqual([]);
   });
+
+  // -------------------------------------------------------------------------
+  // memory_search registration on the subagent path.
+  // Spec: "Named subagent searches own persona only" — the named subagent's
+  // search SHALL consider its own persona scope and SHALL NOT consider peer
+  // persona scopes. Anonymous subagents SHALL NOT search any persona scope.
+  // -------------------------------------------------------------------------
+
+  /** Extract the customTools array from the captured createAgentSession args. */
+  function captureTools(): Array<{
+    name: string;
+    execute: (toolCallId: string, params: unknown) => Promise<unknown>;
+  }> {
+    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
+    return opts.customTools as Array<{
+      name: string;
+      execute: (toolCallId: string, params: unknown) => Promise<unknown>;
+    }>;
+  }
+
+  /** Parse the JSON payload of a tool's text result. */
+  function jsonOf(result: unknown): { results: Array<{ scope: string; text: string }> } {
+    const r = result as { content: Array<{ type: string; text: string }> };
+    return JSON.parse(r.content[0]!.text);
+  }
+
+  it("registers memory_search on the subagent tool list", async () => {
+    const handle = await runner.spawn({ prompt: "work", activeScope: TOPIC_SCOPE });
+    await flush();
+
+    expect(captureTools().some((t) => t.name === "memory_search")).toBe(true);
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+  });
+
+  it("named subagent searches its own persona scope and excludes peer personas", async () => {
+    // Own persona — searchable.
+    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
+    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
+    mkdirSync(join(memoryDir(tmp), "agents", "researcher"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "researcher deployment notes");
+    // Peer persona — MUST NOT be searched by the named subagent.
+    mkdirSync(join(memoryDir(tmp), "agents", "writer"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "agents", "writer", "memory.md"), "writer deployment notes");
+    // Same-chat topic scope — searchable.
+    mkdirSync(join(memoryDir(tmp), "topics", "-100123", "7"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "topics", "-100123", "7", "memory.md"), "topic deployment notes");
+    // Different-chat topic scope — MUST NOT be searched without all_chats.
+    mkdirSync(join(memoryDir(tmp), "topics", "-999", "1"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "topics", "-999", "1", "memory.md"), "other chat deployment notes");
+
+    const handle = await runner.spawn({
+      prompt: "work",
+      name: "researcher",
+      activeScope: TOPIC_SCOPE,
+    });
+    await flush();
+
+    const search = captureTools().find((t) => t.name === "memory_search")!;
+    expect(search).toBeDefined();
+    const out = jsonOf(await search.execute("ms-named", { query: "deployment" }));
+    const scopes = new Set(out.results.map((r) => r.scope));
+
+    // Own persona is searched.
+    expect(scopes.has("agents/researcher")).toBe(true);
+    // Peer persona is excluded.
+    expect(scopes.has("agents/writer")).toBe(false);
+    // Same-chat topic is searched.
+    expect(scopes.has("topics/-100123/7")).toBe(true);
+    // Different-chat topic excluded without all_chats.
+    expect(scopes.has("topics/-999/1")).toBe(false);
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+  });
+
+  it("anonymous subagent searches no named-agent persona scopes", async () => {
+    // Persona scopes exist but MUST NOT be searched by an anonymous subagent.
+    mkdirSync(join(memoryDir(tmp), "agents", "researcher"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "researcher deployment notes");
+    mkdirSync(join(memoryDir(tmp), "agents", "writer"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "agents", "writer", "memory.md"), "writer deployment notes");
+    // Same-chat topic is still in scope.
+    mkdirSync(join(memoryDir(tmp), "topics", "-100123", "7"), { recursive: true });
+    writeFileSync(join(memoryDir(tmp), "topics", "-100123", "7", "memory.md"), "topic deployment notes");
+
+    const handle = await runner.spawn({ prompt: "work", activeScope: TOPIC_SCOPE });
+    await flush();
+
+    const search = captureTools().find((t) => t.name === "memory_search")!;
+    expect(search).toBeDefined();
+    const out = jsonOf(await search.execute("ms-anon", { query: "deployment" }));
+    const scopes = new Set(out.results.map((r) => r.scope));
+
+    expect(scopes.has("agents/researcher")).toBe(false);
+    expect(scopes.has("agents/writer")).toBe(false);
+    // Same-chat topic scope remains searchable by anonymous subagents.
+    expect(scopes.has("topics/-100123/7")).toBe(true);
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await handle.result;
+  });
 });

@@ -72,6 +72,15 @@ describe("memory search", () => {
       expect(clampLimit(3)).toBe(3);
       expect(clampLimit(50)).toBe(50);
     });
+    it("floors fractional values then re-checks the <= 0 collapse", () => {
+      // 0.5 floors to 0, which collapses to the default rather than yielding
+      // an empty result slice.
+      expect(clampLimit(0.5)).toBe(10);
+      // Fractional values in (0, 1) all collapse to the default.
+      expect(clampLimit(0.99)).toBe(10);
+      // Fractional values >= 1 floor to the integer part.
+      expect(clampLimit(3.7)).toBe(3);
+    });
   });
 
   describe("personaPolicyFor", () => {

@@ -55,7 +55,7 @@ export interface MemorySearchResultEntry {
 
 export interface MemorySearchOutput {
   query: string;
-  /** Number of distinct scopes that contributed entries to the search. */
+  /** Number of distinct scopes enumerated for the search (including empty/non-matching scopes). */
   searchedScopes: number;
   results: MemorySearchResultEntry[];
 }
@@ -322,12 +322,16 @@ const MAX_LIMIT = 50;
 
 /**
  * Clamp the requested limit per spec: values <= 0 collapse to the default
- * (10); values > 50 collapse to 50; otherwise the requested value.
+ * (10); values > 50 collapse to 50; otherwise the requested value. Fractional
+ * values are floored first, so a value like 0.5 floors to 0 and then collapses
+ * to the default (rather than producing an empty result slice).
  */
 export function clampLimit(limit: number | undefined): number {
-  if (limit === undefined || limit <= 0) return DEFAULT_LIMIT;
-  if (limit > MAX_LIMIT) return MAX_LIMIT;
-  return Math.floor(limit);
+  if (limit === undefined) return DEFAULT_LIMIT;
+  const floored = Math.floor(limit);
+  if (floored <= 0) return DEFAULT_LIMIT;
+  if (floored > MAX_LIMIT) return MAX_LIMIT;
+  return floored;
 }
 
 // ---------------------------------------------------------------------------

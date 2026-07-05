@@ -547,6 +547,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
         // Preserve the original voice-file saving behavior for project-bound
         // sessions and append a saved-file note alongside the transcript.
+        // Saved-name mime→ext mapping is deliberately the narrow subset the spec
+        // constrains (`audio/ogg → oga, else bin`); the ASR-side table in
+        // groq.ts is liberal because Groq only uses it as a multipart hint.
         if (turn.projectDir) {
           const ext = mimeType === "audio/ogg" ? "oga" : "bin";
           const safeName = `voice-${Date.now()}.${ext}`;
@@ -555,6 +558,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           try {
             await writeFile(destPath, raw);
           } catch (err) {
+            // Save failure discards an otherwise-successful transcript: the user
+            // just got a "Failed to save" reply, and prompting without the saved
+            // file (which the transcript note promises) would be misleading.
+            // Spec-silent; this preserves pre-ASR voice behavior.
             log.error("failed to write voice to project directory", { error: String(err), destPath });
             if (isCurrent()) await message.reply(`Failed to save ${safeName}.`);
             return;

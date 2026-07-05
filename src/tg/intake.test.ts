@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Bot } from "grammy";
@@ -800,5 +800,47 @@ describe("Telegram intake", () => {
 
     expect(staleRunner.dispose).toHaveBeenCalledTimes(1);
     expect(staleRunner.prompt).not.toHaveBeenCalled();
+    // The spec scenario "Stale ASR work does not side-effect" prohibits replies
+    // too — assert the no-side-effect guarantee the test name claims.
+    expect(replies.some((r) => r.includes("transcrib") || r.includes("No speech") || r.includes("Saved"))).toBe(false);
+  });
+
+  it("does not save the voice file for stale work when a projectDir is bound", async () => {
+    // The no-projectDir stale test above can't exercise the "SHALL NOT save"
+    // guarantee (saving is structurally impossible without a projectDir), so
+    // this fixture binds a projectDir and asserts no voice file is written
+    // when the runner is swapped before transcription settles.
+    const cfg = makeConfig();
+    cfg.groqApiKey = "groq-key";
+    const { intake } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const pending = deferred();
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("api.telegram.org")) {
+        return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } });
+      }
+      await pending.promise;
+      return new Response(JSON.stringify({ text: "stale" }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, `/project ${cfg.goblinHome}`);
+    await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
+    const staleRunner = runners[0]!;
+
+    // Swap the runner out before transcription settles.
+    await intake.handleText(message, "/new");
+
+    pending.resolve();
+    await flushMicrotasks();
+
+    expect(staleRunner.dispose).toHaveBeenCalledTimes(1);
+    expect(staleRunner.prompt).not.toHaveBeenCalled();
+    // No voice file was written to the project directory.
+    expect(replies.some((r) => r.startsWith("Saved voice-"))).toBe(false);
+    const writtenVoices = readdirSync(cfg.goblinHome).filter((f) => /^voice-\d+\.oga$/.test(f));
+    expect(writtenVoices).toEqual([]);
   });
 });

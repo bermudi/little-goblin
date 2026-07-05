@@ -6,7 +6,7 @@ Scheduled turns are a local, single-process orchestration layer. They do not add
 
 The core architecture has four parts:
 
-1. `ScheduleStore` persists schedule definitions in a single JSON file whose path is resolved via `src/sessions/paths.ts` (`schedulesPath(home) = join(home, "schedules.json")`) with atomic writes. The path helper lives in `paths.ts` to honor the AGENTS.md guardrail that `$GOBLIN_HOME` is only touched from the code tree through `SessionManager`, `MemoryStore`, and `paths.ts`.
+1. `ScheduleStore` persists schedule definitions in a single JSON file whose path is resolved via `src/sessions/paths.ts` (`schedulesPath(home) = join(home, "schedules.json")`) with atomic writes. The path helper lives in `paths.ts` to honor the AGENTS.md guardrail that `$GOBLIN_HOME` is only touched from the code tree through `SessionManager`, `MemoryStore`, and `paths.ts`. **Superseded by `workspace-layout` (2026-07-05):** `schedulesPath(home)` now returns `join(home, "state", "schedules.json")`. The structural contract (single JSON file, resolved via `schedulesPath(home)`, NOT under an individual session directory) is unchanged; only the resolved path moved to `state/`.
 2. `/schedule` command handlers mutate `ScheduleStore` for the active session and captured Telegram locator.
 3. A scheduler loop polls the store on an interval, claims due schedules, validates that the captured session is still bound to the captured locator, and dispatches due prompts.
 4. A shared session turn dispatcher owns runner creation, per-session prompt queues, and `MessageBuffer` creation so scheduled turns, `/queue`, and media prompts all use the same fresh-turn semantics.
@@ -31,6 +31,8 @@ Heartbeat is represented as a schedule with `kind = "heartbeat"` and a system-ow
 ### Persist schedules in one JSON file under `GOBLIN_HOME`
 
 Chosen: `<home>/schedules.json`, with the path resolved via `schedulesPath(home)` in `src/sessions/paths.ts`.
+
+**Superseded by `workspace-layout` (2026-07-05):** the schedule store relocated to `<home>/state/schedules.json` as part of the broader root-level → `state/` migration. The "single JSON file, NOT under a session directory" ruling is promoted to decision 0006 and still holds; decision 0006's status is now `superseded` and points here for the path change.
 
 Why: this follows the repository's file-native, atomic-write shape and lets startup discover schedules before any individual session is loaded. Putting schedules inside `sessions/<id>/` would make startup discovery require scanning every session and would make schedule lifecycle awkward when sessions are archived. The path helper lives in `paths.ts` to honor the AGENTS.md guardrail that `$GOBLIN_HOME` is only touched from the code tree through `SessionManager`, `MemoryStore`, and `paths.ts`. This ruling is promoted to decision 0006 (`schedule-store-location`) so it applies beyond this change.
 
@@ -192,6 +194,8 @@ Relates to all sessions capability scenarios.
 ### `src/sessions/paths.ts`
 
 Add `schedulesPath(home): string` returning `join(home, "schedules.json")`. This is the single point where the schedule store path is defined, honoring the AGENTS.md guardrail that `$GOBLIN_HOME` is only touched from the code tree through `SessionManager`, `MemoryStore`, and `paths.ts`.
+
+**Superseded by `workspace-layout` (2026-07-05):** `schedulesPath(home)` now returns `join(home, "state", "schedules.json")`. The `schedulesPath(home)` helper itself remains the single point of path truth; only the value it returns moved under `state/`.
 
 Relates to `Persist scheduled turn definitions`.
 

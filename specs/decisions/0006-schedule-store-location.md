@@ -2,7 +2,7 @@
 
 ## Status
 
-accepted
+superseded by `workspace-layout` (2026-07-05) — the schedule store relocated from `<home>/schedules.json` to `<home>/state/schedules.json` as part of the root-level → `state/` migration. The structural ruling below still holds (single JSON file, NOT under an individual session directory, path resolved via `schedulesPath(home)`); only the resolved path changed. See decision `path-helper-only-path-construction` (0008) and the `workspace-layout` change for the current path.
 
 ## Context
 

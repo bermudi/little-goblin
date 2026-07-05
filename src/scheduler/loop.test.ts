@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { SchedulerLoop, HEARTBEAT_PROMPT, DEFAULT_TICK_INTERVAL_MS } from "./loop.ts";
+import { dirname, join } from "node:path";
+import { SchedulerLoop, HEARTBEAT_PROMPT, DEFAULT_TICK_INTERVAL_MS, resolveHeartbeatPrompt } from "./loop.ts";
 import { ScheduleStore } from "./store.ts";
 import { SessionManager } from "../sessions/manager.ts";
+import { heartbeatMdPath } from "../pi-host.ts";
 import type { Config } from "../config.ts";
 import type { ChatLocator } from "../sessions/types.ts";
 import type { SessionState } from "../sessions/mod.ts";
@@ -80,7 +81,7 @@ describe("SchedulerLoop", () => {
   });
 
   function makeLoop(): SchedulerLoop {
-    return new SchedulerLoop({ store, manager, dispatcher, clock: clock.clock });
+    return new SchedulerLoop({ store, manager, dispatcher, clock: clock.clock, home: tmpDir });
   }
 
   describe("constants and prompt", () => {
@@ -283,7 +284,7 @@ describe("SchedulerLoop", () => {
       const restartedStore = new ScheduleStore(tmpDir);
       const restartedManager = new SessionManager(makeTestConfig(tmpDir));
       restartedManager.init();
-      const restartedLoop = new SchedulerLoop({ store: restartedStore, manager: restartedManager, dispatcher, clock: clock.clock });
+      const restartedLoop = new SchedulerLoop({ store: restartedStore, manager: restartedManager, dispatcher, clock: clock.clock, home: tmpDir });
 
       await restartedLoop.tick();
       await restartedLoop.tick();
@@ -310,7 +311,7 @@ describe("SchedulerLoop", () => {
       const restartedStore = new ScheduleStore(tmpDir);
       const restartedManager = new SessionManager(makeTestConfig(tmpDir));
       restartedManager.init();
-      const restartedLoop = new SchedulerLoop({ store: restartedStore, manager: restartedManager, dispatcher, clock: clock.clock });
+      const restartedLoop = new SchedulerLoop({ store: restartedStore, manager: restartedManager, dispatcher, clock: clock.clock, home: tmpDir });
 
       await restartedLoop.tick();
       await restartedLoop.tick();
@@ -448,7 +449,7 @@ describe("SchedulerLoop", () => {
           throw new Error("boom");
         },
       };
-      const loop = new SchedulerLoop({ store, manager, dispatcher: throwingDispatcher, clock: clock.clock });
+      const loop = new SchedulerLoop({ store, manager, dispatcher: throwingDispatcher, clock: clock.clock, home: tmpDir });
 
       // The tick must not reject even though dispatch threw.
       await expect(loop.tick()).resolves.toBeUndefined();
@@ -491,7 +492,7 @@ describe("SchedulerLoop", () => {
           throw new Error("sync boom");
         },
       };
-      const loop = new SchedulerLoop({ store, manager, dispatcher: throwingDispatcher, clock: clock.clock });
+      const loop = new SchedulerLoop({ store, manager, dispatcher: throwingDispatcher, clock: clock.clock, home: tmpDir });
 
       await expect(loop.tick()).resolves.toBeUndefined();
 
@@ -523,6 +524,136 @@ describe("SchedulerLoop", () => {
     });
   });
 
+  describe("resolveHeartbeatPrompt (HEARTBEAT.md sourcing)", () => {
+    function writeHeartbeat(home: string, content: string): void {
+      const path = heartbeatMdPath(home);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content, "utf-8");
+    }
+
+    it("uses HEARTBEAT.md content with [heartbeat] prefix when file is present", () => {
+      writeHeartbeat(tmpDir, "Check the build; if red, ping me.");
+      expect(resolveHeartbeatPrompt(tmpDir)).toBe(
+        "[heartbeat] Check the build; if red, ping me.",
+      );
+    });
+
+    it("trims trailing whitespace from the file content", () => {
+      writeHeartbeat(tmpDir, "Check the build; if red, ping me.\n\n  \n");
+      expect(resolveHeartbeatPrompt(tmpDir)).toBe(
+        "[heartbeat] Check the build; if red, ping me.",
+      );
+    });
+
+    it("falls back to the constant when HEARTBEAT.md is absent (exactly one [heartbeat] marker)", () => {
+      // tmpDir has no workspace/HEARTBEAT.md.
+      expect(resolveHeartbeatPrompt(tmpDir)).toBe(HEARTBEAT_PROMPT);
+      // The constant already includes the prefix — no double prefix on fallback.
+      expect(resolveHeartbeatPrompt(tmpDir).startsWith("[heartbeat]")).toBe(true);
+      expect(resolveHeartbeatPrompt(tmpDir).match(/\[heartbeat\]/g)).toHaveLength(1);
+    });
+
+    it("falls back to the constant when HEARTBEAT.md is empty", () => {
+      writeHeartbeat(tmpDir, "");
+      expect(resolveHeartbeatPrompt(tmpDir)).toBe(HEARTBEAT_PROMPT);
+    });
+
+    it("falls back to the constant when HEARTBEAT.md is whitespace-only", () => {
+      writeHeartbeat(tmpDir, "   \n\t \n");
+      expect(resolveHeartbeatPrompt(tmpDir)).toBe(HEARTBEAT_PROMPT);
+    });
+
+    it("propagates non-ENOENT read errors (does not fall back silently)", () => {
+      // Point the home at a path where workspace/HEARTBEAT.md resolves under a
+      // non-directory ancestor, so readFileSync throws EACCES/ENOTDIR rather
+      // than ENOENT.
+      const blockingFile = join(tmpDir, "blocking");
+      writeFileSync(blockingFile, "x", "utf-8");
+      expect(() => resolveHeartbeatPrompt(blockingFile)).toThrow();
+    });
+  });
+
+  describe("heartbeat dispatch sourcing HEARTBEAT.md", () => {
+    function writeHeartbeat(home: string, content: string): void {
+      const path = heartbeatMdPath(home);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content, "utf-8");
+    }
+
+    function enableHeartbeat(loc: ChatLocator): string {
+      const session = manager.createForChat(loc);
+      store.setHeartbeat({
+        sessionId: session.id,
+        locator: loc,
+        enabled: true,
+        now: new Date(NOW_MS - 1800_000).toISOString(), // 30m ago → due now
+      });
+      return session.id;
+    }
+
+    it("dispatches HEARTBEAT.md content with exactly one [heartbeat] marker when the file exists", async () => {
+      const loc: ChatLocator = { chatId: 100 };
+      enableHeartbeat(loc);
+      writeHeartbeat(tmpDir, "Check the build; if red, ping me.");
+
+      await makeLoop().tick();
+
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.content).toBe(
+        "[heartbeat] Check the build; if red, ping me.",
+      );
+      // Exactly one marker — the user body does not get re-prefixed.
+      expect(dispatcher.calls[0]!.content.match(/\[heartbeat\]/g)).toHaveLength(1);
+    });
+
+    it("dispatches the constant fallback when HEARTBEAT.md is absent", async () => {
+      const loc: ChatLocator = { chatId: 100 };
+      enableHeartbeat(loc);
+      // No workspace/HEARTBEAT.md in tmpDir.
+
+      await makeLoop().tick();
+
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.content).toBe(HEARTBEAT_PROMPT);
+      expect(dispatcher.calls[0]!.content.match(/\[heartbeat\]/g)).toHaveLength(1);
+    });
+
+    it("dispatches the constant fallback when HEARTBEAT.md is empty/whitespace-only", async () => {
+      const loc: ChatLocator = { chatId: 100 };
+      enableHeartbeat(loc);
+      writeHeartbeat(tmpDir, "   \n\t \n");
+
+      await makeLoop().tick();
+
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.content).toBe(HEARTBEAT_PROMPT);
+    });
+
+    it("uses updated HEARTBEAT.md content on the next tick after an edit (no restart)", async () => {
+      const loc: ChatLocator = { chatId: 100 };
+      const sessionId = enableHeartbeat(loc);
+      writeHeartbeat(tmpDir, "first body");
+
+      const loop = makeLoop();
+      await loop.tick();
+      expect(dispatcher.calls[0]!.content).toBe("[heartbeat] first body");
+
+      // Edit the file and re-arm the heartbeat so it is due again.
+      writeHeartbeat(tmpDir, "second body");
+      store.setHeartbeat({
+        sessionId,
+        locator: loc,
+        enabled: true,
+        now: new Date(NOW_MS).toISOString(),
+      });
+      clock.advance(31 * 60_000);
+      await loop.tick();
+
+      expect(dispatcher.calls).toHaveLength(2);
+      expect(dispatcher.calls[1]!.content).toBe("[heartbeat] second body");
+    });
+  });
+
   describe("stop behavior", () => {
     it("stop clears the timer and is idempotent", () => {
       let cleared = 0;
@@ -539,6 +670,7 @@ describe("SchedulerLoop", () => {
         manager,
         dispatcher,
         clock: countingClock,
+        home: tmpDir,
         tickIntervalMs: 1000,
       });
 
@@ -565,6 +697,7 @@ describe("SchedulerLoop", () => {
         manager,
         dispatcher,
         clock: countingClock,
+        home: tmpDir,
         tickIntervalMs: 1000,
       });
 

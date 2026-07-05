@@ -656,6 +656,7 @@ describe("Telegram intake", () => {
       manager,
       dispatcher: intake.dispatcher,
       clock: fixedClock(now),
+      home: cfg.goblinHome,
     });
 
     await intake.handleText(message, "active telegram turn");

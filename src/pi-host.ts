@@ -94,3 +94,8 @@ export function findMostRecentPiSession(piSessionDir: string): string | null {
 export function soulMdPath(home: string): string {
   return join(home, "workspace", "SOUL.md");
 }
+
+/** Path to the optional HEARTBEAT.md file in the goblin workspace. */
+export function heartbeatMdPath(home: string): string {
+  return join(home, "workspace", "HEARTBEAT.md");
+}

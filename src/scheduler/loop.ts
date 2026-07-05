@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { log } from "../log.ts";
+import { heartbeatMdPath } from "../pi-host.ts";
 import type { ChatLocator, SessionManager, SessionState } from "../sessions/mod.ts";
 import type { TurnDispatcher } from "../tg/turn-dispatcher.ts";
 import type { ScheduledTurn } from "./types.ts";
@@ -23,6 +25,31 @@ export const DEFAULT_TICK_INTERVAL_MS = 60_000;
  */
 export const HEARTBEAT_PROMPT =
   "[heartbeat] This is a scheduled self-check-in. No user message prompted this turn. Review the current session context and decide whether there is anything useful, timely, or important to say. If there is nothing worth saying, reply briefly that you have nothing to add and stop.";
+
+/**
+ * Resolve the heartbeat prompt body for a given `$GOBLIN_HOME`.
+ *
+ * Reads `$GOBLIN_HOME/workspace/HEARTBEAT.md` at dispatch time. When the
+ * file exists and contains non-whitespace content, its content is used as
+ * the prompt body with the `[heartbeat] ` prefix prepended (the file holds
+ * the user-authored body; the system owns the prefix). When the file is
+ * absent (ENOENT) or empty/whitespace-only, the system-owned
+ * `HEARTBEAT_PROMPT` constant is returned as-is — it already includes the
+ * `[heartbeat]` prefix, so no double-prefixing occurs on the fallback
+ * path. Non-ENOENT read errors propagate (fail loud, per AGENTS.md).
+ */
+export function resolveHeartbeatPrompt(home: string): string {
+  let raw: string;
+  try {
+    raw = readFileSync(heartbeatMdPath(home), "utf-8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return HEARTBEAT_PROMPT;
+    throw e;
+  }
+  const body = raw.trim();
+  if (body.length === 0) return HEARTBEAT_PROMPT;
+  return `[heartbeat] ${body}`;
+}
 
 /**
  * Clock and timer injection for tests. The default uses the real wall clock
@@ -60,6 +87,8 @@ export interface SchedulerOptions {
   store: ScheduleStore;
   manager: SessionManager;
   dispatcher: SchedulerDispatcher | TurnDispatcher;
+  /** `$GOBLIN_HOME`, used to resolve the heartbeat prompt file at dispatch time. */
+  home: string;
   clock?: SchedulerClock;
   tickIntervalMs?: number;
 }
@@ -84,6 +113,7 @@ export class SchedulerLoop {
   private readonly dispatcher: SchedulerDispatcher;
   private readonly clock: SchedulerClock;
   private readonly tickIntervalMs: number;
+  private readonly home: string;
   private timer: { clear(): void } | null = null;
   private ticking = false;
 
@@ -93,6 +123,7 @@ export class SchedulerLoop {
     this.dispatcher = options.dispatcher;
     this.clock = options.clock ?? realClock;
     this.tickIntervalMs = options.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS;
+    this.home = options.home;
   }
 
   /** Begin ticking. No-op if already started. */
@@ -145,10 +176,11 @@ export class SchedulerLoop {
    * Stale bindings are recorded via `recordRun` with the appropriate outcome.
    */
   private async processOne(schedule: ScheduledTurn, nowIso: string): Promise<void> {
-    // The prompt text is decided before claiming: a heartbeat uses the
-    // system-owned constant; a user schedule uses its captured prompt.
+    // The prompt text is decided before claiming: a heartbeat resolves its
+    // body from `$GOBLIN_HOME/workspace/HEARTBEAT.md` (with constant
+    // fallback) at dispatch time; a user schedule uses its captured prompt.
     const isHeartbeat = schedule.kind === "heartbeat";
-    const prompt = isHeartbeat ? HEARTBEAT_PROMPT : schedule.prompt ?? "";
+    const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home) : schedule.prompt ?? "";
 
     // Claim before dispatch. For one-shot this completes/disables; for
     // recurring this advances nextRunAt. If another tick already claimed it,

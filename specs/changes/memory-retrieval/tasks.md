@@ -2,10 +2,10 @@
 
 ## Phase 1: Add lexical search core
 
-- [ ] Create `src/memory/search.ts` with entry enumeration, metadata parsing, lexical scoring, ranking, and limit enforcement for `Memory search ranks entries lexically`.
-- [ ] Add `src/memory/search.test.ts` coverage for active-scope matches, metadata parsing, no matches, limits, deterministic ordering, empty/whitespace query rejection, invalid limit clamping, and the relative signal ordering (overlap > exact phrase > boosts > recency) with crafted entries that isolate each signal.
-- [ ] Run `bun test src/memory/search.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Create `src/memory/search.ts` with entry enumeration, metadata parsing, lexical scoring, ranking, and limit enforcement for `Memory search ranks entries lexically`.
+- [x] Add `src/memory/search.test.ts` coverage for active-scope matches, metadata parsing, no matches, limits, deterministic ordering, empty/whitespace query rejection, invalid limit clamping, and the relative signal ordering (overlap > exact phrase > boosts > recency) with crafted entries that isolate each signal.
+- [x] Run `bun test src/memory/search.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 2: Add memory_search tool
 

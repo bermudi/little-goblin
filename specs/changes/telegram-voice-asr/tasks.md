@@ -10,11 +10,11 @@
 
 ## Phase 2: Add Groq transcription
 
-- [ ] Create `src/asr/groq.ts` with typed success/failure results for `Groq ASR provider transcribes audio bytes`.
-- [ ] Create `src/asr/mod.ts` as the internal ASR barrel.
-- [ ] Add mocked-fetch tests for successful transcription, API failure, network failure, empty transcript, and secret redaction.
-- [ ] Run `bun test src/asr/groq.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Create `src/asr/groq.ts` with typed success/failure results for `Groq ASR provider transcribes audio bytes`.
+- [x] Create `src/asr/mod.ts` as the internal ASR barrel.
+- [x] Add mocked-fetch tests for successful transcription, API failure, network failure, empty transcript, and secret redaction.
+- [x] Run `bun test src/asr/groq.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 3: Wire voice intake
 

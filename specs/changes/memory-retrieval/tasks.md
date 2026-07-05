@@ -17,11 +17,11 @@
 
 ## Phase 3: Register memory_search in AgentRunner
 
-- [ ] Register `memory_search` in `src/agent/mod.ts` between `memory_read_index` and `memory_write` for `AgentRunner registers the memory write tool`.
-- [ ] Update `src/agent/mod.test.ts` assertions for the four memory tools while preserving caller-supplied tool ordering.
-- [ ] Add tests asserting persona scope eligibility: main agent searches all persona scopes, named subagent searches own only, anonymous searches none.
-- [ ] Run `bun test src/agent/mod.test.ts`.
-- [ ] Run `bun run typecheck`.
+- [x] Register `memory_search` in `src/agent/mod.ts` between `memory_read_index` and `memory_write` for `AgentRunner registers the memory write tool`.
+- [x] Update `src/agent/mod.test.ts` assertions for the four memory tools while preserving caller-supplied tool ordering.
+- [x] Add tests asserting persona scope eligibility: main agent searches all persona scopes, named subagent searches own only, anonymous searches none.
+- [x] Run `bun test src/agent/mod.test.ts`.
+- [x] Run `bun run typecheck`.
 
 ## Phase 4: Add prompt-relevant snapshot memory
 

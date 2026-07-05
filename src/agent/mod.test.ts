@@ -314,7 +314,7 @@ describe("AgentRunner", () => {
   });
 
   describe("memory tool registration", () => {
-    it("appends the three memory tools to customTools when none are supplied", async () => {
+    it("appends the four memory tools to customTools when none are supplied", async () => {
       const runner = makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
@@ -324,6 +324,7 @@ describe("AgentRunner", () => {
       const names = tools.map((t) => t.name);
       expect(names).toContain("memory_read");
       expect(names).toContain("memory_read_index");
+      expect(names).toContain("memory_search");
       expect(names).toContain("memory_write");
     });
 
@@ -336,7 +337,22 @@ describe("AgentRunner", () => {
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
-      expect(names).toEqual(["t1", "t2", "memory_read", "memory_read_index", "memory_write"]);
+      expect(names).toEqual(["t1", "t2", "memory_read", "memory_read_index", "memory_search", "memory_write"]);
+    });
+
+    it("registers memory_search between memory_read_index and memory_write", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      const searchIdx = names.indexOf("memory_search");
+      const readIndexIdx = names.indexOf("memory_read_index");
+      const writeIdx = names.indexOf("memory_write");
+      expect(searchIdx).toBeGreaterThan(-1);
+      expect(searchIdx).toBeGreaterThan(readIndexIdx);
+      expect(searchIdx).toBeLessThan(writeIdx);
     });
 
     it("topic-bound memory_write targets the runner's active topic scope", async () => {
@@ -355,6 +371,63 @@ describe("AgentRunner", () => {
         {},
       );
       expect(readFileSync(join(memoryDir(tmpDir), "topics", "-100", "42", "memory.md"), "utf-8")).toBe("topic fact");
+    });
+
+    it("main agent memory_search includes all persona scopes", async () => {
+      // Seed two persona scopes and the active topic, all matching the query.
+      mkdirSync(join(memoryDir(tmpDir), "agents", "researcher"), { recursive: true });
+      mkdirSync(join(memoryDir(tmpDir), "agents", "writer"), { recursive: true });
+      writeFileSync(join(memoryDir(tmpDir), "agents", "researcher", "memory.md"), "researcher backups persona note", "utf-8");
+      writeFileSync(join(memoryDir(tmpDir), "agents", "writer", "memory.md"), "writer backups persona note", "utf-8");
+
+      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      await runner.prompt("hello", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }>;
+      const searchTool = tools.find((t) => t.name === "memory_search");
+      expect(searchTool).toBeDefined();
+      const r = await searchTool!.execute(
+        "call-memory-search",
+        { query: "backups" },
+        undefined,
+        undefined,
+        {},
+      );
+      const payload = r as { content: { type: string; text: string }[] };
+      const parsed = JSON.parse(payload.content[0]!.text) as { results: Array<{ scope: string }> };
+      const scopes = parsed.results.map((x) => x.scope).sort();
+      // Main agent (namedAgent=null, includeAgents=true) searches every persona.
+      expect(scopes).toEqual(["agents/researcher", "agents/writer"]);
+    });
+
+    it("memory_search default scope is limited to the runner's active chat plus global memory", async () => {
+      // Same-chat topic + other-chat topic both matching.
+      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "42"), { recursive: true });
+      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "7"), { recursive: true });
+      mkdirSync(join(memoryDir(tmpDir), "topics", "-200", "9"), { recursive: true });
+      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "42", "memory.md"), "active backups note", "utf-8");
+      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "7", "memory.md"), "peer backups note", "utf-8");
+      writeFileSync(join(memoryDir(tmpDir), "topics", "-200", "9", "memory.md"), "other chat backups note", "utf-8");
+
+      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      await runner.prompt("hello", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }>;
+      const searchTool = tools.find((t) => t.name === "memory_search")!;
+      const r = await searchTool.execute(
+        "call-search-boundary",
+        { query: "backups" },
+        undefined,
+        undefined,
+        {},
+      );
+      const payload = r as { content: { type: string; text: string }[] };
+      const parsed = JSON.parse(payload.content[0]!.text) as { results: Array<{ scope: string }> };
+      const scopes = parsed.results.map((x) => x.scope).sort();
+      expect(scopes).toEqual(["topics/-100/42", "topics/-100/7"]);
+      expect(scopes).not.toContain("topics/-200/9");
     });
   });
 

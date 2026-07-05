@@ -29,6 +29,7 @@ import {
   MemoryStore,
   createMemoryReadIndexTool,
   createMemoryReadTool,
+  createMemorySearchTool,
   createMemoryWriteTool,
   formatSnapshot,
   resolveActiveScope,
@@ -171,6 +172,7 @@ export class AgentRunner {
         includeAgents: true,
         getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
       }),
+      createMemorySearchTool({ store: this.memoryStore, activeScope: this.activeScope, includeAgents: true }),
       createMemoryWriteTool({ store: this.memoryStore, activeScope: this.activeScope }),
     ];
 

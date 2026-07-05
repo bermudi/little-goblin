@@ -72,4 +72,11 @@
   // Can be literal, env var name, or shell command. VOICE_NAME env overrides.
   // voiceName: "VOICE_NAME",
   // voiceName: "en-US-AndrewMultilingualNeural",
+
+  // --- Voice-note ASR (Groq Whisper) ---
+  // Optional. When set, Telegram voice messages are transcribed and prompted
+  // as a transcript turn (with the original file still saved for project-bound
+  // sessions). Omit to leave voice intake unconfigured.
+  // groqApiKey: "GROQ_API_KEY",
+  // asrModel: "whisper-large-v3-turbo",  // or "whisper-large-v3"
 }

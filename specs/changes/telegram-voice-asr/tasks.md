@@ -27,8 +27,8 @@
 
 ## Phase 4: Refresh backlog
 
-- [ ] Strike `specs/backlog.md` STT-provider open question line as resolved by Groq.
-- [ ] Leave `backlog.md` voice-note-first (STT+TTS) item intact since TTS remains a non-goal.
-- [ ] Run `litespec validate telegram-voice-asr`.
-- [ ] Run `bun test`.
-- [ ] Run `bun run typecheck`.
+- [x] Strike `specs/backlog.md` STT-provider open question line as resolved by Groq.
+- [x] Leave `backlog.md` voice-note-first (STT+TTS) item intact since TTS remains a non-goal.
+- [x] Run `litespec validate telegram-voice-asr`.
+- [x] Run `bun test`.
+- [x] Run `bun run typecheck`.

@@ -29,6 +29,6 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 
 - **Dynamic Poe model resolution — shelved (using Poe less).** Replace static Poe model entries with dynamic resolution from Poe's `GET /v1/models` catalog: accurate `input` modalities (so non-vision models don't crash on image sends), `contextWindow`, `maxTokens`, and `cost`. Goblin already fetches the catalog at startup for validation and throws it away. Reopen when Poe becomes a primary provider again; until then the static registry is tolerable. Original proposal in git history.
 - ~~Which pi-coding-agent release to pin?~~ Resolved: ^0.67.x caret is fine. ToolDefinition fields we use are stable; re-evaluate at ^0.68 or ^1.0 cutover.
-- STT provider when v2 voice lands — Whisper local vs. Poe/OpenRouter audio endpoint.
+- ~~STT provider when v2 voice lands — Whisper local vs. Poe/OpenRouter audio endpoint.~~ Resolved by `telegram-voice-asr`: Groq Whisper (`whisper-large-v3-turbo` default) handles Telegram voice transcription; the voice-note-first (STT+TTS) backlog item below remains since TTS response is still a non-goal.
 - Named subagent user-facing invocation (v1.1 design): slash per agent (`/researcher`), generic dispatcher (`/agent researcher …`), or Telegram topic binding?
 - `spawn_named` when no existing instance: always create new, or prompt goblin to pick between create / continue latest / continue specific?

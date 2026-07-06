@@ -23,10 +23,11 @@ function stubSubagentRunner(infos: SubagentInfo[] = []): SubagentRunner {
   return { list: () => infos } as unknown as SubagentRunner;
 }
 
-function stubRunner(opts: { tools: string[] | null; modelName: string }): AgentRunner {
+function stubRunner(opts: { tools: string[] | null; modelName: string; initialized?: boolean }): AgentRunner {
   return {
     getActiveToolNames: () => opts.tools,
     modelName: opts.modelName,
+    isInitialized: opts.initialized ?? false,
   } as unknown as AgentRunner;
 }
 
@@ -39,6 +40,7 @@ const baseDiagnostics: Diagnostics = {
   sessionName: null,
   createdAt: "2026-04-29T00:00:00.000Z",
   model: "poe/Claude-Sonnet-4.6",
+  runnerInitialized: true,
   tools: ["bash", "memory"],
   skillsLoaded: null,
   transcriptPath: "/tmp/transcript.jsonl",
@@ -87,6 +89,37 @@ describe("formatDiagnostics", () => {
     expect(out).toContain("Context: unavailable");
     expect(out).toContain("Context files: unavailable");
     expect(out).toContain("Project: (none)");
+  });
+
+  it("renders runner-backed null fields as '(not initialized)' when the runner is not primed", () => {
+    const out = formatDiagnostics({
+      ...baseDiagnostics,
+      runnerInitialized: false,
+      tools: null,
+      skillsLoaded: null,
+      contextTokens: null,
+      contextFiles: null,
+    });
+    expect(out).toContain("Tools: (not initialized — send a message first)");
+    expect(out).toContain("Skills loaded: (not initialized — send a message first)");
+    expect(out).toContain("Context: (not initialized — send a message first)");
+    expect(out).toContain("Context files: (not initialized — send a message first)");
+    // Non-runner fields still render "unavailable", not the not-initialized marker.
+    expect(out).toContain("Session Name: unavailable");
+  });
+
+  it("renders runner-backed null fields as 'unavailable' when the runner is primed but the field is unobservable", () => {
+    const out = formatDiagnostics({
+      ...baseDiagnostics,
+      runnerInitialized: true,
+      tools: null,
+      skillsLoaded: null,
+      contextTokens: null,
+      contextFiles: null,
+    });
+    expect(out).toContain("Tools: unavailable");
+    expect(out).toContain("Context: unavailable");
+    expect(out).not.toContain("not initialized");
   });
 
   it("renders empty tool list distinctly from 'unavailable'", () => {
@@ -228,13 +261,37 @@ describe("gatherDiagnostics", () => {
   it("skillsLoaded and contextTokens remain null (best-effort, not exposed by pi)", () => {
     const d = gatherDiagnostics({
       session: makeSession("sess000005"),
-      runner: stubRunner({ tools: [], modelName: "m" }),
+      runner: stubRunner({ tools: [], modelName: "m", initialized: true }),
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
       modelName: "m",
     });
     expect(d.skillsLoaded).toBeNull();
     expect(d.contextTokens).toBeNull();
+    expect(d.runnerInitialized).toBe(true);
+  });
+
+  it("reports runnerInitialized=false when the runner exists but is not primed", () => {
+    const d = gatherDiagnostics({
+      session: makeSession("sess000005b"),
+      runner: stubRunner({ tools: null, modelName: "m", initialized: false }),
+      subagentRunner: stubSubagentRunner(),
+      goblinHome: tmpDir,
+      modelName: "m",
+    });
+    expect(d.runnerInitialized).toBe(false);
+    expect(d.tools).toBeNull();
+  });
+
+  it("reports runnerInitialized=false when there is no runner", () => {
+    const d = gatherDiagnostics({
+      session: makeSession("sess000005c"),
+      runner: null,
+      subagentRunner: stubSubagentRunner(),
+      goblinHome: tmpDir,
+      modelName: "m",
+    });
+    expect(d.runnerInitialized).toBe(false);
   });
 
   it("reports contextFiles from the runner when available", () => {

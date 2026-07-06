@@ -7,9 +7,12 @@
  *   2. `formatDiagnostics(d)` turns the structured snapshot into the
  *      human-readable text we paste back into Telegram.
  *
- * Everything that we can't currently observe (skills loaded, context token
- * usage) is modelled as `null` and rendered as "unavailable" — present in
- * the output rather than silently omitted, per design.md.
+ * Runner-backed fields (tools, skillsLoaded, contextTokens, contextFiles)
+ * are `null` when the runner is absent OR when the runner exists but its
+ * underlying pi `AgentSession` has not been initialized yet (the first
+ * `prompt()` primes it lazily). `runnerInitialized` distinguishes the two
+ * cases so `formatDiagnostics` can render "(not initialized — send a
+ * message first)" instead of the misleading "unavailable".
  */
 
 import { statSync, readFileSync } from "node:fs";
@@ -24,9 +27,16 @@ export interface Diagnostics {
   sessionName: string | null;
   createdAt: string;
   model: string;
+  /**
+   * Whether the live runner's underlying pi `AgentSession` has been
+   * initialized (i.e. at least one `prompt()` has run). `false` when
+   * there is no runner OR the runner has not been primed yet. Drives the
+   * "(not initialized)" rendering for runner-backed fields.
+   */
+  runnerInitialized: boolean;
   /** Tool names active on the live session. `null` if session not yet initialized. */
   tools: string[] | null;
-  /** Number of skills loaded by pi. Currently always `null` — pi exposes no API for this. */
+  /** Number of skills loaded by pi. `null` if session not yet initialized. */
   skillsLoaded: number | null;
   /** Absolute path to the transcript.jsonl file. */
   transcriptPath: string;
@@ -38,7 +48,7 @@ export interface Diagnostics {
   activeSubagents: number;
   /** Number of subagents whose status is "running". */
   runningSubagents: number;
-  /** Approximate context tokens used. Currently always `null` — pi exposes no API for this. */
+  /** Approximate context tokens used. `null` if session not yet initialized. */
   contextTokens: number | null;
   /** Paths of context files (AGENTS.md, skills) loaded into the session. `null` if uninitialized. */
   contextFiles: string[] | null;
@@ -97,6 +107,7 @@ export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
     sessionName: deps.session.title ?? null,
     createdAt: deps.session.createdAt,
     model: deps.runner?.modelName ?? deps.modelName,
+    runnerInitialized: deps.runner?.isInitialized ?? false,
     tools: deps.runner?.getActiveToolNames() ?? null,
     skillsLoaded: deps.runner?.skillsLoaded ?? null,
     transcriptPath: path,
@@ -111,9 +122,11 @@ export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
 }
 
 const UNAVAILABLE = "unavailable";
+/** Rendered for runner-backed fields when the runner's pi session hasn't been primed yet. */
+const NOT_INITIALIZED = "(not initialized — send a message first)";
 
-function fmtTools(tools: string[] | null): string {
-  if (tools === null) return UNAVAILABLE;
+function fmtTools(tools: string[] | null, initialized: boolean): string {
+  if (tools === null) return initialized ? UNAVAILABLE : NOT_INITIALIZED;
   if (tools.length === 0) return "(none)";
   return tools.join(", ");
 }
@@ -129,8 +142,14 @@ function fmtNum(n: number | null): string {
   return n === null ? UNAVAILABLE : String(n);
 }
 
-function fmtContextFiles(files: string[] | null): string {
-  if (files === null) return UNAVAILABLE;
+/** Like `fmtNum` but distinguishes "not initialized" from genuine unavailability. */
+function fmtRunnerNum(n: number | null, initialized: boolean): string {
+  if (n === null) return initialized ? UNAVAILABLE : NOT_INITIALIZED;
+  return String(n);
+}
+
+function fmtContextFiles(files: string[] | null, initialized: boolean): string {
+  if (files === null) return initialized ? UNAVAILABLE : NOT_INITIALIZED;
   if (files.length === 0) return "(none)";
   return files.join(", ");
 }
@@ -141,13 +160,13 @@ export function formatDiagnostics(d: Diagnostics): string {
     `Session Name: ${d.sessionName ?? UNAVAILABLE}`,
     `Created: ${d.createdAt}`,
     `Model: ${d.model}`,
-    `Tools: ${fmtTools(d.tools)}`,
-    `Skills loaded: ${fmtNum(d.skillsLoaded)}`,
+    `Tools: ${fmtTools(d.tools, d.runnerInitialized)}`,
+    `Skills loaded: ${fmtRunnerNum(d.skillsLoaded, d.runnerInitialized)}`,
     `Transcript: ${d.transcriptPath}`,
     `Transcript file: ${fmtBytes(d.transcriptBytes)}, ${fmtNum(d.transcriptLines)} lines`,
     `Subagents: ${d.activeSubagents} tracked, ${d.runningSubagents} running`,
-    `Context: ${fmtNum(d.contextTokens)}`,
-    `Context files: ${fmtContextFiles(d.contextFiles)}`,
+    `Context: ${fmtRunnerNum(d.contextTokens, d.runnerInitialized)}`,
+    `Context files: ${fmtContextFiles(d.contextFiles, d.runnerInitialized)}`,
     `Project: ${d.projectDir !== null ? d.projectDir : "(none)"}`,
   ].join("\n");
 }

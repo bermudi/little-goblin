@@ -470,6 +470,15 @@ export class AgentRunner {
   }
 
   /**
+   * True once `init()` has run (i.e. the first `prompt()` has primed the
+   * underlying pi `AgentSession`). Callers can use this to distinguish
+   * "not yet initialized" from genuinely-unobservable fields.
+   */
+  get isInitialized(): boolean {
+    return this.session !== null;
+  }
+
+  /**
    * Names of tools currently active on the underlying pi `AgentSession`.
    * Returns `null` when the session has not been initialized yet (i.e. no
    * `prompt()` has run); callers should render that as "unavailable".

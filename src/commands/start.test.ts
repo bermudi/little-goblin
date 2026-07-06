@@ -55,8 +55,8 @@ describe("buildStartHandler", () => {
     await handler(ctx);
 
     expect(replies.length).toBe(1);
-    expect(replies[0]!.text).toBe("Session `sess-abc-123` ready\\. Just start typing\\!");
-    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2" });
+    expect(replies[0]!.text).toBe("`[info]` Session `sess-abc-123` ready\\. Just start typing\\!");
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
     expect(calls.length).toBe(1);
     expect(calls[0]!).toEqual({ chatId: 123, topicId: undefined });
   });
@@ -83,9 +83,9 @@ describe("buildStartHandler", () => {
 
     expect(replies.length).toBe(1);
     expect(replies[0]!.text).toBe(
-      "Welcome back\\. Session `existing-99` is active\\. Use /new for a fresh one\\.",
+      "`[info]` Welcome back\\. Session `existing-99` is active\\. Use /new for a fresh one\\.",
     );
-    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2" });
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
     expect(calls.length).toBe(0); // No new session created
   });
 
@@ -105,8 +105,8 @@ describe("buildStartHandler", () => {
     await handler(ctx);
 
     expect(replies.length).toBe(1);
-    expect(replies[0]!.text).toBe("This topic is already its own session. Just start typing!");
-    expect(replies[0]!.opts).toEqual({ message_thread_id: 1 });
+    expect(replies[0]!.text).toBe("`[info]` This topic is already its own session\\. Just start typing\\!");
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true, message_thread_id: 1 });
     expect(calls.length).toBe(0); // No session created for forum topics
   });
 
@@ -125,7 +125,8 @@ describe("buildStartHandler", () => {
     await handler(ctx);
 
     expect(replies.length).toBe(1);
-    expect(replies[0]!.text).toBe("Use /start in a private chat or a forum topic.");
+    expect(replies[0]!.text).toBe("`[info]` Use /start in a private chat or a forum topic\\.");
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
   });
 
   it("informs that topic is already a session", async () => {
@@ -144,8 +145,8 @@ describe("buildStartHandler", () => {
     await handler(ctx);
 
     expect(replies.length).toBe(1);
-    expect(replies[0]!.text).toBe("This topic is already its own session. Just start typing!");
-    expect(replies[0]!.opts).toEqual({ message_thread_id: 42 });
+    expect(replies[0]!.text).toBe("`[info]` This topic is already its own session\\. Just start typing\\!");
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true, message_thread_id: 42 });
   });
 
   it("handles missing locator", async () => {
@@ -163,6 +164,7 @@ describe("buildStartHandler", () => {
     await handler(ctx);
 
     expect(replies.length).toBe(1);
-    expect(replies[0]!.text).toBe("Unable to determine chat context.");
+    expect(replies[0]!.text).toBe("`[error]` Unable to determine chat context\\.");
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
   });
 });

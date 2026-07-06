@@ -126,13 +126,15 @@ export function stripMdV2(text: string): string {
  * Wraps `text` as a MarkdownV2 system message with a monospaced tag prefix:
  * `` `[tag]` `` + space + escaped text. The result is ready to send with
  * `parse_mode: "MarkdownV2"`. The tag itself is ASCII-safe and needs no
- * escaping inside the backticks.
+ * escaping inside the backticks. If `tag` is omitted, no prefix is emitted
+ * (the text is still escaped for MarkdownV2).
  */
-export function systemReply(text: string, tag: SystemTag): string {
+export function systemReply(text: string, tag?: SystemTag): string {
+  if (tag === undefined) return escapeMdV2(text);
   return "`[" + tag + "]` " + escapeMdV2(text);
 }
 
-function isParseError(err: unknown): boolean {
+export function isParseError(err: unknown): boolean {
   const e = err as { error_code?: number; description?: string } | undefined;
   if (e?.error_code !== 400) return false;
   const desc = e.description ?? "";
@@ -150,7 +152,7 @@ function isParseError(err: unknown): boolean {
 export async function sendSystemReply(
   message: SystemMessageSender,
   text: string,
-  tag: SystemTag,
+  tag?: SystemTag,
   opts: { silent?: boolean } = {},
 ): Promise<void> {
   const silent = opts.silent !== false;
@@ -161,9 +163,13 @@ export async function sendSystemReply(
     await message.reply(formatted, sendOpts);
   } catch (err) {
     if (isParseError(err)) {
-      const plain = `[${tag}] ` + stripMdV2(text);
+      const plain = (tag ? `[${tag}] ` : "") + stripMdV2(text);
+      // The plain-text retry keeps disable_notification (system replies stay
+      // silent); only parse_mode is dropped since the text is no longer markdown.
+      const retryOpts: ReplyOpts = {};
+      if (silent) retryOpts.disable_notification = true;
       try {
-        await message.reply(plain);
+        await message.reply(plain, retryOpts);
       } catch (retryErr) {
         log.warn("sendSystemReply plain-text retry failed", { error: String(retryErr) });
       }

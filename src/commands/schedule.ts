@@ -22,6 +22,16 @@
 import type { ChatLocator, SessionState } from "../sessions/mod.ts";
 import type { ScheduledTurn } from "../scheduler/types.ts";
 import { formatDuration, formatRunTime, parseAt, parseDuration, parseIn } from "../scheduler/time.ts";
+import type { SystemTag } from "../tg/format.ts";
+
+/**
+ * Result of executing a `/schedule` subcommand. The `tag` field drives the
+ * system-reply prefix (`[ok]` / `[info]` / `[warn]`) at the dispatch site.
+ */
+export interface ScheduleCommandResult {
+  reply: string;
+  tag: SystemTag;
+}
 
 export const NO_ACTIVE_SESSION_REPLY = "No active session. Use /new to start one.";
 export const SCHEDULE_USAGE_REPLY = [
@@ -123,60 +133,61 @@ function formatScheduleList(schedules: ScheduledTurn[]): string {
 
 /**
  * Execute a parsed `/schedule` subcommand against the injected deps. Returns
- * the reply string. Pure with respect to the filesystem and Telegram — the
- * caller sends the reply.
+ * a `{ reply, tag }` result: the reply text and the system-reply tag that
+ * drives the `[ok]` / `[info]` / `[warn]` prefix at the dispatch site. Pure
+ * with respect to the filesystem and Telegram — the caller sends the reply.
  */
-export function executeSchedule(deps: ScheduleCommandDeps, rawText: string): string {
-  if (!deps.hasSession || !deps.session) return NO_ACTIVE_SESSION_REPLY;
+export function executeSchedule(deps: ScheduleCommandDeps, rawText: string): ScheduleCommandResult {
+  if (!deps.hasSession || !deps.session) return { reply: NO_ACTIVE_SESSION_REPLY, tag: "info" };
   const parsed = parseScheduleArgs(rawText);
-  if (!parsed) return SCHEDULE_USAGE_REPLY;
+  if (!parsed) return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
   const { sub, rest } = parsed;
 
   switch (sub) {
     case "list":
-      return formatScheduleList(deps.list());
+      return { reply: formatScheduleList(deps.list()), tag: "info" };
 
     case "at": {
       const parts = rest.split(/\s+/u);
       const timeToken = parts[0] ?? "";
       const prompt = parts.slice(1).join(" ").trim();
-      if (timeToken === "" || prompt === "") return SCHEDULE_USAGE_REPLY;
+      if (timeToken === "" || prompt === "") return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
       const result = parseAt(timeToken, deps.now);
       if (!result.ok) {
         return result.reason === "past"
-          ? "That time is in the past."
-          : SCHEDULE_USAGE_REPLY;
+          ? { reply: "That time is in the past.", tag: "warn" }
+          : { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
       }
       const created = deps.create({
         kind: "once",
         prompt,
         nextRunAt: new Date(result.ms).toISOString(),
       });
-      return `Scheduled \`${created.id}\` for ${formatRunTime(result.ms)}:\n${prompt}`;
+      return { reply: `Scheduled \`${created.id}\` for ${formatRunTime(result.ms)}:\n${prompt}`, tag: "ok" };
     }
 
     case "in": {
       const parts = rest.split(/\s+/u);
       const durToken = parts[0] ?? "";
       const prompt = parts.slice(1).join(" ").trim();
-      if (durToken === "" || prompt === "") return SCHEDULE_USAGE_REPLY;
+      if (durToken === "" || prompt === "") return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
       const result = parseIn(durToken, deps.now);
-      if (!result.ok) return SCHEDULE_USAGE_REPLY;
+      if (!result.ok) return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
       const created = deps.create({
         kind: "once",
         prompt,
         nextRunAt: new Date(result.ms).toISOString(),
       });
-      return `Scheduled \`${created.id}\` in ${durToken} (${formatRunTime(result.ms)}):\n${prompt}`;
+      return { reply: `Scheduled \`${created.id}\` in ${durToken} (${formatRunTime(result.ms)}):\n${prompt}`, tag: "ok" };
     }
 
     case "every": {
       const parts = rest.split(/\s+/u);
       const durToken = parts[0] ?? "";
       const prompt = parts.slice(1).join(" ").trim();
-      if (durToken === "" || prompt === "") return SCHEDULE_USAGE_REPLY;
+      if (durToken === "" || prompt === "") return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
       const intervalMs = parseDuration(durToken);
-      if (intervalMs === null) return SCHEDULE_USAGE_REPLY;
+      if (intervalMs === null) return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
       const firstRun = new Date(deps.now + intervalMs).toISOString();
       const created = deps.create({
         kind: "recurring",
@@ -184,28 +195,34 @@ export function executeSchedule(deps: ScheduleCommandDeps, rawText: string): str
         nextRunAt: firstRun,
         intervalMs,
       });
-      return `Scheduled \`${created.id}\` every ${formatDuration(intervalMs)}:\n${prompt}`;
+      return { reply: `Scheduled \`${created.id}\` every ${formatDuration(intervalMs)}:\n${prompt}`, tag: "ok" };
     }
 
     case "remove": {
       const id = rest.split(/\s+/u)[0] ?? "";
-      if (id === "") return SCHEDULE_USAGE_REPLY;
+      if (id === "") return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
       const removed = deps.remove(id);
-      return removed ? `Removed schedule \`${id}\`.` : `No matching schedule \`${id}\`.`;
+      return removed
+        ? { reply: `Removed schedule \`${id}\`.`, tag: "ok" }
+        : { reply: `No matching schedule \`${id}\`.`, tag: "warn" };
     }
 
     case "pause": {
       const id = rest.split(/\s+/u)[0] ?? "";
-      if (id === "") return SCHEDULE_USAGE_REPLY;
+      if (id === "") return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
       const paused = deps.pause(id);
-      return paused ? `Paused schedule \`${id}\`.` : `No matching schedule \`${id}\`.`;
+      return paused
+        ? { reply: `Paused schedule \`${id}\`.`, tag: "ok" }
+        : { reply: `No matching schedule \`${id}\`.`, tag: "warn" };
     }
 
     case "resume": {
       const id = rest.split(/\s+/u)[0] ?? "";
-      if (id === "") return SCHEDULE_USAGE_REPLY;
+      if (id === "") return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
       const resumed = deps.resume(id);
-      return resumed ? `Resumed schedule \`${id}\`.` : `No matching schedule \`${id}\`.`;
+      return resumed
+        ? { reply: `Resumed schedule \`${id}\`.`, tag: "ok" }
+        : { reply: `No matching schedule \`${id}\`.`, tag: "warn" };
     }
 
     case "heartbeat": {
@@ -213,19 +230,19 @@ export function executeSchedule(deps: ScheduleCommandDeps, rawText: string): str
     }
 
     default:
-      return SCHEDULE_USAGE_REPLY;
+      return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
   }
 }
 
 /** `/schedule heartbeat <on [duration] | off | status>` — heartbeat manager. */
-export function executeHeartbeat(deps: ScheduleCommandDeps, rest: string): string {
+export function executeHeartbeat(deps: ScheduleCommandDeps, rest: string): ScheduleCommandResult {
   const parts = rest.split(/\s+/u).filter((x) => x !== "");
   const action = parts[0] ?? "";
 
   switch (action) {
     case "": {
       // Bare `/schedule heartbeat` shows status.
-      return heartbeatStatus(deps);
+      return { reply: heartbeatStatus(deps), tag: "info" };
     }
     case "on": {
       const durToken = parts[1];
@@ -233,20 +250,20 @@ export function executeHeartbeat(deps: ScheduleCommandDeps, rest: string): strin
       // silently falling back to the default. Absent duration → undefined,
       // which the store interprets as the 30-minute default.
       const parsedInterval = durToken !== undefined ? parseDuration(durToken) : undefined;
-      if (parsedInterval === null) return HEARTBEAT_USAGE_REPLY;
+      if (parsedInterval === null) return { reply: HEARTBEAT_USAGE_REPLY, tag: "info" };
       const intervalMs: number | undefined = parsedInterval ?? undefined;
       const hb = deps.setHeartbeat({ enabled: true, intervalMs });
-      return heartbeatStatusReply(hb, deps.now);
+      return { reply: heartbeatStatusReply(hb, deps.now), tag: "ok" };
     }
     case "off": {
       deps.setHeartbeat({ enabled: false });
-      return "Heartbeat disabled.";
+      return { reply: "Heartbeat disabled.", tag: "ok" };
     }
     case "status": {
-      return heartbeatStatus(deps);
+      return { reply: heartbeatStatus(deps), tag: "info" };
     }
     default:
-      return HEARTBEAT_USAGE_REPLY;
+      return { reply: HEARTBEAT_USAGE_REPLY, tag: "info" };
   }
 }
 

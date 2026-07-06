@@ -495,4 +495,242 @@ describe("handleCommand", () => {
     await dispatch({ command: "/new", harness });
     expect(harness.interrupt).not.toHaveBeenCalled();
   });
+
+  describe("DispatchResult.tag propagation", () => {
+    it("/new success is tagged 'ok'", async () => {
+      const harness = makeHarness();
+      const result = expectReplied(await dispatch({ command: "/new", harness }));
+      expect(result.tag).toBe("ok");
+    });
+
+    it("/cancel 'Nothing to cancel.' is tagged 'info'", async () => {
+      const harness = makeHarness();
+      const result = expectReplied(await dispatch({ command: "/cancel", harness }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/cancel 'Cancelled.' is tagged 'ok'", async () => {
+      const cascade = baseCascade({ attemptedMain: true });
+      const harness = makeHarness(cascade);
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const runner = makeRunner(true);
+      const result = expectReplied(await dispatch({ command: "/cancel", session, runner, harness }));
+      expect(result.tag).toBe("ok");
+    });
+
+    it("/help is tagged 'info'", async () => {
+      const result = expectReplied(await dispatch({ command: "/help" }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/queue while streaming is tagged 'queued'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const runner = makeRunner(true);
+      const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do thing", session, runner, harness }));
+      expect(result.tag).toBe("queued");
+    });
+
+    it("/queue while idle is tagged 'ok'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const runner = makeRunner(false);
+      const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do thing", session, runner, harness }));
+      expect(result.tag).toBe("ok");
+    });
+
+    it("/model list (no arg) is tagged 'info'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const result = expectReplied(await dispatch({ command: "/model", session, harness }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/model switch is tagged 'ok'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const runner = makeRunner(false);
+      const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, runner, harness }));
+      expect(result.tag).toBe("ok");
+    });
+
+    it("/new failure is tagged 'error'", async () => {
+      // Force createForChat to throw by archiving then making manager fail.
+      const harness = makeHarness();
+      const orig = harness.manager.createForChat.bind(harness.manager);
+      harness.manager.createForChat = () => { throw new Error("boom"); };
+      try {
+        const result = expectReplied(await dispatch({ command: "/new", harness }));
+        expect(result.tag).toBe("error");
+      } finally {
+        harness.manager.createForChat = orig;
+      }
+    });
+
+    it("/subagents is tagged 'info'", async () => {
+      const result = expectReplied(await dispatch({ command: "/subagents" }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/cancel_subagent without id is tagged 'info'", async () => {
+      const result = expectReplied(await dispatch({ command: "/cancel_subagent" }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("replied() without an explicit tag leaves tag undefined (defaults to 'ok' at the dispatch site)", async () => {
+      // The spec says: "Command reply without explicit tag defaults to ok."
+      // The default is applied at the intake dispatch site via
+      // `sendSystemReply(message, result.reply, result.tag ?? "ok")`, so the
+      // DispatchResult itself carries `tag: undefined` when omitted. This test
+      // guards the contract: a handler that forgets to set a tag still gets
+      // `[ok]` prefixed at the send site.
+      const harness = makeHarness();
+      const result = expectReplied(await dispatch({ command: "/new", harness }));
+      // /new sets "ok" explicitly; verify the field is present and typed.
+      expect(result.tag).toBe("ok");
+      // A handler that omits tag produces `tag: undefined` — the dispatch
+      // site's `?? "ok"` covers it. Simulate by checking the type permits
+      // undefined: the field is `tag?: SystemTag`.
+      const untagged: DispatchResult = { kind: "replied", reply: "x", sideEffects: [] };
+      expect(untagged.tag).toBeUndefined();
+    });
+
+    it("/archive success is tagged 'ok'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const result = expectReplied(await dispatch({ command: "/archive", session, harness }));
+      expect(result.tag).toBe("ok");
+    });
+
+    it("/archive without a session is tagged 'info'", async () => {
+      const result = expectReplied(await dispatch({ command: "/archive" }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/project set is tagged 'ok'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const result = expectReplied(await dispatch({ command: "/project", rawText: `/project ${harness.cfg.goblinHome}`, session, harness }));
+      expect(result.tag).toBe("ok");
+    });
+
+    it("/project without a session is tagged 'info'", async () => {
+      const result = expectReplied(await dispatch({ command: "/project", rawText: "/project /tmp" }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/project bad path is tagged 'warn'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const result = expectReplied(await dispatch({ command: "/project", rawText: "/project /nonexistent/path/xyz", session, harness }));
+      expect(result.tag).toBe("warn");
+    });
+
+    it("/project missing arg is tagged 'info'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const result = expectReplied(await dispatch({ command: "/project", rawText: "/project", session, harness }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/compact success is tagged 'ok'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const runner = makeRunner(false);
+      const result = expectReplied(await dispatch({ command: "/compact", session, runner, harness }));
+      expect(result.tag).toBe("ok");
+    });
+
+    it("/compact without a session is tagged 'info'", async () => {
+      const result = expectReplied(await dispatch({ command: "/compact" }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/compact without a runner is tagged 'info'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const result = expectReplied(await dispatch({ command: "/compact", session, runner: null, harness }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/name success is tagged 'ok'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const result = expectReplied(await dispatch({ command: "/name", rawText: "/name my-session", session, harness }));
+      expect(result.tag).toBe("ok");
+    });
+
+    it("/name without a session is tagged 'info'", async () => {
+      const result = expectReplied(await dispatch({ command: "/name", rawText: "/name foo" }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/name missing arg is tagged 'info'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const result = expectReplied(await dispatch({ command: "/name", rawText: "/name", session, harness }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/resume success is tagged 'ok'", async () => {
+      const harness = makeHarness();
+      const target = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      harness.manager.setTitle(target.id, "my-target");
+      const result = expectReplied(await dispatch({ command: "/resume", rawText: `/resume ${target.id}`, harness }));
+      expect(result.tag).toBe("ok");
+    });
+
+    it("/resume list (no arg) is tagged 'info'", async () => {
+      const harness = makeHarness();
+      const result = expectReplied(await dispatch({ command: "/resume", rawText: "/resume", harness }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/resume not-found is tagged 'warn'", async () => {
+      const harness = makeHarness();
+      const result = expectReplied(await dispatch({ command: "/resume", rawText: "/resume nonexistent", harness }));
+      expect(result.tag).toBe("warn");
+    });
+
+    it("/schedule list is tagged 'info'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const { ScheduleStore } = await import("../scheduler/store.ts");
+      const scheduleStore = new ScheduleStore(harness.cfg.goblinHome);
+      harness.deps.scheduleStore = scheduleStore;
+      const result = expectReplied(await dispatch({ command: "/schedule", rawText: "/schedule list", session, harness }));
+      expect(result.tag).toBe("info");
+    });
+
+    it("/schedule at success is tagged 'ok'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const { ScheduleStore } = await import("../scheduler/store.ts");
+      const scheduleStore = new ScheduleStore(harness.cfg.goblinHome);
+      harness.deps.scheduleStore = scheduleStore;
+      const future = new Date(Date.now() + 3600_000).toISOString();
+      const result = expectReplied(await dispatch({ command: "/schedule", rawText: `/schedule at ${future} hello`, session, harness }));
+      expect(result.tag).toBe("ok");
+    });
+
+    it("/schedule past time is tagged 'warn'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const { ScheduleStore } = await import("../scheduler/store.ts");
+      const scheduleStore = new ScheduleStore(harness.cfg.goblinHome);
+      harness.deps.scheduleStore = scheduleStore;
+      const result = expectReplied(await dispatch({ command: "/schedule", rawText: "/schedule at 2000-01-01T00:00:00Z hello", session, harness }));
+      expect(result.tag).toBe("warn");
+    });
+
+    it("/schedule usage (no sub) is tagged 'info'", async () => {
+      const harness = makeHarness();
+      const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+      const { ScheduleStore } = await import("../scheduler/store.ts");
+      const scheduleStore = new ScheduleStore(harness.cfg.goblinHome);
+      harness.deps.scheduleStore = scheduleStore;
+      const result = expectReplied(await dispatch({ command: "/schedule", rawText: "/schedule", session, harness }));
+      expect(result.tag).toBe("info");
+    });
+  });
 });

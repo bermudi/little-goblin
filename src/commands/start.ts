@@ -1,6 +1,7 @@
 import type { Context } from "grammy";
 import type { SessionManager } from "../sessions/mod.ts";
 import { locatorFromCtx } from "../tg/locator.ts";
+import { systemReply } from "../tg/format.ts";
 
 /**
  * /start command handler.
@@ -12,7 +13,10 @@ export function buildStartHandler(manager: SessionManager) {
   return async (ctx: Context): Promise<void> => {
     const loc = locatorFromCtx(ctx);
     if (!loc) {
-      await ctx.reply("Unable to determine chat context.");
+      await ctx.reply(
+        systemReply("Unable to determine chat context.", "error"),
+        { parse_mode: "MarkdownV2", disable_notification: true },
+      );
       return;
     }
 
@@ -27,13 +31,19 @@ export function buildStartHandler(manager: SessionManager) {
     const hasThreadId = ctx.msg && "message_thread_id" in ctx.msg && typeof ctx.msg.message_thread_id === "number";
     const isSupergroup = chatType === "supergroup";
     if (chatType !== "private" && loc.topicId === undefined && !hasThreadId && !isSupergroup) {
-      await ctx.reply("Use /start in a private chat or a forum topic.", replyOpts);
+      await ctx.reply(
+        systemReply("Use /start in a private chat or a forum topic.", "info"),
+        { parse_mode: "MarkdownV2", disable_notification: true, ...replyOpts },
+      );
       return;
     }
 
     if (loc.topicId !== undefined || hasThreadId) {
       // In a forum topic (including General) - already has a session (auto-created on first message)
-      await ctx.reply("This topic is already its own session. Just start typing!", replyOpts);
+      await ctx.reply(
+        systemReply("This topic is already its own session. Just start typing!", "info"),
+        { parse_mode: "MarkdownV2", disable_notification: true, ...replyOpts },
+      );
       return;
     }
 
@@ -42,8 +52,8 @@ export function buildStartHandler(manager: SessionManager) {
     const existing = manager.resolve(loc, { isSupergroup });
     if (existing) {
       await ctx.reply(
-        `Welcome back\\. Session \`${existing.id}\` is active\\. Use /new for a fresh one\\.`,
-        { parse_mode: "MarkdownV2", ...replyOpts },
+        systemReply(`Welcome back. Session \`${existing.id}\` is active. Use /new for a fresh one.`, "info"),
+        { parse_mode: "MarkdownV2", disable_notification: true, ...replyOpts },
       );
       return;
     }
@@ -52,12 +62,15 @@ export function buildStartHandler(manager: SessionManager) {
     try {
       state = manager.createForChat(loc, { isSupergroup });
     } catch (e) {
-      await ctx.reply("Failed to create session. Please try again.");
+      await ctx.reply(
+        systemReply("Failed to create session. Please try again.", "error"),
+        { parse_mode: "MarkdownV2", disable_notification: true, ...replyOpts },
+      );
       throw e;
     }
     await ctx.reply(
-      `Session \`${state.id}\` ready\\. Just start typing\\!`,
-      { parse_mode: "MarkdownV2", ...replyOpts },
+      systemReply(`Session \`${state.id}\` ready. Just start typing!`, "info"),
+      { parse_mode: "MarkdownV2", disable_notification: true, ...replyOpts },
     );
   };
 }

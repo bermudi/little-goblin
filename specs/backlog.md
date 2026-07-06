@@ -29,6 +29,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 - v1.x: render `onStatusUpdate` events in the MessageBuffer status line (e.g. "🧠 Researcher analyzing…"). Hook is already implemented as a no-op stub in `src/tg/buffer.ts`; rendering deferred until subagents land. Split out of `message-buffer-streaming`.
 - v1.x: end-to-end smoke test of `/cancel`, `/new`, `/archive`, `/debug`, `/help`, and subagent command stubs in both DM and forum-topic surfaces. Deferred from `session-commands-cancel` phase 8; unit tests cover helpers but the grammy ↔ SessionManager ↔ AgentRunner integration path still needs a manual walk-through.
 - v1.x: rate limiting — beta tools operate in "YOLO mode". No client-side rate limiting; we rely on Telegram's server-side limits and return errors to the LLM.
+- v1.x: EphemeralReply / auto-delete for transient system messages — deferred from `reply-formatting`. System acks (`[queued]`, `[ok] Saved file.`) currently persist in the thread. An `EphemeralReply` wrapper (like Hermes') could auto-delete them after a TTL if the chat gets noisy. Not needed for single-user homelab today.
 - glossary: `memory_search`, `standing order`, `commitment` — deferred from `memory-retrieval` and `scheduled-turns` until wording stabilizes across both proposals.
 
 ## Open Questions

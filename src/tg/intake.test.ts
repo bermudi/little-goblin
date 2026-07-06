@@ -189,7 +189,7 @@ function makeMessage(replies: string[] = [], overrides: Partial<TelegramIntakeMe
   return {
     locator: { chatId: 1 },
     isSupergroup: false,
-    reply: async (text) => {
+    reply: async (text, _opts) => {
       replies.push(text);
     },
     prepare: (content: PromptContent): PromptContent => {
@@ -331,7 +331,7 @@ describe("Telegram intake", () => {
     replyNoActiveSession(makeMessage(dmReplies), { chatId: 1 }, "message");
     replyNoActiveSession(makeMessage(topicReplies), { chatId: 1, topicId: 42 }, "message");
 
-    expect(dmReplies).toEqual(["No active session. Use /new to start one."]);
+    expect(dmReplies).toEqual(["`[info]` No active session\\. Use /new to start one\\."]);
     expect(topicReplies).toEqual([]);
   });
 
@@ -373,7 +373,7 @@ describe("Telegram intake", () => {
     await flushMicrotasks();
 
     const replyText = "No project directory is set. Use /project <path> to enable file saving.";
-    expect(replies.at(-1)).toBe(replyText);
+    expect(replies.at(-1)).toBe("`[warn]` No project directory is set\\. Use /project <path\\> to enable file saving\\.");
     expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
 
     const sessionId = manager.list()[0]!.id;
@@ -396,7 +396,7 @@ describe("Telegram intake", () => {
     await intake.handlePhoto(message, fakeApi(), ["file-id"], undefined);
     await flushMicrotasks();
 
-    const replyText = "Sorry, I couldn't download that image.";
+    const replyText = "`[error]` Sorry, I couldn't download that image\\.";
     expect(replies.some((r) => r === replyText)).toBe(true);
 
     const sessionId = manager.list()[0]!.id;
@@ -405,7 +405,7 @@ describe("Telegram intake", () => {
     expect(lastEntry).toEqual({
       ts: expect.any(String),
       role: "assistant",
-      content: `[system] ${replyText}`,
+      content: "[system] Sorry, I couldn't download that image.",
     });
   });
 
@@ -491,11 +491,11 @@ describe("Telegram intake", () => {
     await flushMicrotasks();
 
     // Instant ack; the switch has NOT happened yet (runner still on old model).
-    expect(replies.at(-1)).toBe("Queued. Will run after this turn.");
+    expect(replies.at(-1)).toBe("`[queued]` Queued\\. Will run after this turn\\.");
 
     // Release the turn. The deferred command re-dispatches and replies.
     slow.resolve();
-    await waitFor(() => replies.at(-1)!.startsWith("Switched to"));
+    await waitFor(() => replies.at(-1)!.includes("Switched to"));
     expect(replies.at(-1)).toContain("Switched to `poe/GPT-4o`");
   });
 
@@ -545,7 +545,7 @@ describe("Telegram intake", () => {
     // /cancel aborted the turn (MockAgentRunner.abort flips streaming false)
     // and replied — no "Queued." ack.
     expect(runners[0]!.abort).toHaveBeenCalledTimes(1);
-    expect(replies.at(-1)).toBe("Cancelled.");
+    expect(replies.at(-1)).toBe("`[ok]` Cancelled\\.");
     expect(runners[0]!.isStreaming).toBe(false);
 
     slow.resolve();
@@ -612,11 +612,11 @@ describe("Telegram intake", () => {
 
     slow.resolve();
     // /model succeeds first, then /new creates the second session.
-    await waitFor(() => replies.filter((r) => r.startsWith("Switched to")).length === 1);
+    await waitFor(() => replies.filter((r) => r.includes("Switched to")).length === 1);
     await waitFor(() => replies.filter((r) => r.includes("Created new session")).length === 2);
 
     expect(runners[0]!.setModel).toHaveBeenCalledTimes(1);
-    expect(replies.some((r) => r.startsWith("Switched to `poe/GPT-4o`"))).toBe(true);
+    expect(replies.some((r) => r.includes("Switched to `poe/GPT-4o`"))).toBe(true);
   });
 
   it("surfaces a deferred command's handler failure as the canned reply", async () => {
@@ -645,13 +645,13 @@ describe("Telegram intake", () => {
 
     await intake.handleText(message, "/model 1");
     await flushMicrotasks();
-    expect(replies.at(-1)).toBe("Queued. Will run after this turn.");
+    expect(replies.at(-1)).toBe("`[queued]` Queued\\. Will run after this turn\\.");
 
     slow.resolve();
-    await waitFor(() => replies.at(-1)!.startsWith("Failed"));
+    await waitFor(() => replies.at(-1)!.includes("Failed"));
 
     // The canned error reply arrives after the turn settles.
-    expect(replies.at(-1)).toBe("Failed to switch model. Please try again.");
+    expect(replies.at(-1)).toBe("`[error]` Failed to switch model\\. Please try again\\.");
   });
 
   it("shares per-session ordering between /queue and scheduled dispatch", async () => {
@@ -828,7 +828,7 @@ describe("Telegram intake", () => {
     expect(promptArg).toContain("[Voice message transcript]\nhello project");
     // Saved-file note names the voice file with its .oga extension.
     expect(promptArg).toMatch(/\[Voice file `voice-\d+\.oga` saved to project directory\.\]/);
-    expect(replies.some((r) => /^Saved voice-\d+\.oga\.$/.test(r))).toBe(true);
+    expect(replies.some((r) => /^`\[ok\]` Saved voice\\-\d+\\.oga\\.$/.test(r))).toBe(true);
   });
 
   it("replies with a setup message when groqApiKey is absent and does not prompt", async () => {

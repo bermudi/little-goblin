@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TurnCallbacks } from "../agent/mod.ts";
 import { log } from "../log.ts";
+import { stripMdV2, isParseError } from "./format.ts";
 
 /**
  * MessageBuffer turns AgentSession events (via TurnCallbacks) into Telegram
@@ -147,6 +148,28 @@ export function findSafeSplit(text: string, maxLen: number): number {
   return maxLen;
 }
 
+/**
+ * Adjust a rollover split point so it does not break an inline code span.
+ * Counts unescaped backticks (`` ` ``) in `text[0..splitAt]`; if the count
+ * is odd, the head would open a span that never closes. Moves the split
+ * backward to just before the last backtick so the head is self-contained.
+ * A backtick preceded by `\` is escaped and skipped.
+ */
+export function adjustForCodeSpan(text: string, splitAt: number): number {
+  let count = 0;
+  let lastBacktick = -1;
+  for (let i = 0; i < splitAt; i++) {
+    if (text[i] === "`" && text[i - 1] !== "\\") {
+      count++;
+      lastBacktick = i;
+    }
+  }
+  if (count % 2 === 1 && lastBacktick > 0) {
+    return lastBacktick;
+  }
+  return splitAt;
+}
+
 export class MessageBuffer implements TurnCallbacks {
   private bot: Bot;
   private chatId: number;
@@ -182,6 +205,13 @@ export class MessageBuffer implements TurnCallbacks {
    * Reset to "" whenever the response message is recreated or goes away.
    */
   private lastRenderedResponseText: string = "";
+  /**
+   * Sticky flag: once a MarkdownV2 parse error forces a plain-text retry,
+   * subsequent response sends/edits skip `parse_mode` for the rest of the
+   * current response message's lifetime. Reset whenever `responseMessageId`
+   * is cleared (tool boundary seal, rollover, file escape).
+   */
+  private responseIsPlainText: boolean = false;
 
   private now: () => number;
   private statusThrottleMs: number;
@@ -311,6 +341,7 @@ export class MessageBuffer implements TurnCallbacks {
         this.responseMessageId = undefined;
         this.accumulatedText = "";
         this.lastRenderedResponseText = "";
+        this.responseIsPlainText = false;
       })();
     }
 
@@ -415,6 +446,29 @@ export class MessageBuffer implements TurnCallbacks {
       return { ...opts, message_thread_id: this.topicId };
     }
     return opts;
+  }
+
+  /**
+   * Response-path send options: `parse_mode: "MarkdownV2"` unless the sticky
+   * `responseIsPlainText` flag is set (set by a 400 parse-error fallback).
+   * Status-line sends use `withThread()` directly — they stay plain text.
+   */
+  private responseOpts(): Record<string, unknown> {
+    if (this.responseIsPlainText) return this.withThread();
+    return this.withThread({ parse_mode: "MarkdownV2" });
+  }
+
+  /**
+   * Response-path send text: when the sticky `responseIsPlainText` flag is
+   * set (after a 400 parse-error fallback), markdown is stripped so the text
+   * is readable as plain text. Without the flag, the raw text is returned
+   * (Telegram renders it as MarkdownV2). Accepts an optional `text`
+   * parameter for derived slices (e.g. rollover head, file-escape summary);
+   * defaults to the full `accumulatedText`.
+   */
+  private responseText(text: string = this.accumulatedText): string {
+    if (this.responseIsPlainText) return stripMdV2(text);
+    return text;
   }
 
   /** Best-effort `sendChatAction("typing")`; never throws out. */
@@ -695,12 +749,14 @@ export class MessageBuffer implements TurnCallbacks {
           try {
             const msg = await this.bot.api.sendMessage(
               this.chatId,
-              sentText,
-              this.withThread(),
+              this.responseText(sentText),
+              this.responseOpts(),
             );
             this.responseMessageId = msg.message_id;
             // Seed the idempotence guard so a force-flush at agent_end
             // with the same text becomes a no-op rather than a 400.
+            // Track the raw captured text (not the stripped render) so the
+            // guard compares raw-to-raw and correctly detects no-op edits.
             this.lastRenderedResponseText = sentText;
             log.debug("response: sent", {
               msgId: msg.message_id,
@@ -727,7 +783,7 @@ export class MessageBuffer implements TurnCallbacks {
         const messageId = this.responseMessageId;
         const inFlight = (async () => {
           try {
-            await this.bot.api.editMessageText(this.chatId, messageId, text, this.withThread());
+            await this.bot.api.editMessageText(this.chatId, messageId, this.responseText(text), this.responseOpts());
             this.lastRenderedResponseText = text;
             log.debug("response: edited", {
               msgId: messageId,
@@ -736,7 +792,7 @@ export class MessageBuffer implements TurnCallbacks {
           } catch (err) {
             await this.handleResponseError(err);
             if (force && this.responseMessageId === undefined && this.accumulatedText.length > 0) {
-              const msg = await this.bot.api.sendMessage(this.chatId, this.accumulatedText, this.withThread());
+              const msg = await this.bot.api.sendMessage(this.chatId, this.responseText(), this.responseOpts());
               this.responseMessageId = msg.message_id;
               this.lastRenderedResponseText = this.accumulatedText;
             }
@@ -775,7 +831,7 @@ export class MessageBuffer implements TurnCallbacks {
         new InputFile(tmpPath, "reply.md"),
         this.withThread(),
       );
-      await this.bot.api.sendMessage(this.chatId, summary, this.withThread());
+      await this.bot.api.sendMessage(this.chatId, this.responseText(summary), this.responseOpts());
     } catch (err) {
       await this.handleResponseError(err);
     } finally {
@@ -787,6 +843,7 @@ export class MessageBuffer implements TurnCallbacks {
     this.accumulatedText = "";
     this.responseMessageId = undefined;
     this.lastRenderedResponseText = "";
+    this.responseIsPlainText = false;
     return true;
   }
 
@@ -801,8 +858,14 @@ export class MessageBuffer implements TurnCallbacks {
   private async maybeRollover(): Promise<boolean> {
     let rolled = false;
     while (this.accumulatedText.length > MAX_MESSAGE_LEN) {
-      const splitAt = findSafeSplit(this.accumulatedText, MAX_MESSAGE_LEN);
-      const head = this.accumulatedText.slice(0, splitAt);
+      let splitAt = findSafeSplit(this.accumulatedText, MAX_MESSAGE_LEN);
+      // Inline-code-span safety: if the split point has an odd number of
+      // unescaped backticks before it, the head would open a code span that
+      // never closes (Telegram rejects unterminated spans in MarkdownV2).
+      // Move the split backward to before the last backtick so the head is
+      // self-contained and the tail starts fresh.
+      splitAt = adjustForCodeSpan(this.accumulatedText, splitAt);
+      const head = this.responseText(this.accumulatedText.slice(0, splitAt));
       const tail = this.accumulatedText.slice(splitAt);
       try {
         if (this.responseMessageId !== undefined) {
@@ -810,14 +873,15 @@ export class MessageBuffer implements TurnCallbacks {
             this.chatId,
             this.responseMessageId,
             head,
-            this.withThread(),
+            this.responseOpts(),
           );
         } else {
-          await this.bot.api.sendMessage(this.chatId, head, this.withThread());
+          await this.bot.api.sendMessage(this.chatId, head, this.responseOpts());
         }
         // The previous message is now "closed"; the tail starts a new one.
         this.responseMessageId = undefined;
         this.lastRenderedResponseText = "";
+        this.responseIsPlainText = false;
         this.accumulatedText = tail;
         rolled = true;
       } catch (err) {
@@ -829,9 +893,50 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   private async handleResponseError(err: unknown): Promise<void> {
+    // MarkdownV2 parse error: strip markdown and retry as plain text. The
+    // sticky `responseIsPlainText` flag keeps subsequent sends/edits plain
+    // for the rest of this response message's lifetime, so we don't loop.
+    if (!this.responseIsPlainText && isParseError(err)) {
+      this.responseIsPlainText = true;
+      log.warn("response MarkdownV2 parse error, falling back to plain text", {
+        description: (err as { description?: string }).description,
+      });
+      // Retry once with stripped markdown and no parse_mode. If the retry
+      // also fails, fall through to the normal error handler.
+      try {
+        if (this.responseMessageId === undefined) {
+          const msg = await this.bot.api.sendMessage(
+            this.chatId,
+            this.responseText(),
+            this.responseOpts(),
+          );
+          this.responseMessageId = msg.message_id;
+          this.lastRenderedResponseText = this.accumulatedText;
+        } else {
+          await this.bot.api.editMessageText(
+            this.chatId,
+            this.responseMessageId,
+            this.responseText(),
+            this.responseOpts(),
+          );
+          this.lastRenderedResponseText = this.accumulatedText;
+        }
+        return;
+      } catch (retryErr) {
+        log.warn("response plain-text retry failed", { error: String(retryErr) });
+        // Fall through to handleApiError for the retry error.
+        await this.handleApiError(retryErr, "response", () => {
+          this.responseMessageId = undefined;
+          this.lastRenderedResponseText = "";
+          this.responseIsPlainText = false;
+        });
+        return;
+      }
+    }
     await this.handleApiError(err, "response", () => {
       this.responseMessageId = undefined;
       this.lastRenderedResponseText = "";
+      this.responseIsPlainText = false;
     });
   }
 

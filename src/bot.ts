@@ -40,8 +40,8 @@ function intakeMessageFromCtx(ctx: Context): TelegramIntakeMessage {
     locator: locatorFromCtx(ctx),
     isSupergroup: ctx.chat?.type === "supergroup",
     threadId: ctx.message?.message_thread_id,
-    reply: async (text) => {
-      await ctx.reply(text);
+    reply: async (text, opts) => {
+      await ctx.reply(text, opts as Record<string, unknown> | undefined);
     },
     prepare: (content: PromptContent): PromptContent => {
       if (typeof content === "string") return prepareUserContent(ctx, content);
@@ -60,8 +60,8 @@ export function replyNoActiveSession(ctx: Context, locator: ChatLocator, kind: s
     locator,
     isSupergroup: ctx.chat?.type === "supergroup",
     threadId: ctx.message?.message_thread_id,
-    reply: async (text) => {
-      await ctx.reply(text);
+    reply: async (text, opts) => {
+      await ctx.reply(text, opts as Record<string, unknown> | undefined);
     },
     prepare: (content) => content,
   }, locator, kind);

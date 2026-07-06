@@ -33,6 +33,7 @@ import { pingHandler } from "./ping.ts";
 import { buildStartHandler } from "./start.ts";
 import { buildScheduleDeps, executeSchedule } from "./schedule.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
+import type { SystemTag } from "../tg/format.ts";
 
 // ---------------------------------------------------------------------------
 // Shared dispatch types (owned by the registry; re-exported by dispatch.ts)
@@ -44,7 +45,7 @@ export type SideEffect =
   | { kind: "queue-prompt"; session: SessionState; text: string };
 
 export type DispatchResult =
-  | { kind: "replied"; reply: string; sideEffects: SideEffect[] }
+  | { kind: "replied"; reply: string; tag?: SystemTag; sideEffects: SideEffect[] }
   | { kind: "handled"; sideEffects: SideEffect[] }
   | { kind: "fallthrough" };
 
@@ -128,8 +129,8 @@ export interface CommandDef {
 // Helpers shared by handlers
 // ---------------------------------------------------------------------------
 
-function replied(reply: string, sideEffects: SideEffect[] = []): DispatchResult {
-  return { kind: "replied", reply, sideEffects };
+function replied(reply: string, sideEffects: SideEffect[] = [], tag?: SystemTag): DispatchResult {
+  return { kind: "replied", reply, sideEffects, tag };
 }
 
 function errorMessage(err: unknown): string {
@@ -156,7 +157,7 @@ const cancelHandler: CommandHandler = async ({ deps, session, existingRunner }) 
     hasSession: session !== null,
     cascade,
     cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
-  }));
+  }), [], cascade.attemptedMain || cascade.attemptedSubagents > 0 ? "ok" : "info");
 };
 
 const newHandler: CommandHandler = async ({ deps, locator, isSupergroup, session }) => {
@@ -169,10 +170,10 @@ const newHandler: CommandHandler = async ({ deps, locator, isSupergroup, session
     });
     if (priorSession) sideEffects.push({ kind: "runner-disposed", sessionId: priorSession.id });
     sideEffects.push({ kind: "runner-created", session: result.session, locator });
-    return replied(result.reply, sideEffects);
+    return replied(result.reply, sideEffects, "ok");
   } catch (err) {
     log.error("new session creation failed", { error: String(err), sessionId: priorSession?.id });
-    return replied("Failed to reset session. Please try again.");
+    return replied("Failed to reset session. Please try again.", [], "error");
   }
 };
 
@@ -188,10 +189,11 @@ const archiveHandler: CommandHandler = async ({ deps, session }) => {
         sideEffects.push({ kind: "runner-disposed", sessionId: session!.id });
       },
     });
-    return replied(result.reply, sideEffects);
+    const tag: SystemTag = result.kind === "archived" ? "ok" : "info";
+    return replied(result.reply, sideEffects, tag);
   } catch (err) {
     log.error("archive failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to archive session. Please try again.");
+    return replied("Failed to archive session. Please try again.", [], "error");
   }
 };
 
@@ -208,10 +210,13 @@ const projectHandler: CommandHandler = async ({ deps, locator, session, rawText 
         sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
       },
     });
-    return replied(result.reply, sideEffects);
+    const tag: SystemTag = result.kind === "set" || result.kind === "cleared" ? "ok"
+      : result.kind === "bad-path" ? "warn"
+      : "info";
+    return replied(result.reply, sideEffects, tag);
   } catch (err) {
     log.error("project failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to set project directory. Please try again.");
+    return replied("Failed to set project directory. Please try again.", [], "error");
   }
 };
 
@@ -241,10 +246,13 @@ const modelHandler: CommandHandler = async ({ deps, session, existingRunner, raw
       const targetName = result.kind === "set" ? result.modelName : cfg.modelName;
       await existingRunner.setModel(targetName);
     }
-    return replied(result.reply, sideEffects);
+    const tag: SystemTag = result.kind === "set" || result.kind === "cleared" ? "ok"
+      : result.kind === "no-favorites" || result.kind === "bad-index" || result.kind === "bad-model" ? "warn"
+      : "info";
+    return replied(result.reply, sideEffects, tag);
   } catch (err) {
     log.error("model failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to switch model. Please try again.");
+    return replied("Failed to switch model. Please try again.", [], "error");
   }
 };
 
@@ -266,16 +274,19 @@ const thinkHandler: CommandHandler = async ({ deps, session, existingRunner, raw
         try { existingRunner?.setThinkingLevel(level); } catch { /* best-effort */ }
       },
     });
-    return replied(result.reply);
+    const thinkTag: SystemTag = result.kind === "set" || result.kind === "cleared" ? "ok"
+      : result.kind === "bad-level" ? "warn"
+      : "info";
+    return replied(result.reply, [], thinkTag);
   } catch (err) {
     log.error("think failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to set thinking level. Please try again.");
+    return replied("Failed to set thinking level. Please try again.", [], "error");
   }
 };
 
 const debugHandler: CommandHandler = async ({ deps, locator, session, existingRunner }) => {
   const { manager, cfg, subagentRunner } = deps;
-  if (!session) return replied("No active session.");
+  if (!session) return replied("No active session.", [], "info");
   const diag = generateDiagnostics({
     session,
     runner: existingRunner,
@@ -284,16 +295,19 @@ const debugHandler: CommandHandler = async ({ deps, locator, session, existingRu
     modelName: cfg.modelName,
     projectDir: manager.getProjectDir(locator),
   });
-  return replied(diag);
+  return replied(diag, [], "info");
 };
 
 const compactHandler: CommandHandler = async ({ session, existingRunner, rawText }) => {
   try {
     const result = await executeCompact({ hasSession: session !== null, rawText, runner: existingRunner });
-    return replied(result.reply);
+    const tag: SystemTag = result.kind === "compacted" ? "ok"
+      : result.kind === "failed" ? "error"
+      : "info";
+    return replied(result.reply, [], tag);
   } catch (err) {
     log.error("compact failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to compact session. Please try again.");
+    return replied("Failed to compact session. Please try again.", [], "error");
   }
 };
 
@@ -309,10 +323,11 @@ const nameHandler: CommandHandler = async ({ deps, session, rawText }) => {
         manager.setTitle(session.id, title);
       },
     });
-    return replied(result.reply);
+    const tag: SystemTag = result.kind === "renamed" ? "ok" : "info";
+    return replied(result.reply, [], tag);
   } catch (err) {
     log.error("name failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to name session. Please try again.");
+    return replied("Failed to name session. Please try again.", [], "error");
   }
 };
 
@@ -329,50 +344,53 @@ const resumeHandler: CommandHandler = async ({ deps, locator, isSupergroup, sess
       if (session) sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
       sideEffects.push({ kind: "runner-created", session: result.session, locator });
     }
-    return replied(result.reply, sideEffects);
+    const tag: SystemTag = result.kind === "resumed" ? "ok"
+      : result.kind === "not-found" || result.kind === "ambiguous" ? "warn"
+      : "info";
+    return replied(result.reply, sideEffects, tag);
   } catch (err) {
     log.error("resume failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to resume session. Please try again.");
+    return replied("Failed to resume session. Please try again.", [], "error");
   }
 };
 
 const subagentsHandler: CommandHandler = async ({ deps }) => {
-  return replied(formatSubagentsList(deps.subagentRunner.list()));
+  return replied(formatSubagentsList(deps.subagentRunner.list()), [], "info");
 };
 
 const cancelSubagentHandler: CommandHandler = async ({ deps, rawText }) => {
   const id = parseSubagentId(rawText);
-  if (id === null) return replied(CANCEL_SUBAGENT_USAGE_REPLY);
+  if (id === null) return replied(CANCEL_SUBAGENT_USAGE_REPLY, [], "info");
   try {
     await deps.subagentRunner.cancel(id);
-    return replied(`Cancelled subagent \`${id}\`.`);
+    return replied(`Cancelled subagent \`${id}\`.`, [], "ok");
   } catch (err) {
     const message = errorMessage(err);
     log.error("cancel_subagent failed", { id, error: message });
-    return replied(`Failed to cancel subagent \`${id}\`: ${message}`);
+    return replied(`Failed to cancel subagent \`${id}\`: ${message}`, [], "error");
   }
 };
 
 const reviveHandler: CommandHandler = async ({ deps, rawText }) => {
   const args = parseReviveSubagentArgs(rawText);
-  if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY);
+  if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY, [], "info");
   try {
     const result = await deps.subagentRunner.revive(args.id, args.prompt);
-    return replied(result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`);
+    return replied(result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`, [], "ok");
   } catch (err) {
     const message = errorMessage(err);
     log.error("revive failed", { id: args.id, error: message });
-    return replied(`Failed to revive subagent \`${args.id}\`: ${message}`);
+    return replied(`Failed to revive subagent \`${args.id}\`: ${message}`, [], "error");
   }
 };
 
-const helpHandler: CommandHandler = async () => replied(helpReply());
+const helpHandler: CommandHandler = async () => replied(helpReply(), [], "info");
 
 const voiceHandler: CommandHandler = async ({ deps, session, locator, bot }) => {
-  if (!session) return replied("No active session. Use /new to start one.");
+  if (!session) return replied("No active session. Use /new to start one.", [], "info");
   if (!bot) {
     log.error("voice dispatch bot missing");
-    return replied("Voice generation failed: internal error");
+    return replied("Voice generation failed: internal error", [], "error");
   }
   try {
     const voiceResult = await executeVoice({
@@ -384,37 +402,39 @@ const voiceHandler: CommandHandler = async ({ deps, session, locator, bot }) => 
     });
     switch (voiceResult.kind) {
       case "no-messages":
-        return replied("No messages to voice yet.");
+        return replied("No messages to voice yet.", [], "info");
       case "tts-failed":
         log.warn("voice failed", { error: voiceResult.error, sessionId: session.id });
-        return replied(`Voice generation failed: ${voiceResult.error}`);
+        return replied(`Voice generation failed: ${voiceResult.error}`, [], "error");
       case "sent":
         return { kind: "handled", sideEffects: [] };
     }
   } catch (err) {
     log.error("voice failed", { error: String(err), sessionId: session.id });
-    return replied(`Voice generation failed: ${errorMessage(err)}`);
+    return replied(`Voice generation failed: ${errorMessage(err)}`, [], "error");
   }
 };
 
 const queueHandler: CommandHandler = async ({ session, existingRunner, rawText }) => {
-  if (!session) return replied("No active session.");
+  if (!session) return replied("No active session.", [], "info");
   const arg = parseCommandArg(rawText);
-  if (arg.length === 0) return replied("Usage: /queue <text>");
+  if (arg.length === 0) return replied("Usage: /queue <text>", [], "info");
   const sideEffects: SideEffect[] = [{ kind: "queue-prompt", session, text: arg }];
   const ack = existingRunner?.isStreaming ? "Queued. Will run after the current turn." : "Running.";
-  return replied(ack, sideEffects);
+  const tag: SystemTag = existingRunner?.isStreaming ? "queued" : "ok";
+  return replied(ack, sideEffects, tag);
 };
 
 const scheduleHandler: CommandHandler = async ({ deps, session, locator, rawText }) => {
   // `/schedule` is instant-timing: it only mutates the schedule store and does
   // not touch the in-flight runner, so it never defers behind a streaming turn.
   if (!deps.scheduleStore) {
-    return replied("Scheduling is not available.");
+    return replied("Scheduling is not available.", [], "warn");
   }
-  if (!session) return replied("No active session. Use /new to start one.");
+  if (!session) return replied("No active session. Use /new to start one.", [], "info");
   const depsForSchedule = buildScheduleDeps(deps.scheduleStore, session, locator, Date.now());
-  return replied(executeSchedule(depsForSchedule, rawText));
+  const result = executeSchedule(depsForSchedule, rawText);
+  return replied(result.reply, [], result.tag);
 };
 
 // ---------------------------------------------------------------------------

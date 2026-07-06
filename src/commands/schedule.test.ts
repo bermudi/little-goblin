@@ -134,20 +134,22 @@ describe("parseScheduleArgs", () => {
 describe("executeSchedule — active session requirement", () => {
   it("replies with no-active-session when there is no session", () => {
     const deps = makeFakeDeps(null);
-    expect(executeSchedule(deps, "/schedule list")).toBe(NO_ACTIVE_SESSION_REPLY);
-    expect(executeSchedule(deps, "/schedule every 1h hello")).toBe(NO_ACTIVE_SESSION_REPLY);
+    expect(executeSchedule(deps, "/schedule list").reply).toBe(NO_ACTIVE_SESSION_REPLY);
+    expect(executeSchedule(deps, "/schedule list").tag).toBe("info");
+    expect(executeSchedule(deps, "/schedule every 1h hello").reply).toBe(NO_ACTIVE_SESSION_REPLY);
   });
 
   it("returns usage when no subcommand is given", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule")).toBe(SCHEDULE_USAGE_REPLY);
+    expect(executeSchedule(deps, "/schedule").reply).toBe(SCHEDULE_USAGE_REPLY);
+    expect(executeSchedule(deps, "/schedule").tag).toBe("info");
   });
 });
 
 describe("executeSchedule — list", () => {
   it("reports no schedules when empty", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule list")).toBe("No schedules for this session.");
+    expect(executeSchedule(deps, "/schedule list").reply).toBe("No schedules for this session.");
   });
 
   it("lists schedules with id, state, recurrence, next run, and preview", () => {
@@ -177,7 +179,7 @@ describe("executeSchedule — list", () => {
         createdAt: "2026-07-04T12:00:00Z",
       },
     ];
-    const reply = executeSchedule(deps, "/schedule list");
+    const reply = executeSchedule(deps, "/schedule list").reply;
     expect(reply).toContain("abc123");
     expect(reply).toContain("[enabled]");
     expect(reply).toContain("every 1h");
@@ -204,7 +206,7 @@ describe("executeSchedule — list", () => {
         createdAt: "2026-07-04T12:00:00Z",
       },
     ];
-    const reply = executeSchedule(deps, "/schedule list");
+    const reply = executeSchedule(deps, "/schedule list").reply;
     expect(reply).toContain("[heartbeat]");
     expect(reply).toContain("heartbeat 30m");
   });
@@ -213,32 +215,35 @@ describe("executeSchedule — list", () => {
 describe("executeSchedule — at (one-shot absolute)", () => {
   it("creates an enabled one-shot and replies with id and run time", () => {
     const deps = makeFakeDeps();
-    const reply = executeSchedule(deps, `/schedule at ${FUTURE_ISO} check the backup status`);
+    const result = executeSchedule(deps, `/schedule at ${FUTURE_ISO} check the backup status`);
     expect(deps.created).toHaveLength(1);
     expect(deps.created[0]!.kind).toBe("once");
     expect(deps.created[0]!.prompt).toBe("check the backup status");
     expect(deps.created[0]!.nextRunAt).toBe(new Date(Date.parse(FUTURE_ISO)).toISOString());
-    expect(reply).toContain("newid1");
-    expect(reply).toContain("check the backup status");
+    expect(result.reply).toContain("newid1");
+    expect(result.reply).toContain("check the backup status");
+    expect(result.tag).toBe("ok");
   });
 
   it("rejects a past timestamp", () => {
     const deps = makeFakeDeps();
-    const reply = executeSchedule(deps, "/schedule at 2000-01-01T00:00:00Z check backups");
-    expect(reply).toBe("That time is in the past.");
+    const result = executeSchedule(deps, "/schedule at 2000-01-01T00:00:00Z check backups");
+    expect(result.reply).toBe("That time is in the past.");
+    expect(result.tag).toBe("warn");
     expect(deps.created).toHaveLength(0);
   });
 
   it("rejects an invalid ISO timestamp with usage", () => {
     const deps = makeFakeDeps();
-    const reply = executeSchedule(deps, "/schedule at not-a-timestamp check backups");
-    expect(reply).toBe(SCHEDULE_USAGE_REPLY);
+    const result = executeSchedule(deps, "/schedule at not-a-timestamp check backups");
+    expect(result.reply).toBe(SCHEDULE_USAGE_REPLY);
+    expect(result.tag).toBe("info");
     expect(deps.created).toHaveLength(0);
   });
 
   it("rejects a missing prompt", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, `/schedule at ${FUTURE_ISO}`)).toBe(SCHEDULE_USAGE_REPLY);
+    expect(executeSchedule(deps, `/schedule at ${FUTURE_ISO}`).reply).toBe(SCHEDULE_USAGE_REPLY);
     expect(deps.created).toHaveLength(0);
   });
 });
@@ -246,17 +251,18 @@ describe("executeSchedule — at (one-shot absolute)", () => {
 describe("executeSchedule — in (one-shot relative)", () => {
   it("creates a one-shot due ~30m from now", () => {
     const deps = makeFakeDeps();
-    const reply = executeSchedule(deps, "/schedule in 30m stretch your legs");
+    const result = executeSchedule(deps, "/schedule in 30m stretch your legs");
     expect(deps.created).toHaveLength(1);
     expect(deps.created[0]!.kind).toBe("once");
     expect(deps.created[0]!.nextRunAt).toBe(new Date(NOW + 30 * 60_000).toISOString());
-    expect(reply).toContain("in 30m");
-    expect(reply).toContain("stretch your legs");
+    expect(result.reply).toContain("in 30m");
+    expect(result.reply).toContain("stretch your legs");
+    expect(result.tag).toBe("ok");
   });
 
   it("rejects an invalid relative duration", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule in soon stretch your legs")).toBe(SCHEDULE_USAGE_REPLY);
+    expect(executeSchedule(deps, "/schedule in soon stretch your legs").reply).toBe(SCHEDULE_USAGE_REPLY);
     expect(deps.created).toHaveLength(0);
   });
 });
@@ -264,16 +270,17 @@ describe("executeSchedule — in (one-shot relative)", () => {
 describe("executeSchedule — every (recurring)", () => {
   it("creates a recurring schedule with the interval", () => {
     const deps = makeFakeDeps();
-    const reply = executeSchedule(deps, "/schedule every 2h check the backup status");
+    const result = executeSchedule(deps, "/schedule every 2h check the backup status");
     expect(deps.created).toHaveLength(1);
     expect(deps.created[0]!.kind).toBe("recurring");
     expect(deps.created[0]!.intervalMs).toBe(2 * 3_600_000);
-    expect(reply).toContain("every 2h");
+    expect(result.reply).toContain("every 2h");
+    expect(result.tag).toBe("ok");
   });
 
   it("rejects an invalid duration", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule every soon check backups")).toBe(SCHEDULE_USAGE_REPLY);
+    expect(executeSchedule(deps, "/schedule every soon check backups").reply).toBe(SCHEDULE_USAGE_REPLY);
     expect(deps.created).toHaveLength(0);
   });
 });
@@ -281,58 +288,74 @@ describe("executeSchedule — every (recurring)", () => {
 describe("executeSchedule — remove / pause / resume", () => {
   it("remove confirms when found", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule remove abc123")).toBe("Removed schedule `abc123`.");
+    const result = executeSchedule(deps, "/schedule remove abc123");
+    expect(result.reply).toBe("Removed schedule `abc123`.");
+    expect(result.tag).toBe("ok");
     expect(deps.removed).toEqual(["abc123"]);
   });
 
   it("remove reports no match when the store returns false", () => {
     const deps = makeFakeDeps();
     deps.remove = () => false;
-    expect(executeSchedule(deps, "/schedule remove nope99")).toBe("No matching schedule `nope99`.");
+    const result = executeSchedule(deps, "/schedule remove nope99");
+    expect(result.reply).toBe("No matching schedule `nope99`.");
+    expect(result.tag).toBe("warn");
   });
 
   it("pause reports no match when store returns null (missing or foreign-owned)", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule pause nope99")).toBe("No matching schedule `nope99`.");
+    const result = executeSchedule(deps, "/schedule pause nope99");
+    expect(result.reply).toBe("No matching schedule `nope99`.");
+    expect(result.tag).toBe("warn");
   });
 
   it("resume reports no match when store returns null", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule resume nope99")).toBe("No matching schedule `nope99`.");
+    const result = executeSchedule(deps, "/schedule resume nope99");
+    expect(result.reply).toBe("No matching schedule `nope99`.");
+    expect(result.tag).toBe("warn");
   });
 });
 
 describe("executeSchedule — heartbeat", () => {
   it("on without duration enables heartbeat with default 30m", () => {
     const deps = makeFakeDeps();
-    const reply = executeSchedule(deps, "/schedule heartbeat on");
+    const result = executeSchedule(deps, "/schedule heartbeat on");
     expect(deps.heartbeatCalls).toEqual([{ enabled: true, intervalMs: undefined }]);
-    expect(reply).toContain("every 30m");
+    expect(result.reply).toContain("every 30m");
+    expect(result.tag).toBe("ok");
   });
 
   it("on with a custom interval applies it", () => {
     const deps = makeFakeDeps();
-    const reply = executeSchedule(deps, "/schedule heartbeat on 2h");
+    const result = executeSchedule(deps, "/schedule heartbeat on 2h");
     expect(deps.heartbeatCalls).toEqual([{ enabled: true, intervalMs: 7_200_000 }]);
-    expect(reply).toContain("every 2h");
+    expect(result.reply).toContain("every 2h");
+    expect(result.tag).toBe("ok");
   });
 
   it("on with an invalid interval returns usage", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule heartbeat on soon")).toBe(HEARTBEAT_USAGE_REPLY);
+    const result = executeSchedule(deps, "/schedule heartbeat on soon");
+    expect(result.reply).toBe(HEARTBEAT_USAGE_REPLY);
+    expect(result.tag).toBe("info");
     expect(deps.heartbeatCalls).toHaveLength(0);
   });
 
   it("off disables heartbeat", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule heartbeat off")).toBe("Heartbeat disabled.");
+    const result = executeSchedule(deps, "/schedule heartbeat off");
+    expect(result.reply).toBe("Heartbeat disabled.");
+    expect(result.tag).toBe("ok");
     expect(deps.heartbeatCalls).toEqual([{ enabled: false, intervalMs: undefined }]);
   });
 
   it("status reports disabled when no heartbeat exists", () => {
     const deps = makeFakeDeps();
     deps.heartbeatReturn = null;
-    expect(executeSchedule(deps, "/schedule heartbeat status")).toBe("Heartbeat is disabled.");
+    const result = executeSchedule(deps, "/schedule heartbeat status");
+    expect(result.reply).toBe("Heartbeat is disabled.");
+    expect(result.tag).toBe("info");
   });
 
   it("status reports enabled with interval and next run", () => {
@@ -349,27 +372,34 @@ describe("executeSchedule — heartbeat", () => {
       intervalMs: 1800000,
       createdAt: "2026-07-04T12:00:00Z",
     };
-    const reply = executeSchedule(deps, "/schedule heartbeat status");
-    expect(reply).toContain("Heartbeat is enabled");
-    expect(reply).toContain("every 30m");
+    const result = executeSchedule(deps, "/schedule heartbeat status");
+    expect(result.reply).toContain("Heartbeat is enabled");
+    expect(result.reply).toContain("every 30m");
+    expect(result.tag).toBe("info");
   });
 
   it("bare /schedule heartbeat shows status", () => {
     const deps = makeFakeDeps();
     deps.heartbeatReturn = null;
-    expect(executeSchedule(deps, "/schedule heartbeat")).toBe("Heartbeat is disabled.");
+    const result = executeSchedule(deps, "/schedule heartbeat");
+    expect(result.reply).toBe("Heartbeat is disabled.");
+    expect(result.tag).toBe("info");
   });
 
   it("unknown heartbeat action returns usage", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule heartbeat bogus")).toBe(HEARTBEAT_USAGE_REPLY);
+    const result = executeSchedule(deps, "/schedule heartbeat bogus");
+    expect(result.reply).toBe(HEARTBEAT_USAGE_REPLY);
+    expect(result.tag).toBe("info");
   });
 });
 
 describe("executeSchedule — unknown subcommand", () => {
   it("returns full usage for an unknown sub", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule frobnicate")).toBe(SCHEDULE_USAGE_REPLY);
+    const result = executeSchedule(deps, "/schedule frobnicate");
+    expect(result.reply).toBe(SCHEDULE_USAGE_REPLY);
+    expect(result.tag).toBe("info");
   });
 });
 
@@ -394,10 +424,10 @@ describe("buildScheduleDeps + ScheduleStore (integration)", () => {
   it("creates a one-shot via the real store and lists it", () => {
     const session = makeSession();
     const deps = buildScheduleDeps(store, session, LOC, NOW);
-    const reply = executeSchedule(deps, `/schedule at ${FUTURE_ISO} hello`);
-    expect(reply).toContain("Scheduled");
+    const result = executeSchedule(deps, `/schedule at ${FUTURE_ISO} hello`);
+    expect(result.reply).toContain("Scheduled");
     const list = executeSchedule(deps, "/schedule list");
-    expect(list).toContain("hello");
+    expect(list.reply).toContain("hello");
   });
 
   it("ownership: remove returns no-match for a foreign-owned schedule", () => {
@@ -412,7 +442,7 @@ describe("buildScheduleDeps + ScheduleStore (integration)", () => {
     const sessionA = makeSession("sess-a");
     const deps = buildScheduleDeps(store, sessionA, LOC, NOW);
     const id = store.listBySession("sess-b")[0]!.id;
-    expect(executeSchedule(deps, `/schedule remove ${id}`)).toBe(`No matching schedule \`${id}\`.`);
+    expect(executeSchedule(deps, `/schedule remove ${id}`).reply).toBe(`No matching schedule \`${id}\`.`);
     // The foreign schedule is untouched.
     expect(store.listBySession("sess-b")).toHaveLength(1);
   });
@@ -428,7 +458,7 @@ describe("buildScheduleDeps + ScheduleStore (integration)", () => {
     const sessionA = makeSession("sess-a");
     const deps = buildScheduleDeps(store, sessionA, LOC, NOW);
     const id = store.listBySession("sess-b")[0]!.id;
-    expect(executeSchedule(deps, `/schedule pause ${id}`)).toBe(`No matching schedule \`${id}\`.`);
+    expect(executeSchedule(deps, `/schedule pause ${id}`).reply).toBe(`No matching schedule \`${id}\`.`);
   });
 
   it("ownership: resume returns no-match for a foreign-owned schedule", () => {
@@ -442,7 +472,7 @@ describe("buildScheduleDeps + ScheduleStore (integration)", () => {
     const sessionA = makeSession("sess-a");
     const deps = buildScheduleDeps(store, sessionA, LOC, NOW);
     const id = store.listBySession("sess-b")[0]!.id;
-    expect(executeSchedule(deps, `/schedule resume ${id}`)).toBe(`No matching schedule \`${id}\`.`);
+    expect(executeSchedule(deps, `/schedule resume ${id}`).reply).toBe(`No matching schedule \`${id}\`.`);
     // The foreign schedule is untouched.
     expect(store.listBySession("sess-b")).toHaveLength(1);
   });

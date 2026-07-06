@@ -131,22 +131,23 @@ describe("sendSystemReply", () => {
     expect(m.calls[0]!.opts).toEqual({ parse_mode: "MarkdownV2" });
   });
 
-  it("falls back to plain text on a 400 parse error", async () => {
+  it("falls back to plain text on a 400 parse error, keeping disable_notification", async () => {
     const m = makeMessage();
     let first = true;
-    m.reply.mockImplementation((text: string, _opts?: ReplyOpts) => {
+    m.reply.mockImplementation((text: string, opts?: ReplyOpts) => {
       if (first) {
         first = false;
         const err = { error_code: 400, description: "Bad Request: can't parse entities" };
         return Promise.reject(err);
       }
-      m.calls.push({ text, opts: undefined });
+      m.calls.push({ text, opts });
       return Promise.resolve();
     });
     await sendSystemReply({ reply: m.reply }, "Failed to *save*.", "error");
     expect(m.calls).toHaveLength(1);
     expect(m.calls[0]!.text).toBe("[error] Failed to save.");
-    expect(m.calls[0]!.opts).toBeUndefined();
+    // Plain-text retry drops parse_mode but keeps disable_notification (silent).
+    expect(m.calls[0]!.opts).toEqual({ disable_notification: true });
   });
 
   it("swallows a failed plain-text retry", async () => {

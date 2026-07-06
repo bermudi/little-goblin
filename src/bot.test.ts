@@ -263,7 +263,10 @@ describe("replyNoActiveSession", () => {
     const reply = mock(async () => ({}));
     const ctx = { reply } as unknown as Context;
     replyNoActiveSession(ctx, { chatId: 1 }, "text");
-    expect(reply).toHaveBeenCalledWith("No active session. Use /new to start one.");
+    expect(reply).toHaveBeenCalledWith(
+      "`[info]` No active session\\. Use /new to start one\\.",
+      { disable_notification: true, parse_mode: "MarkdownV2" },
+    );
   });
 
   it("does not reply in topics without a session", () => {
@@ -312,7 +315,7 @@ describe("buildBot integration", () => {
   it("unknown DM command without active session prompts for /new", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/foo"));
-    expect(built.api.sent).toEqual(["No active session. Use /new to start one."]);
+    expect(built.api.sent).toEqual(["`[info]` No active session\\. Use /new to start one\\."]);
   });
 
   it("text messages release the update handler while the runner is busy", async () => {
@@ -391,7 +394,7 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate("/queue do this now"));
     await waitFor(() => runnerInstances.at(-1)!.prompt.mock.calls.length === 1);
 
-    expect(built.api.sent.at(-1)).toBe("Running.");
+    expect(built.api.sent.at(-1)).toBe("`[ok]` Running\\.");
     const runner = runnerInstances.at(-1)!;
     expect(runner.abort).not.toHaveBeenCalled();
     const content = runner.prompt.mock.calls[0]![0] as string;
@@ -405,7 +408,7 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate("/queue"));
     await flushMicrotasks();
 
-    expect(built.api.sent.at(-1)).toBe("Usage: /queue <text>");
+    expect(built.api.sent.at(-1)).toBe("`[info]` Usage: /queue <text\\>");
     expect(runnerInstances.at(-1)!.prompt).not.toHaveBeenCalled();
   });
 
@@ -414,7 +417,7 @@ describe("buildBot integration", () => {
 
     await built.bot.handleUpdate(textUpdate("/queue do something"));
 
-    expect(built.api.sent.at(-1)).toBe("No active session.");
+    expect(built.api.sent.at(-1)).toBe("`[info]` No active session\\.");
     expect(runnerInstances).toHaveLength(0);
   });
 
@@ -445,7 +448,7 @@ describe("buildBot integration", () => {
 
     expect(built.api.api.getFile).toHaveBeenCalledWith("doc");
     expect(existsSync(join(built.cfg.goblinHome, "notes.txt"))).toBe(true);
-    expect(built.api.sent.at(-1)).toBe("Saved notes.txt.");
+    expect(built.api.sent.at(-1)).toBe("`[ok]` Saved notes\\.txt\\.");
     const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
     expect(prompt).toBe("[From: Daniel (@bermudi)]\nplease inspect\n\n[File `notes.txt` saved to project directory.]");
   });
@@ -469,9 +472,9 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
 
     await built.bot.handleUpdate(documentUpdate(".") as never);
-    await waitFor(() => built.api.sent.at(-1) === "Rejected: unsafe filename.");
+    await waitFor(() => built.api.sent.at(-1)!.includes("Rejected: unsafe filename"));
 
-    expect(built.api.sent.at(-1)).toBe("Rejected: unsafe filename.");
+    expect(built.api.sent.at(-1)).toBe("`[warn]` Rejected: unsafe filename\\.");
   });
 
   it("voice messages transcribe, save the original file, and prompt the runner", async () => {
@@ -497,9 +500,12 @@ describe("buildBot integration", () => {
 
     expect(built.api.api.getFile).toHaveBeenCalledWith("voice");
     const saved = built.api.sent.at(-1)!;
-    expect(saved.startsWith("Saved voice-")).toBe(true);
-    expect(saved.endsWith(".oga.")).toBe(true);
-    const safeName = saved.slice("Saved ".length, -1);
+    // The reply is MarkdownV2-escaped: `[ok]` Saved voice\-NNN\.oga\.
+    expect(saved.includes("Saved voice\\-")).toBe(true);
+    expect(saved.endsWith("\\.oga\\.")).toBe(true);
+    // Extract the voice filename from the formatted reply: `[ok]` Saved voice\-NNN\.oga\.
+    const match = saved.match(/Saved (voice\\-\d+\\\.oga)\\\./);
+    const safeName = match![1]!.replace(/\\/g, "");
     expect(existsSync(join(built.cfg.goblinHome, safeName))).toBe(true);
     const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
     expect(prompt).toContain("[Voice message transcript]\nthe transcript text");
@@ -517,7 +523,7 @@ describe("buildBot integration", () => {
 
     expect(built.api.api.getFile).toHaveBeenCalledWith("audio");
     expect(existsSync(join(built.cfg.goblinHome, "song.mp3"))).toBe(true);
-    expect(built.api.sent.at(-1)).toBe("Saved song.mp3.");
+    expect(built.api.sent.at(-1)).toBe("`[ok]` Saved song\\.mp3\\.");
     const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
     expect(prompt).toBe("[From: Daniel (@bermudi)]\nlisten\n\n[Audio file `song.mp3` saved to project directory.]");
   });

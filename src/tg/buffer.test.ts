@@ -7,6 +7,7 @@ import {
   BIG_OUTPUT_THRESHOLD,
   SUMMARY_PREFIX_LEN,
   findSafeSplit,
+  adjustForCodeSpan,
   shouldShowTool,
   VISIBILITY_TOOLS,
   VISIBILITY_LIMITS,
@@ -15,11 +16,13 @@ import {
 interface SendCall {
   chatId: number | string;
   text: string;
+  opts?: Record<string, unknown>;
 }
 interface EditCall {
   chatId: number | string;
   messageId: number;
   text: string;
+  opts?: Record<string, unknown>;
 }
 interface DocumentCall {
   chatId: number | string;
@@ -63,26 +66,27 @@ function makeBot(): MockBot {
   };
   const bot = {
     api: {
-      sendMessage: async (chatId: number | string, text: string) => {
+      sendMessage: async (chatId: number | string, text: string, opts?: Record<string, unknown>) => {
         if (state.failNext.send !== undefined) {
           const err = state.failNext.send;
           state.failNext.send = undefined;
           throw err;
         }
-        send.push({ chatId, text });
+        send.push({ chatId, text, opts });
         return { message_id: ++state.nextMessageId };
       },
       editMessageText: async (
         chatId: number | string,
         messageId: number,
         text: string,
+        opts?: Record<string, unknown>,
       ) => {
         if (state.failNext.edit !== undefined) {
           const err = state.failNext.edit;
           state.failNext.edit = undefined;
           throw err;
         }
-        edit.push({ chatId, messageId, text });
+        edit.push({ chatId, messageId, text, opts });
         return true;
       },
       sendDocument: async (chatId: number | string, document: InputFile) => {
@@ -460,7 +464,7 @@ describe("MessageBuffer", () => {
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(1);
-      expect(m.send[0]).toEqual({ chatId: 7, text: "🤔 thinking…" });
+      expect(m.send[0]).toEqual({ chatId: 7, text: "🤔 thinking…", opts: {} });
       expect(buffer._state().placeholderSent).toBe(true);
       expect(buffer._state().statusMessageId).toBe(101);
     });
@@ -761,7 +765,7 @@ describe("MessageBuffer", () => {
       buffer.onTextDelta("Hello");
       await tick();
       expect(m.send.length).toBe(1);
-      expect(m.send[0]).toEqual({ chatId: 99, text: "Hello" });
+      expect(m.send[0]).toEqual({ chatId: 99, text: "Hello", opts: { parse_mode: "MarkdownV2" } });
       expect(buffer._state().responseMessageId).toBe(101);
     });
 
@@ -785,6 +789,7 @@ describe("MessageBuffer", () => {
         chatId: 1,
         messageId: 101,
         text: "Hello, world!",
+        opts: { parse_mode: "MarkdownV2" },
       });
     });
 
@@ -2429,6 +2434,185 @@ describe("MessageBuffer", () => {
       expect(() => buffer.onTextDelta("hi")).not.toThrow();
       await tick();
       expect(buffer._state().chatActionHandle).toBeDefined();
+    });
+  });
+
+  describe("MarkdownV2 parse mode on response sends", () => {
+    it("sends response with parse_mode MarkdownV2", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+        responseThrottleMs: 0,
+        visibility: "none",
+      });
+      buffer.onTextDelta("hello");
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]!.opts).toEqual({ parse_mode: "MarkdownV2" });
+    });
+
+    it("edits response with parse_mode MarkdownV2", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+        responseThrottleMs: 0,
+        visibility: "none",
+      });
+      buffer.onTextDelta("hello");
+      await tick();
+      buffer.onTextDelta(" world");
+      await tick();
+      expect(m.edit.length).toBeGreaterThanOrEqual(1);
+      expect(m.edit[0]!.opts).toEqual({ parse_mode: "MarkdownV2" });
+    });
+
+    it("status-line sends remain plain text (no parse_mode)", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+        statusThrottleMs: 0,
+        responseThrottleMs: 0,
+        visibility: "standard",
+      });
+      buffer.onStatusUpdate("thinking");
+      await tick();
+      // The status sendMessage should NOT have parse_mode.
+      expect(m.send.length).toBeGreaterThanOrEqual(1);
+      const statusSend = m.send[0]!;
+      expect(statusSend.opts?.parse_mode).toBeUndefined();
+    });
+  });
+
+  describe("400 parse-error plain-text fallback", () => {
+    it("falls back to plain text on a 400 parse error and sets sticky flag", async () => {
+      const m = makeBot();
+      m.failNext.send = { error_code: 400, description: "Bad Request: can't parse entities" };
+      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+        responseThrottleMs: 0,
+        visibility: "none",
+      });
+      buffer.onTextDelta("*bold text*");
+      await tick();
+      await tick();
+      await tick();
+      // The retry send should have no parse_mode (plain text).
+      const retrySend = m.send.at(-1)!;
+      expect(retrySend.opts?.parse_mode).toBeUndefined();
+      expect(retrySend.text).toBe("bold text");
+    });
+
+    it("subsequent edits skip MarkdownV2 after sticky flag is set", async () => {
+      const m = makeBot();
+      m.failNext.send = { error_code: 400, description: "can't parse markdown" };
+      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+        responseThrottleMs: 0,
+        visibility: "none",
+      });
+      buffer.onTextDelta("*bold*");
+      await tick();
+      await tick();
+      await tick();
+      // First send failed with parse error (not pushed); retry was plain text.
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]!.opts?.parse_mode).toBeUndefined();
+      expect(m.send[0]!.text).toBe("bold");
+
+      // Next delta triggers an edit — should be plain text (no parse_mode)
+      // AND the text should be stripped (not raw markdown).
+      buffer.onTextDelta(" more");
+      await tick();
+      await tick();
+      expect(m.edit.length).toBeGreaterThanOrEqual(1);
+      expect(m.edit[0]!.opts?.parse_mode).toBeUndefined();
+      expect(m.edit[0]!.text).toBe("bold more");
+    });
+
+    it("resets sticky flag on tool boundary seal", async () => {
+      const m = makeBot();
+      m.failNext.send = { error_code: 400, description: "can't parse markdown" };
+      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+        responseThrottleMs: 0,
+        statusThrottleMs: 0,
+        visibility: "none",
+      });
+      buffer.onTextDelta("*bad*");
+      await tick();
+      await tick();
+      await tick();
+      // Plain-text retry happened (first send failed, retry succeeded).
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]!.opts?.parse_mode).toBeUndefined();
+
+      // Tool start seals the segment and resets the flag.
+      buffer.onToolStart("bash", {});
+      await tick();
+      await tick();
+      await tick();
+
+      // Next text delta should send with MarkdownV2 again.
+      buffer.onTextDelta("good");
+      await tick();
+      await tick();
+      const lastSend = m.send.at(-1)!;
+      expect(lastSend.opts).toEqual({ parse_mode: "MarkdownV2" });
+    });
+
+    it("rollover head is stripped when sticky flag is set", async () => {
+      const m = makeBot();
+      m.failNext.send = { error_code: 400, description: "can't parse markdown" };
+      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+        responseThrottleMs: 0,
+        visibility: "none",
+      });
+      // Send markdown that triggers the parse-error fallback.
+      buffer.onTextDelta("*bold*");
+      await tick();
+      await tick();
+      await tick();
+      expect(m.send[0]!.text).toBe("bold");
+      expect(m.send[0]!.opts?.parse_mode).toBeUndefined();
+
+      // Now accumulate enough text to trigger a rollover. The head (which
+      // finalizes the current plain-text message) must be stripped.
+      const filler = "x".repeat(MAX_MESSAGE_LEN + 10);
+      buffer.onTextDelta(filler);
+      await tick();
+      await tick();
+      await tick();
+
+      // The rollover edit (head) should be plain text with stripped markdown.
+      // The head contains "*bold*" + filler prefix → stripped to "bold" + filler.
+      const rolloverEdit = m.edit.at(-1) ?? m.send.at(-1)!;
+      expect(rolloverEdit.opts?.parse_mode).toBeUndefined();
+      expect(rolloverEdit.text.startsWith("bold")).toBe(true);
+      expect(rolloverEdit.text.includes("*")).toBe(false);
+    });
+  });
+
+  describe("adjustForCodeSpan", () => {
+    it("returns splitAt unchanged when backtick count is even", () => {
+      const text = "hello `code` world more text here";
+      expect(adjustForCodeSpan(text, 20)).toBe(20);
+    });
+
+    it("returns splitAt unchanged when there are no backticks", () => {
+      const text = "no backticks here at all";
+      expect(adjustForCodeSpan(text, 10)).toBe(10);
+    });
+
+    it("moves split backward when backtick count is odd", () => {
+      const text = "hello `code without close here and more";
+      // Backtick at index 6. splitAt=20 → odd count → move to 6.
+      expect(adjustForCodeSpan(text, 20)).toBe(6);
+    });
+
+    it("does not count escaped backticks", () => {
+      const text = "escaped \\` and `real";
+      // The \` at index 9 is escaped (preceded by \). The unescaped backtick
+      // is at index 15. splitAt=20 → odd count → move to 15.
+      expect(adjustForCodeSpan(text, 20)).toBe(15);
+    });
+
+    it("handles multiple code spans (even count)", () => {
+      const text = "a `b` c `d` e f g h i j k";
+      expect(adjustForCodeSpan(text, 15)).toBe(15);
     });
   });
 });

@@ -24,7 +24,8 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { memoryDir, type ActiveScope } from "../memory/mod.ts";
-import { createPiServices, type PiServices, workdirPath } from "../pi-host.ts";
+import { createPiServices, type PiServices } from "../pi-host.ts";
+import { workdirPath } from "../workspace/paths.ts";
 import {
   type ExecutionDeps,
   prefixStatusCallback,

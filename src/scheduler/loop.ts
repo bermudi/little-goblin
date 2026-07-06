@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { log } from "../log.ts";
-import { heartbeatMdPath } from "../pi-host.ts";
+import { heartbeatMdPath } from "../workspace/paths.ts";
 import type { ChatLocator, SessionManager, SessionState } from "../sessions/mod.ts";
 import type { TurnDispatcher } from "../tg/turn-dispatcher.ts";
 import type { ScheduledTurn } from "./types.ts";

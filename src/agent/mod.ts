@@ -22,10 +22,11 @@ import { appendTranscriptEntry, dispatchAgentEvent, extractAssistantText } from 
 import type { TurnCallbacks } from "./events.ts";
 export { appendAssistantTranscriptEntry } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
-import { workdirPath, createPiServices, piAgentDir, skillsPath, findMostRecentPiSession } from "../pi-host.ts";
+import { createPiServices, findMostRecentPiSession, piAgentDir } from "../pi-host.ts";
+import { skillsPath, workdirPath } from "../workspace/paths.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import { resolveModel, type ResolvedModel } from "./models.ts";
-import { buildGoblinSystemPrompt } from "./system-prompt.ts";
+import { type GoblinSystemPrompt, buildGoblinSystemPrompt } from "./system-prompt.ts";
 import {
   MemoryStore,
   createMemoryReadIndexTool,
@@ -112,6 +113,8 @@ export class AgentRunner {
   private _thinkingLevel: ThinkingLevel | undefined;
   private pendingProjectNotice: string | undefined;
   private resolvedModel: ResolvedModel | null = null;
+  /** The goblin system prompt value (text + provenance of loaded prompt files). */
+  private goblinSystemPrompt: GoblinSystemPrompt | null = null;
   /** Pi auth storage — retained so setModel() can register a new provider's key. */
   private authStorage: AuthStorage | null = null;
   /**
@@ -213,12 +216,16 @@ export class AgentRunner {
       );
     }
 
-    const systemPrompt = await buildGoblinSystemPrompt({ home, projectDir: this.projectDir });
+    const goblinSystemPrompt = await buildGoblinSystemPrompt({
+      home,
+      projectDir: this.projectDir,
+    });
+    this.goblinSystemPrompt = goblinSystemPrompt;
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir,
       settingsManager,
-      systemPrompt,
+      systemPrompt: goblinSystemPrompt.prompt,
       noContextFiles: true,
       additionalSkillPaths: [skillsPath(home)],
       ...(this.cfg.skillSources === "goblin-only" ? { noSkills: true } : {}),
@@ -489,15 +496,15 @@ export class AgentRunner {
   }
 
   /**
-   * Paths of context files (AGENTS.md, skills) loaded into the session.
+   * Paths of context files loaded into the session: goblin prompt files
+   * (SOUL.md, AGENTS.md, project AGENTS.md) and any pi-loaded skills.
    * Returns `null` when the session has not been initialized yet.
    */
   get contextFiles(): string[] | null {
     const s = this.session;
     if (!s) return null;
-    const agentsFiles = s.resourceLoader.getAgentsFiles().agentsFiles.map((f) => f.path);
     const skillPaths = s.resourceLoader.getSkills().skills.map((sk) => sk.filePath);
-    return [...agentsFiles, ...skillPaths];
+    return [...(this.goblinSystemPrompt?.sources ?? []), ...skillPaths];
   }
 
   /**

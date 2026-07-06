@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../../config.ts";
 import type { ActiveScope } from "../../memory/mod.ts";
-import { piAgentDir, workdirPath } from "../../pi-host.ts";
+import { piAgentDir } from "../../pi-host.ts";
+import { workdirPath } from "../../workspace/paths.ts";
 
 /** Default active scope for tests that don't need a specific topic/agent scope. */
 export const DEFAULT_SCOPE: ActiveScope = {

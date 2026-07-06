@@ -236,6 +236,24 @@ describe("gatherDiagnostics", () => {
     expect(d.skillsLoaded).toBeNull();
     expect(d.contextTokens).toBeNull();
   });
+
+  it("reports contextFiles from the runner when available", () => {
+    const runner = {
+      ...stubRunner({ tools: ["memory"], modelName: "m" }),
+      contextFiles: ["/home/user/.goblin/workspace/SOUL.md", "/home/user/project/AGENTS.md"],
+    };
+    const d = gatherDiagnostics({
+      session: makeSession("sess000006"),
+      runner: runner as unknown as AgentRunner,
+      subagentRunner: stubSubagentRunner(),
+      goblinHome: tmpDir,
+      modelName: "m",
+    });
+    expect(d.contextFiles).toEqual([
+      "/home/user/.goblin/workspace/SOUL.md",
+      "/home/user/project/AGENTS.md",
+    ]);
+  });
 });
 
 describe("generateDiagnostics", () => {

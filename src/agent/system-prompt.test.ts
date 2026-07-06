@@ -8,7 +8,7 @@ import {
   buildGoblinSystemPrompt,
   preflightGoblinPromptFiles,
 } from "./system-prompt.ts";
-import { agentsMdPath, soulMdPath } from "../pi-host.ts";
+import { agentsMdPath, soulMdPath } from "../workspace/paths.ts";
 
 describe("GOBLIN_PRODUCT_SHELL", () => {
   it("contains approved runtime mechanics without deployed identity fallback", () => {
@@ -88,7 +88,7 @@ describe("buildGoblinSystemPrompt", () => {
     writeFileSync(agentsMdPath(tmpDir), "deployment rules\n", "utf-8");
     writeFileSync(join(projectDir, "AGENTS.md"), "project rules\n", "utf-8");
 
-    const prompt = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
+    const { prompt, sources } = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
 
     expect(prompt).toContain("## Deployment Identity and Voice (SOUL.md)\n\nsoul identity");
     expect(prompt).toContain("## Deployment Operating Rules (AGENTS.md)\n\ndeployment rules");
@@ -97,6 +97,7 @@ describe("buildGoblinSystemPrompt", () => {
     expect(prompt.indexOf("soul identity")).toBeLessThan(prompt.indexOf("deployment rules"));
     expect(prompt.indexOf("deployment rules")).toBeLessThan(prompt.indexOf("## Runtime Mechanics"));
     expect(prompt.indexOf("## Runtime Mechanics")).toBeLessThan(prompt.indexOf("project rules"));
+    expect(sources).toEqual([soulMdPath(tmpDir), agentsMdPath(tmpDir), join(projectDir, "AGENTS.md")]);
   });
 
   it("throws the shared missing-SOUL configuration error when SOUL.md is missing", async () => {
@@ -108,12 +109,13 @@ describe("buildGoblinSystemPrompt", () => {
     mkdirSync(projectDir);
     writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
 
-    const prompt = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
+    const { prompt, sources } = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
 
     expect(prompt).toContain("soul identity");
     expect(prompt).toContain(GOBLIN_PRODUCT_SHELL);
     expect(prompt).not.toContain("Deployment Operating Rules");
     expect(prompt).not.toContain("Project Guidance");
+    expect(sources).toEqual([soulMdPath(tmpDir)]);
   });
 
   it("uses only the exact bound project AGENTS.md and excludes ancestor/global/compatibility files", async () => {
@@ -129,13 +131,14 @@ describe("buildGoblinSystemPrompt", () => {
     writeFileSync(join(projectDir, ".cursorrules"), "cursor rules\n", "utf-8");
     writeFileSync(join(projectDir, "AGENTS.md"), "exact project rules\n", "utf-8");
 
-    const prompt = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
+    const { prompt, sources } = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
 
     expect(prompt).toContain("exact project rules");
     expect(prompt).not.toContain("global rules");
     expect(prompt).not.toContain("ancestor rules");
     expect(prompt).not.toContain("compat rules");
     expect(prompt).not.toContain("cursor rules");
+    expect(sources).toEqual([soulMdPath(tmpDir), join(projectDir, "AGENTS.md")]);
   });
 
   it("propagates non-ENOENT read failures for required SOUL.md without wrapping in MissingSoulError", async () => {

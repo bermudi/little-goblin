@@ -17,7 +17,8 @@ import {
   type ResourceLoader,
   type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { piAgentDir, skillsPath } from "../pi-host.ts";
+import { piAgentDir } from "../pi-host.ts";
+import { skillsPath } from "../workspace/paths.ts";
 import { namedAgentAgentsMdPath, namedAgentDir, namedAgentSkillsDir } from "./paths.ts";
 import type { NamedAgentDefinition, SubagentRole } from "./types.ts";
 

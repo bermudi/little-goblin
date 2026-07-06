@@ -20,34 +20,32 @@ The `src/pi-host.ts` module SHALL export a `PiServices` type and a `createPiServ
 
 ### Requirement: Pi-host module exports pi filesystem path helpers
 
-The `src/pi-host.ts` module SHALL export path helper functions `workdirPath(home)`, `piAgentDir(home)`, and `agentsMdPath(home)` as the canonical source for pi-related filesystem paths.
+The `src/pi-host.ts` module SHALL export path helper functions `piAgentDir(home)` and `findMostRecentPiSession(piSessionDir)` as the canonical source for pi-related filesystem paths and session discovery.
 
 #### Scenario: Path helpers available
 
-- **WHEN** a consumer imports `{ workdirPath, piAgentDir, agentsMdPath }` from `pi-host.ts`
-- **THEN** `workdirPath(home)` SHALL resolve to `$GOBLIN_HOME/scratch/workdir/`
-- **AND** `piAgentDir(home)` SHALL resolve to `$GOBLIN_HOME/state/pi/`
-- **AND** `agentsMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/AGENTS.md`
+- **WHEN** a consumer imports `{ piAgentDir, findMostRecentPiSession }` from `pi-host.ts`
+- **THEN** `piAgentDir(home)` SHALL resolve to `$GOBLIN_HOME/state/pi/`
+- **AND** `findMostRecentPiSession(dir)` SHALL return the most recently modified `.jsonl` file in `dir`, or `null` when the directory is missing or empty
 
 ### Requirement: Pi-host module has no dependency on agent or subagent modules
 
-The `src/pi-host.ts` module MUST NOT import from `src/agent/` or `src/subagents/`. It SHALL depend only on `@mariozechner/pi-coding-agent` types and `node:path`.
+The `src/pi-host.ts` module MUST NOT import from `src/agent/` or `src/subagents/`. It SHALL depend only on `@earendil-works/pi-coding-agent` types and `node:fs` / `node:path`.
 
 #### Scenario: Import check
 
 - **WHEN** the TypeScript project is compiled
 - **THEN** `src/pi-host.ts` SHALL NOT have any import path starting with `../agent/` or `../subagents/`
 
-### Requirement: Pi-host exposes Goblin prompt file paths
+### Requirement: Workspace prompt file paths live in a dedicated module
 
-The `src/pi-host.ts` module SHALL expose canonical path helpers for Goblin-owned prompt files under `$GOBLIN_HOME/workspace/`, including `agentsMdPath(home)`, `soulMdPath(home)`, and `heartbeatMdPath(home)`.
+Goblin-owned workspace path helpers (`workdirPath`, `agentsMdPath`, `soulMdPath`, `heartbeatMdPath`, `skillsPath`) SHALL be exported from `src/workspace/paths.ts`, not from `src/pi-host.ts`. The `src/pi-host.ts` module SHALL NOT export workspace path helpers.
 
-#### Scenario: Prompt path helpers available
+#### Scenario: Workspace path helpers are not in pi-host
 
-- **WHEN** a consumer imports Goblin prompt path helpers from `src/pi-host.ts`
-- **THEN** `agentsMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/AGENTS.md`
-- **AND** `soulMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/SOUL.md`
-- **AND** `heartbeatMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/HEARTBEAT.md`
+- **WHEN** inspecting the exports of `src/pi-host.ts`
+- **THEN** it SHALL NOT export `workdirPath`, `agentsMdPath`, `soulMdPath`, `heartbeatMdPath`, or `skillsPath`
+- **AND** those helpers SHALL be importable from `src/workspace/paths.ts`
 
 ### Requirement: Prompt file reads fail loud except optional missing files
 

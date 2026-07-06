@@ -1,5 +1,5 @@
 /**
- * Single source of truth for pi infrastructure services and filesystem paths.
+ * Pi infrastructure services and pi-specific filesystem paths.
  *
  * Both `AgentRunner` and `SubagentRunner` import from here, eliminating the
  * cross-module import from `subagents/` into `agent/paths.ts`.
@@ -35,27 +35,12 @@ export function createPiServices(home: string): PiServices {
 }
 
 // ---------------------------------------------------------------------------
-// Path helpers (moved from agent/paths.ts)
+// Pi-specific path helpers
 // ---------------------------------------------------------------------------
-
-/** Path to the workdir directory for sandboxed execution. */
-export function workdirPath(home: string): string {
-  return join(home, "scratch", "workdir");
-}
 
 /** Path to the pi directory for pi-ai configuration (auth.json, models.json). */
 export function piAgentDir(home: string): string {
   return join(home, "state", "pi");
-}
-
-/** Path to the AGENTS.md file in the goblin workspace. */
-export function agentsMdPath(home: string): string {
-  return join(home, "workspace", "AGENTS.md");
-}
-
-/** Path to goblin's skills directory in the goblin workspace. */
-export function skillsPath(home: string): string {
-  return join(home, "workspace", "skills");
 }
 
 /**
@@ -88,14 +73,4 @@ export function findMostRecentPiSession(piSessionDir: string): string | null {
     if (!best || mtime > best.mtime) best = { path, mtime };
   }
   return best ? best.path : null;
-}
-
-/** Path to the SOUL.md file in the goblin workspace. */
-export function soulMdPath(home: string): string {
-  return join(home, "workspace", "SOUL.md");
-}
-
-/** Path to the optional HEARTBEAT.md file in the goblin workspace. */
-export function heartbeatMdPath(home: string): string {
-  return join(home, "workspace", "HEARTBEAT.md");
 }

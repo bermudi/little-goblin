@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { SchedulerLoop, HEARTBEAT_PROMPT, DEFAULT_TICK_INTERVAL_MS, resolveHeartbeatPrompt } from "./loop.ts";
 import { ScheduleStore } from "./store.ts";
 import { SessionManager } from "../sessions/manager.ts";
-import { heartbeatMdPath } from "../pi-host.ts";
+import { heartbeatMdPath } from "../workspace/paths.ts";
 import type { Config } from "../config.ts";
 import type { ChatLocator } from "../sessions/types.ts";
 import type { SessionState } from "../sessions/mod.ts";

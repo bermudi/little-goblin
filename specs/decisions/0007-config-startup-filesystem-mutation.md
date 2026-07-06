@@ -16,7 +16,7 @@ The `workspace-layout` change originally added a one-time migration loop (`renam
 
 `src/config.ts` is exempted from the AGENTS.md "Don't touch `$GOBLIN_HOME`" guardrail, but ONLY for the `ensureGoblinHome()` startup path: directory creation (`mkdirSync`). This exemption SHALL be documented in AGENTS.md alongside the guardrail.
 
-The exemption is narrow: `config.ts` MUST NOT read or write session bindings, memory, or any other runtime state. Its filesystem access is limited to directory creation (`mkdirSync`). All path construction inside `ensureGoblinHome()` MUST go through the path-helper modules (`sessions/paths.ts`, `pi-host.ts`, `memory/paths.ts`, `subagents/paths.ts`) — see decision `path-helper-only-path-construction`.
+The exemption is narrow: `config.ts` MUST NOT read or write session bindings, memory, or any other runtime state. Its filesystem access is limited to directory creation (`mkdirSync`). All path construction inside `ensureGoblinHome()` MUST go through the path-helper modules (`sessions/paths.ts`, `pi-host.ts`, `workspace/paths.ts`, `memory/paths.ts`, `subagents/paths.ts`) — see decision `path-helper-only-path-construction`.
 
 ## Consequences
 

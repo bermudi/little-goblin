@@ -36,7 +36,7 @@ The `AgentRunner` SHALL create pi's `AgentSession` via `createAgentSession()` la
 
 ### Requirement: cwd is the shared goblin workspace
 
-Every `AgentRunner` SHALL pass `cwd = workdirPath($GOBLIN_HOME)` to `createAgentSession()`, where `workdirPath` is imported from `src/pi-host.ts`. Per-session workdirs MUST NOT be used.
+Every `AgentRunner` SHALL pass `cwd = workdirPath($GOBLIN_HOME)` to `createAgentSession()`, where `workdirPath` is imported from `src/workspace/paths.ts`. Per-session workdirs MUST NOT be used.
 
 #### Scenario: Runner created
 

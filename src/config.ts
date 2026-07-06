@@ -5,7 +5,8 @@ import JSON5 from "json5";
 import { ConfigFileSchema } from "./schema.ts";
 import { resolveConfigValue } from "./resolve-value.ts";
 import { sessionsDir } from "./sessions/paths.ts";
-import { piAgentDir, skillsPath, workdirPath } from "./pi-host.ts";
+import { piAgentDir } from "./pi-host.ts";
+import { skillsPath, workdirPath } from "./workspace/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
 import { namedAgentsRoot, subagentsRoot } from "./subagents/paths.ts";
 

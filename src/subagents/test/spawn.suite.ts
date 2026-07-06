@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { SubagentRunner, type SubagentToolFactory } from "../mod.ts";
-import { skillsPath, workdirPath } from "../../pi-host.ts";
+import { skillsPath, workdirPath } from "../../workspace/paths.ts";
 import {
   MAX_SUBAGENT_DEPTH,
   type SubagentMeta,

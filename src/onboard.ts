@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { ConfigFileSchema } from "./schema.ts";
-import { agentsMdPath, soulMdPath } from "./pi-host.ts";
+import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
 
 const DEFAULT_MODEL = "poe/Claude-Sonnet-4.6";
 

@@ -1,6 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { agentsMdPath, soulMdPath } from "../pi-host.ts";
+import { agentsMdPath, soulMdPath } from "../workspace/paths.ts";
 
 export const GOBLIN_PRODUCT_SHELL = `## Runtime Mechanics
 
@@ -31,20 +31,40 @@ export interface BuildGoblinSystemPromptOptions {
   projectDir?: string;
 }
 
+/** System prompt value: assembled text plus the provenance of loaded prompt files. */
+export class GoblinSystemPrompt {
+  /** The assembled system prompt text. */
+  readonly prompt: string;
+  /** Paths of prompt files that were actually loaded, in order. */
+  readonly sources: readonly string[];
+
+  constructor(prompt: string, sources: readonly string[]) {
+    this.prompt = prompt;
+    this.sources = sources;
+  }
+}
+
 export async function buildGoblinSystemPrompt(
   opts: BuildGoblinSystemPromptOptions,
-): Promise<string> {
+): Promise<GoblinSystemPrompt> {
   const soulPath = soulMdPath(opts.home);
   const deploymentAgentsPath = agentsMdPath(opts.home);
   const projectAgentsPath =
     opts.projectDir === undefined ? undefined : join(opts.projectDir, "AGENTS.md");
 
   const soul = await readRequiredSoul(soulPath);
+  const sources: string[] = [soulPath];
   const deploymentAgents = await readOptionalPromptFile(deploymentAgentsPath);
+  if (deploymentAgents !== null) {
+    sources.push(deploymentAgentsPath);
+  }
   const projectAgents =
     projectAgentsPath === undefined ? null : await readOptionalPromptFile(projectAgentsPath);
+  if (projectAgentsPath !== undefined && projectAgents !== null) {
+    sources.push(projectAgentsPath);
+  }
 
-  return [
+  const prompt = [
     section("Deployment Identity and Voice (SOUL.md)", soul),
     deploymentAgents === null
       ? null
@@ -56,6 +76,8 @@ export async function buildGoblinSystemPrompt(
   ]
     .filter((part): part is string => part !== null)
     .join("\n\n");
+
+  return new GoblinSystemPrompt(prompt, sources);
 }
 
 export interface PreflightGoblinPromptFilesOptions {

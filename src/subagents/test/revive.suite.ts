@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubagentRunner } from "../mod.ts";
-import { workdirPath } from "../../pi-host.ts";
+import { workdirPath } from "../../workspace/paths.ts";
 import type { SubagentMeta } from "../types.ts";
 import {
   genericSubagentDir,

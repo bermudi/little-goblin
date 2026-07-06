@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { sessionDir, transcriptPath } from "../sessions/paths.ts";
-import { agentsMdPath, piAgentDir, skillsPath, soulMdPath, workdirPath } from "../pi-host.ts";
+import { piAgentDir } from "../pi-host.ts";
+import { agentsMdPath, skillsPath, soulMdPath, workdirPath } from "../workspace/paths.ts";
 import { memoryDir } from "../memory/paths.ts";
 
 // ---------------------------------------------------------------------------

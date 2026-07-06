@@ -24,11 +24,11 @@ Commit: `sessions: add guest binding surface`
 
 ## Phase 2: guest reply sink
 
-- [ ] Create `src/tg/guest-sink.ts` exporting `GuestReplySink implements TurnCallbacks` per design D4: `buf` accumulation in `onTextDelta`, no-op `onToolStart`/`onToolEnd`/`onStatusUpdate`, `onAgentEnd` resolves; expose `.text` read after `prompt()` resolves
-- [ ] Create `src/tg/guest-sink.test.ts`: text deltas accumulate, tool events ignored, `onAgentEnd` produces accumulated text, empty turn yields empty string
-- [ ] Export `GuestReplySink` from `src/tg/mod.ts` barrel
-- [ ] Satisfies spec: "Non-streaming reply sink for guest turns"
-- [ ] `bun test && bun run typecheck`
+- [x] Create `src/tg/guest-sink.ts` exporting `GuestReplySink implements TurnCallbacks` per design D4: `buf` accumulation in `onTextDelta`, no-op `onToolStart`/`onToolEnd`/`onStatusUpdate`, `onAgentEnd` resolves; expose `.text` read after `prompt()` resolves
+- [x] Create `src/tg/guest-sink.test.ts`: text deltas accumulate, tool events ignored, `onAgentEnd` produces accumulated text, empty turn yields empty string
+- [x] Export `GuestReplySink` from `src/tg/mod.ts` barrel
+- [x] Satisfies spec: "Non-streaming reply sink for guest turns"
+- [x] `bun test && bun run typecheck`
 
 Commit: `tg: add guest reply sink`
 

@@ -46,12 +46,12 @@ Commit: `tg: add guest message intake`
 
 ## Phase 4: middleware + bot.ts wiring
 
-- [ ] In `src/tg/middleware.ts`: insert, before the `if (!ctx.chat || !ctx.from)` guard, a `guest_message` branch that reads `ctx.update?.guest_message?.from?.id` (optional chaining — test stubs omit `ctx.update`, see `src/tg/middleware.test.ts:22-55`), allows via `cfg.allowedTgUserIds.has(fromId)` → `next()`, otherwise returns silently with a debug log (matching the DM drop shape). Do NOT read or log `guest_query_id`. (The diagnostic block was already removed in pre-build cleanup; verify it is gone.)
-- [ ] In `src/bot.ts`: register `bot.on("guest_message", handler)` after `bot.use(buildAllowlistMiddleware(cfg))`. The handler reads `ctx.guestMessage`, drops media (no `text`, including caption-only) with debug log, **strips the mention and prepends sender prefix via `prepareUserContent(ctx, ctx.guestMessage.text)`** (adapter has `ctx`; intake does not — this resolves review C2), and calls `await intake.handleGuestMessage({ chatId: ctx.guestMessage.chat.id, replyVia: (result) => ctx.answerGuestQuery(result) }, cleanedText)`. grammy routes errors through `bot.catch` automatically.
-- [ ] Update `src/tg/middleware.test.ts` `makeCtx` helper: add a `guestMessage?` option that populates `ctx.update.guest_message` so the new guard can be exercised
-- [ ] Add middleware tests: allowed summoner's guest update calls `next()`; non-allowed summoner's guest update does not call `next()` and emits debug log WITHOUT `guest_query_id` in the payload
-- [ ] Satisfies spec: "Allowlist middleware gates guest_message updates by summoner" + "buildBot wires a guest_message grammy handler" + "Non-guest updates do not hit the guest handler"
-- [ ] `bun test && bun run typecheck`
+- [x] In `src/tg/middleware.ts`: insert, before the `if (!ctx.chat || !ctx.from)` guard, a `guest_message` branch that reads `ctx.update?.guest_message?.from?.id` (optional chaining — test stubs omit `ctx.update`, see `src/tg/middleware.test.ts:22-55`), allows via `cfg.allowedTgUserIds.has(fromId)` → `next()`, otherwise returns silently with a debug log (matching the DM drop shape). Do NOT read or log `guest_query_id`. (The diagnostic block was already removed in pre-build cleanup; verified gone.)
+- [x] In `src/bot.ts`: register `bot.on("guest_message", handler)` after `bot.use(buildAllowlistMiddleware(cfg))`. The handler reads `ctx.guestMessage`, drops media (no `text`, including caption-only) with debug log, **strips the mention and prepends sender prefix via `prepareUserContent(ctx, ctx.guestMessage.text)`** (adapter has `ctx`; intake does not — this resolves review C2), and calls `await intake.handleGuestMessage({ chatId: ctx.guestMessage.chat.id, replyVia: (result) => ctx.answerGuestQuery(result) }, cleanedText)`. grammy routes errors through `bot.catch` automatically.
+- [x] Update `src/tg/middleware.test.ts` `makeCtx` helper: add a `guestMessage?` option that populates `ctx.update.guest_message` so the new guard can be exercised
+- [x] Add middleware tests: allowed summoner's guest update calls `next()`; non-allowed summoner's guest update does not call `next()` and emits debug log WITHOUT `guest_query_id` in the payload
+- [x] Satisfies spec: "Allowlist middleware gates guest_message updates by summoner" + "buildBot wires a guest_message grammy handler" + "Non-guest updates do not hit the guest handler"
+- [x] `bun test && bun run typecheck`
 
 Commit: `tg: wire guest_message handling`
 

@@ -157,6 +157,33 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     );
   });
 
+  // Guest Mode (Bot API 10.0): a @mention in a chat the bot is NOT a member of.
+  // The allowlist middleware gates these by summoner before this handler runs.
+  // Reply is one-shot via ctx.answerGuestQuery (it auto-reads guest_query_id
+  // from ctx.guestMessage) — no streaming. Media/caption-only summons are out
+  // of scope: we drop them silently with a debug log. See telegram-guest-mode.
+  bot.on("guest_message", async (ctx: Context) => {
+    const guestMessage = ctx.guestMessage;
+    if (!guestMessage) return;
+    const text = guestMessage.text;
+    if (!text) {
+      // Media (photo/document/voice) or caption-only — Non-Goal, drop quietly.
+      log.debug("dropping guest_message: no text", {
+        chatId: guestMessage.chat?.id,
+        hasCaption: "caption" in guestMessage,
+      });
+      return;
+    }
+    const cleanedText = prepareUserContent(ctx, text);
+    await intake.handleGuestMessage(
+      {
+        chatId: guestMessage.chat.id,
+        replyVia: (result) => ctx.answerGuestQuery(result),
+      },
+      cleanedText,
+    );
+  });
+
   bot.catch((err) => {
     log.error("bot error", {
       name: err.error instanceof Error ? err.error.name : typeof err.error,

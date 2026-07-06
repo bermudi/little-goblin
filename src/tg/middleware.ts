@@ -96,6 +96,24 @@ export function buildAllowlistMiddleware(cfg: Config) {
   }
 
   return async (ctx: Context, next: NextFunction): Promise<void> => {
+    // guest_message: grammy does not populate ctx.chat/ctx.from for these, so
+    // read the summoner id directly from the update. BotFather's "Restrict bot
+    // usage" setting does NOT gate guest updates, so this code-level check is
+    // load-bearing — without it anyone who knows the bot's username can summon
+    // it and burn LLM credits. See telegram-guest-mode proposal.
+    const guestFrom = ctx.update?.guest_message?.from;
+    if (guestFrom) {
+      if (cfg.allowedTgUserIds.has(guestFrom.id)) {
+        await next();
+        return;
+      }
+      log.debug("dropping guest_message from non-allowed user", {
+        userId: guestFrom.id,
+        username: guestFrom.username,
+      });
+      return;
+    }
+
     // Non-message updates (callback_query, inline_query, etc.) — pass through.
     // The middleware is installed via bot.use() so it sees all updates, but
     // the access control logic only makes sense for messages.

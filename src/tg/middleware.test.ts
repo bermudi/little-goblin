@@ -29,6 +29,7 @@ function makeCtx(opts: {
   memberCount?: number;
   memberCountError?: unknown;
   replyToMessage?: { from?: { id: number }; forum_topic_created?: unknown };
+  guestMessage?: { from?: { id: number; first_name?: string; username?: string }; text?: string; chat?: { id: number } };
 }): { ctx: Context; getChatMemberCount: ReturnType<typeof mock> } {
   const getChatMemberCount = mock(async () => {
     if (opts.memberCountError !== undefined) throw opts.memberCountError;
@@ -48,6 +49,7 @@ function makeCtx(opts: {
             reply_to_message: opts.replyToMessage,
           }
         : undefined,
+      update: opts.guestMessage ? { guest_message: opts.guestMessage } : {},
       api: { getChatMemberCount },
     } as unknown as Context,
     getChatMemberCount,
@@ -258,5 +260,106 @@ describe("buildAllowlistMiddleware", () => {
     const { ctx, getChatMemberCount } = makeCtx({ chat: { id: -1, type: "group" }, from: { id: 1, first_name: "Daniel" }, text: "hi", memberCountError: new Error("nope") });
     expect(await run(ctx)).not.toHaveBeenCalled();
     expect(getChatMemberCount).toHaveBeenCalledTimes(1);
+  });
+
+  describe("guest_message", () => {
+    it("passes a guest_message from an allowed summoner", async () => {
+      const { ctx } = makeCtx({
+        guestMessage: { from: { id: 1, first_name: "Daniel", username: "daniel" }, text: "@goblinbot hi", chat: { id: -42 } },
+      });
+      expect(await run(ctx)).toHaveBeenCalledTimes(1);
+    });
+
+    it("drops a guest_message from a non-allowed summoner without calling next", async () => {
+      const { ctx } = makeCtx({
+        guestMessage: { from: { id: 2, first_name: "Mallory", username: "mallory" }, text: "@goblinbot hi", chat: { id: -42 } },
+      });
+      expect(await run(ctx)).not.toHaveBeenCalled();
+    });
+
+    it("does not log guest_query_id when dropping a non-allowed summoner", async () => {
+      // Enable debug logging so the drop line is emitted, then capture stdout.
+      const originalWrite = process.stdout.write.bind(process.stdout);
+      const lines: string[] = [];
+      // The middleware logs at debug; force the threshold down by spying on
+      // emit via stdout capture. We pass a guest_message carrying a real-looking
+      // guest_query_id and assert the value never reaches the stream.
+      const written = mock((chunk: string | Uint8Array) => {
+        lines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+        return true;
+      });
+      process.stdout.write = written as unknown as typeof process.stdout.write;
+
+      // Initialize debug level so the drop log is actually emitted.
+      const { initLog } = await import("../log.ts");
+      initLog("debug");
+
+      try {
+        const { ctx } = makeCtx({
+          guestMessage: {
+            // Include a guest_query_id on the update shape to prove it's never
+            // surfaced. The middleware must only read .from.
+            from: { id: 2, first_name: "Mallory", username: "mallory" },
+            text: "@goblinbot hi",
+            chat: { id: -42 },
+            // @ts-expect-error — guest_query_id is intentionally not part of
+            // the test stub type; we add it to verify it never leaks.
+            guest_query_id: "AAAA_SECRET_ID",
+          },
+        });
+        await run(ctx);
+
+        const blob = lines.join("");
+        expect(blob).not.toContain("guest_query_id");
+        expect(blob).not.toContain("AAAA_SECRET_ID");
+        expect(blob).toContain("dropping guest_message from non-allowed user");
+        expect(blob).toContain("mallory");
+      } finally {
+        process.stdout.write = originalWrite;
+        initLog("error"); // restore to a quiet level for the rest of the suite
+      }
+    });
+
+    it("does not log guest_query_id when allowing an allowed summoner", async () => {
+      const originalWrite = process.stdout.write.bind(process.stdout);
+      const lines: string[] = [];
+      process.stdout.write = mock((chunk: string | Uint8Array) => {
+        lines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+        return true;
+      }) as unknown as typeof process.stdout.write;
+
+      const { initLog } = await import("../log.ts");
+      initLog("debug");
+
+      try {
+        const { ctx } = makeCtx({
+          guestMessage: {
+            from: { id: 1, first_name: "Daniel", username: "daniel" },
+            text: "@goblinbot hi",
+            chat: { id: -42 },
+            // @ts-expect-error — see above
+            guest_query_id: "BBBB_SECRET_ID",
+          },
+        });
+        await run(ctx);
+
+        const blob = lines.join("");
+        expect(blob).not.toContain("guest_query_id");
+        expect(blob).not.toContain("BBBB_SECRET_ID");
+      } finally {
+        process.stdout.write = originalWrite;
+        initLog("error");
+      }
+    });
+
+    it("passes a guest_message without ctx.chat/ctx.from populated (grammy leaves these unset)", async () => {
+      // grammy does not derive ctx.chat/ctx.from for guest_message — confirm
+      // the guest branch fires before the !ctx.chat/!ctx.from pass-through.
+      const { ctx } = makeCtx({
+        // chat/from intentionally omitted.
+        guestMessage: { from: { id: 1, first_name: "Daniel" }, text: "hi", chat: { id: -42 } },
+      });
+      expect(await run(ctx)).toHaveBeenCalledTimes(1);
+    });
   });
 });

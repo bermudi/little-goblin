@@ -35,4 +35,6 @@ export interface BindingsFile {
   topics?: Record<string, Record<string, string>>;
   /** Supergroup bindings: chatId -> sessionId (supergroup without topic = single session) */
   supergroups?: Record<string, string>;
+  /** Guest session bindings: foreign chatId -> sessionId (chat the bot was summoned in but is not a member of) */
+  guest?: Record<string, string>;
 }

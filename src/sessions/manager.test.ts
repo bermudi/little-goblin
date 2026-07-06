@@ -447,6 +447,95 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("guest bindings", () => {
+    it("resolve(loc, { isGuest: true }) auto-creates on first call", () => {
+      const loc: ChatLocator = { chatId: 888 };
+      const state = manager.resolve(loc, { isGuest: true });
+      expect(state).not.toBeNull();
+      expect(state!.chatId).toBe(888);
+      expect(state!.topicId).toBeUndefined();
+
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
+      expect(config.guest?.["888"]).toBe(state!.id);
+    });
+
+    it("resolve(loc, { isGuest: true }) returns the bound session on second call", () => {
+      const loc: ChatLocator = { chatId: 888 };
+      const first = manager.resolve(loc, { isGuest: true });
+      const second = manager.resolve(loc, { isGuest: true });
+      expect(second?.id).toBe(first!.id);
+    });
+
+    it("auto-heals a stale guest binding by recreating", () => {
+      const loc: ChatLocator = { chatId: 888 };
+      const first = manager.resolve(loc, { isGuest: true });
+      unlinkSync(statePath(tmpDir, first!.id));
+
+      const second = manager.resolve(loc, { isGuest: true });
+      expect(second).not.toBeNull();
+      expect(second!.id).not.toBe(first!.id);
+
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
+      expect(config.guest?.["888"]).toBe(second!.id);
+    });
+
+    it("guest binding does not collide with a DM binding for the same chat id", () => {
+      const loc: ChatLocator = { chatId: 888 };
+      const dm = manager.createForChat(loc);
+      const guest = manager.resolve(loc, { isGuest: true });
+
+      expect(guest!.id).not.toBe(dm.id);
+
+      // DM resolve returns the DM binding; guest resolve returns the guest binding.
+      expect(manager.resolve(loc)?.id).toBe(dm.id);
+      expect(manager.resolve(loc, { isGuest: true })?.id).toBe(guest!.id);
+
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
+      expect(config.dm?.["888"]).toBe(dm.id);
+      expect(config.guest?.["888"]).toBe(guest!.id);
+    });
+
+    it("resolve(loc) without isGuest is unchanged (does not consult guest map)", () => {
+      const loc: ChatLocator = { chatId: 888 };
+      // Create a guest session
+      manager.resolve(loc, { isGuest: true });
+
+      // Plain resolve (no isGuest) MUST NOT find it — behaves like an unbound DM.
+      expect(manager.resolve(loc)).toBeNull();
+    });
+
+    it("peekBinding honors isGuest and does not auto-create", () => {
+      const loc: ChatLocator = { chatId: 888 };
+      expect(manager.peekBinding(loc, { isGuest: true })).toBeNull();
+      expect(readdirSync(sessionsDir(tmpDir))).toEqual([]);
+
+      manager.resolve(loc, { isGuest: true });
+      const peeked = manager.peekBinding(loc, { isGuest: true });
+      expect(peeked).not.toBeNull();
+      // peekBinding without isGuest does not find the guest binding.
+      expect(manager.peekBinding(loc)).toBeNull();
+    });
+
+    it("archive clears the guest binding", () => {
+      const loc: ChatLocator = { chatId: 888 };
+      const created = manager.resolve(loc, { isGuest: true });
+
+      manager.archive(created!.id);
+
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
+      expect(config.guest?.["888"]).toBeUndefined();
+    });
+
+    it("createForChat with isGuest writes the guest map", () => {
+      const loc: ChatLocator = { chatId: 888 };
+      const state = manager.createForChat(loc, { isGuest: true });
+
+      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
+      expect(config.guest?.["888"]).toBe(state.id);
+      expect(config.dm?.["888"]).toBeUndefined();
+    });
+  });
+
   describe("peekBinding", () => {
     it("returns the bound session id and state for a DM", () => {
       const loc: ChatLocator = { chatId: 42 };

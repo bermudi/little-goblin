@@ -10,15 +10,15 @@ Commit: `deps: bump grammy 1.42.0 -> 1.44.0, @grammyjs/types 3.26.0 -> 3.28.0`
 
 ## Phase 1: guest session binding surface
 
-- [ ] Re-read `src/sessions/types.ts` (BindingsFile shape) and `src/sessions/manager.ts` (resolve/createForChat/peekBinding branches) before editing — confirm the explore agent's report matches current code
-- [ ] Add `guest?: Record<number, string>` to `BindingsFile` in `src/sessions/types.ts`
-- [ ] Add `isGuest?: boolean` to the options of `resolve`, `createForChat`, and `peekBinding` (extend the option type or add a new overload — match the existing `isSupergroup` pattern)
-- [ ] In `SessionManager.resolve`, add an `opts?.isGuest` branch: auto-create on first resolve against the `guest` map (mirror the topic branch at lines ~116-128), auto-heal stale bindings (mirror the topic stale branch)
-- [ ] In `SessionManager.createForChat`, route to the `guest` map when `opts?.isGuest`
-- [ ] In `SessionManager.peekBinding`, accept `opts?.isGuest` and read the `guest` map (scheduler will not pass it; type-completeness only)
-- [ ] Verify the guest map is loaded/saved with `bindings.json` (no separate file) — extend the existing `loadBindings`/`saveBindings` to round-trip the new field
-- [ ] Add colocated tests in `src/sessions/manager.test.ts` (or the existing test file): `resolve(loc, { isGuest: true })` first-call auto-creates; second-call returns bound; stale auto-heal; guest binding does not collide with a `dm` binding for the same numeric chat id; `resolve(loc)` without `isGuest` is unchanged
-- [ ] `bun test && bun run typecheck` — phase must build and pass
+- [x] Re-read `src/sessions/types.ts` (BindingsFile shape) and `src/sessions/manager.ts` (resolve/createForChat/peekBinding branches) before editing — confirm the explore agent's report matches current code
+- [x] Add `guest?: Record<number, string>` to `BindingsFile` in `src/sessions/types.ts`
+- [x] Add `isGuest?: boolean` to the options of `resolve`, `createForChat`, and `peekBinding` (extend the option type or add a new overload — match the existing `isSupergroup` pattern)
+- [x] In `SessionManager.resolve`, add an `opts?.isGuest` branch: auto-create on first resolve against the `guest` map (mirror the topic branch at lines ~116-128), auto-heal stale bindings (mirror the topic stale branch)
+- [x] In `SessionManager.createForChat`, route to the `guest` map when `opts?.isGuest`
+- [x] In `SessionManager.peekBinding`, accept `opts?.isGuest` and read the `guest` map (scheduler will not pass it; type-completeness only)
+- [x] Verify the guest map is loaded/saved with `bindings.json` (no separate file) — extend the existing `loadBindings`/`saveBindings` to round-trip the new field
+- [x] Add colocated tests in `src/sessions/manager.test.ts` (or the existing test file): `resolve(loc, { isGuest: true })` first-call auto-creates; second-call returns bound; stale auto-heal; guest binding does not collide with a `dm` binding for the same numeric chat id; `resolve(loc)` without `isGuest` is unchanged
+- [x] `bun test && bun run typecheck` — phase must build and pass
 
 Commit: `sessions: add guest binding surface`
 

@@ -40,6 +40,14 @@ function clearBindingsForSession(bindings: BindingsFile, sessionId: string): boo
       }
     }
   }
+  if (bindings.guest) {
+    for (const key of Object.keys(bindings.guest)) {
+      if (bindings.guest[key] === sessionId) {
+        delete bindings.guest[key];
+        changed = true;
+      }
+    }
+  }
   if (bindings.topics) {
     for (const chat of Object.keys(bindings.topics)) {
       const inner = bindings.topics[chat];
@@ -109,7 +117,7 @@ export class SessionManager {
    * Stale bindings (binding exists but state.json missing) are treated as absent
    * and auto-heal for topics/supergroups. For DMs, the stale binding is logged and cleared.
    */
-  resolve(loc: ChatLocator, opts?: { isSupergroup?: boolean }): SessionState | null {
+  resolve(loc: ChatLocator, opts?: { isSupergroup?: boolean; isGuest?: boolean }): SessionState | null {
     const bindings = loadBindings(this.home);
     const chatKey = String(loc.chatId);
 
@@ -138,6 +146,19 @@ export class SessionManager {
       return this.createForChat(loc, { isSupergroup: true });
     }
 
+    // Guest (no topic): auto-create on first summon, like topics/supergroups.
+    // Distinct from dm so a foreign chat.id can never clobber a real DM binding
+    // (the bot may later be added to that chat as a normal member).
+    if (opts?.isGuest) {
+      const existingId = bindings.guest?.[chatKey];
+      if (existingId) {
+        const state = loadState(this.home, existingId);
+        if (state) return state;
+        log.warn("stale guest binding, recreating session", { chatId: loc.chatId, sessionId: existingId });
+      }
+      return this.createForChat(loc, { isGuest: true });
+    }
+
     // DM: must have explicit binding
     const dmId = bindings.dm?.[chatKey];
     if (!dmId) return null;
@@ -156,7 +177,7 @@ export class SessionManager {
    * For Topics: should not be called if already bound (resolve handles that).
    * For Supergroups: treated like topics (auto-created, bound to chatId).
    */
-  createForChat(loc: ChatLocator, opts?: { title?: string; isSupergroup?: boolean }): SessionState {
+  createForChat(loc: ChatLocator, opts?: { title?: string; isSupergroup?: boolean; isGuest?: boolean }): SessionState {
     const id = makeSessionId();
     const state: SessionState = {
       id,
@@ -183,17 +204,20 @@ export class SessionManager {
     } else if (opts?.isSupergroup) {
       bindings.supergroups ??= {};
       bindings.supergroups[chatKey] = id;
+    } else if (opts?.isGuest) {
+      bindings.guest ??= {};
+      bindings.guest[chatKey] = id;
     } else {
       bindings.dm ??= {};
       bindings.dm[chatKey] = id;
     }
     saveBindings(this.home, bindings);
 
-    log.info("created session", { id, chatId: loc.chatId, topicId: loc.topicId, isSupergroup: opts?.isSupergroup });
+    log.info("created session", { id, chatId: loc.chatId, topicId: loc.topicId, isSupergroup: opts?.isSupergroup, isGuest: opts?.isGuest });
     return state;
   }
 
-  bindExistingToChat(sessionId: string, loc: ChatLocator, opts?: { isSupergroup?: boolean }): SessionState {
+  bindExistingToChat(sessionId: string, loc: ChatLocator, opts?: { isSupergroup?: boolean; isGuest?: boolean }): SessionState {
     const state = loadState(this.home, sessionId);
     if (!state) {
       throw new Error(`session not found: ${sessionId}`);
@@ -208,12 +232,15 @@ export class SessionManager {
     } else if (opts?.isSupergroup) {
       bindings.supergroups ??= {};
       bindings.supergroups[chatKey] = sessionId;
+    } else if (opts?.isGuest) {
+      bindings.guest ??= {};
+      bindings.guest[chatKey] = sessionId;
     } else {
       bindings.dm ??= {};
       bindings.dm[chatKey] = sessionId;
     }
     saveBindings(this.home, bindings);
-    log.info("bound existing session", { sessionId, chatId: loc.chatId, topicId: loc.topicId, isSupergroup: opts?.isSupergroup });
+    log.info("bound existing session", { sessionId, chatId: loc.chatId, topicId: loc.topicId, isSupergroup: opts?.isSupergroup, isGuest: opts?.isGuest });
     return state;
   }
 
@@ -325,13 +352,17 @@ export class SessionManager {
    * Returns null when the locator is unbound or the bound state is missing
    * (e.g. the session was archived, which clears the binding and moves state).
    */
-  peekBinding(loc: ChatLocator): { sessionId: string; state: SessionState } | null {
+  peekBinding(loc: ChatLocator, opts?: { isGuest?: boolean }): { sessionId: string; state: SessionState } | null {
     const bindings = loadBindings(this.home);
     const chatKey = String(loc.chatId);
 
     let boundId: string | undefined;
     if (loc.topicId !== undefined) {
       boundId = bindings.topics?.[chatKey]?.[String(loc.topicId)];
+    } else if (opts?.isGuest) {
+      // Guest surface is distinct from dm/supergroup so a foreign chat.id can
+      // never collide with a normal binding for the same numeric id.
+      boundId = bindings.guest?.[chatKey];
     } else {
       // Topicless locator: check DM then supergroup. A chat is either a DM or
       // a supergroup in practice, so checking both is unambiguous.

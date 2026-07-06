@@ -20,6 +20,7 @@ import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { appendTranscriptEntry, dispatchAgentEvent, extractAssistantText } from "./events.ts";
 import type { TurnCallbacks } from "./events.ts";
+export { appendAssistantTranscriptEntry } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
 import { workdirPath, createPiServices, piAgentDir, skillsPath, findMostRecentPiSession } from "../pi-host.ts";
 import { sessionDir } from "../sessions/paths.ts";

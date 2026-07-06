@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Bot } from "grammy";
@@ -7,6 +7,7 @@ import type { Config } from "../config.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator } from "../sessions/mod.ts";
+import { transcriptPath } from "../sessions/paths.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { SchedulerLoop, type SchedulerClock } from "../scheduler/loop.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
@@ -226,6 +227,17 @@ function fixedClock(now: number): SchedulerClock {
   };
 }
 
+function readTranscriptLines(home: string, sessionId: string): unknown[] {
+  const path = transcriptPath(home, sessionId);
+  if (!path) return [];
+  const content = readFileSync(path, "utf-8");
+  return content
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line));
+}
+
 beforeEach(() => {
   runners = [];
   MockAgentRunner.nextPrompt = undefined;
@@ -347,7 +359,7 @@ describe("Telegram intake", () => {
   });
 
   it("handles document fallback without a project directory", async () => {
-    const { intake } = makeHarness();
+    const { intake, manager, cfg } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
 
@@ -360,8 +372,41 @@ describe("Telegram intake", () => {
     await intake.handleDocument(message, fakeApi(), { fileId: "doc", fileName: "note.txt" });
     await flushMicrotasks();
 
-    expect(replies.at(-1)).toBe("No project directory is set. Use /project <path> to enable file saving.");
+    const replyText = "No project directory is set. Use /project <path> to enable file saving.";
+    expect(replies.at(-1)).toBe(replyText);
     expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
+
+    const sessionId = manager.list()[0]!.id;
+    const lines = readTranscriptLines(cfg.goblinHome, sessionId);
+    const lastEntry = lines.at(-1);
+    expect(lastEntry).toEqual({
+      ts: expect.any(String),
+      role: "assistant",
+      content: `[system] ${replyText}`,
+    });
+  });
+
+  it("records a photo download failure reply in the transcript", async () => {
+    const { intake, manager, cfg } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    globalThis.fetch = mock(async () => new Response("", { status: 404 })) as unknown as typeof fetch;
+
+    await intake.handleText(message, "/new");
+    await intake.handlePhoto(message, fakeApi(), ["file-id"], undefined);
+    await flushMicrotasks();
+
+    const replyText = "Sorry, I couldn't download that image.";
+    expect(replies.some((r) => r === replyText)).toBe(true);
+
+    const sessionId = manager.list()[0]!.id;
+    const lines = readTranscriptLines(cfg.goblinHome, sessionId);
+    const lastEntry = lines.at(-1);
+    expect(lastEntry).toEqual({
+      ts: expect.any(String),
+      role: "assistant",
+      content: `[system] ${replyText}`,
+    });
   });
 
   it("falls back to a fresh turn when a steer loses the streaming race", async () => {
@@ -804,7 +849,7 @@ describe("Telegram intake", () => {
   it("replies that the voice could not be transcribed on ASR failure and does not prompt", async () => {
     const cfg = makeConfig();
     cfg.groqApiKey = "groq-key";
-    const { intake } = makeHarness(cfg);
+    const { intake, manager, cfg: harnessCfg } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);
     installVoiceFetch({ groqStatus: 500, groqBody: '{"error":"internal"}' });
@@ -817,6 +862,17 @@ describe("Telegram intake", () => {
     // The raw error body is not surfaced.
     expect(replies.some((r) => r.includes("internal"))).toBe(false);
     expect(runners[0]!.prompt).not.toHaveBeenCalled();
+
+    // The error reply is recorded as an assistant entry so the context window
+    // stays honest about what the bot said.
+    const sessionId = manager.list()[0]!.id;
+    const lines = readTranscriptLines(harnessCfg.goblinHome, sessionId);
+    const lastEntry = lines.at(-1);
+    expect(lastEntry).toEqual({
+      ts: expect.any(String),
+      role: "assistant",
+      content: "[system] Sorry, I couldn't transcribe that voice message.",
+    });
   });
 
   it("replies that no speech was detected on an empty transcript and does not prompt", async () => {

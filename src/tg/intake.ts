@@ -6,7 +6,7 @@ import type { InlineQueryResult } from "@grammyjs/types";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { AgentRunner, ModelNotCapableError } from "../agent/mod.ts";
+import { AgentRunner, appendAssistantTranscriptEntry, ModelNotCapableError } from "../agent/mod.ts";
 import { resolveModel, type ResolvedModel } from "../agent/models.ts";
 import { handleCommand, type DispatchDeps } from "../commands/dispatch.ts";
 import { parseCommand } from "../commands/parse.ts";
@@ -184,6 +184,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     createMessageBuffer: options.createMessageBuffer,
   });
 
+  function recordAssistantReply(sessionId: string, text: string): void {
+    appendAssistantTranscriptEntry(sessionId, cfg.goblinHome, text);
+  }
+
   function tryResolveModel(cfg: Config, session: SessionState | null, runner?: AgentRunner): ResolvedModel | undefined {
     try {
       const modelName = runner?.modelName ?? session?.modelName ?? cfg.modelName;
@@ -288,7 +292,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       async (err) => {
         const msg = err instanceof Error ? err.message : String(err);
         log.error("deferred command failed", { error: msg, command, sessionId: session.id });
-        await message.reply(`/${command} failed after the turn: ${msg}`).catch(() => {});
+        const replyText = `/${command} failed after the turn: ${msg}`;
+        await message.reply(replyText).catch(() => {});
+        recordAssistantReply(session.id, replyText);
       },
     );
   }
@@ -337,7 +343,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           },
           async (err) => {
             if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
-              await message.reply(`❌ ${err.message}`);
+              const replyText = `❌ ${err.message}`;
+              await message.reply(replyText);
+              recordAssistantReply(session.id, replyText);
               return;
             }
             const msg = err instanceof Error ? err.message : String(err);
@@ -406,6 +414,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       } catch (err) {
         log.error("command dispatch failed", { error: String(err), command, sessionId: session?.id });
         await message.reply("Something went wrong. Please try again.");
+        if (session) recordAssistantReply(session.id, "Something went wrong. Please try again.");
         return;
       }
     }
@@ -435,7 +444,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         const photo = await downloadPhoto(api, fileIds, cfg.botToken);
         if (!isCurrent()) return;
         if (!photo) {
-          await message.reply("Sorry, I couldn't download that image.");
+          const replyText = "Sorry, I couldn't download that image.";
+          await message.reply(replyText);
+          recordAssistantReply(turn.session.id, replyText);
           return;
         }
 
@@ -463,13 +474,19 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           const raw = await downloadFileBytes(api, doc.fileId, cfg.botToken);
           if (!isCurrent()) return;
           if (!raw) {
-            await message.reply("Sorry, I couldn't download that file.");
+            const replyText = "Sorry, I couldn't download that file.";
+            await message.reply(replyText);
+            recordAssistantReply(turn.session.id, replyText);
             return;
           }
 
           let safeName = basename(doc.fileName || "attachment").trim() || "attachment";
           if (safeName === "." || safeName === "..") {
-            if (isCurrent()) await message.reply("Rejected: unsafe filename.");
+            if (isCurrent()) {
+              const replyText = "Rejected: unsafe filename.";
+              await message.reply(replyText);
+              recordAssistantReply(turn.session.id, replyText);
+            }
             return;
           }
           const destPath = join(turn.projectDir, safeName);
@@ -478,7 +495,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             await writeFile(destPath, raw);
           } catch (err) {
             log.error("failed to write attachment to project directory", { error: String(err), destPath });
-            if (isCurrent()) await message.reply(`Failed to save ${safeName}.`);
+            if (isCurrent()) {
+              const replyText = `Failed to save ${safeName}.`;
+              await message.reply(replyText);
+              recordAssistantReply(turn.session.id, replyText);
+            }
             return;
           }
 
@@ -500,7 +521,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         if (doc.caption) {
           await runPrompt(message, turn.locator, runner, doc.caption);
         } else {
-          await message.reply("No project directory is set. Use /project <path> to enable file saving.");
+          const replyText = "No project directory is set. Use /project <path> to enable file saving.";
+          await message.reply(replyText);
+          recordAssistantReply(turn.session.id, replyText);
         }
       },
       "runner document prompt failed",
@@ -518,7 +541,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // the reply respects the stale-runner guard and stays non-blocking.
         if (!cfg.groqApiKey) {
           if (!isCurrent()) return;
-          await message.reply("Groq ASR is not configured. Add a Groq API key to transcribe voice messages.");
+          const replyText = "Groq ASR is not configured. Add a Groq API key to transcribe voice messages.";
+          await message.reply(replyText);
+          recordAssistantReply(turn.session.id, replyText);
           return;
         }
 
@@ -527,7 +552,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         const raw = await downloadFileBytes(api, voice.fileId, cfg.botToken);
         if (!isCurrent()) return;
         if (!raw) {
-          if (isCurrent()) await message.reply("Sorry, I couldn't download that voice message.");
+          if (isCurrent()) {
+            const replyText = "Sorry, I couldn't download that voice message.";
+            await message.reply(replyText);
+            recordAssistantReply(turn.session.id, replyText);
+          }
           return;
         }
 
@@ -545,14 +574,22 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         if (!asrResult.ok) {
           // Transport/API failure only; the sanitized error carries no secrets.
           log.warn("voice transcription failed", { error: asrResult.error, sessionId: turn.session.id });
-          if (isCurrent()) await message.reply("Sorry, I couldn't transcribe that voice message.");
+          if (isCurrent()) {
+            const replyText = "Sorry, I couldn't transcribe that voice message.";
+            await message.reply(replyText);
+            recordAssistantReply(turn.session.id, replyText);
+          }
           return;
         }
 
         // Intake owns the semantic empty-text check: a successful HTTP response
         // with no speech is not an ASR failure.
         if (asrResult.text.length === 0) {
-          if (isCurrent()) await message.reply("No speech was detected in that voice message.");
+          if (isCurrent()) {
+            const replyText = "No speech was detected in that voice message.";
+            await message.reply(replyText);
+            recordAssistantReply(turn.session.id, replyText);
+          }
           return;
         }
 
@@ -577,7 +614,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             // file (which the transcript note promises) would be misleading.
             // Spec-silent; this preserves pre-ASR voice behavior.
             log.error("failed to write voice to project directory", { error: String(err), destPath });
-            if (isCurrent()) await message.reply(`Failed to save ${safeName}.`);
+            if (isCurrent()) {
+              const replyText = `Failed to save ${safeName}.`;
+              await message.reply(replyText);
+              recordAssistantReply(turn.session.id, replyText);
+            }
             return;
           }
 
@@ -605,7 +646,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           const raw = await downloadFileBytes(api, audio.fileId, cfg.botToken);
           if (!isCurrent()) return;
           if (!raw) {
-            await message.reply("Sorry, I couldn't download that audio file.");
+            const replyText = "Sorry, I couldn't download that audio file.";
+            await message.reply(replyText);
+            recordAssistantReply(turn.session.id, replyText);
             return;
           }
 
@@ -616,7 +659,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           }
           safeName = basename(safeName);
           if (safeName === "." || safeName === "..") {
-            if (isCurrent()) await message.reply("Rejected: unsafe filename.");
+            if (isCurrent()) {
+              const replyText = "Rejected: unsafe filename.";
+              await message.reply(replyText);
+              recordAssistantReply(turn.session.id, replyText);
+            }
             return;
           }
           const destPath = join(turn.projectDir, safeName);
@@ -625,7 +672,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             await writeFile(destPath, raw);
           } catch (err) {
             log.error("failed to write audio to project directory", { error: String(err), destPath });
-            if (isCurrent()) await message.reply(`Failed to save ${safeName}.`);
+            if (isCurrent()) {
+              const replyText = `Failed to save ${safeName}.`;
+              await message.reply(replyText);
+              recordAssistantReply(turn.session.id, replyText);
+            }
             return;
           }
 
@@ -647,7 +698,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         if (audio.caption) {
           await runPrompt(message, turn.locator, runner, audio.caption);
         } else {
-          await message.reply("No project directory is set. Use /project <path> to enable file saving.");
+          const replyText = "No project directory is set. Use /project <path> to enable file saving.";
+          await message.reply(replyText);
+          recordAssistantReply(turn.session.id, replyText);
         }
       },
       "runner audio prompt failed",

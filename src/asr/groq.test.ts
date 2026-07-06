@@ -159,7 +159,7 @@ describe("transcribeWithGroq", () => {
 
     const fileEntry = entries[2]![1];
     expect(fileEntry).toBeInstanceOf(Blob);
-    const file = fileEntry as Blob;
+    const file = fileEntry as unknown as Blob;
     expect((file as File).name).toBe("voice.ogg");
   });
 

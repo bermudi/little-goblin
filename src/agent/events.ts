@@ -263,3 +263,25 @@ export function appendTranscriptEntry(sessionId: string, home: string, event: ob
   if (entry === null) return;
   appendJsonl(transcriptPath(home, sessionId), entry);
 }
+
+/**
+ * Append a synthetic assistant entry to the transcript for user-facing replies
+ * that the intake/command layer sends directly without running an agent turn.
+ * This keeps the context window honest: if the user replies to a hardcoded
+ * error message, the model can see what it said.
+ *
+ * The entry is prefixed with a marker so the model can distinguish system
+ * boilerplate from generated assistant text.
+ */
+export function appendAssistantTranscriptEntry(
+  sessionId: string,
+  home: string,
+  text: string,
+): void {
+  const entry: TranscriptEntry = {
+    ts: new Date().toISOString(),
+    role: "assistant",
+    content: `[system] ${text}`,
+  };
+  appendJsonl(transcriptPath(home, sessionId), entry);
+}

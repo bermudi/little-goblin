@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendAssistantTranscriptEntry,
   appendTranscriptEntry,
   dispatchAgentEvent,
   extractAssistantText,
@@ -348,6 +349,42 @@ describe("dispatchAgentEvent", () => {
       dispatchAgentEvent({ type: "some_future_event" } as any, cb);
     }).not.toThrow();
     expect(cb.calls).toEqual([]);
+  });
+});
+
+describe("appendAssistantTranscriptEntry", () => {
+  let tmpDir: string;
+  let sessionId: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "goblin-assistant-entry-test-"));
+    sessionId = "test-session-456";
+    mkdirSync(sessionDir(tmpDir, sessionId), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("appends a synthetic assistant entry with a system marker", () => {
+    appendAssistantTranscriptEntry(sessionId, tmpDir, "Sorry, I couldn't transcribe that voice message.");
+
+    const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
+    const parsed = JSON.parse(content.trim());
+    expect(parsed.role).toBe("assistant");
+    expect(parsed.content).toBe("[system] Sorry, I couldn't transcribe that voice message.");
+    expect(typeof parsed.ts).toBe("string");
+  });
+
+  it("appends multiple synthetic entries", () => {
+    appendAssistantTranscriptEntry(sessionId, tmpDir, "first");
+    appendAssistantTranscriptEntry(sessionId, tmpDir, "second");
+
+    const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
+    const lines = content.trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0]!).content).toBe("[system] first");
+    expect(JSON.parse(lines[1]!).content).toBe("[system] second");
   });
 });
 

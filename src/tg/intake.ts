@@ -1,6 +1,8 @@
 import { writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
 import type { Bot } from "grammy";
+import type { InlineQueryResult } from "@grammyjs/types";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
@@ -16,6 +18,7 @@ import { SubagentRunner } from "../subagents/mod.ts";
 import { TurnDispatcher, type PromptContent } from "./turn-dispatcher.ts";
 import { transcribeWithGroq } from "../asr/mod.ts";
 import type { MessageBuffer } from "./mod.ts";
+import { GuestReplySink } from "./guest-sink.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 
 export type { PromptContent };
@@ -46,6 +49,16 @@ export interface TelegramAudioInput {
   performer?: string;
   title?: string;
   caption?: string;
+}
+
+/**
+ * A guest summon: the foreign chat id and a one-shot reply callback that
+ * encapsulates `ctx.answerGuestQuery`. `guest_query_id` lives entirely inside
+ * the closure — the intake MUST NOT name, log, or persist it. See design D5.
+ */
+export interface GuestMessage {
+  chatId: number;
+  replyVia: (result: InlineQueryResult) => Promise<unknown>;
 }
 
 export interface TelegramIntakeOptions {
@@ -651,6 +664,70 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     }
   }
 
+  /**
+   * Handle a guest summon: resolve (auto-create) a guest session keyed on the
+   * foreign chat id, run the agent to completion against a non-streaming sink,
+   * and reply exactly once via `message.replyVia`. The `text` arrives already
+   * mention-stripped and sender-prefixed from the bot.ts adapter.
+   *
+   * The `guest_query_id` lives inside `replyVia`'s closure (built by the
+   * adapter as `(result) => ctx.answerGuestQuery(result)`); this function never
+   * names or extracts it. `replyVia` is single-use and short-lived — if the
+   * runner is busy we reply immediately with a busy fallback so the id is
+   * consumed before expiry rather than queueing a turn that would outlive it.
+   * If `replyVia` itself rejects (expired id), the rejection is swallowed: the
+   * summoner sees nothing, but the bot does not crash.
+   */
+  async function handleGuestMessage(message: GuestMessage, text: string): Promise<void> {
+    const locator: ChatLocator = { chatId: message.chatId };
+    const session = manager.resolve(locator, { isGuest: true });
+    // resolve({ isGuest }) auto-creates like topics/supergroups, so null is
+    // unreachable in practice. Fail loud if it ever returns null.
+    if (!session) {
+      log.error("guest resolve returned null despite auto-create", { chatId: message.chatId });
+      try {
+        await message.replyVia(errorArticle());
+      } catch (err) {
+        log.warn("guest error reply failed", { error: String(err), chatId: message.chatId });
+      }
+      return;
+    }
+    const runner = dispatcher.getOrCreateRunner(session, locator);
+
+    // Busy path: never queue. guest_query_id would expire before a queued turn
+    // runs, so reply immediately with a busy fallback to consume the id.
+    if (runner.isStreaming) {
+      log.debug("guest summon dropped: runner busy", { chatId: message.chatId, sessionId: session.id });
+      try {
+        await message.replyVia(busyArticle());
+      } catch (err) {
+        log.warn("guest busy reply failed", { error: String(err), chatId: message.chatId });
+      }
+      return;
+    }
+
+    const sink = new GuestReplySink();
+    try {
+      await runner.prompt(text, sink);
+    } catch (err) {
+      log.warn("guest turn failed", { error: String(err), chatId: message.chatId, sessionId: session.id });
+      try {
+        await message.replyVia(errorArticle());
+      } catch (replyErr) {
+        log.warn("guest error reply failed", { error: String(replyErr), chatId: message.chatId });
+      }
+      return;
+    }
+
+    try {
+      await message.replyVia(article(sink.text || "(no response)"));
+    } catch (err) {
+      // Expired guest_query_id or other Telegram failure — swallow so the bot
+      // does not crash. The summoner sees nothing; inherent to the one-shot API.
+      log.warn("guest reply failed", { error: String(err), chatId: message.chatId });
+    }
+  }
+
   return {
     handleText,
     handlePhoto,
@@ -658,6 +735,25 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     handleVoice,
     handleAudio,
     handleTopicDescription,
+    handleGuestMessage,
     dispatcher,
   };
+}
+
+/** Build a single-shot `InlineQueryResultArticle` carrying plain text. */
+function article(messageText: string): InlineQueryResult {
+  return {
+    type: "article",
+    id: randomUUID(),
+    title: "Goblin",
+    input_message_content: { message_text: messageText },
+  };
+}
+
+function busyArticle(): InlineQueryResult {
+  return article("⏳ I'm already thinking about something — try again in a moment.");
+}
+
+function errorArticle(): InlineQueryResult {
+  return article("⚠️ Something went wrong.");
 }

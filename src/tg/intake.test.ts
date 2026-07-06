@@ -13,10 +13,13 @@ import { ScheduleStore } from "../scheduler/store.ts";
 import {
   createTelegramIntake,
   replyNoActiveSession,
+  type GuestMessage,
   type PromptContent,
   type TelegramIntakeMessage,
 } from "./intake.ts";
 import type { MessageBuffer } from "./mod.ts";
+import type { GuestReplySink } from "./guest-sink.ts";
+import type { InlineQueryResult } from "@grammyjs/types";
 
 class MockAgentRunner {
   static nextPrompt?: (content: unknown, buffer: unknown) => Promise<void>;
@@ -51,6 +54,28 @@ class MockAgentRunner {
   get isStreaming(): boolean {
     return this.streaming;
   }
+}
+
+/** A GuestMessage capturing replyVia calls for assertions. */
+function makeGuestMessage(chatId = 99): {
+  message: GuestMessage;
+  results: InlineQueryResult[];
+  rejectNext: (err: Error) => void;
+} {
+  const results: InlineQueryResult[] = [];
+  let pendingReject: Error | undefined;
+  const message: GuestMessage = {
+    chatId,
+    replyVia: async (result) => {
+      if (pendingReject) {
+        const err = pendingReject;
+        pendingReject = undefined;
+        throw err;
+      }
+      results.push(result);
+    },
+  };
+  return { message, results, rejectNext: (err) => { pendingReject = err; } };
 }
 
 interface IntakeHarness {
@@ -898,5 +923,160 @@ describe("Telegram intake", () => {
     expect(replies.some((r) => r.startsWith("Saved voice-"))).toBe(false);
     const writtenVoices = readdirSync(cfg.goblinHome).filter((f) => /^voice-\d+\.oga$/.test(f));
     expect(writtenVoices).toEqual([]);
+  });
+
+  describe("handleGuestMessage", () => {
+    it("replies once with the full accumulated text on success", async () => {
+      const { intake } = makeHarness();
+      const { message, results } = makeGuestMessage();
+      MockAgentRunner.nextPrompt = async (_content, buffer) => {
+        const sink = buffer as GuestReplySink;
+        sink.onTextDelta("Hello, ");
+        sink.onTextDelta("guest!");
+      };
+
+      await intake.handleGuestMessage(message, "[prepared] hi");
+
+      expect(runners).toHaveLength(1);
+      expect(results).toHaveLength(1);
+      const r = results[0]!;
+      expect(r.type).toBe("article");
+      const article = r as { type: "article"; input_message_content: { message_text: string } };
+      expect(article.input_message_content.message_text).toBe("Hello, guest!");
+    });
+
+    it("passes the cleaned text to prompt (no prepare wrapper for guest)", async () => {
+      const { intake } = makeHarness();
+      const { message, results } = makeGuestMessage();
+      let captured: unknown;
+      MockAgentRunner.nextPrompt = async (content) => {
+        captured = content;
+      };
+
+      await intake.handleGuestMessage(message, "raw guest text");
+
+      expect(captured).toBe("raw guest text");
+      expect(results[0]!.type).toBe("article");
+    });
+
+    it("replies with the fallback when agent output is empty", async () => {
+      const { intake } = makeHarness();
+      const { message, results } = makeGuestMessage();
+      // No onTextDelta calls — sink.text stays empty.
+      MockAgentRunner.nextPrompt = async () => {};
+
+      await intake.handleGuestMessage(message, "hi");
+
+      expect(results).toHaveLength(1);
+      const article = results[0] as { type: "article"; input_message_content: { message_text: string } };
+      expect(article.input_message_content.message_text).toBe("(no response)");
+    });
+
+    it("sends a busy fallback without prompting when the runner is streaming", async () => {
+      const { intake } = makeHarness();
+      const pending = deferred();
+      MockAgentRunner.nextPrompt = async () => { await pending.promise; };
+
+      // First summon starts a streaming turn. Don't await it — it stays open.
+      const first = intake.handleGuestMessage(makeGuestMessage().message, "first");
+      await waitFor(() => runners[0]!.isStreaming);
+
+      // Second summon while busy: must not prompt, must reply busy fallback.
+      const { message: message2, results: results2 } = makeGuestMessage();
+      await intake.handleGuestMessage(message2, "second");
+
+      expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
+      expect(results2).toHaveLength(1);
+      const article = results2[0] as { type: "article"; input_message_content: { message_text: string } };
+      expect(article.input_message_content.message_text).toContain("already thinking");
+
+      pending.resolve();
+      await first;
+      await flushMicrotasks();
+    });
+
+    it("replies with the error fallback when prompt rejects", async () => {
+      const { intake } = makeHarness();
+      const { message, results } = makeGuestMessage();
+      MockAgentRunner.nextPrompt = async () => { throw new Error("model down"); };
+
+      await intake.handleGuestMessage(message, "hi");
+
+      expect(results).toHaveLength(1);
+      const article = results[0] as { type: "article"; input_message_content: { message_text: string } };
+      expect(article.input_message_content.message_text).toBe("⚠️ Something went wrong.");
+    });
+
+    it("swallows a replyVia rejection without throwing", async () => {
+      const { intake } = makeHarness();
+      const { message, results, rejectNext } = makeGuestMessage();
+      rejectNext(new Error("guest_query_id expired"));
+      MockAgentRunner.nextPrompt = async (_c, buffer) => {
+        (buffer as GuestReplySink).onTextDelta("text");
+      };
+
+      // Must not throw — the expired id is an inherent limitation.
+      await expect(intake.handleGuestMessage(message, "hi")).resolves.toBeUndefined();
+      expect(results).toHaveLength(0);
+    });
+
+    it("swallows a replyVia rejection on the error-fallback path too", async () => {
+      const { intake } = makeHarness();
+      const { message, results, rejectNext } = makeGuestMessage();
+      rejectNext(new Error("expired"));
+      MockAgentRunner.nextPrompt = async () => { throw new Error("turn failed"); };
+
+      await expect(intake.handleGuestMessage(message, "hi")).resolves.toBeUndefined();
+      expect(results).toHaveLength(0);
+    });
+
+    it("auto-creates a guest session keyed on the foreign chat id", async () => {
+      const { intake, manager } = makeHarness();
+      const { message, results } = makeGuestMessage(7777);
+      MockAgentRunner.nextPrompt = async () => {};
+
+      await intake.handleGuestMessage(message, "first");
+
+      // A guest binding for chat 7777 now exists.
+      expect(manager.peekBinding({ chatId: 7777 }, { isGuest: true })).not.toBeNull();
+      // And NOT a DM binding for the same id.
+      expect(manager.peekBinding({ chatId: 7777 })).toBeNull();
+      expect(results).toHaveLength(1);
+    });
+
+    it("reuses the same guest session on a second summon from the same chat", async () => {
+      const { intake, manager } = makeHarness();
+      MockAgentRunner.nextPrompt = async (_c, buffer) => {
+        (buffer as GuestReplySink).onTextDelta("ack");
+      };
+
+      await intake.handleGuestMessage(makeGuestMessage(7777).message, "first");
+      const firstSession = manager.peekBinding({ chatId: 7777 }, { isGuest: true });
+      expect(firstSession).not.toBeNull();
+
+      await intake.handleGuestMessage(makeGuestMessage(7777).message, "second");
+      const secondSession = manager.peekBinding({ chatId: 7777 }, { isGuest: true });
+
+      expect(secondSession!.sessionId).toBe(firstSession!.sessionId);
+      // Only one session was ever created.
+      expect(manager.list().filter((s) => s.chatId === 7777)).toHaveLength(1);
+    });
+
+    it("each InlineQueryResult article has a unique id and a title", async () => {
+      const { intake } = makeHarness();
+      const { message, results } = makeGuestMessage();
+      MockAgentRunner.nextPrompt = async (_c, buffer) => {
+        (buffer as GuestReplySink).onTextDelta("x");
+      };
+
+      await intake.handleGuestMessage(message, "a");
+      await intake.handleGuestMessage(makeGuestMessage().message, "b");
+
+      const ids = results.map((r) => (r as { id: string }).id);
+      expect(new Set(ids).size).toBe(ids.length);
+      for (const r of results) {
+        expect((r as { title: string }).title).toBe("Goblin");
+      }
+    });
   });
 });

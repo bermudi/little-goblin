@@ -51,9 +51,13 @@ export async function transcribeWithGroq(input: AsrInput): Promise<AsrResult> {
 
   const form = new FormData();
   const blob = new Blob([input.audioBytes], { type: input.mimeType });
-  form.append("file", blob, `voice.${extForMimeType(input.mimeType)}`);
+  // Append non-file fields first: Groq's parser validates the file part by its
+  // filename extension, and some multipart stacks treat the first file field
+  // as the upload target. The extension must be one Groq recognizes (ogg,
+  // opus, etc.); `.oga` is rejected with a "file must be one of..." error.
   form.append("model", input.model);
   form.append("response_format", "json");
+  form.append("file", blob, `voice.${extForMimeType(input.mimeType)}`);
 
   let resp: Response;
   try {
@@ -93,14 +97,15 @@ export async function transcribeWithGroq(input: AsrInput): Promise<AsrResult> {
 
 /**
  * Map an audio MIME type to a filename extension for the multipart `file`
- * field. Groq relies primarily on the Blob content type; the extension is a
- * secondary hint. `audio/ogg` (Telegram voice) maps to `oga`, matching the
- * project's voice-file naming; unknown types fall back to `bin`.
+ * field. Groq validates the upload by filename extension, not MIME type, so the
+ * extension must be one of its supported set (`flac mp3 mp4 mpeg mpga m4a ogg
+ * opus wav webm`). `audio/ogg` (Telegram voice) maps to `ogg` for the upload;
+ * the local saved copy still uses `.oga` per the project file naming spec.
  */
 function extForMimeType(mimeType: string): string {
   switch (mimeType) {
     case "audio/ogg":
-      return "oga";
+      return "ogg";
     case "audio/mpeg":
       return "mp3";
     case "audio/wav":

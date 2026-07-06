@@ -544,6 +544,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
         if (!asrResult.ok) {
           // Transport/API failure only; the sanitized error carries no secrets.
+          log.warn("voice transcription failed", { error: asrResult.error, sessionId: turn.session.id });
           if (isCurrent()) await message.reply("Sorry, I couldn't transcribe that voice message.");
           return;
         }

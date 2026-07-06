@@ -142,6 +142,27 @@ describe("transcribeWithGroq", () => {
     if (!result.ok) expect(result.error).toContain("malformed");
   });
 
+  it("uses a Groq-recognized filename extension and places the file field last", async () => {
+    const fetchMock = mock(async () =>
+      new Response(JSON.stringify({ text: "hello" }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    globalThis.fetch = fetchMock;
+
+    await transcribeWithGroq(baseInput({ mimeType: "audio/ogg" }));
+
+    const call = (globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls[0]!;
+    const init = call[1] as RequestInit;
+    const body = init.body as FormData;
+    const entries = Array.from(body.entries());
+    const names = entries.map(([k]) => k);
+    expect(names).toEqual(["model", "response_format", "file"]);
+
+    const fileEntry = entries[2]![1];
+    expect(fileEntry).toBeInstanceOf(Blob);
+    const file = fileEntry as Blob;
+    expect((file as File).name).toBe("voice.ogg");
+  });
+
   it("never includes the API key in any failure result or request body", async () => {
     // Drive through several failure paths and assert the key never appears.
     globalThis.fetch = mock(async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;

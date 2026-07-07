@@ -52,13 +52,13 @@
 
 ## Phase 4: Add backup and update scripts
 
-- [ ] Create `scripts/backup.sh` that:
+- [x] Create `scripts/backup.sh` that:
   - requires the `goblin` user or root,
   - creates `$GOBLIN_HOME/backups/` if missing,
   - writes `$GOBLIN_HOME/backups/goblin-home-<timestamp>.tar.gz`,
   - includes `workspace/`, `state/`, and `goblin.json5`,
   - excludes `scratch/`, `node_modules/`, `.git/`, and `*.tmp`.
-- [ ] Create `scripts/update.sh` that:
+- [x] Create `scripts/update.sh` that:
   - requires root,
   - pulls the latest code in `/opt/little-goblin`,
   - runs `bun install`,
@@ -66,10 +66,10 @@
   - runs `bun run validate-config`,
   - restarts the `goblin` service on success,
   - exits before restart if any check fails.
-- [ ] Add `backup` script to `package.json`.
-- [ ] Add `update` script to `package.json` pointing at `scripts/update.sh` (or leave it as a documented manual step).
-- [ ] Run `bun run typecheck`.
-- [ ] Commit: `production-packaging: phase 4 — backup and update scripts`.
+- [x] Add `backup` script to `package.json`.
+- [x] Add `update` script to `package.json` pointing at `scripts/update.sh` (or leave it as a documented manual step).
+- [x] Run `bun run typecheck`.
+- [x] Commit: `production-packaging: phase 4 — backup and update scripts`.
 
 ## Phase 5: Verify and document
 

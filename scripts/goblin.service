@@ -1,0 +1,18 @@
+[Unit]
+Description=Little Goblin Telegram bot
+After=network.target
+
+[Service]
+Type=simple
+User=goblin
+Group=goblin
+WorkingDirectory=/opt/little-goblin
+Environment="GOBLIN_HOME=/var/lib/goblin"
+ExecStart=/usr/local/bin/bun run src/index.ts
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

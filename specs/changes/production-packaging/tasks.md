@@ -23,16 +23,16 @@
 
 ## Phase 2: Add systemd service and installer helper
 
-- [ ] Create `scripts/goblin.service` with `User=goblin`, `Group=goblin`, `WorkingDirectory=/opt/little-goblin`, `Environment=GOBLIN_HOME=/var/lib/goblin`, `ExecStart=/usr/local/bin/bun run src/index.ts`, `Restart=on-failure`, `RestartSec=5`, and `StandardOutput=journal`/`StandardError=journal`.
-- [ ] Create `scripts/install-service.sh` that:
+- [x] Create `scripts/goblin.service` with `User=goblin`, `Group=goblin`, `WorkingDirectory=/opt/little-goblin`, `Environment=GOBLIN_HOME=/var/lib/goblin`, `ExecStart=/usr/local/bin/bun run src/index.ts`, `Restart=on-failure`, `RestartSec=5`, and `StandardOutput=journal`/`StandardError=journal`.
+- [x] Create `scripts/install-service.sh` that:
   - requires root,
   - copies `scripts/goblin.service` to `/etc/systemd/system/goblin.service`,
   - runs `systemctl daemon-reload`,
   - enables the service,
   - optionally starts it via `--start` flag.
-- [ ] Add `install-service` script to `package.json` pointing at `scripts/install-service.sh`.
-- [ ] Run `bun run typecheck`.
-- [ ] Commit: `production-packaging: phase 2 — systemd service and installer helper`.
+- [x] Add `install-service` script to `package.json` pointing at `scripts/install-service.sh`.
+- [x] Run `bun run typecheck`.
+- [x] Commit: `production-packaging: phase 2 — systemd service and installer helper`.
 
 ## Phase 3: Add end-to-end install script
 

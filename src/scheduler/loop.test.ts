@@ -9,7 +9,7 @@ import { heartbeatMdPath } from "../workspace/paths.ts";
 import type { Config } from "../config.ts";
 import type { ChatLocator } from "../sessions/types.ts";
 import type { SessionState } from "../sessions/mod.ts";
-import type { SchedulerClock, SchedulerDispatcher } from "./loop.ts";
+import type { SchedulerClock, SchedulerDispatcher, SchedulerSessionSource } from "./loop.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -36,6 +36,21 @@ function makeFakeDispatcher(): SchedulerDispatcher & {
     enqueueScheduledTurn(session, locator, content) {
       calls.push({ session, locator, content });
     },
+  };
+}
+
+/**
+ * Fake session source for eligibility tests. Returns canned `peekBinding` /
+ * `isArchived` results so the scheduler's due/binding/archived logic can be
+ * exercised without a filesystem-backed `SessionManager`.
+ */
+function makeFakeSessionSource(
+  peek: { sessionId: string; state: SessionState } | null,
+  archived = false,
+): SchedulerSessionSource {
+  return {
+    peekBinding: () => peek,
+    isArchived: () => archived,
   };
 }
 
@@ -328,22 +343,28 @@ describe("SchedulerLoop", () => {
 
   describe("stale bindings", () => {
     it("disables a schedule whose locator is now bound to a different session", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const first = manager.createForChat(loc);
+      // Eligibility test: uses a fake session source (no filesystem).
+      // The locator is now bound to a different session id than captured.
+      const capturedSessionId = "session-original";
+      const reboundState: SessionState = {
+        id: "session-rebound",
+        chatId: 100,
+        createdAt: new Date(NOW_MS).toISOString(),
+      } as SessionState;
       const created = store.create({
-        sessionId: first.id,
-        locator: loc,
+        sessionId: capturedSessionId,
+        locator: { chatId: 100 },
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
         intervalMs: 3600_000,
       });
-      // Rebind the locator to a brand-new session (e.g. /new in a DM).
-      manager.createForChat(loc);
+      const source = makeFakeSessionSource({ sessionId: reboundState.id, state: reboundState });
 
-      await makeLoop().tick();
+      const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
+      await loop.tick();
 
-      const after = store.getForSession(first.id, created.id);
+      const after = store.getForSession(capturedSessionId, created.id);
       expect(after!.enabled).toBe(false);
       expect(after!.state).toBe("disabled");
       expect(after!.lastRun!.outcome).toBe("binding-mismatch");
@@ -351,20 +372,22 @@ describe("SchedulerLoop", () => {
     });
 
     it("disables a schedule whose locator resolves to no session (mismatch)", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      // Eligibility test: peekBinding returns null (no live binding).
+      const sessionId = "session-unbound";
       const created = store.create({
-        sessionId: session.id,
-        locator: { chatId: 999 }, // different, unbound locator captured
+        sessionId,
+        locator: { chatId: 999 }, // unbound locator
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
         intervalMs: 3600_000,
       });
+      const source = makeFakeSessionSource(null);
 
-      await makeLoop().tick();
+      const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
+      await loop.tick();
 
-      const after = store.getForSession(session.id, created.id);
+      const after = store.getForSession(sessionId, created.id);
       expect(after!.enabled).toBe(false);
       expect(after!.lastRun!.outcome).toBe("binding-mismatch");
       expect(dispatcher.calls).toHaveLength(0);
@@ -373,58 +396,48 @@ describe("SchedulerLoop", () => {
 
   describe("archived session skip", () => {
     it("disables the schedule with outcome 'archived' and does not recreate the session", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      // Eligibility test: uses a fake session source that reports the session
+      // as archived. The scheduler SHALL label it "archived" and not dispatch.
+      const sessionId = "session-archived";
       const created = store.create({
-        sessionId: session.id,
-        locator: loc,
+        sessionId,
+        locator: { chatId: 100 },
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
         intervalMs: 3600_000,
       });
-      manager.archive(session.id);
+      // peekBinding returns null (binding cleared by archive) AND isArchived is
+      // true — the two signals the scheduler combines to label "archived".
+      const source = makeFakeSessionSource(null, true);
 
-      const sessionsBefore = manager.list().length;
-      await makeLoop().tick();
-      const sessionsAfter = manager.list().length;
+      const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
+      await loop.tick();
 
-      // SHALL NOT recreate or resume the archived session.
-      expect(sessionsAfter).toBe(sessionsBefore);
-      // The archived session is not in the live list.
-      expect(manager.list().some((s) => s.id === session.id)).toBe(false);
-
-      const after = store.getForSession(session.id, created.id);
+      const after = store.getForSession(sessionId, created.id);
       expect(after!.enabled).toBe(false);
       expect(after!.lastRun!.outcome).toBe("archived");
       expect(dispatcher.calls).toHaveLength(0);
     });
 
     it("labels a deleted-but-not-archived session as binding-mismatch, not archived", async () => {
-      // Pattern C precision: only sessions archived via archive() get the
-      // "archived" outcome. A session whose dir was removed manually (or that
-      // simply never existed for the captured locator) is a binding-mismatch.
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      // Eligibility test: peekBinding returns null but isArchived is false —
+      // a manually-deleted dir (never archived) is a binding-mismatch.
+      const sessionId = "session-deleted";
       const created = store.create({
-        sessionId: session.id,
-        locator: loc,
+        sessionId,
+        locator: { chatId: 100 },
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
         intervalMs: 3600_000,
       });
-      // Simulate deletion without archive: clear the DM binding and remove the
-      // dir directly, so peekBinding returns null and isArchived is false.
-      const { rmSync } = await import("node:fs");
-      const { sessionDir } = await import("../sessions/paths.ts");
-      rmSync(sessionDir(tmpDir, session.id), { recursive: true, force: true });
-      // The DM binding in config.json still references the deleted session;
-      // peekBinding reads binding + loadState, finds state missing → null.
+      const source = makeFakeSessionSource(null, false);
 
-      await makeLoop().tick();
+      const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
+      await loop.tick();
 
-      const after = store.getForSession(session.id, created.id);
+      const after = store.getForSession(sessionId, created.id);
       expect(after!.enabled).toBe(false);
       expect(after!.lastRun!.outcome).toBe("binding-mismatch");
       expect(dispatcher.calls).toHaveLength(0);

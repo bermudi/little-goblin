@@ -11,10 +11,10 @@ Commit: `phase 1: add SchedulerSessionSource seam`
 
 ## Phase 2: Fake the session source in eligibility tests
 
-- [ ] Add `makeFakeSessionSource()` to `src/scheduler/loop.test.ts` mirroring `makeFakeDispatcher()` (`loop.test.ts:30`): returns configurable `peekBinding` (canned `{sessionId, state} | null`) and `isArchived` (canned boolean). Covers: `Eligibility tests inject a fake session source`.
-- [ ] Update `beforeEach` (`loop.test.ts:71-73`): drop `mkdtempSync` + `new SessionManager` + `manager.init()` for eligibility tests; inject `makeFakeSessionSource()` instead. Keep filesystem setup only for tests that exercise the real `ScheduleStore`.
-- [ ] Convert the eligibility tests (due-and-bound, archived, binding-mismatch) to drive the fake session source. Update the `restartedManager` tests at `loop.test.ts:285, 312` if they are session-source restarts; otherwise leave them. Covers: `Archived schedule detected via the seam`.
-- [ ] Run `bun test src/scheduler/loop.test.ts` and `bun run typecheck`.
+- [x] Add `makeFakeSessionSource()` to `src/scheduler/loop.test.ts` mirroring `makeFakeDispatcher()` (`loop.test.ts:30`): returns configurable `peekBinding` (canned `{sessionId, state} | null`) and `isArchived` (canned boolean). Covers: `Eligibility tests inject a fake session source`.
+- [x] Update `beforeEach` (`loop.test.ts:71-73`): drop `mkdtempSync` + `new SessionManager` + `manager.init()` for eligibility tests; inject `makeFakeSessionSource()` instead. Keep filesystem setup only for tests that exercise the real `ScheduleStore`. NOTE: the shared `beforeEach` still constructs a real `SessionManager` because the majority of tests in the file (dispatch, queueing, heartbeat, timing, stop) exercise dispatch behavior and legitimately set up real bindings via `manager.createForChat`. Per design D4, only the eligibility-focused tests (stale bindings, archived skip) were converted to the fake — they no longer reference `manager` at all (verified: 0 manager refs in those blocks). The `restartedManager` tests at 285/312 are ScheduleStore-restart tests (they re-read persisted schedules from disk), not session-source restarts — left on the real manager.
+- [x] Convert the eligibility tests (due-and-bound, archived, binding-mismatch) to drive the fake session source. Update the `restartedManager` tests at `loop.test.ts:285, 312` if they are session-source restarts; otherwise leave them. Covers: `Archived schedule detected via the seam`.
+- [x] Run `bun test src/scheduler/loop.test.ts` and `bun run typecheck`.
 
 Commit: `phase 2: fake session source in scheduler tests`
 

@@ -72,6 +72,11 @@ describe("runPreflight", () => {
     await expect(runPreflight(cfg)).rejects.toThrow("Preflight failed: GOBLIN_HOME directories are writable");
   });
 
+  test("warns only when Groq ASR is configured but unreachable", async () => {
+    const cfg = buildConfig({ goblinHome: home, groqApiKey: "invalid-key" });
+    await expect(runPreflight(cfg)).resolves.toBeUndefined();
+  });
+
   test("fails when atomic write read-back mismatches", async () => {
     // No direct way to force a mismatch without mocking atomicWrite. This test
     // documents that the function exercises the atomic path; the happy-path

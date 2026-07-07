@@ -50,7 +50,7 @@ For a homelab server that survives reboots, run the packaging installer as root 
 sudo bash scripts/install.sh
 ```
 
-This creates a dedicated `goblin` user, installs `bun` if needed, clones the repo to `/opt/little-goblin`, runs `bun run onboard` if no config exists, validates the config, and installs a systemd service that auto-starts on boot.
+This creates a dedicated `goblin` user, installs `bun` if needed, clones the repo to `/opt/little-goblin`, runs `bun run onboard` if no config exists, validates the config, and installs a systemd service that auto-starts on boot. (The same script is aliased as `bun run install:prod` for discovery, but it must still be run as root.)
 
 Once installed:
 
@@ -69,6 +69,8 @@ sudo bash scripts/update.sh   # pull latest code, run checks, then restart gobli
 ```
 
 `scripts/update.sh` only restarts the service if the typecheck and `bun run validate-config` pass, so a bad deploy cannot leave the bot down.
+
+`scripts/backup.sh` is safe to run while the service is running: most state files are written atomically (tmp + rename). The exception is `state/transcript.jsonl`, which is appended line-by-line; a live backup may capture a partial trailing line.
 
 ## Core ideas
 

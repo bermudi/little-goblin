@@ -1,6 +1,7 @@
 import { access, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import type { Config } from "./config.ts";
 import { resolveModel } from "./agent/models.ts";
 import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
@@ -53,6 +54,8 @@ export async function runPreflight(cfg: Config): Promise<void> {
 
   await ctx.check("GOBLIN_HOME directories are writable", async () => {
     await checkDirectoryWritable(cfg.goblinHome);
+    await checkDirectoryWritable(join(cfg.goblinHome, "workspace"));
+    await checkDirectoryWritable(join(cfg.goblinHome, "scratch"));
     await checkDirectoryWritable(skillsPath(cfg.goblinHome));
     await checkDirectoryWritable(sessionsDir(cfg.goblinHome));
     await checkDirectoryWritable(memoryDir(cfg.goblinHome));
@@ -75,6 +78,14 @@ export async function runPreflight(cfg: Config): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     });
   });
+
+  if (cfg.groqApiKey) {
+    await checkGroqAsrAvailable(cfg.groqApiKey).catch((err) => {
+      log.warn("preflight: Groq ASR not reachable", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
 }
 
 function checkDirectoryWritable(dir: string): Promise<void> {
@@ -85,7 +96,7 @@ function checkDirectoryWritable(dir: string): Promise<void> {
         return;
       }
       // Write and immediately remove a probe file to prove writability.
-      const probe = join(dir, `.preflight-${Date.now()}.tmp`);
+      const probe = join(dir, `.preflight-${randomBytes(6).toString("hex")}.tmp`);
       try {
         writeFileSync(probe, "");
         rmSync(probe, { force: true });
@@ -98,8 +109,8 @@ function checkDirectoryWritable(dir: string): Promise<void> {
 }
 
 async function checkAtomicWrite(dir: string): Promise<void> {
-  const expected = `preflight-${Date.now()}`;
-  const target = join(dir, `.preflight-atomic-${Date.now()}.txt`);
+  const expected = `preflight-${randomBytes(6).toString("hex")}`;
+  const target = join(dir, `.preflight-atomic-${randomBytes(6).toString("hex")}.txt`);
   atomicWrite(target, expected);
   const actual = await import("node:fs").then(({ readFileSync }) => readFileSync(target, "utf-8"));
   if (actual !== expected) {
@@ -146,4 +157,19 @@ function checkEdgeTtsAvailable(): Promise<void> {
       }
     });
   });
+}
+
+async function checkGroqAsrAvailable(apiKey: string): Promise<void> {
+  const req = new Request("https://api.groq.com/openai/v1/models", {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(5_000),
+  });
+  try {
+    const res = await fetch(req);
+    if (!res.ok) {
+      throw new Error(`Groq ASR API returned HTTP ${res.status}`);
+    }
+  } catch (err) {
+    throw new Error(`Groq ASR unreachable: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }

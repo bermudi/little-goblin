@@ -16,7 +16,7 @@ if [[ ! -d "${repo_dir}/.git" ]]; then
 fi
 
 echo "Pulling latest code..."
-git -C "${repo_dir}" pull
+su -s /bin/bash "${user}" -c "cd ${repo_dir} && git pull"
 
 echo "Installing dependencies..."
 su -s /bin/bash "${user}" -c "cd ${repo_dir} && bun install"

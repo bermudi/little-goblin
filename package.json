@@ -10,10 +10,10 @@
     "dev": "bun --watch run src/index.ts",
     "onboard": "bun run src/onboard.ts",
     "validate-config": "bun run src/validate-config.ts",
-    "install": "bash scripts/install.sh",
+    "install:prod": "bash scripts/install.sh",
     "install-service": "bash scripts/install-service.sh",
     "backup": "bash scripts/backup.sh",
-    "update": "bash scripts/update.sh",
+    "update:prod": "bash scripts/update.sh",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

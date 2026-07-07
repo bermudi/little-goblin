@@ -2,7 +2,7 @@
 
 ## Phase 1: Add startup preflight and config validator
 
-- [ ] Create `src/preflight.ts` with `runPreflight(cfg)` that:
+- [x] Create `src/preflight.ts` with `runPreflight(cfg)` that:
   - validates `goblin.json5` loaded correctly (already done by `loadConfig`),
   - checks the selected model's required API key is resolvable via `resolveModel()`,
   - verifies `workspace/`, `state/`, and `scratch/` are writable,
@@ -10,16 +10,16 @@
   - checks Edge TTS availability when `voiceName` is configured (warn only),
   - checks Groq ASR availability when `groqApiKey` is configured (warn only),
   - fails fast with a clear error on critical checks.
-- [ ] Create `src/validate-config.ts` CLI entry point that loads config and calls `runPreflight()`, then prints go/no-go and exits accordingly.
-- [ ] Wire `runPreflight(cfg)` into `src/index.ts` after `ensureGoblinHome(cfg)` and before `buildBot(cfg)`.
-- [ ] Add `validate-config` script to `package.json`.
-- [ ] Add `src/preflight.test.ts` covering:
+- [x] Create `src/validate-config.ts` CLI entry point that loads config and calls `runPreflight()`, then prints go/no-go and exits accordingly.
+- [x] Wire `runPreflight(cfg)` into `src/index.ts` after `ensureGoblinHome(cfg)` and before `buildBot(cfg)`.
+- [x] Add `validate-config` script to `package.json`.
+- [x] Add `src/preflight.test.ts` covering:
   - happy path with writable directories and good atomic write,
   - failure when state directory is read-only,
   - failure when model API key is missing,
   - warning-only when Edge TTS is missing.
-- [ ] Run `bun run typecheck` and `bun test`.
-- [ ] Commit: `production-packaging: phase 1 — preflight and validate-config`.
+- [x] Run `bun run typecheck` and `bun test`.
+- [x] Commit: `production-packaging: phase 1 — preflight and validate-config`.
 
 ## Phase 2: Add systemd service and installer helper
 

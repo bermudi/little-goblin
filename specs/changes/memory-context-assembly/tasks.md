@@ -2,12 +2,12 @@
 
 ## Phase 1: Centralize the active-scope conversion
 
-- [ ] Add `activeMemoryScopeFor(activeScope)` (the body duplicated in four places) to `src/memory/scope.ts` and export it. Covers: `Active-scope-to-memory-scope conversion has one home`.
-- [ ] Delete the private copy in `src/memory/reflector.ts:450` and import from `scope.ts`.
-- [ ] Delete the private copy in `src/memory/tool.ts:340` and import from `scope.ts`.
-- [ ] Delete the private copy in `src/memory/snapshot.ts:172` and import from `scope.ts`.
-- [ ] Delete the private copy in `src/memory/search.ts:306` and import from `scope.ts`.
-- [ ] Run `bun test src/memory` and `bun run typecheck`. Existing memory tests must pass unchanged (behavior identical, only the call site changed).
+- [x] Add `activeMemoryScopeFor(activeScope)` (the body duplicated in four places) to `src/memory/scope.ts` and export it. Covers: `Active-scope-to-memory-scope conversion has one home`.
+- [x] Delete the private copy in `src/memory/reflector.ts:450` and import from `scope.ts`.
+- [x] Delete the private copy in `src/memory/tool.ts:340` and import from `scope.ts`. NOTE: tool.ts named its copy `activeMemoryScope` (no `For` suffix); the two call sites were updated to `activeMemoryScopeFor` and the unused `MemoryScope` type import was kept (still used by `resolveReadScope`/`resolveWriteScope` signatures).
+- [x] Delete the private copy in `src/memory/snapshot.ts:172` and import from `scope.ts`. NOTE: `MemoryScope` type import dropped (was only used by the deleted local function's signature); `ActiveScope` kept.
+- [x] Delete the private copy in `src/memory/search.ts:306` and import from `scope.ts`.
+- [x] Run `bun test src/memory` and `bun run typecheck`. Existing memory tests must pass unchanged (behavior identical, only the call site changed).
 
 Commit: `phase 1: centralize active-scope conversion`
 

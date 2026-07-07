@@ -37,7 +37,7 @@ import {
   type EntryMetadata,
   type EntrySourceRole,
 } from "./entry.ts";
-import { scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
+import { activeMemoryScopeFor, scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -381,16 +381,6 @@ function writeCursor(home: string, sessionId: string, cursor: ReflectionCursor):
 // ---------------------------------------------------------------------------
 // Scope resolution
 // ---------------------------------------------------------------------------
-
-function activeMemoryScopeFor(activeScope: ActiveScope): MemoryScope {
-  if (activeScope.topicScope === "general") return "general";
-  return {
-    topic: {
-      chatId: activeScope.chatId,
-      topicId: activeScope.topicScope.topicId,
-    },
-  };
-}
 
 function resolveScope(
   target: "user" | "memory",

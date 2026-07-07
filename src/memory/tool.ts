@@ -1,7 +1,7 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { MemoryStore, StoreResult } from "./store.ts";
-import type { ActiveScope, MemoryScope } from "./scope.ts";
+import { activeMemoryScopeFor, type ActiveScope, type MemoryScope } from "./scope.ts";
 import { VALID_NAME_RE } from "../subagents/named-agents.ts";
 import { checkDescriptionSafety, checkMemorySafety } from "./safety.ts";
 import { personaPolicyFor, searchMemoryEntries, type PersonaPolicy } from "./search.ts";
@@ -312,7 +312,7 @@ function resolveReadScope(activeScope: ActiveScope, input: MemoryReadInput): Mem
     return { agent: { name: activeScope.namedAgent.name } };
   }
   const scope = input.scope ?? "active";
-  if (scope === "active") return activeMemoryScope(activeScope);
+  if (scope === "active") return activeMemoryScopeFor(activeScope);
   if (scope === "general") return "general";
   if ("agent" in scope) {
     if (!VALID_NAME_RE.test(scope.agent.name)) {
@@ -334,15 +334,5 @@ function resolveWriteScope(activeScope: ActiveScope, target: MemoryTarget): Memo
     }
     return { agent: { name: activeScope.namedAgent.name } };
   }
-  return activeMemoryScope(activeScope);
-}
-
-function activeMemoryScope(activeScope: ActiveScope): MemoryScope {
-  if (activeScope.topicScope === "general") return "general";
-  return {
-    topic: {
-      chatId: activeScope.chatId,
-      topicId: activeScope.topicScope.topicId,
-    },
-  };
+  return activeMemoryScopeFor(activeScope);
 }

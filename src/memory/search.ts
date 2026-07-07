@@ -21,7 +21,7 @@ import {
   stripEntryMetadata,
   type EntryMetadata,
 } from "./entry.ts";
-import { scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
+import { activeMemoryScopeFor, scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -301,16 +301,6 @@ async function enumerateScopes(
   }
 
   return scopes;
-}
-
-function activeMemoryScopeFor(activeScope: ActiveScope): MemoryScope {
-  if (activeScope.topicScope === "general") return "general";
-  return {
-    topic: {
-      chatId: activeScope.chatId,
-      topicId: activeScope.topicScope.topicId,
-    },
-  };
 }
 
 // ---------------------------------------------------------------------------

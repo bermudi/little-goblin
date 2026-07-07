@@ -1,5 +1,6 @@
 import { MemoryStore } from "./store.ts";
-import type { ActiveScope, MemoryScope } from "./scope.ts";
+import { activeMemoryScopeFor } from "./scope.ts";
+import type { ActiveScope } from "./scope.ts";
 import {
   personaPolicyFor,
   searchMemoryEntries,
@@ -167,16 +168,6 @@ async function formatRelevantMemory(
 function splitEntries(body: string): string[] {
   if (body.length === 0) return [];
   return body.split("\n§\n");
-}
-
-function activeMemoryScopeFor(activeScope: ActiveScope): MemoryScope {
-  if (activeScope.topicScope === "general") return "general";
-  return {
-    topic: {
-      chatId: activeScope.chatId,
-      topicId: activeScope.topicScope.topicId,
-    },
-  };
 }
 
 async function formatScope(

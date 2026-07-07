@@ -10,8 +10,8 @@ Commit: `phase 1: add transcript module`
 
 ## Phase 2: Route the writer through the module
 
-- [ ] Update `src/agent/events.ts`: delete the local `TranscriptEntry` interface (and `TranscriptContent`/`TranscriptUsage` if relocated), import `TranscriptEntry` and `appendTranscriptEntry` from `sessions/transcript.ts`. Keep `transcriptEntryFromEvent` in events.ts returning the imported type. The `message_end` write path calls the module's writer. Covers modified: `Write transcript entries on message completion`.
-- [ ] Run `bun test src/agent/events.test.ts` (if present) and `bun run typecheck`.
+- [x] Update `src/agent/events.ts`: delete the local `TranscriptEntry` interface (and `TranscriptContent`/`TranscriptUsage` if relocated), import `TranscriptEntry` and `appendTranscriptEntry` from `sessions/transcript.ts`. Keep `transcriptEntryFromEvent` in events.ts returning the imported type. The `message_end` write path calls the module's writer. Covers modified: `Write transcript entries on message completion`.
+- [x] Run `bun test src/agent/events.test.ts` (if present) and `bun run typecheck`.
 
 Commit: `phase 2: route transcript writer through the module`
 

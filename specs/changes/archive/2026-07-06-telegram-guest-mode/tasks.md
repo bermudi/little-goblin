@@ -57,10 +57,10 @@ Commit: `tg: wire guest_message handling`
 
 ## Phase 5: live verification
 
-- [ ] Restart the bot in the `boo` session and confirm `bot online as`
-- [ ] From the allowlisted account, send a guest mention in a foreign chat; confirm a single reply arrives in the foreign chat (not a DM to yourself)
-- [ ] From a non-allowlisted account, send a guest mention; confirm NO reply and a `dropping guest_message from non-allowed user` debug line in scrollback with no `guest_query_id` in the payload
-- [ ] Send a second guest mention from the same foreign chat; confirm the reply references prior context (per-chat session continuity)
-- [ ] Check scrollback: confirm no `guest_query_id` value appears anywhere in logs; confirm `state/sessions/<id>/state.json` and `transcript.jsonl` for the guest session contain no `guest_query_id`
+- [x] Restart the bot in the `boo` session and confirm `bot online as`
+- [x] From the allowlisted account, send a guest mention in a foreign chat; confirm a single reply arrives in the foreign chat (not a DM to yourself)
+- [x] From a non-allowlisted account, send a guest mention; confirm NO reply and a `dropping guest_message from non-allowed user` debug line in scrollback with no `guest_query_id` in the payload
+- [x] Send a second guest mention from the same foreign chat; confirm the reply references prior context (per-chat session continuity)
+- [x] Check scrollback: confirm no `guest_query_id` value appears anywhere in logs; confirm `state/sessions/<id>/state.json` and `transcript.jsonl` for the guest session contain no `guest_query_id`
 
 Commit: `telegram-guest-mode: live verification complete` (or amend into phase 4 — operator's choice)

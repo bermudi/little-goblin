@@ -87,4 +87,4 @@
 
 - [x] Run `bun test` — all tests pass
 - [x] Run `bun run --bun tsc --noEmit` — type check passes
-- [ ] Manual smoke test: send `/start`, `/new`, `/project ~/build/little-goblin`, a message, `/queue test`, `/cancel` — verify tags render as monospaced `[ok]`/`[info]`/`[queued]` in Telegram, agent markdown renders, system messages don't ping
+- [x] Manual smoke test: send `/start`, `/new`, `/project ~/build/little-goblin`, a message, `/queue test`, `/cancel` — verify tags render as monospaced `[ok]`/`[info]`/`[queued]` in Telegram, agent markdown renders, system messages don't ping

@@ -3,7 +3,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { AgentRunner } from "../agent/mod.ts";
+import { AgentRunner, type TurnCallbacks } from "../agent/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -11,11 +11,21 @@ import {
   createSendDocumentTool,
   createSendPhotoTool,
   createSendVoiceTool,
-} from "./tools.ts";
-import { createTextToSpeechTool, MessageBuffer } from "./mod.ts";
+} from "../tg/tools.ts";
+import { createTextToSpeechTool } from "../tg/mod.ts";
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
+
+/**
+ * The opaque sink a turn dispatches through — the subset of `MessageBuffer`
+ * that `runner.prompt(content, sink)` consumes. Typed as `TurnCallbacks` so the
+ * dispatcher does not depend on the concrete `MessageBuffer` type or on
+ * `src/tg/`. The Telegram layer injects a factory that produces real
+ * `MessageBuffer` instances; the dispatcher is transport-agnostic at the type
+ * level.
+ */
+export type TurnSink = TurnCallbacks;
 
 function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number) => Promise<string | null> {
   return async (chatId, topicId) => {
@@ -46,35 +56,40 @@ export interface TurnDispatcherOptions {
   agentRunners: Map<string, AgentRunner>;
   promptQueues?: Map<string, Promise<void>>;
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
-  createMessageBuffer?: (locator: ChatLocator) => MessageBuffer;
+  /**
+   * Mandatory factory that builds the turn sink for a locator. The dispatcher
+   * never constructs a `MessageBuffer` itself — the Telegram-aware caller
+   * (intake) injects this so rendering knowledge stays in `src/tg/`.
+   */
+  createMessageBuffer: (locator: ChatLocator) => TurnSink;
 }
 
 /**
  * Shared turn dispatcher: owns `AgentRunner` creation, per-session fresh-turn
- * queues, `MessageBuffer` creation, and runner disposal. Both Telegram intake
- * and the scheduled-turn scheduler dispatch through this so a due scheduled
- * prompt and a Telegram message serialize through the same per-session chain.
+ * queues, turn-sink creation, and runner disposal. Both Telegram intake and the
+ * scheduled-turn scheduler dispatch through this so a due scheduled prompt and
+ * a Telegram message serialize through the same per-session chain.
  *
  * The stale-runner guard (`isCurrent()`) is the linchpin: when a runner is
- * swapped (by `/new` or `/resume`) before a queued turn starts, the queued
- * work detects it is no longer current and aborts before producing
- * user-visible side effects. This covers the "stale runner guard aborts
- * scheduled turn" orchestration scenario.
+ * swapped (by `/new` or `/resume`) before a queued turn starts, the queued work
+ * detects it is no longer current and aborts before producing user-visible side
+ * effects.
  *
- * Lives in `src/tg/` because it creates `MessageBuffer` instances and beta
- * Telegram tools (see design.md dependency note). The `src/scheduler/ →
- * src/tg/` import is intentional.
+ * Lives in `src/orchestration/` — turn serialization is an orchestration
+ * concern, not a Telegram concern. The dispatcher does not import the
+ * `MessageBuffer` type; it obtains its turn sink through the injected
+ * `createMessageBuffer` factory.
  */
 export class TurnDispatcher {
-  readonly runners: Map<string, AgentRunner>;
-  readonly promptQueues: Map<string, Promise<void>>;
+  private readonly runners: Map<string, AgentRunner>;
+  private readonly promptQueues: Map<string, Promise<void>>;
   private readonly cfg: Config;
   private readonly bot: Bot;
   private readonly manager: SessionManager;
   private readonly subagentRunner: SubagentRunner;
   private readonly memoryStore: MemoryStore;
   private readonly createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
-  private readonly createMessageBufferFn?: (locator: ChatLocator) => MessageBuffer;
+  private readonly createMessageBufferFn: (locator: ChatLocator) => TurnSink;
   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
 
   constructor(options: TurnDispatcherOptions) {
@@ -88,6 +103,22 @@ export class TurnDispatcher {
     this.createAgentRunner = options.createAgentRunner;
     this.createMessageBufferFn = options.createMessageBuffer;
     this.getTopicName = buildGetTopicName(this.memoryStore);
+  }
+
+  /**
+   * Return the current runner for a session, or null if none exists. Replaces
+   * direct reads of the (now-private) `runners` map.
+   */
+  getRunner(sessionId: string): AgentRunner | null {
+    return this.runners.get(sessionId) ?? null;
+  }
+
+  /**
+   * True when a runner is currently registered for a session. Replaces direct
+   * `runners.has(...)` reads of the (now-private) map.
+   */
+  hasRunner(sessionId: string): boolean {
+    return this.runners.has(sessionId);
   }
 
   /**
@@ -127,20 +158,12 @@ export class TurnDispatcher {
   }
 
   /**
-   * Create a `MessageBuffer` targeting a Telegram surface.
+   * Build the turn sink for a locator via the injected factory. Always
+   * delegates to `createMessageBufferFn` — there is no fallback, the factory
+   * is mandatory at construction.
    */
-  createMessageBuffer(locator: ChatLocator): MessageBuffer {
-    if (this.createMessageBufferFn) return this.createMessageBufferFn(locator);
-    const topicId = locator.topicId;
-    return new MessageBuffer(this.bot, locator.chatId, topicId, {
-      visibility: this.cfg.toolVisibility,
-      onTopicNotFound:
-        topicId !== undefined
-          ? async () => {
-              await this.memoryStore.archiveOrphan(locator.chatId, topicId);
-            }
-          : undefined,
-    });
+  createMessageBuffer(locator: ChatLocator): TurnSink {
+    return this.createMessageBufferFn(locator);
   }
 
   /**

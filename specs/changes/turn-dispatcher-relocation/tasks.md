@@ -2,19 +2,19 @@
 
 ## Phase 1: Relocate the dispatcher and encapsulate the runners map
 
-- [ ] Create `src/orchestration/dispatcher.ts` by moving `TurnDispatcher` from `src/tg/turn-dispatcher.ts`. Make `runners` private. Add `getRunner(sessionId): AgentRunner | null` returning the current runner or null. Remove the internal `new MessageBuffer(...)` fallback at `turn-dispatcher.ts:135`; `createMessageBuffer` always delegates to `createMessageBufferFn`, which becomes mandatory at construction. Covers: `Turn serialization lives in the orchestration layer`, `Turn dispatcher runners map is encapsulated`.
-- [ ] Delete `src/tg/turn-dispatcher.ts` (no re-export shim).
-- [ ] Update `src/tg/intake.ts`: import `TurnDispatcher` from `../orchestration/dispatcher.ts`; construct the dispatcher with a `createMessageBuffer` factory containing the `MessageBuffer` construction logic that previously lived in the dispatcher (`turn-dispatcher.ts:132-144`, including the `onTopicNotFound` orphan-archive hook). Replace `dispatcher.runners.get(session.id)` at `intake.ts:274, 381` with `dispatcher.getRunner(session.id)`. Covers: `Turn serialization lives in the orchestration layer` (intake injects factory), `Turn dispatcher runners map is encapsulated`.
-- [ ] Update `src/bot.ts` (`bot.ts:21`) and `src/index.ts` imports of `TurnDispatcher` to the new path.
-- [ ] Run `bun run typecheck` and fix all broken import paths.
+- [x] Create `src/orchestration/dispatcher.ts` by moving `TurnDispatcher` from `src/tg/turn-dispatcher.ts`. Make `runners` private. Add `getRunner(sessionId): AgentRunner | null` returning the current runner or null. Remove the internal `new MessageBuffer(...)` fallback at `turn-dispatcher.ts:135`; `createMessageBuffer` always delegates to `createMessageBufferFn`, which becomes mandatory at construction. Covers: `Turn serialization lives in the orchestration layer`, `Turn dispatcher runners map is encapsulated`. NOTE: the factory type is the opaque `TurnSink` (= `TurnCallbacks`, the subset of `MessageBuffer` that `runner.prompt` consumes), not `MessageBuffer` — so the dispatcher drops its `MessageBuffer` import entirely (design D2). Also added `hasRunner(sessionId)` since `intake.test.ts` needed the `has` check.
+- [x] Delete `src/tg/turn-dispatcher.ts` (no re-export shim).
+- [x] Update `src/tg/intake.ts`: import `TurnDispatcher` from `../orchestration/dispatcher.ts`; construct the dispatcher with a `createMessageBuffer` factory containing the `MessageBuffer` construction logic that previously lived in the dispatcher (`turn-dispatcher.ts:132-144`, including the `onTopicNotFound` orphan-archive hook). Replace `dispatcher.runners.get(session.id)` at `intake.ts:274, 381` with `dispatcher.getRunner(session.id)`. Covers: `Turn serialization lives in the orchestration layer` (intake injects factory), `Turn dispatcher runners map is encapsulated`. NOTE: the factory is now constructed inside `createTelegramIntake` (defaulting to the `MessageBuffer` builder when `options.createMessageBuffer` is absent) — this fixes the half-wired seam where prod `buildBot` never passed a factory and the dispatcher's internal fallback fired.
+- [x] Update `src/bot.ts` (`bot.ts:21`) and `src/index.ts` imports of `TurnDispatcher` to the new path. NOTE: only `bot.ts` imported the type; `index.ts` references `TurnDispatcher` in a comment only and receives the instance via `buildBot`'s return — no import to update there.
+- [x] Run `bun run typecheck` and fix all broken import paths.
 
 Commit: `phase 1: relocate TurnDispatcher to orchestration`
 
 ## Phase 2: Decouple the scheduler from the Telegram layer
 
-- [ ] Update `src/scheduler/loop.ts`: delete `import type { TurnDispatcher } from "../tg/turn-dispatcher.ts"` (`loop.ts:5`); change `SchedulerOptions.dispatcher` from `SchedulerDispatcher | TurnDispatcher` to `SchedulerDispatcher` (`loop.ts:93`). Covers: `Turn serialization lives in the orchestration layer` (scheduler imports from orchestration, not tg).
-- [ ] Verify `src/index.ts:23` still compiles passing the concrete dispatcher (now typed as `SchedulerDispatcher`); no runtime change.
-- [ ] Run `bun test src/scheduler/loop.test.ts` and `bun run typecheck`. The `makeFakeDispatcher` fake is unchanged.
+- [x] Update `src/scheduler/loop.ts`: delete `import type { TurnDispatcher } from "../tg/turn-dispatcher.ts"` (`loop.ts:5`); change `SchedulerOptions.dispatcher` from `SchedulerDispatcher | TurnDispatcher` to `SchedulerDispatcher` (`loop.ts:93`). Covers: `Turn serialization lives in the orchestration layer` (scheduler imports from orchestration, not tg).
+- [x] Verify `src/index.ts:23` still compiles passing the concrete dispatcher (now typed as `SchedulerDispatcher`); no runtime change.
+- [x] Run `bun test src/scheduler/loop.test.ts` and `bun run typecheck`. The `makeFakeDispatcher` fake is unchanged.
 
 Commit: `phase 2: decouple scheduler from telegram layer`
 

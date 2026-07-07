@@ -15,9 +15,9 @@ import { interruptAndCascade } from "../interrupt.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
-import { TurnDispatcher, type PromptContent } from "./turn-dispatcher.ts";
+import { TurnDispatcher, type PromptContent, type TurnSink } from "../orchestration/dispatcher.ts";
 import { transcribeWithGroq } from "../asr/mod.ts";
-import type { MessageBuffer } from "./mod.ts";
+import { MessageBuffer } from "./mod.ts";
 import { GuestReplySink } from "./guest-sink.ts";
 import { type ReplyOpts, sendSystemReply } from "./format.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
@@ -71,7 +71,13 @@ export interface TelegramIntakeOptions {
   agentRunners: Map<string, AgentRunner>;
   promptQueues?: Map<string, Promise<void>>;
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
-  createMessageBuffer?: (locator: ChatLocator) => MessageBuffer;
+  /**
+   * Optional override for the turn-sink factory. Production leaves this unset
+   * and `createTelegramIntake` builds the default `MessageBuffer` factory
+   * (Telegram rendering + the `onTopicNotFound` orphan-archive hook). Tests
+   * inject a fake to observe sink creation without a real `MessageBuffer`.
+   */
+  createMessageBuffer?: (locator: ChatLocator) => TurnSink;
   /** Shared schedule store for `/schedule`. Wired in Phase 6 (bot.ts). */
   scheduleStore?: ScheduleStore;
 }
@@ -173,6 +179,22 @@ export function replyNoActiveSession(message: TelegramIntakeMessage, locator: Ch
 
 export function createTelegramIntake(options: TelegramIntakeOptions) {
   const { cfg, bot, manager, subagentRunner, memoryStore } = options;
+  // The turn-sink factory: builds a `MessageBuffer` targeting the Telegram
+  // surface for a locator. This rendering logic lived inside the dispatcher
+  // before relocation; it moves here (the Telegram layer) so the dispatcher
+  // stays transport-agnostic. Tests override via `options.createMessageBuffer`.
+  const createMessageBuffer = options.createMessageBuffer ?? ((locator: ChatLocator): TurnSink => {
+    const topicId = locator.topicId;
+    return new MessageBuffer(bot, locator.chatId, topicId, {
+      visibility: cfg.toolVisibility,
+      onTopicNotFound:
+        topicId !== undefined
+          ? async () => {
+              await memoryStore.archiveOrphan(locator.chatId, topicId);
+            }
+          : undefined,
+    });
+  });
   const dispatcher = new TurnDispatcher({
     cfg,
     bot,
@@ -182,7 +204,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     agentRunners: options.agentRunners,
     promptQueues: options.promptQueues,
     createAgentRunner: options.createAgentRunner,
-    createMessageBuffer: options.createMessageBuffer,
+    createMessageBuffer,
   });
 
   function recordAssistantReply(sessionId: string, text: string): void {
@@ -271,7 +293,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // Re-resolve the runner: a queued `/new` or `/resume` in the same
         // chain may have swapped it. If it's gone, the turn's session is no
         // longer bound here, so drop the deferred command.
-        const currentRunner = dispatcher.runners.get(session.id);
+        const currentRunner = dispatcher.getRunner(session.id);
         if (!currentRunner) return;
         const result = await handleCommand({
           command,
@@ -378,7 +400,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     }
 
     const session = manager.resolve(locator, { isSupergroup: message.isSupergroup });
-    const existingRunner = session ? dispatcher.runners.get(session.id) ?? null : null;
+    const existingRunner = session ? dispatcher.getRunner(session.id) : null;
     const command = parseCommand(rawText);
     if (command !== null) {
       const def = resolveCommand(command);

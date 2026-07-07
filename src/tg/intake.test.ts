@@ -783,7 +783,7 @@ describe("Telegram intake", () => {
     expect(firstRunner.prompt).toHaveBeenCalledTimes(1);
     expect(firstRunner.prompt.mock.calls[0]![0]).toBe("[prepared] slow");
     // No new runner was created for the scheduled turn (isCurrent() aborted).
-    expect(dispatcher.runners.has(session.id)).toBe(false);
+    expect(dispatcher.hasRunner(session.id)).toBe(false);
   });
 
   it("transcribes a voice message into a transcript prompt without a projectDir", async () => {

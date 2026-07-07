@@ -18,7 +18,7 @@ import {
   type PromptContent,
   type TelegramIntakeMessage,
 } from "./tg/intake.ts";
-import type { TurnDispatcher } from "./tg/turn-dispatcher.ts";
+import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent

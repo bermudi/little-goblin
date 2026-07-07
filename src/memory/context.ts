@@ -34,9 +34,8 @@ export type MemoryCaller =
  * vs `{kind:"own"}` from `activeScope.namedAgent`. That works for main and
  * named-subagent (where namedAgent is set), but it returns `{kind:"all"}` for
  * anonymous subagents (whose namedAgent is null) — wrong. This caller-typed
- * resolver is the correct one for search-tool persona gating.
- * `personaPolicyFor(activeScope)` remains for the internal snapshot
- * relevant-memory path which still keys off `activeScope`.
+ * resolver is the single source of truth for both search tools and the
+ * snapshot's `## relevant memory` section.
  */
 export function personaPolicyForCaller(caller: MemoryCaller): PersonaPolicy {
   switch (caller.kind) {

@@ -7,6 +7,7 @@ import {
   createMemoryReadTool,
   createMemoryWriteTool,
   type ActiveScope,
+  type MemoryIndex,
 } from "../../memory/mod.ts";
 import { memoryDir } from "../../memory/paths.ts";
 import { SubagentRunner } from "../mod.ts";
@@ -207,11 +208,11 @@ describe("SubagentRunner — scoped memory", () => {
 
     expect(readIndex).toBeDefined();
     const index = await readIndex!.execute("ri-named", {});
+    const parsed = jsonOf<MemoryIndex>(index);
 
     // Named subagent's index does NOT include other agents
-    // This is intentional isolation - subagents don't see peer personas
-    // When includeAgents is false, the agents field is omitted (undefined)
-    expect((index as { agents?: unknown[] }).agents).toBeUndefined();
+    // This is intentional isolation - subagents don't see peer personas.
+    expect(parsed.agents).toEqual([]);
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -352,7 +353,7 @@ describe("SubagentRunner — scoped memory", () => {
   }
 
   /** Parse the JSON payload of a tool's text result. */
-  function jsonOf(result: unknown): { results: Array<{ scope: string; text: string }> } {
+  function jsonOf<T>(result: unknown): T {
     const r = result as { content: Array<{ type: string; text: string }> };
     return JSON.parse(r.content[0]!.text);
   }
@@ -392,7 +393,9 @@ describe("SubagentRunner — scoped memory", () => {
 
     const search = captureTools().find((t) => t.name === "memory_search")!;
     expect(search).toBeDefined();
-    const out = jsonOf(await search.execute("ms-named", { query: "deployment" }));
+    const out = jsonOf<{ results: Array<{ scope: string; text: string }> }>(
+      await search.execute("ms-named", { query: "deployment" }),
+    );
     const scopes = new Set(out.results.map((r) => r.scope));
 
     // Own persona is searched.
@@ -423,7 +426,9 @@ describe("SubagentRunner — scoped memory", () => {
 
     const search = captureTools().find((t) => t.name === "memory_search")!;
     expect(search).toBeDefined();
-    const out = jsonOf(await search.execute("ms-anon", { query: "deployment" }));
+    const out = jsonOf<{ results: Array<{ scope: string; text: string }> }>(
+      await search.execute("ms-anon", { query: "deployment" }),
+    );
     const scopes = new Set(out.results.map((r) => r.scope));
 
     expect(scopes.has("agents/researcher")).toBe(false);

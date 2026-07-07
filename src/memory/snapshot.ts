@@ -2,12 +2,11 @@ import { MemoryStore } from "./store.ts";
 import { activeMemoryScopeFor } from "./scope.ts";
 import type { ActiveScope } from "./scope.ts";
 import {
-  personaPolicyFor,
   searchMemoryEntries,
   stripEntryMetadata,
   type PersonaPolicy,
 } from "./search.ts";
-import { includeAgentsFor, personaSectionFor, type MemoryCaller } from "./context.ts";
+import { includeAgentsFor, personaPolicyForCaller, personaSectionFor, type MemoryCaller } from "./context.ts";
 
 /**
  * Per-turn memory aside.
@@ -78,6 +77,7 @@ export async function formatSnapshot(
     ...args,
     includePersona: personaSectionFor(args.caller),
     includeAgents: includeAgentsFor(args.caller),
+    personaPolicy: personaPolicyForCaller(args.caller),
   });
 }
 
@@ -85,6 +85,7 @@ export async function formatSnapshot(
 type ResolvedSnapshotArgs = Omit<FormatSnapshotArgs, "caller"> & {
   includePersona?: { name: string };
   includeAgents: boolean;
+  personaPolicy: PersonaPolicy;
 };
 
 async function formatScopedSnapshot(args: ResolvedSnapshotArgs): Promise<MemorySnapshotPayload | null> {
@@ -156,9 +157,7 @@ async function formatRelevantMemory(
   args: ResolvedSnapshotArgs,
   activeMemoryBody: string,
 ): Promise<string[]> {
-  const persona: PersonaPolicy = args.includePersona !== undefined
-    ? { kind: "own", name: args.includePersona.name }
-    : personaPolicyFor(args.activeScope);
+  const persona = args.personaPolicy;
   const requested = args.relevantLimit ?? DEFAULT_RELEVANT_LIMIT;
   const limit = Math.min(Math.max(1, requested), MAX_RELEVANT_LIMIT);
 

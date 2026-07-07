@@ -20,8 +20,8 @@ Commit: `phase 2: fake session source in scheduler tests`
 
 ## Phase 3: Boundary check and validation
 
-- [ ] Grep `src/scheduler/loop.ts` for any remaining `SessionManager` references beyond type-only imports for `SessionState`/`ChatLocator`; confirm the runtime dependency is gone.
-- [ ] Confirm `SchedulerLoop` no longer references `this.manager`.
-- [ ] Run full validation: `litespec validate scheduler-session-source`, `bun test`, `bun run typecheck`.
+- [x] Grep `src/scheduler/loop.ts` for any remaining `SessionManager` references beyond type-only imports for `SessionState`/`ChatLocator`; confirm the runtime dependency is gone. NOTE: the only remaining `SessionManager` mentions are in docstring comments (the `SchedulerSessionSource` interface doc, the `SchedulerLoop` class doc, and the `isArchived` helper doc) — they document the structural-satisfaction relationship. The runtime import and type dependency are gone.
+- [x] Confirm `SchedulerLoop` no longer references `this.manager`.
+- [x] Run full validation: `litespec validate scheduler-session-source`, `bun test`, `bun run typecheck`.
 
 Commit: `phase 3: finalize scheduler session source seam`

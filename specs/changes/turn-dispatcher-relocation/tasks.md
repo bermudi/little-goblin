@@ -20,10 +20,10 @@ Commit: `phase 2: decouple scheduler from telegram layer`
 
 ## Phase 3: Boundary check and validation
 
-- [ ] Grep for any remaining `from.*tg/turn-dispatcher` imports across `src/` and update stragglers.
-- [ ] Grep for any remaining direct `.runners.get(` or `.runners.` reads outside `orchestration/dispatcher.ts`; confirm there are none.
-- [ ] Confirm no module under `src/scheduler/` imports anything from `src/tg/` (the cross-layer leak is closed).
-- [ ] Update affected tests (`src/tg/intake.test.ts` and any test importing `TurnDispatcher`).
-- [ ] Run full validation: `litespec validate turn-dispatcher-relocation`, `bun test`, `bun run typecheck`.
+- [x] Grep for any remaining `from.*tg/turn-dispatcher` imports across `src/` and update stragglers.
+- [x] Grep for any remaining direct `.runners.get(` or `.runners.` reads outside `orchestration/dispatcher.ts`; confirm there are none.
+- [x] Confirm no module under `src/scheduler/` imports anything from `src/tg/` (the cross-layer leak is closed).
+- [x] Update affected tests (`src/tg/intake.test.ts` and any test importing `TurnDispatcher`). NOTE: `intake.test.ts` had one `.runners.has(...)` assertion — replaced with `hasRunner(...)`. No test imported `TurnDispatcher` from the old path directly (tests exercise it via `createTelegramIntake`).
+- [x] Run full validation: `litespec validate turn-dispatcher-relocation`, `bun test`, `bun run typecheck`.
 
 Commit: `phase 3: finalize dispatcher relocation boundary`

@@ -10,7 +10,7 @@ The dispatcher side already has a seam — `SchedulerDispatcher` (`loop.ts:81-88
 
 ## Scope
 
-Affected capabilities: `scheduler` (a new capability — `scheduled-turns` shipped but its canon was not archived; this change treats scheduler as a first-class capability and writes its first canon spec) and `sessions`.
+Affected capabilities: `orchestration` (scheduler semantics live in the orchestration canon, introduced by the archived `scheduled-turns` change — `Scheduler dispatches due turns through the per-session queue` and `Scheduler lifecycle follows bot lifecycle`) and `sessions`.
 
 This change introduces:
 
@@ -24,5 +24,5 @@ This change introduces:
 - No change to `SessionManager`'s public surface — it just gains `SchedulerSessionSource` as an explicit interface it already structurally satisfies.
 - No change to the dispatcher seam (`SchedulerDispatcher` is unchanged).
 - No multi-process scheduler, no distributed locking (those remain backlog).
-- Not extracting a `SchedulerClock`/`SchedulerTimer` seam — only the session-source and dispatcher seams are in scope, and the dispatcher is already done.
-- Not retroactively backfilling scheduler canon beyond what's needed to spec the new seam. A future change can consolidate the full scheduler capability spec from `scheduled-turns` if desired.
+- Not extracting a `SchedulerClock`/`SchedulerTimer` seam — only the session-source seam is in scope; the dispatcher and clock seams already exist.
+- Not retroactively backfilling scheduler canon. The scheduler requirements already live in the `orchestration` capability spec (folded in by the archived `scheduled-turns` change); this change adds a seam to the existing `Scheduler dispatches due turns through the per-session queue` requirement rather than minting a new capability.

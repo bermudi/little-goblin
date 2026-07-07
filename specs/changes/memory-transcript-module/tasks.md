@@ -25,7 +25,7 @@ Commit: `phase 3: route transcript reader through the module`
 
 ## Phase 4: Boundary check and validation
 
-- [ ] Grep the tree for any remaining direct `JSON.parse` of `transcript.jsonl` lines or private `TranscriptEntry`/`RawTranscriptEntry` redeclarations outside `src/sessions/transcript.ts`; fix any stragglers. Covers: `Writer is the sole producer`, `Reader is the sole consumer`.
-- [ ] Run full validation: `litespec validate memory-transcript-module`, `bun test`, `bun run typecheck`.
+- [x] Grep the tree for any remaining direct `JSON.parse` of `transcript.jsonl` lines or private `TranscriptEntry`/`RawTranscriptEntry` redeclarations outside `src/sessions/transcript.ts`; fix any stragglers. Covers: `Writer is the sole producer`, `Reader is the sole consumer`. NOTE: `src/commands/voice.ts` (`readLastAssistantMessage`) is a separate transcript consumer outside this change's scope (proposal Non-Goals: "the reflector remains the only consumer in this change"). It uses `unknown` + narrowing rather than a private type, so it is not a straggler from the consolidated seam.
+- [x] Run full validation: `litespec validate memory-transcript-module`, `bun test`, `bun run typecheck`.
 
 Commit: `phase 4: finalize transcript module boundary`

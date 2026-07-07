@@ -2,16 +2,16 @@ import { loadConfig, ensureGoblinHome } from "./config.ts";
 import { buildBot } from "./bot.ts";
 import { log, initLog } from "./log.ts";
 import { validateModelAtStartup } from "./agent/poe-validate.ts";
-import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
 import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
 import { syncTelegramMenu } from "./commands/registry.ts";
 import { SchedulerLoop } from "./scheduler/loop.ts";
+import { runPreflight } from "./preflight.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
   initLog(cfg.logLevel);
   ensureGoblinHome(cfg);
-  await preflightGoblinPromptFiles({ home: cfg.goblinHome, warn: log.warn });
+  await runPreflight(cfg);
   await validateModelAtStartup(cfg, log);
   const { bot, manager, subagentRunner, agentRunners, scheduleStore, dispatcher } = buildBot(cfg);
   manager.init();

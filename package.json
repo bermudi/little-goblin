@@ -9,6 +9,7 @@
     "start": "bun run src/index.ts",
     "dev": "bun --watch run src/index.ts",
     "onboard": "bun run src/onboard.ts",
+    "validate-config": "bun run src/validate-config.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

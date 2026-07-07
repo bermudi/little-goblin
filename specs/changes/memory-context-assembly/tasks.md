@@ -32,8 +32,8 @@ Commit: `phase 3: route memory callers through the context module`
 
 ## Phase 4: Boundary check and validation
 
-- [ ] Grep the tree for any remaining `includeAgents`, `includePersona`, or hand-rolled `persona: { kind:` knobs at call sites outside the memory layer; the only remaining occurrences should be inside `context.ts`/`snapshot.ts`/`tool.ts` internals.
-- [ ] Grep for any remaining private `activeMemoryScopeFor`/`activeMemoryScope` definitions outside `src/memory/scope.ts`; fix stragglers.
-- [ ] Run full validation: `litespec validate memory-context-assembly`, `bun test`, `bun run typecheck`.
+- [x] Grep the tree for any remaining `includeAgents`, `includePersona`, or hand-rolled `persona: { kind:` knobs at call sites outside the memory layer; the only remaining occurrences should be inside `context.ts`/`snapshot.ts`/`tool.ts` internals.
+- [x] Grep for any remaining private `activeMemoryScopeFor`/`activeMemoryScope` definitions outside `src/memory/scope.ts`; fix stragglers.
+- [x] Run full validation: `litespec validate memory-context-assembly`, `bun test`, `bun run typecheck`.
 
 Commit: `phase 4: finalize memory context assembly`

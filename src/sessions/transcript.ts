@@ -46,12 +46,13 @@ export interface TranscriptEntry {
 
 /**
  * A simplified transcript line extracted for the reflection pipeline.
- * `index` is the absolute 0-based line index in the transcript file
- * (malformed lines are counted but carry empty text). `text` is the
- * concatenation of all `{ type: "text" }` content blocks.
+ * `index` is the absolute 0-based logical line index in the transcript
+ * file (one per non-blank line; blank lines are not counted, malformed
+ * lines are counted but carry empty text). `text` is the concatenation
+ * of all `{ type: "text" }` content blocks.
  */
 export interface TranscriptLine {
-  /** Zero-based index in the transcript file. */
+  /** Zero-based logical line index (non-blank lines only). */
   index: number;
   role: "user" | "assistant" | "toolResult" | "unknown";
   /** Concatenated text content (text blocks joined; non-text blocks ignored). */
@@ -221,14 +222,16 @@ export function extractEntryText(content: unknown): string {
 }
 
 /**
- * Read transcript entries with absolute line indices ≥ `processedLines`,
+ * Read transcript entries with logical line indices ≥ `processedLines`,
  * returning simplified {@link TranscriptLine} records for the reflection
  * pipeline. Returns `[]` when the transcript file does not exist yet.
  *
- * Indices are absolute across the whole file: malformed lines are counted
- * toward the cursor (an entry is emitted with role `"unknown"` and empty text)
- * so the reflection cursor's `processedLines` stays aligned regardless of
- * corruption. Entries before `processedLines` are skipped.
+ * Indices are logical (non-blank) line counts, matching how the reflection
+ * cursor seeds and advances `processedLines`: malformed lines are counted
+ * toward the cursor (an entry is emitted with role `"unknown"` and empty
+ * text) so the cursor stays aligned regardless of corruption; blank lines
+ * are skipped and do NOT advance the logical index. Entries before
+ * `processedLines` are skipped.
  */
 export function readTranscriptAfter(
   home: string,
@@ -245,24 +248,27 @@ export function readTranscriptAfter(
   }
   const lines = raw.split("\n");
   const result: TranscriptLine[] = [];
+  let lineIndex = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (line.trim().length === 0) continue;
-    if (i < processedLines) continue;
+    const index = lineIndex;
+    lineIndex++;
+    if (index < processedLines) continue;
     let entry: TranscriptEntry;
     try {
       entry = JSON.parse(line) as TranscriptEntry;
     } catch {
-      // Skip malformed lines — the cursor tracks line indices, not byte offsets,
-      // so a skipped line still counts toward processedLines.
-      result.push({ index: result.length + processedLines, role: "unknown", text: "", ts: new Date().toISOString() });
+      // Skip malformed lines — the cursor tracks logical line indices, not
+      // byte offsets, so a skipped line still counts toward processedLines.
+      result.push({ index, role: "unknown", text: "", ts: new Date().toISOString() });
       continue;
     }
     const role = entry.role === "user" || entry.role === "assistant" || entry.role === "toolResult"
       ? entry.role
       : "unknown";
     result.push({
-      index: result.length + processedLines,
+      index,
       role,
       text: extractEntryText(entry.content),
       ts: entry.ts ?? new Date().toISOString(),

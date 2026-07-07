@@ -164,12 +164,13 @@ async function checkGroqAsrAvailable(apiKey: string): Promise<void> {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal: AbortSignal.timeout(5_000),
   });
+  let res: Response;
   try {
-    const res = await fetch(req);
-    if (!res.ok) {
-      throw new Error(`Groq ASR API returned HTTP ${res.status}`);
-    }
+    res = await fetch(req);
   } catch (err) {
     throw new Error(`Groq ASR unreachable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!res.ok) {
+    throw new Error(`Groq ASR API returned HTTP ${res.status}`);
   }
 }

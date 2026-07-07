@@ -192,5 +192,41 @@ describe("transcript module", () => {
       expect(tail[1]!.index).toBe(3);
       expect(tail[1]!.text).toBe("d");
     });
+
+    it("interior blank lines do not desync the cursor from logical indices", () => {
+      // Hand-write a transcript with an interior blank line. The writer never
+      // produces these, but external corruption can. The cursor is a logical
+      // (non-blank) count, so the skip guard must use a logical counter too —
+      // otherwise the blank line shifts physical indices and entries get
+      // re-processed.
+      const path = transcriptPath(tmpDir, sessionId);
+      const good1 = JSON.stringify({ ts: "2026-07-07T10:00:00.000Z", role: "user", content: "first" });
+      const good2 = JSON.stringify({ ts: "2026-07-07T10:00:02.000Z", role: "assistant", content: [{ type: "text", text: "second" }] });
+      const good3 = JSON.stringify({ ts: "2026-07-07T10:00:03.000Z", role: "user", content: "third" });
+      // blank line between good1 and good2
+      writeFileSync(path, `${good1}\n\n${good2}\n${good3}\n`, "utf-8");
+
+      // First pass: seed cursor to 3 (three non-blank lines).
+      const all = readTranscriptAfter(tmpDir, sessionId, 0);
+      expect(all).toHaveLength(3);
+      expect(all[0]!.index).toBe(0);
+      expect(all[0]!.text).toBe("first");
+      expect(all[1]!.index).toBe(1);
+      expect(all[1]!.text).toBe("second");
+      expect(all[2]!.index).toBe(2);
+      expect(all[2]!.text).toBe("third");
+
+      // Second pass with processedLines=3 → nothing new (no re-processing).
+      const none = readTranscriptAfter(tmpDir, sessionId, 3);
+      expect(none).toEqual([]);
+
+      // processedLines=1 → only the second and third logical lines.
+      const tail = readTranscriptAfter(tmpDir, sessionId, 1);
+      expect(tail).toHaveLength(2);
+      expect(tail[0]!.index).toBe(1);
+      expect(tail[0]!.text).toBe("second");
+      expect(tail[1]!.index).toBe(2);
+      expect(tail[1]!.text).toBe("third");
+    });
   });
 });

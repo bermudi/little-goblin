@@ -29,6 +29,7 @@ import {
   createMemorySearchTool,
   createMemoryWriteTool,
   formatSnapshot,
+  type MemoryCaller,
 } from "../memory/mod.ts";
 import { resolveModel } from "../agent/models.ts";
 import { log } from "../log.ts";
@@ -112,6 +113,14 @@ async function _runInstanceInner(
     settingsManager: services.settingsManager,
   });
 
+  // The caller descriptor is constant across this run: a named subagent
+  // sees only its own persona; an anonymous subagent sees none. Compute
+  // once and reuse for the memory tools and the per-turn snapshot.
+  const caller: MemoryCaller =
+    instance.role === "named" && instance.name !== null
+      ? { kind: "named-subagent", name: instance.name }
+      : { kind: "anonymous-subagent" };
+
   const { session } = await createAgentSession({
     cwd,
     agentDir: piAgentDir(cfg.goblinHome),
@@ -130,10 +139,7 @@ async function _runInstanceInner(
       createMemoryReadIndexTool({
         store: memoryStore,
         activeScope: instance.activeScope,
-        caller:
-          instance.role === "named" && instance.name !== null
-            ? { kind: "named-subagent", name: instance.name }
-            : { kind: "anonymous-subagent" },
+        caller,
       }),
       // memory_search mirrors memory_read_index gating but with finer persona
       // control: a named subagent searches its own persona scope; an anonymous
@@ -142,10 +148,7 @@ async function _runInstanceInner(
       createMemorySearchTool({
         store: memoryStore,
         activeScope: instance.activeScope,
-        caller:
-          instance.role === "named" && instance.name !== null
-            ? { kind: "named-subagent", name: instance.name }
-            : { kind: "anonymous-subagent" },
+        caller,
       }),
       createMemoryWriteTool({ store: memoryStore, activeScope: instance.activeScope }),
     ],
@@ -202,10 +205,7 @@ async function _runInstanceInner(
     const aside = await formatSnapshot({
       store: memoryStore,
       activeScope: instance.activeScope,
-      caller:
-        instance.role === "named" && instance.name !== null
-          ? { kind: "named-subagent", name: instance.name }
-          : { kind: "anonymous-subagent" },
+      caller,
     });
     if (aside !== null) {
       await session.sendCustomMessage(aside, { deliverAs: "nextTurn" });

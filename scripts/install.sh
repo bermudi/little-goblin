@@ -54,12 +54,12 @@ if [[ ! -d "${repo_dir}/.git" ]]; then
   git clone "${repo_url}" "${repo_dir}"
 else
   repo_existed=1
-  old_head="$(git -C "${repo_dir}" rev-parse HEAD)"
+  old_head="$(su -s /bin/bash "${user}" -c "git -C ${repo_dir} rev-parse HEAD")"
   echo "Updating existing repository at ${repo_dir}..."
-  git -C "${repo_dir}" fetch origin
-  git -C "${repo_dir}" checkout main
-  git -C "${repo_dir}" pull origin main
-  new_head="$(git -C "${repo_dir}" rev-parse HEAD)"
+  su -s /bin/bash "${user}" -c "git -C ${repo_dir} fetch origin"
+  su -s /bin/bash "${user}" -c "git -C ${repo_dir} checkout main"
+  su -s /bin/bash "${user}" -c "git -C ${repo_dir} pull origin main"
+  new_head="$(su -s /bin/bash "${user}" -c "git -C ${repo_dir} rev-parse HEAD")"
 fi
 
 chown -R "${user}:${group}" "${repo_dir}"

@@ -20,7 +20,7 @@ async function main(): Promise<void> {
   // peekBinding validation. Shares the same ScheduleStore and TurnDispatcher
   // as Telegram intake, so scheduled turns serialize through the same
   // per-session queue as /queue and media prompts.
-  const scheduler = new SchedulerLoop({ store: scheduleStore, manager, dispatcher, home: cfg.goblinHome });
+  const scheduler = new SchedulerLoop({ store: scheduleStore, sessionSource: manager, dispatcher, home: cfg.goblinHome });
   scheduler.start();
 
   // Graceful shutdown. grammy's start() resolves when stop() is called.

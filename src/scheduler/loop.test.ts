@@ -81,7 +81,7 @@ describe("SchedulerLoop", () => {
   });
 
   function makeLoop(): SchedulerLoop {
-    return new SchedulerLoop({ store, manager, dispatcher, clock: clock.clock, home: tmpDir });
+    return new SchedulerLoop({ store, sessionSource: manager, dispatcher, clock: clock.clock, home: tmpDir });
   }
 
   describe("constants and prompt", () => {
@@ -284,7 +284,7 @@ describe("SchedulerLoop", () => {
       const restartedStore = new ScheduleStore(tmpDir);
       const restartedManager = new SessionManager(makeTestConfig(tmpDir));
       restartedManager.init();
-      const restartedLoop = new SchedulerLoop({ store: restartedStore, manager: restartedManager, dispatcher, clock: clock.clock, home: tmpDir });
+      const restartedLoop = new SchedulerLoop({ store: restartedStore, sessionSource: restartedManager, dispatcher, clock: clock.clock, home: tmpDir });
 
       await restartedLoop.tick();
       await restartedLoop.tick();
@@ -311,7 +311,7 @@ describe("SchedulerLoop", () => {
       const restartedStore = new ScheduleStore(tmpDir);
       const restartedManager = new SessionManager(makeTestConfig(tmpDir));
       restartedManager.init();
-      const restartedLoop = new SchedulerLoop({ store: restartedStore, manager: restartedManager, dispatcher, clock: clock.clock, home: tmpDir });
+      const restartedLoop = new SchedulerLoop({ store: restartedStore, sessionSource: restartedManager, dispatcher, clock: clock.clock, home: tmpDir });
 
       await restartedLoop.tick();
       await restartedLoop.tick();
@@ -449,7 +449,7 @@ describe("SchedulerLoop", () => {
           throw new Error("boom");
         },
       };
-      const loop = new SchedulerLoop({ store, manager, dispatcher: throwingDispatcher, clock: clock.clock, home: tmpDir });
+      const loop = new SchedulerLoop({ store, sessionSource: manager, dispatcher: throwingDispatcher, clock: clock.clock, home: tmpDir });
 
       // The tick must not reject even though dispatch threw.
       await expect(loop.tick()).resolves.toBeUndefined();
@@ -492,7 +492,7 @@ describe("SchedulerLoop", () => {
           throw new Error("sync boom");
         },
       };
-      const loop = new SchedulerLoop({ store, manager, dispatcher: throwingDispatcher, clock: clock.clock, home: tmpDir });
+      const loop = new SchedulerLoop({ store, sessionSource: manager, dispatcher: throwingDispatcher, clock: clock.clock, home: tmpDir });
 
       await expect(loop.tick()).resolves.toBeUndefined();
 
@@ -697,7 +697,7 @@ describe("SchedulerLoop", () => {
       writeFileSync(blockingFile, "x", "utf-8");
       const loop = new SchedulerLoop({
         store,
-        manager,
+        sessionSource: manager,
         dispatcher,
         clock: clock.clock,
         // `home` only feeds resolveHeartbeatPrompt; store/manager use tmpDir.
@@ -756,7 +756,7 @@ describe("SchedulerLoop", () => {
       };
       const loop = new SchedulerLoop({
         store,
-        manager,
+        sessionSource: manager,
         dispatcher: mixedDispatcher,
         clock: clock.clock,
         home: tmpDir,
@@ -783,7 +783,7 @@ describe("SchedulerLoop", () => {
       };
       const loop = new SchedulerLoop({
         store,
-        manager,
+        sessionSource: manager,
         dispatcher,
         clock: countingClock,
         home: tmpDir,
@@ -810,7 +810,7 @@ describe("SchedulerLoop", () => {
       };
       const loop = new SchedulerLoop({
         store,
-        manager,
+        sessionSource: manager,
         dispatcher,
         clock: countingClock,
         home: tmpDir,

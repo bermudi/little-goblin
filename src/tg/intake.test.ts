@@ -723,7 +723,7 @@ describe("Telegram intake", () => {
     });
     const loop = new SchedulerLoop({
       store,
-      manager,
+      sessionSource: manager,
       dispatcher: intake.dispatcher,
       clock: fixedClock(now),
       home: cfg.goblinHome,

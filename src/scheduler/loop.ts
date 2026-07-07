@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { log } from "../log.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
-import type { ChatLocator, SessionManager, SessionState } from "../sessions/mod.ts";
+import type { ChatLocator, SessionState } from "../sessions/mod.ts";
 import type { TurnDispatcher } from "../tg/turn-dispatcher.ts";
 import type { ScheduledTurn } from "./types.ts";
 import type { ScheduleStore } from "./store.ts";
@@ -87,9 +87,21 @@ export interface SchedulerDispatcher {
   ): void;
 }
 
+/**
+ * The minimal session surface the scheduler needs: a non-mutating binding
+ * peek and an archived check. `SessionManager` satisfies this structurally
+ * (its `peekBinding(loc, opts?)` accepts an optional second arg the seam
+ * omits — scheduled turns never carry `isGuest`). Injected so eligibility
+ * tests can fake sessions without a filesystem.
+ */
+export interface SchedulerSessionSource {
+  peekBinding(loc: ChatLocator): { sessionId: string; state: SessionState } | null;
+  isArchived(sessionId: string): boolean;
+}
+
 export interface SchedulerOptions {
   store: ScheduleStore;
-  manager: SessionManager;
+  sessionSource: SchedulerSessionSource;
   dispatcher: SchedulerDispatcher | TurnDispatcher;
   /** `$GOBLIN_HOME`, used to resolve the heartbeat prompt file at dispatch time. */
   home: string;
@@ -113,7 +125,7 @@ export interface SchedulerOptions {
  */
 export class SchedulerLoop {
   private readonly store: ScheduleStore;
-  private readonly manager: SessionManager;
+  private readonly sessionSource: SchedulerSessionSource;
   private readonly dispatcher: SchedulerDispatcher;
   private readonly clock: SchedulerClock;
   private readonly tickIntervalMs: number;
@@ -123,7 +135,7 @@ export class SchedulerLoop {
 
   constructor(options: SchedulerOptions) {
     this.store = options.store;
-    this.manager = options.manager;
+    this.sessionSource = options.sessionSource;
     this.dispatcher = options.dispatcher;
     this.clock = options.clock ?? realClock;
     this.tickIntervalMs = options.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS;
@@ -208,7 +220,7 @@ export class SchedulerLoop {
 
     // Validate the captured binding via the NON-MUTATING peek. Never resolve(),
     // which auto-creates sessions for topic/supergroup locators.
-    const peeked = this.manager.peekBinding(schedule.locator);
+    const peeked = this.sessionSource.peekBinding(schedule.locator);
 
     if (peeked === null) {
       // No binding resolves to a live session. Distinguish archived (the
@@ -273,6 +285,6 @@ export class SchedulerLoop {
    * `manager.list()` scan the prior heuristic used.
    */
   private isArchived(sessionId: string): boolean {
-    return this.manager.isArchived(sessionId);
+    return this.sessionSource.isArchived(sessionId);
   }
 }

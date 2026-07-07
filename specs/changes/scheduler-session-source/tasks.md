@@ -2,10 +2,10 @@
 
 ## Phase 1: Introduce the SchedulerSessionSource seam
 
-- [ ] Add `SchedulerSessionSource` interface to `src/scheduler/loop.ts` (alongside `SchedulerDispatcher` and `SchedulerClock`): `peekBinding(loc: ChatLocator): { sessionId: string; state: SessionState } | null` and `isArchived(sessionId: string): boolean`. Covers modified: `Scheduler dispatches due turns through the per-session queue`.
-- [ ] Rename `SchedulerOptions.manager: SessionManager` to `sessionSource: SchedulerSessionSource` (`loop.ts:92`); rename `SchedulerLoop.manager` field to `sessionSource` (`loop.ts:116, 126`); update the two call sites (`loop.ts:211` peekBinding, `loop.ts:276` isArchived) to `this.sessionSource.`.
-- [ ] Update `src/index.ts:23` to pass `sessionSource: manager` instead of `manager`. Confirm `SessionManager` satisfies `SchedulerSessionSource` structurally (no wrapper needed). Covers: `SessionManager satisfies the session source seam structurally`.
-- [ ] Run `bun run typecheck`. Existing `loop.test.ts` will need its constructor call updated (phase 2), so typecheck may fail there until phase 2 — acceptable mid-phase, but fix before committing.
+- [x] Add `SchedulerSessionSource` interface to `src/scheduler/loop.ts` (alongside `SchedulerDispatcher` and `SchedulerClock`): `peekBinding(loc: ChatLocator): { sessionId: string; state: SessionState } | null` and `isArchived(sessionId: string): boolean`. Covers modified: `Scheduler dispatches due turns through the per-session queue`.
+- [x] Rename `SchedulerOptions.manager: SessionManager` to `sessionSource: SchedulerSessionSource` (`loop.ts:92`); rename `SchedulerLoop.manager` field to `sessionSource` (`loop.ts:116, 126`); update the two call sites (`loop.ts:211` peekBinding, `loop.ts:276` isArchived) to `this.sessionSource.`.
+- [x] Update `src/index.ts:23` to pass `sessionSource: manager` instead of `manager`. Confirm `SessionManager` satisfies `SchedulerSessionSource` structurally (no wrapper needed). Covers: `SessionManager satisfies the session source seam structurally`.
+- [x] Run `bun run typecheck`. Existing `loop.test.ts` will need its constructor call updated (phase 2), so typecheck may fail there until phase 2 — acceptable mid-phase, but fix before committing. NOTE: option key renamed `manager` → `sessionSource: manager` in `loop.test.ts` (7 sites) and `intake.test.ts` (1 site) so the suite stays green; the values still reference the real `SessionManager` until phase 2 swaps eligible tests to fakes.
 
 Commit: `phase 1: add SchedulerSessionSource seam`
 

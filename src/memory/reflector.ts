@@ -24,7 +24,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite } from "../fs.ts";
 import { log } from "../log.ts";
-import { sessionDir, transcriptPath } from "../sessions/paths.ts";
+import { sessionDir } from "../sessions/paths.ts";
+import { readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
 import { MemoryStore } from "./store.ts";
 import { checkMemorySafety } from "./safety.ts";
 import { appendQuarantine } from "./quarantine.ts";
@@ -42,16 +43,10 @@ import { scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
 // Types
 // ---------------------------------------------------------------------------
 
-/** A single simplified transcript line extracted from `transcript.jsonl`. */
-export interface TranscriptLine {
-  /** Zero-based index in the transcript file. */
-  index: number;
-  role: "user" | "assistant" | "toolResult" | "unknown";
-  /** Concatenated text content (text blocks joined; non-text blocks ignored). */
-  text: string;
-  /** ISO timestamp from the transcript entry. */
-  ts: string;
-}
+// `TranscriptLine` is re-exported from the transcript module so existing
+// import sites (`reflector.test.ts`) are unaffected. It is the shared
+// reader/writer type — see `src/sessions/transcript.ts`.
+export type { TranscriptLine } from "../sessions/transcript.ts";
 
 /** A structured memory candidate extracted from transcript entries. */
 export interface Candidate {
@@ -352,66 +347,6 @@ function findNearDuplicate(
 }
 
 // ---------------------------------------------------------------------------
-// Transcript reading
-// ---------------------------------------------------------------------------
-
-interface RawTranscriptEntry {
-  ts?: string;
-  role?: string;
-  content?: unknown;
-}
-
-function extractText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  let text = "";
-  for (const item of content) {
-    if (typeof item !== "object" || item === null) continue;
-    const block = item as Record<string, unknown>;
-    if (block.type === "text" && typeof block.text === "string") {
-      text += block.text;
-    }
-  }
-  return text;
-}
-
-function readTranscript(sessionId: string, home: string): TranscriptLine[] {
-  const path = transcriptPath(home, sessionId);
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf-8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw e;
-  }
-  const lines = raw.split("\n");
-  const result: TranscriptLine[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (line.trim().length === 0) continue;
-    let entry: RawTranscriptEntry;
-    try {
-      entry = JSON.parse(line) as RawTranscriptEntry;
-    } catch {
-      // Skip malformed lines — the cursor tracks line indices, not byte offsets,
-      // so a skipped line still counts toward processedLines.
-      result.push({ index: result.length, role: "unknown", text: "", ts: new Date().toISOString() });
-      continue;
-    }
-    const role = entry.role === "user" || entry.role === "assistant" || entry.role === "toolResult"
-      ? entry.role
-      : "unknown";
-    result.push({
-      index: result.length,
-      role,
-      text: extractText(entry.content),
-      ts: entry.ts ?? new Date().toISOString(),
-    });
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
 // Cursor read/write
 // ---------------------------------------------------------------------------
 
@@ -560,21 +495,21 @@ export class MemoryReflector {
 
   private async reflectInner(sessionId: string, activeScope: ActiveScope): Promise<void> {
     const cursor = readCursor(this.home, sessionId);
-    const lines = readTranscript(sessionId, this.home);
 
     // First observation: seed cursor to current transcript end, do not
     // process historical entries (no automatic backfill).
     if (cursor === null) {
+      const total = readTranscriptAfter(this.home, sessionId, 0).length;
       const seeded: ReflectionCursor = {
-        processedLines: lines.length,
+        processedLines: total,
         lastReflectedAt: new Date().toISOString(),
       };
       writeCursor(this.home, sessionId, seeded);
-      log.debug("memory reflection: seeded cursor", { sessionId, processedLines: lines.length });
+      log.debug("memory reflection: seeded cursor", { sessionId, processedLines: total });
       return;
     }
 
-    const newLines = lines.slice(cursor.processedLines);
+    const newLines = readTranscriptAfter(this.home, sessionId, cursor.processedLines);
     if (newLines.length === 0) return;
 
     // Extract candidates from the new transcript range.
@@ -587,7 +522,7 @@ export class MemoryReflector {
 
     // Advance cursor only after the full range is processed.
     const advanced: ReflectionCursor = {
-      processedLines: lines.length,
+      processedLines: cursor.processedLines + newLines.length,
       lastReflectedAt: new Date().toISOString(),
     };
     writeCursor(this.home, sessionId, advanced);

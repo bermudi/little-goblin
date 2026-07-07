@@ -17,9 +17,9 @@ Commit: `phase 2: route transcript writer through the module`
 
 ## Phase 3: Route the reader through the module
 
-- [ ] Update `src/memory/reflector.ts`: delete `RawTranscriptEntry` (`:358-362`), `extractText` (`:364-376`), and `readTranscript` (`:378-412`). Replace the call site with `readTranscriptAfter(home, sessionId, cursor.processedLines)` imported from `sessions/transcript.ts`. Import `TranscriptLine` from the module. Cursor logic stays in the reflector. Covers modified: `Write transcript entries on message completion`, `Reader and writer share one type`.
-- [ ] Update `src/memory/reflector.test.ts` to remove any direct references to `RawTranscriptEntry`/`extractText`; cursor and reflection-behavior tests remain unchanged because `TranscriptLine` shape is preserved.
-- [ ] Run `bun test src/memory/reflector.test.ts` and `bun run typecheck`.
+- [x] Update `src/memory/reflector.ts`: delete `RawTranscriptEntry` (`:358-362`), `extractText` (`:364-376`), and `readTranscript` (`:378-412`). Replace the call site with `readTranscriptAfter(home, sessionId, cursor.processedLines)` imported from `sessions/transcript.ts`. Import `TranscriptLine` from the module. Cursor logic stays in the reflector. Covers modified: `Write transcript entries on message completion`, `Reader and writer share one type`.
+- [x] Update `src/memory/reflector.test.ts` to remove any direct references to `RawTranscriptEntry`/`extractText`; cursor and reflection-behavior tests remain unchanged because `TranscriptLine` shape is preserved.
+- [x] Run `bun test src/memory/reflector.test.ts` and `bun run typecheck`.
 
 Commit: `phase 3: route transcript reader through the module`
 

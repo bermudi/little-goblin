@@ -10,10 +10,10 @@ Commit: `phase 1: add JSON state-file module`
 
 ## Phase 2: Migrate the three session consumers
 
-- [ ] Update `src/sessions/state.ts`: `loadState` → `loadJsonFile<SessionState | null>(statePath(home, id), null)`; `saveState` → `saveJsonFile(statePath(home, state.id), state)`. Delete the try/catch recipe. Covers modified: `Persist session state atomically`.
-- [ ] Update `src/sessions/bindings.ts`: `loadBindings` → `loadJsonFile(pathFor(home), structuredClone(DEFAULT_BINDINGS))`; `saveBindings` → `saveJsonFile(pathFor(home), bindings)`. Delete the try/catch recipe. Covers modified: `Persist bindings atomically`.
-- [ ] Update `src/sessions/topic-settings.ts`: `loadTopicSettings` → `loadJsonFile(topicSettingsPath(home), structuredClone(DEFAULT_SETTINGS))`; `saveTopicSettings` → `saveJsonFile(topicSettingsPath(home), settings)`. Delete the try/catch recipe. Leave slot logic unchanged. **Note:** `topic-settings.ts` currently swallows all errors; after migration, non-`ENOENT`/non-`SyntaxError` errors propagate (fail loud). This is a deliberate behavior change — see proposal Non-Goals. Covers modified: `Topic settings file`.
-- [ ] Run `bun test src/sessions` and `bun run typecheck`. `state.ts` and `bindings.ts` behavior is identical. `topic-settings.ts` now propagates non-`ENOENT`/non-`SyntaxError` errors; update any test that relied on the old swallow-all behavior.
+- [x] Update `src/sessions/state.ts`: `loadState` → `loadJsonFile<SessionState | null>(statePath(home, id), null)`; `saveState` → `saveJsonFile(statePath(home, state.id), state)`. Delete the try/catch recipe. Covers modified: `Persist session state atomically`.
+- [x] Update `src/sessions/bindings.ts`: `loadBindings` → `loadJsonFile(pathFor(home), structuredClone(DEFAULT_BINDINGS))`; `saveBindings` → `saveJsonFile(pathFor(home), bindings)`. Delete the try/catch recipe. Covers modified: `Persist bindings atomically`.
+- [x] Update `src/sessions/topic-settings.ts`: `loadTopicSettings` → `loadJsonFile(topicSettingsPath(home), structuredClone(DEFAULT_SETTINGS))`; `saveTopicSettings` → `saveJsonFile(topicSettingsPath(home), settings)`. Delete the try/catch recipe. Leave slot logic unchanged. **Note:** `topic-settings.ts` currently swallows all errors; after migration, non-`ENOENT`/non-`SyntaxError` errors propagate (fail loud). This is a deliberate behavior change — see proposal Non-Goals. Covers modified: `Topic settings file`.
+- [x] Run `bun test src/sessions` and `bun run typecheck`. `state.ts` and `bindings.ts` behavior is identical. `topic-settings.ts` now propagates non-`ENOENT`/non-`SyntaxError` errors; update any test that relied on the old swallow-all behavior.
 
 Commit: `phase 2: migrate session state files to the module`
 

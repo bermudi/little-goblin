@@ -1,7 +1,6 @@
-import { readFileSync } from "node:fs";
 import type { ChatLocator } from "./types.ts";
 import { topicSettingsPath } from "./paths.ts";
-import { atomicWrite } from "../fs.ts";
+import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 import { log } from "../log.ts";
 
 /**
@@ -31,25 +30,17 @@ const DEFAULT_SETTINGS: TopicSettingsFile = {
 
 /**
  * Load topic-settings.json. Returns default if missing or malformed.
+ * Non-ENOENT/non-Syntax errors propagate per the fail-loud rule.
  */
 export function loadTopicSettings(home: string): TopicSettingsFile {
-  try {
-    const raw = readFileSync(topicSettingsPath(home), "utf-8");
-    return JSON.parse(raw) as TopicSettingsFile;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      return structuredClone(DEFAULT_SETTINGS);
-    }
-    log.warn("malformed topic-settings.json, returning default", { error: String(e) });
-    return structuredClone(DEFAULT_SETTINGS);
-  }
+  return loadJsonFile(topicSettingsPath(home), structuredClone(DEFAULT_SETTINGS));
 }
 
 /**
  * Save topic settings atomically (write to unique tmp, then rename).
  */
 export function saveTopicSettings(home: string, settings: TopicSettingsFile): void {
-  atomicWrite(topicSettingsPath(home), JSON.stringify(settings, null, 2) + "\n");
+  saveJsonFile(topicSettingsPath(home), settings);
 }
 
 /**

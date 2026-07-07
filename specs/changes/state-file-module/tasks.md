@@ -2,9 +2,9 @@
 
 ## Phase 1: Create the state-file module
 
-- [ ] Add `src/sessions/state-file.ts` exporting `loadJsonFile<T>(path: string, defaultValue: T): T` (readFileSync → JSON.parse; ENOENT → default; SyntaxError → log warning + default; else throw) and `saveJsonFile(path: string, value: unknown): void` (`atomicWrite(path, JSON.stringify(value, null, 2) + "\n")`). Wraps `atomicWrite` from `src/fs.ts`; does not own atomic-write. Covers: `JSON state files load and save through one module`.
-- [ ] Add `src/sessions/state-file.test.ts` covering: parsed JSON returned when file exists; default returned on ENOENT; default returned and warning logged on malformed JSON; non-ENOENT/non-Syntax errors propagate; save produces `JSON.stringify(v, null, 2) + "\n"` via atomicWrite. Covers all five scenarios under `JSON state files load and save through one module`.
-- [ ] Run `bun test src/sessions/state-file.test.ts` and `bun run typecheck`.
+- [x] Add `src/sessions/state-file.ts` exporting `loadJsonFile<T>(path: string, defaultValue: T): T` (readFileSync → JSON.parse; ENOENT → default; SyntaxError → log warning + default; else throw) and `saveJsonFile(path: string, value: unknown): void` (`atomicWrite(path, JSON.stringify(value, null, 2) + "\n")`). Wraps `atomicWrite` from `src/fs.ts`; does not own atomic-write. Covers: `JSON state files load and save through one module`.
+- [x] Add `src/sessions/state-file.test.ts` covering: parsed JSON returned when file exists; default returned on ENOENT; default returned and warning logged on malformed JSON; non-ENOENT/non-Syntax errors propagate; save produces `JSON.stringify(v, null, 2) + "\n"` via atomicWrite. Covers all five scenarios under `JSON state files load and save through one module`.
+- [x] Run `bun test src/sessions/state-file.test.ts` and `bun run typecheck`.
 
 Commit: `phase 1: add JSON state-file module`
 

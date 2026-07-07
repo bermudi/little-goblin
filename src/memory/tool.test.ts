@@ -52,10 +52,10 @@ describe("memory tool", () => {
     readIndexTool = createMemoryReadIndexTool({
       store,
       activeScope: TOPIC_SCOPE,
-      includeAgents: true,
+      caller: { kind: "main" },
     });
     writeTool = createMemoryWriteTool({ store, activeScope: TOPIC_SCOPE });
-    searchTool = createMemorySearchTool({ store, activeScope: TOPIC_SCOPE, includeAgents: true });
+    searchTool = createMemorySearchTool({ store, activeScope: TOPIC_SCOPE, caller: { kind: "main" } });
   });
 
   afterEach(() => {
@@ -171,12 +171,12 @@ describe("memory tool", () => {
     ]);
   });
 
-  it("memory_read_index omits agents when includeAgents=false", async () => {
+  it("memory_read_index omits agents for an anonymous subagent caller", async () => {
     await store.setDescription({ agent: { name: "researcher" } }, "research persona");
     const tool = createMemoryReadIndexTool({
       store,
       activeScope: { chatId: -100, topicScope: { topicId: 42 }, namedAgent: null },
-      includeAgents: false,
+      caller: { kind: "anonymous-subagent" },
     });
     const index = jsonOf<{ agents: unknown[] }>(
       await tool.execute("call-index-no-agents", {}, undefined, undefined, NULL_CTX),
@@ -529,13 +529,13 @@ describe("memory tool", () => {
       expect(scopes).toEqual(["agents/researcher", "agents/writer"]);
     });
 
-    it("named subagent (includeAgents=true, namedAgent set) searches only its own persona", async () => {
+    it("named subagent searches only its own persona", async () => {
       await store.add({ agent: { name: "researcher" } }, "researcher persona backups note");
       await store.add({ agent: { name: "writer" } }, "writer persona backups note");
       const namedSearch = createMemorySearchTool({
         store,
         activeScope: NAMED_AGENT_SCOPE,
-        includeAgents: true,
+        caller: { kind: "named-subagent", name: "researcher" },
       });
 
       const r = await namedSearch.execute(
@@ -549,12 +549,12 @@ describe("memory tool", () => {
       expect(scopes).toEqual(["agents/researcher"]);
     });
 
-    it("anonymous subagent (includeAgents=false) searches no persona scopes", async () => {
+    it("anonymous subagent searches no persona scopes", async () => {
       await store.add({ agent: { name: "researcher" } }, "researcher persona backups note");
       const anonSearch = createMemorySearchTool({
         store,
         activeScope: TOPIC_SCOPE,
-        includeAgents: false,
+        caller: { kind: "anonymous-subagent" },
       });
 
       const r = await anonSearch.execute(

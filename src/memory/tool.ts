@@ -4,7 +4,8 @@ import type { MemoryStore, StoreResult } from "./store.ts";
 import { activeMemoryScopeFor, type ActiveScope, type MemoryScope } from "./scope.ts";
 import { VALID_NAME_RE } from "../subagents/named-agents.ts";
 import { checkDescriptionSafety, checkMemorySafety } from "./safety.ts";
-import { personaPolicyFor, searchMemoryEntries, type PersonaPolicy } from "./search.ts";
+import { searchMemoryEntries } from "./search.ts";
+import { includeAgentsFor, personaPolicyForCaller, type MemoryCaller } from "./context.ts";
 
 const targetSchema = Type.Union([
   Type.Literal("memory"),
@@ -146,7 +147,7 @@ export function createMemoryReadTool(args: {
 export function createMemoryReadIndexTool(args: {
   store: MemoryStore;
   activeScope: ActiveScope;
-  includeAgents: boolean;
+  caller: MemoryCaller;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
 }): ToolDefinition {
   return defineTool({
@@ -160,7 +161,7 @@ export function createMemoryReadIndexTool(args: {
       return jsonResult(
         await args.store.listIndex({
           chatId: params.all_chats ? undefined : args.activeScope.chatId,
-          includeAgents: args.includeAgents,
+          includeAgents: includeAgentsFor(args.caller),
           getTopicName: args.getTopicName,
         }),
       );
@@ -168,33 +169,16 @@ export function createMemoryReadIndexTool(args: {
   });
 }
 
-/**
- * Build the persona-eligibility policy for a memory_search caller from the
- * tool-wiring flags. Mirrors memory_read_index gating: the main goblin agent
- * (no namedAgent) searches all persona scopes; a named subagent searches only
- * its own; anonymous subagents search none.
- */
-function resolveSearchPersonaPolicy(
-  activeScope: ActiveScope,
-  includeAgents: boolean,
-): PersonaPolicy {
-  if (!includeAgents) return { kind: "none" };
-  return personaPolicyFor(activeScope);
-}
-
 export function createMemorySearchTool(args: {
   store: MemoryStore;
   activeScope: ActiveScope;
-  includeAgents: boolean;
   /**
-   * Explicit persona-eligibility policy. When supplied, overrides the
-   * `(activeScope, includeAgents)` derivation. Used by the subagent path,
-   * which needs finer control than the boolean: a named subagent searches
-   * its own persona scope (`{kind: "own", name}`) while an anonymous
-   * subagent searches none (`{kind: "none"}`) — see spec scenario
-   * "Named subagent searches own persona only".
+   * Who is calling. The persona-eligibility policy is derived from the caller
+   * kind: main searches all personas, a named subagent searches only its own,
+   * an anonymous subagent searches none. Replaces the former `includeAgents` +
+   * `persona` knobs.
    */
-  persona?: PersonaPolicy;
+  caller: MemoryCaller;
 }): ToolDefinition {
   return defineTool({
     name: "memory_search",
@@ -208,7 +192,7 @@ export function createMemorySearchTool(args: {
       if (query.length === 0) {
         throw new Error("memory_search requires a non-empty `query`");
       }
-      const persona = args.persona ?? resolveSearchPersonaPolicy(args.activeScope, args.includeAgents);
+      const persona = personaPolicyForCaller(args.caller);
       const output = await searchMemoryEntries({
         store: args.store,
         activeScope: args.activeScope,

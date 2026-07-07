@@ -187,10 +187,10 @@ export class AgentRunner {
       createMemoryReadIndexTool({
         store: this.memoryStore,
         activeScope: this.activeScope,
-        includeAgents: true,
+        caller: { kind: "main" },
         getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
       }),
-      createMemorySearchTool({ store: this.memoryStore, activeScope: this.activeScope, includeAgents: true }),
+      createMemorySearchTool({ store: this.memoryStore, activeScope: this.activeScope, caller: { kind: "main" } }),
       createMemoryWriteTool({ store: this.memoryStore, activeScope: this.activeScope }),
     ];
 
@@ -375,7 +375,7 @@ export class AgentRunner {
     const aside = await formatSnapshot({
       store: this.memoryStore,
       activeScope: this.activeScope,
-      includeAgents: true,
+      caller: { kind: "main" },
       getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
       promptText,
     });

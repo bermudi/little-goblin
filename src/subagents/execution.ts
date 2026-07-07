@@ -130,7 +130,10 @@ async function _runInstanceInner(
       createMemoryReadIndexTool({
         store: memoryStore,
         activeScope: instance.activeScope,
-        includeAgents: false,
+        caller:
+          instance.role === "named" && instance.name !== null
+            ? { kind: "named-subagent", name: instance.name }
+            : { kind: "anonymous-subagent" },
       }),
       // memory_search mirrors memory_read_index gating but with finer persona
       // control: a named subagent searches its own persona scope; an anonymous
@@ -139,11 +142,10 @@ async function _runInstanceInner(
       createMemorySearchTool({
         store: memoryStore,
         activeScope: instance.activeScope,
-        includeAgents: false,
-        persona:
+        caller:
           instance.role === "named" && instance.name !== null
-            ? { kind: "own", name: instance.name }
-            : { kind: "none" },
+            ? { kind: "named-subagent", name: instance.name }
+            : { kind: "anonymous-subagent" },
       }),
       createMemoryWriteTool({ store: memoryStore, activeScope: instance.activeScope }),
     ],
@@ -200,10 +202,10 @@ async function _runInstanceInner(
     const aside = await formatSnapshot({
       store: memoryStore,
       activeScope: instance.activeScope,
-      includePersona: instance.role === "named" && instance.name !== null
-        ? { name: instance.name }
-        : undefined,
-      includeAgents: false, // Subagents never see other agents' personas
+      caller:
+        instance.role === "named" && instance.name !== null
+          ? { kind: "named-subagent", name: instance.name }
+          : { kind: "anonymous-subagent" },
     });
     if (aside !== null) {
       await session.sendCustomMessage(aside, { deliverAs: "nextTurn" });

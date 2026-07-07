@@ -135,7 +135,7 @@ describe("quarantine store", () => {
       const snapshot = await formatSnapshot({
         store,
         activeScope: TOPIC_SCOPE,
-        includeAgents: true,
+        caller: { kind: "main" },
       });
       expect(snapshot).toBeNull();
     });
@@ -152,7 +152,7 @@ describe("quarantine store", () => {
       const readIndexTool = createMemoryReadIndexTool({
         store,
         activeScope: TOPIC_SCOPE,
-        includeAgents: true,
+        caller: { kind: "main" },
       });
       const index = jsonOf<{
         general: unknown;

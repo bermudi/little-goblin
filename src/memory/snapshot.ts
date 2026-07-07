@@ -7,6 +7,7 @@ import {
   stripEntryMetadata,
   type PersonaPolicy,
 } from "./search.ts";
+import { includeAgentsFor, personaSectionFor, type MemoryCaller } from "./context.ts";
 
 /**
  * Per-turn memory aside.
@@ -42,8 +43,12 @@ export const SNAPSHOT_GUARDRAIL =
 export interface FormatSnapshotArgs {
   store: MemoryStore;
   activeScope: ActiveScope;
-  includePersona?: { name: string };
-  includeAgents: boolean;
+  /**
+   * Who the snapshot is for. Replaces the former `includePersona` /
+   * `includeAgents` knobs — those are derived from `caller` inside the
+   * formatter via {@link personaSectionFor} / {@link includeAgentsFor}.
+   */
+  caller: MemoryCaller;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
   /**
    * Current prompt text. When supplied and non-empty, the snapshot appends a
@@ -58,13 +63,31 @@ export interface FormatSnapshotArgs {
   relevantLimit?: number;
 }
 
+/**
+ * Build the per-turn memory snapshot for a caller. The caller-typed entry
+ * point: callers pass a {@link MemoryCaller} instead of raw policy knobs.
+ * Internally derives `includePersona` / `includeAgents` from the caller kind.
+ * The on-wire snapshot output is identical to the former knob-based path.
+ *
+ * Returns `null` when memory is empty/absent.
+ */
 export async function formatSnapshot(
   args: FormatSnapshotArgs,
 ): Promise<MemorySnapshotPayload | null> {
-  return formatScopedSnapshot(args);
+  return formatScopedSnapshot({
+    ...args,
+    includePersona: personaSectionFor(args.caller),
+    includeAgents: includeAgentsFor(args.caller),
+  });
 }
 
-async function formatScopedSnapshot(args: FormatSnapshotArgs): Promise<MemorySnapshotPayload | null> {
+/** Internal args: the public `caller` resolved back into the knob dialect. */
+type ResolvedSnapshotArgs = Omit<FormatSnapshotArgs, "caller"> & {
+  includePersona?: { name: string };
+  includeAgents: boolean;
+};
+
+async function formatScopedSnapshot(args: ResolvedSnapshotArgs): Promise<MemorySnapshotPayload | null> {
   const activeMemoryScope = activeMemoryScopeFor(args.activeScope);
   const memoryBody = args.store.read(activeMemoryScope).body;
   const userBody = args.store.read("user").body;
@@ -130,7 +153,7 @@ const MAX_RELEVANT_LIMIT = 5;
  * when there are no matches after dedup.
  */
 async function formatRelevantMemory(
-  args: FormatSnapshotArgs,
+  args: ResolvedSnapshotArgs,
   activeMemoryBody: string,
 ): Promise<string[]> {
   const persona: PersonaPolicy = args.includePersona !== undefined
@@ -194,7 +217,7 @@ function formatBody(body: string): string {
   return body.length === 0 ? "(empty)" : body;
 }
 
-async function formatOtherScopes(args: FormatSnapshotArgs): Promise<string[]> {
+async function formatOtherScopes(args: ResolvedSnapshotArgs): Promise<string[]> {
   const index = await args.store.listIndex({
     chatId: args.activeScope.chatId,
     includeAgents: args.includeAgents,

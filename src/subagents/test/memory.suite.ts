@@ -167,7 +167,7 @@ describe("SubagentRunner — scoped memory", () => {
         createMemoryReadIndexTool({
           store: new MemoryStore(tmp),
           activeScope: TOPIC_SCOPE,
-          includeAgents: false,
+          caller: { kind: "anonymous-subagent" },
         }).parameters,
       ),
     );

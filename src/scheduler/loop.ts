@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { log } from "../log.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
 import type { ChatLocator, SessionState } from "../sessions/mod.ts";
-import type { TurnDispatcher } from "../tg/turn-dispatcher.ts";
 import type { ScheduledTurn } from "./types.ts";
 import type { ScheduleStore } from "./store.ts";
 
@@ -102,7 +101,7 @@ export interface SchedulerSessionSource {
 export interface SchedulerOptions {
   store: ScheduleStore;
   sessionSource: SchedulerSessionSource;
-  dispatcher: SchedulerDispatcher | TurnDispatcher;
+  dispatcher: SchedulerDispatcher;
   /** `$GOBLIN_HOME`, used to resolve the heartbeat prompt file at dispatch time. */
   home: string;
   clock?: SchedulerClock;

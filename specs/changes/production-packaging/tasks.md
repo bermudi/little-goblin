@@ -73,8 +73,8 @@
 
 ## Phase 5: Verify and document
 
-- [ ] Run `bun run typecheck` and `bun test` across the whole repo.
-- [ ] Run `bun run validate-config` with the current `.env`/config setup and confirm behavior.
-- [ ] Inspect generated scripts for shellcheck-level issues (no obvious quoting or permission bugs).
-- [ ] Update `README.md` or `AGENTS.md` with a short "Production install" section describing `scripts/install.sh`, `systemctl start goblin`, `journalctl -u goblin`, `scripts/backup.sh`, and `scripts/update.sh`.
-- [ ] Commit: `production-packaging: phase 5 — verification and docs`.
+- [x] Run `bun run typecheck` and `bun test` across the whole repo.
+- [x] Run `bun run validate-config` with the current `.env`/config setup and confirm behavior.
+- [x] Inspect generated scripts for shellcheck-level issues (no obvious quoting or permission bugs).
+- [x] Update `README.md` or `AGENTS.md` with a short "Production install" section describing `scripts/install.sh`, `systemctl start goblin`, `journalctl -u goblin`, `scripts/backup.sh`, and `scripts/update.sh`.
+- [x] Commit: `production-packaging: phase 5 — verification and docs`.

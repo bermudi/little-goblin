@@ -42,6 +42,34 @@ Then open Telegram and send `/start` in a DM, or start typing in a forum topic w
 
 See <ref_file file="/home/daniel/build/little-goblin/goblin.json5.example" /> for a complete annotated config.
 
+## Production install
+
+For a homelab server that survives reboots, run the packaging installer as root on a Linux host:
+
+```sh
+sudo bash scripts/install.sh
+```
+
+This creates a dedicated `goblin` user, installs `bun` if needed, clones the repo to `/opt/little-goblin`, runs `bun run onboard` if no config exists, validates the config, and installs a systemd service that auto-starts on boot.
+
+Once installed:
+
+```sh
+systemctl start goblin     # start now
+systemctl stop goblin      # stop
+systemctl status goblin    # status
+journalctl -u goblin -f    # follow live logs
+```
+
+Backups and updates are also scripted:
+
+```sh
+sudo bash scripts/backup.sh   # archive $GOBLIN_HOME to $GOBLIN_HOME/backups/
+sudo bash scripts/update.sh   # pull latest code, run checks, then restart goblin
+```
+
+`scripts/update.sh` only restarts the service if the typecheck and `bun run validate-config` pass, so a bad deploy cannot leave the bot down.
+
 ## Core ideas
 
 - **Telegram is the UI.** Every feature is designed around chat, topics, replies, and file sharing.

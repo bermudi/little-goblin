@@ -19,7 +19,7 @@ Commit: `phase 2: migrate session state files to the module`
 
 ## Phase 3: Boundary check and validation
 
-- [ ] Grep `src/sessions/` for any remaining `readFileSync(..., "utf-8")` + `JSON.parse` + ENOENT/Syntax catch patterns outside `state-file.ts`; fix stragglers. Confirm `memory/store.ts` is NOT touched (it is Markdown, not JSON — out of scope per the corrected proposal).
-- [ ] Run full validation: `litespec validate state-file-module`, `bun test`, `bun run typecheck`.
+- [x] Grep `src/sessions/` for any remaining `readFileSync(..., "utf-8")` + `JSON.parse` + ENOENT/Syntax catch patterns outside `state-file.ts`; fix stragglers. Confirm `memory/store.ts` is NOT touched (it is Markdown, not JSON — out of scope per the corrected proposal).
+- [x] Run full validation: `litespec validate state-file-module`, `bun test`, `bun run typecheck`.
 
 Commit: `phase 3: finalize state-file module boundary`

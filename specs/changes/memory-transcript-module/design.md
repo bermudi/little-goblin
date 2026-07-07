@@ -125,6 +125,8 @@ Covers modified `Write transcript entries on message completion` (writer goes th
 
 Covers modified `Write transcript entries on message completion` (reader goes through the module) and `Reader and writer share one type`.
 
+**Cross-change note:** `memory-context-assembly` also edits `reflector.ts`, but at `reflector.ts:450` (`activeMemoryScopeFor`) — a different region of the file. The two changes don't share symbols or types (no shared new types are introduced by either), so neither needs the other to compile. Land `memory-transcript-module` first (it touches the read path; line numbers in this spec are anchored to current line numbers and will drift if the other change lands first). Not a `dependsOn` relationship — see portfolio coordination.
+
 ### `src/memory/reflector.test.ts` (modified)
 
 Update any test that asserts on `RawTranscriptEntry` or `extractText` directly to use the new module's exports. Cursor and reflection-behavior tests are unchanged (they consume `TranscriptLine`, whose shape is preserved).

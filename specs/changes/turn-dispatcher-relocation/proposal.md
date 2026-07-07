@@ -6,8 +6,8 @@
 
 Two related leaks exist:
 
-- The dispatcher exposes a public `runners: Map<string, AgentRunner>` (`turn-dispatcher.ts:69`, assigned at `:86`) that intake reads directly (`src/tg/intake.ts:269, 373`) to do stale-runner checks and runner lookup. The arrival-timing, stale-runner, runner-lookup, command-execution, side-effect, and reply logic is split across `tg/intake.ts` and `tg/turn-dispatcher.ts` with no single home.
-- A `createMessageBuffer` injection hook exists on both `TurnDispatcherOptions` (`turn-dispatcher.ts:49`) and `TelegramIntakeOptions` (`intake.ts:73`), and intake does call `dispatcher.createMessageBuffer(locator)` (`intake.ts:205, 361`). But no caller ever *passes* a factory in options, so the dispatcher's internal `new MessageBuffer(...)` fallback (`turn-dispatcher.ts:135`) always fires. The seam is wired but unused.
+- The dispatcher exposes a public `runners: Map<string, AgentRunner>` (`turn-dispatcher.ts:69`, assigned at `:86`) that intake reads directly (`src/tg/intake.ts:274, 381`) to do stale-runner checks and runner lookup. The arrival-timing, stale-runner, runner-lookup, command-execution, side-effect, and reply logic is split across `tg/intake.ts` and `tg/turn-dispatcher.ts` with no single home.
+- A `createMessageBuffer` injection hook exists on both `TurnDispatcherOptions` (`turn-dispatcher.ts:49`) and `TelegramIntakeOptions` (`intake.ts:74`), and intake does call `dispatcher.createMessageBuffer(locator)` (`intake.ts:210, 369`). The factory is threaded in *tests* (`intake.test.ts` passes a real callback) and forwarded by `createTelegramIntake` (`intake.ts:185`), but the **production** composition root (`bot.ts`) does not pass one, so the dispatcher's internal `new MessageBuffer(...)` fallback (`turn-dispatcher.ts:135`) fires in prod. The seam is half-wired: structurally present but not relied on by the only caller that matters.
 
 This change merges two architecture-review candidates: "Move TurnDispatcher out of the Telegram module" (R1#3) and "Deepen command runtime and hide runner maps" (R2#1). Both target the same coupling; addressing them together avoids doing the move twice.
 
@@ -18,7 +18,7 @@ Affected capabilities: `orchestration` and `telegram`. (`commands` is touched at
 This change introduces:
 
 - Relocation of `TurnDispatcher` from `src/tg/` to an orchestration-layer module (`src/orchestration/`). Turn serialization stops knowing about `MessageBuffer`.
-- A buffer-factory seam: callers (Telegram intake for live turns, the scheduler for scheduled turns) inject a `createMessageBuffer` factory at the call site. The existing-but-unused injection hook becomes the only path; the internal `new MessageBuffer` fallback is removed.
+- A buffer-factory seam: callers (Telegram intake for live turns, the scheduler for scheduled turns) inject a `createMessageBuffer` factory at the call site. The existing-but-half-wired injection hook becomes the only path; the internal `new MessageBuffer` fallback is removed. (Today the hook is used in tests and forwarded by `createTelegramIntake`, but prod `bot.ts` does not pass it and so the fallback fires. This change makes the factory mandatory.)
 - Behavior-oriented dispatcher methods that replace the public `runners` map reads. Intake's stale-runner check and runner lookup go through dispatcher methods (`getRunner(sessionId)`, `hasRunner(sessionId)`, etc.) instead of `dispatcher.runners.get(...)`. The `runners` map becomes private.
 - Concentration of arrival-timing and stale-runner behavior: the dispatcher owns runner-replacement semantics; intake owns Telegram-side arrival and reply routing.
 

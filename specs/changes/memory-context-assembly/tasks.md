@@ -23,8 +23,8 @@ Commit: `phase 2: add caller-typed memory context module`
 ## Phase 3: Route callers through the context module
 
 - [ ] Update `src/memory/snapshot.ts`: `FormatSnapshotArgs` accepts a `caller: MemoryCaller`; derive `includePersona`/`includeAgents` internally. On-wire snapshot output unchanged. Covers modified: `Snapshot format for prompt injection`.
-- [ ] Update `src/agent/mod.ts`: replace the `formatSnapshot({ ..., includeAgents: true, promptText })` call (`mod.ts:367-373`) and the `createMemorySearchTool({ ..., includeAgents: true })` call (`mod.ts:189`) with caller-typed equivalents (`{ kind: "main" }`).
-- [ ] Update `src/subagents/execution.ts`: replace the two `formatSnapshot` calls (`execution.ts:144-148, 201-208`) and the `createMemorySearchTool({ persona: ... })` knob with caller-typed equivalents (`{ kind: "named-subagent", name }` or `{ kind: "anonymous-subagent" }`).
+- [ ] Update `src/agent/mod.ts`: replace the `formatSnapshot({ ..., includeAgents: true, promptText })` call (`mod.ts:375-381`) and the `createMemorySearchTool({ ..., includeAgents: true })` call (`mod.ts:193`) with caller-typed equivalents (`{ kind: "main" }`).
+- [ ] Update `src/subagents/execution.ts`: replace the single `formatSnapshot` call (`execution.ts:200-207`) and the `createMemorySearchTool({ persona: ... })` knob (`execution.ts:143-146`) with caller-typed equivalents (`{ kind: "named-subagent", name }` or `{ kind: "anonymous-subagent" }`). There is only one `formatSnapshot` call in this file.
 - [ ] Update existing snapshot/subagent tests that assert on the old knob shapes.
 - [ ] Run `bun test src/memory src/agent/mod.test.ts src/subagents` and `bun run typecheck`.
 

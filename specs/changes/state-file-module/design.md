@@ -58,9 +58,9 @@ Specs: `JSON state files load and save through one module` (the "SHALL NOT hardc
 
 ### D3. Error policy: ENOENT and Syntax → default + log; everything else throws
 
-**Chosen:** match the existing policy verbatim. `ENOENT` → default silently (expected — file not created yet). `SyntaxError` → log a warning with path + error, return default (recover gracefully from corruption). All other errors propagate (fail loud).
+**Chosen:** match the `state.ts`/`bindings.ts` policy. `ENOENT` → default silently (expected — file not created yet). `SyntaxError` → log a warning with path + error, return default (recover gracefully from corruption). All other errors propagate (fail loud).
 
-**Why:** this is exactly what `state.ts`, `bindings.ts`, and `topic-settings.ts` do today. Centralizing must not change behavior.
+**Why:** this is what `state.ts` and `bindings.ts` do today, and it matches the fail-loud rule in `AGENTS.md`. `topic-settings.ts` is the outlier: its current `catch (e)` at `topic-settings.ts:35-46` does **not** discriminate `SyntaxError` and swallows all errors (disk, permission, anything) into the default. The new module rethrows non-`ENOENT`/non-`SyntaxError` errors, so `topic-settings.ts` will start propagating where it currently swallows. This is a deliberate alignment, not an accidental regression — see the Non-Goals in `proposal.md` where it is called out.
 
 **Note:** `state.ts` logs `"malformed session state, treating as missing"`, `bindings.ts` logs `"malformed bindings.json, returning default"`, `topic-settings.ts` logs `"malformed topic-settings.json, returning default"`. The module uses a single generic message (e.g. `"malformed JSON state file, returning default"`); the per-file specificity is lost but the path is included, which is the load-bearing diagnostic.
 
@@ -103,5 +103,7 @@ Covers modified `Persist bindings atomically`.
 ### `src/sessions/topic-settings.ts` (modified)
 
 `loadTopicSettings` becomes `return loadJsonFile(topicSettingsPath(home), structuredClone(DEFAULT_SETTINGS));` — the try/catch recipe is deleted. `saveTopicSettings` becomes `saveJsonFile(topicSettingsPath(home), settings);`. The locator-keyed slot logic (`getProjectDir`, slot read/write) stays unchanged.
+
+**Behavior change:** the current `loadTopicSettings` catches all errors and returns the default. After migration, non-`ENOENT`/non-`SyntaxError` errors propagate (fail loud), matching `state.ts`/`bindings.ts`. Called out in proposal Non-Goals and D3.
 
 Covers modified `Topic settings file`.

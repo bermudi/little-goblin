@@ -103,6 +103,8 @@ Specs: `Eligibility tests inject a fake session source`.
 
 Covers modified `Scheduler dispatches due turns through the per-session queue`.
 
+**Cross-change note:** `turn-dispatcher-relocation` also edits `loop.ts` — it deletes the `TurnDispatcher` import (`loop.ts:5`) and collapses the `SchedulerDispatcher | TurnDispatcher` union (`loop.ts:93`) to `SchedulerDispatcher`. That edit is at a different line region from this change's (the options/field renames are at `:92, :116-126`; the dispatcher union edit is at `:5, :93`). The two changes don't share new types or symbols. Land this change first — the dispatcher relocation's union collapse is a no-op at the runtime level and reads more cleanly once `manager` is already renamed to `sessionSource`. Not a `dependsOn` relationship — see portfolio coordination.
+
 ### `src/index.ts` (modified)
 
 - `new SchedulerLoop({ store, manager, dispatcher, home })` (`index.ts:23`) → `new SchedulerLoop({ store, sessionSource: manager, dispatcher, home })`. The same `manager` instance is passed; only the option name changes.

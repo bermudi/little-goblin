@@ -25,7 +25,8 @@ This change introduces:
 ## Non-Goals
 
 - No change to file paths, file formats, or on-disk schemas. Each state file keeps its shape; only the read/write recipe is consolidated.
-- No change to the atomic-write policy itself (tmp + rename, fail loud on non-ENOENT). The new module encodes the existing policy, it does not redefine it.
+- No change to the atomic-write policy itself (tmp + rename). The new module encodes the shared read recipe; it does not redefine the write primitive.
+- One deliberate behavior change: `topic-settings.ts` today catches **all** errors and returns the default (it never rethrows). The new module rethrows non-`ENOENT`/non-`SyntaxError` errors, which means `topic-settings.ts` will start propagating disk/permission errors where it currently swallows them. This aligns with the fail-loud rule in `AGENTS.md` and matches what `state.ts` and `bindings.ts` already do; the per-file Non-Goal "no behavior change" does not hold for `topic-settings.ts` and is called out explicitly.
 - No change to memory's git-backing, quarantine paths, or `memory/store.ts`. The memory store reads/writes Markdown, not JSON, and is not a consumer of `loadJsonFile`. (It does share the `atomicWrite` primitive, as everything else does via `src/fs.ts` — that is unchanged.)
 - No new state files; no migration of existing files.
 - Not pulling in `schedules.json` (already covered by its own store), `events.jsonl`, or `transcript.jsonl` — those are JSONL/append-only and out of scope for the JSON-state recipe.

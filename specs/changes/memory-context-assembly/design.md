@@ -92,7 +92,7 @@ Specs: `Memory context assembly is caller-typed`.
 - **Named subagent:** `activeScope.namedAgent = {name}`. `personaPolicyFor` returns `{kind:"own", name}`. `MemoryCaller {kind:"named-subagent", name}` maps to `includePersona:{name}` + persona policy `{kind:"own", name}`. ✓
 - **Anonymous subagent:** `activeScope.namedAgent === null` (indistinguishable from main by `activeScope` alone). Today the subagent execution path passes `includePersona: undefined` and `includeAgents: false`. `MemoryCaller {kind:"anonymous-subagent"}` maps to `includePersona: undefined` + persona policy `{kind:"none"}`.
 
-The `MemoryCaller` union earns its keep precisely on the anonymous-subagent case: `activeScope.namedAgent` cannot distinguish main from anonymous-subagent (both null), so the caller descriptor is the only place that distinction can live. The union is necessary, not redundant.
+The honest justification for the union is narrower than "necessary." The three-way caller distinction **already exists at the call sites today** — `mod.ts:375-381` sets `includeAgents: true` for main, `execution.ts:200-207` sets `includeAgents: false` and derives `includePersona` from `instance.role`, and the `persona` policy for the search tool is built at `execution.ts:143-146`. So the distinction is not new; what's new is *typing it as one thing instead of leaving it implicit in boolean knobs spread across two files*. The anonymous-subagent case is where the typing pays off: `activeScope.namedAgent === null` for both main and anonymous, so the snapshot/search layer cannot derive "is this anonymous?" from `activeScope` alone — only the caller knows. Today that knowledge lives in `execution.ts`'s `includeAgents: false` + `{ kind: "none" }` literal; the union moves it into a typed value that the context module branches on once. That is a locality and testability argument, not a correctness necessity. If the anonymous case were ever dropped, the union would collapse to `{ kind: "main" } | { kind: "named-subagent"; name }` and could equivalently be derived from `activeScope.namedAgent` — at which point the union would add little over the status quo.
 
 Specs: the `Scenario:` blocks under `Memory context assembly is caller-typed` restate the existing rules as assertions.
 
@@ -147,18 +147,18 @@ Covers `Active-scope-to-memory-scope conversion has one home`, `Memory context a
 
 - Delete the private `activeMemoryScopeFor` (`reflector.ts:450`); import from `scope.ts`.
 
-Covers `Active-scope-to-memory-scope conversion has one home`. (Note: this file is also touched by `memory-transcript-module` on the read path; sequence that change first or merge the edits if both land together.)
+Covers `Active-scope-to-memory-scope conversion has one home`. (Note: this file is also touched by `memory-transcript-module` on the read path — that change touches `reflector.ts:358-412`, this change touches `reflector.ts:450`. Different regions, no shared symbols. Land `memory-transcript-module` first so its line-number citations stay accurate; not a `dependsOn` relationship.)
 
 ### `src/agent/mod.ts` (modified)
 
-- Replace the `formatSnapshot({ ..., includeAgents: true, promptText })` call (`mod.ts:367-373`) with `buildMemoryContext({ caller: { kind: "main" }, store, activeScope, promptText, getTopicName })` (or pass `caller` into `formatSnapshot`).
-- Replace the `createMemorySearchTool({ ..., includeAgents: true })` call (`mod.ts:189`) with the caller-typed equivalent.
+- Replace the `formatSnapshot({ ..., includeAgents: true, promptText })` call (`mod.ts:375-381`) with `buildMemoryContext({ caller: { kind: "main" }, store, activeScope, promptText, getTopicName })` (or pass `caller` into `formatSnapshot`).
+- Replace the `createMemorySearchTool({ ..., includeAgents: true })` call (`mod.ts:193`) with the caller-typed equivalent.
 
 Covers `Memory context assembly is caller-typed` (main-agent call site).
 
 ### `src/subagents/execution.ts` (modified)
 
-- Replace the two `formatSnapshot({ ..., includePersona, includeAgents: false })` calls (`execution.ts:144-148, 201-208`) with caller-typed equivalents: `{ kind: "named-subagent", name }` for named subagents, `{ kind: "anonymous-subagent" }` otherwise.
-- Replace the `createMemorySearchTool({ ..., persona: { kind: "own"|"none" } })` knob with the caller-typed equivalent.
+- Replace the single `formatSnapshot({ ..., includePersona, includeAgents: false })` call (`execution.ts:200-207`) with the caller-typed equivalent: `{ kind: "named-subagent", name }` for named subagents, `{ kind: "anonymous-subagent" }` otherwise. (There is only one `formatSnapshot` call in this file; the `persona` policy passed to `createMemorySearchTool` at `execution.ts:143-146` is a separate object, handled below.)
+- Replace the `createMemorySearchTool({ ..., persona: { kind: "own"|"none" } })` knob (`execution.ts:143-146`) with the caller-typed equivalent.
 
 Covers `Memory context assembly is caller-typed` (subagent call sites).

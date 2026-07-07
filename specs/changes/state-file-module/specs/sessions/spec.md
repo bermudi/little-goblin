@@ -79,6 +79,8 @@ The system SHALL write `state/bindings.json` (session bindings) using atomic wri
 
 The system SHALL maintain a `state/topic-settings.json` file under `$GOBLIN_HOME` that stores per-chat-surface settings including `projectDir`. Topic settings SHALL be loaded and saved through the JSON state-file module; the default for a missing or malformed file SHALL be the empty settings structure. The locator-keyed slot logic (which settings record a given `(chatId, topicId)` resolves to) SHALL remain in `topic-settings.ts` — it is not part of the read/write recipe.
 
+Note: prior to this change, `loadTopicSettings` swallowed all read errors. After this change it matches the shared module policy: `ENOENT` and `SyntaxError` return the default; all other errors propagate (fail loud). This is a deliberate behavior change.
+
 #### Scenario: Load topic settings
 
 - **WHEN** `loadTopicSettings()` is called
@@ -97,3 +99,11 @@ The system SHALL maintain a `state/topic-settings.json` file under `$GOBLIN_HOME
 - **AND** `state/topic-settings.json` exists but contains invalid JSON
 - **THEN** it SHALL return an empty default structure via `loadJsonFile`
 - **AND** it SHOULD log a warning
+
+#### Scenario: Non-JSON errors propagate (behavior change)
+
+- **WHEN** `loadTopicSettings()` is called
+- **AND** `readFileSync` throws a non-`ENOENT`, non-`SyntaxError` error (e.g. permission denied)
+- **THEN** the error SHALL propagate to the caller (fail loud)
+- **AND** SHALL NOT be swallowed into the default
+- **NOTE** prior to this change, `topic-settings.ts` swallowed all errors; this scenario pins the new fail-loud behavior

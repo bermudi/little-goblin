@@ -112,6 +112,8 @@ Covers `Turn serialization lives in the orchestration layer` (intake injects the
 
 Covers `Turn serialization lives in the orchestration layer` (scheduler no longer imports from `tg/`).
 
+**Cross-change note:** `scheduler-session-source` also edits `loop.ts` (renames `manager`→`sessionSource` at `:92, :116-126`) and `index.ts` (renames the option at the composition root). Different regions, no shared symbols. Land `scheduler-session-source` first so the `SchedulerOptions` shape settles before this change narrows the `dispatcher` field. Not a `dependsOn` relationship — see portfolio coordination.
+
 ### `src/bot.ts` (modified)
 
 - Update `import type { TurnDispatcher } from "./tg/turn-dispatcher.ts"` (`bot.ts:21`) to `from "./orchestration/dispatcher.ts"`.

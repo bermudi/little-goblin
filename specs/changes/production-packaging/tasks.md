@@ -36,7 +36,7 @@
 
 ## Phase 3: Add end-to-end install script
 
-- [ ] Create `scripts/install.sh` that:
+- [x] Create `scripts/install.sh` that:
   - requires root and a Linux environment,
   - checks for `bun` and installs it via the official install script if missing,
   - creates the `goblin` system user with disabled login and home `/var/lib/goblin`,
@@ -46,9 +46,9 @@
   - runs `bun run onboard` if `/var/lib/goblin/goblin.json5` does not exist,
   - runs `bun run validate-config` to verify the setup,
   - installs and starts the systemd service.
-- [ ] Add `install` script to `package.json` pointing at `scripts/install.sh` (or leave it as a documented manual step to avoid accidental root invocation from npm).
-- [ ] Run `bun run typecheck`.
-- [ ] Commit: `production-packaging: phase 3 — install script`.
+- [x] Add `install` script to `package.json` pointing at `scripts/install.sh` (or leave it as a documented manual step to avoid accidental root invocation from npm).
+- [x] Run `bun run typecheck`.
+- [x] Commit: `production-packaging: phase 3 — install script`.
 
 ## Phase 4: Add backup and update scripts
 

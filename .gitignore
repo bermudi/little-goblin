@@ -8,3 +8,4 @@ bun.lockb
 .pi/settings.json
 .pi/npm/
 .worktrees/
+.superpowers/

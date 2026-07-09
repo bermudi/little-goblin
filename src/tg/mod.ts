@@ -4,5 +4,7 @@ export { MessageBuffer, DEFAULT_VISIBILITY, VISIBILITY_TOOLS, VISIBILITY_LIMITS,
 export { createTextToSpeechTool } from "./tools.ts";
 export { GuestReplySink } from "./guest-sink.ts";
 export { sendSystemReply, systemReply, escapeMdV2 } from "./format.ts";
+export { TextCoalescer, TEXT_SPLIT_THRESHOLD, TEXT_SPLIT_WINDOW_MS, MAX_FRAGMENTS, MAX_TOTAL_CHARS } from "./coalesce.ts";
 export type { SystemTag } from "./format.ts";
 export type { MessageBufferOptions, ToolSlot } from "./buffer.ts";
+export type { CoalesceKey, CoalesceInput, CoalesceDispatch } from "./coalesce.ts";

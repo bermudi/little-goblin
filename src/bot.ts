@@ -2,7 +2,7 @@ import { Bot } from "grammy";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
 import { log } from "./log.ts";
-import { buildAllowlistMiddleware, locatorFromCtx } from "./tg/mod.ts";
+import { buildAllowlistMiddleware, locatorFromCtx, TextCoalescer } from "./tg/mod.ts";
 import { prepareUserContent } from "./tg/user-context.ts";
 import { MemoryStore } from "./memory/mod.ts";
 import { registerCommands } from "./commands/mod.ts";
@@ -97,11 +97,33 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     scheduleStore,
   });
 
+  // Text coalescer: merges Telegram-split fragments before they reach intake.
+  // One instance shared across all message:text handlers, keyed per
+  // (chatId, topicId, fromUserId). See src/tg/coalesce.ts.
+  const coalescer = new TextCoalescer({
+    dispatch: (msg, text) => {
+      void intake.handleText(msg, text);
+    },
+  });
+
   bot.use(buildAllowlistMiddleware(cfg));
   registerCommands(bot, manager);
 
   bot.on("message:text", async (ctx: Context) => {
-    await intake.handleText(intakeMessageFromCtx(ctx), ctx.msg?.text);
+    const message = intakeMessageFromCtx(ctx);
+    // No valid chat → drop, same as the handler did before coalescing.
+    if (!message.locator) return;
+    coalescer.submit({
+      message,
+      text: ctx.msg?.text ?? "",
+      key: {
+        chatId: message.locator.chatId,
+        topicId: message.locator.topicId,
+        fromUserId: ctx.from!.id,
+      },
+      messageId: ctx.msg?.message_id ?? 0,
+      isCommand: ctx.msg?.entities?.[0]?.type === "bot_command",
+    });
   });
 
   bot.on("message:photo", async (ctx: Context) => {

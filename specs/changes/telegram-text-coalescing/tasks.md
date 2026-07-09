@@ -15,10 +15,10 @@ Verification: `bun test src/tg/coalesce.test.ts` passes; `bunx tsc --noEmit` is 
 
 ## Phase 2: Command-flush and bot.ts wiring
 
-- [ ] Add command detection to the coalescer's `submit`: when `input.isCommand` is true, flush any open buffer for the key (in arrival order — buffered text first), then `dispatch` the command immediately. A command never opens a buffer. Add a test: command-with-pending-buffer flushes-then-dispatches in order; command-with-no-buffer dispatches immediately.
-- [ ] Export `TextCoalescer` and the constants/types from `src/tg/mod.ts` (barrel), mirroring the existing export pattern.
-- [ ] In `src/bot.ts` `buildBot`: construct a single `TextCoalescer` instance after `intake` is created, passing `dispatch: (msg, text) => intake.handleText(msg, text)`.
-- [ ] Rewrite the `bot.on("message:text")` handler (`bot.ts:103-105`) to build the `TelegramIntakeMessage` once, extract `fromUserId` from `ctx.from?.id`, `messageId` from `ctx.msg?.message_id`, detect `isCommand` from the first entity (`ctx.msg?.entities?.[0]?.type === "bot_command"`), and call `coalescer.submit({ message, text, key, messageId, isCommand })` instead of calling `intake.handleText` directly.
-- [ ] Confirm no other `bot.on(...)` handler changed (media paths must still bypass the coalescer) — diff-verify during review.
+- [x] Add command detection to the coalescer's `submit`: when `input.isCommand` is true, flush any open buffer for the key (in arrival order — buffered text first), then `dispatch` the command immediately. A command never opens a buffer. Add a test: command-with-pending-buffer flushes-then-dispatches in order; command-with-no-buffer dispatches immediately.
+- [x] Export `TextCoalescer` and the constants/types from `src/tg/mod.ts` (barrel), mirroring the existing export pattern.
+- [x] In `src/bot.ts` `buildBot`: construct a single `TextCoalescer` instance after `intake` is created, passing `dispatch: (msg, text) => intake.handleText(msg, text)`.
+- [x] Rewrite the `bot.on("message:text")` handler (`bot.ts:103-105`) to build the `TelegramIntakeMessage` once, extract `fromUserId` from `ctx.from?.id`, `messageId` from `ctx.msg?.message_id`, detect `isCommand` from the first entity (`ctx.msg?.entities?.[0]?.type === "bot_command"`), and call `coalescer.submit({ message, text, key, messageId, isCommand })` instead of calling `intake.handleText` directly.
+- [x] Confirm no other `bot.on(...)` handler changed (media paths must still bypass the coalescer) — diff-verify during review.
 
 Verification: `bun test` (full suite) passes; `bunx tsc --noEmit` is clean; the existing `src/bot.ts`-adjacent tests (if any) still pass. Manual smoke check: a short DM message still responds with no added latency; a paste over 4096 chars arrives as a single agent turn.

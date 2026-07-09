@@ -46,7 +46,19 @@ export type CoalesceDispatch = (message: TelegramIntakeMessage, text: string) =>
 
 interface BufferEntry {
   /** The first fragment's message — retained at open time and passed to
-   * `dispatch` on every flush path (design D9). Never overwritten on append. */
+   * `dispatch` on every flush path (design D9). Never overwritten on append.
+   *
+   * `message.prepare` (built from the first fragment's grammy `ctx`) carries
+   * that fragment's `entities`/`caption_entities`. On flush it is applied to
+   * the *merged* text, so later-fragment entity offsets are not represented
+   * here. The practical consequence: `stripBotMention`'s entity path runs on
+   * first-fragment entities only — but its plain-text fallback (user-context.ts)
+   * still strips bare `@handle` occurrences anywhere in the merged text. So a
+   * bot mention in a later fragment is stripped via the fallback as long as no
+   * entity-range match was found in the first fragment. Re-basing per-fragment
+   * entity offsets onto the merged text would be the full fix; the current
+   * behavior is accepted as benign and rare (a >4096-char message with bot
+   * mentions split across the boundary). */
   message: TelegramIntakeMessage;
   text: string;
   lastMessageId: number;

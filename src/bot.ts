@@ -100,9 +100,20 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   // Text coalescer: merges Telegram-split fragments before they reach intake.
   // One instance shared across all message:text handlers, keyed per
   // (chatId, topicId, fromUserId). See src/tg/coalesce.ts.
+  //
+  // The dispatch callback is fire-and-forget (coalescer.submit is sync), so it
+  // routes handleText rejections to log.error explicitly — grammy's bot.catch
+  // only sees promises from awaited handlers, not from setTimeout-flushed
+  // dispatches, so without this catch a rejection would become an unhandled
+  // rejection.
   const coalescer = new TextCoalescer({
     dispatch: (msg, text) => {
-      void intake.handleText(msg, text);
+      intake.handleText(msg, text).catch((err) => {
+        log.error("handleText failed", {
+          name: err instanceof Error ? err.name : typeof err,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
     },
   });
 
@@ -113,15 +124,29 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const message = intakeMessageFromCtx(ctx);
     // No valid chat → drop, same as the handler did before coalescing.
     if (!message.locator) return;
+    // Telegram always populates `from` on user-originated text messages and
+    // `message_id` on Message objects, and the allowlist middleware has already
+    // gated this update. Guard defensively anyway so a future invariant shift
+    // fails here rather than producing a bogus key.
+    const fromId = ctx.from?.id;
+    const messageId = ctx.msg?.message_id;
+    if (fromId === undefined || messageId === undefined) return;
     coalescer.submit({
       message,
       text: ctx.msg?.text ?? "",
       key: {
         chatId: message.locator.chatId,
         topicId: message.locator.topicId,
-        fromUserId: ctx.from!.id,
+        fromUserId: fromId,
       },
-      messageId: ctx.msg?.message_id ?? 0,
+      messageId,
+      // The first entity being bot_command means this is a slash command.
+      // Commands bypass the coalescer (and flush any pending buffer first) —
+      // so a slash command whose ARGUMENT exceeds Telegram's 4096-char limit
+      // will be split, with the first fragment dispatched immediately as a
+      // (truncated) command and the rest treated as a separate text turn.
+      // No command in this codebase accepts a >4096-char argument, so this is
+      // accepted as a known limitation rather than handled by coalescing.
       isCommand: ctx.msg?.entities?.[0]?.type === "bot_command",
     });
   });

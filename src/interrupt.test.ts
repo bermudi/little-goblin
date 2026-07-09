@@ -115,6 +115,9 @@ describe("interruptAndCascade", () => {
       get isStreaming() {
         return true;
       },
+      get isAbortTimedOut() {
+        return false;
+      },
       abort: async () => {
         order.push("abort");
       },
@@ -160,6 +163,9 @@ describe("interruptAndCascade", () => {
       get isStreaming() {
         return streaming;
       },
+      get isAbortTimedOut() {
+        return false;
+      },
       abort: async () => {
         // abort resolves immediately; isStreaming is still true
       },
@@ -179,6 +185,9 @@ describe("interruptAndCascade", () => {
     const runner: InterruptableRunner = {
       get isStreaming() {
         return true;
+      },
+      get isAbortTimedOut() {
+        return false;
       },
       abort: async () => {},
     };

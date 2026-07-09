@@ -254,6 +254,12 @@ export class TurnDispatcher {
       runner,
       async (isCurrent) => {
         if (!isCurrent()) return;
+        if (runner.isAbortTimedOut) {
+          log.warn("scheduled turn dropped: runner is wedged after abort timed out", {
+            sessionId: session.id,
+          });
+          return;
+        }
         await runner.prompt(content, buffer);
       },
       async (err) => {

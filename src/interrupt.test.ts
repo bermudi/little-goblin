@@ -7,6 +7,7 @@ import {
 
 function makeRunner(opts: {
   isStreaming: boolean;
+  isAbortTimedOut?: boolean;
   abort?: () => Promise<void>;
 }): InterruptableRunner & { abort: ReturnType<typeof mock>; markAbortTimedOut: ReturnType<typeof mock> } {
   const abort = mock(opts.abort ?? (async () => {}));
@@ -14,6 +15,9 @@ function makeRunner(opts: {
   return {
     get isStreaming() {
       return opts.isStreaming;
+    },
+    get isAbortTimedOut() {
+      return opts.isAbortTimedOut ?? false;
     },
     abort,
     markAbortTimedOut,
@@ -204,6 +208,16 @@ describe("interruptAndCascade", () => {
     expect(runner.markAbortTimedOut).not.toHaveBeenCalled();
   });
 
+  it("reports wedgedMain and does not re-abort when runner is already wedged", async () => {
+    const runner = makeRunner({ isStreaming: false, isAbortTimedOut: true });
+    const sr = makeSubagentRunner([]);
+    const res = await interruptAndCascade(runner, sr);
+    expect(res.attemptedMain).toBe(true);
+    expect(res.wedgedMain).toBe(true);
+    expect(res.timedOutMain).toBe(false);
+    expect(runner.abort).not.toHaveBeenCalled();
+  });
+
   it("tolerates a runner without markAbortTimedOut (optional hook)", async () => {
     // The interface marks markAbortTimedOut as optional; a legacy runner
     // without it shouldn't crash the cascade when abort times out.
@@ -211,6 +225,9 @@ describe("interruptAndCascade", () => {
     const runner: InterruptableRunner = {
       get isStreaming() {
         return true;
+      },
+      get isAbortTimedOut() {
+        return false;
       },
       abort,
     };

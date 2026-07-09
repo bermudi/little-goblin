@@ -43,6 +43,7 @@ function baseCascade(overrides: Partial<CascadeResult> = {}): CascadeResult {
     attemptedSubagents: 0,
     timedOutMain: false,
     timedOutSubagents: 0,
+    wedgedMain: false,
     ...overrides,
   };
 }
@@ -58,6 +59,7 @@ function makeRunner(streaming = false): AgentRunner {
     contextTokens: null,
     contextFiles: null,
     isStreaming: streaming,
+    isAbortTimedOut: false,
   } as unknown as AgentRunner;
 }
 
@@ -516,6 +518,13 @@ describe("handleCommand", () => {
       const runner = makeRunner(true);
       const result = expectReplied(await dispatch({ command: "/cancel", session, runner, harness }));
       expect(result.tag).toBe("ok");
+    });
+
+    it("/cancel when main is wedged is tagged 'error'", async () => {
+      const cascade = baseCascade({ attemptedMain: true, wedgedMain: true });
+      const harness = makeHarness(cascade);
+      const result = expectReplied(await dispatch({ command: "/cancel", harness }));
+      expect(result.tag).toBe("error");
     });
 
     it("/help is tagged 'info'", async () => {

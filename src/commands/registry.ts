@@ -153,11 +153,16 @@ const cancelHandler: CommandHandler = async ({ deps, session, existingRunner }) 
     DEFAULT_CASCADE_TIMEOUT_MS,
     session?.id ?? null,
   );
+  const tag: SystemTag = cascade.wedgedMain
+    ? "error"
+    : cascade.attemptedMain || cascade.attemptedSubagents > 0
+    ? "ok"
+    : "info";
   return replied(cancelReply({
     hasSession: session !== null,
     cascade,
     cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
-  }), [], cascade.attemptedMain || cascade.attemptedSubagents > 0 ? "ok" : "info");
+  }), [], tag);
 };
 
 const newHandler: CommandHandler = async ({ deps, locator, isSupergroup, session }) => {

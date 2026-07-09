@@ -21,6 +21,8 @@ import { log } from "./log.ts";
 /** Minimal shape we need from `AgentRunner` — keeps testing trivial. */
 export interface InterruptableRunner {
   readonly isStreaming: boolean;
+  /** True when a prior abort() timed out and the runner is wedged. */
+  readonly isAbortTimedOut: boolean;
   abort(): Promise<void>;
   /**
    * Optional hook called by the cascade when `abort()` doesn't resolve
@@ -48,7 +50,7 @@ export interface InterruptableSubagentRunner {
  * unhappily.
  */
 export interface CascadeResult {
-  /** True iff the main runner was streaming when the cascade started. */
+  /** True iff the main runner was streaming or wedged when the cascade started. */
   attemptedMain: boolean;
   /** Number of subagents in `running` status at cascade-start. */
   attemptedSubagents: number;
@@ -56,6 +58,8 @@ export interface CascadeResult {
   timedOutMain: boolean;
   /** Number of subagent `cancel()`s that did not resolve within the timeout. */
   timedOutSubagents: number;
+  /** True iff the main runner was already wedged (abort timed out earlier) and was not re-aborted. */
+  wedgedMain: boolean;
 }
 
 /** Default cascade timeout. Long enough to cover real network aborts; short enough to not feel hung. */
@@ -131,32 +135,38 @@ export async function interruptAndCascade(
     attemptedSubagents: 0,
     timedOutMain: false,
     timedOutSubagents: 0,
+    wedgedMain: false,
   };
 
-  if (runner?.isStreaming) {
+  if (runner?.isStreaming || runner?.isAbortTimedOut) {
     result.attemptedMain = true;
-    const abortPromise = (async () => {
-      try {
-        await runner.abort();
-      } catch (err) {
-        log.error("abort failed during interrupt", { error: String(err) });
-        // continue — command still executes even if abort throws
-      }
-    })();
-    const outcome = await withTimeout(abortPromise, cascadeTimeoutMs);
-    if (outcome === TIMEOUT_SENTINEL) {
-      result.timedOutMain = true;
-      log.warn("main runner abort timed out", { timeoutMs: cascadeTimeoutMs });
-      // Flip the runner into a "gave up" state so the next cancel-capable
-      // command doesn't re-enter abort() on a wedged pi session.
-      runner.markAbortTimedOut?.();
+    if (runner.isAbortTimedOut) {
+      result.wedgedMain = true;
+      log.warn("main runner is already wedged after abort timed out", { timeoutMs: cascadeTimeoutMs });
     } else {
-      // abort() resolved. pi sometimes resolves `session.abort()` before
-      // `isStreaming` has flipped back to false — a trailing tick may
-      // still be flushing event handlers. Poll briefly so callers who
-      // rename the session directory immediately afterwards (`/new`,
-      // `/archive`) don't race an in-flight transcript.jsonl append.
-      await waitForIdle(runner, IDLE_POLL_MS, IDLE_MAX_WAIT_MS);
+      const abortPromise = (async () => {
+        try {
+          await runner.abort();
+        } catch (err) {
+          log.error("abort failed during interrupt", { error: String(err) });
+          // continue — command still executes even if abort throws
+        }
+      })();
+      const outcome = await withTimeout(abortPromise, cascadeTimeoutMs);
+      if (outcome === TIMEOUT_SENTINEL) {
+        result.timedOutMain = true;
+        log.warn("main runner abort timed out", { timeoutMs: cascadeTimeoutMs });
+        // Flip the runner into a "gave up" state so the next cancel-capable
+        // command doesn't re-enter abort() on a wedged pi session.
+        runner.markAbortTimedOut?.();
+      } else {
+        // abort() resolved. pi sometimes resolves `session.abort()` before
+        // `isStreaming` has flipped back to false — a trailing tick may
+        // still be flushing event handlers. Poll briefly so callers who
+        // rename the session directory immediately afterwards (`/new`,
+        // `/archive`) don't race an in-flight transcript.jsonl append.
+        await waitForIdle(runner, IDLE_POLL_MS, IDLE_MAX_WAIT_MS);
+      }
     }
   }
 

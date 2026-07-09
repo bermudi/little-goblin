@@ -886,14 +886,12 @@ describe("AgentRunner", () => {
       expect(sessionHolder.sendUserMessage).toHaveBeenCalledTimes(1);
     });
 
-    // Regression: when a prior abort timed out, the runner reports
-    // `isStreaming === false` even though the underlying pi session is
-    // still streaming. The bot layer's steer-vs-idle check uses the
-    // runner's `isStreaming` getter and takes the idle path, calling
-    // `prompt()`. The guard must use the same getter — otherwise the
-    // message is silently dropped (the old guard checked the raw pi
-    // `session.isStreaming` and threw).
-    it("prompt() proceeds after markAbortTimedOut even though pi is still streaming", async () => {
+    // When a prior abort timed out, the runner is wedged. The runner
+    // reports `isStreaming === false` for scheduling purposes, but the
+    // `prompt()` guard must also check `isAbortTimedOut` and refuse to
+    // start a new turn on the broken session. The user-facing reply
+    // happens at the intake layer; the runner just throws.
+    it("prompt() rejects after markAbortTimedOut even though pi is still streaming", async () => {
       const runner = makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
       // pi is still mid-stream, but the abort cascade timed out.
@@ -901,11 +899,13 @@ describe("AgentRunner", () => {
       runner.markAbortTimedOut();
 
       expect(runner.isStreaming).toBe(false);
+      expect(runner.isAbortTimedOut).toBe(true);
 
-      // A fresh turn starts instead of throwing — the dead turn is
-      // treated as effectively idle.
-      await runner.prompt("recovery", nopCallbacks());
-      expect(sessionHolder.sendUserMessage).toHaveBeenCalledTimes(2);
+      // A wedged turn is treated as broken — do not start another turn.
+      await expect(runner.prompt("recovery", nopCallbacks())).rejects.toThrow(
+        "wedged after a failed abort",
+      );
+      expect(sessionHolder.sendUserMessage).toHaveBeenCalledTimes(1);
     });
 
     it("followUp() rejects after markAbortTimedOut even though pi is still streaming", async () => {

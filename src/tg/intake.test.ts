@@ -27,6 +27,7 @@ class MockAgentRunner {
 
   readonly sessionId: string;
   streaming = false;
+  abortTimedOut = false;
   readonly prompt = mock(async (content: unknown, buffer: unknown) => {
     this.streaming = true;
     try {
@@ -45,6 +46,9 @@ class MockAgentRunner {
   readonly abort = mock(async () => {
     this.streaming = false;
   });
+  readonly markAbortTimedOut = mock(() => {
+    this.abortTimedOut = true;
+  });
   readonly modelName?: string;
 
   constructor(opts: { sessionId: string; modelName?: string }) {
@@ -54,6 +58,10 @@ class MockAgentRunner {
 
   get isStreaming(): boolean {
     return this.streaming;
+  }
+
+  get isAbortTimedOut(): boolean {
+    return this.abortTimedOut;
   }
 }
 
@@ -549,6 +557,37 @@ describe("Telegram intake", () => {
     expect(runners[0]!.isStreaming).toBe(false);
 
     slow.resolve();
+    await flushMicrotasks();
+  });
+
+  it("replies with recovery instructions when the runner is wedged", async () => {
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    // Simulate the abort cascade having given up on this runner.
+    runners[0]!.markAbortTimedOut();
+    expect(runners[0]!.isAbortTimedOut).toBe(true);
+
+    // A second /cancel no longer lies with "Nothing to cancel.";
+    // it reports the wedged state and points to recovery commands.
+    await intake.handleText(message, "/cancel");
+    await flushMicrotasks();
+    expect(replies.at(-1)).toContain("wedged after a previous abort timed out");
+    expect(replies.at(-1)).toContain("/new or /archive");
+
+    // A new user message while wedged is not silently queued/dropped.
+    await intake.handleText(message, "what about now");
+    await flushMicrotasks();
+    expect(replies.at(-1)).toBe("`[error]` A previous turn is wedged after a failed abort\\. Use /new or /archive to recover\\.");
+
+    pending.resolve();
     await flushMicrotasks();
   });
 

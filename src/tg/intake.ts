@@ -211,6 +211,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     appendAssistantTranscriptEntry(sessionId, cfg.goblinHome, text);
   }
 
+  const WEDGED_RUNNER_REPLY =
+    "A previous turn is wedged after a failed abort. Use /new or /archive to recover.";
+
   function tryResolveModel(cfg: Config, session: SessionState | null, runner?: AgentRunner): ResolvedModel | undefined {
     try {
       const modelName = runner?.modelName ?? session?.modelName ?? cfg.modelName;
@@ -358,6 +361,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       projectDir: manager.getProjectDir(locator),
       schedule: (run, failureLog, opts) => {
         const runner = dispatcher.getOrCreateRunner(session, locator, message.threadId);
+        if (runner.isAbortTimedOut) {
+          sendSystemReply(message, WEDGED_RUNNER_REPLY, "error").catch((err: unknown) => {
+            log.error("failed to send wedged runner reply", {
+              error: String(err),
+              sessionId: session.id,
+            });
+          });
+          return;
+        }
         dispatcher.schedulePrompt(
           session,
           runner,
@@ -448,6 +460,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     const runner = dispatcher.getOrCreateRunner(session, locator, message.threadId);
     if (!rawText) return;
+
+    if (runner.isAbortTimedOut) {
+      await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
+      return;
+    }
 
     if (runner.isStreaming) {
       steerOrFallbackToFreshTurn(message, locator, session, runner, rawText);

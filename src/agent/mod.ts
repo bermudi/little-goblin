@@ -127,6 +127,11 @@ export class AgentRunner {
    */
   private _abortTimedOut: boolean = false;
 
+  /** Exposed for the interrupt layer and intake. */
+  get isAbortTimedOut(): boolean {
+    return this._abortTimedOut;
+  }
+
   constructor(opts: AgentRunnerOptions) {
     this.cfg = opts.cfg;
     this.sessionId = opts.sessionId;
@@ -352,6 +357,11 @@ export class AgentRunner {
     if (!this.session) {
       throw new Error("Failed to initialize AgentSession");
     }
+    if (this.isAbortTimedOut) {
+      throw new Error(
+        "The previous turn is wedged after a failed abort. Use /new or /archive to recover.",
+      );
+    }
     if (this.isStreaming) {
       throw new Error("Cannot prompt while streaming; use followUp().");
     }
@@ -452,8 +462,11 @@ export class AgentRunner {
   }
 
   /**
-   * True when the underlying pi `AgentSession` is mid-stream.
-   * False when no session has been initialized yet.
+   * True when the runner is active from a scheduling perspective (the
+   * underlying pi `AgentSession` is mid-stream AND the previous abort did
+   * not time out). False when the runner is idle OR when the previous
+   * abort timed out (the runner is wedged). Callers should use
+   * `isAbortTimedOut` to distinguish idle from wedged.
    */
   get isStreaming(): boolean {
     if (this._abortTimedOut) return false;
@@ -566,7 +579,7 @@ export class AgentRunner {
    * Abort the current agent operation.
    */
   async abort(): Promise<void> {
-    if (this._abortTimedOut) return;
+    if (this.isAbortTimedOut) return;
     if (!this.session) return;
     await this.session.abort();
   }
@@ -576,7 +589,7 @@ export class AgentRunner {
     if (!this.session) {
       throw new Error("Failed to initialize AgentSession");
     }
-    if (this._abortTimedOut) {
+    if (this.isAbortTimedOut) {
       throw new Error("Cannot compact because the previous abort timed out. Try /new or /archive.");
     }
     if (this.session.isStreaming) {

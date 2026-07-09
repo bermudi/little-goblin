@@ -16,6 +16,7 @@ class MockAgentRunner {
 
   readonly sessionId: string;
   streaming = false;
+  abortTimedOut = false;
   readonly prompt = mock(async (content: unknown, buffer: unknown) => {
     this.streaming = true;
     try {
@@ -34,6 +35,9 @@ class MockAgentRunner {
   readonly compact = mock(async () => ({ tokensBefore: 10_000 }));
   readonly setThinkingLevel = mock(() => {});
   readonly getActiveToolNames = mock(() => []);
+  readonly markAbortTimedOut = mock(() => {
+    this.abortTimedOut = true;
+  });
   readonly modelName?: string;
   readonly skillsLoaded = null;
   readonly contextTokens = null;
@@ -47,6 +51,10 @@ class MockAgentRunner {
 
   get isStreaming(): boolean {
     return this.streaming;
+  }
+
+  get isAbortTimedOut(): boolean {
+    return this.abortTimedOut;
   }
 }
 

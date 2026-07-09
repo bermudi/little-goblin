@@ -7,6 +7,7 @@ const NOTHING: CascadeResult = {
   attemptedSubagents: 0,
   timedOutMain: false,
   timedOutSubagents: 0,
+  wedgedMain: false,
 };
 
 describe("cancelReply", () => {
@@ -59,7 +60,7 @@ describe("cancelReply", () => {
     expect(
       cancelReply({
         hasSession: true,
-        cascade: { attemptedMain: true, attemptedSubagents: 0, timedOutMain: true, timedOutSubagents: 0 },
+        cascade: { attemptedMain: true, attemptedSubagents: 0, timedOutMain: true, timedOutSubagents: 0, wedgedMain: false },
         cascadeTimeoutMs: 5000,
       }),
     ).toBe("Cancelled. (the main agent didn't respond in 5s and may still be running.)");
@@ -69,7 +70,7 @@ describe("cancelReply", () => {
     expect(
       cancelReply({
         hasSession: true,
-        cascade: { attemptedMain: false, attemptedSubagents: 1, timedOutMain: false, timedOutSubagents: 1 },
+        cascade: { attemptedMain: false, attemptedSubagents: 1, timedOutMain: false, timedOutSubagents: 1, wedgedMain: false },
         cascadeTimeoutMs: 5000,
       }),
     ).toBe("Cancelled. (1 subagent didn't respond in 5s and may still be running.)");
@@ -79,7 +80,7 @@ describe("cancelReply", () => {
     expect(
       cancelReply({
         hasSession: true,
-        cascade: { attemptedMain: false, attemptedSubagents: 3, timedOutMain: false, timedOutSubagents: 3 },
+        cascade: { attemptedMain: false, attemptedSubagents: 3, timedOutMain: false, timedOutSubagents: 3, wedgedMain: false },
         cascadeTimeoutMs: 5000,
       }),
     ).toBe("Cancelled. (3 subagents didn't respond in 5s and may still be running.)");
@@ -89,9 +90,19 @@ describe("cancelReply", () => {
     expect(
       cancelReply({
         hasSession: true,
-        cascade: { attemptedMain: true, attemptedSubagents: 2, timedOutMain: true, timedOutSubagents: 2 },
+        cascade: { attemptedMain: true, attemptedSubagents: 2, timedOutMain: true, timedOutSubagents: 2, wedgedMain: false },
         cascadeTimeoutMs: 5000,
       }),
     ).toBe("Cancelled. (the main agent and 2 subagents didn't respond in 5s and may still be running.)");
+  });
+
+  it("reports wedged main agent with recovery instructions", () => {
+    expect(
+      cancelReply({
+        hasSession: true,
+        cascade: { attemptedMain: true, attemptedSubagents: 0, timedOutMain: false, timedOutSubagents: 0, wedgedMain: true },
+        cascadeTimeoutMs: 5000,
+      }),
+    ).toBe("The main agent is wedged after a previous abort timed out. Use /new or /archive to recover.");
   });
 });

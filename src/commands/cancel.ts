@@ -31,11 +31,14 @@ export interface CancelReplyArgs {
 }
 
 export function cancelReply(args: CancelReplyArgs): string {
-  const { attemptedMain, attemptedSubagents } = args.cascade;
+  const { attemptedMain, attemptedSubagents, wedgedMain } = args.cascade;
   // "Nothing to cancel." iff truly nothing was aborted — no main stream
   // AND no live subagents at cascade-start. If the cascade touched
   // anything, be honest about it regardless of session binding.
   if (!attemptedMain && attemptedSubagents === 0) return "Nothing to cancel.";
+  if (wedgedMain) {
+    return `The main agent is wedged after a previous abort timed out. Use /new or /archive to recover.${formatCascadeTimeoutSuffix(args.cascade, args.cascadeTimeoutMs)}`;
+  }
   return `Cancelled.${formatCascadeTimeoutSuffix(args.cascade, args.cascadeTimeoutMs)}`;
 }
 

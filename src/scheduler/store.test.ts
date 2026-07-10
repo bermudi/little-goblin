@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { ScheduleStore, makeScheduleId, loadStore } from "./store.ts";
 import { schedulesPath } from "../sessions/paths.ts";
 import type { ChatLocator } from "../sessions/types.ts";
+import type { ScheduledTurn } from "./types.ts";
 
 const LOC: ChatLocator = { chatId: 100, topicId: 5 };
 const OTHER_LOC: ChatLocator = { chatId: 200 };

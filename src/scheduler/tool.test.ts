@@ -2,10 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createScheduleTurnTool } from "./tool.ts";
+import { createScheduleTurnTool, type ScheduleTurnInput } from "./tool.ts";
 import { ScheduleStore } from "./store.ts";
 import { MAX_AGENT_SCHEDULES } from "./types.ts";
 import type { ChatLocator } from "../sessions/types.ts";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const NOW_MS = new Date("2026-07-04T12:00:00.000Z").getTime();
 const FUTURE_ISO = new Date(NOW_MS + 3600_000).toISOString();
@@ -15,13 +16,24 @@ function makeNow() {
   return () => NOW_MS;
 }
 
-async function run(tool: ReturnType<typeof createScheduleTurnTool>, action: string, extra: Record<string, unknown> = {}) {
-  const result = await tool.execute("call-1", { action, ...extra } as any);
-  return (result as any).details;
+const stubCtx = {} as unknown as ExtensionContext;
+
+async function run(
+  tool: ReturnType<typeof createScheduleTurnTool>,
+  action: ScheduleTurnInput["action"],
+  extra: Partial<Omit<ScheduleTurnInput, "action">> = {},
+): Promise<Record<string, unknown>> {
+  const params: ScheduleTurnInput = { action, ...extra };
+  const result = await tool.execute("call-1", params, undefined, undefined, stubCtx);
+  return result.details as Record<string, unknown>;
 }
 
-async function runThrows(tool: ReturnType<typeof createScheduleTurnTool>, action: string, extra: Record<string, unknown> = {}) {
-  return expect(tool.execute("call-1", { action, ...extra } as any)).rejects;
+async function rejectTool(
+  tool: ReturnType<typeof createScheduleTurnTool>,
+  params: ScheduleTurnInput,
+  pattern: RegExp,
+): Promise<void> {
+  await expect(tool.execute("call-1", params, undefined, undefined, stubCtx)).rejects.toThrow(pattern);
 }
 
 describe("createScheduleTurnTool", () => {
@@ -60,33 +72,31 @@ describe("createScheduleTurnTool", () => {
     });
 
     it("rejects when both `in` and `at` are provided", async () => {
-      await expect(
-        tool.execute("call-1", { action: "create_once", in: "30m", at: FUTURE_ISO, prompt: "x" } as any),
-      ).rejects.toThrow(/exactly one/);
-    });
-
-    it("rejects when neither `in` nor `at` is provided", async () => {
-      await expect(tool.execute("call-1", { action: "create_once", prompt: "x" } as any)).rejects.toThrow(
-        /requires one of/,
+      await rejectTool(
+        tool,
+        { action: "create_once", in: "30m", at: FUTURE_ISO, prompt: "x" },
+        /exactly one/,
       );
     });
 
+    it("rejects when neither `in` nor `at` is provided", async () => {
+      await rejectTool(tool, { action: "create_once", prompt: "x" }, /requires one of/);
+    });
+
     it("rejects an empty prompt", async () => {
-      await expect(
-        tool.execute("call-1", { action: "create_once", in: "30m", prompt: "   " } as any),
-      ).rejects.toThrow(/non-empty/);
+      await rejectTool(tool, { action: "create_once", in: "30m", prompt: "   " }, /non-empty/);
     });
 
     it("rejects an invalid `in` duration", async () => {
-      await expect(
-        tool.execute("call-1", { action: "create_once", in: "7w", prompt: "x" } as any),
-      ).rejects.toThrow(/Invalid duration/);
+      await rejectTool(tool, { action: "create_once", in: "7w", prompt: "x" }, /Invalid duration/);
     });
 
     it("rejects a past `at` timestamp", async () => {
-      await expect(
-        tool.execute("call-1", { action: "create_once", at: "2020-01-01T00:00:00Z", prompt: "x" } as any),
-      ).rejects.toThrow(/Invalid or past/);
+      await rejectTool(
+        tool,
+        { action: "create_once", at: "2020-01-01T00:00:00Z", prompt: "x" },
+        /Invalid or past/,
+      );
     });
   });
 
@@ -100,15 +110,15 @@ describe("createScheduleTurnTool", () => {
     });
 
     it("rejects an invalid duration", async () => {
-      await expect(
-        tool.execute("call-1", { action: "create_recurring", every: "7w", prompt: "x" } as any),
-      ).rejects.toThrow(/Invalid duration/);
+      await rejectTool(
+        tool,
+        { action: "create_recurring", every: "7w", prompt: "x" },
+        /Invalid duration/,
+      );
     });
 
     it("rejects a missing prompt", async () => {
-      await expect(
-        tool.execute("call-1", { action: "create_recurring", every: "1h" } as any),
-      ).rejects.toThrow(/non-empty/);
+      await rejectTool(tool, { action: "create_recurring", every: "1h" }, /non-empty/);
     });
   });
 
@@ -124,7 +134,12 @@ describe("createScheduleTurnTool", () => {
       });
 
       const result = await run(tool, "list");
-      const records = result.schedules as Array<{ id: string; prompt: string | null; source: string; userOwned?: boolean }>;
+      const records = result.schedules as Array<{
+        id: string;
+        prompt: string | null;
+        source: string;
+        userOwned?: boolean;
+      }>;
       expect(records).toHaveLength(2);
 
       const agentRecord = records.find((r) => r.id === agent.id)!;
@@ -142,16 +157,18 @@ describe("createScheduleTurnTool", () => {
   describe("remove / pause / resume", () => {
     it("remove deletes an agent-owned schedule", async () => {
       const created = await run(tool, "create_once", { in: "1h", prompt: "x" });
-      const result = await run(tool, "remove", { id: created.id });
+      const id = created.id as string;
+      const result = await run(tool, "remove", { id });
       expect(result.removed).toBe(true);
-      expect(store.getForSession("abcdef1234", created.id)).toBeNull();
+      expect(store.getForSession("abcdef1234", id)).toBeNull();
     });
 
     it("pause and resume an agent-owned schedule", async () => {
       const created = await run(tool, "create_once", { in: "1h", prompt: "x" });
-      const paused = await run(tool, "pause", { id: created.id });
+      const id = created.id as string;
+      const paused = await run(tool, "pause", { id });
       expect(paused.state).toBe("disabled");
-      const resumed = await run(tool, "resume", { id: created.id });
+      const resumed = await run(tool, "resume", { id });
       expect(resumed.state).toBe("enabled");
     });
 
@@ -163,9 +180,9 @@ describe("createScheduleTurnTool", () => {
         prompt: "user-owned",
         nextRunAt: FUTURE_ISO,
       });
-      await expect(tool.execute("call-1", { action: "remove", id: user.id } as any)).rejects.toThrow(/user-owned/);
-      await expect(tool.execute("call-1", { action: "pause", id: user.id } as any)).rejects.toThrow(/user-owned/);
-      await expect(tool.execute("call-1", { action: "resume", id: user.id } as any)).rejects.toThrow(/user-owned/);
+      await rejectTool(tool, { action: "remove", id: user.id }, /user-owned/);
+      await rejectTool(tool, { action: "pause", id: user.id }, /user-owned/);
+      await rejectTool(tool, { action: "resume", id: user.id }, /user-owned/);
     });
   });
 
@@ -197,32 +214,32 @@ describe("createScheduleTurnTool", () => {
         enabled: true,
         now: new Date(NOW_MS).toISOString(),
       });
-      await expect(
-        tool.execute("call-1", { action: "heartbeat", heartbeat_action: "on", duration: "1h" } as any),
-      ).rejects.toThrow(/user-owned/);
-      await expect(
-        tool.execute("call-1", { action: "heartbeat", heartbeat_action: "off" } as any),
-      ).rejects.toThrow(/user-owned/);
+      await rejectTool(
+        tool,
+        { action: "heartbeat", heartbeat_action: "on", duration: "1h" },
+        /user-owned/,
+      );
+      await rejectTool(tool, { action: "heartbeat", heartbeat_action: "off" }, /user-owned/);
     });
   });
 
   describe("agent cap", () => {
     it("create_recurring refuses when the cap is exceeded", async () => {
       for (let i = 0; i < MAX_AGENT_SCHEDULES; i++) {
-        await run(tool, "create_once", { in: "1h", prompt: `a${i}` });
+        await run(tool, "create_recurring", { every: "1h", prompt: `a${i}` });
       }
-      await expect(
-        tool.execute("call-1", { action: "create_once", in: "1h", prompt: "too many" } as any),
-      ).rejects.toThrow(/cap/);
+      await rejectTool(
+        tool,
+        { action: "create_recurring", every: "1h", prompt: "too many" },
+        /cap/,
+      );
     });
 
     it("heartbeat on refuses when the cap is exceeded", async () => {
       for (let i = 0; i < MAX_AGENT_SCHEDULES; i++) {
         await run(tool, "create_once", { in: "1h", prompt: `a${i}` });
       }
-      await expect(
-        tool.execute("call-1", { action: "heartbeat", heartbeat_action: "on" } as any),
-      ).rejects.toThrow(/cap/);
+      await rejectTool(tool, { action: "heartbeat", heartbeat_action: "on" }, /cap/);
     });
   });
 });

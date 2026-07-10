@@ -29,7 +29,7 @@ const scheduleTurnSchema = Type.Object(
   { additionalProperties: false },
 );
 
-type ScheduleTurnInput = Static<typeof scheduleTurnSchema>;
+export type ScheduleTurnInput = Static<typeof scheduleTurnSchema>;
 
 export interface ScheduleTurnToolArgs {
   store: ScheduleStore;

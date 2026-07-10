@@ -294,7 +294,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("creates an AgentSession with customTools=[] and the subagent's SessionManager", async () => {
+  it("creates an AgentSession with the subagent-only tool list and the subagent's SessionManager", async () => {
     const handle = await runner.spawn({ prompt: "Analyze logs", activeScope: DEFAULT_SCOPE });
     handle.result.catch(() => {});
     await flush();
@@ -304,7 +304,9 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     const opts = captured[0] as Record<string, unknown>;
     expect(opts.cwd).toBe(workdirPath(tmp));
     expect(Array.isArray(opts.customTools)).toBe(true);
-    expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
+    const names = (opts.customTools as Array<{ name: string }>).map((tool) => tool.name);
+    expect(names).not.toContain("schedule_turn");
+    expect(names).toEqual([
       "memory_read",
       "memory_read_index",
       "memory_search",

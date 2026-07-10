@@ -24,6 +24,14 @@ export type ScheduleKind = "once" | "recurring" | "heartbeat";
 export type ScheduleState = "enabled" | "disabled" | "completed";
 
 /**
+ * Maximum number of enabled agent-source schedules allowed per session. The cap
+ * is enforced at the store mutation boundary for every agent-originated
+ * transition into `enabled` (`create`, `resume`, `setHeartbeat(enabled: true)`).
+ * User-originated schedules and disabled/completed agent schedules do not count.
+ */
+export const MAX_AGENT_SCHEDULES = 8;
+
+/**
  * Terminal status recorded the last time the scheduler touched a schedule.
  *
  * `at` is an ISO-8601 timestamp. `outcome` enumerates the scheduler's terminal
@@ -58,6 +66,8 @@ export interface ScheduledTurn {
   intervalMs?: number;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
+  /** Provenance: who created the schedule. Absent/legacy records read as "user". */
+  source?: "user" | "agent";
   lastRun?: LastRunStatus;
 }
 

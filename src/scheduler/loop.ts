@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { log } from "../log.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
+import { heartbeatMdPathForSession } from "../sessions/paths.ts";
 import type { ChatLocator, SessionState } from "../sessions/mod.ts";
 import type { ScheduledTurn } from "./types.ts";
 import type { ScheduleStore } from "./store.ts";
@@ -26,32 +27,48 @@ export const HEARTBEAT_PROMPT =
   "[heartbeat] This is a scheduled self-check-in. No user message prompted this turn. Review the current session context and decide whether there is anything useful, timely, or important to say. If there is nothing worth saying, reply briefly that you have nothing to add and stop.";
 
 /**
- * Resolve the heartbeat prompt body for a given `$GOBLIN_HOME`.
- *
- * Reads `$GOBLIN_HOME/workspace/HEARTBEAT.md` at dispatch time. When the
- * file exists and contains non-whitespace content, its content is used as
- * the prompt body with the `[heartbeat] ` prefix prepended (the file holds
- * the user-authored body; the system owns the prefix). When the file is
- * absent (ENOENT) or empty/whitespace-only, the system-owned
- * `HEARTBEAT_PROMPT` constant is returned as-is — it already includes the
- * `[heartbeat]` prefix, so no double-prefixing occurs on the fallback
- * path. Non-ENOENT read errors propagate (fail loud, per AGENTS.md).
- *
- * Whitespace contract: leading whitespace is preserved (the user may
- * intend it as part of the body, e.g. an indented first line); only
- * trailing whitespace is stripped. The emptiness check uses `trim()` so a
- * file of only whitespace falls back to the constant.
+ * Read a candidate heartbeat prompt file and return its content if it exists
+ * and is non-whitespace. Returns `null` for ENOENT or whitespace-only files.
+ * Non-ENOENT read errors propagate.
  */
-export function resolveHeartbeatPrompt(home: string): string {
+function readCandidate(path: string): string | null {
   let raw: string;
   try {
-    raw = readFileSync(heartbeatMdPath(home), "utf-8");
+    raw = readFileSync(path, "utf-8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return HEARTBEAT_PROMPT;
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw e;
   }
-  if (raw.trim().length === 0) return HEARTBEAT_PROMPT;
-  return `[heartbeat] ${raw.trimEnd()}`;
+  if (raw.trim().length === 0) return null;
+  return raw.trimEnd();
+}
+
+/**
+ * Resolve the heartbeat prompt body for a given session.
+ *
+ * Checks candidates in first-non-empty-wins order:
+ * 1. `$GOBLIN_HOME/state/sessions/<sessionId>/HEARTBEAT.md`
+ * 2. `$GOBLIN_HOME/workspace/HEARTBEAT.md`
+ * 3. The system-owned `HEARTBEAT_PROMPT` constant
+ *
+ * When a file yields non-whitespace content, its content is used as the prompt
+ * body with the `[heartbeat] ` prefix prepended (the file holds the user-
+ * authored body; the system owns the prefix). When a file is absent or
+ * empty/whitespace-only, the next candidate is tried. The constant already
+ * includes the `[heartbeat]` prefix, so no double-prefixing occurs on the
+ * fallback path. Non-ENOENT read errors propagate (fail loud, per AGENTS.md).
+ *
+ * Whitespace contract: leading whitespace is preserved (the user may intend it
+ * as part of the body, e.g. an indented first line); only trailing whitespace
+ * is stripped. The emptiness check uses `trim()` so a file of only whitespace
+ * falls back to the next candidate.
+ */
+export function resolveHeartbeatPrompt(home: string, sessionId: string): string {
+  const sessionBody = readCandidate(heartbeatMdPathForSession(home, sessionId));
+  if (sessionBody !== null) return `[heartbeat] ${sessionBody}`;
+  const globalBody = readCandidate(heartbeatMdPath(home));
+  if (globalBody !== null) return `[heartbeat] ${globalBody}`;
+  return HEARTBEAT_PROMPT;
 }
 
 /**
@@ -206,10 +223,10 @@ export class SchedulerLoop {
    */
   private async processOne(schedule: ScheduledTurn, nowIso: string): Promise<void> {
     // The prompt text is decided before claiming: a heartbeat resolves its
-    // body from `$GOBLIN_HOME/workspace/HEARTBEAT.md` (with constant
-    // fallback) at dispatch time; a user schedule uses its captured prompt.
+    // body from `$GOBLIN_HOME/state/sessions/<id>/HEARTBEAT.md` (then global,
+    // then constant) at dispatch time; a user schedule uses its captured prompt.
     const isHeartbeat = schedule.kind === "heartbeat";
-    const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home) : schedule.prompt ?? "";
+    const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.sessionId) : schedule.prompt ?? "";
 
     // Claim before dispatch. For one-shot this completes/disables; for
     // recurring this advances nextRunAt. If another tick already claimed it,

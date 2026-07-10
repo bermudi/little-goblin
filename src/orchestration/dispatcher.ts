@@ -13,6 +13,7 @@ import {
   createSendVoiceTool,
 } from "../tg/tools.ts";
 import { createTextToSpeechTool } from "../tg/mod.ts";
+import type { ScheduleStore } from "../scheduler/store.ts";
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
@@ -69,6 +70,8 @@ export interface TurnDispatcherOptions {
    * (intake) injects this so rendering knowledge stays in `src/tg/`.
    */
   createMessageBuffer: (locator: ChatLocator) => TurnSink;
+  /** Shared schedule store. When present, the `schedule_turn` tool is wired to the main agent. */
+  scheduleStore?: ScheduleStore;
 }
 
 /**
@@ -99,6 +102,7 @@ export class TurnDispatcher {
   private readonly createMessageBufferFn: (locator: ChatLocator) => TurnSink;
   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
   private readonly promptQueueMeta: Map<string, PromptQueueEntry>;
+  private readonly scheduleStore: ScheduleStore | undefined;
 
   constructor(options: TurnDispatcherOptions) {
     this.cfg = options.cfg;
@@ -112,6 +116,7 @@ export class TurnDispatcher {
     this.createAgentRunner = options.createAgentRunner;
     this.createMessageBufferFn = options.createMessageBuffer;
     this.getTopicName = buildGetTopicName(this.memoryStore);
+    this.scheduleStore = options.scheduleStore;
   }
 
   /**
@@ -149,6 +154,7 @@ export class TurnDispatcher {
       modelName: session.modelName,
       thinkingLevel: session.thinkingLevel,
       pendingProjectNotice: this.manager.consumeProjectNotice(locator),
+      scheduleStore: this.scheduleStore,
     };
     return this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
   }

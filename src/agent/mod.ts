@@ -40,6 +40,8 @@ import { MemoryReflector } from "../memory/reflector.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
 import type { ChatLocator } from "../sessions/types.ts";
 import type { ActiveScope } from "../memory/mod.ts";
+import type { ScheduleStore } from "../scheduler/store.ts";
+import { createScheduleTurnTool } from "../scheduler/tool.ts";
 
 /** Options for constructing an AgentRunner. */
 export interface AgentRunnerOptions {
@@ -64,6 +66,8 @@ export interface AgentRunnerOptions {
    * candidate extraction and observe reflection state.
    */
   memoryReflector?: MemoryReflector;
+  /** Shared schedule store. When present, the agent gets the `schedule_turn` tool. */
+  scheduleStore?: ScheduleStore;
 }
 
 /** Thrown when the resolved model does not support the content types present in a prompt. */
@@ -97,8 +101,10 @@ function extractPromptText(content: string | (TextContent | ImageContent)[]): st
 export class AgentRunner {
   private cfg: Config;
   private sessionId: string;
+  private locator: ChatLocator;
   private customTools: ToolDefinition[];
   private subagentRunner: SubagentRunner | null;
+  private scheduleStore: ScheduleStore | undefined;
   private session: AgentSession | null = null;
   private unsubscribe: (() => void) | null = null;
   private accumulatedText: string = "";
@@ -157,9 +163,11 @@ export class AgentRunner {
   constructor(opts: AgentRunnerOptions) {
     this.cfg = opts.cfg;
     this.sessionId = opts.sessionId;
+    this.locator = opts.locator;
     this.activeScope = resolveActiveScope(opts.locator);
     this.customTools = opts.customTools;
     this.subagentRunner = opts.subagentRunner ?? null;
+    this.scheduleStore = opts.scheduleStore;
     this.getTopicName = opts.getTopicName;
     this.projectDir = opts.projectDir;
     this._modelName = opts.modelName;
@@ -208,7 +216,7 @@ export class AgentRunner {
       ? SessionManager.open(recent, piSessionDir, cwd)
       : SessionManager.create(cwd, piSessionDir);
 
-    // Caller-supplied tools first; then memory; then spawn_subagent if wired.
+    // Caller-supplied tools first; then memory; then scheduling; then spawn_subagent if wired.
     const tools: ToolDefinition[] = [
       ...this.customTools,
       createMemoryReadTool({ store: this.memoryStore, activeScope: this.activeScope }),
@@ -221,6 +229,17 @@ export class AgentRunner {
       createMemorySearchTool({ store: this.memoryStore, activeScope: this.activeScope, caller: { kind: "main" } }),
       createMemoryWriteTool({ store: this.memoryStore, activeScope: this.activeScope }),
     ];
+
+    if (this.scheduleStore) {
+      tools.push(
+        createScheduleTurnTool({
+          store: this.scheduleStore,
+          sessionId: this.sessionId,
+          locator: this.locator,
+          now: () => Date.now(),
+        }),
+      );
+    }
 
     if (this.subagentRunner) {
       const { createSpawnSubagentTool, createReviveSubagentTool } = await import("../subagents/tool.ts");

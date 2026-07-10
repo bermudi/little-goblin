@@ -8,7 +8,10 @@ import {
   configPath,
   topicSettingsPath,
   schedulesPath,
+  heartbeatMdPathForSession,
 } from "./paths.ts";
+
+const VALID_HEX_ID = "abc123def0";
 
 describe("sessions paths", () => {
   const home = "/tmp/goblin";
@@ -43,5 +46,23 @@ describe("sessions paths", () => {
 
   it("resolves schedules.json under state/", () => {
     expect(schedulesPath(home)).toBe(join(home, "state", "schedules.json"));
+  });
+
+  it("resolves a session-scoped HEARTBEAT.md by id", () => {
+    expect(heartbeatMdPathForSession(home, VALID_HEX_ID)).toBe(
+      join(home, "state", "sessions", VALID_HEX_ID, "HEARTBEAT.md"),
+    );
+  });
+
+  it("rejects path traversal in session ids", () => {
+    expect(() => heartbeatMdPathForSession(home, "../escape")).toThrow();
+    expect(() => heartbeatMdPathForSession(home, "abc/123")).toThrow();
+    expect(() => heartbeatMdPathForSession(home, "abc\\123")).toThrow();
+  });
+
+  it("rejects non-hex session ids for HEARTBEAT.md", () => {
+    expect(() => heartbeatMdPathForSession(home, "abc")).toThrow();
+    expect(() => heartbeatMdPathForSession(home, "sess-001")).toThrow();
+    expect(() => heartbeatMdPathForSession(home, "ABCDEF1234")).toThrow();
   });
 });

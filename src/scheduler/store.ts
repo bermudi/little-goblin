@@ -4,7 +4,14 @@ import { atomicWrite } from "../fs.ts";
 import { log } from "../log.ts";
 import { schedulesPath } from "../sessions/paths.ts";
 import type { ChatLocator } from "../sessions/types.ts";
-import type { LastRunStatus, ScheduleKind, ScheduleStoreFile, ScheduleState, ScheduledTurn } from "./types.ts";
+import {
+  MAX_AGENT_SCHEDULES,
+  type LastRunStatus,
+  type ScheduleKind,
+  type ScheduleStoreFile,
+  type ScheduleState,
+  type ScheduledTurn,
+} from "./types.ts";
 
 /**
  * Default heartbeat interval: 30 minutes. Used by the command layer when the
@@ -56,11 +63,24 @@ export function saveStore(home: string, store: ScheduleStoreFile): void {
 }
 
 /**
+ * The effective source of a schedule record. Absent/legacy records read as
+ * "user" so pre-existing schedules are cap-safe and authority-protected.
+ */
+function effectiveSource(s: ScheduledTurn): "user" | "agent" {
+  return s.source ?? "user";
+}
+
+/**
  * Mutable schedule store. Backed by `schedulesPath(home)` with atomic writes.
  *
  * Operations take the active `sessionId` so that remove/pause/resume enforce
  * active-session ownership: a schedule can only be mutated by the session that
  * owns it. Cross-session mutations return null/false rather than throwing.
+ *
+ * Provenance (`source`) is an authority boundary: the agent tool path may only
+ * mutate agent-owned schedules, and agent-originated transitions into `enabled`
+ * are capped by `MAX_AGENT_SCHEDULES`. The `/schedule` command path is exempt
+ * from both the cap and the source authority check.
  */
 export class ScheduleStore {
   private readonly generateId: () => string;
@@ -82,6 +102,16 @@ export class ScheduleStore {
 
   private write(store: ScheduleStoreFile): void {
     saveStore(this.home, store);
+  }
+
+  /**
+   * Count enabled schedules owned by the session whose effective source is
+   * "agent". Used to enforce the per-session agent cap at mutation time.
+   */
+  countEnabledAgentSchedules(sessionId: string): number {
+    return this.read().schedules.filter(
+      (s) => s.sessionId === sessionId && s.state === "enabled" && effectiveSource(s) === "agent",
+    ).length;
   }
 
   /**
@@ -113,6 +143,9 @@ export class ScheduleStore {
   /**
    * Create a one-shot or recurring schedule. Heartbeat schedules are created
    * via `setHeartbeat`. Retries id generation on collision.
+   *
+   * `source` defaults to `"user"` for the `/schedule` command path. The agent
+   * tool passes `"agent"` and is subject to the per-session agent cap.
    */
   create(params: {
     sessionId: string;
@@ -121,8 +154,20 @@ export class ScheduleStore {
     prompt: string;
     nextRunAt: string;
     intervalMs?: number;
+    source?: "user" | "agent";
   }): ScheduledTurn {
+    const source = params.source ?? "user";
     const store = this.read();
+
+    if (source === "agent") {
+      const count = this.countEnabledAgentSchedules(params.sessionId);
+      if (count >= MAX_AGENT_SCHEDULES) {
+        throw new Error(
+          `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
+        );
+      }
+    }
+
     const record: ScheduledTurn = {
       id: this.freshId(store),
       sessionId: params.sessionId,
@@ -134,10 +179,11 @@ export class ScheduleStore {
       nextRunAt: params.nextRunAt,
       intervalMs: params.intervalMs,
       createdAt: new Date().toISOString(),
+      source,
     };
     store.schedules.push(record);
     this.write(store);
-    log.info("created schedule", { id: record.id, kind: record.kind, sessionId: record.sessionId });
+    log.info("created schedule", { id: record.id, kind: record.kind, sessionId: record.sessionId, source });
     return record;
   }
 
@@ -147,6 +193,10 @@ export class ScheduleStore {
    * and its next run is computed from `now`. When `enabled` is false the
    * heartbeat is disabled in place (the record is retained so status can
    * report it).
+   *
+   * `agent` is set by the `schedule_turn` tool. When true, the heartbeat is
+   * treated as agent-owned and cannot overwrite or disable a user-owned
+   * heartbeat; agent-path `enabled:true` is also subject to the cap.
    */
   setHeartbeat(params: {
     sessionId: string;
@@ -154,7 +204,9 @@ export class ScheduleStore {
     enabled: boolean;
     intervalMs?: number;
     now: string;
+    agent?: boolean;
   }): ScheduledTurn {
+    const agent = params.agent ?? false;
     const store = this.read();
     const existing = store.schedules.find(
       (s) => s.kind === "heartbeat" && s.sessionId === params.sessionId,
@@ -165,6 +217,21 @@ export class ScheduleStore {
       : existing?.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
 
     if (existing) {
+      // Authority: the agent path cannot overwrite or disable a user-owned heartbeat.
+      if (agent && effectiveSource(existing) === "user") {
+        throw new Error("Cannot modify a user-owned heartbeat.");
+      }
+
+      // Cap only applies when the agent is enabling a currently disabled heartbeat.
+      if (agent && params.enabled && existing.state !== "enabled") {
+        const count = this.countEnabledAgentSchedules(params.sessionId);
+        if (count >= MAX_AGENT_SCHEDULES) {
+          throw new Error(
+            `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
+          );
+        }
+      }
+
       existing.intervalMs = intervalMs;
       if (params.enabled) {
         existing.enabled = true;
@@ -193,8 +260,19 @@ export class ScheduleStore {
         nextRunAt: params.now,
         intervalMs,
         createdAt: new Date().toISOString(),
+        source: agent ? "agent" : "user",
       };
       return record;
+    }
+
+    // Enabling a new heartbeat from the agent path counts toward the cap.
+    if (agent) {
+      const count = this.countEnabledAgentSchedules(params.sessionId);
+      if (count >= MAX_AGENT_SCHEDULES) {
+        throw new Error(
+          `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
+        );
+      }
     }
 
     const record: ScheduledTurn = {
@@ -208,10 +286,11 @@ export class ScheduleStore {
       nextRunAt: new Date(new Date(params.now).getTime() + intervalMs).toISOString(),
       intervalMs,
       createdAt: new Date().toISOString(),
+      source: agent ? "agent" : "user",
     };
     store.schedules.push(record);
     this.write(store);
-    log.info("enabled heartbeat", { id: record.id, sessionId: record.sessionId, intervalMs });
+    log.info("enabled heartbeat", { id: record.id, sessionId: record.sessionId, intervalMs, source: record.source });
     return record;
   }
 
@@ -227,11 +306,14 @@ export class ScheduleStore {
   /**
    * Remove a schedule owned by the active session. Returns true if removed,
    * false if no matching schedule exists for this session.
+   *
+   * `agent` callers may only remove agent-owned schedules.
    */
-  remove(sessionId: string, id: string): boolean {
+  remove(sessionId: string, id: string, agent = false): boolean {
     const store = this.read();
     const idx = store.schedules.findIndex((s) => s.id === id && s.sessionId === sessionId);
     if (idx === -1) return false;
+    if (agent && effectiveSource(store.schedules[idx]!) === "user") return false;
     store.schedules.splice(idx, 1);
     this.write(store);
     log.info("removed schedule", { id, sessionId });
@@ -240,31 +322,53 @@ export class ScheduleStore {
 
   /**
    * Pause (disable) a schedule owned by the active session.
+   *
+   * `agent` callers may only pause agent-owned schedules.
    */
-  pause(sessionId: string, id: string): ScheduledTurn | null {
-    return this.setState(sessionId, id, "disabled");
+  pause(sessionId: string, id: string, agent = false): ScheduledTurn | null {
+    return this.setState(sessionId, id, "disabled", agent);
   }
 
   /**
    * Resume (re-enable) a schedule owned by the active session. Does not touch
    * prompt text or interval. A completed one-shot schedule stays completed.
+   *
+   * `agent` callers may only resume agent-owned schedules, and resuming a
+   * disabled schedule is subject to the agent cap.
    */
-  resume(sessionId: string, id: string): ScheduledTurn | null {
+  resume(sessionId: string, id: string, agent = false): ScheduledTurn | null {
     const existing = this.getForSession(sessionId, id);
     if (!existing) return null;
     if (existing.state === "completed") return existing;
-    return this.setState(sessionId, id, "enabled");
+    return this.setState(sessionId, id, "enabled", agent);
   }
 
-  private setState(sessionId: string, id: string, state: ScheduleState): ScheduledTurn | null {
+  private setState(sessionId: string, id: string, state: ScheduleState, agent = false): ScheduledTurn | null {
     const store = this.read();
     const s = store.schedules.find((x) => x.id === id && x.sessionId === sessionId);
     if (!s) return null;
+
+    // Authority: agent callers cannot mutate user-owned schedules.
+    if (agent && effectiveSource(s) === "user") return null;
+
     // Terminal-state guard: a completed one-shot has run its single
     // occurrence. Refuse any further lifecycle transition so `/schedule list`
     // keeps displaying `completed` (the list requirement) rather than silently
     // rewriting it to `disabled` via `/schedule pause`.
     if (s.state === "completed" && state !== "completed") return s;
+
+    // Cap: agent-path transitions into enabled count toward the cap.
+    if (
+      agent &&
+      state === "enabled" &&
+      s.state !== "enabled" &&
+      this.countEnabledAgentSchedules(sessionId) >= MAX_AGENT_SCHEDULES
+    ) {
+      throw new Error(
+        `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
+      );
+    }
+
     s.state = state;
     s.enabled = state === "enabled";
     this.write(store);

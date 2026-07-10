@@ -6,6 +6,7 @@ import { SchedulerLoop, HEARTBEAT_PROMPT, DEFAULT_TICK_INTERVAL_MS, resolveHeart
 import { ScheduleStore } from "./store.ts";
 import { SessionManager } from "../sessions/manager.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
+import { heartbeatMdPathForSession } from "../sessions/paths.ts";
 import type { Config } from "../config.ts";
 import type { ChatLocator } from "../sessions/types.ts";
 import type { SessionState } from "../sessions/mod.ts";
@@ -538,22 +539,57 @@ describe("SchedulerLoop", () => {
   });
 
   describe("resolveHeartbeatPrompt (HEARTBEAT.md sourcing)", () => {
-    function writeHeartbeat(home: string, content: string): void {
+    const SESSION_ID = "abc123def0";
+
+    function writeGlobalHeartbeat(home: string, content: string): void {
       const path = heartbeatMdPath(home);
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, content, "utf-8");
     }
 
-    it("uses HEARTBEAT.md content with [heartbeat] prefix when file is present", () => {
-      writeHeartbeat(tmpDir, "Check the build; if red, ping me.");
-      expect(resolveHeartbeatPrompt(tmpDir)).toBe(
-        "[heartbeat] Check the build; if red, ping me.",
+    function writeSessionHeartbeat(home: string, sessionId: string, content: string): void {
+      const path = heartbeatMdPathForSession(home, sessionId);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content, "utf-8");
+    }
+
+    it("uses session-scoped HEARTBEAT.md with [heartbeat] prefix when present", () => {
+      writeSessionHeartbeat(tmpDir, SESSION_ID, "Session-scoped check.");
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(
+        "[heartbeat] Session-scoped check.",
       );
     });
 
+    it("session-scoped takes precedence over global", () => {
+      writeSessionHeartbeat(tmpDir, SESSION_ID, "session body");
+      writeGlobalHeartbeat(tmpDir, "global body");
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe("[heartbeat] session body");
+    });
+
+    it("falls back to global when session-scoped is absent", () => {
+      writeGlobalHeartbeat(tmpDir, "Global fallback body.");
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe("[heartbeat] Global fallback body.");
+    });
+
+    it("falls back to global when session-scoped is whitespace-only", () => {
+      writeSessionHeartbeat(tmpDir, SESSION_ID, "   \n\t \n");
+      writeGlobalHeartbeat(tmpDir, "Global fallback body.");
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe("[heartbeat] Global fallback body.");
+    });
+
+    it("falls back to the constant when both files are absent", () => {
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(HEARTBEAT_PROMPT);
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID).match(/\[heartbeat\]/g)).toHaveLength(1);
+    });
+
+    it("falls back to the constant when global is empty/whitespace-only", () => {
+      writeGlobalHeartbeat(tmpDir, "   \n\t \n");
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(HEARTBEAT_PROMPT);
+    });
+
     it("trims trailing whitespace from the file content", () => {
-      writeHeartbeat(tmpDir, "Check the build; if red, ping me.\n\n  \n");
-      expect(resolveHeartbeatPrompt(tmpDir)).toBe(
+      writeSessionHeartbeat(tmpDir, SESSION_ID, "Check the build; if red, ping me.\n\n  \n");
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(
         "[heartbeat] Check the build; if red, ping me.",
       );
     });
@@ -561,37 +597,19 @@ describe("SchedulerLoop", () => {
     it("preserves leading whitespace in the file content", () => {
       // The user may intend an indented first line; only trailing whitespace
       // is stripped. Spec: "Heartbeat due turn with HEARTBEAT.md present".
-      writeHeartbeat(tmpDir, "  \tCheck the build; if red, ping me.  \n");
-      expect(resolveHeartbeatPrompt(tmpDir)).toBe(
+      writeSessionHeartbeat(tmpDir, SESSION_ID, "  \tCheck the build; if red, ping me.  \n");
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(
         "[heartbeat]   \tCheck the build; if red, ping me.",
       );
     });
 
-    it("falls back to the constant when HEARTBEAT.md is absent (exactly one [heartbeat] marker)", () => {
-      // tmpDir has no workspace/HEARTBEAT.md.
-      expect(resolveHeartbeatPrompt(tmpDir)).toBe(HEARTBEAT_PROMPT);
-      // The constant already includes the prefix — no double prefix on fallback.
-      expect(resolveHeartbeatPrompt(tmpDir).startsWith("[heartbeat]")).toBe(true);
-      expect(resolveHeartbeatPrompt(tmpDir).match(/\[heartbeat\]/g)).toHaveLength(1);
-    });
-
-    it("falls back to the constant when HEARTBEAT.md is empty", () => {
-      writeHeartbeat(tmpDir, "");
-      expect(resolveHeartbeatPrompt(tmpDir)).toBe(HEARTBEAT_PROMPT);
-    });
-
-    it("falls back to the constant when HEARTBEAT.md is whitespace-only", () => {
-      writeHeartbeat(tmpDir, "   \n\t \n");
-      expect(resolveHeartbeatPrompt(tmpDir)).toBe(HEARTBEAT_PROMPT);
-    });
-
     it("propagates non-ENOENT read errors (does not fall back silently)", () => {
-      // Point the home at a path where workspace/HEARTBEAT.md resolves under a
-      // non-directory ancestor, so readFileSync throws EACCES/ENOTDIR rather
+      // Point the home at a path where state/sessions/<id>/HEARTBEAT.md resolves
+      // under a non-directory ancestor, so readFileSync throws ENOTDIR rather
       // than ENOENT.
       const blockingFile = join(tmpDir, "blocking");
       writeFileSync(blockingFile, "x", "utf-8");
-      expect(() => resolveHeartbeatPrompt(blockingFile)).toThrow();
+      expect(() => resolveHeartbeatPrompt(blockingFile, SESSION_ID)).toThrow();
     });
   });
 

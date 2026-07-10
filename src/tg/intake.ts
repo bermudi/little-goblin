@@ -205,6 +205,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     promptQueues: options.promptQueues,
     createAgentRunner: options.createAgentRunner,
     createMessageBuffer,
+    scheduleStore: options.scheduleStore,
   });
 
   function recordAssistantReply(sessionId: string, text: string): void {

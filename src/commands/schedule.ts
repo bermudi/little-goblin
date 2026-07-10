@@ -124,8 +124,9 @@ function formatScheduleList(schedules: ScheduledTurn[]): string {
   if (schedules.length === 0) return "No schedules for this session.";
   const lines = ["Schedules:"];
   for (const s of schedules) {
+    const sourceTag = s.source === "agent" ? " [agent]" : "";
     lines.push(
-      `- \`${s.id}\` [${stateLabel(s)}] ${recurrenceLabel(s)} → ${nextRunLabel(s)} :: ${preview(s.prompt)}`,
+      `- \`${s.id}\` [${stateLabel(s)}]${sourceTag} ${recurrenceLabel(s)} → ${nextRunLabel(s)} :: ${preview(s.prompt)}`,
     );
   }
   return lines.join("\n");

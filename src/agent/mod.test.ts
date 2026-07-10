@@ -6,6 +6,7 @@ import { sessionDir, transcriptPath } from "../sessions/paths.ts";
 import { piAgentDir } from "../pi-host.ts";
 import { agentsMdPath, skillsPath, soulMdPath, workdirPath } from "../workspace/paths.ts";
 import { memoryDir } from "../memory/paths.ts";
+import { ScheduleStore } from "../scheduler/store.ts";
 
 // ---------------------------------------------------------------------------
 // Shared mutable state — captured by the module mock closure
@@ -1416,6 +1417,35 @@ describe("AgentRunner", () => {
       // The tool exists and was registered — the delegating callback is
       // captured inside the tool's closure. Integration testing of the
       // full callback chain is covered by the subagent mod.test.ts suite.
+    });
+  });
+
+  describe("schedule_turn tool registration", () => {
+    it("registers schedule_turn when scheduleStore is provided", async () => {
+      const scheduleStore = new ScheduleStore(tmpDir);
+      const runner = new AgentRunner({
+        cfg: makeConfig(tmpDir),
+        sessionId: "sess-001",
+        locator: { chatId: 123 },
+        customTools: [],
+        scheduleStore,
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).toContain("schedule_turn");
+    });
+
+    it("does not register schedule_turn when scheduleStore is absent", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).not.toContain("schedule_turn");
     });
   });
 

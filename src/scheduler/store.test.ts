@@ -577,4 +577,279 @@ describe("ScheduleStore", () => {
       expect(created.id).not.toBe("seedid0000");
     });
   });
+
+  describe("provenance", () => {
+    it("create stamps user by default and agent when passed", () => {
+      const user = store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "u",
+        nextRunAt: FUTURE_ISO,
+      });
+      expect(user.source).toBe("user");
+
+      const agent = store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "a",
+        nextRunAt: FUTURE_ISO,
+        source: "agent",
+      });
+      expect(agent.source).toBe("agent");
+    });
+
+    it("legacy records without source count as user", () => {
+      mkdirSync(dirname(schedulesPath(tmpDir)), { recursive: true });
+      writeFileSync(
+        schedulesPath(tmpDir),
+        JSON.stringify({
+          schedules: [
+            {
+              id: "legacyid",
+              sessionId: "sess-a",
+              locator: LOC,
+              kind: "once",
+              prompt: "legacy",
+              enabled: true,
+              state: "enabled",
+              nextRunAt: FUTURE_ISO,
+              createdAt: "2026-01-01T00:00:00Z",
+            },
+          ],
+        }),
+      );
+      expect(store.countEnabledAgentSchedules("sess-a")).toBe(0);
+      expect(store.getForSession("sess-a", "legacyid")!.source).toBeUndefined();
+    });
+
+    it("countEnabledAgentSchedules counts only enabled agent-source records", () => {
+      store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "a1",
+        nextRunAt: FUTURE_ISO,
+        source: "agent",
+      });
+      store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "a2",
+        nextRunAt: FUTURE_ISO,
+        source: "agent",
+      });
+      store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "u",
+        nextRunAt: FUTURE_ISO,
+      });
+      const paused = store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "a3",
+        nextRunAt: FUTURE_ISO,
+        source: "agent",
+      });
+      store.pause("sess-a", paused.id, true);
+
+      expect(store.countEnabledAgentSchedules("sess-a")).toBe(2);
+      expect(store.countEnabledAgentSchedules("sess-b")).toBe(0);
+    });
+  });
+
+  describe("agent cap", () => {
+    it("create refuses when the agent cap is exceeded", () => {
+      for (let i = 0; i < 8; i++) {
+        store.create({
+          sessionId: "sess-a",
+          locator: LOC,
+          kind: "once",
+          prompt: `a${i}`,
+          nextRunAt: FUTURE_ISO,
+          source: "agent",
+        });
+      }
+      expect(store.countEnabledAgentSchedules("sess-a")).toBe(8);
+      expect(() =>
+        store.create({
+          sessionId: "sess-a",
+          locator: LOC,
+          kind: "once",
+          prompt: "too many",
+          nextRunAt: FUTURE_ISO,
+          source: "agent",
+        }),
+      ).toThrow(/cap/);
+      expect(store.listBySession("sess-a")).toHaveLength(8);
+    });
+
+    it("pausing frees cap headroom for another agent create", () => {
+      const created: ScheduledTurn[] = [];
+      for (let i = 0; i < 8; i++) {
+        created.push(
+          store.create({
+            sessionId: "sess-a",
+            locator: LOC,
+            kind: "once",
+            prompt: `a${i}`,
+            nextRunAt: FUTURE_ISO,
+            source: "agent",
+          }),
+        );
+      }
+      store.pause("sess-a", created[0]!.id, true);
+      expect(() =>
+        store.create({
+          sessionId: "sess-a",
+          locator: LOC,
+          kind: "once",
+          prompt: "replacement",
+          nextRunAt: FUTURE_ISO,
+          source: "agent",
+        }),
+      ).not.toThrow();
+      expect(store.countEnabledAgentSchedules("sess-a")).toBe(8);
+    });
+
+    it("resume at cap fails", () => {
+      const created: ScheduledTurn[] = [];
+      for (let i = 0; i < 8; i++) {
+        created.push(
+          store.create({
+            sessionId: "sess-a",
+            locator: LOC,
+            kind: "once",
+            prompt: `a${i}`,
+            nextRunAt: FUTURE_ISO,
+            source: "agent",
+          }),
+        );
+      }
+      store.pause("sess-a", created[0]!.id, true);
+      store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "replacement",
+        nextRunAt: FUTURE_ISO,
+        source: "agent",
+      });
+      expect(() => store.resume("sess-a", created[0]!.id, true)).toThrow(/cap/);
+      expect(store.getForSession("sess-a", created[0]!.id)!.state).toBe("disabled");
+    });
+
+    it("heartbeat on at cap fails", () => {
+      for (let i = 0; i < 8; i++) {
+        store.create({
+          sessionId: "sess-a",
+          locator: LOC,
+          kind: "once",
+          prompt: `a${i}`,
+          nextRunAt: FUTURE_ISO,
+          source: "agent",
+        });
+      }
+      expect(() =>
+        store.setHeartbeat({
+          sessionId: "sess-a",
+          locator: LOC,
+          enabled: true,
+          now: NOW_ISO,
+          agent: true,
+        }),
+      ).toThrow(/cap/);
+      expect(store.getHeartbeat("sess-a")).toBeNull();
+    });
+
+    it("user-source schedules are not capped", () => {
+      for (let i = 0; i < 8; i++) {
+        store.create({
+          sessionId: "sess-a",
+          locator: LOC,
+          kind: "once",
+          prompt: `a${i}`,
+          nextRunAt: FUTURE_ISO,
+          source: "agent",
+        });
+      }
+      expect(() =>
+        store.create({
+          sessionId: "sess-a",
+          locator: LOC,
+          kind: "once",
+          prompt: "user extra",
+          nextRunAt: FUTURE_ISO,
+          source: "user",
+        }),
+      ).not.toThrow();
+      expect(store.listBySession("sess-a")).toHaveLength(9);
+    });
+  });
+
+  describe("agent authority", () => {
+    it("agent remove/pause/resume on a user-owned schedule fails", () => {
+      const user = store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "user",
+        nextRunAt: FUTURE_ISO,
+        source: "user",
+      });
+      expect(store.remove("sess-a", user.id, true)).toBe(false);
+      expect(store.pause("sess-a", user.id, true)).toBeNull();
+      expect(store.resume("sess-a", user.id, true)).toBeNull();
+      expect(store.getForSession("sess-a", user.id)!.state).toBe("enabled");
+    });
+
+    it("user command remove/pause/resume on an agent-owned schedule succeeds", () => {
+      const agent = store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "agent",
+        nextRunAt: FUTURE_ISO,
+        source: "agent",
+      });
+      expect(store.pause("sess-a", agent.id)).not.toBeNull();
+      expect(store.resume("sess-a", agent.id)).not.toBeNull();
+      expect(store.remove("sess-a", agent.id)).toBe(true);
+      expect(store.getForSession("sess-a", agent.id)).toBeNull();
+    });
+
+    it("agent cannot turn off or overwrite a user-owned heartbeat", () => {
+      store.setHeartbeat({
+        sessionId: "sess-a",
+        locator: LOC,
+        enabled: true,
+        now: NOW_ISO,
+      });
+      expect(() =>
+        store.setHeartbeat({
+          sessionId: "sess-a",
+          locator: LOC,
+          enabled: true,
+          intervalMs: 60_000,
+          now: NOW_ISO,
+          agent: true,
+        }),
+      ).toThrow(/user-owned/);
+      expect(() =>
+        store.setHeartbeat({
+          sessionId: "sess-a",
+          locator: LOC,
+          enabled: false,
+          now: NOW_ISO,
+          agent: true,
+        }),
+      ).toThrow(/user-owned/);
+      expect(store.getHeartbeat("sess-a")!.enabled).toBe(true);
+    });
+  });
 });

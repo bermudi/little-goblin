@@ -5,6 +5,8 @@
  */
 
 export { ScheduleStore, DEFAULT_HEARTBEAT_INTERVAL_MS, makeScheduleId, loadStore, saveStore } from "./store.ts";
+export { createScheduleTurnTool } from "./tool.ts";
+export type { ScheduleTurnToolArgs } from "./tool.ts";
 export {
   SchedulerLoop,
   DEFAULT_TICK_INTERVAL_MS,

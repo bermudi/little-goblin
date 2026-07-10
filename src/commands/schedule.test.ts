@@ -210,6 +210,41 @@ describe("executeSchedule — list", () => {
     expect(reply).toContain("[heartbeat]");
     expect(reply).toContain("heartbeat 30m");
   });
+
+  it("annotates agent-source schedules with [agent] and leaves user schedules unchanged", () => {
+    const deps = makeFakeDeps();
+    deps.listReturn = [
+      {
+        id: "user1",
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "user prompt",
+        enabled: true,
+        state: "enabled",
+        nextRunAt: "2026-07-04T13:00:00.000Z",
+        createdAt: "2026-07-04T12:00:00Z",
+      },
+      {
+        id: "agent1",
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "agent prompt",
+        enabled: true,
+        state: "enabled",
+        nextRunAt: "2026-07-04T13:00:00.000Z",
+        createdAt: "2026-07-04T12:00:00Z",
+        source: "agent",
+      },
+    ];
+    const reply = executeSchedule(deps, "/schedule list").reply;
+    const lines = reply.split("\n");
+    const userLine = lines.find((l) => l.includes("user1"))!;
+    const agentLine = lines.find((l) => l.includes("agent1"))!;
+    expect(userLine).not.toContain("[agent]");
+    expect(agentLine).toContain("[agent]");
+  });
 });
 
 describe("executeSchedule — at (one-shot absolute)", () => {

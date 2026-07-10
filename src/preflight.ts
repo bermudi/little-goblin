@@ -1,4 +1,4 @@
-import { access, rmSync, writeFileSync } from "node:fs";
+import { access, constants, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -57,13 +57,14 @@ export async function runPreflight(cfg: Config): Promise<void> {
     await checkDirectoryWritable(join(cfg.goblinHome, "workspace"));
     await checkDirectoryWritable(join(cfg.goblinHome, "scratch"));
     await checkDirectoryWritable(skillsPath(cfg.goblinHome));
+    await checkDirectoryWritable(join(cfg.goblinHome, "state"));
     await checkDirectoryWritable(sessionsDir(cfg.goblinHome));
     await checkDirectoryWritable(memoryDir(cfg.goblinHome));
     await checkDirectoryWritable(workdirPath(cfg.goblinHome));
   });
 
   await ctx.check("atomic write works in state/", async () => {
-    await checkAtomicWrite(sessionsDir(cfg.goblinHome));
+    await checkAtomicWrite(join(cfg.goblinHome, "state"));
   });
 
   // Optional: best-effort checks that should not block startup on flakes.
@@ -90,9 +91,12 @@ export async function runPreflight(cfg: Config): Promise<void> {
 
 function checkDirectoryWritable(dir: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    access(dir, (err) => {
+    access(dir, constants.W_OK, (err) => {
       if (err) {
-        reject(new Error(`directory not writable: ${dir}: ${err.message}`));
+        const reason = err.code === "ENOENT"
+          ? "directory does not exist"
+          : "directory not writable";
+        reject(new Error(`${reason}: ${dir}: ${err.message}`));
         return;
       }
       // Write and immediately remove a probe file to prove writability.

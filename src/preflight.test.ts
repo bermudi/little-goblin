@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test";
 import { runPreflight } from "./preflight.ts";
+import * as goblinFs from "./fs.ts";
 import type { Config } from "./config.ts";
 
 function buildConfig(overrides: Partial<Config> & { goblinHome: string }): Config {
@@ -77,11 +78,17 @@ describe("runPreflight", () => {
     await expect(runPreflight(cfg)).resolves.toBeUndefined();
   });
 
-  test("fails when atomic write read-back mismatches", async () => {
-    // No direct way to force a mismatch without mocking atomicWrite. This test
-    // documents that the function exercises the atomic path; the happy-path
-    // test above proves it works on a real filesystem.
-    const cfg = buildConfig({ goblinHome: home });
-    await expect(runPreflight(cfg)).resolves.toBeUndefined();
+  test("fails when atomic write cannot rename", async () => {
+    const spy = spyOn(goblinFs, "atomicWrite").mockImplementation(() => {
+      throw new Error("simulated rename failure");
+    });
+    try {
+      const cfg = buildConfig({ goblinHome: home });
+      await expect(runPreflight(cfg)).rejects.toThrow(
+        "Preflight failed: atomic write works in state/",
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

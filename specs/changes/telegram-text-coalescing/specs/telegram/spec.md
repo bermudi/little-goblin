@@ -33,7 +33,7 @@ The system SHALL provide a text coalescer (`src/tg/coalesce.ts`) that detects me
 #### Scenario: Non-adjacent message flushes pending buffer then dispatches fresh
 
 - **WHEN** a buffer is open at message_id N
-- **AND** a text message arrives whose `message_id` is greater than N+1, less than or equal to N (non-monotonic: an out-of-order, duplicate, or redelivered `message_id`), or from a different sender, or in a different chat/topic, or after the debounce window elapsed
+- **AND** a text message arrives whose `message_id` is greater than N+1, less than or equal to N (non-monotonic: an out-of-order, duplicate, or redelivered `message_id`), or after the debounce window elapsed
 - **THEN** the coalescer SHALL flush the pending buffer immediately (dispatch its concatenation to `intake.handleText`, using the first buffered `TelegramIntakeMessage`)
 - **AND** SHALL then evaluate the incoming message independently
 

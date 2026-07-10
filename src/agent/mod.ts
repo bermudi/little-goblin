@@ -1,18 +1,12 @@
-import { join } from "node:path";
-
 /**
  * Agent runner module.
  * Orchestrates LLM calls, tool use, and turn management.
  */
 
 import {
-  AgentSession,
-  AuthStorage,
-  DefaultResourceLoader,
-  SessionManager,
-  createAgentSession,
   type ToolDefinition,
   type AgentSessionEvent,
+  type CompactionResult,
 } from "@earendil-works/pi-coding-agent";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -22,9 +16,6 @@ import { appendTranscriptEntry, dispatchAgentEvent, extractAssistantText } from 
 import type { TurnCallbacks } from "./events.ts";
 export { appendAssistantTranscriptEntry } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
-import { createPiServices, findMostRecentPiSession, piAgentDir } from "../pi-host.ts";
-import { skillsPath, workdirPath } from "../workspace/paths.ts";
-import { sessionDir } from "../sessions/paths.ts";
 import { resolveModel, type ResolvedModel } from "./models.ts";
 import { type GoblinSystemPrompt, buildGoblinSystemPrompt } from "./system-prompt.ts";
 import {
@@ -42,6 +33,8 @@ import type { ChatLocator } from "../sessions/types.ts";
 import type { ActiveScope } from "../memory/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
+import { workdirPath } from "../workspace/paths.ts";
+import { AgentBackend, AgentBackendOptions, PiAgentBackend } from "./backend.ts";
 
 /** Options for constructing an AgentRunner. */
 export interface AgentRunnerOptions {
@@ -68,6 +61,17 @@ export interface AgentRunnerOptions {
   memoryReflector?: MemoryReflector;
   /** Shared schedule store. When present, the agent gets the `schedule_turn` tool. */
   scheduleStore?: ScheduleStore;
+  /**
+   * Pre-resolved model to use. When present, the runner skips `resolveModel()`
+   * and uses this value directly. Useful for tests that drive the SDK with a
+   * deterministic fake provider.
+   */
+  resolvedModel?: ResolvedModel;
+  /**
+   * Factory for the backend. Defaults to the real `PiAgentBackend`. Tests can
+   * inject a fake backend to observe calls without constructing the real SDK.
+   */
+  backendFactory?: (opts: AgentBackendOptions) => AgentBackend;
 }
 
 /** Thrown when the resolved model does not support the content types present in a prompt. */
@@ -105,8 +109,7 @@ export class AgentRunner {
   private customTools: ToolDefinition[];
   private subagentRunner: SubagentRunner | null;
   private scheduleStore: ScheduleStore | undefined;
-  private session: AgentSession | null = null;
-  private unsubscribe: (() => void) | null = null;
+  private backend: AgentBackend;
   private accumulatedText: string = "";
   private callbacks: TurnCallbacks | null = null;
   private memoryStore: MemoryStore;
@@ -121,8 +124,6 @@ export class AgentRunner {
   private resolvedModel: ResolvedModel | null = null;
   /** The goblin system prompt value (text + provenance of loaded prompt files). */
   private goblinSystemPrompt: GoblinSystemPrompt | null = null;
-  /** Pi auth storage — retained so setModel() can register a new provider's key. */
-  private authStorage: AuthStorage | null = null;
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
    * resolve within the cascade timeout. Once set, `isStreaming` reports
@@ -134,13 +135,15 @@ export class AgentRunner {
   private _abortTimedOut: boolean = false;
   /**
    * Set by `abort()` when it is called before the first `prompt()` has
-   * initialized the underlying `AgentSession`. The next `prompt()` call checks
-   * this flag and throws, so a queued turn that has not yet started can be
-   * canceled even though `session` does not yet exist.
+   * initialized the backend. The next `prompt()` call checks this flag and
+   * throws, so a queued turn that has not yet started can be canceled even
+   * though the backend is not yet initialized.
    */
   private _abortBeforeInit: boolean = false;
   /** True while `prompt()` is in progress (including initialization). */
   private _prompting: boolean = false;
+  /** True while the backend is being initialized (between init() start and end). */
+  private _initInProgress: boolean = false;
 
   /** Exposed for the interrupt layer and intake. */
   get isAbortTimedOut(): boolean {
@@ -170,53 +173,74 @@ export class AgentRunner {
     this.scheduleStore = opts.scheduleStore;
     this.getTopicName = opts.getTopicName;
     this.projectDir = opts.projectDir;
-    this._modelName = opts.modelName;
+    this._modelName = opts.modelName ?? (opts.resolvedModel ? `${opts.resolvedModel.model.provider}/${opts.resolvedModel.model.id}` : undefined);
     this._thinkingLevel = opts.thinkingLevel;
     this.pendingProjectNotice = opts.pendingProjectNotice;
+    this.resolvedModel = opts.resolvedModel ?? null;
     // Construction is cheap (no I/O); the directory is created lazily on first write.
     this.memoryStore = new MemoryStore(opts.cfg.goblinHome);
     this.memoryReflector = opts.memoryReflector ??
       new MemoryReflector({ goblinHome: opts.cfg.goblinHome, store: this.memoryStore });
+    const backendOpts: AgentBackendOptions = {
+      cfg: this.cfg,
+      sessionId: this.sessionId,
+      onEvent: (event) => this.handleEvent(event),
+    };
+    this.backend = opts.backendFactory?.(backendOpts) ?? new PiAgentBackend(backendOpts);
   }
 
   /**
-   * Lazy initialization of the AgentSession.
-   * Called on first prompt().
+   * Lazy initialization of the backend.
+   * Called on first prompt() or compact().
    */
   private async init(): Promise<void> {
-    if (this.session) return;
-    this.throwIfAbortedBeforeInit();
+    if (this.backend.isInitialized) return;
+    this._initInProgress = true;
+    try {
+      this.throwIfAbortedBeforeInit();
 
-    const home = this.cfg.goblinHome;
-    const resolved = resolveModel({ ...this.cfg, modelName: this._modelName ?? this.cfg.modelName });
-    this.resolvedModel = resolved;
+      const home = this.cfg.goblinHome;
+      const cwd = this.projectDir ?? workdirPath(home);
+      const resolvedModel = this.resolvedModel ?? resolveModel({ ...this.cfg, modelName: this._modelName ?? this.cfg.modelName });
+      this.resolvedModel = resolvedModel;
 
-    // Create pi services with goblin paths
-    const { authStorage, modelRegistry, settingsManager } = createPiServices(home);
-    this.authStorage = authStorage;
-    authStorage.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
+      const goblinSystemPrompt = await buildGoblinSystemPrompt({
+        home,
+        projectDir: this.projectDir,
+      });
+      this.goblinSystemPrompt = goblinSystemPrompt;
 
-    const cwd = this.projectDir ?? workdirPath(home);
-    const agentDir = piAgentDir(home);
+      const tools = await this.buildCustomTools();
 
-    // Resume the most recent pi session file in this goblin session's private
-    // directory. We deliberately do NOT use SessionManager.continueRecent(),
-    // which filters candidate files by their on-disk `header.cwd` matching the
-    // resolved cwd. Goblin pins the session directory to sessions/<id>/pi (the
-    // dir is the scope), and `cwd` here can differ from a prior session file's
-    // header — e.g. after a /project bind (the old runner was created under a
-    // different cwd) or a /model switch (the recreated runner inherits the
-    // current projectDir). With cwd-gated filtering, resume silently misses and
-    // a fresh empty session is created, losing all conversation history.
-    // Opening the file directly with a cwd override lets history survive across
-    // project and model switches.
-    const piSessionDir = join(sessionDir(home, this.sessionId), "pi");
-    const recent = findMostRecentPiSession(piSessionDir);
-    const sessionManager = recent
-      ? SessionManager.open(recent, piSessionDir, cwd)
-      : SessionManager.create(cwd, piSessionDir);
+      this.throwIfAbortedBeforeInit();
+      await this.backend.init({
+        resolvedModel,
+        thinkingLevel: this._thinkingLevel ?? resolvedModel.thinkingLevel,
+        customTools: tools,
+        systemPrompt: goblinSystemPrompt.prompt,
+        cwd,
+      });
+      this.throwIfAbortedBeforeInit();
+      // Consumed — any later setThinkingLevel() calls go through the live backend.
+      this._thinkingLevel = undefined;
 
-    // Caller-supplied tools first; then memory; then scheduling; then spawn_subagent if wired.
+      // Inject any queued project notice as a nextTurn custom message,
+      // so the model knows the cwd changed when it sees the next user message.
+      if (this.pendingProjectNotice) {
+        await this.backend.sendCustomMessage(
+          { customType: "project_notice", content: this.pendingProjectNotice, display: false, details: undefined },
+          { deliverAs: "nextTurn" },
+        );
+        this.pendingProjectNotice = undefined;
+      }
+
+      log.debug("AgentRunner initialized", { sessionId: this.sessionId });
+    } finally {
+      this._initInProgress = false;
+    }
+  }
+
+  private async buildCustomTools(): Promise<ToolDefinition[]> {
     const tools: ToolDefinition[] = [
       ...this.customTools,
       createMemoryReadTool({ store: this.memoryStore, activeScope: this.activeScope }),
@@ -263,57 +287,7 @@ export class AgentRunner {
       );
     }
 
-    const goblinSystemPrompt = await buildGoblinSystemPrompt({
-      home,
-      projectDir: this.projectDir,
-    });
-    this.goblinSystemPrompt = goblinSystemPrompt;
-    const resourceLoader = new DefaultResourceLoader({
-      cwd,
-      agentDir,
-      settingsManager,
-      systemPrompt: goblinSystemPrompt.prompt,
-      noContextFiles: true,
-      additionalSkillPaths: [skillsPath(home)],
-      ...(this.cfg.skillSources === "goblin-only" ? { noSkills: true } : {}),
-    });
-    await resourceLoader.reload();
-    this.throwIfAbortedBeforeInit();
-
-    const { session } = await createAgentSession({
-      cwd,
-      agentDir,
-      authStorage,
-      modelRegistry,
-      settingsManager,
-      sessionManager,
-      model: resolved.model,
-      thinkingLevel: this._thinkingLevel ?? resolved.thinkingLevel,
-      customTools: tools,
-      resourceLoader,
-    });
-    this.throwIfAbortedBeforeInit();
-    // Consumed — any later setThinkingLevel() calls go through the live session.
-    this._thinkingLevel = undefined;
-
-    this.session = session;
-
-    // Subscribe to events
-    this.unsubscribe = session.subscribe((event) => {
-      this.handleEvent(event);
-    });
-
-    // Inject any queued project notice as a nextTurn custom message,
-    // so the model knows the cwd changed when it sees the next user message.
-    if (this.pendingProjectNotice) {
-      await session.sendCustomMessage(
-        { customType: "project_notice", content: this.pendingProjectNotice, display: false, details: undefined },
-        { deliverAs: "nextTurn" },
-      );
-      this.pendingProjectNotice = undefined;
-    }
-
-    log.debug("AgentRunner initialized", { sessionId: this.sessionId });
+    return tools;
   }
 
   /**
@@ -402,9 +376,6 @@ export class AgentRunner {
       this.throwIfAbortedBeforeInit();
       await this.init();
       this.throwIfAbortedBeforeInit();
-      if (!this.session) {
-        throw new Error("Failed to initialize AgentSession");
-      }
       if (this.isAbortTimedOut) {
         throw new Error(
           "The previous turn is wedged after a failed abort. Use /new or /archive to recover.",
@@ -418,8 +389,8 @@ export class AgentRunner {
       this.accumulatedText = "";
 
       // Apply any pending thinking-level override before the turn starts.
-      if (this._thinkingLevel !== undefined && this.session) {
-        this.session.setThinkingLevel(this._thinkingLevel);
+      if (this._thinkingLevel !== undefined && this.backend.isInitialized) {
+        this.backend.setThinkingLevel(this._thinkingLevel);
         this._thinkingLevel = undefined;
       }
 
@@ -438,11 +409,11 @@ export class AgentRunner {
         promptText,
       });
       if (aside !== null) {
-        await this.session.sendCustomMessage(aside, { deliverAs: "nextTurn" });
+        await this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" });
       }
 
       const contentForModel = this.normalizeContentForModel(content);
-      await this.session.sendUserMessage(contentForModel);
+      await this.backend.sendUserMessage(contentForModel);
     } finally {
       this._prompting = false;
     }
@@ -459,22 +430,14 @@ export class AgentRunner {
    * steer-vs-queue; the runner only exposes the two primitives.
    */
   async followUp(content: string | (TextContent | ImageContent)[]): Promise<void> {
-    if (!this.session) {
+    if (!this.backend.isInitialized) {
       throw new Error("Cannot steer: session not initialized. Call prompt() first.");
     }
     if (!this.isStreaming) {
       throw new Error("Cannot steer: session is not streaming.");
     }
     const contentForModel = this.normalizeContentForModel(content);
-    if (typeof contentForModel === "string") {
-      await this.session.followUp(contentForModel);
-    } else {
-      const texts = contentForModel
-        .filter((c): c is TextContent => c.type === "text")
-        .map((c) => c.text);
-      const images = contentForModel.filter((c): c is ImageContent => c.type === "image");
-      await this.session.followUp(texts.join("\n"), images.length > 0 ? images : undefined);
-    }
+    await this.backend.followUp(contentForModel);
   }
 
   private normalizeContentForModel(
@@ -521,7 +484,7 @@ export class AgentRunner {
    */
   get isStreaming(): boolean {
     if (this._abortTimedOut) return false;
-    return this.session?.isStreaming ?? false;
+    return this.backend.isStreaming;
   }
 
   /**
@@ -535,91 +498,86 @@ export class AgentRunner {
 
   /**
    * True once `init()` has run (i.e. the first `prompt()` has primed the
-   * underlying pi `AgentSession`). Callers can use this to distinguish
-   * "not yet initialized" from genuinely-unobservable fields.
+   * backend). Callers can use this to distinguish "not yet initialized"
+   * from genuinely-unobservable fields.
    */
   get isInitialized(): boolean {
-    return this.session !== null;
+    return this.backend.isInitialized;
   }
 
   /**
-   * Names of tools currently active on the underlying pi `AgentSession`.
-   * Returns `null` when the session has not been initialized yet (i.e. no
+   * Names of tools currently active on the underlying backend.
+   * Returns `null` when the backend has not been initialized yet (i.e. no
    * `prompt()` has run); callers should render that as "unavailable".
    */
   getActiveToolNames(): string[] | null {
-    return this.session?.getActiveToolNames() ?? null;
+    return this.backend.getActiveToolNames();
   }
 
   /**
-   * Number of skills loaded by the resource loader.
-   * Returns `null` when the session has not been initialized yet.
+   * Number of skills loaded by the backend.
+   * Returns `null` when the backend has not been initialized yet.
    */
   get skillsLoaded(): number | null {
-    return this.session?.resourceLoader.getSkills().skills.length ?? null;
+    return this.backend.getSkills()?.skills.length ?? null;
   }
 
   /**
-   * Approximate context tokens used. Returns `null` when the session has
+   * Approximate context tokens used. Returns `null` when the backend has
    * not been initialized or when the token count is unknown (e.g. right
    * after compaction).
    */
   get contextTokens(): number | null {
-    return this.session?.getContextUsage()?.tokens ?? null;
+    return this.backend.getContextUsage()?.tokens ?? null;
   }
 
   /**
-   * Paths of context files loaded into the session: goblin prompt files
+   * Paths of context files loaded into the backend: goblin prompt files
    * (SOUL.md, AGENTS.md, project AGENTS.md) and any pi-loaded skills.
-   * Returns `null` when the session has not been initialized yet.
+   * Returns `null` when the backend has not been initialized yet.
    */
   get contextFiles(): string[] | null {
-    const s = this.session;
-    if (!s) return null;
-    const skillPaths = s.resourceLoader.getSkills().skills.map((sk) => sk.filePath);
-    return [...(this.goblinSystemPrompt?.sources ?? []), ...skillPaths];
+    if (!this.backend.isInitialized) return null;
+    const skills = this.backend.getSkills()?.skills ?? [];
+    return [...(this.goblinSystemPrompt?.sources ?? []), ...skills.map((sk) => sk.filePath)];
   }
 
   /**
    * Configured model id (session override or config default).
-   * Available even before the session has been initialized.
+   * Available even before the backend has been initialized.
    */
   get modelName(): string {
     return this._modelName ?? this.cfg.modelName;
   }
 
   /**
-   * Switch the model in place. On an initialized session this delegates to
-   * pi's `session.setModel()`, which appends a `model_change` entry to the
-   * *same* session file and re-clamps thinking — no dispose, no recreate, no
-   * history loss. Before init it just records the override (applied on first
+   * Switch the model in place. On an initialized backend this delegates to
+   * the backend, which updates the session in place — no dispose, no recreate,
+   * no history loss. Before init it just records the override (applied on first
    * prompt). Either way `_modelName`/`resolvedModel` track the new model.
    */
   async setModel(modelName: string): Promise<void> {
     const resolved = resolveModel({ ...this.cfg, modelName });
     this._modelName = modelName;
     this.resolvedModel = resolved;
-    if (this.session) {
-      // Register the new provider's API key so session.setModel()'s
-      // hasConfiguredAuth check passes for a provider we haven't used yet.
-      this.authStorage?.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
-      await this.session.setModel(resolved.model);
+    if (this.backend.isInitialized) {
+      await this.backend.setModel(resolved.model, resolved.apiKey);
     }
   }
 
   /**
-   * If the session is already initialized, applies immediately.
+   * If the backend is already initialized, applies immediately.
    * Otherwise stores a pending override applied on first prompt().
    * Pass `undefined` to reset to the model's default.
    */
   setThinkingLevel(level: ThinkingLevel | undefined): void {
-    if (this.session) {
+    if (this.backend.isInitialized) {
       if (level !== undefined) {
-        this.session.setThinkingLevel(level);
+        this.backend.setThinkingLevel(level);
       } else {
         // Reset to model default by re-resolving. Pi does not expose a
         // "clear thinking level" API, so we set it back to the default.
-        this.session.setThinkingLevel(this.resolvedModel?.thinkingLevel ?? "medium");
+        this.backend.setThinkingLevel(this.resolvedModel?.thinkingLevel ?? "medium");
       }
     } else {
       this._thinkingLevel = level;
@@ -631,41 +589,34 @@ export class AgentRunner {
    */
   async abort(): Promise<void> {
     if (this.isAbortTimedOut) return;
-    if (!this.session) {
+    if (this._initInProgress || !this.backend.isInitialized) {
       // The turn has been scheduled but `init()` has not yet completed (or
       // has not started). Stash the abort so the next `prompt()` aborts before
       // it produces side effects.
       this._abortBeforeInit = true;
       return;
     }
-    await this.session.abort();
+    await this.backend.abort();
   }
 
-  async compact(customInstructions?: string): Promise<Awaited<ReturnType<AgentSession["compact"]>>> {
+  async compact(customInstructions?: string): Promise<CompactionResult> {
     await this.init();
-    if (!this.session) {
-      throw new Error("Failed to initialize AgentSession");
+    if (!this.backend.isInitialized) {
+      throw new Error("Failed to initialize backend");
     }
     if (this.isAbortTimedOut) {
       throw new Error("Cannot compact because the previous abort timed out. Try /new or /archive.");
     }
-    if (this.session.isStreaming) {
+    if (this.backend.isStreaming) {
       throw new Error("Cannot compact while the agent is still streaming. Try /cancel first.");
     }
-    return this.session.compact(customInstructions);
+    return this.backend.compact(customInstructions);
   }
 
   /**
    * Clean up resources.
    */
   dispose(): void {
-    if (this.unsubscribe) {
-      this.unsubscribe();
-      this.unsubscribe = null;
-    }
-    if (this.session) {
-      this.session.dispose();
-      this.session = null;
-    }
+    this.backend.dispose();
   }
 }

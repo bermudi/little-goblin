@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { sessionDir, transcriptPath } from "../sessions/paths.ts";
@@ -7,6 +7,8 @@ import { piAgentDir } from "../pi-host.ts";
 import { agentsMdPath, skillsPath, soulMdPath, workdirPath } from "../workspace/paths.ts";
 import { memoryDir } from "../memory/paths.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
+import type { AgentBackend, AgentBackendOptions, AgentBackendInitArgs } from "./backend.ts";
+import type { ToolDefinition, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Shared mutable state — captured by the module mock closure
@@ -105,60 +107,161 @@ let capturedResourceLoaderArgs: unknown[] = [];
 let sessionManagerCalls: { method: string; args: unknown[] }[] = [];
 
 // ---------------------------------------------------------------------------
-// Module mock — hoisted by Bun before any imports below
+// Fake backend — captures init arguments and delegates to the shared session
+// proxy so the unit tests can exercise the AgentRunner without touching the
+// real pi-coding-agent SDK.
 // ---------------------------------------------------------------------------
 
-mock.module("@earendil-works/pi-coding-agent", () => {
-  return {
-    AgentSession: {},
-    DefaultResourceLoader: class {
-      constructor(opts: unknown) {
-        capturedResourceLoaderArgs.push(opts);
-      }
-      async reload() {}
-      getSkills() { return { skills: [], diagnostics: [] }; }
-      getAgentsFiles() { return { agentsFiles: [] }; }
-      getSystemPrompt() { return undefined; }
-      getAppendSystemPrompt() { return []; }
-    },
-    AuthStorage: {
-      create: (_path: string) => ({
-        setRuntimeApiKey: (_provider: string, _key: string) => {},
-      }),
-    },
-    ModelRegistry: {
-      create: (_auth: unknown, _path: string) => ({}),
-    },
-    SettingsManager: {
-      inMemory: (_obj: unknown) => ({}),
-    },
-    SessionManager: {
-      inMemory: (cwd: string) => {
-        sessionManagerCalls.push({ method: "inMemory", args: [cwd] });
-        return {};
-      },
-      continueRecent: (cwd: string, sessionDir: string) => {
-        sessionManagerCalls.push({ method: "continueRecent", args: [cwd, sessionDir] });
-        return { cwd, sessionDir };
-      },
-      create: (cwd: string, sessionDir: string) => {
-        sessionManagerCalls.push({ method: "create", args: [cwd, sessionDir] });
-        return { cwd, sessionDir };
-      },
-      open: (path: string, sessionDir: string, cwd: string) => {
-        sessionManagerCalls.push({ method: "open", args: [path, sessionDir, cwd] });
-        return { path, sessionDir, cwd };
-      },
-    },
-    createAgentSession: async (opts: unknown) => {
-      capturedCreateArgs.push(opts);
-      return { session: sessionHolder.proxy, extensionsResult: {} };
-    },
-  };
-});
+class FakeAgentBackend implements AgentBackend {
+  private readonly opts: AgentBackendOptions;
+  private session: (typeof sessionHolder.proxy) | null = null;
+  private unsubscribe: (() => void) | null = null;
+  private customTools: ToolDefinition[] = [];
+  private resourceLoader: { getSkills: () => { skills: { filePath: string }[]; diagnostics: unknown[] } } | null = null;
+  isInitialized = false;
+
+  get isStreaming(): boolean {
+    return sessionHolder.streaming;
+  }
+
+  constructor(opts: AgentBackendOptions) {
+    this.opts = opts;
+  }
+
+  async init(args: AgentBackendInitArgs): Promise<void> {
+    const home = this.opts.cfg.goblinHome;
+    const cwd = args.cwd;
+    const sessionDirPath = join(sessionDir(home, this.opts.sessionId), "pi");
+    const agentDir = piAgentDir(home);
+
+    const existingSessionFile = findMostRecentSessionFile(sessionDirPath);
+
+    if (existingSessionFile) {
+      sessionManagerCalls.push({ method: "open", args: [existingSessionFile, sessionDirPath, cwd] });
+    } else {
+      sessionManagerCalls.push({ method: "create", args: [cwd, sessionDirPath] });
+    }
+
+    const authStorage = { setRuntimeApiKey: (_provider: string, _key: string) => {} };
+    const modelRegistry = {};
+    const settingsManager = {};
+    const resourceLoader = {
+      reload: async () => {},
+      getSkills: () => ({ skills: [], diagnostics: [] }),
+      getAgentsFiles: () => ({ agentsFiles: [] }),
+      getSystemPrompt: () => args.systemPrompt,
+      getAppendSystemPrompt: () => [],
+    };
+
+    capturedCreateArgs.push({
+      cwd,
+      agentDir,
+      authStorage,
+      modelRegistry,
+      settingsManager,
+      sessionManager: { cwd, sessionDir: sessionDirPath },
+      resourceLoader,
+      model: args.resolvedModel.model,
+      thinkingLevel: args.thinkingLevel,
+      customTools: args.customTools,
+    });
+
+    const loaderOpts: Record<string, unknown> = {
+      systemPrompt: args.systemPrompt,
+      cwd,
+      noContextFiles: true,
+      additionalSkillPaths: [skillsPath(home)],
+    };
+    if (this.opts.cfg.skillSources === "goblin-only") {
+      loaderOpts.noSkills = true;
+    }
+    capturedResourceLoaderArgs.push(loaderOpts);
+
+    this.customTools = args.customTools;
+    this.resourceLoader = resourceLoader;
+    this.session = sessionHolder.proxy;
+    this.unsubscribe = this.session.subscribe((event) => this.opts.onEvent(event as unknown as AgentSessionEvent));
+    this.isInitialized = true;
+  }
+
+  async sendCustomMessage(message: { customType: string; content: string; display: boolean; details?: unknown }, opts?: { deliverAs?: "nextTurn" }): Promise<void> {
+    if (!this.session) throw new Error("Session not initialized");
+    await this.session.sendCustomMessage(message, opts);
+  }
+
+  async sendUserMessage(content: string | unknown[]): Promise<void> {
+    if (!this.session) throw new Error("Session not initialized");
+    await this.session.sendUserMessage(content);
+  }
+
+  async followUp(content: string | unknown[]): Promise<void> {
+    if (!this.session) throw new Error("Session not initialized");
+    if (typeof content === "string") {
+      await this.session.followUp(content);
+      return;
+    }
+    const texts = (content as Array<{ type: string; text?: string }>)
+      .filter((c) => c.type === "text")
+      .map((c) => c.text ?? "")
+      .join("\n");
+    const images = (content as Array<{ type: string }>).filter((c) => c.type === "image");
+    await this.session.followUp(texts, images.length > 0 ? images : undefined);
+  }
+
+  async abort(): Promise<void> {
+    if (!this.session) return;
+    await this.session.abort();
+  }
+
+  async compact(customInstructions?: string): Promise<{ summary: string; firstKeptEntryId: string; tokensBefore: number }> {
+    if (!this.session) throw new Error("Session not initialized");
+    return this.session.compact(customInstructions);
+  }
+
+  async setModel(model: unknown, _apiKey: string): Promise<void> {
+    if (!this.session) return;
+    await this.session.setModel(model);
+  }
+
+  setThinkingLevel(level: string): void {
+    if (!this.session) return;
+    this.session.setThinkingLevel(level);
+  }
+
+  dispose(): void {
+    if (!this.session) return;
+    this.session.dispose();
+    this.unsubscribe?.();
+  }
+
+  getActiveToolNames(): string[] | null {
+    return this.isInitialized ? this.customTools.map((t) => t.name) : null;
+  }
+
+  getSkills(): { skills: { filePath: string }[] } | null {
+    return this.isInitialized && this.resourceLoader ? this.resourceLoader.getSkills() : null;
+  }
+
+  getContextUsage(): { tokens: number | null } | null {
+    return this.isInitialized ? { tokens: null } : null;
+  }
+}
+
+function findMostRecentSessionFile(dir: string): string | null {
+  if (!existsSync(dir)) return null;
+  const entries = readdirSync(dir)
+    .filter((f) => f.endsWith(".jsonl"))
+    .map((f) => {
+      const path = join(dir, f);
+      return { path, mtime: statSync(path).mtimeMs };
+    });
+  if (entries.length === 0) return null;
+  entries.sort((a, b) => b.mtime - a.mtime);
+  return entries[0]!.path;
+}
 
 // ---------------------------------------------------------------------------
-// Module under test (imported after mock.module so it sees the mock)
+// Module under test
 // ---------------------------------------------------------------------------
 
 import { AgentRunner, ModelNotCapableError, type TurnCallbacks } from "./mod.ts";
@@ -227,6 +330,7 @@ function makeRunner(
     pendingProjectNotice,
     thinkingLevel: thinkingLevel as never,
     memoryReflector,
+    backendFactory: (opts) => new FakeAgentBackend(opts),
   });
 }
 
@@ -1369,6 +1473,7 @@ describe("AgentRunner", () => {
         locator: { chatId: 123 },
         customTools: [],
         subagentRunner: subRunner,
+        backendFactory: (opts) => new FakeAgentBackend(opts),
       });
       await runner.prompt("hi", nopCallbacks());
 
@@ -1400,6 +1505,7 @@ describe("AgentRunner", () => {
         locator: { chatId: 123 },
         customTools: [],
         subagentRunner: subRunner,
+        backendFactory: (opts) => new FakeAgentBackend(opts),
       });
 
       const cb = nopCallbacks();
@@ -1429,6 +1535,7 @@ describe("AgentRunner", () => {
         locator: { chatId: 123 },
         customTools: [],
         scheduleStore,
+        backendFactory: (opts) => new FakeAgentBackend(opts),
       });
       await runner.prompt("hi", nopCallbacks());
 

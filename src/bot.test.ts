@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
-import type { AgentRunner } from "./agent/mod.ts";
-import { replyNoActiveSession } from "./bot.ts";
+import { AgentRunner } from "./agent/mod.ts";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { replyNoActiveSession, buildBot } from "./bot.ts";
 import { memoryDir } from "./memory/paths.ts";
+import { workdirPath, soulMdPath } from "./workspace/paths.ts";
+import { piAgentDir } from "./pi-host.ts";
 import { TEXT_SPLIT_THRESHOLD, TEXT_SPLIT_WINDOW_MS } from "./tg/mod.ts";
 
 const runnerInstances: MockAgentRunner[] = [];
@@ -69,6 +74,7 @@ class MockAgentRunner {
 }
 
 const dirs: string[] = [];
+let currentFaux: (() => void) | undefined = undefined;
 const originalFetch = globalThis.fetch;
 
 function makeConfig(): Config {
@@ -90,6 +96,7 @@ function makeConfig(): Config {
 
 function makeApi() {
   const sent: string[] = [];
+  const edits: string[] = [];
   let failTopicNotFound = false;
   const getFile = mock(async (_fileId: unknown) => ({ file_path: "photos/x.jpg" }));
   const getChatMemberCount = mock(async (_chatId: unknown) => 1);
@@ -97,14 +104,19 @@ function makeApi() {
     sent.push(text);
     return { message_id: sent.length, date: 1, chat: { id: 1, type: "private" }, text };
   });
+  const editMessageText = mock(async (_chatId: number | string, _messageId: number, text: string) => {
+    edits.push(text);
+    return true;
+  });
   return {
     sent,
+    edits,
     api: {
       getMe: mock(async () => ({ id: 99, is_bot: true, first_name: "Goblin", username: "goblinbot" })),
       getChatMemberCount,
       getFile,
       sendMessage,
-      editMessageText: mock(async () => true),
+      editMessageText,
       sendChatAction: mock(async () => true),
       sendVoice: mock(async () => ({ message_id: 1 })),
       sendPhoto: mock(async () => ({ message_id: 1 })),
@@ -121,7 +133,9 @@ function makeApi() {
         }
         return { ok: true as const, result: await sendMessage(payload.chat_id as number | string, payload.text as string) };
       }
-      if (method === "editMessageText") return { ok: true as const, result: true };
+      if (method === "editMessageText") {
+        return { ok: true as const, result: await editMessageText(payload.chat_id as number | string, payload.message_id as number, payload.text as string) };
+      }
       if (method === "sendChatAction") return { ok: true as const, result: true };
       if (method === "sendVoice" || method === "sendPhoto" || method === "sendDocument") return { ok: true as const, result: { message_id: 1 } };
       if (method === "editForumTopic") return { ok: true as const, result: true };
@@ -132,16 +146,43 @@ function makeApi() {
 }
 
 async function makeBot(cfgPatch: Partial<Config> = {}) {
-  const { buildBot } = await import("./bot.ts");
+  const { buildBot: buildBotImpl } = await import("./bot.ts");
   const base = makeConfig();
   const cfg: Config = Object.freeze({ ...base, ...cfgPatch });
-  const built = buildBot(cfg, {
+  const built = buildBotImpl(cfg, {
     createAgentRunner: (opts) => new MockAgentRunner(opts) as unknown as AgentRunner,
   });
   const api = makeApi();
   (built.bot as unknown as { botInfo: unknown }).botInfo = { id: 99, is_bot: true, first_name: "Goblin", username: "goblinbot" };
   built.bot.api.config.use((async (_prev: unknown, method: string, payload: unknown) => api.transform(method, payload as Record<string, unknown>)) as never);
   return { ...built, cfg, api };
+}
+
+async function makeBotWithRealRunner(cfgPatch: Partial<Config> = {}) {
+  const base = makeConfig();
+  const cfg: Config = Object.freeze({ ...base, ...cfgPatch });
+  const home = cfg.goblinHome;
+  mkdirSync(workdirPath(home), { recursive: true });
+  mkdirSync(piAgentDir(home), { recursive: true });
+  mkdirSync(memoryDir(home), { recursive: true });
+  mkdirSync(dirname(soulMdPath(home)), { recursive: true });
+  writeFileSync(soulMdPath(home), "test goblin identity\n", "utf-8");
+
+  const faux = registerFauxProvider();
+  currentFaux = faux.unregister;
+
+  const built = buildBot(cfg, {
+    createAgentRunner: (opts) =>
+      new AgentRunner({
+        ...opts,
+        modelName: "faux/faux-1",
+        resolvedModel: { model: faux.getModel() as Model<Api>, apiKey: "fake-key", thinkingLevel: "medium" },
+      }),
+  });
+  const api = makeApi();
+  (built.bot as unknown as { botInfo: unknown }).botInfo = { id: 99, is_bot: true, first_name: "Goblin", username: "goblinbot" };
+  built.bot.api.config.use((async (_prev: unknown, method: string, payload: unknown) => api.transform(method, payload as Record<string, unknown>)) as never);
+  return { ...built, cfg, api, faux };
 }
 
 function textUpdate(text: string, fromId = 1, messageId = 1) {
@@ -269,9 +310,11 @@ beforeEach(() => {
   runnerInstances.length = 0;
   MockAgentRunner.nextPrompt = undefined;
   MockAgentRunner.nextFollowUp = undefined;
+  currentFaux = undefined;
 });
 
 afterEach(() => {
+  currentFaux?.();
   globalThis.fetch = originalFetch;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -600,5 +643,23 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate("/new", 2));
     expect(built.api.sent).toEqual([]);
     expect(built.manager.list()).toEqual([]);
+  });
+});
+
+describe("vertical slice with real AgentRunner", () => {
+  it("streams a faux LLM response end-to-end through buildBot", async () => {
+    const built = await makeBotWithRealRunner();
+    const response = "Hello from the faux provider";
+    built.faux.setResponses([fauxAssistantMessage(response)]);
+
+    await built.bot.handleUpdate(textUpdate("/new"));
+    await built.bot.handleUpdate(textUpdate("hello"));
+
+    await waitFor(
+      () =>
+        built.api.sent.some((text) => text.includes(response)) ||
+        built.api.edits.some((text) => text.includes(response)),
+    );
+    expect(built.api.sent.some((text) => text.includes(response)) || built.api.edits.some((text) => text.includes(response))).toBe(true);
   });
 });

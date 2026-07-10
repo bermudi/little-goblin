@@ -6,6 +6,11 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "Error: systemctl is required but not installed." >&2
+  exit 1
+fi
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "${script_dir}/.." && pwd)"
 unit_src="${repo_dir}/scripts/goblin.service"

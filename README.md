@@ -70,7 +70,7 @@ sudo bash scripts/update.sh   # pull latest code, run checks, then restart gobli
 
 `scripts/update.sh` only restarts the service if the typecheck and `bun run validate-config` pass, so a bad deploy cannot leave the bot down.
 
-`scripts/backup.sh` is safe to run while the service is running: most state files are written atomically (tmp + rename). The exception is `state/transcript.jsonl`, which is appended line-by-line; a live backup may capture a partial trailing line.
+`scripts/backup.sh` is safe to run while the service is running: it archives `workspace/`, `state/`, and `goblin.json5`, excluding `scratch/`, `node_modules/`, `.git/`, `*.tmp`, and `state/*.jsonl` append-only logs (transcript, quarantine, and pi session files).
 
 ## Core ideas
 

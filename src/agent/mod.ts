@@ -126,10 +126,32 @@ export class AgentRunner {
    * undefined state.
    */
   private _abortTimedOut: boolean = false;
+  /**
+   * Set by `abort()` when it is called before the first `prompt()` has
+   * initialized the underlying `AgentSession`. The next `prompt()` call checks
+   * this flag and throws, so a queued turn that has not yet started can be
+   * canceled even though `session` does not yet exist.
+   */
+  private _abortBeforeInit: boolean = false;
+  /** True while `prompt()` is in progress (including initialization). */
+  private _prompting: boolean = false;
 
   /** Exposed for the interrupt layer and intake. */
   get isAbortTimedOut(): boolean {
     return this._abortTimedOut;
+  }
+
+  /** True while the runner is actively processing a `prompt()` call. */
+  get isPrompting(): boolean {
+    return this._prompting;
+  }
+
+  /** If a cancel arrived before the first prompt, clear the flag and throw. */
+  private throwIfAbortedBeforeInit(): void {
+    if (this._abortBeforeInit) {
+      this._abortBeforeInit = false;
+      throw new Error("Turn aborted before it started.");
+    }
   }
 
   constructor(opts: AgentRunnerOptions) {
@@ -155,6 +177,7 @@ export class AgentRunner {
    */
   private async init(): Promise<void> {
     if (this.session) return;
+    this.throwIfAbortedBeforeInit();
 
     const home = this.cfg.goblinHome;
     const resolved = resolveModel({ ...this.cfg, modelName: this._modelName ?? this.cfg.modelName });
@@ -236,6 +259,7 @@ export class AgentRunner {
       ...(this.cfg.skillSources === "goblin-only" ? { noSkills: true } : {}),
     });
     await resourceLoader.reload();
+    this.throwIfAbortedBeforeInit();
 
     const { session } = await createAgentSession({
       cwd,
@@ -249,6 +273,7 @@ export class AgentRunner {
       customTools: tools,
       resourceLoader,
     });
+    this.throwIfAbortedBeforeInit();
     // Consumed — any later setThinkingLevel() calls go through the live session.
     this._thinkingLevel = undefined;
 
@@ -353,48 +378,55 @@ export class AgentRunner {
     content: string | (TextContent | ImageContent)[],
     callbacks: TurnCallbacks,
   ): Promise<void> {
-    await this.init();
-    if (!this.session) {
-      throw new Error("Failed to initialize AgentSession");
-    }
-    if (this.isAbortTimedOut) {
-      throw new Error(
-        "The previous turn is wedged after a failed abort. Use /new or /archive to recover.",
-      );
-    }
-    if (this.isStreaming) {
-      throw new Error("Cannot prompt while streaming; use followUp().");
-    }
+    this._prompting = true;
+    try {
+      this.throwIfAbortedBeforeInit();
+      await this.init();
+      this.throwIfAbortedBeforeInit();
+      if (!this.session) {
+        throw new Error("Failed to initialize AgentSession");
+      }
+      if (this.isAbortTimedOut) {
+        throw new Error(
+          "The previous turn is wedged after a failed abort. Use /new or /archive to recover.",
+        );
+      }
+      if (this.isStreaming) {
+        throw new Error("Cannot prompt while streaming; use followUp().");
+      }
 
-    this.callbacks = callbacks;
-    this.accumulatedText = "";
+      this.callbacks = callbacks;
+      this.accumulatedText = "";
 
-    // Apply any pending thinking-level override before the turn starts.
-    if (this._thinkingLevel !== undefined && this.session) {
-      this.session.setThinkingLevel(this._thinkingLevel);
-      this._thinkingLevel = undefined;
+      // Apply any pending thinking-level override before the turn starts.
+      if (this._thinkingLevel !== undefined && this.session) {
+        this.session.setThinkingLevel(this._thinkingLevel);
+        this._thinkingLevel = undefined;
+      }
+
+      // Inject the curated memory snapshot as a per-turn aside.
+      // Pi queues it and flushes alongside the next user message; the system
+      // prompt stays frozen, preserving the provider prefix cache. When prompt
+      // text is available it drives a bounded `## relevant memory` section so
+      // the snapshot can surface related entries from other scopes. Steers do
+      // not pass prompt text and so never inject a relevant-memory section.
+      const promptText = extractPromptText(content);
+      const aside = await formatSnapshot({
+        store: this.memoryStore,
+        activeScope: this.activeScope,
+        caller: { kind: "main" },
+        getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
+        promptText,
+      });
+      if (aside !== null) {
+        await this.session.sendCustomMessage(aside, { deliverAs: "nextTurn" });
+      }
+
+      const contentForModel = this.normalizeContentForModel(content);
+      await this.session.sendUserMessage(contentForModel);
+    } finally {
+      this._prompting = false;
     }
-
-    // Inject the curated memory snapshot as a per-turn aside.
-    // Pi queues it and flushes alongside the next user message; the system
-    // prompt stays frozen, preserving the provider prefix cache. When prompt
-    // text is available it drives a bounded `## relevant memory` section so
-    // the snapshot can surface related entries from other scopes. Steers do
-    // not pass prompt text and so never inject a relevant-memory section.
-    const promptText = extractPromptText(content);
-    const aside = await formatSnapshot({
-      store: this.memoryStore,
-      activeScope: this.activeScope,
-      caller: { kind: "main" },
-      getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
-      promptText,
-    });
-    if (aside !== null) {
-      await this.session.sendCustomMessage(aside, { deliverAs: "nextTurn" });
-    }
-
-    const contentForModel = this.normalizeContentForModel(content);
-    await this.session.sendUserMessage(contentForModel);
   }
 
   /**
@@ -580,7 +612,13 @@ export class AgentRunner {
    */
   async abort(): Promise<void> {
     if (this.isAbortTimedOut) return;
-    if (!this.session) return;
+    if (!this.session) {
+      // The turn has been scheduled but `init()` has not yet completed (or
+      // has not started). Stash the abort so the next `prompt()` aborts before
+      // it produces side effects.
+      this._abortBeforeInit = true;
+      return;
+    }
     await this.session.abort();
   }
 

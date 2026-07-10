@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, vi } from "bun:test";
 import {
   MAX_FRAGMENTS,
+  MAX_TOTAL_CHARS,
   TEXT_SPLIT_THRESHOLD,
   TEXT_SPLIT_WINDOW_MS,
   TextCoalescer,
@@ -218,30 +219,27 @@ describe("TextCoalescer — hard caps", () => {
   it("flushes at the total-chars cap and re-evaluates the overflow fragment fresh", () => {
     const { coalescer, dispatch } = makeCoalescer();
     // Fill a buffer close to the cap without tripping the fragment cap.
-    // Use a few large fragments so one more would exceed MAX_TOTAL_CHARS.
     const big = textOf(TEXT_SPLIT_THRESHOLD); // 4000
     coalescer.submit(makeInput(big, { messageIdFor: 1, messageId: 1 }));
 
-    // Keep appending large adjacent fragments until the next would overflow.
+    // 11 threshold fragments (count 11, total 44000). The next fragment must
+    // exceed 6000 chars to cross MAX_TOTAL_CHARS without tripping the fragment
+    // cap (11 + 1 = 12 ≤ 12). This is the only path that reaches the char-cap
+    // branch before the fragment-cap branch.
     let id = 1;
-    // MAX_TOTAL_CHARS / THRESHOLD = 12.5; the fragment cap (12) binds first if
-    // every fragment is exactly threshold. So use a final huge tail to trip the
-    // char cap distinctly: append 11 threshold fragments (count -> 12, still
-    // under char cap: 12*4000=48000), then a fragment that crosses 50000.
-    for (let i = 2; i <= MAX_FRAGMENTS; i++) {
+    for (let i = 2; i < MAX_FRAGMENTS; i++) {
       coalescer.submit(makeInput(big, { messageIdFor: i, messageId: i }));
       id = i;
     }
-    // 12 fragments, 48000 chars. One more of length 4000 → 52000 > 50000.
     expect(dispatch).not.toHaveBeenCalled();
 
-    const overflow = big; // 4000 chars → would push to 52000
+    const overflow = textOf(MAX_TOTAL_CHARS - (MAX_FRAGMENTS - 1) * TEXT_SPLIT_THRESHOLD + 1);
     coalescer.submit(makeInput(overflow, { messageIdFor: id + 1, messageId: id + 1 }));
 
-    // Char-cap flush of the 12-fragment buffer.
+    // Char-cap flush of the 11-fragment buffer.
     expect(dispatch).toHaveBeenCalledTimes(1);
     expectDispatchedMessageId(dispatch, 0, 1);
-    expect(dispatchedText(dispatch, 0).length).toBe(48000);
+    expect(dispatchedText(dispatch, 0).length).toBe((MAX_FRAGMENTS - 1) * TEXT_SPLIT_THRESHOLD);
 
     // Overflow is threshold-length → opens a new buffer.
     vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS);

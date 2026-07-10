@@ -17,6 +17,12 @@ import { createTextToSpeechTool } from "../tg/mod.ts";
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
 
+/** Metadata stored alongside each queued prompt chain entry. */
+interface PromptQueueEntry {
+  /** True for actual prompt turns; false for deferred commands. */
+  isPrompt: boolean;
+}
+
 /**
  * The opaque sink a turn dispatches through — the subset of `MessageBuffer`
  * that `runner.prompt(content, sink)` consumes. Typed as `TurnCallbacks` so the
@@ -55,6 +61,7 @@ export interface TurnDispatcherOptions {
   memoryStore: MemoryStore;
   agentRunners: Map<string, AgentRunner>;
   promptQueues?: Map<string, Promise<void>>;
+  promptQueueMeta?: Map<string, PromptQueueEntry>;
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
   /**
    * Mandatory factory that builds the turn sink for a locator. The dispatcher
@@ -91,6 +98,7 @@ export class TurnDispatcher {
   private readonly createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
   private readonly createMessageBufferFn: (locator: ChatLocator) => TurnSink;
   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
+  private readonly promptQueueMeta: Map<string, PromptQueueEntry>;
 
   constructor(options: TurnDispatcherOptions) {
     this.cfg = options.cfg;
@@ -100,6 +108,7 @@ export class TurnDispatcher {
     this.memoryStore = options.memoryStore;
     this.runners = options.agentRunners;
     this.promptQueues = options.promptQueues ?? new Map<string, Promise<void>>();
+    this.promptQueueMeta = options.promptQueueMeta ?? new Map<string, PromptQueueEntry>();
     this.createAgentRunner = options.createAgentRunner;
     this.createMessageBufferFn = options.createMessageBuffer;
     this.getTopicName = buildGetTopicName(this.memoryStore);
@@ -180,6 +189,7 @@ export class TurnDispatcher {
     runner: AgentRunner,
     run: (isCurrent: () => boolean) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
+    opts: { isPrompt?: boolean } = {},
   ): void {
     const isCurrent = (): boolean => this.runners.get(session.id) === runner;
     const execute = async (): Promise<void> => {
@@ -197,10 +207,54 @@ export class TurnDispatcher {
     };
     const prior = this.promptQueues.get(session.id);
     const current = prior ? prior.then(execute, execute) : execute();
+    const meta: PromptQueueEntry = { isPrompt: opts.isPrompt ?? true };
     this.promptQueues.set(session.id, current);
+    this.promptQueueMeta.set(session.id, meta);
     void current.finally(() => {
       if (this.promptQueues.get(session.id) === current) this.promptQueues.delete(session.id);
+      if (this.promptQueueMeta.get(session.id) === meta) this.promptQueueMeta.delete(session.id);
     });
+  }
+
+  /**
+   * True when the session has a deferred command that has been scheduled but
+   * not yet settled. State-mutating commands that queue should also queue when
+   * a command is already pending, so they serialize after it.
+   */
+  isCommandPending(sessionId: string): boolean {
+    const meta = this.promptQueueMeta.get(sessionId);
+    return meta !== undefined && !meta.isPrompt;
+  }
+
+  /**
+   * True when the session has a prompt turn that has been scheduled but not
+   * yet started. This covers a coalescer-flushed prompt whose `handleText`
+   * promise has scheduled but not yet started. Complements `runner.isStreaming`
+   * and `runner.isPrompting`, which are false until `AgentRunner.prompt` is
+   * actually called.
+   */
+  isPromptPending(sessionId: string): boolean {
+    const meta = this.promptQueueMeta.get(sessionId);
+    return meta !== undefined && meta.isPrompt;
+  }
+
+  /**
+   * Cancel the queued-but-not-yet-started prompt for a session, if one exists.
+   * This is the complement to `isPromptPending`: it reaches a turn that has
+   * been scheduled through `schedulePrompt` but has not yet started streaming,
+   * so `runner.isStreaming` is still false and `interruptAndCascade` would not
+   * abort it. The runner's `abort()` is invoked; the agent runner uses this
+   * signal to abort a turn before it starts (see `AgentRunner.abort`).
+   * Returns true when a pending prompt was found and canceled.
+   */
+  async cancelPending(sessionId: string): Promise<boolean> {
+    const meta = this.promptQueueMeta.get(sessionId);
+    if (!meta || !meta.isPrompt) return false;
+    const runner = this.getRunner(sessionId);
+    if (runner && !runner.isStreaming) {
+      await runner.abort();
+    }
+    return true;
   }
 
   /**

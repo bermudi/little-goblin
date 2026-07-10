@@ -7,6 +7,7 @@ import type { Config } from "./config.ts";
 import type { AgentRunner } from "./agent/mod.ts";
 import { replyNoActiveSession } from "./bot.ts";
 import { memoryDir } from "./memory/paths.ts";
+import { TEXT_SPLIT_THRESHOLD, TEXT_SPLIT_WINDOW_MS } from "./tg/mod.ts";
 
 const runnerInstances: MockAgentRunner[] = [];
 
@@ -17,12 +18,20 @@ class MockAgentRunner {
   readonly sessionId: string;
   streaming = false;
   abortTimedOut = false;
+  abortBeforeInit = false;
+  isPrompting = false;
   readonly prompt = mock(async (content: unknown, buffer: unknown) => {
+    if (this.abortBeforeInit) {
+      this.abortBeforeInit = false;
+      throw new Error("Turn aborted before it started.");
+    }
+    this.isPrompting = true;
     this.streaming = true;
     try {
       await MockAgentRunner.nextPrompt?.(content, buffer);
     } finally {
       this.streaming = false;
+      this.isPrompting = false;
     }
   });
   readonly followUp = mock(async (content: unknown) => {
@@ -30,6 +39,7 @@ class MockAgentRunner {
   });
   readonly dispose = mock(() => {});
   readonly abort = mock(async () => {
+    if (!this.streaming) this.abortBeforeInit = true;
     this.streaming = false;
   });
   readonly compact = mock(async () => ({ tokensBefore: 10_000 }));
@@ -134,11 +144,11 @@ async function makeBot(cfgPatch: Partial<Config> = {}) {
   return { ...built, cfg, api };
 }
 
-function textUpdate(text: string, fromId = 1) {
+function textUpdate(text: string, fromId = 1, messageId = 1) {
   return {
     update_id: 1,
     message: {
-      message_id: 1,
+      message_id: messageId,
       date: 1,
       chat: { id: 1, type: "private", first_name: "Daniel" },
       from: { id: fromId, is_bot: false, first_name: "Daniel", username: "bermudi" },
@@ -366,6 +376,25 @@ describe("buildBot integration", () => {
       pending.resolve();
       await handled;
     }
+  });
+
+  it("coalesces two adjacent text fragments into a single prompt", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+
+    const head = "A".repeat(TEXT_SPLIT_THRESHOLD);
+    const tail = "tail-of-split-message";
+
+    await built.bot.handleUpdate(textUpdate(head, 1, 2));
+    await built.bot.handleUpdate(textUpdate(tail, 1, 3));
+
+    const runner = runnerInstances.at(-1)!;
+    // Wait past the coalescer debounce window.
+    await new Promise<void>((resolve) => setTimeout(resolve, TEXT_SPLIT_WINDOW_MS + 100));
+
+    expect(runner.prompt).toHaveBeenCalledTimes(1);
+    const content = runner.prompt.mock.calls[0]![0] as string;
+    expect(content).toContain(head + tail);
   });
 
   it("photo messages release the update handler while download is pending", async () => {

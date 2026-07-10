@@ -59,6 +59,7 @@ function makeRunner(streaming = false): AgentRunner {
     contextTokens: null,
     contextFiles: null,
     isStreaming: streaming,
+    isPrompting: false,
     isAbortTimedOut: false,
   } as unknown as AgentRunner;
 }

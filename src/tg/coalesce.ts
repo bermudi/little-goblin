@@ -64,6 +64,10 @@ interface BufferEntry {
   lastMessageId: number;
   fragmentCount: number;
   totalChars: number;
+  /** Wall-clock timestamp of the most recent fragment for this buffer. Used to
+   * enforce the 1200 ms wall-clock window even when a setTimeout callback is
+   * delayed by the event loop. */
+  lastReceivedAt: number;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -108,12 +112,20 @@ export class TextCoalescer {
       return;
     }
 
-    // Buffer is open. Decide append vs flush-then-handle on adjacency.
-    const isAdjacent = input.messageId === entry.lastMessageId + 1;
+    // Buffer is open. Decide append vs flush-then-handle on adjacency and
+    // wall-clock window. A fragment is adjacent only if its message_id is
+    // exactly one greater than the last buffered id AND it arrived within the
+    // 1200 ms wall-clock window from the prior fragment. The wall-clock check
+    // prevents a late fragment from extending the window when the setTimeout
+    // callback has not yet fired.
+    const isAdjacent =
+      input.messageId === entry.lastMessageId + 1 &&
+      Date.now() - entry.lastReceivedAt <= TEXT_SPLIT_WINDOW_MS;
 
     if (!isAdjacent) {
-      // Non-adjacent (gap > 1, or non-monotonic / duplicate): the open buffer
-      // and the incoming message are not fragments of one logical message.
+      // Non-adjacent (gap > 1, non-monotonic / duplicate, or window elapsed):
+      // the open buffer and the incoming message are not fragments of one
+      // logical message.
       this.flush(input.key);
       // Re-evaluate the incoming fragment as if fresh.
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
@@ -147,6 +159,7 @@ export class TextCoalescer {
     entry.lastMessageId = input.messageId;
     entry.fragmentCount += 1;
     entry.totalChars += input.text.length;
+    entry.lastReceivedAt = Date.now();
     entry.timer = setTimeout(() => this.flush(input.key), TEXT_SPLIT_WINDOW_MS);
   }
 
@@ -160,6 +173,7 @@ export class TextCoalescer {
       lastMessageId: input.messageId,
       fragmentCount: 1,
       totalChars: input.text.length,
+      lastReceivedAt: Date.now(),
       timer: setTimeout(() => this.flush(input.key), TEXT_SPLIT_WINDOW_MS),
     };
     this.buffers.set(key, entry);

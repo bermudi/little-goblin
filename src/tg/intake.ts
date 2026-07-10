@@ -322,6 +322,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         await sendSystemReply(message, replyText, "error").catch(() => {});
         recordAssistantReply(session.id, replyText);
       },
+      { isPrompt: false },
     );
   }
 
@@ -397,6 +398,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     tryResolveModel,
     interruptAndCascade,
     scheduleStore: options.scheduleStore,
+    dispatcher,
   };
 
   async function runPrompt(message: TelegramIntakeMessage, locator: ChatLocator, runner: AgentRunner, content: PromptContent): Promise<void> {
@@ -420,11 +422,18 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
       // Queue-timing commands defer behind an in-flight turn so the runner is
       // idle when they mutate state (model switch, project rebind, archive,
-      // compact, etc.). Interrupt-timing (/cancel) and instant-timing
-      // commands run immediately regardless of streaming state.
-      if (timing === "queue" && session && existingRunner?.isStreaming) {
+      // compact, etc.). They also defer behind a prompt that has already started
+      // (isPrompting), e.g. a coalescer-flushed prompt whose handleText has
+      // already called runner.prompt, and behind any already-deferred command.
+      // Interrupt-timing (/cancel) and instant-timing commands run immediately.
+      const busy =
+        existingRunner?.isStreaming ||
+        existingRunner?.isPrompting ||
+        (session ? dispatcher.isCommandPending(session.id) : false);
+      if (timing === "queue" && session && busy) {
         await sendSystemReply(message, "Queued. Will run after this turn.", "queued");
-        scheduleDeferredCommand(message, locator, session, existingRunner, rawText ?? "", command);
+        const queueRunner = existingRunner ?? dispatcher.getOrCreateRunner(session, locator, message.threadId);
+        scheduleDeferredCommand(message, locator, session, queueRunner, rawText ?? "", command);
         return;
       }
 

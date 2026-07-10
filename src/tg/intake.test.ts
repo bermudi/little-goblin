@@ -28,12 +28,20 @@ class MockAgentRunner {
   readonly sessionId: string;
   streaming = false;
   abortTimedOut = false;
+  abortBeforeInit = false;
+  isPrompting = false;
   readonly prompt = mock(async (content: unknown, buffer: unknown) => {
+    if (this.abortBeforeInit) {
+      this.abortBeforeInit = false;
+      throw new Error("Turn aborted before it started.");
+    }
+    this.isPrompting = true;
     this.streaming = true;
     try {
       await MockAgentRunner.nextPrompt?.(content, buffer);
     } finally {
       this.streaming = false;
+      this.isPrompting = false;
     }
   });
   static nextFollowUp?: (content: unknown) => Promise<void>;
@@ -44,6 +52,7 @@ class MockAgentRunner {
   readonly setModel = mock(async (_name: string) => {});
   readonly dispose = mock(() => {});
   readonly abort = mock(async () => {
+    if (!this.streaming) this.abortBeforeInit = true;
     this.streaming = false;
   });
   readonly markAbortTimedOut = mock(() => {

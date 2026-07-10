@@ -9,6 +9,7 @@ import type { ChatLocator, SessionManager, SessionState } from "../sessions/mod.
 import type { AgentRunner } from "../agent/mod.ts";
 import type { ResolvedModel } from "../agent/models.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
+import type { TurnDispatcher } from "../orchestration/dispatcher.ts";
 import { DEFAULT_CASCADE_TIMEOUT_MS, interruptAndCascade } from "../interrupt.ts";
 import { generateDiagnostics } from "../diagnostics.ts";
 import { cancelReply } from "./cancel.ts";
@@ -65,6 +66,12 @@ export interface DispatchDeps {
    * The `/schedule` handler returns a usage reply when this is absent.
    */
   scheduleStore?: ScheduleStore;
+  /**
+   * Turn dispatcher, used by `/cancel` to cancel a queued-but-not-yet-started
+   * prompt before it starts streaming. Optional for callers that only test
+   * command handling in isolation.
+   */
+  dispatcher?: TurnDispatcher;
 }
 
 export interface DispatchOpts {
@@ -147,12 +154,19 @@ const cancelHandler: CommandHandler = async ({ deps, session, existingRunner }) 
   // /cancel is the sole interrupter: it aborts the in-flight turn itself,
   // rather than relying on a dispatch pre-check. The cascade result drives
   // the honest reply ("Cancelled." vs "Nothing to cancel." vs timeout suffix).
+  // If there is a queued-but-not-yet-started prompt (e.g. a coalescer flush
+  // that has scheduled but not yet started), cancel it first so the reply
+  // reflects the work that was actually stopped.
+  const cancelledPending = session
+    ? await deps.dispatcher?.cancelPending(session.id)
+    : false;
   const cascade = await deps.interruptAndCascade(
     existingRunner,
     deps.subagentRunner,
     DEFAULT_CASCADE_TIMEOUT_MS,
     session?.id ?? null,
   );
+  if (cancelledPending) cascade.attemptedMain = true;
   const tag: SystemTag = cascade.wedgedMain
     ? "error"
     : cascade.attemptedMain || cascade.attemptedSubagents > 0

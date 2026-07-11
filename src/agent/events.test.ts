@@ -17,7 +17,7 @@ describe("appendTranscriptEntry", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-transcript-test-"));
-    sessionId = "test-session-123";
+    sessionId = "abcdef1234";
     mkdirSync(sessionDir(tmpDir, sessionId), { recursive: true });
   });
 
@@ -358,7 +358,7 @@ describe("appendAssistantTranscriptEntry", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-assistant-entry-test-"));
-    sessionId = "test-session-456";
+    sessionId = "abcdef1235";
     mkdirSync(sessionDir(tmpDir, sessionId), { recursive: true });
   });
 

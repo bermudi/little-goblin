@@ -181,7 +181,7 @@ describe("gatherDiagnostics", () => {
   });
 
   it("reports transcript.jsonl size + line count when the file exists", () => {
-    const session = makeSession("sess000001");
+    const session = makeSession("abcdef1234");
     const dir = sessionDir(tmpDir, session.id);
     mkdirSync(dir, { recursive: true });
     const transcriptFile = transcriptPath(tmpDir, session.id);
@@ -204,7 +204,7 @@ describe("gatherDiagnostics", () => {
   });
 
   it("reports null events stats when the file is missing", () => {
-    const session = makeSession("sess000002");
+    const session = makeSession("abcdef1235");
     const d = gatherDiagnostics({
       session,
       runner: null,
@@ -218,7 +218,7 @@ describe("gatherDiagnostics", () => {
 
   it("falls back to deps.modelName when runner is null", () => {
     const d = gatherDiagnostics({
-      session: makeSession("sess000003"),
+      session: makeSession("abcdef1236"),
       runner: null,
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -236,7 +236,7 @@ describe("gatherDiagnostics", () => {
       { id: "d", name: null, role: "generic", status: "cancelled", spawnedAt: "", spawnedBy: null },
     ];
     const d = gatherDiagnostics({
-      session: makeSession("sess000004"),
+      session: makeSession("abcdef1237"),
       runner: null,
       subagentRunner: stubSubagentRunner(subagents),
       goblinHome: tmpDir,
@@ -248,7 +248,7 @@ describe("gatherDiagnostics", () => {
 
   it("passes projectDir through when provided", () => {
     const d = gatherDiagnostics({
-      session: makeSession("sess000004"),
+      session: makeSession("abcdef1237"),
       runner: null,
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -260,7 +260,7 @@ describe("gatherDiagnostics", () => {
 
   it("skillsLoaded and contextTokens remain null (best-effort, not exposed by pi)", () => {
     const d = gatherDiagnostics({
-      session: makeSession("sess000005"),
+      session: makeSession("abcdef1238"),
       runner: stubRunner({ tools: [], modelName: "m", initialized: true }),
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -273,7 +273,7 @@ describe("gatherDiagnostics", () => {
 
   it("reports runnerInitialized=false when the runner exists but is not primed", () => {
     const d = gatherDiagnostics({
-      session: makeSession("sess000005b"),
+      session: makeSession("abcdef1239"),
       runner: stubRunner({ tools: null, modelName: "m", initialized: false }),
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -285,7 +285,7 @@ describe("gatherDiagnostics", () => {
 
   it("reports runnerInitialized=false when there is no runner", () => {
     const d = gatherDiagnostics({
-      session: makeSession("sess000005c"),
+      session: makeSession("abcdef123a"),
       runner: null,
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -300,7 +300,7 @@ describe("gatherDiagnostics", () => {
       contextFiles: ["/home/user/.goblin/workspace/SOUL.md", "/home/user/project/AGENTS.md"],
     };
     const d = gatherDiagnostics({
-      session: makeSession("sess000006"),
+      session: makeSession("abcdef123b"),
       runner: runner as unknown as AgentRunner,
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -318,14 +318,14 @@ describe("generateDiagnostics", () => {
     const tmp = mkdtempSync(join(tmpdir(), "goblin-diag-"));
     try {
       const out = generateDiagnostics({
-        session: makeSession("sessgen0001"),
+        session: makeSession("abc1234568"),
         runner: stubRunner({ tools: ["memory"], modelName: "model-x" }),
         subagentRunner: stubSubagentRunner(),
         goblinHome: tmp,
         modelName: "model-x",
       });
       expect(typeof out).toBe("string");
-      expect(out).toContain("Session: sessgen0001");
+      expect(out).toContain("Session: abc1234568");
       expect(out).toContain("Model: model-x");
       expect(out).toContain("Tools: memory");
     } finally {

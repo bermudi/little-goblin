@@ -260,9 +260,10 @@ Actions:
           if (heartbeatAction === "status") {
             const hb = store.getHeartbeat(sessionId);
             if (hb === null) {
-              return jsonResult({ enabled: false, source: null });
+              return jsonResult({ enabled: false, source: null, id: null });
             }
             return jsonResult({
+              id: hb.id,
               enabled: hb.enabled,
               state: hb.state,
               intervalMs: hb.intervalMs,
@@ -285,6 +286,7 @@ Actions:
               agent: true,
             });
             return jsonResult({
+              id: record.id,
               enabled: record.enabled,
               state: record.state,
               intervalMs: record.intervalMs,
@@ -298,6 +300,9 @@ Actions:
           if (existing !== null && effectiveSource(existing.source) === "user") {
             throw new Error("Cannot turn off a user-owned heartbeat.");
           }
+          if (existing === null) {
+            return jsonResult({ enabled: false, source: null, id: null });
+          }
           const record = store.setHeartbeat({
             sessionId,
             locator,
@@ -306,6 +311,7 @@ Actions:
             agent: true,
           });
           return jsonResult({
+            id: record.id,
             enabled: record.enabled,
             state: record.state,
             intervalMs: record.intervalMs,

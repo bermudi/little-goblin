@@ -12,25 +12,16 @@ import { join } from "node:path";
 const SESSION_ID_HEX_RE = /^[0-9a-f]{10}$/;
 
 /**
- * Reject session ids that could escape `state/sessions/` via path traversal.
- * Goblin session ids are generated and never user input, but this guard keeps
- * path helpers safe if a bad value ever reaches them. This is a single shared
- * validation function used by all session-id-based path helpers.
+ * Reject session ids that do not match the goblin-generated hex format. This
+ * single validation is also a path-traversal guard: any value containing `..`,
+ * path separators, or non-hex characters fails the same hex check.
  */
 function validateSessionId(id: string): void {
   if (typeof id !== "string" || id.length === 0) {
     throw new Error(`Invalid session id: must be a non-empty string`);
   }
-  if (id === "." || id === "..") {
-    throw new Error(`Invalid session id: cannot be "." or ".."`);
-  }
-  if (id.includes("/") || id.includes("\\")) {
-    throw new Error(`Invalid session id: cannot contain path separators`);
-  }
-  for (const segment of id.split("/")) {
-    if (segment === "..") {
-      throw new Error(`Invalid session id: cannot contain ".." segments`);
-    }
+  if (!SESSION_ID_HEX_RE.test(id)) {
+    throw new Error(`Invalid session id: must be 10 lowercase hex characters`);
   }
 }
 
@@ -65,13 +56,10 @@ export function schedulesPath(home: string): string {
 
 /**
  * Path to a session-scoped `HEARTBEAT.md` prompt file. The id is validated as
- * goblin-generated lowercase hex (defense-in-depth) in addition to the shared
- * path-traversal guard in `sessionDir`.
+ * goblin-generated lowercase hex (defense-in-depth) by the shared
+ * `validateSessionId` used by all session-id path helpers.
  */
 export function heartbeatMdPathForSession(home: string, id: string): string {
   validateSessionId(id);
-  if (!SESSION_ID_HEX_RE.test(id)) {
-    throw new Error(`Invalid session id: must be 10 lowercase hex characters`);
-  }
   return join(sessionDir(home, id), "HEARTBEAT.md");
 }

@@ -218,7 +218,7 @@ describe("SessionManager", () => {
     });
 
     it("throws when session dir does not exist", () => {
-      expect(() => manager.archive("nonexistent")).toThrow(/not found or already archived/);
+      expect(() => manager.archive("0000000000")).toThrow(/not found or already archived/);
     });
 
     it("throws when called twice on the same session", () => {
@@ -381,7 +381,7 @@ describe("SessionManager", () => {
     });
 
     it("throws when session does not exist", () => {
-      expect(() => manager.setModelName("nonexistent", "poe/GPT-4o")).toThrow(
+      expect(() => manager.setModelName("0000000000", "poe/GPT-4o")).toThrow(
         /session not found/,
       );
     });
@@ -409,7 +409,7 @@ describe("SessionManager", () => {
     });
 
     it("throws when session does not exist", () => {
-      expect(() => manager.setThinkingLevel("nonexistent", "high")).toThrow(
+      expect(() => manager.setThinkingLevel("0000000000", "high")).toThrow(
         /session not found/,
       );
     });
@@ -426,7 +426,7 @@ describe("SessionManager", () => {
     });
 
     it("throws when session does not exist", () => {
-      expect(() => manager.setTitle("nonexistent", "nope")).toThrow(/session not found/);
+      expect(() => manager.setTitle("0000000000", "nope")).toThrow(/session not found/);
     });
   });
 
@@ -443,7 +443,7 @@ describe("SessionManager", () => {
     });
 
     it("throws when session does not exist", () => {
-      expect(() => manager.bindExistingToChat("nonexistent", { chatId: 1 })).toThrow(/session not found/);
+      expect(() => manager.bindExistingToChat("0000000000", { chatId: 1 })).toThrow(/session not found/);
     });
   });
 

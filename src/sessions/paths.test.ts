@@ -21,18 +21,20 @@ describe("sessions paths", () => {
   });
 
   it("resolves a session directory by id", () => {
-    expect(sessionDir(home, "abc")).toBe(join(home, "state", "sessions", "abc"));
+    expect(sessionDir(home, VALID_HEX_ID)).toBe(
+      join(home, "state", "sessions", VALID_HEX_ID),
+    );
   });
 
   it("resolves a session state.json by id", () => {
-    expect(statePath(home, "abc")).toBe(
-      join(home, "state", "sessions", "abc", "state.json"),
+    expect(statePath(home, VALID_HEX_ID)).toBe(
+      join(home, "state", "sessions", VALID_HEX_ID, "state.json"),
     );
   });
 
   it("resolves a session transcript.jsonl by id", () => {
-    expect(transcriptPath(home, "abc")).toBe(
-      join(home, "state", "sessions", "abc", "transcript.jsonl"),
+    expect(transcriptPath(home, VALID_HEX_ID)).toBe(
+      join(home, "state", "sessions", VALID_HEX_ID, "transcript.jsonl"),
     );
   });
 
@@ -64,5 +66,11 @@ describe("sessions paths", () => {
     expect(() => heartbeatMdPathForSession(home, "abc")).toThrow();
     expect(() => heartbeatMdPathForSession(home, "sess-001")).toThrow();
     expect(() => heartbeatMdPathForSession(home, "ABCDEF1234")).toThrow();
+  });
+
+  it("rejects non-hex session ids for all session-id path helpers", () => {
+    expect(() => sessionDir(home, "abc")).toThrow();
+    expect(() => statePath(home, "abc")).toThrow();
+    expect(() => transcriptPath(home, "abc")).toThrow();
   });
 });

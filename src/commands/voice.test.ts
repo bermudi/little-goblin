@@ -16,7 +16,7 @@ function writeTranscript(home: string, sessionId: string, lines: object[]): void
 
 describe("readLastAssistantMessage", () => {
   let home: string;
-  const sessionId = "sess-voice-test";
+  const sessionId = "abcdef1234";
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "goblin-voice-cmd-test-"));
@@ -89,7 +89,7 @@ describe("readLastAssistantMessage", () => {
 
 describe("executeVoice", () => {
   let home: string;
-  const sessionId = "sess-voice-exec";
+  const sessionId = "abcdef1235";
   const chatId = 42;
   const topicId = 7;
 

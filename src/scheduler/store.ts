@@ -260,7 +260,7 @@ export class ScheduleStore {
         nextRunAt: params.now,
         intervalMs,
         createdAt: new Date().toISOString(),
-        source: agent ? "agent" : "user",
+        source: undefined,
       };
       return record;
     }

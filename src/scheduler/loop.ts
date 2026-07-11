@@ -63,11 +63,15 @@ function readCandidate(path: string): string | null {
  * is stripped. The emptiness check uses `trim()` so a file of only whitespace
  * falls back to the next candidate.
  */
+function stripLeadingHeartbeat(body: string): string {
+  return body.replace(/^\[heartbeat\]\s*/, "");
+}
+
 export function resolveHeartbeatPrompt(home: string, sessionId: string): string {
   const sessionBody = readCandidate(heartbeatMdPathForSession(home, sessionId));
-  if (sessionBody !== null) return `[heartbeat] ${sessionBody}`;
+  if (sessionBody !== null) return `[heartbeat] ${stripLeadingHeartbeat(sessionBody)}`;
   const globalBody = readCandidate(heartbeatMdPath(home));
-  if (globalBody !== null) return `[heartbeat] ${globalBody}`;
+  if (globalBody !== null) return `[heartbeat] ${stripLeadingHeartbeat(globalBody)}`;
   return HEARTBEAT_PROMPT;
 }
 

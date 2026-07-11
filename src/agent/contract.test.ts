@@ -51,7 +51,7 @@ describe("AgentRunner pi-ai contract", () => {
     const model = faux.getModel() as Model<Api>;
     const runner = new AgentRunner({
       cfg: makeConfig(tmpDir),
-      sessionId: "sess000001",
+      sessionId: "abcdef1234",
       locator: { chatId: 1 },
       customTools: [],
       resolvedModel: { model, apiKey: "fake-key", thinkingLevel: "medium" },

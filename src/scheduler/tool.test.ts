@@ -192,19 +192,23 @@ describe("createScheduleTurnTool", () => {
       expect(on.enabled).toBe(true);
       expect(on.intervalMs).toBe(30 * 60_000);
       expect(on.source).toBe("agent");
+      expect(on.id).toBeString();
 
       const status = await run(tool, "heartbeat", { heartbeat_action: "status" });
       expect(status.enabled).toBe(true);
       expect(status.intervalMs).toBe(30 * 60_000);
+      expect(status.id).toBe(on.id);
 
       const off = await run(tool, "heartbeat", { heartbeat_action: "off" });
       expect(off.enabled).toBe(false);
       expect(off.source).toBe("agent");
+      expect(off.id).toBe(on.id);
     });
 
     it("accepts a custom duration for heartbeat on", async () => {
       const on = await run(tool, "heartbeat", { heartbeat_action: "on", duration: "2h" });
       expect(on.intervalMs).toBe(2 * 3600_000);
+      expect(on.id).toBeString();
     });
 
     it("rejects turning on or off a user-owned heartbeat", async () => {
@@ -220,6 +224,14 @@ describe("createScheduleTurnTool", () => {
         /user-owned/,
       );
       await rejectTool(tool, { action: "heartbeat", heartbeat_action: "off" }, /user-owned/);
+    });
+
+    it("off without an existing heartbeat returns enabled false and source null", async () => {
+      const off = await run(tool, "heartbeat", { heartbeat_action: "off" });
+      expect(off.enabled).toBe(false);
+      expect(off.source).toBe(null);
+      expect(off.id).toBe(null);
+      expect(store.getHeartbeat("abcdef1234")).toBeNull();
     });
   });
 

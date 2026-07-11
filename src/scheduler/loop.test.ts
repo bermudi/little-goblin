@@ -603,6 +603,14 @@ describe("SchedulerLoop", () => {
       );
     });
 
+    it("strips a leading [heartbeat] marker from file content before prepending its own", () => {
+      writeSessionHeartbeat(tmpDir, SESSION_ID, "[heartbeat] Session-scoped check.");
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(
+        "[heartbeat] Session-scoped check.",
+      );
+      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID).match(/\[heartbeat\]/g)).toHaveLength(1);
+    });
+
     it("propagates non-ENOENT read errors (does not fall back silently)", () => {
       // Point the home at a path where state/sessions/<id>/HEARTBEAT.md resolves
       // under a non-directory ancestor, so readFileSync throws ENOTDIR rather

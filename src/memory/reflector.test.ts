@@ -98,7 +98,7 @@ function makeCandidate(overrides: Partial<Candidate> & { summary: string }): Can
     category: "project_fact",
     confidence: 0.8,
     source: {
-      sessionId: "s1",
+      sessionId: "abcdef1234",
       lineRange: [0, 0],
       sourceRole: "user",
       ...sourceOverride,
@@ -136,22 +136,22 @@ describe("MemoryReflector", () => {
 
   describe("first-observation cursor seeding", () => {
     it("seeds cursor to current transcript end and processes nothing", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "I prefer concise summaries" },
         { role: "assistant", text: "Got it." },
         { role: "user", text: "the project uses TypeScript" },
       ]);
-      expect(readCursor(tmp, "s1")).toBeNull();
+      expect(readCursor(tmp, "abcdef1234")).toBeNull();
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
         store,
         extractor: fixedExtractor([makeCandidate({ summary: "I prefer concise summaries" })]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       // Cursor is seeded to the transcript end (3 lines).
-      const cursor = readCursor(tmp, "s1");
+      const cursor = readCursor(tmp, "abcdef1234");
       expect(cursor).not.toBeNull();
       expect(cursor!.processedLines).toBe(3);
 
@@ -166,9 +166,9 @@ describe("MemoryReflector", () => {
         store,
         extractor: fixedExtractor([]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
-      const cursor = readCursor(tmp, "s1");
+      const cursor = readCursor(tmp, "abcdef1234");
       expect(cursor).not.toBeNull();
       expect(cursor!.processedLines).toBe(0);
     });
@@ -181,23 +181,23 @@ describe("MemoryReflector", () => {
   describe("cursor skip after restart", () => {
     it("processes only entries after the cursor on a subsequent pass", async () => {
       // Pre-seed cursor at line 2 (first 2 lines already reflected).
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "I prefer concise summaries" },
         { role: "assistant", text: "Got it." },
         { role: "user", text: "the project uses TypeScript" },
         { role: "user", text: "we always run bun test" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 2, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 2, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
         store,
         extractor: fixedExtractor([makeCandidate({ summary: "the project uses TypeScript" })]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       // Cursor advanced past all 4 lines.
-      const cursor = readCursor(tmp, "s1");
+      const cursor = readCursor(tmp, "abcdef1234");
       expect(cursor!.processedLines).toBe(4);
 
       // The candidate from line 3 (index 2) was written.
@@ -206,21 +206,21 @@ describe("MemoryReflector", () => {
     });
 
     it("does nothing when cursor is already at transcript end", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "I prefer concise summaries" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 1, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 1, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
         store,
         extractor: fixedExtractor([makeCandidate({ summary: "should not appear" })]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       expect(store.read("general").body).toBe("");
       // Cursor unchanged (no new lines to process).
-      const cursor = readCursor(tmp, "s1");
+      const cursor = readCursor(tmp, "abcdef1234");
       expect(cursor!.processedLines).toBe(1);
     });
   });
@@ -231,10 +231,10 @@ describe("MemoryReflector", () => {
 
   describe("retry when cursor is not advanced", () => {
     it("does not advance cursor when the extractor throws", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "I prefer concise summaries" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       let callCount = 0;
       const failingExtractor: CandidateExtractor = () => {
@@ -247,10 +247,10 @@ describe("MemoryReflector", () => {
         store,
         extractor: failingExtractor,
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       // Cursor not advanced.
-      expect(readCursor(tmp, "s1")!.processedLines).toBe(0);
+      expect(readCursor(tmp, "abcdef1234")!.processedLines).toBe(0);
       expect(store.read("general").body).toBe("");
       expect(callCount).toBe(1);
 
@@ -261,10 +261,10 @@ describe("MemoryReflector", () => {
         store,
         extractor: goodExtractor,
       });
-      await reflector2.reflect("s1", GENERAL_SCOPE);
+      await reflector2.reflect("abcdef1234", GENERAL_SCOPE);
 
       // Cursor advanced and candidate written.
-      expect(readCursor(tmp, "s1")!.processedLines).toBe(1);
+      expect(readCursor(tmp, "abcdef1234")!.processedLines).toBe(1);
       expect(store.read("general").body).toContain("I prefer concise summaries");
     });
   });
@@ -275,10 +275,10 @@ describe("MemoryReflector", () => {
 
   describe("overlapping schedule coalescing", () => {
     it("coalesces two rapid schedules into at most two passes (original + one follow-up)", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "I prefer concise summaries" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       let resolveBlocker: () => void = () => {};
       const blocker = new Promise<void>((res) => { resolveBlocker = res; });
@@ -298,28 +298,28 @@ describe("MemoryReflector", () => {
       });
 
       // Schedule pass 1 — starts and blocks in the extractor.
-      reflector.scheduleReflection("s1", GENERAL_SCOPE);
+      reflector.scheduleReflection("abcdef1234", GENERAL_SCOPE);
       // Schedule pass 2 while pass 1 is still running — should coalesce.
-      reflector.scheduleReflection("s1", GENERAL_SCOPE);
+      reflector.scheduleReflection("abcdef1234", GENERAL_SCOPE);
       // While pass 1 is blocked, append a new transcript line so the
       // follow-up pass has new work and actually invokes the extractor.
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "the project uses TypeScript" },
       ]);
 
       // Release the first pass.
       resolveBlocker();
-      await reflector.awaitSettled("s1");
+      await reflector.awaitSettled("abcdef1234");
 
       // Exactly 2 passes: the original + one follow-up (not 3+).
       expect(extractCount).toBe(2);
     });
 
     it("does not schedule a follow-up when no overlap occurs", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "I prefer concise summaries" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       let extractCount = 0;
       const countingExtractor: CandidateExtractor = () => {
@@ -332,8 +332,8 @@ describe("MemoryReflector", () => {
         store,
         extractor: countingExtractor,
       });
-      reflector.scheduleReflection("s1", GENERAL_SCOPE);
-      await reflector.awaitSettled("s1");
+      reflector.scheduleReflection("abcdef1234", GENERAL_SCOPE);
+      await reflector.awaitSettled("abcdef1234");
 
       expect(extractCount).toBe(1);
     });
@@ -345,10 +345,10 @@ describe("MemoryReflector", () => {
 
   describe("unsafe candidate quarantine", () => {
     it("quarantines a candidate containing a secret and does not write memory", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "the api key is sk-abcdefghijklmnopqrstuvwxyz1234567890" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
@@ -357,7 +357,7 @@ describe("MemoryReflector", () => {
           makeCandidate({ summary: "the api key is sk-abcdefghijklmnopqrstuvwxyz1234567890" }),
         ]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       // Memory untouched.
       expect(store.read("general").body).toBe("");
@@ -368,7 +368,7 @@ describe("MemoryReflector", () => {
       expect(record.reason).toBe("unsafe");
       expect(record.preview).not.toContain("abcdefghijklmnopqrstuvwxyz1234567890");
       // Cursor still advanced (the candidate was handled — quarantined).
-      expect(readCursor(tmp, "s1")!.processedLines).toBe(1);
+      expect(readCursor(tmp, "abcdef1234")!.processedLines).toBe(1);
     });
   });
 
@@ -378,10 +378,10 @@ describe("MemoryReflector", () => {
 
   describe("low-confidence quarantine", () => {
     it("quarantines a candidate below the confidence threshold", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "maybe the project uses TypeScript" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
@@ -390,7 +390,7 @@ describe("MemoryReflector", () => {
           makeCandidate({ summary: "maybe the project uses TypeScript", confidence: 0.2 }),
         ]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       expect(store.read("general").body).toBe("");
       const records = readQuarantine(tmp);
@@ -405,36 +405,36 @@ describe("MemoryReflector", () => {
 
   describe("procedural-noise skip", () => {
     it("skips a procedural command without writing memory or quarantine", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "run the tests now" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
         store,
         extractor: fixedExtractor([makeCandidate({ summary: "run the tests now" })]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       expect(store.read("general").body).toBe("");
       expect(readQuarantine(tmp)).toHaveLength(0);
       // Cursor still advanced — the noise candidate was handled (skipped).
-      expect(readCursor(tmp, "s1")!.processedLines).toBe(1);
+      expect(readCursor(tmp, "abcdef1234")!.processedLines).toBe(1);
     });
 
     it("skips greeting/small-talk without quarantine", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "hello" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
         store,
         extractor: fixedExtractor([makeCandidate({ summary: "hello" })]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       expect(store.read("general").body).toBe("");
       expect(readQuarantine(tmp)).toHaveLength(0);
@@ -447,10 +447,10 @@ describe("MemoryReflector", () => {
 
   describe("safe candidate write", () => {
     it("writes a safe high-confidence candidate to the active memory scope", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "the project uses TypeScript" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
@@ -459,7 +459,7 @@ describe("MemoryReflector", () => {
           makeCandidate({ summary: "the project uses TypeScript", confidence: 0.85 }),
         ]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       const body = store.read("general").body;
       expect(body).toContain("the project uses TypeScript");
@@ -468,14 +468,14 @@ describe("MemoryReflector", () => {
       expect(parsed).not.toBeNull();
       expect(parsed!.metadata.category).toBe("project_fact");
       expect(parsed!.metadata.confidence).toBe(0.85);
-      expect(parsed!.metadata.source_session).toBe("s1");
+      expect(parsed!.metadata.source_session).toBe("abcdef1234");
     });
 
     it("writes a user preference candidate to user.md", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "I prefer concise summaries" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
@@ -489,17 +489,17 @@ describe("MemoryReflector", () => {
           }),
         ]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       expect(store.read("user").body).toContain("I prefer concise summaries");
       expect(store.read("general").body).toBe("");
     });
 
     it("writes to topic scope when active scope is a topic", async () => {
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "the project uses TypeScript" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
@@ -508,7 +508,7 @@ describe("MemoryReflector", () => {
           makeCandidate({ summary: "the project uses TypeScript" }),
         ]),
       });
-      await reflector.reflect("s1", TOPIC_SCOPE);
+      await reflector.reflect("abcdef1234", TOPIC_SCOPE);
 
       expect(store.read({ topic: { chatId: -100, topicId: 42 } }).body).toContain(
         "the project uses TypeScript",
@@ -522,10 +522,10 @@ describe("MemoryReflector", () => {
       const filler = "x".repeat(1950);
       await store.add("user", filler);
 
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "I prefer concise summaries with test output evidence" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
@@ -539,7 +539,7 @@ describe("MemoryReflector", () => {
           }),
         ]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       // The candidate was not written (cap overflow).
       const body = store.read("user").body;
@@ -563,10 +563,10 @@ describe("MemoryReflector", () => {
         "<!-- memory: category=preference confidence=0.8 created_at=2026-07-01T00:00:00.000Z updated_at=2026-07-01T00:00:00.000Z source_session=s_old source_role=user -->\nI prefer concise summaries",
       );
 
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "I prefer concise summaries with test output" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
@@ -581,7 +581,7 @@ describe("MemoryReflector", () => {
           }),
         ]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       const body = store.read("user").body;
       // Only one entry — not duplicated.
@@ -603,10 +603,10 @@ describe("MemoryReflector", () => {
     it("appends a distinct candidate as a new entry", async () => {
       await store.add("user", "I prefer concise summaries");
 
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "the project uses Bun" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
@@ -620,7 +620,7 @@ describe("MemoryReflector", () => {
           }),
         ]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       const body = store.read("user").body;
       const entries = body.split("\n§\n");
@@ -639,10 +639,10 @@ describe("MemoryReflector", () => {
           detailed,
       );
 
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "I prefer concise summaries" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       const reflector = new MemoryReflector({
         goblinHome: tmp,
@@ -657,7 +657,7 @@ describe("MemoryReflector", () => {
           }),
         ]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       const body = store.read("user").body;
       const entries = body.split("\n§\n");
@@ -680,10 +680,10 @@ describe("MemoryReflector", () => {
     it("does not lose an explicit write that lands before the locked consolidate read", async () => {
       await store.add("user", "I prefer concise summaries");
 
-      appendTranscript(tmp, "s1", [
+      appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "the project uses Bun" },
       ]);
-      writeCursor(tmp, "s1", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
       // Patch the store's consolidate to inject an explicit write before
       // the locked read-modify-write runs. If the reflector held a stale
@@ -712,7 +712,7 @@ describe("MemoryReflector", () => {
           }),
         ]),
       });
-      await reflector.reflect("s1", GENERAL_SCOPE);
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       const body = store.read("user").body;
       // The explicit write survives — not silently overwritten.
@@ -729,7 +729,7 @@ describe("MemoryReflector", () => {
   describe("defaultCandidateExtractor", () => {
     it("extracts a preference candidate from a user message", () => {
       const entries = [makeTranscriptLine("user", "I prefer terse summaries", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(1);
       expect(candidates[0]!.category).toBe("preference");
       expect(candidates[0]!.target).toBe("user");
@@ -738,7 +738,7 @@ describe("MemoryReflector", () => {
 
     it("extracts a decision candidate", () => {
       const entries = [makeTranscriptLine("user", "let's decide on using Bun", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(1);
       expect(candidates[0]!.category).toBe("decision");
       expect(candidates[0]!.target).toBe("memory");
@@ -746,28 +746,28 @@ describe("MemoryReflector", () => {
 
     it("extracts a project fact from an assistant message", () => {
       const entries = [makeTranscriptLine("assistant", "the project uses TypeScript and Bun", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(1);
       expect(candidates[0]!.category).toBe("project_fact");
     });
 
     it("extracts a gotcha", () => {
       const entries = [makeTranscriptLine("user", "watch out for the timezone bug in date parsing", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(1);
       expect(candidates[0]!.category).toBe("gotcha");
     });
 
     it("extracts a convention", () => {
       const entries = [makeTranscriptLine("user", "we always run bun test before committing", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(1);
       expect(candidates[0]!.category).toBe("convention");
     });
 
     it("extracts an explicit commitment", () => {
       const entries = [makeTranscriptLine("user", "I commit to reviewing invoices every Friday", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(1);
       expect(candidates[0]!.category).toBe("commitment");
       expect(candidates[0]!.target).toBe("memory");
@@ -776,14 +776,14 @@ describe("MemoryReflector", () => {
 
     it("extracts an explicit commitment from 'commitment:' phrasing", () => {
       const entries = [makeTranscriptLine("user", "commitment: ship the release notes by Monday", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(1);
       expect(candidates[0]!.category).toBe("commitment");
     });
 
     it("extracts an explicit standing order", () => {
       const entries = [makeTranscriptLine("user", "standing order: remind me to check backups weekly", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(1);
       expect(candidates[0]!.category).toBe("standing_order");
       expect(candidates[0]!.target).toBe("memory");
@@ -792,14 +792,14 @@ describe("MemoryReflector", () => {
 
     it("extracts a standing order from 'always remind me to' phrasing", () => {
       const entries = [makeTranscriptLine("user", "always remind me to renew the domain", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(1);
       expect(candidates[0]!.category).toBe("standing_order");
     });
 
     it("does NOT infer a commitment from vague intent", () => {
       const entries = [makeTranscriptLine("user", "I should probably check backups sometime", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       const durable = candidates.filter(
         (c) => c.category === "commitment" || c.category === "standing_order",
       );
@@ -808,7 +808,7 @@ describe("MemoryReflector", () => {
 
     it("does NOT infer a commitment from an ordinary task request", () => {
       const entries = [makeTranscriptLine("user", "can you check the backups later?", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       const durable = candidates.filter(
         (c) => c.category === "commitment" || c.category === "standing_order",
       );
@@ -817,26 +817,26 @@ describe("MemoryReflector", () => {
 
     it("extracts a correction as a preference", () => {
       const entries = [makeTranscriptLine("user", "no, actually I meant concise summaries", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(1);
       expect(candidates[0]!.category).toBe("preference");
     });
 
     it("produces no candidates for procedural commands", () => {
       const entries = [makeTranscriptLine("user", "run the tests now", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(0);
     });
 
     it("produces no candidates for toolResult entries", () => {
       const entries = [makeTranscriptLine("toolResult", "I prefer concise summaries", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(0);
     });
 
     it("produces no candidates for tiny fragments", () => {
       const entries = [makeTranscriptLine("user", "ok", 0)];
-      const candidates = defaultCandidateExtractor(entries, { sessionId: "s1" });
+      const candidates = defaultCandidateExtractor(entries, { sessionId: "abcdef1234" });
       expect(candidates).toHaveLength(0);
     });
   });

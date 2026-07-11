@@ -322,7 +322,7 @@ function makeRunner(
 ) {
   return new AgentRunner({
     cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }), ...configOverrides },
-    sessionId: "sess-001",
+    sessionId: "abcdef1234",
     locator,
     customTools: customTools as never,
     getTopicName,
@@ -342,8 +342,8 @@ let tmpDir: string;
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "goblin-agent-test-"));
-  mkdirSync(sessionDir(tmpDir, "sess-001"), { recursive: true });
-  writeFileSync(transcriptPath(tmpDir, "sess-001"), "");
+  mkdirSync(sessionDir(tmpDir, "abcdef1234"), { recursive: true });
+  writeFileSync(transcriptPath(tmpDir, "abcdef1234"), "");
   mkdirSync(workdirPath(tmpDir), { recursive: true });
   mkdirSync(piAgentDir(tmpDir), { recursive: true });
   // SOUL.md lives under workspace/ — ensure the parent exists before writing.
@@ -373,7 +373,7 @@ describe("AgentRunner", () => {
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
       expect(opts.sessionManager).toEqual({
         cwd: workdirPath(tmpDir),
-        sessionDir: join(sessionDir(tmpDir, "sess-001"), "pi"),
+        sessionDir: join(sessionDir(tmpDir, "abcdef1234"), "pi"),
       });
     });
 
@@ -394,7 +394,7 @@ describe("AgentRunner", () => {
     // conversation history. Resume must open the existing file directly with a
     // cwd override instead.
     it("resumes prior pi session even when its header cwd differs from projectDir", async () => {
-      const piDir = join(sessionDir(tmpDir, "sess-001"), "pi");
+      const piDir = join(sessionDir(tmpDir, "abcdef1234"), "pi");
       mkdirSync(piDir, { recursive: true });
       // Prior session file whose header cwd does NOT match the runner's cwd.
       const staleCwd = "/some/other/project";
@@ -1348,7 +1348,7 @@ describe("AgentRunner", () => {
       });
 
       const content = readFileSync(
-        transcriptPath(tmpDir, "sess-001"),
+        transcriptPath(tmpDir, "abcdef1234"),
         "utf-8",
       );
       const lines = content.trim().split("\n").filter(Boolean);
@@ -1469,7 +1469,7 @@ describe("AgentRunner", () => {
       const subRunner = new SubagentRunner(makeConfig(tmpDir));
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
-        sessionId: "sess-001",
+        sessionId: "abcdef1234",
         locator: { chatId: 123 },
         customTools: [],
         subagentRunner: subRunner,
@@ -1501,7 +1501,7 @@ describe("AgentRunner", () => {
       const subRunner = new SubagentRunner(makeConfig(tmpDir));
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
-        sessionId: "sess-001",
+        sessionId: "abcdef1234",
         locator: { chatId: 123 },
         customTools: [],
         subagentRunner: subRunner,
@@ -1531,7 +1531,7 @@ describe("AgentRunner", () => {
       const scheduleStore = new ScheduleStore(tmpDir);
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
-        sessionId: "sess-001",
+        sessionId: "abcdef1234",
         locator: { chatId: 123 },
         customTools: [],
         scheduleStore,
@@ -1569,7 +1569,7 @@ describe("AgentRunner", () => {
     /** Pre-seed a reflection cursor at processedLines=0 so the first pass processes all transcript entries. */
     function seedCursorAtZero(home: string): void {
       writeFileSync(
-        join(sessionDir(home, "sess-001"), "memory-reflection.json"),
+        join(sessionDir(home, "abcdef1234"), "memory-reflection.json"),
         JSON.stringify({ processedLines: 0, lastReflectedAt: new Date().toISOString() }) + "\n",
         "utf-8",
       );
@@ -1578,7 +1578,7 @@ describe("AgentRunner", () => {
     /** Write a single user transcript entry. */
     function writeTranscriptEntry(home: string, text: string): void {
       writeFileSync(
-        transcriptPath(home, "sess-001"),
+        transcriptPath(home, "abcdef1234"),
         JSON.stringify({
           ts: new Date().toISOString(),
           role: "user",
@@ -1602,7 +1602,7 @@ describe("AgentRunner", () => {
 
       expect(scheduleSpy).toHaveBeenCalledTimes(1);
       expect(scheduleSpy).toHaveBeenCalledWith(
-        "sess-001",
+        "abcdef1234",
         expect.objectContaining({ chatId: 123, topicScope: "general" }),
       );
     });
@@ -1640,12 +1640,12 @@ describe("AgentRunner", () => {
 
       // Emitting agent_end should not throw even though reflection fails.
       sessionHolder.emit({ type: "agent_end", messages: [] });
-      await reflector.awaitSettled("sess-001");
+      await reflector.awaitSettled("abcdef1234");
 
       // The cursor should NOT have advanced — a failed pass retries the
       // same range on the next schedule.
       const cursor = JSON.parse(
-        readFileSync(join(sessionDir(tmpDir, "sess-001"), "memory-reflection.json"), "utf-8"),
+        readFileSync(join(sessionDir(tmpDir, "abcdef1234"), "memory-reflection.json"), "utf-8"),
       );
       expect(cursor.processedLines).toBe(0);
     });
@@ -1656,7 +1656,7 @@ describe("AgentRunner", () => {
         category: "preference",
         confidence: 0.9,
         summary: "User prefers terse engineering summaries.",
-        source: { sessionId: "sess-001", lineRange: [0, 0], sourceRole: "user" },
+        source: { sessionId: "abcdef1234", lineRange: [0, 0], sourceRole: "user" },
       };
       const extractor: CandidateExtractor = () => [candidate];
       const reflector = makeReflector(tmpDir, extractor);
@@ -1671,7 +1671,7 @@ describe("AgentRunner", () => {
 
       // Complete the turn — agent_end schedules reflection.
       sessionHolder.emit({ type: "agent_end", messages: [] });
-      await reflector.awaitSettled("sess-001");
+      await reflector.awaitSettled("abcdef1234");
 
       // The reflected entry should now be in user.md.
       const userMd = readFileSync(join(memoryDir(tmpDir), "user.md"), "utf-8");
@@ -1702,7 +1702,7 @@ describe("AgentRunner", () => {
         category: "preference",
         confidence: 0.9,
         summary: "User prefers terse engineering summaries.",
-        source: { sessionId: "sess-001", lineRange: [0, 0], sourceRole: "user" },
+        source: { sessionId: "abcdef1234", lineRange: [0, 0], sourceRole: "user" },
       };
       const extractor: CandidateExtractor = () => [candidate];
       const reflector = makeReflector(tmpDir, extractor);
@@ -1723,7 +1723,7 @@ describe("AgentRunner", () => {
       // Complete the turn — agent_end schedules a reflection pass that
       // writes to user.md on disk.
       sessionHolder.emit({ type: "agent_end", messages: [] });
-      await reflector.awaitSettled("sess-001");
+      await reflector.awaitSettled("abcdef1234");
 
       const userMd = readFileSync(join(memoryDir(tmpDir), "user.md"), "utf-8");
       expect(userMd).toContain("User prefers terse engineering summaries.");

@@ -13,7 +13,7 @@ import { sessionDir, transcriptPath } from "./paths.ts";
 
 describe("transcript module", () => {
   let tmpDir: string;
-  const sessionId = "test-session";
+  const sessionId = "abcdef1234";
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-transcript-"));
@@ -149,7 +149,7 @@ describe("transcript module", () => {
 
   describe("readTranscriptAfter", () => {
     it("returns [] when the transcript file does not exist (ENOENT)", () => {
-      expect(readTranscriptAfter(tmpDir, "missing-session", 0)).toEqual([]);
+      expect(readTranscriptAfter(tmpDir, "0000000000", 0)).toEqual([]);
     });
 
     it("skips malformed lines but counts them toward the index", () => {

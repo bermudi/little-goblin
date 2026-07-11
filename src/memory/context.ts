@@ -29,13 +29,8 @@ export type MemoryCaller =
  * - `main` → `{ kind: "all" }` (search every persona scope).
  * - `named-subagent` → `{ kind: "own", name }` (search only this persona).
  * - `anonymous-subagent` → `{ kind: "none" }` (search no persona scopes).
- *
- * Note: `personaPolicyFor(activeScope)` in `search.ts` derives `{kind:"all"}`
- * vs `{kind:"own"}` from `activeScope.namedAgent`. That works for main and
- * named-subagent (where namedAgent is set), but it returns `{kind:"all"}` for
- * anonymous subagents (whose namedAgent is null) — wrong. This caller-typed
- * resolver is the single source of truth for both search tools and the
- * snapshot's `## relevant memory` section.
+ * This caller-typed resolver is the single source of truth for both search
+ * tools and the snapshot's `## relevant memory` section.
  */
 export function personaPolicyForCaller(caller: MemoryCaller): PersonaPolicy {
   switch (caller.kind) {

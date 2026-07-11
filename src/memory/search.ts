@@ -74,11 +74,6 @@ export type PersonaPolicy =
   | { kind: "own"; name: string }
   | { kind: "none" };
 
-export function personaPolicyFor(activeScope: ActiveScope): PersonaPolicy {
-  if (activeScope.namedAgent === null) return { kind: "all" };
-  return { kind: "own", name: activeScope.namedAgent.name };
-}
-
 // ---------------------------------------------------------------------------
 // Normalization
 // ---------------------------------------------------------------------------
@@ -340,14 +335,14 @@ const DELIMITER = "\n§\n";
 export async function searchMemoryEntries(args: {
   store: MemoryStore;
   activeScope: ActiveScope;
-  persona?: PersonaPolicy;
+  persona: PersonaPolicy;
   query: string;
   limit?: number;
   allChats?: boolean;
   /** Override the wall clock for deterministic recency tests. */
   nowMs?: number;
 }): Promise<MemorySearchOutput> {
-  const persona = args.persona ?? personaPolicyFor(args.activeScope);
+  const { persona } = args;
   const limit = clampLimit(args.limit);
   const nowMs = args.nowMs ?? Date.now();
   const queryTokens = tokenize(args.query);

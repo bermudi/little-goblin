@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { MemoryStore } from "./store.ts";
 import {
   clampLimit,
-  personaPolicyFor,
   scoreEntry,
   searchMemoryEntries,
   tokenize,
@@ -20,6 +19,10 @@ const ACTIVE_TOPIC: ActiveScope = {
   topicScope: { topicId: 42 },
   namedAgent: null,
 };
+
+const MAIN_PERSONA: PersonaPolicy = { kind: "all" };
+const RESEARCHER_PERSONA: PersonaPolicy = { kind: "own", name: "researcher" };
+const NONE_PERSONA: PersonaPolicy = { kind: "none" };
 
 type BodyScope = "user" | "general" | { topic: { chatId: number; topicId: number } } | { agent: { name: string } };
 
@@ -83,15 +86,6 @@ describe("memory search", () => {
     });
   });
 
-  describe("personaPolicyFor", () => {
-    it("returns 'all' for the main agent (no namedAgent)", () => {
-      expect(personaPolicyFor({ chatId: 1, topicScope: "general", namedAgent: null })).toEqual<PersonaPolicy>({ kind: "all" });
-    });
-    it("returns 'own' for a named subagent", () => {
-      expect(personaPolicyFor({ chatId: 1, topicScope: "general", namedAgent: { name: "researcher" } })).toEqual<PersonaPolicy>({ kind: "own", name: "researcher" });
-    });
-  });
-
   describe("searchMemoryEntries — basic matching", () => {
     it("returns ranked entry results from the active scope", async () => {
       setBody(tmp, { topic: { chatId: -100, topicId: 42 } }, "Homelab backups run nightly\n§\nIrrelevant note about cooking");
@@ -99,6 +93,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
         query: "homelab backups",
       });
 
@@ -117,6 +112,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
         query: "backups",
       });
 
@@ -134,6 +130,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
         query: "backups",
       });
 
@@ -157,6 +154,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
         query: "homelab backups",
       });
 
@@ -179,6 +177,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
         query: "backups",
         limit: 2,
       });
@@ -196,6 +195,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
         query: "backups",
       });
 
@@ -211,6 +211,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
         query: "backups",
         allChats: true,
       });
@@ -226,6 +227,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: { chatId: -100, topicScope: { topicId: 42 }, namedAgent: null },
+        persona: MAIN_PERSONA,
         query: "backups",
       });
 
@@ -241,6 +243,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: { chatId: -100, topicScope: { topicId: 42 }, namedAgent: null },
+        persona: MAIN_PERSONA,
         query: "backups",
       });
 
@@ -255,6 +258,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: { chatId: -100, topicScope: { topicId: 42 }, namedAgent: { name: "researcher" } },
+        persona: RESEARCHER_PERSONA,
         query: "backups",
       });
 
@@ -269,7 +273,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
-        persona: { kind: "none" },
+        persona: NONE_PERSONA,
         query: "backups",
       });
 
@@ -285,8 +289,8 @@ describe("memory search", () => {
         "backups alpha\n§\nbackups beta\n§\nbackups gamma",
       );
 
-      const a = await searchMemoryEntries({ store, activeScope: ACTIVE_TOPIC, query: "backups" });
-      const b = await searchMemoryEntries({ store, activeScope: ACTIVE_TOPIC, query: "backups" });
+      const a = await searchMemoryEntries({ store, activeScope: ACTIVE_TOPIC, persona: MAIN_PERSONA, query: "backups" });
+      const b = await searchMemoryEntries({ store, activeScope: ACTIVE_TOPIC, persona: MAIN_PERSONA, query: "backups" });
       expect(a.results.map((r) => r.text)).toEqual(b.results.map((r) => r.text));
     });
   });
@@ -464,6 +468,7 @@ describe("memory search", () => {
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
         query: "alpha beta gamma",
         nowMs: NOW,
       });

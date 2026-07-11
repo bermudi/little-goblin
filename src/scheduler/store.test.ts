@@ -853,4 +853,120 @@ describe("ScheduleStore", () => {
       expect(store.getHeartbeat("sess-a")!.enabled).toBe(true);
     });
   });
+
+  describe("provenance re-stamping on /schedule mutation", () => {
+    it("user re-enabling an agent heartbeat re-stamps source to user", () => {
+      // Agent creates and disables a heartbeat.
+      store.setHeartbeat({
+        sessionId: "sess-a",
+        locator: LOC,
+        enabled: true,
+        now: NOW_ISO,
+        agent: true,
+      });
+      store.setHeartbeat({
+        sessionId: "sess-a",
+        locator: LOC,
+        enabled: false,
+        now: NOW_ISO,
+        agent: true,
+      });
+      expect(store.getHeartbeat("sess-a")!.source).toBe("agent");
+
+      // User re-enables it via /schedule (agent: false).
+      store.setHeartbeat({
+        sessionId: "sess-a",
+        locator: LOC,
+        enabled: true,
+        now: NOW_ISO,
+      });
+      expect(store.getHeartbeat("sess-a")!.source).toBe("user");
+
+      // Agent can no longer disable it.
+      expect(() =>
+        store.setHeartbeat({
+          sessionId: "sess-a",
+          locator: LOC,
+          enabled: false,
+          now: NOW_ISO,
+          agent: true,
+        }),
+      ).toThrow(/user-owned/);
+      expect(store.getHeartbeat("sess-a")!.enabled).toBe(true);
+    });
+
+    it("user disabling an agent heartbeat re-stamps source to user", () => {
+      store.setHeartbeat({
+        sessionId: "sess-a",
+        locator: LOC,
+        enabled: true,
+        now: NOW_ISO,
+        agent: true,
+      });
+      expect(store.getHeartbeat("sess-a")!.source).toBe("agent");
+
+      // User disables it via /schedule (agent: false).
+      store.setHeartbeat({
+        sessionId: "sess-a",
+        locator: LOC,
+        enabled: false,
+        now: NOW_ISO,
+      });
+      expect(store.getHeartbeat("sess-a")!.source).toBe("user");
+
+      // Agent can no longer re-enable it.
+      expect(() =>
+        store.setHeartbeat({
+          sessionId: "sess-a",
+          locator: LOC,
+          enabled: true,
+          now: NOW_ISO,
+          agent: true,
+        }),
+      ).toThrow(/user-owned/);
+      expect(store.getHeartbeat("sess-a")!.enabled).toBe(false);
+    });
+
+    it("user pausing an agent schedule re-stamps source to user", () => {
+      const agent = store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "agent-owned",
+        nextRunAt: FUTURE_ISO,
+        source: "agent",
+      });
+      expect(agent.source).toBe("agent");
+
+      // User pauses it via /schedule (agent: false / default).
+      store.pause("sess-a", agent.id);
+      expect(store.getForSession("sess-a", agent.id)!.source).toBe("user");
+
+      // Agent can no longer resume it.
+      expect(store.resume("sess-a", agent.id, true)).toBeNull();
+      expect(store.getForSession("sess-a", agent.id)!.state).toBe("disabled");
+    });
+
+    it("user resuming an agent schedule re-stamps source to user", () => {
+      const agent = store.create({
+        sessionId: "sess-a",
+        locator: LOC,
+        kind: "once",
+        prompt: "agent-owned",
+        nextRunAt: FUTURE_ISO,
+        source: "agent",
+      });
+      // Agent pauses its own schedule.
+      store.pause("sess-a", agent.id, true);
+      expect(store.getForSession("sess-a", agent.id)!.source).toBe("agent");
+
+      // User resumes it via /schedule (agent: false / default).
+      store.resume("sess-a", agent.id);
+      expect(store.getForSession("sess-a", agent.id)!.source).toBe("user");
+
+      // Agent can no longer pause it.
+      expect(store.pause("sess-a", agent.id, true)).toBeNull();
+      expect(store.getForSession("sess-a", agent.id)!.state).toBe("enabled");
+    });
+  });
 });

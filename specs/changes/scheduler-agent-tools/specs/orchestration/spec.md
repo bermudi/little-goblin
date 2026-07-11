@@ -156,6 +156,8 @@ The cap SHALL NOT apply to schedules created or resumed via the `/schedule` comm
 
 Each `ScheduledTurn` SHALL carry an optional `source` field of type `"user" | "agent"`. The `/schedule` command path SHALL stamp `source: "user"`; the `schedule_turn` agent tool SHALL stamp `source: "agent"`. When `source` is absent (e.g. a record created before this change), it SHALL be treated as `"user"` for the purposes of cap counting, authority checks, list redaction, and display. The `/schedule list` command SHALL annotate agent-originated schedules with an `[agent]` tag so the user can see, in Telegram, which schedules the goblin created itself.
 
+Any `/schedule`-path mutation of an existing record (`pause`, `resume`, `heartbeat on`, `heartbeat off`) SHALL re-stamp `source` to `"user"`. This "last writer owns" principle ensures that once the user touches a schedule, the agent cannot subsequently undo the user's action: the agent cannot re-enable a heartbeat the user disabled, resume a schedule the user paused, or disable a heartbeat the user re-enabled. The agent path SHALL NOT re-stamp `source` (it can only touch agent-owned records, so re-stamping would be a no-op). The only way for the agent to regain control of a user-claimed schedule is for the user to `remove` it so the agent can create a fresh one.
+
 Provenance is structural and SHALL be retained even if the cap policy is later relaxed: it drives authority (see *Agent tool authority is scoped to agent-owned schedules*), list redaction, display annotation, and audit/debugging.
 
 #### Scenario: User schedule stamped user
@@ -180,3 +182,24 @@ Provenance is structural and SHALL be retained even if the cap policy is later r
 - **AND** the session owns both user- and agent-originated schedules
 - **THEN** agent-originated rows SHALL be annotated with `[agent]`
 - **AND** user-originated rows SHALL carry no such tag
+
+#### Scenario: User re-enabling an agent heartbeat claims ownership
+
+- **GIVEN** a session with a heartbeat whose `source = "agent"` and `state = "disabled"`
+- **WHEN** the user runs `/schedule heartbeat on`
+- **THEN** the persisted record SHALL have `source = "user"`
+- **AND** the agent SHALL NOT be able to disable it via `schedule_turn heartbeat off`
+
+#### Scenario: User disabling an agent heartbeat claims ownership
+
+- **GIVEN** a session with an enabled heartbeat whose `source = "agent"`
+- **WHEN** the user runs `/schedule heartbeat off`
+- **THEN** the persisted record SHALL have `source = "user"`
+- **AND** the agent SHALL NOT be able to re-enable it via `schedule_turn heartbeat on`
+
+#### Scenario: User pausing an agent schedule claims ownership
+
+- **GIVEN** a session with an enabled schedule whose `source = "agent"`
+- **WHEN** the user runs `/schedule pause <id>`
+- **THEN** the persisted record SHALL have `source = "user"`
+- **AND** the agent SHALL NOT be able to resume it via `schedule_turn resume`

@@ -24,6 +24,7 @@ export {
   MS_PER_DAY,
 } from "./time.ts";
 export type { ParseAtResult, ParseInResult, DurationUnit } from "./time.ts";
+export { MAX_AGENT_SCHEDULES } from "./types.ts";
 export type {
   ScheduleKind,
   ScheduleState,

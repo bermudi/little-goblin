@@ -232,6 +232,13 @@ export class ScheduleStore {
         }
       }
 
+      // Re-stamp provenance: any /schedule mutation of an existing heartbeat
+      // claims ownership for the user. This prevents the agent from undoing a
+      // user's heartbeat off/on by re-enabling or re-disabling it.
+      if (!agent) {
+        existing.source = "user";
+      }
+
       existing.intervalMs = intervalMs;
       if (params.enabled) {
         existing.enabled = true;
@@ -367,6 +374,13 @@ export class ScheduleStore {
       throw new Error(
         `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
       );
+    }
+
+    // Re-stamp provenance: any /schedule mutation of an existing schedule
+    // claims ownership for the user. This prevents the agent from undoing a
+    // user's pause by resuming the schedule.
+    if (!agent) {
+      s.source = "user";
     }
 
     s.state = state;

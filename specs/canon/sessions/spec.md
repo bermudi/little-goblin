@@ -73,7 +73,7 @@ The system SHALL auto-recreate topic sessions when the bound session is stale. T
 
 ### Requirement: Persist session state atomically
 
-The system SHALL write session state using atomic write (tmp file + rename) to prevent corruption.
+The system SHALL write session state using atomic write (tmp file + rename) to prevent corruption. State SHALL be loaded and saved through the JSON state-file module (`loadJsonFile`/`saveJsonFile`); the module owns the read recipe and the atomic-write wrapper. The default for a missing `state.json` SHALL be `null` (session treated as missing), preserving existing behavior.
 
 #### Scenario: Session state saved
 
@@ -81,15 +81,26 @@ The system SHALL write session state using atomic write (tmp file + rename) to p
 - **THEN** it SHALL write to a temp file named `.state-<id>.tmp` in the session directory
 - **AND** rename the temp file to `state.json` atomically
 
+#### Scenario: Session state loaded through the module
+
+- **WHEN** `loadState()` is called and `state.json` exists
+- **THEN** it SHALL return the parsed state via `loadJsonFile`
+- **AND** when `state.json` does not exist, it SHALL return `null` (the caller-supplied default)
+
 ### Requirement: Persist bindings atomically
 
-The system SHALL write `state/bindings.json` (session bindings) using atomic write with unique temp names.
+The system SHALL write `state/bindings.json` (session bindings) using atomic write with unique temp names. Bindings SHALL be loaded and saved through the JSON state-file module; the default for a missing or malformed `bindings.json` SHALL be the empty bindings structure.
 
 #### Scenario: Bindings saved
 
 - **WHEN** `saveBindings()` is called
 - **THEN** it SHALL write to a temp file with name `.bindings.<random8chars>.tmp` in `state/`
 - **AND** rename the temp file to `state/bindings.json` atomically
+
+#### Scenario: Bindings loaded through the module
+
+- **WHEN** `loadBindings()` is called and `bindings.json` is missing or malformed
+- **THEN** it SHALL return the default empty bindings structure via `loadJsonFile`
 
 ### Requirement: Create session filesystem layout
 
@@ -102,22 +113,37 @@ The system SHALL create the complete filesystem structure when creating a sessio
 
 ### Requirement: Write transcript entries on message completion
 
-The system SHALL append final message entries to `transcript.jsonl` when pi emits `message_end` events.
+The system SHALL append final message entries to `transcript.jsonl` when pi emits `message_end` events. All writes and all reads of `transcript.jsonl` SHALL cross a single transcript module that owns the `TranscriptEntry` type, the writer, and the reader. No module other than the transcript module SHALL `JSON.parse` transcript lines or construct `TranscriptEntry` values directly.
+
+The transcript module SHALL be the sole producer and the sole typing authority for transcript entries: `events.ts` SHALL write through the module's writer, and the memory reflection pipeline SHALL read through the module's reader. The two consumers SHALL NOT maintain private transcript entry types; both SHALL reference the module's exported `TranscriptEntry` type.
 
 #### Scenario: Message end event received
 
 - **WHEN** a `message_end` event is received from pi
 - **THEN** the system SHALL extract the `message` field
-- **AND** normalize it into a transcript entry with `ts`, `role`, `timestamp`, and `content`
+- **AND** normalize it into a transcript entry (typed by the transcript module) with `ts`, `role`, `timestamp`, and `content`
 - **AND** for assistant messages, include `api`, `provider`, `model`, `stopReason`, and `errorMessage` if present
 - **AND** for tool result messages, include `toolCallId`, `toolName`, and `isError`
 - **AND** drop noisy/sensitive payloads: image base64 data (keep `mimeType`), provider signatures (`textSignature`, `thinkingSignature`), and tool result `details`
-- **AND** append the entry as a single JSONL line to `transcript.jsonl`
+- **AND** append the entry as a single JSONL line to `transcript.jsonl` via the transcript module's writer
 
 #### Scenario: Non-message_end events received
 
 - **WHEN** an event type other than `message_end` is received
 - **THEN** the system SHALL NOT write to `transcript.jsonl`
+
+#### Scenario: Reader and writer share one type
+
+- **WHEN** the reflection pipeline reads a transcript entry written by `events.ts`
+- **THEN** the reader SHALL parse the line into the same `TranscriptEntry` type the writer used
+- **AND** SHALL NOT use a private re-declared subset type
+
+#### Scenario: Round-trip preserves all fields the writer can produce
+
+- **GIVEN** the writer can produce assistant entries with optional `api`/`provider`/`model`/`stopReason`/`errorMessage`, tool-result entries with `toolCallId`/`toolName`/`isError`, and content blocks including text, tool calls, and images (mimeType only)
+- **WHEN** any such entry is written and then read back through the transcript module
+- **THEN** the reader SHALL return a value whose fields match the writer's input
+- **AND** SHALL NOT silently drop text that the writer recorded
 
 ### Requirement: Support session rebinding for DMs
 
@@ -218,26 +244,36 @@ The session list SHALL include unbound sessions and exclude archived sessions un
 
 ### Requirement: Topic settings file
 
-The system SHALL maintain a `state/topic-settings.json` file under `$GOBLIN_HOME` that stores per-chat-surface settings including `projectDir`.
+The system SHALL maintain a `state/topic-settings.json` file under `$GOBLIN_HOME` that stores per-chat-surface settings including `projectDir`. Topic settings SHALL be loaded and saved through the JSON state-file module; the default for a missing or malformed file SHALL be the empty settings structure. The locator-keyed slot logic (which settings record a given `(chatId, topicId)` resolves to) SHALL remain in `topic-settings.ts` — it is not part of the read/write recipe.
+
+Note: prior to this change, `loadTopicSettings` swallowed all read errors. After this change it matches the shared module policy: `ENOENT` and `SyntaxError` return the default; all other errors propagate (fail loud). This is a deliberate behavior change.
 
 #### Scenario: Load topic settings
 
 - **WHEN** `loadTopicSettings()` is called
 - **AND** `state/topic-settings.json` exists
-- **THEN** it SHALL return the parsed settings
+- **THEN** it SHALL return the parsed settings via `loadJsonFile`
 
 #### Scenario: Default topic settings
 
 - **WHEN** `loadTopicSettings()` is called
 - **AND** `state/topic-settings.json` does not exist
-- **THEN** it SHALL return an empty default structure
+- **THEN** it SHALL return an empty default structure (the caller-supplied default)
 
 #### Scenario: Malformed topic settings
 
 - **WHEN** `loadTopicSettings()` is called
 - **AND** `state/topic-settings.json` exists but contains invalid JSON
-- **THEN** it SHALL return an empty default structure
+- **THEN** it SHALL return an empty default structure via `loadJsonFile`
 - **AND** it SHOULD log a warning
+
+#### Scenario: Non-JSON errors propagate (behavior change)
+
+- **WHEN** `loadTopicSettings()` is called
+- **AND** `readFileSync` throws a non-`ENOENT`, non-`SyntaxError` error (e.g. permission denied)
+- **THEN** the error SHALL propagate to the caller (fail loud)
+- **AND** SHALL NOT be swallowed into the default
+- **NOTE** prior to this change, `topic-settings.ts` swallowed all errors; this scenario pins the new fail-loud behavior
 
 ### Requirement: Get projectDir from binding
 
@@ -462,3 +498,106 @@ The session manager SHALL accept an `isGuest: boolean` option on `resolve()` and
 - **WHEN** `resolve(loc)` is called without the `isGuest` option
 - **THEN** it SHALL behave exactly as before (DM/topic/supergroup routing unchanged)
 - **AND** SHALL NOT consult or write the `guest` map
+
+### Requirement: JSON state files load and save through one module
+
+The system SHALL provide a JSON state-file module that is the exclusive interface for reading and writing the session JSON state files (`state.json`, `bindings.json`, `topic-settings.json`). The module SHALL expose a load function that takes a file path and a caller-supplied default, and a save function that takes a file path and a value. Memory store files (`memory.md`, `user.md`) are Markdown and are NOT consumers of this module.
+
+The load function SHALL implement the read recipe: `readFileSync` → `JSON.parse`; on `ENOENT` SHALL return the caller-supplied default; on `SyntaxError` SHALL log a warning and return the caller-supplied default; all other errors SHALL propagate (fail loud). The save function SHALL serialize the value as pretty-printed JSON with a trailing newline and write it via the existing `atomicWrite` primitive (tmp + rename). The module SHALL NOT own atomic-write itself — it wraps `src/fs.ts`'s `atomicWrite`.
+
+Each caller SHALL supply its own default value and its own result type; the module is generic over `T`. The module SHALL NOT hardcode defaults for any specific state file.
+
+#### Scenario: Load returns parsed JSON when the file exists
+
+- **WHEN** `loadJsonFile<BindingsFile>(path, DEFAULT_BINDINGS)` is called and `path` contains valid JSON
+- **THEN** it SHALL return the parsed value typed as `BindingsFile`
+- **AND** SHALL NOT invoke the default
+
+#### Scenario: Load returns default on ENOENT
+
+- **WHEN** `loadJsonFile(path, DEFAULT)` is called and the file does not exist
+- **THEN** it SHALL return the caller-supplied default
+- **AND** SHALL NOT throw
+
+#### Scenario: Load returns default on malformed JSON and logs
+
+- **WHEN** `loadJsonFile(path, DEFAULT)` is called and the file contains invalid JSON
+- **THEN** it SHALL log a warning including the path and error
+- **AND** SHALL return the caller-supplied default
+- **AND** SHALL NOT throw
+
+#### Scenario: Load propagates non-ENOENT, non-Syntax errors
+
+- **WHEN** `loadJsonFile(path, DEFAULT)` is called and `readFileSync` throws a permission error
+- **THEN** the error SHALL propagate to the caller
+- **AND** the default SHALL NOT be returned
+
+#### Scenario: Save writes atomically
+
+- **WHEN** `saveJsonFile(path, value)` is called
+- **THEN** it SHALL serialize `value` as `JSON.stringify(value, null, 2) + "\n"`
+- **AND** SHALL write it via `atomicWrite` (tmp file + rename)
+- **AND** SHALL NOT bypass atomicity
+
+### Requirement: Transcript module owns the transcript seam
+
+The system SHALL provide a single transcript module that is the exclusive interface to `transcript.jsonl`. The module SHALL export the `TranscriptEntry` type, an append writer, and a reader, and SHALL guarantee that every entry shape the writer can produce is readable by the reader without silent field loss.
+
+The module is the seam between the agent layer (which writes transcripts on `message_end`) and the memory reflection pipeline (which reads the transcript tail). Format changes SHALL touch only this module.
+
+#### Scenario: Writer is the sole producer
+
+- **WHEN** any module appends a transcript entry
+- **THEN** it SHALL do so by calling the transcript module's writer
+- **AND** SHALL NOT construct JSONL lines or call `appendFile`/`writeFile` against `transcript.jsonl` directly
+
+#### Scenario: Reader is the sole consumer
+
+- **WHEN** any module reads transcript entries
+- **THEN** it SHALL do so by calling the transcript module's reader
+- **AND** SHALL NOT call `JSON.parse` on transcript lines directly
+
+#### Scenario: Reader supports range reads for reflection cursoring
+
+- **WHEN** the reflection pipeline requests entries after a given line offset (the cursor)
+- **THEN** the reader SHALL return only entries whose line index is greater than the offset
+- **AND** SHALL return each entry typed as `TranscriptEntry`
+
+#### Scenario: Reader extracts displayable text uniformly
+
+- **WHEN** a transcript entry's `content` is a text block, a tool-call block, a tool-result block, or an image block
+- **THEN** the reader SHALL expose a helper that yields the displayable text for that entry
+- **AND** the extraction logic SHALL live in the transcript module, not duplicated at read sites
+
+### Requirement: Startup preflight verifies filesystem persistence
+
+The system SHALL run a persistence check before starting long polling that proves the `GOBLIN_HOME` state directory is writable and that atomic write + rename works as expected.
+
+#### Scenario: Atomic write test succeeds
+
+- **WHEN** the preflight persistence check runs
+- **THEN** it SHALL write a temporary file under `state/`, rename it to a target name, read it back, verify contents match, and delete it
+
+#### Scenario: State directory is not writable
+
+- **WHEN** the preflight persistence check cannot write to `state/`
+- **THEN** it SHALL fail with a clear error and prevent the bot from starting
+
+#### Scenario: Atomic rename fails
+
+- **WHEN** the preflight persistence check writes successfully but cannot rename the temp file
+- **THEN** it SHALL fail with a clear error and prevent the bot from starting
+
+### Requirement: Startup preflight verifies workspace and scratch writability
+
+The system SHALL verify that the `workspace/` and `scratch/` directories are writable before starting the bot, because prompt files, memory writes, and subagent work depend on them.
+
+#### Scenario: Workspace is read-only
+
+- **WHEN** the preflight check cannot write to `workspace/`
+- **THEN** it SHALL fail with a clear error and prevent the bot from starting
+
+#### Scenario: Scratch is read-only
+
+- **WHEN** the preflight check cannot write to `scratch/`
+- **THEN** it SHALL fail with a clear error and prevent the bot from starting

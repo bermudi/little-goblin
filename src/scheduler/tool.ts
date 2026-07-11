@@ -221,7 +221,7 @@ Actions:
           if (!removed) {
             throw new Error(`No schedule found with id \`${id}\`.`);
           }
-          return jsonResult({ id, removed: true, source: "agent" });
+          return jsonResult({ id, removed: true, source: "agent", nextRunAt: null });
         }
 
         case "pause": {

@@ -107,9 +107,15 @@ export class ScheduleStore {
   /**
    * Count enabled schedules owned by the session whose effective source is
    * "agent". Used to enforce the per-session agent cap at mutation time.
+   *
+   * When `snapshot` is provided, the count is computed over that already-loaded
+   * store so the cap check and the mutation operate on the same in-memory record
+   * list (no fresh disk read between count and write). When omitted, a fresh
+   * read is performed — used by external callers that are not mid-mutation.
    */
-  countEnabledAgentSchedules(sessionId: string): number {
-    return this.read().schedules.filter(
+  countEnabledAgentSchedules(sessionId: string, snapshot?: ScheduleStoreFile): number {
+    const schedules = snapshot ? snapshot.schedules : this.read().schedules;
+    return schedules.filter(
       (s) => s.sessionId === sessionId && s.state === "enabled" && effectiveSource(s) === "agent",
     ).length;
   }
@@ -160,7 +166,7 @@ export class ScheduleStore {
     const store = this.read();
 
     if (source === "agent") {
-      const count = this.countEnabledAgentSchedules(params.sessionId);
+      const count = this.countEnabledAgentSchedules(params.sessionId, store);
       if (count >= MAX_AGENT_SCHEDULES) {
         throw new Error(
           `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
@@ -224,7 +230,7 @@ export class ScheduleStore {
 
       // Cap only applies when the agent is enabling a currently disabled heartbeat.
       if (agent && params.enabled && existing.state !== "enabled") {
-        const count = this.countEnabledAgentSchedules(params.sessionId);
+        const count = this.countEnabledAgentSchedules(params.sessionId, store);
         if (count >= MAX_AGENT_SCHEDULES) {
           throw new Error(
             `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
@@ -274,7 +280,7 @@ export class ScheduleStore {
 
     // Enabling a new heartbeat from the agent path counts toward the cap.
     if (agent) {
-      const count = this.countEnabledAgentSchedules(params.sessionId);
+      const count = this.countEnabledAgentSchedules(params.sessionId, store);
       if (count >= MAX_AGENT_SCHEDULES) {
         throw new Error(
           `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
@@ -369,7 +375,7 @@ export class ScheduleStore {
       agent &&
       state === "enabled" &&
       s.state !== "enabled" &&
-      this.countEnabledAgentSchedules(sessionId) >= MAX_AGENT_SCHEDULES
+      this.countEnabledAgentSchedules(sessionId, store) >= MAX_AGENT_SCHEDULES
     ) {
       throw new Error(
         `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,

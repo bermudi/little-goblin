@@ -160,6 +160,7 @@ describe("createScheduleTurnTool", () => {
       const id = created.id as string;
       const result = await run(tool, "remove", { id });
       expect(result.removed).toBe(true);
+      expect(result.nextRunAt).toBeNull();
       expect(store.getForSession("abcdef1234", id)).toBeNull();
     });
 
@@ -233,6 +234,26 @@ describe("createScheduleTurnTool", () => {
       expect(off.id).toBe(null);
       expect(store.getHeartbeat("abcdef1234")).toBeNull();
     });
+
+    it("status without an existing heartbeat returns enabled false and source null", async () => {
+      const status = await run(tool, "heartbeat", { heartbeat_action: "status" });
+      expect(status.enabled).toBe(false);
+      expect(status.source).toBe(null);
+      expect(status.id).toBe(null);
+    });
+
+    it("status on a user-owned heartbeat returns metadata with source user", async () => {
+      store.setHeartbeat({
+        sessionId: "abcdef1234",
+        locator: LOC,
+        enabled: true,
+        now: new Date(NOW_MS).toISOString(),
+      });
+      const status = await run(tool, "heartbeat", { heartbeat_action: "status" });
+      expect(status.enabled).toBe(true);
+      expect(status.source).toBe("user");
+      expect(status.id).toBeString();
+    });
   });
 
   describe("agent cap", () => {
@@ -252,6 +273,20 @@ describe("createScheduleTurnTool", () => {
         await run(tool, "create_once", { in: "1h", prompt: `a${i}` });
       }
       await rejectTool(tool, { action: "heartbeat", heartbeat_action: "on" }, /cap/);
+    });
+
+    it("resume refuses when the cap is exceeded", async () => {
+      // Fill the cap with enabled agent schedules.
+      const ids: string[] = [];
+      for (let i = 0; i < MAX_AGENT_SCHEDULES; i++) {
+        const created = await run(tool, "create_once", { in: "1h", prompt: `a${i}` });
+        ids.push(created.id as string);
+      }
+      // Pause one, then fill the freed headroom.
+      await run(tool, "pause", { id: ids[0]! });
+      await run(tool, "create_once", { in: "1h", prompt: "headroom" });
+      // Now resuming the paused one would exceed the cap.
+      await rejectTool(tool, { action: "resume", id: ids[0]! }, /cap/);
     });
   });
 });

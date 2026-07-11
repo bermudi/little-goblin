@@ -1,4 +1,3 @@
-import type { Bot } from "grammy";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
@@ -7,12 +6,6 @@ import { AgentRunner, type TurnCallbacks } from "../agent/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
-import {
-  createSendDocumentTool,
-  createSendPhotoTool,
-  createSendVoiceTool,
-} from "../tg/tools.ts";
-import { createTextToSpeechTool } from "../tg/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
@@ -41,22 +34,8 @@ function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number
   };
 }
 
-function getBetaTools(
-  bot: Bot,
-  chatId: number,
-  topicId?: number,
-): ToolDefinition[] {
-  return [
-    createSendVoiceTool(bot, chatId, topicId),
-    createSendPhotoTool(bot, chatId, topicId),
-    createSendDocumentTool(bot, chatId, topicId),
-    createTextToSpeechTool(),
-  ].filter((t): t is NonNullable<typeof t> => t !== null);
-}
-
 export interface TurnDispatcherOptions {
   cfg: Config;
-  bot: Bot;
   manager: SessionManager;
   subagentRunner: SubagentRunner;
   memoryStore: MemoryStore;
@@ -70,6 +49,13 @@ export interface TurnDispatcherOptions {
    * (intake) injects this so rendering knowledge stays in `src/tg/`.
    */
   createMessageBuffer: (locator: ChatLocator) => TurnSink;
+  /**
+   * Mandatory factory that builds Telegram-specific beta tools (voice, photo,
+   * document, TTS) for a chat. The dispatcher does not import from `src/tg/`;
+   * the Telegram-aware caller (intake) injects this so beta tool creation stays
+   * in the Telegram layer.
+   */
+  createBetaTools: (chatId: number, threadId?: number) => ToolDefinition[];
   /** Shared schedule store. When present, the `schedule_turn` tool is wired to the main agent. */
   scheduleStore?: ScheduleStore;
 }
@@ -94,19 +80,18 @@ export class TurnDispatcher {
   private readonly runners: Map<string, AgentRunner>;
   private readonly promptQueues: Map<string, Promise<void>>;
   private readonly cfg: Config;
-  private readonly bot: Bot;
   private readonly manager: SessionManager;
   private readonly subagentRunner: SubagentRunner;
   private readonly memoryStore: MemoryStore;
   private readonly createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
   private readonly createMessageBufferFn: (locator: ChatLocator) => TurnSink;
+  private readonly createBetaToolsFn: (chatId: number, threadId?: number) => ToolDefinition[];
   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
   private readonly promptQueueMeta: Map<string, PromptQueueEntry>;
   private readonly scheduleStore: ScheduleStore | undefined;
 
   constructor(options: TurnDispatcherOptions) {
     this.cfg = options.cfg;
-    this.bot = options.bot;
     this.manager = options.manager;
     this.subagentRunner = options.subagentRunner;
     this.memoryStore = options.memoryStore;
@@ -115,6 +100,7 @@ export class TurnDispatcher {
     this.promptQueueMeta = options.promptQueueMeta ?? new Map<string, PromptQueueEntry>();
     this.createAgentRunner = options.createAgentRunner;
     this.createMessageBufferFn = options.createMessageBuffer;
+    this.createBetaToolsFn = options.createBetaTools;
     this.getTopicName = buildGetTopicName(this.memoryStore);
     this.scheduleStore = options.scheduleStore;
   }
@@ -142,7 +128,7 @@ export class TurnDispatcher {
    */
   createRunner(session: SessionState, locator: ChatLocator, threadId?: number): AgentRunner {
     const chatId = locator.chatId;
-    const betaTools = getBetaTools(this.bot, chatId, threadId);
+    const betaTools = this.createBetaToolsFn(chatId, threadId);
     const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
       cfg: this.cfg,
       sessionId: session.id,

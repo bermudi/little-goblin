@@ -17,7 +17,8 @@ import { SessionManager, type ChatLocator, type SessionState } from "../sessions
 import { SubagentRunner } from "../subagents/mod.ts";
 import { TurnDispatcher, type PromptContent, type TurnSink } from "../orchestration/dispatcher.ts";
 import { transcribeWithGroq } from "../asr/mod.ts";
-import { MessageBuffer } from "./mod.ts";
+import { MessageBuffer, createTextToSpeechTool } from "./mod.ts";
+import { createSendDocumentTool, createSendPhotoTool, createSendVoiceTool } from "./tools.ts";
 import { GuestReplySink } from "./guest-sink.ts";
 import { type ReplyOpts, sendSystemReply } from "./format.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
@@ -195,9 +196,18 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           : undefined,
     });
   });
+  // Beta tool factory: builds the Telegram-specific tools (voice, photo,
+  // document, TTS) for a chat. The dispatcher does not import from `src/tg/`;
+  // this factory is injected so the Telegram layer owns beta tool creation.
+  const createBetaTools = (chatId: number, threadId?: number) =>
+    [
+      createSendVoiceTool(bot, chatId, threadId),
+      createSendPhotoTool(bot, chatId, threadId),
+      createSendDocumentTool(bot, chatId, threadId),
+      createTextToSpeechTool(),
+    ].filter((t): t is NonNullable<typeof t> => t !== null);
   const dispatcher = new TurnDispatcher({
     cfg,
-    bot,
     manager,
     subagentRunner,
     memoryStore,
@@ -205,6 +215,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     promptQueues: options.promptQueues,
     createAgentRunner: options.createAgentRunner,
     createMessageBuffer,
+    createBetaTools,
     scheduleStore: options.scheduleStore,
   });
 

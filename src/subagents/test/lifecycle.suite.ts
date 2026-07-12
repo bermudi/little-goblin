@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { chmodSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { SubagentRunner } from "../mod.ts";
-import type { SubagentMeta } from "../types.ts";
+import { markCompleted } from "../execution.ts";
+import type { SubagentInstance, SubagentMeta } from "../types.ts";
 import { genericSubagentMetaPath } from "../paths.ts";
 import {
   createTestHome,
@@ -386,5 +387,170 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
     expect(runner.list().find((entry) => entry.id === handle.id)?.status).toBe("completed");
 
     chmodSync(dir, 0o755);
+  });
+});
+
+describe("SubagentRunner.cancelBySession", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = createTestHome("goblin-cancel-by-session-");
+    runner = new SubagentRunner(makeConfig(tmp));
+    resetPiMockState();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function getInstance(id: string): SubagentInstance | undefined {
+    return (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(id);
+  }
+
+  it("cancels direct children of the session", async () => {
+    const a = await runner.spawn({
+      prompt: "a",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    const b = await runner.spawn({
+      prompt: "b",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    await flush();
+
+    await runner.cancelBySession("session-abc");
+
+    expect(sessionHolder.abort).toHaveBeenCalledTimes(2);
+    expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
+    expect(runner.list().find((entry) => entry.id === b.id)?.status).toBe("cancelled");
+
+    const aMeta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, a.id), "utf-8")) as SubagentMeta;
+    const bMeta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, b.id), "utf-8")) as SubagentMeta;
+    expect(aMeta.status).toBe("cancelled");
+    expect(bMeta.status).toBe("cancelled");
+    expect(aMeta.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(bMeta.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("recursively cancels grandchildren", async () => {
+    const a = await runner.spawn({
+      prompt: "a",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    const b = await runner.spawn({
+      prompt: "b",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: a.id,
+      depth: 1,
+    });
+    await flush();
+
+    await runner.cancelBySession("session-abc");
+
+    expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
+    expect(runner.list().find((entry) => entry.id === b.id)?.status).toBe("cancelled");
+    expect(sessionHolder.abort).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels a running child even when its parent is already terminal", async () => {
+    const a = await runner.spawn({
+      prompt: "a",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    await flush();
+
+    const b = await runner.spawn({
+      prompt: "b",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: a.id,
+      depth: 1,
+    });
+    await flush();
+
+    const aInst = getInstance(a.id);
+    expect(aInst).toBeDefined();
+    markCompleted(aInst!);
+
+    await runner.cancelBySession("session-abc");
+
+    expect(aInst?.status).toBe("completed");
+    expect(runner.list().find((entry) => entry.id === b.id)?.status).toBe("cancelled");
+    expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips terminal instances", async () => {
+    const a = await runner.spawn({
+      prompt: "a",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    await flush();
+
+    const aInst = getInstance(a.id);
+    expect(aInst).toBeDefined();
+    markCompleted(aInst!);
+
+    await runner.cancelBySession("session-abc");
+
+    expect(aInst?.status).toBe("completed");
+    const meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, a.id), "utf-8")) as SubagentMeta;
+    expect(meta.status).toBe("completed");
+    expect(sessionHolder.abort).not.toHaveBeenCalled();
+  });
+
+  it("does not match null spawnedBy", async () => {
+    await runner.spawn({ prompt: "a", activeScope: DEFAULT_SCOPE });
+    await flush();
+
+    await runner.cancelBySession("session-abc");
+
+    expect(runner.list()[0]?.status).toBe("running");
+    expect(sessionHolder.abort).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when no subagents match the session", async () => {
+    await runner.cancelBySession("session-xyz");
+
+    expect(sessionHolder.abort).not.toHaveBeenCalled();
+    expect(runner.list()).toHaveLength(0);
+  });
+
+  it("does not cancel subagents of other sessions", async () => {
+    const a = await runner.spawn({
+      prompt: "a",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    const c = await runner.spawn({
+      prompt: "c",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-def",
+    });
+    await flush();
+
+    await runner.cancelBySession("session-abc");
+
+    expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
+    expect(runner.list().find((entry) => entry.id === c.id)?.status).toBe("running");
+    expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not double-cancel when called concurrently with cancel", async () => {
+    const a = await runner.spawn({
+      prompt: "a",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    await flush();
+
+    await Promise.all([runner.cancelBySession("session-abc"), runner.cancel(a.id)]);
+
+    expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+    expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
   });
 });

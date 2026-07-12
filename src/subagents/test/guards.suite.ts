@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { genericSubagentMetaPath } from "../paths.ts";
 import { SubagentRunner } from "../mod.ts";
-import type { SubagentMeta } from "../types.ts";
+import { markCompleted } from "../execution.ts";
+import type { SubagentInstance, SubagentMeta } from "../types.ts";
 import {
   createTestHome,
   DEFAULT_SCOPE,
@@ -226,5 +227,97 @@ describe("SubagentRunner — cancel vs agent_end race", () => {
 
     await runner.cancel(handle.id);
     expect(runner.list().find((entry) => entry.id === handle.id)?.status).toBe("cancelled");
+  });
+});
+
+describe("SubagentRunner — parent status guard", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+
+  beforeEach(() => {
+    tmp = createTestHome("goblin-parent-guard-");
+    runner = new SubagentRunner(makeConfig(tmp));
+    resetPiMockState();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("allows child spawn when parent is running", async () => {
+    const parent = await runner.spawn({
+      prompt: "parent",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    await flush();
+
+    const child = await runner.spawn({
+      prompt: "child",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: parent.id,
+      depth: 1,
+    });
+    await flush();
+
+    expect(child.status).toBe("running");
+  });
+
+  it("rejects child spawn when parent is completed", async () => {
+    const parent = await runner.spawn({
+      prompt: "parent",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    await flush();
+
+    const parentInst = (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(
+      parent.id,
+    );
+    expect(parentInst).toBeDefined();
+    markCompleted(parentInst!);
+
+    await expect(
+      runner.spawn({
+        prompt: "child",
+        activeScope: DEFAULT_SCOPE,
+        spawnedBy: parent.id,
+        depth: 1,
+      }),
+    ).rejects.toThrow("Cannot spawn subagent from a non-running parent");
+  });
+
+  it("rejects child spawn when parent is cancelled", async () => {
+    const parent = await runner.spawn({
+      prompt: "parent",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    await flush();
+    await runner.cancel(parent.id);
+
+    await expect(
+      runner.spawn({
+        prompt: "child",
+        activeScope: DEFAULT_SCOPE,
+        spawnedBy: parent.id,
+        depth: 1,
+      }),
+    ).rejects.toThrow("Cannot spawn subagent from a non-running parent");
+  });
+
+  it("allows top-level spawn with a session id that is not an active subagent", async () => {
+    const handle = await runner.spawn({
+      prompt: "top",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-xyz",
+    });
+    await flush();
+
+    expect(handle.status).toBe("running");
+    const meta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
+    ) as SubagentMeta;
+    expect(meta.spawnedBy).toBe("session-xyz");
   });
 });

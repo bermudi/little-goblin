@@ -103,9 +103,6 @@ export class SubagentRunner {
       throw new Error("SubagentRunner is disposed");
     }
 
-    // Prune terminal subagents before creating new ones.
-    this.pruneTerminal();
-
     const spawnerDepth = options.depth ?? 0;
     if (spawnerDepth < 0) {
       throw new Error(`Invalid depth: ${spawnerDepth}`);
@@ -114,6 +111,17 @@ export class SubagentRunner {
     if (newDepth > MAX_SUBAGENT_DEPTH) {
       throw new Error(`Maximum subagent depth reached (${MAX_SUBAGENT_DEPTH})`);
     }
+
+    // Reject spawns from a subagent that is no longer running.
+    if (options.spawnedBy !== undefined) {
+      const parent = this.activeSubagents.get(options.spawnedBy);
+      if (parent !== undefined && parent.status !== "running") {
+        throw new Error("Cannot spawn subagent from a non-running parent");
+      }
+    }
+
+    // Prune terminal subagents before creating new ones.
+    this.pruneTerminal();
 
     // Sanitise name to prevent path traversal.
     if (options.name !== undefined && !VALID_NAME_RE.test(options.name)) {
@@ -430,6 +438,92 @@ export class SubagentRunner {
     }
 
     log.debug("subagent cancelled", { id });
+  }
+
+  /**
+   * Cancel every subagent in the spawn tree rooted at the given session id.
+   *
+   * Walks `spawnedBy` parentage, marks all non-terminal instances as
+   * `cancelled` synchronously before any await, then tears them down. The
+   * method never rejects — per-instance errors are logged and swallowed.
+   */
+  async cancelBySession(sessionId: string): Promise<void> {
+    // 1. Collect all descendants in the session's spawn tree (BFS by parentage).
+    const queue: string[] = [];
+    const collected = new Set<string>();
+    for (const [id, inst] of this.activeSubagents) {
+      if (inst.spawnedBy === sessionId && !collected.has(id)) {
+        queue.push(id);
+        collected.add(id);
+      }
+    }
+    let index = 0;
+    while (index < queue.length) {
+      const parentId = queue[index];
+      index += 1;
+      for (const [id, inst] of this.activeSubagents) {
+        if (inst.spawnedBy === parentId && !collected.has(id)) {
+          queue.push(id);
+          collected.add(id);
+        }
+      }
+    }
+
+    // 2. Mark every non-terminal instance as cancelled synchronously before any await.
+    const targets: SubagentInstance[] = [];
+    for (const id of queue) {
+      const instance = this.activeSubagents.get(id);
+      if (instance !== undefined && instance.status === "running") {
+        instance.status = "cancelled";
+        targets.push(instance);
+      }
+    }
+
+    // 3. Clean up each targeted instance in BFS order, with per-step error handling.
+    for (const instance of targets) {
+      if (instance.session !== null) {
+        try {
+          await instance.session.abort();
+        } catch {
+          // abort() may throw if the session is in a bad state.
+          // We still want to persist and clean up.
+        }
+      }
+
+      try {
+        persistMetaPatch(instance, {
+          status: "cancelled",
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        log.error("cancelBySession persistMeta failed", {
+          id: instance.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      try {
+        instance.unsubscribe?.();
+      } catch {
+        // best-effort
+      } finally {
+        instance.unsubscribe = null;
+      }
+
+      try {
+        teardownInstance(instance);
+      } catch (err) {
+        log.error("cancelBySession teardown failed", {
+          id: instance.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    log.debug("cascade-cancel: subagents cancelled", {
+      count: targets.length,
+      sessionId,
+    });
   }
 
   /**

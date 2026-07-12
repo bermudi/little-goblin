@@ -617,6 +617,13 @@ export class AgentRunner {
    * Clean up resources.
    */
   dispose(): void {
-    this.backend.dispose();
+    try {
+      this.backend.dispose();
+    } catch (err) {
+      log.error("AgentRunner dispose failed", {
+        sessionId: this.sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }

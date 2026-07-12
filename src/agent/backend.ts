@@ -11,6 +11,7 @@ import {
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
+import { log } from "../log.ts";
 import { createPiServices, findMostRecentPiSession, piAgentDir, type PiServices } from "../pi-host.ts";
 import { skillsPath, workdirPath } from "../workspace/paths.ts";
 import { sessionDir } from "../sessions/paths.ts";
@@ -205,10 +206,26 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   dispose(): void {
-    this.unsubscribe?.();
-    this.unsubscribe = null;
-    this.session?.dispose();
-    this.session = null;
+    try {
+      this.unsubscribe?.();
+    } catch (err) {
+      log.error("AgentBackend unsubscribe failed", {
+        sessionId: this.sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this.unsubscribe = null;
+    }
+    try {
+      this.session?.dispose();
+    } catch (err) {
+      log.error("AgentBackend session.dispose failed", {
+        sessionId: this.sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this.session = null;
+    }
   }
 
   get isStreaming(): boolean {

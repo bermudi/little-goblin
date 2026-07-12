@@ -237,6 +237,7 @@ export class TurnDispatcher {
    * so `runner.isStreaming` is still false and `interruptAndCascade` would not
    * abort it. The runner's `abort()` is invoked; the agent runner uses this
    * signal to abort a turn before it starts (see `AgentRunner.abort`).
+   * Returns true when a pending prompt was found and canceled.
    *
    * Note: this does not cascade to subagents. The session remains alive and
    * its subagents may continue doing useful work.

@@ -17,6 +17,9 @@ interface PromptQueueEntry {
   isPrompt: boolean;
 }
 
+/** Maximum time `disposeRunner` waits for the subagent cascade to settle. */
+const DISPOSE_RUNNER_CANCEL_TIMEOUT_MS = 10_000;
+
 /**
  * The opaque sink a turn dispatches through — the subset of `MessageBuffer`
  * that `runner.prompt(content, sink)` consumes. Typed as `TurnCallbacks` so the
@@ -268,6 +271,11 @@ export class TurnDispatcher {
     if (prior) {
       try {
         prior.dispose();
+      } catch (err) {
+        log.error("AgentRunner.dispose failed in disposeRunner", {
+          sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
       } finally {
         this.runners.delete(sessionId);
       }
@@ -275,7 +283,27 @@ export class TurnDispatcher {
       this.runners.delete(sessionId);
     }
     this.promptQueues.delete(sessionId);
-    await this.subagentRunner.cancelBySession(sessionId);
+
+    // Cancel subagents spawned by this session, but don't block runner disposal
+    // indefinitely if a subagent abort is stuck.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cancelPromise = this.subagentRunner.cancelBySession(sessionId).catch((err) => {
+      log.error("cancelBySession failed in disposeRunner", {
+        sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        log.warn("cancelBySession timed out in disposeRunner; continuing side effects", { sessionId });
+        resolve();
+      }, DISPOSE_RUNNER_CANCEL_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([cancelPromise, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /**

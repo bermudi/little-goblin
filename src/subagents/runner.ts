@@ -406,24 +406,21 @@ export class SubagentRunner {
     // cancel() calls see a non-running status and exit early.
     instance.status = "cancelled";
 
+    // Capture session/unsubscribe before any await so a concurrent runInstance
+    // cannot reassign them mid-cleanup.
+    const session = instance.session;
+    const unsubscribe = instance.unsubscribe;
+
     try {
-      // Cancel the target and its descendants concurrently. A parent that is
-      // blocked on a child result needs the child to be aborted first so the
-      // parent tool call can finish.
-      await Promise.all([
-        (async () => {
-          if (instance.session !== null) {
-            try {
-              await instance.session.abort();
-            } catch {
-              // abort() may throw if the session is in a bad state.
-              // We still want to update status and clean up.
-              log.debug("session.abort() threw during cancel", { id, error: "(swallowed)" });
-            }
-          }
-        })(),
-        this.cancelBySession(id),
-      ]);
+      if (session !== null) {
+        try {
+          await session.abort();
+        } catch {
+          // abort() may throw if the session is in a bad state.
+          // We still want to update status and clean up.
+          log.debug("session.abort() threw during cancel", { id, error: "(swallowed)" });
+        }
+      }
 
       try {
         persistMetaPatch(instance, {
@@ -438,22 +435,27 @@ export class SubagentRunner {
       }
 
       try {
-        instance.unsubscribe?.();
+        unsubscribe?.();
       } catch {
         // best-effort
       } finally {
         instance.unsubscribe = null;
       }
 
-      teardownInstance(instance);
+      try {
+        teardownInstance(instance);
+      } catch (err) {
+        log.error("cancel teardown failed", { id, err: err instanceof Error ? err.message : String(err) });
+      }
     } catch (err) {
       // teardown failed — still try to clean up.
       try {
-        instance.unsubscribe?.();
+        unsubscribe?.();
       } catch {
         // best-effort
       }
       instance.unsubscribe = null;
+      instance.session = null;
       log.error("cancel cleanup failed", { id, err: err instanceof Error ? err.message : String(err) });
     }
 
@@ -504,9 +506,14 @@ export class SubagentRunner {
     //    unblocked when the child's abort settles.
     await Promise.all(
       targets.map(async (instance) => {
-        if (instance.session !== null) {
+        // Capture session/unsubscribe before any await so a concurrent runInstance
+        // cannot reassign them mid-cleanup.
+        const session = instance.session;
+        const unsubscribe = instance.unsubscribe;
+
+        if (session !== null) {
           try {
-            await instance.session.abort();
+            await session.abort();
           } catch {
             // abort() may throw if the session is in a bad state.
             // We still want to persist and clean up.
@@ -526,7 +533,7 @@ export class SubagentRunner {
         }
 
         try {
-          instance.unsubscribe?.();
+          unsubscribe?.();
         } catch {
           // best-effort
         } finally {
@@ -567,12 +574,27 @@ export class SubagentRunner {
         // cancelled instances should keep their existing status — don't
         // overwrite a successful completion with "cancelled".
         if (instance.status === "running") {
+          // Mark cancelled before any await so a concurrent runInstance sees
+          // the non-running status and does not start/assign a new session.
+          instance.status = "cancelled";
+          // Capture session/unsubscribe before any await so a concurrent
+          // runInstance cannot reassign them mid-cleanup.
+          const session = instance.session;
+          const unsubscribe = instance.unsubscribe;
           try {
-            await instance.session?.abort();
+            if (session !== null) {
+              await session.abort();
+            }
           } catch {
             /* best-effort */
           }
-          instance.status = "cancelled";
+          try {
+            unsubscribe?.();
+          } catch {
+            /* best-effort */
+          } finally {
+            instance.unsubscribe = null;
+          }
           try {
             persistMetaPatch(instance, {
               status: "cancelled",

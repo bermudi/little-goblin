@@ -332,16 +332,25 @@ Add a test verifying that `disposeRunner` calls
 method, or create a fake `SubagentRunner` that records the call. Verify the
 runner is disposed after the cascade completes.
 
-## Non-Changes
+## Changes
 
-- `cancel(id)` — now cancels the target and its descendants concurrently by
-  reusing `cancelBySession(id)`. This unblocks a parent that is waiting on a
-  child result and prevents orphaned descendants.
+- `cancelBySession(sessionId)` — new method that cancels every subagent in the
+  session's spawn tree. This is the actual cascade; it is called by
+  `dispose()` and `disposeRunner()`.
 - `dispose()` — unchanged semantically (nuclear, for process shutdown), but now
   cleans up active instances concurrently for faster shutdown; per-instance
   teardown errors are logged.
-- `cancelPending(sessionId)` — unchanged behavior, but add a code-level comment
-  or JSDoc explicitly stating that it does not cascade to subagents.
+- `disposeRunner(sessionId)` — now async and disposes the runner, clears the
+  prompt queue, and awaits the subagent cascade before returning.
+- `spawn()` — rejects a `spawnedBy` that points to a non-running parent
+  subagent, preventing new children during cancellation or after termination.
+
+## Non-Changes
+
+- `cancel(id)` — unchanged; cancels only the specific subagent whose id was
+  provided. It does not cascade to descendants.
+- `cancelPending(sessionId)` — unchanged behavior; it aborts only the queued
+  prompt and does not cascade to subagents.
 - `SubagentRunner.activeSubagents` — stays private. `cancelBySession` is a
   new public method that accesses it internally.
 - `SubagentInstance.spawnedBy` — field is unchanged.

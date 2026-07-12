@@ -37,7 +37,7 @@ import { piAgentDir, type PiServices } from "../pi-host.ts";
 import type { ActiveScope } from "../memory/mod.ts";
 import { persistMetaPatch } from "./meta.ts";
 import { buildResourceLoader } from "./named-agents.ts";
-import type { SubagentInstance } from "./types.ts";
+import type { SubagentInstance, SubagentStatus } from "./types.ts";
 
 /**
  * Dependencies the execution engine needs but does not own.
@@ -113,6 +113,12 @@ async function _runInstanceInner(
     settingsManager: services.settingsManager,
   });
 
+  // Guard: if cancel() was called before we created the session, stop here.
+  const statusBeforeCreate: SubagentStatus = instance.status;
+  if (statusBeforeCreate === "cancelled") {
+    return "";
+  }
+
   // The caller descriptor is constant across this run: a named subagent
   // sees only its own persona; an anonymous subagent sees none. Compute
   // once and reuse for the memory tools and the per-turn snapshot.
@@ -154,14 +160,26 @@ async function _runInstanceInner(
     ],
     ...(resourceLoader ? { resourceLoader } : {}),
   });
-  instance.session = session;
 
   // Guard: if cancel() was called while we were setting up the session,
   // tear down immediately instead of sending the prompt.
-  if (instance.status === "cancelled") {
-    try { await session.abort(); } catch { /* best-effort */ }
+  const statusAfterCreate: SubagentStatus = instance.status;
+  if (statusAfterCreate === "cancelled") {
+    try {
+      await session.abort();
+    } catch {
+      // best-effort
+    } finally {
+      try {
+        session.dispose();
+      } catch {
+        // best-effort
+      }
+    }
     return "";
   }
+
+  instance.session = session;
 
   // Resolve on agent_end, reject on errors during the run.
   let finalText = "";

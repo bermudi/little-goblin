@@ -835,25 +835,32 @@ describe("Telegram intake", () => {
     expect(dispatcher.hasRunner(session.id)).toBe(false);
   });
 
-  it("disposeRunner cancels subagents before disposing the runner", async () => {
+  it("disposeRunner clears runner and queues before canceling subagents", async () => {
     const cfg = makeConfig();
     const subagentRunner = new SubagentRunner(cfg);
-    let cancelResolved = false;
-    const cancelBySession = mock(async (_sessionId: string) => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
-      cancelResolved = true;
-    });
-    subagentRunner.cancelBySession = cancelBySession as unknown as SubagentRunner["cancelBySession"];
 
     const { agentRunners, intake } = makeHarness(cfg, subagentRunner);
     const dispatcher = intake.dispatcher;
     const runner = new MockAgentRunner({ sessionId: "sess-1" });
     agentRunners.set("sess-1", runner as unknown as AgentRunner);
 
+    let cancelResolved = false;
+    let runnerDisposedBeforeCancel = false;
+    const cancelBySession = mock(async (_sessionId: string) => {
+      if (runner.dispose.mock.calls.length === 0) {
+        throw new Error("runner.dispose was not called before cancelBySession");
+      }
+      runnerDisposedBeforeCancel = true;
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      cancelResolved = true;
+    });
+    subagentRunner.cancelBySession = cancelBySession as unknown as SubagentRunner["cancelBySession"];
+
     await dispatcher.disposeRunner("sess-1");
 
     expect(cancelBySession).toHaveBeenCalledTimes(1);
     expect(cancelBySession).toHaveBeenCalledWith("sess-1");
+    expect(runnerDisposedBeforeCancel).toBe(true);
     expect(cancelResolved).toBe(true);
     expect(runner.dispose).toHaveBeenCalledTimes(1);
     expect(agentRunners.has("sess-1")).toBe(false);

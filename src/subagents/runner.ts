@@ -407,15 +407,24 @@ export class SubagentRunner {
     instance.status = "cancelled";
 
     try {
-      if (instance.session !== null) {
-        try {
-          await instance.session.abort();
-        } catch {
-          // abort() may throw if the session is in a bad state.
-          // We still want to update status and clean up.
-          log.debug("session.abort() threw during cancel", { id, error: "(swallowed)" });
-        }
-      }
+      // Cancel the target and its descendants concurrently. A parent that is
+      // blocked on a child result needs the child to be aborted first so the
+      // parent tool call can finish.
+      await Promise.all([
+        (async () => {
+          if (instance.session !== null) {
+            try {
+              await instance.session.abort();
+            } catch {
+              // abort() may throw if the session is in a bad state.
+              // We still want to update status and clean up.
+              log.debug("session.abort() threw during cancel", { id, error: "(swallowed)" });
+            }
+          }
+        })(),
+        this.cancelBySession(id),
+      ]);
+
       try {
         persistMetaPatch(instance, {
           status: "cancelled",
@@ -427,12 +436,23 @@ export class SubagentRunner {
           err: err instanceof Error ? err.message : String(err),
         });
       }
-      instance.unsubscribe?.();
-      instance.unsubscribe = null;
+
+      try {
+        instance.unsubscribe?.();
+      } catch {
+        // best-effort
+      } finally {
+        instance.unsubscribe = null;
+      }
+
       teardownInstance(instance);
     } catch (err) {
       // teardown failed — still try to clean up.
-      instance.unsubscribe?.();
+      try {
+        instance.unsubscribe?.();
+      } catch {
+        // best-effort
+      }
       instance.unsubscribe = null;
       log.error("cancel cleanup failed", { id, err: err instanceof Error ? err.message : String(err) });
     }
@@ -479,51 +499,57 @@ export class SubagentRunner {
       }
     }
 
-    // 3. Clean up each targeted instance in BFS order, with per-step error handling.
-    for (const instance of targets) {
-      if (instance.session !== null) {
-        try {
-          await instance.session.abort();
-        } catch {
-          // abort() may throw if the session is in a bad state.
-          // We still want to persist and clean up.
+    // 3. Clean up each targeted instance concurrently. Start all aborts in
+    //    parallel so a parent that is blocked on a child result can be
+    //    unblocked when the child's abort settles.
+    await Promise.all(
+      targets.map(async (instance) => {
+        if (instance.session !== null) {
+          try {
+            await instance.session.abort();
+          } catch {
+            // abort() may throw if the session is in a bad state.
+            // We still want to persist and clean up.
+          }
         }
-      }
 
-      try {
-        persistMetaPatch(instance, {
-          status: "cancelled",
-          completedAt: new Date().toISOString(),
-        });
-      } catch (err) {
-        log.error("cancelBySession persistMeta failed", {
-          id: instance.id,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
+        try {
+          persistMetaPatch(instance, {
+            status: "cancelled",
+            completedAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          log.error("cancelBySession persistMeta failed", {
+            id: instance.id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
 
-      try {
-        instance.unsubscribe?.();
-      } catch {
-        // best-effort
-      } finally {
-        instance.unsubscribe = null;
-      }
+        try {
+          instance.unsubscribe?.();
+        } catch {
+          // best-effort
+        } finally {
+          instance.unsubscribe = null;
+        }
 
-      try {
-        teardownInstance(instance);
-      } catch (err) {
-        log.error("cancelBySession teardown failed", {
-          id: instance.id,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
+        try {
+          teardownInstance(instance);
+        } catch (err) {
+          log.error("cancelBySession teardown failed", {
+            id: instance.id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }),
+    );
+
+    if (targets.length > 0) {
+      log.debug("cascade-cancel: subagents cancelled", {
+        count: targets.length,
+        sessionId,
+      });
     }
-
-    log.debug("cascade-cancel: subagents cancelled", {
-      count: targets.length,
-      sessionId,
-    });
   }
 
   /**
@@ -533,33 +559,42 @@ export class SubagentRunner {
   async dispose(): Promise<void> {
     this.disposed = true;
     const ids = [...this.activeSubagents.keys()];
-    for (const id of ids) {
-      const instance = this.activeSubagents.get(id);
-      if (!instance) continue;
-      // Only cancel instances that are still running. Completed/errored/
-      // cancelled instances should keep their existing status — don't
-      // overwrite a successful completion with "cancelled".
-      if (instance.status === "running") {
-        try {
-          await instance.session?.abort();
-        } catch {
-          /* best-effort */
+    await Promise.all(
+      ids.map(async (id) => {
+        const instance = this.activeSubagents.get(id);
+        if (!instance) return;
+        // Only cancel instances that are still running. Completed/errored/
+        // cancelled instances should keep their existing status — don't
+        // overwrite a successful completion with "cancelled".
+        if (instance.status === "running") {
+          try {
+            await instance.session?.abort();
+          } catch {
+            /* best-effort */
+          }
+          instance.status = "cancelled";
+          try {
+            persistMetaPatch(instance, {
+              status: "cancelled",
+              completedAt: new Date().toISOString(),
+            });
+          } catch (err) {
+            log.error("dispose persistMeta failed", {
+              id,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
         }
-        instance.status = "cancelled";
         try {
-          persistMetaPatch(instance, {
-            status: "cancelled",
-            completedAt: new Date().toISOString(),
-          });
+          teardownInstance(instance);
         } catch (err) {
-          log.error("dispose persistMeta failed", {
+          log.error("dispose teardown failed", {
             id,
             err: err instanceof Error ? err.message : String(err),
           });
         }
-      }
-      teardownInstance(instance);
-    }
+      }),
+    );
     this.activeSubagents.clear();
     log.debug("SubagentRunner disposed", { count: ids.length });
   }

@@ -257,12 +257,13 @@ export class TurnDispatcher {
    * work for the stale runner aborts via the `isCurrent()` guard. Safe to call
    * when no runner exists (no-op).
    *
-   * First cancels any subagents spawned by this session so orphaned work does
-   * not outlive the runner.
+   * Disposes the runner and clears the queue first, then cancels any subagents
+   * spawned by this session so orphaned work does not outlive the runner.
    */
   async disposeRunner(sessionId: string): Promise<void> {
-    await this.subagentRunner.cancelBySession(sessionId);
-    this.promptQueues.delete(sessionId);
+    // Dispose the runner and sever the prompt-queue chain first. This prevents
+    // any concurrent scheduled turn from entering a runner that is about to be
+    // disposed while the subagent cascade runs.
     const prior = this.runners.get(sessionId);
     if (prior) {
       try {
@@ -273,6 +274,8 @@ export class TurnDispatcher {
     } else {
       this.runners.delete(sessionId);
     }
+    this.promptQueues.delete(sessionId);
+    await this.subagentRunner.cancelBySession(sessionId);
   }
 
   /**

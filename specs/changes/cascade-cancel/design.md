@@ -22,10 +22,10 @@ Command (/new, /resume, /archive, /project)
   → side effect: runner-disposed
   → intake.applySideEffects (now async)
   → await dispatcher.disposeRunner(sessionId)   [now async]
+  → dispose the AgentRunner, delete from map, clear prompt queue    [existing]
   → subagentRunner.cancelBySession(sessionId)   [new]
   → walk spawnedBy tree, mark all running children cancelled synchronously
   → abort sessions, persist meta, teardown      [async, awaited]
-  → dispose the AgentRunner, delete from map    [existing]
 ```
 
 ### The spawn tree
@@ -48,7 +48,9 @@ operates on live (in-memory) instances only.
 
 **Chosen:** Walk the tree, collect all descendants in the session's spawn tree,
 set `instance.status = "cancelled"` on every non-terminal one synchronously,
-then iterate in BFS order to abort/persist/teardown.
+then clean up all marked instances concurrently (starting all aborts in parallel
+so a parent that is blocked on a child result can be unblocked when the child's
+abort settles).
 
 **Why over cancel-one-by-one:** `cancel(id)` already checks
 `instance.status !== "running"` and returns early (without calling
@@ -119,9 +121,9 @@ session is going away permanently.
 **Chosen:** Start with all instances where `spawnedBy === sessionId`. For each
 match, find children where `spawnedBy === match.id`, regardless of the parent's
 status. Continue until no new descendants are found. Collect all ids into a
-flat set. Mark all non-terminal instances in the set synchronously. Clean up in
-the order they were discovered (BFS order, session's direct children first, then
-grandchildren, and so on).
+flat set. Mark all non-terminal instances in the set synchronously. Clean up all
+marked instances concurrently (starting all aborts in parallel so a parent that
+is blocked on a child result can be unblocked when the child's abort settles).
 
 **Why over recursive DFS:** BFS is simpler to implement iteratively and avoids
 stack-overflow concerns (though depth is capped at 3, so this is academic).
@@ -183,9 +185,12 @@ The method:
    `SubagentStatus`), set `status = "cancelled"`. This prevents double-cancel
    races — any concurrent `cancel(id)` call will see a non-running status and
    exit as a no-op.
-3. **Clean up** (async, awaited, per-instance error handling): For each marked
-   instance, perform each of the following steps in its own try/catch so one
-   failing step does not abort the rest:
+3. **Clean up** (async, awaited, concurrent per-instance error handling): Clean
+   up all marked instances concurrently, starting all aborts in parallel so a
+   parent that is blocked on a child result can be unblocked when the child's
+   abort settles. For each marked instance, perform each of the following steps
+   in its own try/catch so one failing step does not abort the rest or the
+   other instances:
    - call `session.abort()` and swallow any errors;
    - call `persistMetaPatch(...)` with `{ status: "cancelled", completedAt: new Date().toISOString() }` and log any errors;
    - call `instance.unsubscribe()` and set `instance.unsubscribe = null`, swallowing any errors and ensuring the field is nulled even if `unsubscribe()` throws;
@@ -205,8 +210,11 @@ delta).
 ### `src/orchestration/dispatcher.ts` — wire cascade into `disposeRunner`
 
 Change `disposeRunner` signature from `void` to `async ... Promise<void>`.
-Add `await this.subagentRunner.cancelBySession(sessionId)` as the first line of
-the method body, before `this.promptQueues.delete(sessionId)`.
+Dispose the AgentRunner, remove it from the cache, and clear the prompt queue
+**before** awaiting `this.subagentRunner.cancelBySession(sessionId)`. This makes
+the stale runner unreachable from `getOrCreateRunner` before `cancelBySession`
+yields, so a concurrent scheduled turn cannot enter a runner that is being
+disposed.
 
 Current code:
 ```ts
@@ -228,8 +236,6 @@ disposeRunner(sessionId: string): void {
 New code:
 ```ts
 async disposeRunner(sessionId: string): Promise<void> {
-  await this.subagentRunner.cancelBySession(sessionId);
-  this.promptQueues.delete(sessionId);
   const prior = this.runners.get(sessionId);
   if (prior) {
     try {
@@ -240,6 +246,8 @@ async disposeRunner(sessionId: string): Promise<void> {
   } else {
     this.runners.delete(sessionId);
   }
+  this.promptQueues.delete(sessionId);
+  await this.subagentRunner.cancelBySession(sessionId);
 }
 ```
 
@@ -326,8 +334,12 @@ runner is disposed after the cascade completes.
 
 ## Non-Changes
 
-- `cancel(id)` — unchanged.
-- `dispose()` — unchanged (nuclear, for process shutdown).
+- `cancel(id)` — now cancels the target and its descendants concurrently by
+  reusing `cancelBySession(id)`. This unblocks a parent that is waiting on a
+  child result and prevents orphaned descendants.
+- `dispose()` — unchanged semantically (nuclear, for process shutdown), but now
+  cleans up active instances concurrently for faster shutdown; per-instance
+  teardown errors are logged.
 - `cancelPending(sessionId)` — unchanged behavior, but add a code-level comment
   or JSDoc explicitly stating that it does not cascade to subagents.
 - `SubagentRunner.activeSubagents` — stays private. `cancelBySession` is a

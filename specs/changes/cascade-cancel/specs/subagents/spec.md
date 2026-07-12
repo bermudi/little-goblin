@@ -20,7 +20,11 @@ SHALL never match and SHALL be left alone.
 
 To prevent double-cancel races, the method SHALL mark every targeted non-
 terminal instance as `cancelled` synchronously (before any `await`). After all
-statuses are set, the method SHALL, for each marked instance in BFS order:
+statuses are set, the method SHALL clean up all marked instances concurrently
+(starting all aborts in parallel so a parent that is blocked on a child result
+can be unblocked when the child's abort settles). For each marked instance, the
+following steps SHALL run in their own try/catch so one failing step does not
+abort the remaining steps or other instances:
 
 1. Call `instance.session.abort()` and swallow any errors.
 2. Call `persistMetaPatch(instance, { status: "cancelled", completedAt: new Date().toISOString() })` and log any errors.

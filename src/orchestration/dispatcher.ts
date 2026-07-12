@@ -237,7 +237,9 @@ export class TurnDispatcher {
    * so `runner.isStreaming` is still false and `interruptAndCascade` would not
    * abort it. The runner's `abort()` is invoked; the agent runner uses this
    * signal to abort a turn before it starts (see `AgentRunner.abort`).
-   * Returns true when a pending prompt was found and canceled.
+   *
+   * Note: this does not cascade to subagents. The session remains alive and
+   * its subagents may continue doing useful work.
    */
   async cancelPending(sessionId: string): Promise<boolean> {
     const meta = this.promptQueueMeta.get(sessionId);
@@ -253,8 +255,12 @@ export class TurnDispatcher {
    * Dispose a session's runner and sever its prompt-queue chain so any queued
    * work for the stale runner aborts via the `isCurrent()` guard. Safe to call
    * when no runner exists (no-op).
+   *
+   * First cancels any subagents spawned by this session so orphaned work does
+   * not outlive the runner.
    */
-  disposeRunner(sessionId: string): void {
+  async disposeRunner(sessionId: string): Promise<void> {
+    await this.subagentRunner.cancelBySession(sessionId);
     this.promptQueues.delete(sessionId);
     const prior = this.runners.get(sessionId);
     if (prior) {

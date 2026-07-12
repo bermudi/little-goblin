@@ -104,6 +104,7 @@ interface IntakeHarness {
   bot: Bot;
   bufferLocators: ChatLocator[];
   editForumTopic: ReturnType<typeof mock>;
+  subagentRunner: SubagentRunner;
 }
 
 const dirs: string[] = [];
@@ -176,7 +177,7 @@ function installVoiceFetch(opts: {
   return stats;
 }
 
-function makeHarness(cfg = makeConfig()): IntakeHarness {
+function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new SubagentRunner(cfg)): IntakeHarness {
   const manager = new SessionManager(cfg);
   const agentRunners = new Map<string, AgentRunner>();
   const bufferLocators: ChatLocator[] = [];
@@ -186,7 +187,7 @@ function makeHarness(cfg = makeConfig()): IntakeHarness {
     cfg,
     bot,
     manager,
-    subagentRunner: new SubagentRunner(cfg),
+    subagentRunner,
     memoryStore: new MemoryStore(cfg.goblinHome),
     agentRunners,
     createMessageBuffer: (locator) => {
@@ -199,7 +200,7 @@ function makeHarness(cfg = makeConfig()): IntakeHarness {
       return runner as unknown as AgentRunner;
     },
   });
-  return { cfg, manager, agentRunners, intake, bot, bufferLocators, editForumTopic };
+  return { cfg, manager, agentRunners, intake, bot, bufferLocators, editForumTopic, subagentRunner };
 }
 
 function makeMessage(replies: string[] = [], overrides: Partial<TelegramIntakeMessage> = {}): TelegramIntakeMessage {
@@ -819,7 +820,7 @@ describe("Telegram intake", () => {
     await flushMicrotasks();
 
     // Swap the runner out (as /new does) before the scheduled turn starts.
-    dispatcher.disposeRunner(session.id);
+    await dispatcher.disposeRunner(session.id);
     expect(agentRunners.has(session.id)).toBe(false);
 
     // Release the in-flight turn. The queued scheduled turn wakes, sees its
@@ -832,6 +833,30 @@ describe("Telegram intake", () => {
     expect(firstRunner.prompt.mock.calls[0]![0]).toBe("[prepared] slow");
     // No new runner was created for the scheduled turn (isCurrent() aborted).
     expect(dispatcher.hasRunner(session.id)).toBe(false);
+  });
+
+  it("disposeRunner cancels subagents before disposing the runner", async () => {
+    const cfg = makeConfig();
+    const subagentRunner = new SubagentRunner(cfg);
+    let cancelResolved = false;
+    const cancelBySession = mock(async (_sessionId: string) => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      cancelResolved = true;
+    });
+    subagentRunner.cancelBySession = cancelBySession as unknown as SubagentRunner["cancelBySession"];
+
+    const { agentRunners, intake } = makeHarness(cfg, subagentRunner);
+    const dispatcher = intake.dispatcher;
+    const runner = new MockAgentRunner({ sessionId: "sess-1" });
+    agentRunners.set("sess-1", runner as unknown as AgentRunner);
+
+    await dispatcher.disposeRunner("sess-1");
+
+    expect(cancelBySession).toHaveBeenCalledTimes(1);
+    expect(cancelBySession).toHaveBeenCalledWith("sess-1");
+    expect(cancelResolved).toBe(true);
+    expect(runner.dispose).toHaveBeenCalledTimes(1);
+    expect(agentRunners.has("sess-1")).toBe(false);
   });
 
   it("transcribes a voice message into a transcript prompt without a projectDir", async () => {

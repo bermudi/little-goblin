@@ -269,12 +269,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
    * semantics stay identical: create runners, dispose runners (severing their
    * prompt queue chain), or enqueue a fresh prompt.
    */
-  function applySideEffects(sideEffects: SideEffect[], message: TelegramIntakeMessage, locator: ChatLocator): void {
+  async function applySideEffects(sideEffects: SideEffect[], message: TelegramIntakeMessage, locator: ChatLocator): Promise<void> {
     for (const effect of sideEffects) {
       if (effect.kind === "runner-created") {
         dispatcher.setRunner(effect.session, effect.locator, message.threadId);
       } else if (effect.kind === "runner-disposed") {
-        dispatcher.disposeRunner(effect.sessionId);
+        await dispatcher.disposeRunner(effect.sessionId);
       } else if (effect.kind === "queue-prompt") {
         const queueRunner = dispatcher.getOrCreateRunner(effect.session, locator, message.threadId);
         scheduleFreshTurn(message, locator, effect.session, queueRunner, effect.text, "queued prompt failed");
@@ -324,7 +324,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // Queue-timing commands always have a handler, so fallthrough is
         // impossible here — but narrow for the typechecker regardless.
         if (result.kind === "fallthrough") return;
-        applySideEffects(result.sideEffects, message, locator);
+        await applySideEffects(result.sideEffects, message, locator);
         if (result.kind === "replied") await sendSystemReply(message, result.reply, result.tag ?? "ok");
       },
       async (err) => {
@@ -461,7 +461,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           bot,
         });
         if (result.kind !== "fallthrough") {
-          applySideEffects(result.sideEffects, message, locator);
+          await applySideEffects(result.sideEffects, message, locator);
           if (result.kind === "handled") return;
           await sendSystemReply(message, result.reply, result.tag ?? "ok");
           return;

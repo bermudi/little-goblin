@@ -1,6 +1,27 @@
 import { z } from "zod";
 import { DEFAULT_VOICE_NAME } from "./voice.ts";
 
+const EXTERNAL_AGENT_BACKENDS = ["codex", "claude", "devin"] as const;
+const EXTERNAL_AGENT_PERMISSION_PROFILES = ["read-only", "workspace-write"] as const;
+
+export const ExternalAgentsConfigSchema = z.object({
+  backends: z.array(z.enum(EXTERNAL_AGENT_BACKENDS)).default([]),
+  permissionProfile: z.enum(EXTERNAL_AGENT_PERMISSION_PROFILES).default("read-only"),
+  maxConcurrent: z.number().int().min(1).max(8).default(2),
+  timeoutMs: z.number().int().min(60000).max(7200000).default(1800000),
+  ptyFallback: z.boolean().default(false),
+}).superRefine((val, ctx) => {
+  if (new Set(val.backends).size !== val.backends.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "externalAgents.backends must not contain duplicate values",
+      path: ["backends"],
+    });
+  }
+});
+
+export type ExternalAgentsConfig = z.infer<typeof ExternalAgentsConfigSchema>;
+
 /**
  * Zod schema for the JSON5 config file (goblin.json5).
  * Values are resolved via resolveConfigValue() before validation.
@@ -25,6 +46,7 @@ export const ConfigFileSchema = z.object({
   groqApiKey: z.string().optional(),
   /** Groq Whisper model for voice-note ASR. */
   asrModel: z.enum(["whisper-large-v3-turbo", "whisper-large-v3"]).default("whisper-large-v3-turbo"),
+  externalAgents: ExternalAgentsConfigSchema.optional(),
 });
 
 export type ConfigFile = z.infer<typeof ConfigFileSchema>;

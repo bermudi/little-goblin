@@ -35,6 +35,8 @@ import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
 import { workdirPath } from "../workspace/paths.ts";
 import { AgentBackend, AgentBackendOptions, PiAgentBackend } from "./backend.ts";
+import type { ExternalAgentRunner } from "../external-agents/mod.ts";
+import { createExternalAgentTool } from "../external-agents/tool.ts";
 
 /** Options for constructing an AgentRunner. */
 export interface AgentRunnerOptions {
@@ -61,6 +63,8 @@ export interface AgentRunnerOptions {
   memoryReflector?: MemoryReflector;
   /** Shared schedule store. When present, the agent gets the `schedule_turn` tool. */
   scheduleStore?: ScheduleStore;
+  /** Shared external agent runner. When present and enabled, the agent gets the `external_agent` tool. */
+  externalAgentRunner?: ExternalAgentRunner;
   /**
    * Pre-resolved model to use. When present, the runner skips `resolveModel()`
    * and uses this value directly. Useful for tests that drive the SDK with a
@@ -109,6 +113,7 @@ export class AgentRunner {
   private customTools: ToolDefinition[];
   private subagentRunner: SubagentRunner | null;
   private scheduleStore: ScheduleStore | undefined;
+  private externalAgentRunner: ExternalAgentRunner | null;
   private backend: AgentBackend;
   private accumulatedText: string = "";
   private callbacks: TurnCallbacks | null = null;
@@ -171,6 +176,7 @@ export class AgentRunner {
     this.customTools = opts.customTools;
     this.subagentRunner = opts.subagentRunner ?? null;
     this.scheduleStore = opts.scheduleStore;
+    this.externalAgentRunner = opts.externalAgentRunner ?? null;
     this.getTopicName = opts.getTopicName;
     this.projectDir = opts.projectDir;
     this._modelName = opts.modelName ?? (opts.resolvedModel ? `${opts.resolvedModel.model.provider}/${opts.resolvedModel.model.id}` : undefined);
@@ -284,6 +290,18 @@ export class AgentRunner {
           this.subagentRunner,
           (msg) => this.callbacks?.onStatusUpdate(msg),
         ),
+      );
+    }
+
+    if (this.externalAgentRunner && this.cfg.externalAgents?.backends.length) {
+      tools.push(
+        createExternalAgentTool({
+          runner: this.externalAgentRunner,
+          sessionId: this.sessionId,
+          projectDir: this.projectDir ?? workdirPath(this.cfg.goblinHome),
+          enabledBackends: this.cfg.externalAgents.backends,
+          onStatusUpdate: (msg) => this.callbacks?.onStatusUpdate(msg),
+        }),
       );
     }
 

@@ -18,6 +18,7 @@ import {
   type PromptContent,
   type TelegramIntakeMessage,
 } from "./tg/intake.ts";
+import { ExternalAgentRunner } from "./external-agents/mod.ts";
 import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
 
 /**
@@ -75,7 +76,7 @@ interface BuildBotOptions {
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
 }
 
-export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner>; scheduleStore: ScheduleStore; dispatcher: TurnDispatcher } {
+export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner>; scheduleStore: ScheduleStore; dispatcher: TurnDispatcher; externalAgentRunner: ExternalAgentRunner | undefined } {
   configureVoice(cfg);
   const bot = new Bot(cfg.botToken);
   const manager = new SessionManager(cfg);
@@ -86,6 +87,8 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   // and the scheduler loop reads/claims from it. Constructed here so both
   // intake and the loop (wired in index.ts) share a single instance.
   const scheduleStore = new ScheduleStore(cfg.goblinHome);
+  // External agent runner is only created when at least one backend is enabled.
+  const externalAgentRunner = cfg.externalAgents?.backends.length ? new ExternalAgentRunner(cfg) : undefined;
   const intake = createTelegramIntake({
     cfg,
     bot,
@@ -95,6 +98,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     agentRunners: runners,
     createAgentRunner: options.createAgentRunner,
     scheduleStore,
+    externalAgentRunner,
   });
 
   // Text coalescer: merges Telegram-split fragments before they reach intake.
@@ -239,5 +243,5 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     });
   });
 
-  return { bot, manager, subagentRunner, agentRunners: runners, scheduleStore, dispatcher: intake.dispatcher };
+  return { bot, manager, subagentRunner, agentRunners: runners, scheduleStore, dispatcher: intake.dispatcher, externalAgentRunner };
 }

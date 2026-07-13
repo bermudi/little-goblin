@@ -41,8 +41,10 @@ function baseCascade(overrides: Partial<CascadeResult> = {}): CascadeResult {
   return {
     attemptedMain: false,
     attemptedSubagents: 0,
+    attemptedExternalAgents: 0,
     timedOutMain: false,
     timedOutSubagents: 0,
+    timedOutExternalAgents: 0,
     wedgedMain: false,
     ...overrides,
   };
@@ -139,7 +141,7 @@ describe("handleCommand", () => {
     expect(result.reply).toBe(cancelReply({ hasSession: true, cascade, cascadeTimeoutMs: 5_000 }));
     expect(result.sideEffects).toEqual([]);
     // /cancel is self-contained: it calls interruptAndCascade, not a dispatch pre-check.
-    expect(harness.interrupt).toHaveBeenCalledWith(runner, expect.any(Object), 5_000, session.id);
+    expect(harness.interrupt).toHaveBeenCalledWith(runner, expect.any(Object), 5_000, session.id, undefined);
   });
 
   it("replies to /cancel without a session (no cascade attempted)", async () => {
@@ -149,7 +151,7 @@ describe("handleCommand", () => {
     expect(result.reply).toBe("Nothing to cancel.");
     // Still invokes the cascade (with null session id) — but nothing was running,
     // so the reply reflects "Nothing to cancel."
-    expect(harness.interrupt).toHaveBeenCalledWith(null, expect.any(Object), 5_000, null);
+    expect(harness.interrupt).toHaveBeenCalledWith(null, expect.any(Object), 5_000, null, undefined);
   });
 
   it("/new with a prior session disposes prior and creates a new runner", async () => {

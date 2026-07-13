@@ -34,6 +34,7 @@ import { pingHandler } from "./ping.ts";
 import { buildStartHandler } from "./start.ts";
 import { buildScheduleDeps, executeSchedule } from "./schedule.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
+import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { SystemTag } from "../tg/format.ts";
 
 // ---------------------------------------------------------------------------
@@ -72,6 +73,12 @@ export interface DispatchDeps {
    * command handling in isolation.
    */
   dispatcher?: TurnDispatcher;
+  /**
+   * External agent runner, used by `/cancel` to cascade-cancels external runs
+   * owned by the session. Optional for callers that test command handling in
+   * isolation.
+   */
+  externalAgentRunner?: ExternalAgentRunner;
 }
 
 export interface DispatchOpts {
@@ -165,11 +172,12 @@ const cancelHandler: CommandHandler = async ({ deps, session, existingRunner }) 
     deps.subagentRunner,
     DEFAULT_CASCADE_TIMEOUT_MS,
     session?.id ?? null,
+    deps.externalAgentRunner,
   );
   if (cancelledPending) cascade.attemptedMain = true;
   const tag: SystemTag = cascade.wedgedMain
     ? "error"
-    : cascade.attemptedMain || cascade.attemptedSubagents > 0
+    : cascade.attemptedMain || cascade.attemptedSubagents > 0 || cascade.attemptedExternalAgents > 0
     ? "ok"
     : "info";
   return replied(cancelReply({

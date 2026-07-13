@@ -31,11 +31,11 @@ export interface CancelReplyArgs {
 }
 
 export function cancelReply(args: CancelReplyArgs): string {
-  const { attemptedMain, attemptedSubagents, wedgedMain } = args.cascade;
+  const { attemptedMain, attemptedSubagents, attemptedExternalAgents, wedgedMain } = args.cascade;
   // "Nothing to cancel." iff truly nothing was aborted — no main stream
-  // AND no live subagents at cascade-start. If the cascade touched
-  // anything, be honest about it regardless of session binding.
-  if (!attemptedMain && attemptedSubagents === 0) return "Nothing to cancel.";
+  // AND no live subagents AND no live external agents at cascade-start. If the
+  // cascade touched anything, be honest about it regardless of session binding.
+  if (!attemptedMain && attemptedSubagents === 0 && attemptedExternalAgents === 0) return "Nothing to cancel.";
   if (wedgedMain) {
     return `The main agent is wedged after a previous abort timed out. Use /new or /archive to recover.${formatCascadeTimeoutSuffix(args.cascade, args.cascadeTimeoutMs)}`;
   }
@@ -52,14 +52,19 @@ export function formatCascadeTimeoutSuffix(
   cascade: CascadeResult,
   cascadeTimeoutMs: number,
 ): string {
-  const { timedOutMain, timedOutSubagents } = cascade;
-  if (!timedOutMain && timedOutSubagents === 0) return "";
+  const { timedOutMain, timedOutSubagents, timedOutExternalAgents } = cascade;
+  if (!timedOutMain && timedOutSubagents === 0 && timedOutExternalAgents === 0) return "";
   const seconds = Math.round(cascadeTimeoutMs / 1000);
   const stuck: string[] = [];
   if (timedOutMain) stuck.push("the main agent");
   if (timedOutSubagents > 0) {
     stuck.push(
       timedOutSubagents === 1 ? "1 subagent" : `${timedOutSubagents} subagents`,
+    );
+  }
+  if (timedOutExternalAgents > 0) {
+    stuck.push(
+      timedOutExternalAgents === 1 ? "1 external agent" : `${timedOutExternalAgents} external agents`,
     );
   }
   return ` (${stuck.join(" and ")} didn't respond in ${seconds}s and may still be running.)`;

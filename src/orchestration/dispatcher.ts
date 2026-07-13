@@ -7,6 +7,7 @@ import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
+import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
@@ -61,6 +62,11 @@ export interface TurnDispatcherOptions {
   createBetaTools: (chatId: number, threadId?: number) => ToolDefinition[];
   /** Shared schedule store. When present, the `schedule_turn` tool is wired to the main agent. */
   scheduleStore?: ScheduleStore;
+  /**
+   * Shared external agent runner. When present, it is wired into every new
+   * `AgentRunner` and cancelled during `disposeRunner`.
+   */
+  externalAgentRunner?: ExternalAgentRunner;
 }
 
 /**
@@ -92,6 +98,7 @@ export class TurnDispatcher {
   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
   private readonly promptQueueMeta: Map<string, PromptQueueEntry>;
   private readonly scheduleStore: ScheduleStore | undefined;
+  private readonly externalAgentRunner: ExternalAgentRunner | undefined;
 
   constructor(options: TurnDispatcherOptions) {
     this.cfg = options.cfg;
@@ -106,6 +113,7 @@ export class TurnDispatcher {
     this.createBetaToolsFn = options.createBetaTools;
     this.getTopicName = buildGetTopicName(this.memoryStore);
     this.scheduleStore = options.scheduleStore;
+    this.externalAgentRunner = options.externalAgentRunner;
   }
 
   /**
@@ -144,6 +152,7 @@ export class TurnDispatcher {
       thinkingLevel: session.thinkingLevel,
       pendingProjectNotice: this.manager.consumeProjectNotice(locator),
       scheduleStore: this.scheduleStore,
+      externalAgentRunner: this.externalAgentRunner,
     };
     return this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
   }
@@ -284,9 +293,18 @@ export class TurnDispatcher {
     }
     this.promptQueues.delete(sessionId);
 
-    // Cancel subagents spawned by this session, but don't block runner disposal
-    // indefinitely if a subagent abort is stuck.
+    // Cancel external agents owned by this session, then cancel subagents
+    // spawned by this session, but don't block runner disposal indefinitely if
+    // a cancel is stuck.
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const externalCancelPromise = this.externalAgentRunner
+      ? this.externalAgentRunner.cancelBySession(sessionId).catch((err) => {
+          log.error("externalAgentRunner.cancelBySession failed in disposeRunner", {
+            sessionId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        })
+      : Promise.resolve();
     const cancelPromise = this.subagentRunner.cancelBySession(sessionId).catch((err) => {
       log.error("cancelBySession failed in disposeRunner", {
         sessionId,
@@ -300,7 +318,7 @@ export class TurnDispatcher {
       }, DISPOSE_RUNNER_CANCEL_TIMEOUT_MS);
     });
     try {
-      await Promise.race([cancelPromise, timeout]);
+      await Promise.race([Promise.all([externalCancelPromise, cancelPromise]), timeout]);
     } finally {
       if (timer) clearTimeout(timer);
     }

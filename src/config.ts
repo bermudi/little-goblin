@@ -2,13 +2,14 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import JSON5 from "json5";
-import { ConfigFileSchema } from "./schema.ts";
+import { ConfigFileSchema, type ExternalAgentsConfig } from "./schema.ts";
 import { resolveConfigValue } from "./resolve-value.ts";
 import { sessionsDir } from "./sessions/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
 import { skillsPath, workdirPath } from "./workspace/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
 import { namedAgentsRoot, subagentsRoot } from "./subagents/paths.ts";
+import { externalAgentsRoot } from "./external-agents/paths.ts";
 
 export interface Config {
   botToken: string;
@@ -44,6 +45,8 @@ export interface Config {
    * the schema default (`whisper-large-v3-turbo`).
    */
   asrModel?: "whisper-large-v3-turbo" | "whisper-large-v3";
+  /** External agent runner configuration. */
+  externalAgents?: ExternalAgentsConfig;
 }
 
 /**
@@ -102,14 +105,20 @@ export function loadConfig(): Config {
     voiceName: cfg.voiceName,
     groqApiKey: cfg.groqApiKey,
     asrModel: cfg.asrModel,
+    externalAgents: cfg.externalAgents,
   });
+
+  if (config.externalAgents) {
+    Object.freeze(config.externalAgents);
+    Object.freeze(config.externalAgents.backends);
+  }
 
   return config;
 }
 
 /**
  * Recursively resolve all string values in an object using resolveConfigValue().
- * Handles arrays and nested objects, but ConfigFileSchema has a flat shape.
+ * Handles arrays and nested objects.
  */
 function resolveAllStrings(obj: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
@@ -121,14 +130,17 @@ function resolveAllStrings(obj: Record<string, unknown>): Record<string, unknown
 
 /**
  * Resolve a single value: strings get resolved, arrays get their strings resolved,
- * other values pass through.
+ * nested objects are resolved recursively, other values pass through.
  */
 function resolveValue(value: unknown): unknown {
   if (typeof value === "string") {
     return resolveConfigValue(value);
   }
   if (Array.isArray(value)) {
-    return value.map((v) => (typeof v === "string" ? resolveConfigValue(v) : v));
+    return value.map((v) => resolveValue(v));
+  }
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return resolveAllStrings(value as Record<string, unknown>);
   }
   return value;
 }
@@ -161,6 +173,7 @@ export function ensureGoblinHome(cfg: Config): void {
     join(home, "scratch"),
     workdirPath(home),
     subagentsRoot(home),
+    externalAgentsRoot(home),
   ];
   for (const dir of dirs) {
     mkdirSync(dir, { recursive: true });

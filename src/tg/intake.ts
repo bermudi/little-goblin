@@ -16,6 +16,7 @@ import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { TurnDispatcher, type PromptContent, type TurnSink } from "../orchestration/dispatcher.ts";
+import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import { transcribeWithGroq } from "../asr/mod.ts";
 import { MessageBuffer, createTextToSpeechTool } from "./mod.ts";
 import { createSendDocumentTool, createSendPhotoTool, createSendVoiceTool } from "./tools.ts";
@@ -81,6 +82,8 @@ export interface TelegramIntakeOptions {
   createMessageBuffer?: (locator: ChatLocator) => TurnSink;
   /** Shared schedule store for `/schedule`. Wired in Phase 6 (bot.ts). */
   scheduleStore?: ScheduleStore;
+  /** Shared external agent runner. Wired in Phase 6 (bot.ts). */
+  externalAgentRunner?: ExternalAgentRunner;
 }
 
 type ActiveTurn = {
@@ -217,6 +220,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     createMessageBuffer,
     createBetaTools,
     scheduleStore: options.scheduleStore,
+    externalAgentRunner: options.externalAgentRunner,
   });
 
   function recordAssistantReply(sessionId: string, text: string): void {
@@ -411,6 +415,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     interruptAndCascade,
     scheduleStore: options.scheduleStore,
     dispatcher,
+    externalAgentRunner: options.externalAgentRunner,
   };
 
   async function runPrompt(message: TelegramIntakeMessage, locator: ChatLocator, runner: AgentRunner, content: PromptContent): Promise<void> {

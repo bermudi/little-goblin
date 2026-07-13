@@ -17,6 +17,8 @@
  */
 
 import { log } from "./log.ts";
+import type { ExternalAgentRunSummary } from "./external-agents/types.ts";
+import { isTerminal } from "./external-agents/util.ts";
 
 /** Minimal shape we need from `AgentRunner` — keeps testing trivial. */
 export interface InterruptableRunner {
@@ -39,6 +41,12 @@ export interface InterruptableSubagentRunner {
   cancel(id: string): Promise<void>;
 }
 
+/** Minimal shape we need from `ExternalAgentRunner` — keeps testing trivial. */
+export interface InterruptableExternalAgentRunner {
+  list(sessionId?: string): ExternalAgentRunSummary[];
+  cancelBySession(sessionId?: string): Promise<number>;
+}
+
 /**
  * Summary of what `interruptAndCascade` actually did.
  *
@@ -54,10 +62,14 @@ export interface CascadeResult {
   attemptedMain: boolean;
   /** Number of subagents in `running` status at cascade-start. */
   attemptedSubagents: number;
+  /** Number of external agents in non-terminal status at cascade-start. */
+  attemptedExternalAgents: number;
   /** True iff the main runner's `abort()` did not resolve within the timeout. */
   timedOutMain: boolean;
   /** Number of subagent `cancel()`s that did not resolve within the timeout. */
   timedOutSubagents: number;
+  /** Number of external agent `cancel()`s that did not resolve within the timeout. */
+  timedOutExternalAgents: number;
   /** True iff the main runner was already wedged (abort timed out earlier) and was not re-aborted. */
   wedgedMain: boolean;
 }
@@ -129,12 +141,15 @@ export async function interruptAndCascade(
   subagentRunner: InterruptableSubagentRunner,
   cascadeTimeoutMs: number = DEFAULT_CASCADE_TIMEOUT_MS,
   sessionId?: string | null,
+  externalAgentRunner?: InterruptableExternalAgentRunner | null,
 ): Promise<CascadeResult> {
   const result: CascadeResult = {
     attemptedMain: false,
     attemptedSubagents: 0,
+    attemptedExternalAgents: 0,
     timedOutMain: false,
     timedOutSubagents: 0,
+    timedOutExternalAgents: 0,
     wedgedMain: false,
   };
 
@@ -211,6 +226,23 @@ export async function interruptAndCascade(
       }
     }),
   );
+
+  if (externalAgentRunner) {
+    const liveExternal = externalAgentRunner.list(sessionId ?? undefined).filter((r) => !isTerminal(r.status));
+    result.attemptedExternalAgents = liveExternal.length;
+
+    const externalCancelPromise = externalAgentRunner.cancelBySession(sessionId ?? undefined).catch((err) => {
+      log.warn("external agent cancelBySession failed during cascade", {
+        error: String(err),
+        sessionId: sessionId ?? "all",
+      });
+    });
+    const externalOutcome = await withTimeout(externalCancelPromise, cascadeTimeoutMs);
+    if (externalOutcome === TIMEOUT_SENTINEL) {
+      result.timedOutExternalAgents = liveExternal.length;
+      log.warn("external agent cancelBySession timed out", { timeoutMs: cascadeTimeoutMs });
+    }
+  }
 
   return result;
 }

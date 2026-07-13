@@ -13,7 +13,8 @@ async function main(): Promise<void> {
   ensureGoblinHome(cfg);
   await runPreflight(cfg);
   await validateModelAtStartup(cfg, log);
-  const { bot, manager, subagentRunner, agentRunners, scheduleStore, dispatcher } = buildBot(cfg);
+  const { bot, manager, subagentRunner, agentRunners, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg);
+  await externalAgentRunner?.init();
   manager.init();
 
   // Scheduler: start after manager.init() so bindings/state are available for
@@ -28,6 +29,8 @@ async function main(): Promise<void> {
     log.info(`received ${signal}, stopping bot`);
     // Stop the scheduler first so no new due schedules dispatch during shutdown.
     scheduler.stop();
+    // Dispose external agents first (cancels running ones).
+    await externalAgentRunner?.dispose();
     // Dispose subagents first (cancels running ones, releases sessions).
     await subagentRunner.dispose();
     // Dispose agent runners (releases pi sessions).

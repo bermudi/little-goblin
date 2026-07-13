@@ -10,6 +10,7 @@ import { log } from "./log.ts";
 import { skillsPath, workdirPath } from "./workspace/paths.ts";
 import { sessionsDir } from "./sessions/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
+import { runExternalAgentsPreflight } from "./external-agents/preflight.ts";
 
 export interface PreflightContext {
   readonly check: (name: string, fn: () => void | Promise<void>) => Promise<void>;
@@ -85,6 +86,12 @@ export async function runPreflight(cfg: Config): Promise<void> {
       log.warn("preflight: Groq ASR not reachable", {
         error: err instanceof Error ? err.message : String(err),
       });
+    });
+  }
+
+  if (cfg.externalAgents?.backends.length) {
+    await ctx.check("external agent backends are reachable", async () => {
+      await runExternalAgentsPreflight(cfg);
     });
   }
 }

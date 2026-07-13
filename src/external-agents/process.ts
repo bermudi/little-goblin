@@ -3,6 +3,8 @@ import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import type { ProcessExit, ProcessHandle, ProcessHost, ProcessSpawnArgs } from "./types.ts";
 
+const STDERR_MAX_CHARS = 64 * 1024;
+
 export class ProcessHandleImpl implements ProcessHandle {
   readonly stdin: Writable;
   readonly stdout: Readable;
@@ -20,7 +22,10 @@ export class ProcessHandleImpl implements ProcessHandle {
 
     if (child.stderr) {
       child.stderr.on("data", (chunk: Buffer) => {
-        (this._stderr as string) += chunk.toString("utf-8");
+        this._stderr += chunk.toString("utf-8");
+        if (this._stderr.length > STDERR_MAX_CHARS) {
+          this._stderr = this._stderr.slice(-STDERR_MAX_CHARS);
+        }
       });
     }
 

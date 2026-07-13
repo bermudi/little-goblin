@@ -71,7 +71,6 @@ export class ExternalAgentRunner {
     task: string;
     sessionId: string;
     projectDir?: string;
-    onStatusUpdate?: (message: string) => void;
     signal?: AbortSignal;
   }): Promise<ExternalAgentRunSummary> {
     if (this.disposed) {
@@ -124,7 +123,6 @@ export class ExternalAgentRunner {
     run.inputRequired = undefined;
     run.meta.inputRequired = undefined;
     this.transitionStatus(run, "running");
-    this.queueStatus(run, "message sent");
     this.store.save(run.meta);
 
     await run.handle.send(trimmed);
@@ -228,6 +226,7 @@ export class ExternalAgentRunner {
 
       if (run.status === "starting") {
         this.transitionStatus(run, "running");
+        this.store.save(run.meta);
       }
       this.startTimeout(run);
 
@@ -249,24 +248,35 @@ export class ExternalAgentRunner {
       if (run.terminal) {
         return;
       }
-      if (err instanceof Error && err.name === "InteractiveRequiredError" && !run.fallback && this.fallbackAdapter) {
-        this.handleEvent(run, { type: "status", message: "interactive fallback", at: nowIso(this.clock) });
-        try {
-          await run.handle?.cancel();
-        } catch {
-          // ignore
+      if (err instanceof Error && err.name === "InteractiveRequiredError" && !run.fallback) {
+        if (this.fallbackAdapter) {
+          this.handleEvent(run, { type: "status", message: "interactive fallback", at: nowIso(this.clock) });
+          try {
+            await run.handle?.cancel();
+          } catch {
+            // ignore
+          }
+          run.handle = undefined;
+          run.fallback = true;
+          run.adapterKind = "pty";
+          run.status = "starting";
+          run.meta.status = "starting";
+          run.meta.adapterKind = "pty";
+          run.meta.updatedAt = nowIso(this.clock);
+          run.updatedAt = run.meta.updatedAt;
+          this.store.save(run.meta);
+          await this.executeRun(run);
+          run.handle = undefined;
+          return;
         }
-        run.handle = undefined;
-        run.fallback = true;
-        run.adapterKind = "pty";
-        run.status = "starting";
-        run.meta.status = "starting";
-        run.meta.adapterKind = "pty";
-        run.meta.updatedAt = nowIso(this.clock);
-        run.updatedAt = run.meta.updatedAt;
-        this.store.save(run.meta);
-        await this.executeRun(run);
-        run.handle = undefined;
+        this.handleEvent(run, {
+          type: "input_required",
+          message: `${errorString(err)} (interactive fallback is unavailable)`,
+          at: nowIso(this.clock),
+        });
+        // Keep the timeout alive and the concurrency slot held until the run is
+        // cancelled or times out.
+        await run.terminalPromise;
         return;
       }
       this.emitTerminal(run, "failed", errorString(err));
@@ -287,12 +297,7 @@ export class ExternalAgentRunner {
       backend: run.backend,
       task: run.task,
       projectDir: run.projectDir,
-      env: prepareEnv({
-        runId: run.id,
-        sessionId: run.sessionId,
-        backend: run.backend,
-        permissionProfile: this.config.permissionProfile,
-      }),
+      env: prepareEnv(),
       timeoutMs: this.config.timeoutMs,
       permissionProfile: this.config.permissionProfile,
       processHost: this.processHost,
@@ -334,21 +339,20 @@ export class ExternalAgentRunner {
       terminalPromise,
       resolveTerminal: resolveTerminal!,
       meta,
-      eventsBytes: 0,
+      eventsBytes: this.store.getEventsBytes(meta.id),
       result: this.store.getResult(meta.id),
       inputRequired: meta.inputRequired,
       fallback: meta.adapterKind === "pty",
       runPromise: undefined,
-      onStatusUpdate: undefined,
     };
     return run;
   }
 
-  private createRun(args: { backend: ExternalAgentBackend; task: string; sessionId: string; projectDir?: string; onStatusUpdate?: (message: string) => void }): InternalRun {
-    const { backend, task, sessionId, onStatusUpdate } = args;
+  private createRun(args: { backend: ExternalAgentBackend; task: string; sessionId: string; projectDir?: string }): InternalRun {
+    const { backend, task, sessionId } = args;
     let projectDir = args.projectDir;
     if (projectDir === undefined) {
-      throw new Error("projectDir is required");
+      throw new Error("Project directory is required");
     }
     if (!existsSync(projectDir) || !statSync(projectDir).isDirectory()) {
       throw new Error(`Project directory does not exist: ${projectDir}`);
@@ -395,7 +399,6 @@ export class ExternalAgentRunner {
       inputRequired: undefined,
       fallback: false,
       runPromise: undefined,
-      onStatusUpdate,
     };
 
     return run;
@@ -429,9 +432,7 @@ export class ExternalAgentRunner {
   private applyEvent(run: InternalRun, event: ExternalAgentEvent): void {
     switch (event.type) {
       case "status": {
-        if (event.message) {
-          this.queueStatus(run, event.message);
-        }
+        // Status events are persisted by handleEvent; no Telegram-side action.
         break;
       }
       case "output": {
@@ -441,41 +442,35 @@ export class ExternalAgentRunner {
         break;
       }
       case "completed": {
-        if (this.transitionTerminal(run, "completed")) {
-          this.queueStatus(run, "completed");
-        }
+        this.transitionTerminal(run, "completed");
         break;
       }
       case "failed": {
-        if (this.transitionTerminal(run, "failed", event.error)) {
-          this.queueStatus(run, `failed: ${event.error ?? "unknown"}`);
-        }
+        this.transitionTerminal(run, "failed", event.error);
         break;
       }
       case "cancelled": {
-        if (this.transitionTerminal(run, "cancelled")) {
-          this.queueStatus(run, "cancelled");
-        }
+        this.transitionTerminal(run, "cancelled");
         break;
       }
       case "timed_out": {
-        if (this.transitionTerminal(run, "timed_out")) {
-          this.queueStatus(run, "timed out");
-        }
+        this.transitionTerminal(run, "timed_out");
         break;
       }
       case "interrupted": {
-        if (this.transitionTerminal(run, "interrupted", event.error)) {
-          this.queueStatus(run, `interrupted: ${event.error ?? "unknown"}`);
-        }
+        this.transitionTerminal(run, "interrupted", event.error);
         break;
       }
       case "input_required": {
         if (this.transitionStatus(run, "input_required")) {
           run.inputRequired = event.message ?? "send a message";
           run.meta.inputRequired = run.inputRequired;
-          this.queueStatus(run, `input required: ${run.inputRequired}`);
         }
+        break;
+      }
+      case "truncation": {
+        // Truncation is a meta event; it is persisted and may be shown to the
+        // user, but it does not change run state.
         break;
       }
       default: {
@@ -508,7 +503,6 @@ export class ExternalAgentRunner {
     run.meta.status = status;
     run.meta.updatedAt = nowIso(this.clock);
     run.updatedAt = run.meta.updatedAt;
-    this.store.save(run.meta);
     return true;
   }
 
@@ -535,7 +529,6 @@ export class ExternalAgentRunner {
     run.meta.updatedAt = nowIso(this.clock);
     run.updatedAt = run.meta.updatedAt;
     this.clearTimeout(run);
-    this.store.save(run.meta);
     run.resolveTerminal();
     return true;
   }
@@ -545,10 +538,6 @@ export class ExternalAgentRunner {
       return;
     }
     this.handleEvent(run, { type: terminal, error, at: nowIso(this.clock) });
-  }
-
-  private queueStatus(run: InternalRun, message: string): void {
-    run.onStatusUpdate?.(`[external:${run.backend}/${run.id}] ${message}`);
   }
 
   private startTimeout(run: InternalRun): void {

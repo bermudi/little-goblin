@@ -113,7 +113,9 @@ async function handleExternalAction(ctx: ActionContext): Promise<string> {
         return "Error: task is required for action=start.";
       }
       try {
-        const summary = await runner.start({ backend: agent, task, sessionId, projectDir: ctx.projectDir, onStatusUpdate: ctx.onStatusUpdate, signal: ctx.signal });
+        ctx.onStatusUpdate?.("starting external agent");
+        const summary = await runner.start({ backend: agent, task, sessionId, projectDir: ctx.projectDir, signal: ctx.signal });
+        ctx.onStatusUpdate?.("external agent started");
         return `Started external ${summary.backend} run ${summary.id} (status: ${summary.status}).`;
       } catch (err) {
         return `Error: ${errorString(err)}`;
@@ -141,7 +143,9 @@ async function handleExternalAction(ctx: ActionContext): Promise<string> {
       if (!id) return "Error: id is required for action=message.";
       if (!text) return "Error: message is required for action=message.";
       try {
+        ctx.onStatusUpdate?.("sending message to external agent");
         await runner.message(id, sessionId, text);
+        ctx.onStatusUpdate?.("message sent to external agent");
       } catch (err) {
         return `Error: ${errorString(err)}`;
       }
@@ -166,6 +170,8 @@ export function formatDetail(detail: {
   recentOutput?: string;
   error?: string;
   inputRequired?: string;
+  eventsTruncated?: boolean;
+  resultTruncated?: boolean;
   recentEvents: { type: string; at: string; message?: string; output?: string; error?: string }[];
 }): string {
   const headerParts: string[] = [`status: ${detail.status}`];
@@ -178,6 +184,12 @@ export function formatDetail(detail: {
     const maxInput = Math.floor(MAX_TOOL_RESULT_CHARS / 4);
     const input = detail.inputRequired.length > maxInput ? detail.inputRequired.slice(0, maxInput) : detail.inputRequired;
     headerParts.push(`input_required: ${input}`);
+  }
+  if (detail.eventsTruncated || detail.resultTruncated) {
+    const truncated = [];
+    if (detail.eventsTruncated) truncated.push("events");
+    if (detail.resultTruncated) truncated.push("result");
+    headerParts.push(`truncated: ${truncated.join(", ")}`);
   }
   const header = headerParts.join("\n\n");
 

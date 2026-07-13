@@ -49,8 +49,9 @@ class FakeProcessHandle implements ProcessHandle {
   private lines: string[] = [];
   private lineIndex = 0;
 
-  constructor(lines: string[] = []) {
+  constructor(lines: string[] = [], private stderr: string = "", exitCode: number = 0) {
     this.lines = lines;
+    this.exitResult = { exitCode, signal: null };
   }
 
   async *readLines(): AsyncIterable<string> {
@@ -62,7 +63,6 @@ class FakeProcessHandle implements ProcessHandle {
     }
     if (this.lines.length > 0 && !this.resolved) {
       this.resolved = true;
-      this.exitResult = { exitCode: 0, signal: null };
       this.exitResolve?.(this.exitResult);
     }
   }
@@ -76,7 +76,6 @@ class FakeProcessHandle implements ProcessHandle {
         this.exitResolve = resolve;
         if (this.lineIndex >= this.lines.length && this.lines.length > 0 && !this.resolved) {
           this.resolved = true;
-          this.exitResult = { exitCode: 0, signal: null };
           resolve(this.exitResult);
         }
       });
@@ -95,20 +94,24 @@ class FakeProcessHandle implements ProcessHandle {
   }
 
   getStderr(): string {
-    return "";
+    return this.stderr;
   }
 }
 
 class FakeProcessHost implements ProcessHost {
   spawns: { args: ProcessSpawnArgs; handle: FakeProcessHandle }[] = [];
 
-  constructor(private readonly lines: string[] = []) {}
+  constructor(
+    private readonly lines: string[] = [],
+    private readonly stderr: string = "",
+    private readonly exitCode: number = 0,
+  ) {}
 
   async spawn(args: ProcessSpawnArgs): Promise<ProcessHandle> {
     if (args.signal?.aborted) {
       throw new Error("Spawn aborted");
     }
-    const handle = new FakeProcessHandle(this.lines);
+    const handle = new FakeProcessHandle(this.lines, this.stderr, this.exitCode);
     const entry = { args, handle };
     this.spawns.push(entry);
 
@@ -250,5 +253,28 @@ describe("ExternalAgentRunner", () => {
 
     const detail = await runner.status(summary.id);
     expect(detail?.status).toBe("timed_out");
+  });
+
+  it("requires a project directory", async () => {
+    const cfg = makeConfig();
+    const processHost = new FakeProcessHost();
+    const runner = new ExternalAgentRunner(cfg, { processHost });
+
+    await expect(runner.start({ backend: "codex", task: "hello", sessionId: "s1" }))
+      .rejects.toThrow("Project directory is required");
+  });
+
+  it("transitions to input_required when interactive mode is required and PTY fallback is disabled", async () => {
+    const cfg = makeConfig();
+    cfg.externalAgents = { ...cfg.externalAgents!, ptyFallback: false };
+    const processHost = new FakeProcessHost(["invalid json"], "interactive mode required", 0);
+    const runner = new ExternalAgentRunner(cfg, { processHost });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("input_required");
+    expect(detail?.inputRequired).toContain("interactive fallback is unavailable");
   });
 });

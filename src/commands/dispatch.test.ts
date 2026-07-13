@@ -138,7 +138,7 @@ describe("handleCommand", () => {
     const runner = makeRunner(true); // streaming → cascade attempts the main runner
     const result = expectReplied(await dispatch({ command: "/cancel", session, runner, harness }));
 
-    expect(result.reply).toBe(cancelReply({ hasSession: true, cascade, cascadeTimeoutMs: 5_000 }));
+    expect(result.reply).toBe(cancelReply({ cascade, cascadeTimeoutMs: 5_000 }));
     expect(result.sideEffects).toEqual([]);
     // /cancel is self-contained: it calls interruptAndCascade, not a dispatch pre-check.
     expect(harness.interrupt).toHaveBeenCalledWith(runner, expect.any(Object), 5_000, session.id, undefined);

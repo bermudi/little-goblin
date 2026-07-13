@@ -53,11 +53,6 @@ export class DevinAdapter {
     });
 
     const handle: ExternalAgentHandle = {
-      send: async (text: string) => {
-        void session.prompt(text).catch(() => {
-          // ignore; nextUpdate will surface the same error
-        });
-      },
       cancel: async () => {
         connection.close();
         resolveCancel?.(CANCELLED);

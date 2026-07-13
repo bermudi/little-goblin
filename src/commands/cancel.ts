@@ -24,7 +24,6 @@
 import type { CascadeResult } from "../interrupt.ts";
 
 export interface CancelReplyArgs {
-  hasSession: boolean;
   cascade: CascadeResult;
   /** Timeout used by the cascade, surfaced in the reply for context. */
   cascadeTimeoutMs: number;

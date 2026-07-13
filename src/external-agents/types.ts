@@ -43,7 +43,7 @@ export interface ExternalRunDetail extends ExternalAgentRunSummary {
 }
 
 export interface ExternalAgentEvent {
-  type: "status" | "output" | "completed" | "failed" | "cancelled" | "timed_out" | "interrupted" | "input_required";
+  type: "status" | "output" | "completed" | "failed" | "cancelled" | "timed_out" | "interrupted" | "input_required" | "truncation";
   at: string;
   message?: string;
   output?: string;
@@ -117,7 +117,6 @@ export interface InternalRun extends ExternalAgentRunRecord {
   inputRequired: string | undefined;
   fallback: boolean;
   runPromise?: Promise<void>;
-  onStatusUpdate?: (message: string) => void;
 }
 
 export class ExternalAgentError extends Error {

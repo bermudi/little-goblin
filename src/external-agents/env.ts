@@ -1,12 +1,3 @@
-import type { ExternalAgentBackend, ExternalAgentPermissionProfile } from "./types.ts";
-
-export interface EnvOptions {
-  runId: string;
-  sessionId: string;
-  backend: ExternalAgentBackend;
-  permissionProfile: ExternalAgentPermissionProfile;
-}
-
 const EXACT_KEYS = new Set([
   "HOME",
   "PATH",
@@ -37,19 +28,12 @@ function isKeyAllowed(key: string): boolean {
   return false;
 }
 
-export function prepareEnv(options: EnvOptions): Record<string, string> {
+export function prepareEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && isKeyAllowed(key)) {
       env[key] = value;
     }
   }
-
-  env.EXTERNAL_AGENT = "true";
-  env.EXTERNAL_AGENT_BACKEND = options.backend;
-  env.EXTERNAL_AGENT_RUN_ID = options.runId;
-  env.EXTERNAL_AGENT_SESSION_ID = options.sessionId;
-  env.EXTERNAL_AGENT_PERMISSION_PROFILE = options.permissionProfile;
-
   return env;
 }

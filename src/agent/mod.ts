@@ -293,12 +293,12 @@ export class AgentRunner {
       );
     }
 
-    if (this.externalAgentRunner && this.cfg.externalAgents?.backends.length) {
+    if (this.externalAgentRunner && this.cfg.externalAgents?.backends.length && this.projectDir) {
       tools.push(
         createExternalAgentTool({
           runner: this.externalAgentRunner,
           sessionId: this.sessionId,
-          projectDir: this.projectDir ?? workdirPath(this.cfg.goblinHome),
+          projectDir: this.projectDir,
           enabledBackends: this.cfg.externalAgents.backends,
           onStatusUpdate: (msg) => this.callbacks?.onStatusUpdate(msg),
         }),

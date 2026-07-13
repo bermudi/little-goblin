@@ -35,9 +35,15 @@ interface AgentPtyResponse {
 
 const MAX_OUTPUT_EVENT = 2000;
 
-export class AgentPtyAdapter {
-  readonly backend: ExternalAgentBackend = "codex";
+function asAgentPtyResponse(raw: object): AgentPtyResponse {
+  const response = raw as AgentPtyResponse;
+  if (typeof response.ok !== "boolean") {
+    throw new Error("agent-pty response missing ok boolean");
+  }
+  return response;
+}
 
+export class AgentPtyAdapter {
   async start(
     input: AdapterStartInput,
     emit: (event: ExternalAgentEvent) => void,
@@ -46,19 +52,30 @@ export class AgentPtyAdapter {
     const sessionName = `goblin-${input.runId}`;
     const owner = `goblin:${input.sessionId}`;
 
-    emit({ type: "status", at: nowIso(), message: `agent-pty spawn: ${command} ${args.join(" ")}` });
+    // Avoid persisting the task text in the normalized event log; the command
+    // and args (including the task) are sent to the agent-pty daemon, but only
+    // the backend name is shown in the status event.
+    emit({ type: "status", at: nowIso(), message: `agent-pty spawn: ${input.backend}` });
 
-    const spawnResult = await this.rpc(input.processHost, input.projectDir, input.env, {
-      cmd: "spawn",
-      name: sessionName,
-      command,
-      args,
-      cwd: input.projectDir,
-      owner,
-      env: input.env,
-      cols: 80,
-      rows: 24,
-    }, input.signal);
+    let spawnResult: AgentPtyResponse;
+    try {
+      spawnResult = await this.rpc(input.processHost, input.projectDir, input.env, {
+        cmd: "spawn",
+        name: sessionName,
+        command,
+        args,
+        cwd: input.projectDir,
+        owner,
+        env: input.env,
+        cols: 80,
+        rows: 24,
+      }, input.signal);
+    } catch (err) {
+      if (input.signal?.aborted) {
+        await this.killRemove(input.processHost, input.projectDir, input.env, sessionName);
+      }
+      throw err;
+    }
 
     if (!spawnResult.ok) {
       throw new Error(spawnResult.error ?? `agent-pty spawn failed for ${input.backend}`);
@@ -98,7 +115,25 @@ export class AgentPtyAdapter {
       throw new Error("agent-pty returned non-object response");
     }
 
-    return raw as AgentPtyResponse;
+    return asAgentPtyResponse(raw);
+  }
+
+  private async killRemove(
+    processHost: AdapterStartInput["processHost"],
+    cwd: string,
+    env: Record<string, string>,
+    sessionName: string,
+  ): Promise<void> {
+    try {
+      await this.rpc(processHost, cwd, env, { cmd: "kill", name: sessionName, signal: "SIGTERM" }, undefined);
+    } catch {
+      // ignore
+    }
+    try {
+      await this.rpc(processHost, cwd, env, { cmd: "remove", name: sessionName }, undefined);
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -117,7 +152,10 @@ class AgentPtyHandle implements ExternalAgentHandle {
 
   async send(text: string): Promise<void> {
     const line = text.endsWith("\n") ? text : text + "\n";
-    await this.rpc({ cmd: "type", name: this.sessionName, text: line }, this.abortSignal);
+    const response = await this.rpc({ cmd: "type", name: this.sessionName, text: line }, this.abortSignal);
+    if (!response.ok) {
+      throw new Error(response.error ?? "agent-pty type failed");
+    }
   }
 
   async inspect(): Promise<void> {
@@ -148,6 +186,9 @@ class AgentPtyHandle implements ExternalAgentHandle {
       }
       const response = await this.rpc({ cmd: "wait-for-exit", name: this.sessionName, timeout: 1000 }, this.abortSignal);
 
+      if (!response.ok) {
+        throw new Error(response.error ?? "agent-pty wait-for-exit failed");
+      }
       if (response.exited) {
         await this.inspect();
         return {
@@ -196,7 +237,7 @@ class AgentPtyHandle implements ExternalAgentHandle {
       throw new Error("agent-pty returned non-object response");
     }
 
-    return raw as AgentPtyResponse;
+    return asAgentPtyResponse(raw);
   }
 }
 

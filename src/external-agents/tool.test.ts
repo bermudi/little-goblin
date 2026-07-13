@@ -1,5 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import { formatDetail } from "./tool.ts";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { formatDetail, createExternalAgentTool } from "./tool.ts";
+import type { ExternalAgentRunSummary } from "./types.ts";
+import type { ExternalAgentRunner } from "./runner.ts";
 
 describe("formatDetail", () => {
   it("returns status and error for a simple run", () => {
@@ -74,5 +77,82 @@ describe("formatDetail", () => {
     });
     expect(result.length).toBeLessThanOrEqual(16000);
     expect(result.startsWith("status: running")).toBe(true);
+  });
+
+  it("reports truncation in the header", () => {
+    const result = formatDetail({
+      status: "completed",
+      eventsTruncated: true,
+      resultTruncated: true,
+      recentEvents: [],
+      recentOutput: "",
+    });
+    expect(result).toContain("truncated: events, result");
+  });
+});
+
+describe("createExternalAgentTool", () => {
+  it("refuses start without a project directory", async () => {
+    const tool = createExternalAgentTool({
+      runner: {} as unknown as ExternalAgentRunner,
+      sessionId: "s1",
+      projectDir: undefined,
+      enabledBackends: ["codex"],
+      onStatusUpdate: () => {},
+    });
+
+    const result = await tool.execute("call-1", { action: "start", agent: "codex", task: "do something" }, undefined, undefined, undefined as unknown as ExtensionContext);
+    const first = result.content[0];
+    const text = first?.type === "text" ? first.text : "";
+    expect(text).toContain("project directory");
+  });
+
+  it("refuses a disabled backend", async () => {
+    const tool = createExternalAgentTool({
+      runner: {} as unknown as ExternalAgentRunner,
+      sessionId: "s1",
+      projectDir: "/tmp/project",
+      enabledBackends: ["codex"],
+      onStatusUpdate: () => {},
+    });
+
+    const result = await tool.execute("call-1", { action: "start", agent: "claude", task: "do something" }, undefined, undefined, undefined as unknown as ExtensionContext);
+    const first = result.content[0];
+    const text = first?.type === "text" ? first.text : "";
+    expect(text).toContain("not enabled");
+  });
+
+  it("starts a run when projectDir and backend are valid", async () => {
+    const summary: ExternalAgentRunSummary = {
+      id: "run-1",
+      backend: "codex",
+      status: "starting",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+      projectDir: "/tmp/project",
+      eventsTruncated: false,
+      resultTruncated: false,
+    };
+    const runner = {
+      start: (args: { backend: string; task: string; sessionId: string; projectDir: string }) => {
+        expect(args.backend).toBe("codex");
+        expect(args.task).toBe("do something");
+        expect(args.projectDir).toBe("/tmp/project");
+        return Promise.resolve(summary);
+      },
+    } as unknown as ExternalAgentRunner;
+
+    const tool = createExternalAgentTool({
+      runner,
+      sessionId: "s1",
+      projectDir: "/tmp/project",
+      enabledBackends: ["codex"],
+      onStatusUpdate: () => {},
+    });
+
+    const result = await tool.execute("call-1", { action: "start", agent: "codex", task: "do something" }, undefined, undefined, undefined as unknown as ExtensionContext);
+    const first = result.content[0];
+    const text = first?.type === "text" ? first.text : "";
+    expect(text).toContain("Started external codex run run-1");
   });
 });

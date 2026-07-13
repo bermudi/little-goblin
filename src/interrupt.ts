@@ -39,6 +39,8 @@ export interface InterruptableRunner {
 export interface InterruptableSubagentRunner {
   list(): ReadonlyArray<{ id: string; status: string; spawnedBy?: string | null }>;
   cancel(id: string): Promise<void>;
+  /** Cancel every subagent in the spawn tree rooted at the given session id. */
+  cancelBySession?(sessionId: string): Promise<void>;
 }
 
 /** Minimal shape we need from `ExternalAgentRunner` — keeps testing trivial. */
@@ -211,21 +213,35 @@ export async function interruptAndCascade(
   }
   result.attemptedSubagents = live.length;
 
-  await Promise.all(
-    live.map(async (s) => {
-      const cancelPromise = subagentRunner.cancel(s.id).catch((err) => {
-        log.warn("subagent cancel failed during cascade", {
-          id: s.id,
-          error: String(err),
-        });
+  if (sessionId && subagentRunner.cancelBySession) {
+    const cancelPromise = subagentRunner.cancelBySession(sessionId).catch((err) => {
+      log.warn("subagent cancelBySession failed during cascade", {
+        error: String(err),
+        sessionId,
       });
-      const outcome = await withTimeout(cancelPromise, cascadeTimeoutMs);
-      if (outcome === TIMEOUT_SENTINEL) {
-        result.timedOutSubagents += 1;
-        log.warn("subagent cancel timed out", { id: s.id, timeoutMs: cascadeTimeoutMs });
-      }
-    }),
-  );
+    });
+    const outcome = await withTimeout(cancelPromise, cascadeTimeoutMs);
+    if (outcome === TIMEOUT_SENTINEL) {
+      result.timedOutSubagents = live.length;
+      log.warn("subagent cancelBySession timed out", { sessionId, timeoutMs: cascadeTimeoutMs });
+    }
+  } else {
+    await Promise.all(
+      live.map(async (s) => {
+        const cancelPromise = subagentRunner.cancel(s.id).catch((err) => {
+          log.warn("subagent cancel failed during cascade", {
+            id: s.id,
+            error: String(err),
+          });
+        });
+        const outcome = await withTimeout(cancelPromise, cascadeTimeoutMs);
+        if (outcome === TIMEOUT_SENTINEL) {
+          result.timedOutSubagents += 1;
+          log.warn("subagent cancel timed out", { id: s.id, timeoutMs: cascadeTimeoutMs });
+        }
+      }),
+    );
+  }
 
   if (externalAgentRunner) {
     const liveExternal = externalAgentRunner.list(sessionId ?? undefined).filter((r) => !isTerminal(r.status));

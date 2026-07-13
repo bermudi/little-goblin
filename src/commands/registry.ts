@@ -181,7 +181,6 @@ const cancelHandler: CommandHandler = async ({ deps, session, existingRunner }) 
     ? "ok"
     : "info";
   return replied(cancelReply({
-    hasSession: session !== null,
     cascade,
     cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
   }), [], tag);

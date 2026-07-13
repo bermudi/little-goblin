@@ -21,7 +21,7 @@ export async function runExternalAgentsPreflight(cfg: Config): Promise<void> {
 async function runVersionCheck(backend: "codex" | "claude" | "devin"): Promise<void> {
   const process = Bun.spawn({
     cmd: [backend, "--version"],
-    env: sanitizedEnv(backend),
+    env: prepareEnv(),
     timeout: PREFLIGHT_TIMEOUT_MS,
     stdout: "ignore",
     stderr: "ignore",
@@ -36,7 +36,7 @@ async function runVersionCheck(backend: "codex" | "claude" | "devin"): Promise<v
 async function runAgentPtyListSessions(): Promise<void> {
   const process = Bun.spawn({
     cmd: ["agent-pty", "list-sessions"],
-    env: sanitizedEnv("codex"),
+    env: prepareEnv(),
     timeout: PREFLIGHT_TIMEOUT_MS,
     stdout: "ignore",
     stderr: "ignore",
@@ -46,13 +46,4 @@ async function runAgentPtyListSessions(): Promise<void> {
   if (exitCode !== 0) {
     throw new Error(`agent-pty list-sessions failed with exit code ${exitCode}`);
   }
-}
-
-function sanitizedEnv(backend: "codex" | "claude" | "devin"): Record<string, string> {
-  return prepareEnv({
-    runId: "preflight",
-    sessionId: "preflight",
-    backend,
-    permissionProfile: "read-only",
-  });
 }

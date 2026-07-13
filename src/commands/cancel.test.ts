@@ -15,7 +15,7 @@ const NOTHING: CascadeResult = {
 describe("cancelReply", () => {
   it("returns 'Nothing to cancel.' when no session and nothing was running", () => {
     expect(
-      cancelReply({ hasSession: false, cascade: NOTHING, cascadeTimeoutMs: 5000 }),
+      cancelReply({ cascade: NOTHING, cascadeTimeoutMs: 5000 }),
     ).toBe("Nothing to cancel.");
   });
 
@@ -25,7 +25,6 @@ describe("cancelReply", () => {
     // something observable and the reply should reflect that.
     expect(
       cancelReply({
-        hasSession: false,
         cascade: { ...NOTHING, attemptedSubagents: 1 },
         cascadeTimeoutMs: 5000,
       }),
@@ -34,14 +33,13 @@ describe("cancelReply", () => {
 
   it("returns 'Nothing to cancel.' when nothing was running", () => {
     expect(
-      cancelReply({ hasSession: true, cascade: NOTHING, cascadeTimeoutMs: 5000 }),
+      cancelReply({ cascade: NOTHING, cascadeTimeoutMs: 5000 }),
     ).toBe("Nothing to cancel.");
   });
 
   it("returns 'Cancelled.' when the main agent was streaming", () => {
     expect(
       cancelReply({
-        hasSession: true,
         cascade: { ...NOTHING, attemptedMain: true },
         cascadeTimeoutMs: 5000,
       }),
@@ -51,7 +49,6 @@ describe("cancelReply", () => {
   it("returns 'Cancelled.' when only subagents were live", () => {
     expect(
       cancelReply({
-        hasSession: true,
         cascade: { ...NOTHING, attemptedSubagents: 2 },
         cascadeTimeoutMs: 5000,
       }),
@@ -61,7 +58,6 @@ describe("cancelReply", () => {
   it("appends an honest suffix when the main agent's abort timed out", () => {
     expect(
       cancelReply({
-        hasSession: true,
         cascade: { attemptedMain: true, attemptedSubagents: 0, attemptedExternalAgents: 0, timedOutMain: true, timedOutSubagents: 0, timedOutExternalAgents: 0, wedgedMain: false },
         cascadeTimeoutMs: 5000,
       }),
@@ -71,7 +67,6 @@ describe("cancelReply", () => {
   it("appends an honest suffix for a single timed-out subagent", () => {
     expect(
       cancelReply({
-        hasSession: true,
         cascade: { attemptedMain: false, attemptedSubagents: 1, attemptedExternalAgents: 0, timedOutMain: false, timedOutSubagents: 1, timedOutExternalAgents: 0, wedgedMain: false },
         cascadeTimeoutMs: 5000,
       }),
@@ -81,7 +76,6 @@ describe("cancelReply", () => {
   it("pluralizes multiple timed-out subagents", () => {
     expect(
       cancelReply({
-        hasSession: true,
         cascade: { attemptedMain: false, attemptedSubagents: 3, attemptedExternalAgents: 0, timedOutMain: false, timedOutSubagents: 3, timedOutExternalAgents: 0, wedgedMain: false },
         cascadeTimeoutMs: 5000,
       }),
@@ -91,7 +85,6 @@ describe("cancelReply", () => {
   it("combines main + subagent timeouts in one suffix", () => {
     expect(
       cancelReply({
-        hasSession: true,
         cascade: { attemptedMain: true, attemptedSubagents: 2, attemptedExternalAgents: 0, timedOutMain: true, timedOutSubagents: 2, timedOutExternalAgents: 0, wedgedMain: false },
         cascadeTimeoutMs: 5000,
       }),
@@ -101,7 +94,6 @@ describe("cancelReply", () => {
   it("reports wedged main agent with recovery instructions", () => {
     expect(
       cancelReply({
-        hasSession: true,
         cascade: { attemptedMain: true, attemptedSubagents: 0, attemptedExternalAgents: 0, timedOutMain: false, timedOutSubagents: 0, timedOutExternalAgents: 0, wedgedMain: true },
         cascadeTimeoutMs: 5000,
       }),

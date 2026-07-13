@@ -7,6 +7,7 @@ import { piAgentDir } from "../pi-host.ts";
 import { agentsMdPath, skillsPath, soulMdPath, workdirPath } from "../workspace/paths.ts";
 import { memoryDir } from "../memory/paths.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
+import { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { AgentBackend, AgentBackendOptions, AgentBackendInitArgs } from "./backend.ts";
 import type { ToolDefinition, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
@@ -1742,6 +1743,92 @@ describe("AgentRunner", () => {
       expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
       const [, opts] = sessionHolder.sendCustomMessage.mock.calls[0]!;
       expect((opts as { deliverAs?: string }).deliverAs).toBe("nextTurn");
+    });
+  });
+
+  describe("external_agent tool registration", () => {
+    it("registers external_agent when externalAgentRunner, enabled backends, and projectDir are present", async () => {
+      const extCfg = {
+        ...makeConfig(tmpDir),
+        externalAgents: {
+          backends: ["codex" as const],
+          permissionProfile: "read-only" as const,
+          maxConcurrent: 1,
+          timeoutMs: 300_000,
+          ptyFallback: false,
+        },
+      };
+      const externalAgentRunner = new ExternalAgentRunner(extCfg);
+      const runner = new AgentRunner({
+        cfg: extCfg,
+        sessionId: "abcdef1234",
+        locator: { chatId: 123 },
+        customTools: [],
+        projectDir: tmpDir,
+        externalAgentRunner,
+        backendFactory: (opts) => new FakeAgentBackend(opts),
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).toContain("external_agent");
+    });
+
+    it("does not register external_agent when projectDir is absent", async () => {
+      const extCfg = {
+        ...makeConfig(tmpDir),
+        externalAgents: {
+          backends: ["codex" as const],
+          permissionProfile: "read-only" as const,
+          maxConcurrent: 1,
+          timeoutMs: 300_000,
+          ptyFallback: false,
+        },
+      };
+      const externalAgentRunner = new ExternalAgentRunner(extCfg);
+      const runner = new AgentRunner({
+        cfg: extCfg,
+        sessionId: "abcdef1234",
+        locator: { chatId: 123 },
+        customTools: [],
+        externalAgentRunner,
+        backendFactory: (opts) => new FakeAgentBackend(opts),
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).not.toContain("external_agent");
+    });
+
+    it("does not register external_agent when externalAgentRunner is absent", async () => {
+      const extCfg = {
+        ...makeConfig(tmpDir),
+        externalAgents: {
+          backends: ["codex" as const],
+          permissionProfile: "read-only" as const,
+          maxConcurrent: 1,
+          timeoutMs: 300_000,
+          ptyFallback: false,
+        },
+      };
+      const runner = new AgentRunner({
+        cfg: extCfg,
+        sessionId: "abcdef1234",
+        locator: { chatId: 123 },
+        customTools: [],
+        projectDir: tmpDir,
+        backendFactory: (opts) => new FakeAgentBackend(opts),
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).not.toContain("external_agent");
     });
   });
 });

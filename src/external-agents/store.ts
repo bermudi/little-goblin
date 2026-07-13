@@ -1,9 +1,8 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { atomicWrite } from "../fs.ts";
-import type { ExternalAgentEvent, ExternalAgentRunRecord, InternalRun } from "./types.ts";
+import type { ExternalAgentBackend, ExternalAgentEvent, ExternalAgentRunRecord, ExternalAgentStatus, InternalRun } from "./types.ts";
+import { TerminalStatuses } from "./util.ts";
+import { nowIso } from "./util.ts";
 import {
   externalAgentEventsPath,
   externalAgentMetaPath,
@@ -35,7 +34,47 @@ export class ExternalRunStore {
     if (raw === null || typeof raw !== "object") {
       throw new Error(`malformed external agent metadata: ${path}`);
     }
-    return raw as ExternalAgentRunRecord;
+    const record = raw as Record<string, unknown>;
+    this.validateRecord(record, path);
+    return record as unknown as ExternalAgentRunRecord;
+  }
+
+  private validateRecord(record: Record<string, unknown>, path: string): void {
+    const backends = new Set<ExternalAgentBackend>(["codex", "claude", "devin"]);
+    const adapterKinds = new Set<string>(["native", "pty"]);
+    const statuses = new Set<ExternalAgentStatus>([
+      "starting",
+      "running",
+      "input_required",
+      ...TerminalStatuses,
+    ]);
+
+    const stringFields = ["id", "ownerSessionId", "backend", "projectDir", "status", "createdAt", "updatedAt", "adapterKind"];
+    for (const field of stringFields) {
+      if (typeof record[field] !== "string") {
+        throw new Error(`malformed external agent metadata: ${field} is missing or not a string in ${path}`);
+      }
+    }
+
+    if (!backends.has(record.backend as ExternalAgentBackend)) {
+      throw new Error(`malformed external agent metadata: invalid backend in ${path}`);
+    }
+    if (!statuses.has(record.status as ExternalAgentStatus)) {
+      throw new Error(`malformed external agent metadata: invalid status in ${path}`);
+    }
+    if (!adapterKinds.has(record.adapterKind as string)) {
+      throw new Error(`malformed external agent metadata: invalid adapterKind in ${path}`);
+    }
+    if (typeof record.eventsTruncated !== "boolean" || typeof record.resultTruncated !== "boolean") {
+      throw new Error(`malformed external agent metadata: missing boolean truncation flags in ${path}`);
+    }
+
+    const optionalStringFields = ["inputRequired", "terminalError"];
+    for (const field of optionalStringFields) {
+      if (record[field] !== undefined && typeof record[field] !== "string") {
+        throw new Error(`malformed external agent metadata: ${field} is not a string in ${path}`);
+      }
+    }
   }
 
   list(): ExternalAgentRunRecord[] {
@@ -75,25 +114,33 @@ export class ExternalRunStore {
     const raw = readFileSync(path, "utf-8");
     const lines = raw.split("\n");
     let kept: string[] = [];
-    let bytes = 0;
+    let keptBytes = 0;
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i]!;
       if (line.length === 0) continue;
       const lineBytes = Buffer.byteLength(line + "\n", "utf-8");
-      if (bytes + lineBytes > MAX_EVENT_BYTES) break;
+      if (keptBytes + lineBytes > MAX_EVENT_BYTES) break;
       kept.unshift(line);
-      bytes += lineBytes;
+      keptBytes += lineBytes;
     }
 
-    const tmp = join(tmpdir(), `.external-events-${run.id}-${randomBytes(4).toString("hex")}.tmp`);
-    try {
-      writeFileSync(tmp, kept.map((line) => line + "\n").join(""), "utf-8");
-      renameSync(tmp, path);
-    } catch {
-      try { rmSync(tmp, { force: true }); } catch { /* ignore */ }
-    }
+    const truncationEvent: ExternalAgentEvent = {
+      type: "truncation",
+      at: nowIso(),
+      message: "event history truncated",
+    };
+    const truncationLine = JSON.stringify(truncationEvent) + "\n";
+    const truncationBytes = Buffer.byteLength(truncationLine, "utf-8");
 
-    run.eventsBytes = bytes;
+    const keptStr = kept.map((line) => line + "\n").join("");
+    const includeTruncation = keptBytes + truncationBytes <= MAX_EVENT_BYTES;
+    const finalStr = includeTruncation ? keptStr + truncationLine : keptStr;
+
+    // atomicWrite uses a temp file in the same directory, so the rewrite is
+    // atomic and does not cross filesystems.
+    atomicWrite(path, finalStr);
+
+    run.eventsBytes = keptBytes + (includeTruncation ? truncationBytes : 0);
     run.meta.eventsTruncated = true;
   }
 
@@ -114,6 +161,12 @@ export class ExternalRunStore {
       }
     }
     return events;
+  }
+
+  getEventsBytes(runId: string): number {
+    const path = externalAgentEventsPath(this.home, runId);
+    if (!existsSync(path)) return 0;
+    return statSync(path).size;
   }
 
   writeResult(runId: string, text: string): void {

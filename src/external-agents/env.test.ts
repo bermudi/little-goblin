@@ -60,12 +60,7 @@ describe("prepareEnv", () => {
     process.env.SSH_AUTH_SOCK = "/run/ssh/agent";
     process.env.SSL_CERT_FILE = "/etc/ssl/cert.pem";
 
-    const env = prepareEnv({
-      runId: "run-1",
-      sessionId: "session-1",
-      backend: "codex",
-      permissionProfile: "read-only",
-    });
+    const env = prepareEnv();
 
     expect(env.HOME).toBe("/home/user");
     expect(env.PATH).toBe("/usr/bin");
@@ -77,20 +72,15 @@ describe("prepareEnv", () => {
     expect(env.SSH_AUTH_SOCK).toBe("/run/ssh/agent");
     expect(env.SSL_CERT_FILE).toBe("/etc/ssl/cert.pem");
 
-    expect(env.EXTERNAL_AGENT).toBe("true");
-    expect(env.EXTERNAL_AGENT_BACKEND).toBe("codex");
-    expect(env.EXTERNAL_AGENT_RUN_ID).toBe("run-1");
-    expect(env.EXTERNAL_AGENT_SESSION_ID).toBe("session-1");
-    expect(env.EXTERNAL_AGENT_PERMISSION_PROFILE).toBe("read-only");
+    expect(env.EXTERNAL_AGENT).toBeUndefined();
+    expect(env.EXTERNAL_AGENT_BACKEND).toBeUndefined();
+    expect(env.EXTERNAL_AGENT_RUN_ID).toBeUndefined();
+    expect(env.EXTERNAL_AGENT_SESSION_ID).toBeUndefined();
+    expect(env.EXTERNAL_AGENT_PERMISSION_PROFILE).toBeUndefined();
   });
 
   it("excludes provider API keys and Goblin secrets", () => {
-    const env = prepareEnv({
-      runId: "run-1",
-      sessionId: "session-1",
-      backend: "codex",
-      permissionProfile: "read-only",
-    });
+    const env = prepareEnv();
 
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();

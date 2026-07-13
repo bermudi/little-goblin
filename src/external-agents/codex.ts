@@ -121,19 +121,24 @@ function isInteractiveError(text: string | undefined): boolean {
 }
 
 function parseCodexLine(line: string): ExternalAgentEvent[] {
+  if (!line.trim()) return [];
+  const at = nowIso();
   let raw: unknown;
   try {
     raw = JSON.parse(line) as unknown;
   } catch {
-    return [];
+    return [{ type: "status", at, message: "malformed codex line" }];
   }
-  if (raw === null || typeof raw !== "object") return [];
+  if (raw === null || typeof raw !== "object") {
+    return [{ type: "status", at, message: "non-object codex line" }];
+  }
 
   const obj = raw as Record<string, unknown>;
-  const at = nowIso();
 
   const type = obj.type;
-  if (typeof type !== "string") return [];
+  if (typeof type !== "string") {
+    return [{ type: "status", at, message: "codex event missing type" }];
+  }
 
   if (type === "thread.started") return [{ type: "status", at, message: "codex thread started" }];
   if (type === "turn.started") return [{ type: "status", at, message: "codex turn started" }];
@@ -152,10 +157,14 @@ function parseCodexLine(line: string): ExternalAgentEvent[] {
 
   if (type === "item.started" || type === "item.updated" || type === "item.completed") {
     const item = obj.item;
-    if (item === null || typeof item !== "object") return [];
+    if (item === null || typeof item !== "object") {
+      return [{ type: "status", at, message: "malformed codex item event" }];
+    }
     const itemObj = item as Record<string, unknown>;
     const itemType = typeof itemObj.type === "string" ? itemObj.type : typeof itemObj.item_type === "string" ? itemObj.item_type : undefined;
-    if (itemType === undefined) return [];
+    if (itemType === undefined) {
+      return [{ type: "status", at, message: "unknown codex item type" }];
+    }
 
     if (type === "item.started") {
       if (itemType === "command_execution" && typeof itemObj.command === "string") {
@@ -249,7 +258,7 @@ function parseCodexLine(line: string): ExternalAgentEvent[] {
     return [{ type: "status", at, message: `item ${itemType} completed` }];
   }
 
-  return [];
+  return [{ type: "status", at, message: `unknown codex event type: ${type}` }];
 }
 
 function extractError(error: unknown): string {

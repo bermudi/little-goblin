@@ -381,6 +381,7 @@ export class MessageBuffer implements TurnCallbacks {
     // can be created. Starting the chat-action here (not just in
     // onTextDelta) means the typing indicator shows from turn start even
     // on plain-text turns where no thinking block arrives.
+    if (this.statusFrozen) return;
     this.startChatAction();
     if (!this.placeholderSent) this.commitStatus();
   }

@@ -169,8 +169,8 @@ export class ExternalRunStore {
     return statSync(path).size;
   }
 
-  appendResult(runId: string, text: string): void {
-    appendFileSync(externalAgentResultPath(this.home, runId), text, "utf-8");
+  writeResult(runId: string, text: string): void {
+    atomicWrite(externalAgentResultPath(this.home, runId), text);
   }
 
   getResult(runId: string): string {

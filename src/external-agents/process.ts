@@ -122,11 +122,9 @@ export class ProcessHostImpl implements ProcessHost {
     if (signal) {
       const abortPromise = new Promise<never>((_, reject) => {
         const abort = () => {
-          try {
-            child.kill();
-          } catch {
-            // ignore
-          }
+          // Use the ProcessHandle group kill (SIGTERM + SIGKILL fallback) so
+          // cancel/timeout/abort reliably terminate the entire process tree.
+          void handle.kill();
           reject(new Error("Spawn aborted"));
         };
         signal.addEventListener("abort", abort, { once: true });

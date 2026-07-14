@@ -423,9 +423,17 @@ export class ExternalAgentRunner {
       return;
     }
     const capped = this.capEvent(event);
+    const wasTerminal = run.terminal;
     this.applyEvent(run, capped);
     this.store.appendEvent(run, capped);
     this.store.save(run.meta);
+    if (!wasTerminal && run.terminal) {
+      try {
+        this.store.writeResult(run.id, run.result);
+      } catch (err) {
+        log.error("failed to persist result", { runId: run.id, error: errorString(err) });
+      }
+    }
   }
 
   private capEvent(event: ExternalAgentEvent): ExternalAgentEvent {
@@ -506,7 +514,6 @@ export class ExternalAgentRunner {
     }
     const toWrite = text.length > remaining ? text.slice(0, remaining) : text;
     run.result += toWrite;
-    this.store.appendResult(run.id, toWrite);
     if (text.length > remaining) {
       run.meta.resultTruncated = true;
     }
@@ -600,12 +607,11 @@ export class ExternalAgentRunner {
   }
 
   private detail(run: InternalRun): ExternalRunDetail {
-    const result = this.store.getResult(run.id);
     return {
       ...this.summary(run),
       recentEvents: this.store.getEvents(run.id),
-      recentOutput: result.slice(-MAX_STATUS_CHARS),
-      result,
+      recentOutput: run.result.slice(-MAX_STATUS_CHARS),
+      result: run.result,
       inputRequired: run.inputRequired,
       error: run.terminalError,
     };

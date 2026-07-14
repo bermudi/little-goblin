@@ -1,11 +1,13 @@
 import { describe, it, expect, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { ExternalAgentRunner } from "./runner.ts";
+import { ExternalRunStore } from "./store.ts";
+import { externalAgentMetaPath } from "./paths.ts";
 import type { Config } from "../config.ts";
-import type { ProcessExit, ProcessHandle, ProcessHost, ProcessSpawnArgs } from "./types.ts";
+import type { AdapterStartInput, ExternalAgentAdapter, ExternalAgentEvent, ExternalAgentHandle, ExternalAgentRunRecord, InternalRun, ProcessExit, ProcessHandle, ProcessHost, ProcessSpawnArgs } from "./types.ts";
 
 const dirs: string[] = [];
 
@@ -144,6 +146,82 @@ class SlowProcessHost implements ProcessHost {
   }
 }
 
+class RecordingStore extends ExternalRunStore {
+  calls: { method: string; runId: string; text?: string; status?: string }[] = [];
+
+  override writeResult(runId: string, text: string): void {
+    super.writeResult(runId, text);
+    this.calls.push({ method: "writeResult", runId, text });
+  }
+
+  override save(record: ExternalAgentRunRecord): void {
+    super.save(record);
+    this.calls.push({ method: "save", runId: record.id, status: record.status });
+  }
+}
+
+class ThrowingStore extends ExternalRunStore {
+  override writeResult(): void {
+    throw new Error("writeResult failed");
+  }
+}
+
+class FlakyStore extends ExternalRunStore {
+  private saveAttempts = 0;
+
+  override save(record: ExternalAgentRunRecord): void {
+    if (record.status === "completed" && this.saveAttempts === 0) {
+      this.saveAttempts++;
+      throw new Error("save failed once");
+    }
+    super.save(record);
+  }
+}
+
+class ThrowingAppendStore extends ExternalRunStore {
+  override appendEvent(run: InternalRun, event: ExternalAgentEvent): void {
+    if (event.type === "completed") {
+      throw new Error("appendEvent failed");
+    }
+    super.appendEvent(run, event);
+  }
+}
+
+class FakeNoWaitAdapter implements ExternalAgentAdapter {
+  readonly backend = "codex";
+
+  async start(_input: AdapterStartInput, emit: (event: ExternalAgentEvent) => void): Promise<ExternalAgentHandle> {
+    setTimeout(() => {
+      emit({ type: "output", at: "2024-01-01T00:00:00.000Z", output: "hello output" });
+      emit({ type: "completed", at: "2024-01-01T00:00:00.000Z" });
+    }, 0);
+    return { cancel: async () => {} };
+  }
+}
+
+class FakeFailedEventAdapter implements ExternalAgentAdapter {
+  readonly backend = "codex";
+
+  async start(_input: AdapterStartInput, emit: (event: ExternalAgentEvent) => void): Promise<ExternalAgentHandle> {
+    setTimeout(() => {
+      emit({ type: "output", at: "2024-01-01T00:00:00.000Z", output: "hello output" });
+      emit({ type: "failed", at: "2024-01-01T00:00:00.000Z", error: "original adapter failure" });
+    }, 0);
+    return { cancel: async () => {} };
+  }
+}
+
+class FakeWaitExitAdapter implements ExternalAgentAdapter {
+  readonly backend = "codex";
+
+  async start(_input: AdapterStartInput, _emit: (event: ExternalAgentEvent) => void): Promise<ExternalAgentHandle> {
+    return {
+      cancel: async () => {},
+      waitForExit: async () => ({ exitCode: 1, signal: null }),
+    };
+  }
+}
+
 describe("ExternalAgentRunner", () => {
   it("starts a run and reports summary", async () => {
     const cfg = makeConfig();
@@ -215,6 +293,30 @@ describe("ExternalAgentRunner", () => {
     expect(detail?.id).toBe(summary.id);
   });
 
+  it("writes result.txt before saving terminal metadata", async () => {
+    const cfg = makeConfig();
+    const processHost = new FakeProcessHost([
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello output" } }),
+      JSON.stringify({ type: "turn.completed" }),
+    ]);
+    const store = new RecordingStore(cfg.goblinHome);
+    const runner = new ExternalAgentRunner(cfg, { processHost, store });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("completed");
+    expect(detail?.result).toBe("hello output");
+    expect(store.getResult(summary.id)).toBe("hello output");
+
+    const writeResultIndex = store.calls.findIndex((c) => c.method === "writeResult" && c.runId === summary.id && c.text === "hello output");
+    const saveIndex = store.calls.findIndex((c) => c.method === "save" && c.runId === summary.id && c.status === "completed");
+    expect(writeResultIndex).toBeGreaterThanOrEqual(0);
+    expect(saveIndex).toBeGreaterThanOrEqual(0);
+    expect(writeResultIndex).toBeLessThan(saveIndex);
+  });
+
   it("forbids starting a disabled backend", async () => {
     const cfg = makeConfig();
     const processHost = new FakeProcessHost();
@@ -255,6 +357,46 @@ describe("ExternalAgentRunner", () => {
     expect(detail?.status).toBe("timed_out");
   });
 
+  it("does not crash when writeResult fails during timeout", async () => {
+    const cfg = makeConfig();
+    cfg.externalAgents = { ...cfg.externalAgents!, timeoutMs: 10 };
+    const processHost = new SlowProcessHost();
+    const store = new ThrowingStore(cfg.goblinHome);
+    const runner = new ExternalAgentRunner(cfg, { processHost, store });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("timed_out");
+    expect(detail?.error).toContain("writeResult failed");
+
+    const record = store.load(summary.id);
+    expect(record?.status).toBe("timed_out");
+    expect(record?.terminalError).toContain("writeResult failed");
+  });
+
+  it("does not crash when writeResult fails during cancel", async () => {
+    const cfg = makeConfig();
+    const processHost = new FakeProcessHost();
+    const store = new ThrowingStore(cfg.goblinHome);
+    const runner = new ExternalAgentRunner(cfg, { processHost, store });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const cancelled = await runner.cancel(summary.id);
+    expect(cancelled).toBe(true);
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("cancelled");
+    expect(detail?.error).toContain("writeResult failed");
+
+    const record = store.load(summary.id);
+    expect(record?.status).toBe("cancelled");
+    expect(record?.terminalError).toContain("writeResult failed");
+  });
+
   it("requires a project directory", async () => {
     const cfg = makeConfig();
     const processHost = new FakeProcessHost();
@@ -276,5 +418,151 @@ describe("ExternalAgentRunner", () => {
     const detail = await runner.status(summary.id);
     expect(detail?.status).toBe("input_required");
     expect(detail?.inputRequired).toContain("interactive fallback is unavailable");
+  });
+
+  it("marks failed when writeResult fails during normal completion", async () => {
+    const cfg = makeConfig();
+    const processHost = new FakeProcessHost([
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello output" } }),
+      JSON.stringify({ type: "turn.completed" }),
+    ]);
+    const store = new ThrowingStore(cfg.goblinHome);
+    const runner = new ExternalAgentRunner(cfg, { processHost, store });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("failed");
+    expect(detail?.error).toContain("writeResult failed");
+
+    const record = store.load(summary.id);
+    expect(record?.status).toBe("failed");
+    expect(record?.terminalError).toContain("writeResult failed");
+  });
+
+  it("does not hang when writeResult fails for an adapter without waitForExit", async () => {
+    const cfg = makeConfig();
+    cfg.externalAgents = { ...cfg.externalAgents!, timeoutMs: 100 };
+    const adapter = new FakeNoWaitAdapter();
+    const store = new ThrowingStore(cfg.goblinHome);
+    const runner = new ExternalAgentRunner(cfg, { store, adapters: new Map([["codex", adapter]]) });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("failed");
+    expect(detail?.error).toContain("writeResult failed");
+
+    const record = store.load(summary.id);
+    expect(record?.status).toBe("failed");
+    expect(record?.terminalError).toContain("writeResult failed");
+  });
+
+  it("init does not throw when writeResult fails for a non-terminal run", async () => {
+    const cfg = makeConfig();
+    const runDir = join(cfg.goblinHome, "scratch", "external-agents", "r-1");
+    mkdirSync(runDir, { recursive: true });
+    const meta = {
+      id: "r-1",
+      ownerSessionId: "s1",
+      backend: "codex",
+      projectDir: cfg.goblinHome,
+      status: "running",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+      adapterKind: "native",
+      eventsTruncated: false,
+      resultTruncated: false,
+      inputRequired: undefined,
+      terminalError: undefined,
+    };
+    writeFileSync(externalAgentMetaPath(cfg.goblinHome, "r-1"), JSON.stringify(meta, null, 2));
+    const store = new ThrowingStore(cfg.goblinHome);
+    const runner = new ExternalAgentRunner(cfg, { store });
+
+    await runner.init();
+    const detail = await runner.status("r-1");
+    expect(detail?.status).toBe("interrupted");
+    expect(detail?.error).toContain("writeResult failed");
+
+    const record = store.load("r-1");
+    expect(record?.status).toBe("interrupted");
+    expect(record?.terminalError).toContain("writeResult failed");
+  });
+
+  it("preserves the original error when writeResult fails during a failed event", async () => {
+    const cfg = makeConfig();
+    const adapter = new FakeFailedEventAdapter();
+    const store = new ThrowingStore(cfg.goblinHome);
+    const runner = new ExternalAgentRunner(cfg, { store, adapters: new Map([["codex", adapter]]) });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("failed");
+    expect(detail?.error).toContain("original adapter failure");
+    expect(detail?.error).toContain("writeResult failed");
+
+    const record = store.load(summary.id);
+    expect(record?.status).toBe("failed");
+    expect(record?.terminalError).toContain("original adapter failure");
+  });
+
+  it("preserves the original error when writeResult fails after waitForExit reports failure", async () => {
+    const cfg = makeConfig();
+    const adapter = new FakeWaitExitAdapter();
+    const store = new ThrowingStore(cfg.goblinHome);
+    const runner = new ExternalAgentRunner(cfg, { store, adapters: new Map([["codex", adapter]]) });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("failed");
+    expect(detail?.error).toContain("exit code 1");
+    expect(detail?.error).toContain("writeResult failed");
+
+    const record = store.load(summary.id);
+    expect(record?.status).toBe("failed");
+    expect(record?.terminalError).toContain("exit code 1");
+  });
+
+  it("retries store.save when it fails after the run is already terminal", async () => {
+    const cfg = makeConfig();
+    const adapter = new FakeNoWaitAdapter();
+    const store = new FlakyStore(cfg.goblinHome);
+    const runner = new ExternalAgentRunner(cfg, { store, adapters: new Map([["codex", adapter]]) });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("completed");
+    expect(detail?.result).toBe("hello output");
+
+    const record = store.load(summary.id);
+    expect(record?.status).toBe("completed");
+    expect(store.getResult(summary.id)).toBe("hello output");
+  });
+
+  it("retries store.save when appendEvent fails after the run is already terminal", async () => {
+    const cfg = makeConfig();
+    const adapter = new FakeNoWaitAdapter();
+    const store = new ThrowingAppendStore(cfg.goblinHome);
+    const runner = new ExternalAgentRunner(cfg, { store, adapters: new Map([["codex", adapter]]) });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("completed");
+    expect(detail?.result).toBe("hello output");
+
+    const record = store.load(summary.id);
+    expect(record?.status).toBe("completed");
+    expect(store.getResult(summary.id)).toBe("hello output");
   });
 });

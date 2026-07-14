@@ -1,8 +1,8 @@
 import { dirname, isAbsolute, join, sep } from "node:path";
 import { lstatSync, realpathSync } from "node:fs";
-import type { ExternalAgentStatus } from "./types.ts";
+import type { ExternalAgentEvent, ExternalAgentStatus, TerminalStatus } from "./types.ts";
 
-export const TerminalStatuses: ReadonlySet<ExternalAgentStatus> = new Set([
+export const TerminalStatuses: ReadonlySet<TerminalStatus> = new Set([
   "completed",
   "failed",
   "cancelled",
@@ -10,8 +10,12 @@ export const TerminalStatuses: ReadonlySet<ExternalAgentStatus> = new Set([
   "interrupted",
 ]);
 
-export function isTerminal(status: ExternalAgentStatus): boolean {
-  return TerminalStatuses.has(status);
+export function isTerminal(status: ExternalAgentStatus): status is TerminalStatus {
+  return TerminalStatuses.has(status as TerminalStatus);
+}
+
+export function isTerminalEventType(type: ExternalAgentEvent["type"]): type is TerminalStatus {
+  return TerminalStatuses.has(type as TerminalStatus);
 }
 
 export function errorString(err: unknown): string {

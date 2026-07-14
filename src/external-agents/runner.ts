@@ -14,7 +14,7 @@ import type {
   ProcessHost,
   TerminalStatus,
 } from "./types.ts";
-import { errorString, isTerminal, nowIso } from "./util.ts";
+import { errorString, isTerminal, isTerminalEventType, nowIso } from "./util.ts";
 import { prepareEnv } from "./env.ts";
 import { defaultProcessHost } from "./process.ts";
 import { ExternalRunStore } from "./store.ts";
@@ -32,6 +32,7 @@ export interface ExternalAgentRunnerDeps {
   processHost?: ProcessHost;
   store?: ExternalRunStore;
   clock?: () => number;
+  adapters?: Map<ExternalAgentBackend, ExternalAgentAdapter>;
 }
 
 export class ExternalAgentRunner {
@@ -57,9 +58,11 @@ export class ExternalAgentRunner {
     this.store = deps.store ?? new ExternalRunStore(cfg.goblinHome);
     this.clock = deps.clock ?? Date.now;
 
-    this.adapters = new Map<ExternalAgentBackend, ExternalAgentAdapter>();
-    for (const backend of this.config.backends) {
-      this.adapters.set(backend, this.createAdapter(backend));
+    this.adapters = deps.adapters ?? new Map<ExternalAgentBackend, ExternalAgentAdapter>();
+    if (!deps.adapters) {
+      for (const backend of this.config.backends) {
+        this.adapters.set(backend, this.createAdapter(backend));
+      }
     }
 
     this.fallbackAdapter = this.config.ptyFallback ? new AgentPtyAdapter() : undefined;
@@ -154,7 +157,7 @@ export class ExternalAgentRunner {
     if (run.terminal) {
       return false;
     }
-    this.emitTerminal(run, "cancelled");
+    this.safeEmitTerminal(run, "cancelled");
     run.abortController.abort();
     try {
       await run.runPromise;
@@ -192,7 +195,7 @@ export class ExternalAgentRunner {
       if (isTerminal(meta.status as ExternalAgentStatus)) continue;
       const run = this.createRunFromMeta(meta);
       this.runs.set(run.id, run);
-      this.emitTerminal(run, "interrupted", "Interrupted during startup");
+      this.safeEmitTerminal(run, "interrupted", "Interrupted during startup");
     }
   }
 
@@ -231,7 +234,34 @@ export class ExternalAgentRunner {
       this.startTimeout(run);
 
       const input = this.buildInput(run);
-      const handle = await adapter.start(input, (event) => this.handleEvent(run, event));
+      const emit = (event: ExternalAgentEvent) => {
+        try {
+          this.handleEvent(run, event);
+        } catch (err) {
+          if (run.terminal) {
+            // handleEvent failed after the run was already marked terminal
+            // (e.g. appendEvent or store.save failed). The terminal status is
+            // already in memory, so retry persisting the metadata instead of
+            // trying to re-emit a terminal event.
+            log.error("failed to persist terminal state", {
+              runId: run.id,
+              status: run.status,
+              error: errorString(err),
+            });
+            try {
+              this.store.save(run.meta);
+            } catch (saveErr) {
+              log.error("failed to persist terminal metadata", {
+                runId: run.id,
+                error: errorString(saveErr),
+              });
+            }
+            return;
+          }
+          this.safeEmitTerminal(run, "failed", event.type === "failed" ? event.error : errorString(err));
+        }
+      };
+      const handle = await adapter.start(input, emit);
       run.handle = handle;
 
       if (run.terminal) {
@@ -252,7 +282,7 @@ export class ExternalAgentRunner {
         if (exit.exitCode === 0) {
           this.emitTerminal(run, "completed");
         } else {
-          this.emitTerminal(run, "failed", `exit code ${exit.exitCode ?? "null"}`);
+          this.safeEmitTerminal(run, "failed", `exit code ${exit.exitCode ?? "null"}`);
         }
         return;
       }
@@ -260,6 +290,14 @@ export class ExternalAgentRunner {
       await run.terminalPromise;
     } catch (err) {
       if (run.terminal) {
+        try {
+          this.store.save(run.meta);
+        } catch (saveErr) {
+          log.error("failed to persist terminal metadata", {
+            runId: run.id,
+            error: errorString(saveErr),
+          });
+        }
         return;
       }
       if (err instanceof Error && err.name === "InteractiveRequiredError" && !run.fallback) {
@@ -293,7 +331,7 @@ export class ExternalAgentRunner {
         await run.terminalPromise;
         return;
       }
-      this.emitTerminal(run, "failed", errorString(err));
+      this.safeEmitTerminal(run, "failed", errorString(err));
     } finally {
       this.clearTimeout(run);
       try {
@@ -423,17 +461,16 @@ export class ExternalAgentRunner {
       return;
     }
     const capped = this.capEvent(event);
-    const wasTerminal = run.terminal;
+    // A terminal state must not be exposed through status until the result is
+    // persisted. Write the final result before marking the run terminal or
+    // saving metadata, so write failures propagate without leaving a terminal
+    // metadata record without a matching result.txt.
+    if (isTerminalEventType(capped.type)) {
+      this.store.writeResult(run.id, run.result);
+    }
     this.applyEvent(run, capped);
     this.store.appendEvent(run, capped);
     this.store.save(run.meta);
-    if (!wasTerminal && run.terminal) {
-      try {
-        this.store.writeResult(run.id, run.result);
-      } catch (err) {
-        log.error("failed to persist result", { runId: run.id, error: errorString(err) });
-      }
-    }
   }
 
   private capEvent(event: ExternalAgentEvent): ExternalAgentEvent {
@@ -564,6 +601,34 @@ export class ExternalAgentRunner {
     this.handleEvent(run, { type: terminal, error, at: nowIso(this.clock) });
   }
 
+  private safeEmitTerminal(run: InternalRun, terminal: TerminalStatus, error?: string): void {
+    try {
+      this.emitTerminal(run, terminal, error);
+    } catch (err) {
+      log.error("failed to persist terminal state", {
+        runId: run.id,
+        terminal,
+        error,
+        persistError: errorString(err),
+      });
+      if (!run.terminal) {
+        this.transitionTerminal(
+          run,
+          terminal,
+          error ? `${error}; failed to persist ${terminal}: ${errorString(err)}` : `failed to persist ${terminal}: ${errorString(err)}`,
+        );
+      }
+      try {
+        this.store.save(run.meta);
+      } catch (saveErr) {
+        log.error("failed to persist terminal metadata", {
+          runId: run.id,
+          error: errorString(saveErr),
+        });
+      }
+    }
+  }
+
   private startTimeout(run: InternalRun): void {
     if (this.config.timeoutMs <= 0) {
       return;
@@ -582,7 +647,7 @@ export class ExternalAgentRunner {
     if (!run || run.terminal) {
       return;
     }
-    this.emitTerminal(run, "timed_out");
+    this.safeEmitTerminal(run, "timed_out");
     run.abortController.abort();
   }
 

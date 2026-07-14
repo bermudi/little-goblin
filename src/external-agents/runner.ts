@@ -174,6 +174,20 @@ export class ExternalAgentRunner {
 
   async init(): Promise<void> {
     const records = this.store.list();
+    const ptyOwners = new Set<string>();
+    for (const meta of records) {
+      if (isTerminal(meta.status as ExternalAgentStatus)) continue;
+      if (meta.adapterKind === "pty") {
+        ptyOwners.add(meta.ownerSessionId);
+      }
+    }
+    if (ptyOwners.size > 0) {
+      const adapter = this.fallbackAdapter ?? new AgentPtyAdapter();
+      const env = prepareEnv();
+      for (const ownerSessionId of ptyOwners) {
+        await adapter.killOwner(this.processHost, process.cwd(), env, ownerSessionId);
+      }
+    }
     for (const meta of records) {
       if (isTerminal(meta.status as ExternalAgentStatus)) continue;
       const run = this.createRunFromMeta(meta);
@@ -485,14 +499,17 @@ export class ExternalAgentRunner {
     if (run.meta.resultTruncated) {
       return;
     }
-    const combined = run.result + text;
-    if (combined.length > MAX_RESULT_CHARS) {
-      run.result = combined.slice(0, MAX_RESULT_CHARS);
+    const remaining = MAX_RESULT_CHARS - run.result.length;
+    if (remaining <= 0) {
       run.meta.resultTruncated = true;
-    } else {
-      run.result = combined;
+      return;
     }
-    this.store.writeResult(run.id, run.result);
+    const toWrite = text.length > remaining ? text.slice(0, remaining) : text;
+    run.result += toWrite;
+    this.store.appendResult(run.id, toWrite);
+    if (text.length > remaining) {
+      run.meta.resultTruncated = true;
+    }
   }
 
   private transitionStatus(run: InternalRun, status: ExternalAgentStatus): boolean {

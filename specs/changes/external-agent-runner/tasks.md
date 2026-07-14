@@ -1,6 +1,6 @@
 # External Agent Runner — Tasks
 
-This change spans two independent Git repositories. Phase 1 is committed in `~/build/agent-pty`; phases 2–8 are committed in `little-goblin`. Litespec checkbox updates remain in the Little Goblin change and are included in the next Little Goblin commit after an agent-pty-only phase rather than creating a documentation-only commit.
+This change spans two independent Git repositories. Phase 1 is committed in `~/build/agent-pty` at revision `de7f10b261980db3a0c6a9a011b2dfb6cc0669ac`; phases 2–8 are committed in `little-goblin`. Litespec checkbox updates remain in the Little Goblin change and are included in the next Little Goblin commit after an agent-pty-only phase rather than creating a documentation-only commit.
 
 ## Phase 1: Extend agent-pty ownership protocol
 
@@ -30,7 +30,7 @@ This change spans two independent Git repositories. Phase 1 is committed in `~/b
 
 - [x] Add failing `src/external-agents/env.test.ts` proving the child environment preserves only the specified execution allowlist and excludes `GOBLIN_HOME`, Telegram credentials, provider keys, and generic `*_API_KEY` values from `external processes receive a sanitized environment`.
 - [x] Implement `src/external-agents/env.ts` and use exact string values only; omit undefined values and do not mutate `process.env`.
-- [x] Add `src/external-agents/process.ts` with an injectable argument-array `ProcessHost`, piped stdio/line iteration, exit observation, and owned-child cancellation that sends SIGTERM then SIGKILL after two seconds. Add deterministic tests with fake processes.
+- [x] Add `src/external-agents/process.ts` with an injectable argument-array `ProcessHost`, piped stdio/line iteration, exit observation, and owned process-tree cancellation that creates a new process group and sends SIGTERM then SIGKILL to the entire group after two seconds. Add deterministic tests with fake processes.
 - [x] Add failing `src/external-agents/runner.test.ts` cases using at least two fake adapters: immediate run-id return, lifecycle transitions, normalized-event persistence, immutable terminal states, synchronous concurrency-slot reservation, concurrent-start boundary at `maxConcurrent + 1`, cancel/timeout/dispose during pending `adapter.start()`, late-handle cancellation without fallback or non-terminal transition, event ordering for burst-output-then-completion, timeout, late events, cancel/timeout races, owner-hiding lookups, message capability checks, session-scoped concurrent cancellation, startup reconciliation, and disposed-runner rejection.
 - [x] Implement `src/external-agents/runner.ts` with injected adapter map/store/clock/process dependencies, synchronous concurrency-slot reservation with rollback on metadata failure, a per-run ordered event queue that sequences event append and terminal persistence, centralized terminal compare-and-set, bounded timer ownership, attached background rejection handling, `cancelOwned`, `cancelBySession`, and `dispose` from `ExternalAgentRunner owns external-agent run lifecycle`, `concurrency and timeout limits are enforced centrally`, and `cancellation is idempotent and owner-scoped`.
 - [x] Keep PTY fallback disabled in this phase; typed `InteractiveRequiredError` SHALL produce `input_required` or failure according to configuration without starting an adapter that is not yet implemented.

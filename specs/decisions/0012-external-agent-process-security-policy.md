@@ -16,7 +16,7 @@ The `external_agent` tool SHALL NOT accept a `cwd`, `executable`, CLI arguments,
 
 External-agent permission profiles SHALL be code-owned and limited to `read-only` and `workspace-write`. Each adapter SHALL map the profile to its backend-specific non-bypass arguments. There SHALL be no `dangerous` or approval-bypass profile.
 
-`agent-pty` owner metadata is a namespacing field for Goblin lifecycle isolation, not authentication. The daemon SHALL continue to rely on Unix-socket access control. Environment-only API-key authentication for external CLIs is not supported; operators authenticate each CLI through its existing user-scoped credential stores.
+`agent-pty` owner metadata is a namespacing field for Goblin lifecycle isolation, not authentication. The daemon SHALL continue to rely on Unix-socket access control: the socket and its parent directory SHALL be owned by the same OS user that runs the daemon and SHALL have restrictive permissions (for example, directory mode `0700` and socket mode `0600`) so only that user can connect. Environment-only API-key authentication for external CLIs is not supported; operators authenticate each CLI through its existing user-scoped credential stores.
 
 ## Consequences
 

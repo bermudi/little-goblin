@@ -16,7 +16,7 @@
 - [x] Grep for all `disposeRunner` calls in `src/` and `test/` and verify every call site is awaited after the signature change is made. Update any non-awaited call sites to `await`.
 - [x] Grep for all `applySideEffects` calls in `src/` and `test/` and verify every call site is awaited after the signature change is made. `applySideEffects` returning `Promise<void>` must not be ignored or the `runner-disposed`/`runner-created` ordering guarantee breaks.
 - [x] Add a code-level comment or JSDoc to `cancelPending` in `src/orchestration/dispatcher.ts` explicitly stating that it aborts only the queued prompt and does not cascade to subagents (proposal non-goal and design D4).
-- [x] Add a test verifying `disposeRunner` calls `cancelBySession` — either in `intake.test.ts` (spy on the `SubagentRunner` method) or in a dispatcher-focused test. Verify subagents are cancelled before the runner is disposed.
+- [x] Add a test verifying `disposeRunner` calls `cancelBySession` — either in `intake.test.ts` (spy on the `SubagentRunner` method) or in a dispatcher-focused test. Verify the runner is disposed before subagents are cancelled.
 - [x] Run `bun test` — all tests pass.
 - [x] Commit: `cascade-cancel: wire cascade into disposeRunner`
 

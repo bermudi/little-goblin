@@ -27,7 +27,15 @@ export class ProcessHandleImpl implements ProcessHandle {
           this._stderr = this._stderr.slice(-STDERR_MAX_CHARS);
         }
       });
+      child.stderr.on("error", () => {
+        // Swallow: process exit/kill handling covers lifecycle; avoid crashing
+        // the host process on a child stream error.
+      });
     }
+
+    this.stdout.on("error", () => {
+      // Swallow: same rationale as stderr above.
+    });
 
     this._exitPromise = new Promise<ProcessExit>((resolve) => {
       child.on("exit", (code: number | null, signal: string | null) => {
@@ -49,11 +57,17 @@ export class ProcessHandleImpl implements ProcessHandle {
   }
 
   async kill(): Promise<void> {
-    if (this._exited || this._killed) return;
+    if (this._exited) return;
+    if (this._killed) {
+      await this._exitPromise;
+      return;
+    }
     this._killed = true;
 
     try {
-      this._process.kill("SIGTERM");
+      if (this._process.pid) {
+        process.kill(-this._process.pid, "SIGTERM");
+      }
     } catch {
       // already gone
     }
@@ -61,7 +75,9 @@ export class ProcessHandleImpl implements ProcessHandle {
     const timer = setTimeout(() => {
       if (!this._exited) {
         try {
-          this._process.kill("SIGKILL");
+          if (this._process.pid) {
+            process.kill(-this._process.pid, "SIGKILL");
+          }
         } catch {
           // already gone
         }
@@ -93,6 +109,7 @@ export class ProcessHostImpl implements ProcessHost {
       cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
     });
 
     const handle = new ProcessHandleImpl(child);

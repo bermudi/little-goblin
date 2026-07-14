@@ -38,8 +38,8 @@ This change introduces:
   This prevents a subagent that is being cancelled (or has already completed or
   errored) from spawning new children during the `cancelBySession` cleanup
   window.
-- Wiring in `TurnDispatcher.disposeRunner(sessionId)` to call
-  `subagentRunner.cancelBySession(sessionId)` before disposing the runner.
+- Wiring in `TurnDispatcher.disposeRunner(sessionId)` to dispose and remove the
+  runner, clear its prompt queue, then `await subagentRunner.cancelBySession(sessionId)`.
   `disposeRunner` becomes async (`Promise<void>`) so the cascade is awaited.
 - `cancelPending(sessionId)` does **not** cascade. It aborts a queued prompt but
   the session stays alive — its subagents may still be doing useful work.

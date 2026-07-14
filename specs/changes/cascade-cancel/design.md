@@ -236,18 +236,25 @@ disposeRunner(sessionId: string): void {
 New code:
 ```ts
 async disposeRunner(sessionId: string): Promise<void> {
-  const prior = this.runners.get(sessionId);
-  if (prior) {
-    try {
-      prior.dispose();
-    } finally {
+  let disposeErr: unknown;
+  try {
+    const prior = this.runners.get(sessionId);
+    if (prior) {
+      try {
+        prior.dispose();
+      } catch (err) {
+        disposeErr = err;
+      } finally {
+        this.runners.delete(sessionId);
+      }
+    } else {
       this.runners.delete(sessionId);
     }
-  } else {
-    this.runners.delete(sessionId);
+    this.promptQueues.delete(sessionId);
+    await this.subagentRunner.cancelBySession(sessionId);
+  } finally {
+    if (disposeErr) throw disposeErr;
   }
-  this.promptQueues.delete(sessionId);
-  await this.subagentRunner.cancelBySession(sessionId);
 }
 ```
 
@@ -330,7 +337,7 @@ All tests use the existing `installStandardPiMock()`, `createTestHome`,
 Add a test verifying that `disposeRunner` calls
 `subagentRunner.cancelBySession(sessionId)`. Spy on the `SubagentRunner`
 method, or create a fake `SubagentRunner` that records the call. Verify the
-runner is disposed after the cascade completes.
+runner is disposed before the cascade completes.
 
 ## Changes
 

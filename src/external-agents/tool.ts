@@ -125,16 +125,24 @@ async function handleExternalAction(ctx: ActionContext): Promise<string> {
     case "status": {
       const id = params.id;
       if (!id) return "Error: id is required for action=status.";
-      const detail = await runner.status(id, sessionId);
-      if (!detail) return `Error: run ${id} not found.`;
-      return formatDetail(detail);
+      try {
+        const detail = await runner.status(id, sessionId);
+        if (!detail) return `Error: run ${id} not found.`;
+        return formatDetail(detail);
+      } catch (err) {
+        return `Error: ${errorString(err)}`;
+      }
     }
 
     case "cancel": {
       const id = params.id;
       if (!id) return "Error: id is required for action=cancel.";
-      const ok = await runner.cancel(id, sessionId);
-      return ok ? `Cancelled run ${id}.` : `Error: run ${id} not found or already terminal.`;
+      try {
+        const ok = await runner.cancel(id, sessionId);
+        return ok ? `Cancelled run ${id}.` : `Error: run ${id} not found or already terminal.`;
+      } catch (err) {
+        return `Error: ${errorString(err)}`;
+      }
     }
 
     case "message": {
@@ -153,9 +161,13 @@ async function handleExternalAction(ctx: ActionContext): Promise<string> {
     }
 
     case "list": {
-      const runs = runner.list(sessionId);
-      if (runs.length === 0) return "No external runs.";
-      return runs.map((r) => `- ${r.id} [${r.backend}] ${r.status} (updated ${r.updatedAt})`).join("\n");
+      try {
+        const runs = runner.list(sessionId);
+        if (runs.length === 0) return "No external runs.";
+        return runs.map((r) => `- ${r.id} [${r.backend}] ${r.status} (updated ${r.updatedAt})`).join("\n");
+      } catch (err) {
+        return `Error: ${errorString(err)}`;
+      }
     }
 
     default: {

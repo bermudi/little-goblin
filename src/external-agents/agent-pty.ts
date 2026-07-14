@@ -1,11 +1,12 @@
 import type { AdapterStartInput, ExternalAgentBackend, ExternalAgentEvent, ExternalAgentHandle, ProcessExit } from "./types.ts";
-import { nowIso } from "./util.ts";
+import { log } from "../log.ts";
+import { errorString, nowIso } from "./util.ts";
 
-type AgentPtyCommand = "spawn" | "type" | "snapshot" | "wait-for-exit" | "kill" | "remove";
+type AgentPtyCommand = "spawn" | "type" | "snapshot" | "wait-for-exit" | "kill" | "remove" | "kill-owner";
 
 interface AgentPtyRequest {
   cmd: AgentPtyCommand;
-  name: string;
+  name?: string;
   command?: string;
   args?: string[];
   cwd?: string;
@@ -82,6 +83,23 @@ export class AgentPtyAdapter {
     }
 
     return new AgentPtyHandle(input.processHost, sessionName, emit, input.projectDir, input.env, input.signal);
+  }
+
+  async killOwner(
+    processHost: AdapterStartInput["processHost"],
+    cwd: string,
+    env: Record<string, string>,
+    sessionId: string,
+  ): Promise<void> {
+    const owner = `goblin:${sessionId}`;
+    try {
+      const response = await this.rpc(processHost, cwd, env, { cmd: "kill-owner", owner });
+      if (!response.ok) {
+        throw new Error(response.error ?? `agent-pty kill-owner failed for ${owner}`);
+      }
+    } catch (err) {
+      log.error("agent-pty kill-owner failed", { owner, error: errorString(err) });
+    }
   }
 
   private async rpc(

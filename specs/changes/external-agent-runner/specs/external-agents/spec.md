@@ -80,7 +80,7 @@ Malformed lines SHALL produce a normalized failure or diagnostic event according
 
 ### Requirement: external processes receive a sanitized environment
 
-Every native and PTY external-agent process SHALL receive a new code-owned environment map rather than `process.env`. The map SHALL contain only the minimum execution variables required for local CLI operation (`HOME`, `PATH`, `USER`, `LOGNAME`, locale variables, selected `XDG_*` paths, `TMPDIR`, terminal variables, and `SSH_AUTH_SOCK` when present). It MUST exclude Goblin configuration values and secret-bearing variables including Telegram tokens, `GOBLIN_HOME`, and provider API-key variables. Authentication for external CLIs SHALL use their existing user-scoped credential stores; forwarding Goblin's provider keys is not part of this change.
+Every native and PTY external-agent process SHALL receive a new code-owned environment map rather than `process.env`. The map SHALL contain only the minimum execution variables required for local CLI operation (`HOME`, `PATH`, `USER`, `LOGNAME`, locale variables, selected `XDG_*` paths, `TMPDIR`, and terminal variables). It MUST exclude Goblin configuration values and secret-bearing variables including Telegram tokens, `GOBLIN_HOME`, provider API-key variables, and `SSH_AUTH_SOCK`. Authentication for external CLIs SHALL use their existing user-scoped credential stores; forwarding Goblin's provider keys or SSH agent access is not part of this change.
 
 #### Scenario: Bot token exists in parent environment
 
@@ -242,7 +242,7 @@ Startup preflight SHALL verify each enabled native backend executable by running
 
 ### Requirement: external run records are bounded and persisted
 
-Each run SHALL persist under `$GOBLIN_HOME/scratch/external-agents/<runId>/` using path helpers. `meta.json` SHALL be written atomically, normalized events SHALL be appended as complete JSON lines to `events.jsonl`, and a completed final response SHALL be written atomically to `result.txt`. The task text SHALL NOT be persisted in any run artifact or returned by `status` or `list`.
+Each run SHALL persist under `$GOBLIN_HOME/scratch/external-agents/<runId>/` using path helpers. `meta.json` SHALL be written atomically, normalized events SHALL be appended as complete JSON lines to `events.jsonl`, and a completed final response SHALL be written atomically to `result.txt`. The runner SHALL NOT intentionally persist the task text in any run artifact or return it by `status` or `list`. A provider may echo the task text in its output or final result; the runner is not required to redact such echoes, and those echoes are not considered intentional persistence.
 
 The runner SHALL bound individual normalized output events to 32,000 characters, retained `events.jsonl` content to 2 MiB per run, final result text to 128,000 characters, `status` recent-output responses to 16,000 characters, and `list` responses to the 20 newest owned runs. Truncation SHALL be explicit in persisted metadata and tool results.
 
@@ -263,7 +263,8 @@ Events, metadata updates, and result writes for a single run SHALL be processed 
 #### Scenario: Startup finds stale run
 
 - **WHEN** startup loads persisted metadata whose status is non-terminal but no live handle is owned by this runner
-- **THEN** it SHALL atomically mark the run `interrupted`
+- **THEN** it SHALL terminate any orphaned agent-pty sessions whose owner is safely verifiable (e.g., `agent-pty kill-owner goblin:<sessionId>`) before marking the run interrupted
+- **AND** it SHALL atomically mark the run `interrupted`
 - **AND** status inspection SHALL explain that the prior process was not resumed
 
 #### Scenario: Event and result ordering is preserved
@@ -273,11 +274,12 @@ Events, metadata updates, and result writes for a single run SHALL be processed 
 - **AND** `status` SHALL NOT expose the `completed` state until the result is persisted
 - **AND** a late event arriving after completion is stored only for diagnostics, not as a state change
 
-#### Scenario: Task text is not persisted
+#### Scenario: Task text is not intentionally persisted
 
 - **WHEN** a run completes with a final result
-- **THEN** `meta.json`, `events.jsonl`, and `result.txt` SHALL NOT contain the original task text
+- **THEN** `meta.json`, `events.jsonl`, and `result.txt` SHALL NOT intentionally contain the original task text
 - **AND** `status` and `list` responses SHALL NOT include the task text
+- **AND** any task text present in `events.jsonl` or `result.txt` is treated as a provider echo, not as a runner persistence guarantee
 
 ### Requirement: cancellation is idempotent and owner-scoped
 

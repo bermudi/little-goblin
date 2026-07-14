@@ -14,7 +14,9 @@ const ORIGINAL_KEYS = [
   "USER",
   "LANG",
   "LC_ALL",
+  "LC_CTYPE",
   "LC_PAPER",
+  "LC_SECRET",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",
@@ -49,7 +51,9 @@ describe("prepareEnv", () => {
     process.env.USER = "user";
     process.env.LANG = "en_US.UTF-8";
     process.env.LC_ALL = "en_US.UTF-8";
+    process.env.LC_CTYPE = "en_US.UTF-8";
     process.env.LC_PAPER = "letter";
+    process.env.LC_SECRET = "should-not-leak";
     process.env.XDG_CONFIG_HOME = "/home/user/.config";
     process.env.XDG_DATA_HOME = "/home/user/.local/share";
     process.env.XDG_STATE_HOME = "/home/user/.local/state";
@@ -67,11 +71,13 @@ describe("prepareEnv", () => {
     expect(env.USER).toBe("user");
     expect(env.LANG).toBe("en_US.UTF-8");
     expect(env.LC_ALL).toBe("en_US.UTF-8");
+    expect(env.LC_CTYPE).toBe("en_US.UTF-8");
     expect(env.LC_PAPER).toBe("letter");
     expect(env.XDG_CONFIG_HOME).toBe("/home/user/.config");
     expect(env.SSH_AUTH_SOCK).toBe("/run/ssh/agent");
     expect(env.SSL_CERT_FILE).toBe("/etc/ssl/cert.pem");
 
+    expect(env.LC_SECRET).toBeUndefined();
     expect(env.EXTERNAL_AGENT).toBeUndefined();
     expect(env.EXTERNAL_AGENT_BACKEND).toBeUndefined();
     expect(env.EXTERNAL_AGENT_RUN_ID).toBeUndefined();

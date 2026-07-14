@@ -6,6 +6,18 @@ const EXACT_KEYS = new Set([
   "TERM",
   "LANG",
   "LC_ALL",
+  "LC_CTYPE",
+  "LC_NUMERIC",
+  "LC_TIME",
+  "LC_COLLATE",
+  "LC_MONETARY",
+  "LC_MESSAGES",
+  "LC_PAPER",
+  "LC_NAME",
+  "LC_ADDRESS",
+  "LC_TELEPHONE",
+  "LC_MEASUREMENT",
+  "LC_IDENTIFICATION",
   "TMPDIR",
   "COLORTERM",
   "SSH_AUTH_SOCK",
@@ -16,16 +28,10 @@ const EXACT_KEYS = new Set([
   "XDG_CACHE_HOME",
 ]);
 
-const KEY_PREFIXES = ["LC_"];
-
 function isKeyAllowed(key: string): boolean {
   // Generic provider API keys and Goblin secrets must not be forwarded.
   if (key.endsWith("_API_KEY")) return false;
-  if (EXACT_KEYS.has(key)) return true;
-  for (const prefix of KEY_PREFIXES) {
-    if (key.startsWith(prefix)) return true;
-  }
-  return false;
+  return EXACT_KEYS.has(key);
 }
 
 export function prepareEnv(): Record<string, string> {

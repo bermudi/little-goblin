@@ -10,7 +10,7 @@ External coding agents are spawned as child processes with filesystem access and
 
 ## Decision
 
-External-agent child processes SHALL receive a code-owned, allowlisted environment map rather than `process.env`. The map SHALL contain only the execution variables required for local CLI operation (`HOME`, `PATH`, `USER`, `LOGNAME`, locale variables, selected `XDG_*` paths, `TMPDIR`, terminal variables, and `SSH_AUTH_SOCK` when present). `GOBLIN_HOME`, Telegram tokens, Goblin provider keys, and generic `*_API_KEY` variables SHALL be excluded.
+External-agent child processes SHALL receive a code-owned, allowlisted environment map rather than `process.env`. The map SHALL contain only the following exact execution variables: `HOME`, `PATH`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `LC_NUMERIC`, `LC_TIME`, `LC_COLLATE`, `LC_MONETARY`, `LC_MESSAGES`, `LC_PAPER`, `LC_NAME`, `LC_ADDRESS`, `LC_TELEPHONE`, `LC_MEASUREMENT`, `LC_IDENTIFICATION`, `TMPDIR`, `TERM`, `COLORTERM`, `SSL_CERT_FILE`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`. Any variable not in this exact list, including `GOBLIN_HOME`, Telegram tokens, Goblin provider keys, generic `*_API_KEY` variables, and `SSH_AUTH_SOCK`, SHALL be excluded.
 
 The `external_agent` tool SHALL NOT accept a `cwd`, `executable`, CLI arguments, environment overrides, permission mode, `ownerSessionId`, `timeout`, or PTY actions. The current session's `projectDir` SHALL be the only working directory, supplied by the tool factory and required before `start` succeeds.
 

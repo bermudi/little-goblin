@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { prepareEnv } from "./env.ts";
 
+const originalEnv: Record<string, string | undefined> = {};
+
 const ORIGINAL_KEYS = [
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
@@ -30,6 +32,9 @@ const ORIGINAL_KEYS = [
 
 describe("prepareEnv", () => {
   beforeEach(() => {
+    for (const key of ORIGINAL_KEYS) {
+      originalEnv[key] = process.env[key];
+    }
     process.env.OPENAI_API_KEY = "openai-secret";
     process.env.ANTHROPIC_API_KEY = "anthropic-secret";
     process.env.CODEX_API_KEY = "codex-secret";
@@ -41,7 +46,11 @@ describe("prepareEnv", () => {
 
   afterEach(() => {
     for (const key of ORIGINAL_KEYS) {
-      delete process.env[key];
+      if (originalEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = originalEnv[key];
+      }
     }
   });
 
@@ -74,8 +83,8 @@ describe("prepareEnv", () => {
     expect(env.LC_CTYPE).toBe("en_US.UTF-8");
     expect(env.LC_PAPER).toBe("letter");
     expect(env.XDG_CONFIG_HOME).toBe("/home/user/.config");
-    expect(env.SSH_AUTH_SOCK).toBe("/run/ssh/agent");
     expect(env.SSL_CERT_FILE).toBe("/etc/ssl/cert.pem");
+    expect(env.SSH_AUTH_SOCK).toBeUndefined();
 
     expect(env.LC_SECRET).toBeUndefined();
     expect(env.EXTERNAL_AGENT).toBeUndefined();
@@ -85,7 +94,9 @@ describe("prepareEnv", () => {
     expect(env.EXTERNAL_AGENT_PERMISSION_PROFILE).toBeUndefined();
   });
 
-  it("excludes provider API keys and Goblin secrets", () => {
+  it("excludes provider API keys, Goblin secrets, and SSH agent socket", () => {
+    process.env.SSH_AUTH_SOCK = "/run/ssh/agent";
+
     const env = prepareEnv();
 
     expect(env.OPENAI_API_KEY).toBeUndefined();
@@ -95,5 +106,6 @@ describe("prepareEnv", () => {
     expect(env.BOT_TOKEN).toBeUndefined();
     expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
     expect(env.GOBLIN_HOME).toBeUndefined();
+    expect(env.SSH_AUTH_SOCK).toBeUndefined();
   });
 });

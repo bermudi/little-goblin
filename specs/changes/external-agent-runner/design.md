@@ -117,7 +117,7 @@ The client initializes the connection, creates a session rooted at the absolute 
 
 `ProcessHost` is an internal seam used by native adapters and tested with deterministic fake processes. The production adapter uses argument-array process spawning with piped stdio, line iteration, exit observation, and signal delivery.
 
-`buildExternalAgentEnv(process.env)` constructs a new object from an explicit allowlist: `HOME`, `PATH`, `USER`, `LOGNAME`, `LANG`, keys beginning with `LC_`, selected `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME`, `TMPDIR`, `TERM`, `COLORTERM`, and `SSH_AUTH_SOCK`. Undefined entries are omitted. `GOBLIN_HOME`, Telegram tokens, Goblin provider keys, and generic `*_API_KEY` variables are never copied.
+`prepareEnv()` constructs a new object from `process.env` using an explicit allowlist: `HOME`, `PATH`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `LC_NUMERIC`, `LC_TIME`, `LC_COLLATE`, `LC_MONETARY`, `LC_MESSAGES`, `LC_PAPER`, `LC_NAME`, `LC_ADDRESS`, `LC_TELEPHONE`, `LC_MEASUREMENT`, `LC_IDENTIFICATION`, `TMPDIR`, `TERM`, `COLORTERM`, `SSL_CERT_FILE`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`. Undefined entries are omitted. Any variable not in this exact list, including `GOBLIN_HOME`, Telegram tokens, Goblin provider keys, generic `*_API_KEY` variables, and `SSH_AUTH_SOCK`, is never copied.
 
 Native adapters pass this exact map to their child. The PTY adapter includes the same map in `agent-pty`'s spawn protocol, preventing the daemon's broader environment from leaking into the PTY child.
 

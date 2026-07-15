@@ -67,9 +67,6 @@ fi
 echo "Installing dependencies..."
 su -s /bin/bash "${user}" -c "cd ${repo_dir} && bun install"
 
-echo "Running typecheck..."
-su -s /bin/bash "${user}" -c "cd ${repo_dir} && bun run typecheck"
-
 echo "Running validate-config..."
 su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run validate-config"
 

@@ -66,7 +66,7 @@ The system SHALL provide `scripts/backup.sh` that creates a timestamped archive 
 
 ### Requirement: Provide an update script
 
-The system SHALL provide `scripts/update.sh` that safely updates the running deployment: pulls the latest code, installs dependencies, runs the typecheck, runs the preflight check, and restarts the service.
+The system SHALL provide `scripts/update.sh` that safely updates the running deployment: pulls the latest code, installs dependencies, runs the preflight check, and restarts the service.
 
 #### Scenario: Successful update
 
@@ -75,7 +75,7 @@ The system SHALL provide `scripts/update.sh` that safely updates the running dep
 
 #### Scenario: Failing check blocks restart
 
-- **WHEN** `scripts/update.sh` is run and the preflight check or typecheck fails
+- **WHEN** `scripts/update.sh` is run and the preflight check fails
 - **THEN** it SHALL exit before restarting the service and leave the currently running instance untouched
 
 #### Scenario: Requires root

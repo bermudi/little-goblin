@@ -307,6 +307,11 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   onToolStart(name: string, _input: unknown): void {
+    // Stray tool events arriving after onAgentEnd SHALL NOT mutate slot
+    // state or trigger a response flush. Without this guard the
+    // force-flush IIFE below would bypass the freeze (flushResponse has
+    // no statusFrozen check) and issue a Telegram send post-turn.
+    if (this.statusFrozen) return;
     // Force-flush any accumulated response text before the tool runs,
     // regardless of whether this tool is visible in the status line.
     // Without this, text that arrived after the last throttle window
@@ -365,6 +370,7 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   onToolEnd(name: string, isError: boolean): void {
+    if (this.statusFrozen) return;
     if (!shouldShowTool(name, this.visibility)) return;
     const slot = this.slots.get(name);
     if (!slot) return;

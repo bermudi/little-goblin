@@ -649,6 +649,28 @@ describe("MessageBuffer", () => {
       expect(buffer._state().statusFrozen).toBe(true);
     });
 
+    it("stray onToolStart after onAgentEnd does not flush response (force-flush IIFE bypass)", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      buffer.onTextDelta("residual text that arrived late");
+      await tick();
+      buffer.onAgentEnd();
+      await tick();
+      const writesBeforeStray = m.send.length + m.edit.length;
+
+      // A stray onToolStart after onAgentEnd would previously trigger the
+      // force-flush IIFE (flushResponse(true)), bypassing the freeze since
+      // flushResponse has no statusFrozen check. The guard at the top of
+      // onToolStart now prevents this.
+      buffer.onToolStart("late", {});
+      await tick();
+      await buffer.flushResponse(true);
+      await tick();
+
+      expect(m.send.length + m.edit.length).toBe(writesBeforeStray);
+      expect(buffer._state().statusFrozen).toBe(true);
+    });
+
     it("force=true bypasses throttle (used by onAgentEnd)", async () => {
       let t = 1000;
       const m = makeBot();

@@ -624,10 +624,22 @@ export class SubagentRunner {
   /**
    * Remove terminal instances from the map to bound memory growth.
    * Called lazily on each `spawn()`.
+   *
+   * A terminal instance is only pruned if no other instance claims it as
+   * a parent (`spawnedBy`). This preserves the ancestry chain needed by
+   * `cancelBySession`'s BFS traversal — pruning a terminal parent while
+   * it has running descendants would orphan them from the session tree.
+   * Terminal subtrees are pruned leaf-first over successive `spawn()` calls.
    */
   private pruneTerminal(): void {
+    const parents = new Set<string>();
+    for (const inst of this.activeSubagents.values()) {
+      if (inst.spawnedBy !== null) {
+        parents.add(inst.spawnedBy);
+      }
+    }
     for (const [id, inst] of this.activeSubagents) {
-      if (inst.status !== "running") {
+      if (inst.status !== "running" && !parents.has(id)) {
         this.activeSubagents.delete(id);
       }
     }

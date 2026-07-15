@@ -276,11 +276,19 @@ export class TurnDispatcher {
     // Dispose the runner and sever the prompt-queue chain first. This prevents
     // any concurrent scheduled turn from entering a runner that is about to be
     // disposed while the subagent cascade runs.
+    //
+    // Track disposal failure with a boolean separate from disposeErr so that
+    // falsy throws (e.g. `throw undefined` or `throw null`) are still
+    // rethrown — `if (disposeErr)` alone would swallow them.
+    let disposeErr: unknown;
+    let disposeFailed = false;
     const prior = this.runners.get(sessionId);
     if (prior) {
       try {
         prior.dispose();
       } catch (err) {
+        disposeErr = err;
+        disposeFailed = true;
         log.error("AgentRunner.dispose failed in disposeRunner", {
           sessionId,
           err: err instanceof Error ? err.message : String(err),
@@ -321,6 +329,7 @@ export class TurnDispatcher {
       await Promise.race([Promise.all([externalCancelPromise, cancelPromise]), timeout]);
     } finally {
       if (timer) clearTimeout(timer);
+      if (disposeFailed) throw disposeErr;
     }
   }
 

@@ -866,6 +866,36 @@ describe("Telegram intake", () => {
     expect(agentRunners.has("sess-1")).toBe(false);
   });
 
+  it("disposeRunner rethrows when runner.dispose throws (including falsy values)", async () => {
+    const cfg = makeConfig();
+    const subagentRunner = new SubagentRunner(cfg);
+
+    const { agentRunners, intake } = makeHarness(cfg, subagentRunner);
+    const dispatcher = intake.dispatcher;
+
+    // Falsy throw — `if (disposeErr)` alone would swallow this.
+    const falsyRunner = new MockAgentRunner({ sessionId: "sess-falsy" });
+    falsyRunner.dispose.mockImplementation(() => {
+      throw null;
+    });
+    agentRunners.set("sess-falsy", falsyRunner as unknown as AgentRunner);
+    subagentRunner.cancelBySession = mock(async () => {}) as unknown as SubagentRunner["cancelBySession"];
+
+    await expect(dispatcher.disposeRunner("sess-falsy")).rejects.toBeNull();
+    expect(agentRunners.has("sess-falsy")).toBe(false);
+
+    // Real error — must also rethrow.
+    const errorRunner = new MockAgentRunner({ sessionId: "sess-err" });
+    const disposeErr = new Error("dispose blew up");
+    errorRunner.dispose.mockImplementation(() => {
+      throw disposeErr;
+    });
+    agentRunners.set("sess-err", errorRunner as unknown as AgentRunner);
+
+    await expect(dispatcher.disposeRunner("sess-err")).rejects.toBe(disposeErr);
+    expect(agentRunners.has("sess-err")).toBe(false);
+  });
+
   it("transcribes a voice message into a transcript prompt without a projectDir", async () => {
     const cfg = makeConfig();
     cfg.groqApiKey = "groq-key";

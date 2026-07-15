@@ -181,6 +181,68 @@ describe("SubagentRunner — prune terminal instances", () => {
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await second.result;
   });
+
+  it("does not prune a terminal parent while it has running descendants", async () => {
+    const a = await runner.spawn({
+      prompt: "a",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: "session-abc",
+    });
+    await flush();
+
+    const b = await runner.spawn({
+      prompt: "b",
+      activeScope: DEFAULT_SCOPE,
+      spawnedBy: a.id,
+      depth: 1,
+    });
+    await flush();
+
+    // Complete the parent while the child is still running.
+    const aInst = (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(a.id);
+    expect(aInst).toBeDefined();
+    markCompleted(aInst!);
+
+    // Spawning a third subagent triggers pruneTerminal(). The completed
+    // parent must be retained because child b is still running and needs
+    // the ancestry chain for cascade cancel.
+    const c = await runner.spawn({ prompt: "c", activeScope: DEFAULT_SCOPE });
+    c.result.catch(() => {});
+    await flush();
+
+    const ids = runner.list().map((entry) => entry.id);
+    expect(ids).toContain(a.id);
+    expect(ids).toContain(b.id);
+    expect(ids).toContain(c.id);
+
+    // Now complete the child. pruneTerminal is leaf-first: the next spawn
+    // prunes b (the leaf), and the spawn after that prunes a (now that no
+    // one references it as a parent).
+    const bInst = (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(b.id);
+    expect(bInst).toBeDefined();
+    markCompleted(bInst!);
+
+    const d = await runner.spawn({ prompt: "d", activeScope: DEFAULT_SCOPE });
+    d.result.catch(() => {});
+    await flush();
+
+    const idsAfterFirst = runner.list().map((entry) => entry.id);
+    expect(idsAfterFirst).not.toContain(b.id);
+    expect(idsAfterFirst).toContain(a.id); // a still retained (was parent of b)
+    expect(idsAfterFirst).toContain(d.id);
+
+    const e = await runner.spawn({ prompt: "e", activeScope: DEFAULT_SCOPE });
+    e.result.catch(() => {});
+    await flush();
+
+    const idsAfterSecond = runner.list().map((entry) => entry.id);
+    expect(idsAfterSecond).not.toContain(a.id);
+    expect(idsAfterSecond).not.toContain(b.id);
+    expect(idsAfterSecond).toContain(e.id);
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await e.result;
+  });
 });
 
 describe("SubagentRunner — dispose", () => {

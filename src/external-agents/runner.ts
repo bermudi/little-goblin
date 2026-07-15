@@ -17,7 +17,7 @@ import type {
 import { errorString, isTerminal, isTerminalEventType, nowIso } from "./util.ts";
 import { prepareEnv } from "./env.ts";
 import { defaultProcessHost } from "./process.ts";
-import { ExternalRunStore } from "./store.ts";
+import { ExternalRunStore, TERMINAL_RETENTION_MS } from "./store.ts";
 import { CodexAdapter } from "./codex.ts";
 import { ClaudeAdapter } from "./claude.ts";
 import { DevinAdapter } from "./devin.ts";
@@ -128,7 +128,22 @@ export class ExternalAgentRunner {
     this.transitionStatus(run, "running");
     this.store.save(run.meta);
 
-    await run.handle.send(trimmed);
+    try {
+      await run.handle.send(trimmed);
+    } catch (err) {
+      // If the run became terminal while send was in flight (e.g. timeout
+      // fired), do not clobber the terminal state with a recovery attempt.
+      if (run.terminal) {
+        throw err;
+      }
+      // Restore the run to the awaiting-input state so the user can retry.
+      // The input was not delivered, so the run must not be left in "running".
+      this.transitionStatus(run, "input_required");
+      run.inputRequired = "send failed; retry";
+      run.meta.inputRequired = run.inputRequired;
+      this.store.save(run.meta);
+      throw err;
+    }
     return this.summary(run);
   }
 
@@ -177,6 +192,8 @@ export class ExternalAgentRunner {
 
   async init(): Promise<void> {
     const records = this.store.list();
+    // Remove expired terminal run directories from disk.
+    this.store.cleanupTerminalDirs();
     const ptyOwners = new Set<string>();
     for (const meta of records) {
       if (isTerminal(meta.status as ExternalAgentStatus)) continue;
@@ -590,6 +607,7 @@ export class ExternalAgentRunner {
     run.meta.updatedAt = nowIso(this.clock);
     run.updatedAt = run.meta.updatedAt;
     this.clearTimeout(run);
+    this.scheduleTerminalRetention(run);
     run.resolveTerminal();
     return true;
   }
@@ -656,6 +674,20 @@ export class ExternalAgentRunner {
       clearTimeout(run.timeout);
       run.timeout = undefined;
     }
+  }
+
+  /**
+   * Schedule removal of a terminal run from the in-memory `runs` map after
+   * the retention window so `status()` can still query recently finished runs
+   * but terminal entries do not accumulate indefinitely.
+   */
+  private scheduleTerminalRetention(run: InternalRun): void {
+    setTimeout(() => {
+      const current = this.runs.get(run.id);
+      if (current && current.terminal) {
+        this.runs.delete(run.id);
+      }
+    }, TERMINAL_RETENTION_MS).unref?.();
   }
 
   private summary(run: InternalRun): ExternalAgentRunSummary {

@@ -49,13 +49,14 @@ export class AgentPtyAdapter {
     input: AdapterStartInput,
     emit: (event: ExternalAgentEvent) => void,
   ): Promise<ExternalAgentHandle> {
-    const { command, args } = getInteractiveCommand(input.backend, input.projectDir, input.permissionProfile, input.task);
+    const { command, args } = getInteractiveCommand(input.backend, input.projectDir, input.permissionProfile);
     const sessionName = `goblin-${input.runId}`;
     const owner = `goblin:${input.sessionId}`;
 
     // Avoid persisting the task text in the normalized event log; the command
-    // and args (including the task) are sent to the agent-pty daemon, but only
-    // the backend name is shown in the status event.
+    // and args (without the task) are sent to the agent-pty daemon, and the
+    // task is delivered via the `type` RPC after startup so it never appears
+    // in the process command-line (visible via `ps`).
     emit({ type: "status", at: nowIso(), message: `agent-pty spawn: ${input.backend}` });
 
     let spawnResult: AgentPtyResponse;
@@ -82,7 +83,21 @@ export class AgentPtyAdapter {
       throw new Error(spawnResult.error ?? `agent-pty spawn failed for ${input.backend}`);
     }
 
-    return new AgentPtyHandle(input.processHost, sessionName, emit, input.projectDir, input.env, input.signal);
+    const handle = new AgentPtyHandle(input.processHost, sessionName, emit, input.projectDir, input.env, input.signal);
+
+    // Send the task via the `type` RPC after startup so it is not visible in
+    // the process command-line. This matches native adapters that send the
+    // task through stdin rather than argv. If delivery fails, cancel the
+    // spawned session so it is not orphaned — the caller never receives the
+    // handle, so its `finally` cleanup cannot run.
+    try {
+      await handle.send(input.task);
+    } catch (err) {
+      await handle.cancel().catch(() => {});
+      throw err;
+    }
+
+    return handle;
   }
 
   async killOwner(
@@ -142,13 +157,17 @@ export class AgentPtyAdapter {
     env: Record<string, string>,
     sessionName: string,
   ): Promise<void> {
+    // Bounded timeout so a stuck agent-pty daemon cannot block cancellation
+    // indefinitely. Best-effort: errors are swallowed by the try/catch below.
+    const timeoutSignal = AbortSignal.timeout(5000);
     try {
-      await this.rpc(processHost, cwd, env, { cmd: "kill", name: sessionName, signal: "SIGTERM" }, undefined);
+      await this.rpc(processHost, cwd, env, { cmd: "kill", name: sessionName, signal: "SIGTERM" }, timeoutSignal);
     } catch {
       // ignore
     }
+    const removeSignal = AbortSignal.timeout(5000);
     try {
-      await this.rpc(processHost, cwd, env, { cmd: "remove", name: sessionName }, undefined);
+      await this.rpc(processHost, cwd, env, { cmd: "remove", name: sessionName }, removeSignal);
     } catch {
       // ignore
     }
@@ -218,13 +237,17 @@ class AgentPtyHandle implements ExternalAgentHandle {
   }
 
   async cancel(): Promise<void> {
+    // Bounded timeout so a stuck agent-pty daemon cannot block cancellation
+    // indefinitely. Best-effort: errors are swallowed by the try/catch below.
+    const killSignal = AbortSignal.timeout(5000);
     try {
-      await this.rpc({ cmd: "kill", name: this.sessionName, signal: "SIGTERM" }, undefined);
+      await this.rpc({ cmd: "kill", name: this.sessionName, signal: "SIGTERM" }, killSignal);
     } catch {
       // ignore
     }
+    const removeSignal = AbortSignal.timeout(5000);
     try {
-      await this.rpc({ cmd: "remove", name: this.sessionName }, undefined);
+      await this.rpc({ cmd: "remove", name: this.sessionName }, removeSignal);
     } catch {
       // ignore
     }
@@ -263,20 +286,19 @@ function getInteractiveCommand(
   backend: ExternalAgentBackend,
   projectDir: string,
   profile: "read-only" | "workspace-write",
-  task: string,
 ): { command: string; args: string[] } {
   switch (backend) {
     case "codex": {
       const sandbox = profile === "workspace-write" ? "workspace-write" : "read-only";
-      return { command: "codex", args: ["-C", projectDir, "--color", "never", "--sandbox", sandbox, "--", task] };
+      return { command: "codex", args: ["-C", projectDir, "--color", "never", "--sandbox", sandbox] };
     }
     case "claude": {
       const mode = profile === "workspace-write" ? "acceptEdits" : "plan";
-      return { command: "claude", args: ["--permission-mode", mode, "--", task] };
+      return { command: "claude", args: ["--permission-mode", mode] };
     }
     case "devin": {
       const mode = profile === "workspace-write" ? "accept-edits" : "auto";
-      return { command: "devin", args: ["--permission-mode", mode, "--", task] };
+      return { command: "devin", args: ["--permission-mode", mode] };
     }
     default: {
       const _exhaustive: never = backend;

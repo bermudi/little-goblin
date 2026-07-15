@@ -40,7 +40,14 @@ Command (/new, /resume, /archive, /project)
 
 The tree is reconstructable from the in-memory `activeSubagents` map by
 following `spawnedBy` links. No on-disk traversal is needed — cascade cancel
-operates on live (in-memory) instances only.
+operates on live (in-memory) instances only. When `pruneTerminal()` removes a
+terminal parent, running descendants whose `spawnedBy` points to the pruned
+parent can no longer resolve ancestry through `activeSubagents` alone. To
+preserve cascade correctness, `cancelBySession` SHALL resolve ancestry using
+retained terminal ancestors (deferred pruning until all descendants are
+terminal), a parent/session index that maps pruned parents to their session,
+or equivalent recovery logic. `pruneTerminal()` SHALL not remove a terminal
+instance while it has running descendants in the same spawn tree.
 
 ## Decisions
 
@@ -237,6 +244,7 @@ New code:
 ```ts
 async disposeRunner(sessionId: string): Promise<void> {
   let disposeErr: unknown;
+  let disposeFailed = false;
   try {
     const prior = this.runners.get(sessionId);
     if (prior) {
@@ -244,6 +252,7 @@ async disposeRunner(sessionId: string): Promise<void> {
         prior.dispose();
       } catch (err) {
         disposeErr = err;
+        disposeFailed = true;
       } finally {
         this.runners.delete(sessionId);
       }
@@ -253,10 +262,15 @@ async disposeRunner(sessionId: string): Promise<void> {
     this.promptQueues.delete(sessionId);
     await this.subagentRunner.cancelBySession(sessionId);
   } finally {
-    if (disposeErr) throw disposeErr;
+    if (disposeFailed) throw disposeErr;
   }
 }
 ```
+
+A separate `disposeFailed` boolean tracks whether disposal threw, because
+`dispose()` could throw a falsy value (e.g. `throw undefined` or `throw null`).
+Using `if (disposeErr)` alone would swallow a falsy throw; the boolean
+ensures every value is rethrown.
 
 **Spec link:** "Disposing a session runner cancels its subagents"
 (orchestration delta).
@@ -309,9 +323,12 @@ covering:
    `spawnedBy: "session-abc"`, spawn B with `spawnedBy: A.id`, call
    `cancelBySession("session-abc")`, verify both A and B are cancelled.
 3. **Terminal parent with running child is still cancelled** — spawn A with
-   `spawnedBy: "session-abc"`, complete it via `agent_end`, spawn B with
-   `spawnedBy: A.id`, call `cancelBySession("session-abc")`, verify A remains
-   `completed` and B is cancelled.
+   `spawnedBy: "session-abc"` while A is still running, spawn B with
+   `spawnedBy: A.id` while A is still running, then complete A via
+   `agent_end`, call `cancelBySession("session-abc")`, verify A remains
+   `completed` and B is cancelled. (Spawning B while A is running, then
+   completing A before the cancel, properly exercises the terminal-parent
+   traversal scenario.)
 4. **Terminal instances skipped** — spawn A with
    `spawnedBy: "session-abc"`, complete it via `agent_end`, call
    `cancelBySession("session-abc")`, verify A remains `completed`.
@@ -343,7 +360,12 @@ runner is disposed before the cascade completes.
 
 - `cancelBySession(sessionId)` — new method that cancels every subagent in the
   session's spawn tree. This is the actual cascade; it is called by
-  `dispose()` and `disposeRunner()`.
+  `disposeRunner()` (session-scoped) and shares a lower-level cleanup helper
+  with `dispose()`. `dispose()` remains nuclear, process-wide cleanup: it does
+  NOT directly invoke `cancelBySession(sessionId)` for a specific session.
+  Instead, `dispose()` performs its own concurrent cleanup of all active
+  instances, while `disposeRunner()` performs the session-scoped cascade via
+  `cancelBySession(sessionId)`.
 - `dispose()` — unchanged semantically (nuclear, for process shutdown), but now
   cleans up active instances concurrently for faster shutdown; per-instance
   teardown errors are logged.

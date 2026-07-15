@@ -20,6 +20,11 @@ export class ProcessHandleImpl implements ProcessHandle {
     this.stdin = child.stdin!;
     this.stdout = child.stdout!;
 
+    this.stdin.on("error", () => {
+      // Swallow: same rationale as stderr/stdout below — avoid crashing the
+      // host process on a child stream error such as EPIPE.
+    });
+
     if (child.stderr) {
       child.stderr.on("data", (chunk: Buffer) => {
         this._stderr += chunk.toString("utf-8");

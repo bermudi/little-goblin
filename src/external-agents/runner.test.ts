@@ -565,4 +565,46 @@ describe("ExternalAgentRunner", () => {
     expect(record?.status).toBe("completed");
     expect(store.getResult(summary.id)).toBe("hello output");
   });
+
+  it("message() does not clobber terminal state when send fails after a concurrent timeout", async () => {
+    // Adapter that enters input_required, then on send() blocks until the
+    // run becomes terminal (via a short timeout) and throws — exercising the
+    // guard that prevents recovery from overwriting a terminal transition.
+    const cfg = makeConfig();
+    cfg.externalAgents = { ...cfg.externalAgents!, timeoutMs: 30 };
+    const adapter = new (class implements ExternalAgentAdapter {
+      readonly backend = "codex" as const;
+      async start(_input: AdapterStartInput, emit: (event: ExternalAgentEvent) => void): Promise<ExternalAgentHandle> {
+        setTimeout(() => {
+          emit({ type: "input_required", at: "2024-01-01T00:00:00.000Z", message: "send a message" });
+        }, 0);
+        return {
+          cancel: async () => {},
+          send: async (_text: string) => {
+            // Block until the run is terminal, then throw.
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            throw new Error("send failed after timeout");
+          },
+        };
+      }
+    })();
+    const runner = new ExternalAgentRunner(cfg, { adapters: new Map([["codex", adapter]]) });
+
+    const summary = await runner.start({ backend: "codex", task: "hello", sessionId: "s1", projectDir: cfg.goblinHome });
+    // Wait for input_required.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((await runner.status(summary.id))?.status).toBe("input_required");
+
+    // Send a message; the send blocks past the 30ms timeout, so the run
+    // becomes timed_out while send is in flight.
+    await expect(runner.message(summary.id, "s1", "follow up")).rejects.toThrow("send failed after timeout");
+
+    const detail = await runner.status(summary.id);
+    expect(detail?.status).toBe("timed_out");
+    // The terminal guard must not have restored inputRequired.
+    expect(detail?.inputRequired).toBeUndefined();
+    const record = runner["store"].load(summary.id);
+    expect(record?.status).toBe("timed_out");
+    expect(record?.inputRequired).toBeUndefined();
+  });
 });

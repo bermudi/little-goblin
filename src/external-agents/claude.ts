@@ -64,6 +64,7 @@ export class ClaudeAdapter {
               }
             }
             if (event.type === "failed" && !workStarted && !hasOutput && isInteractiveError(event.error)) {
+              await process.kill();
               rejectExit(new InteractiveRequiredError("claude", event.error ?? "interactive mode required"));
               return;
             }
@@ -75,6 +76,7 @@ export class ClaudeAdapter {
 
         const stderr = process.getStderr();
         if (isInteractiveError(stderr) && !workStarted && !hasOutput) {
+          await process.kill();
           rejectExit(new InteractiveRequiredError("claude", stderr || "interactive mode required"));
           return;
         }

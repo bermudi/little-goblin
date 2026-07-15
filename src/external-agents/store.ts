@@ -1,6 +1,7 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { log } from "../log.ts";
 import { atomicWrite } from "../fs.ts";
-import type { ExternalAgentBackend, ExternalAgentEvent, ExternalAgentRunRecord, ExternalAgentStatus, InternalRun } from "./types.ts";
+import type { ExternalAgentBackend, ExternalAgentEvent, ExternalAgentRunRecord, ExternalAgentStatus, InternalRun, TerminalStatus } from "./types.ts";
 import { TerminalStatuses } from "./util.ts";
 import { nowIso } from "./util.ts";
 import {
@@ -13,6 +14,11 @@ import {
 
 const MAX_EVENT_BYTES = 2 * 1024 * 1024;
 const MAX_EVENT_LOOKBACK = 20;
+// Terminal run directories are retained for this long after the run becomes
+// terminal so `status()` can still query recently finished runs, then removed.
+// Shared with runner.ts so in-memory retention and on-disk cleanup stay in
+// sync — do not redeclare a separate copy.
+export const TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export class ExternalRunStore {
   constructor(private readonly home: string) {}
@@ -89,10 +95,51 @@ export class ExternalRunStore {
         const record = this.load(entry.name);
         if (record) entries.push(record);
       } catch (err) {
-        throw new Error(`failed to load external run metadata ${entry.name}: ${err instanceof Error ? err.message : String(err)}`);
+        // Log and skip malformed records so one corrupt entry cannot prevent
+        // startup recovery or hide the remaining valid records.
+        log.error("failed to load external run metadata; skipping", {
+          runId: entry.name,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
     return entries;
+  }
+
+  /**
+   * Remove terminal run directories older than the retention window. Called
+   * during `init()` so expired terminal records do not accumulate on disk.
+   */
+  cleanupTerminalDirs(now: Date = new Date()): void {
+    const root = externalAgentsRoot(this.home);
+    if (!existsSync(root)) return;
+    const cutoffMs = now.getTime() - TERMINAL_RETENTION_MS;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const metaPath = externalAgentMetaPath(this.home, entry.name);
+      if (!existsSync(metaPath)) continue;
+      let record: ExternalAgentRunRecord | null = null;
+      try {
+        record = this.load(entry.name);
+      } catch {
+        // Malformed metadata is left for manual inspection; cleanup only
+        // targets well-formed terminal records past the retention window.
+        continue;
+      }
+      if (!record) continue;
+      if (!TerminalStatuses.has(record.status as TerminalStatus)) continue;
+      const updatedAtMs = Date.parse(record.updatedAt);
+      if (Number.isNaN(updatedAtMs) || updatedAtMs > cutoffMs) continue;
+      const dir = externalAgentRunDir(this.home, record.id);
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        log.error("failed to clean up terminal run directory", {
+          runId: record.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 
   appendEvent(run: InternalRun, event: ExternalAgentEvent): void {

@@ -289,6 +289,7 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   onTextDelta(delta: string): void {
+    if (this.statusFrozen) return;
     const prevLen = this.accumulatedText.length;
     this.accumulatedText += delta;
     this.isStreaming = true;

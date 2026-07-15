@@ -88,7 +88,7 @@ All native adapters receive the same task, absolute project directory, permissio
 
 #### Codex
 
-`CodexAdapter` starts `codex exec` in JSON mode with `-C <projectDir>`, `--color never`, `--ask-for-approval never`, and a code-owned sandbox mapping:
+`CodexAdapter` starts `codex exec` in JSON mode (`--json`) with `-C <projectDir>`, `--color never`, `--skip-git-repo-check`, and a code-owned sandbox mapping:
 
 - `read-only` → `--sandbox read-only`
 - `workspace-write` → `--sandbox workspace-write`
@@ -153,7 +153,7 @@ $GOBLIN_HOME/scratch/external-agents/
 
 Adapter callbacks for a single run are processed through a per-run ordered queue. The queue serializes event append, metadata update, and result write operations in the order the events are accepted. A terminal event is not exposed through `status` until the result is persisted and the queue has drained the preceding events. Before an event append would exceed 2 MiB, the store appends one final truncation event if it fits, sets `eventsTruncated` in metadata, and drops later output events while preserving terminal metadata/result. Individual output and final-result caps are applied before writes. Status reads only the bounded tail required for a 16,000-character response; list sorts metadata by creation time and returns at most 20 owned records.
 
-`init()` creates no paths itself beyond using the directory created by `ensureGoblinHome()`. It loads valid metadata and marks every non-terminal persisted record `interrupted`, because no in-memory process handle can be proven owned after restart. Malformed metadata fails loud rather than silently deleting history.
+`init()` creates no paths itself beyond using the directory created by `ensureGoblinHome()`. It loads valid metadata, cleans up PTY sessions belonging to the current owner (using persisted adapter kind and run ownership metadata to target only owned PTY records while leaving native records and other owners untouched), then marks every non-terminal persisted record `interrupted`, because no in-memory process handle can be proven owned after restart. Malformed metadata is logged and skipped rather than rethrowing, so one corrupt entry cannot prevent startup recovery. Expired terminal run directories are removed according to the retention policy.
 
 ### Start and completion data flow
 

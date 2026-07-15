@@ -19,7 +19,7 @@ This change adds external coding-agent orchestration as a capability of the one 
 - Add one `external_agent` tool with `start`, `status`, `message`, `cancel`, and `list` actions. `start` returns immediately with a run ID; status and terminal results are obtained without holding a tool call open for the full coding task.
 - Bind every run to the spawning Goblin session and that session's configured project directory. The model cannot supply an arbitrary executable or working directory.
 - Configure an explicit backend allowlist, concurrency limit, run timeout, and permission profile. If no external backends are enabled, the tool is omitted.
-- Persist bounded run metadata, normalized events, and final results under `$GOBLIN_HOME/scratch/external-agents/` using atomic writes/append-only JSONL. Reconcile stale `running` metadata at startup.
+- Persist bounded run metadata, normalized events, and final results under `$GOBLIN_HOME/scratch/external-agents/` using atomic writes/append-only JSONL. Reconcile all non-terminal external-agent records (`starting`, `running`, and `input_required`) at startup.
 - Enforce backend-specific safe permission arguments and a code-owned sanitized child environment; tool input cannot request approval bypass, arbitrary CLI flags, or environment values.
 
 ### Orchestration integration

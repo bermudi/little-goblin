@@ -20,7 +20,7 @@ This change spans two independent Git repositories. Phase 1 is committed in `~/b
 - [x] Add the nested `externalAgents` Zod schema in `src/schema.ts` and expose a deeply frozen typed value from `src/config.ts`, defaulting to no enabled backends.
 - [x] Add `src/external-agents/paths.ts` for root/run/meta/events/result paths; update `ensureGoblinHome()` to create the root only through that helper, per decision 0008.
 - [x] Add `src/external-agents/types.ts` with backend/status/event/record types, fixed output limits, terminal-state helpers, adapter/handle interfaces, and typed startup errors from `ExternalAgentRunner owns external-agent run lifecycle` and `External agent adapters normalize native protocols`.
-- [x] Add failing `src/external-agents/store.test.ts` coverage for atomic metadata/result writes, complete JSONL events, all byte/character caps, explicit truncation, newest-20 owner-filtered list, malformed-record fail-loud behavior, stale non-terminal reconciliation, and the absence of the task text from `meta.json`, `events.jsonl`, and `result.txt`.
+- [x] Add failing `src/external-agents/store.test.ts` coverage for atomic metadata/result writes, complete JSONL events, all byte/character caps, explicit truncation, newest-20 owner-filtered list, malformed-record fail-loud behavior, stale non-terminal reconciliation, and verification that the runner does not intentionally write task text to `meta.json`, `events.jsonl`, or `result.txt` (provider-generated output that echoes the task is outside the runner's control).
 - [x] Implement `src/external-agents/store.ts` as the sole owner of run filesystem behavior; serialize concurrent appends per run and mark stale non-terminal records `interrupted` during initialization.
 - [x] Add `src/external-agents/mod.ts` exports for the foundation types/store/path functions required by later phases.
 - [x] Run targeted external-agent/config tests, `bun test`, and `bun run typecheck`.
@@ -40,7 +40,7 @@ This change spans two independent Git repositories. Phase 1 is committed in `~/b
 ## Phase 4: Add Codex and Claude adapters
 
 - [x] Record the installed Codex/Claude structured-mode contract used by the adapters in test fixtures or test builders without invoking a paid model. Add malformed-line, missing-terminal-event, nonzero-exit, safe-to-retry startup, and representative completion tests for both adapters.
-- [x] Implement `src/external-agents/codex.ts` with `codex exec --json`, stdin task delivery, absolute `-C`, `--color never`, `--ask-for-approval never`, and exact read-only/workspace-write sandbox mappings. Validate every JSONL event before normalization.
+- [x] Implement `src/external-agents/codex.ts` with `codex exec --json`, stdin task delivery, absolute `-C`, `--color never`, `--skip-git-repo-check`, and exact read-only/workspace-write sandbox mappings. Validate every JSONL event before normalization.
 - [x] Implement `src/external-agents/claude.ts` with print/stream-JSON mode, stdin task delivery, exact `plan`/`acceptEdits` permission mappings, validated event normalization, and no native `send` capability.
 - [x] Ensure both adapters classify interactive startup only before any execution event and otherwise fail rather than retrying through PTY, satisfying `agent-pty is an internal interactive fallback`.
 - [x] Add `src/external-agents/preflight.ts` with injectable process checks for enabled Codex/Claude version commands and bounded timeout/error messages from `enabled external executables are preflighted`; add tests proving disabled binaries are not checked.

@@ -2411,7 +2411,7 @@ describe("MessageBuffer", () => {
       expect(buffer._state().chatActionHandle).toBeUndefined();
     });
 
-    it("after onAgentEnd, a new onTextDelta starts a fresh interval", async () => {
+    it("after onAgentEnd, a stray onTextDelta does not re-arm the chat-action timer", async () => {
       const m = makeBot();
       const sched = fakeScheduler();
       const buffer = makeBufferWithScheduler(m, sched);
@@ -2419,11 +2419,10 @@ describe("MessageBuffer", () => {
       buffer.onAgentEnd();
       buffer.onTextDelta("second");
       await tick();
-      expect(sched.scheduled.length).toBe(2);
-      expect(m.chatActions.length).toBe(2);
-      expect(buffer._state().chatActionHandle).toBe(
-        sched.scheduled[1]?.handle,
-      );
+      // Only the first delta arms the chat-action timer; the stray delta
+      // after onAgentEnd is ignored because statusFrozen is true.
+      expect(sched.scheduled.length).toBe(1);
+      expect(m.chatActions.length).toBe(1);
     });
 
     it("does not throw if sendChatAction rejects", async () => {

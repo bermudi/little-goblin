@@ -12,8 +12,6 @@ export class CodexAdapter {
     const profile = input.permissionProfile === "workspace-write" ? "workspace-write" : "read-only";
     const command = [
       "codex",
-      "--ask-for-approval",
-      "never",
       "exec",
       "--skip-git-repo-check",
       "--json",
@@ -67,6 +65,7 @@ export class CodexAdapter {
               }
             }
             if (event.type === "failed" && !turnCompleted && !workStarted && !hasOutput && isInteractiveError(event.error)) {
+              await process.kill();
               rejectExit(new InteractiveRequiredError("codex", event.error ?? "interactive mode required"));
               return;
             }
@@ -88,7 +87,8 @@ export class CodexAdapter {
         }
 
         const stderr = process.getStderr();
-        if (isInteractiveError(stderr)) {
+        if (!workStarted && !hasOutput && isInteractiveError(stderr)) {
+          await process.kill();
           rejectExit(new InteractiveRequiredError("codex", stderr || "interactive mode required"));
           return;
         }

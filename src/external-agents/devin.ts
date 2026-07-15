@@ -7,7 +7,10 @@ import {
   ndJsonStream,
   RequestError,
   type ContentBlock,
+  type PermissionOption,
   type ReadTextFileRequest,
+  type RequestPermissionRequest,
+  type RequestPermissionResponse,
   type SessionUpdate,
   type WriteTextFileRequest,
 } from "@agentclientprotocol/sdk";
@@ -54,8 +57,27 @@ export class DevinAdapter {
 
     const handle: ExternalAgentHandle = {
       cancel: async () => {
-        connection.close();
+        // Resolve the cancel signal BEFORE disposing the session. The ACP SDK's
+        // session.dispose() synchronously rejects the pending nextUpdate()
+        // promise; if that rejection settles before cancelPromise, Promise.race
+        // in the update loop would reject instead of resolving with CANCELLED,
+        // emitting a spurious "failed" event. Settling cancelPromise first
+        // guarantees the loop observes CANCELLED and emits "cancelled".
         resolveCancel?.(CANCELLED);
+        // Request graceful ACP session disposal if available. The SDK does not
+        // expose a client-side session/cancel request, so we dispose update
+        // routing and close the connection; the agent observes the closed
+        // connection and stops on its own.
+        try {
+          session.dispose();
+        } catch {
+          // ignore — best-effort cleanup
+        }
+        try {
+          connection.close();
+        } catch {
+          // ignore — best-effort; do not let a close failure skip process.kill
+        }
         await process.kill();
       },
     };
@@ -67,8 +89,15 @@ export class DevinAdapter {
     void (async () => {
       try {
         while (true) {
-          const msg = await Promise.race([session.nextUpdate(), cancelPromise]);
-          if (msg === CANCELLED) break;
+          const nextUpdatePromise = session.nextUpdate();
+          const msg = await Promise.race([nextUpdatePromise, cancelPromise]);
+          if (msg === CANCELLED) {
+            // Consume the abandoned nextUpdate promise so a connection-close
+            // rejection cannot create an unhandled rejection.
+            nextUpdatePromise.catch(() => {});
+            emit({ type: "cancelled", at: nowIso() });
+            break;
+          }
           if (msg === undefined) {
             emit({ type: "failed", at: nowIso(), error: "devin session ended without a terminal event" });
             break;
@@ -147,8 +176,8 @@ function registerHandlers(
     }
   });
 
-  acpClient.onRequest(methods.client.session.requestPermission, () => {
-    return { outcome: { outcome: "cancelled" } };
+  acpClient.onRequest(methods.client.session.requestPermission, (ctx: { params: RequestPermissionRequest }) => {
+    return buildPermissionResponse(ctx.params.options);
   });
 
   acpClient.onRequest(methods.client.elicitation.create, () => {
@@ -156,7 +185,8 @@ function registerHandlers(
   });
 
   acpClient.onNotification(methods.client.elicitation.complete, () => {
-    throw new RequestError(-32603, "Elicitation not supported");
+    // Notifications have no response channel; ignore. Elicitation is not
+    // supported, but throwing here would create an unhandled rejection.
   });
 
   acpClient.onRequest(methods.client.terminal.create, () => {
@@ -220,4 +250,23 @@ function textFromContent(content: ContentBlock | undefined): string {
     return content.text;
   }
   return "";
+}
+
+/**
+ * Build the ACP permission response for an automated client.
+ *
+ * Selects a reject option when available so the agent sees an explicit denial
+ * of the specific action. Never selects an allow option: Goblin is an
+ * automated client and must not grant permissions the user did not pre-approve
+ * via the configured permission profile. When no reject option is offered,
+ * denies by cancelling the permission request.
+ *
+ * Exported for unit testing.
+ */
+export function buildPermissionResponse(options: PermissionOption[] | undefined): RequestPermissionResponse {
+  const rejectOption = options?.find((o) => o.kind === "reject_once" || o.kind === "reject_always");
+  if (rejectOption) {
+    return { outcome: { outcome: "selected", optionId: rejectOption.optionId } };
+  }
+  return { outcome: { outcome: "cancelled" } };
 }

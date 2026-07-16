@@ -17,7 +17,7 @@ repo_dir="/opt/little-goblin"
 goblin_home="/var/lib/goblin"
 user="goblin"
 
-MIN_RAM_MB="${GOBLIN_UPDATE_MIN_RAM_MB:-1024}"
+MIN_RAM_MB="${GOBLIN_UPDATE_MIN_RAM_MB:-512}"
 
 available_kb=$(awk '
   /^MemAvailable:/ { mem = $2; found_avail = 1 }

@@ -2310,6 +2310,119 @@ describe("MessageBuffer", () => {
     });
   });
 
+  describe("response message segments at assistant message boundaries", () => {
+    const STATUS_OFF = { visibility: "none" as const, responseThrottleMs: 0 };
+
+    it("two assistant messages in one turn produce two Telegram bubbles", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
+
+      // First assistant message_start arrives before any text.
+      buffer.onMessageStart();
+      await tick();
+      expect(m.send.length).toBe(0);
+      expect(buffer._state().responseMessageId).toBeUndefined();
+
+      buffer.onTextDelta("First reply.");
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]?.text).toBe("First reply.");
+      const firstMsgId = buffer._state().responseMessageId;
+      expect(firstMsgId).toBeDefined();
+
+      // message_end should flush the segment but not reset state.
+      buffer.onMessageEnd();
+      await tick();
+      expect(buffer._state().responseMessageId).toBe(firstMsgId);
+
+      // Second assistant message_start seals the first and starts a fresh bubble.
+      buffer.onMessageStart();
+      await tick();
+      expect(buffer._state().responseMessageId).toBeUndefined();
+      expect(buffer._state().accumulatedText).toBe("");
+
+      buffer.onTextDelta("Second reply.");
+      await tick();
+      expect(m.send.length).toBe(2);
+      expect(m.send[1]?.text).toBe("Second reply.");
+      expect(buffer._state().responseMessageId).not.toBe(firstMsgId);
+
+      // No edit should have appended the second reply onto the first bubble.
+      const cross = m.edit.filter((e) => e.text.includes("Second reply."));
+      expect(cross.length).toBe(0);
+    });
+
+    it("no stub on the first assistant message", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
+
+      // First assistant message_start with no response in progress should not
+      // send a stub and should not mutate response state.
+      buffer.onMessageStart();
+      await tick();
+      expect(m.send.length).toBe(0);
+      expect(m.edit.length).toBe(0);
+      expect(buffer._state().responseMessageId).toBeUndefined();
+      expect(buffer._state().accumulatedText).toBe("");
+
+      // The first text delta is what creates the response bubble.
+      buffer.onTextDelta("hello");
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]?.text).toBe("hello");
+      expect(buffer._state().responseMessageId).toBeDefined();
+    });
+
+    it("onMessageEnd force-flushes text that is within the throttle window", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        visibility: "none",
+        responseThrottleMs: 10000,
+        now: () => 0,
+      });
+
+      // Natural flush is throttled out.
+      buffer.onTextDelta("throttled");
+      await tick();
+      expect(m.send.length).toBe(0);
+
+      // message_end must force-flush so the user sees the text.
+      buffer.onMessageEnd();
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]?.text).toBe("throttled");
+    });
+
+    it("resets sticky plain-text flag on new assistant message", async () => {
+      const m = makeBot();
+      m.failNext.send = { error_code: 400, description: "Bad Request: can't parse markdown" };
+      const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
+
+      // First assistant message falls back to plain text.
+      buffer.onTextDelta("*bad*");
+      await tick();
+      await tick();
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]?.opts?.parse_mode).toBeUndefined();
+      expect(m.send[0]?.text).toBe("bad");
+
+      buffer.onMessageEnd();
+      await tick();
+
+      // Second assistant message_start should reset the sticky flag so the
+      // next response can attempt MarkdownV2 again.
+      buffer.onMessageStart();
+      await tick();
+
+      buffer.onTextDelta("good");
+      await tick();
+      expect(m.send.length).toBe(2);
+      expect(m.send[1]?.opts).toEqual({ parse_mode: "MarkdownV2" });
+      expect(m.send[1]?.text).toBe("good");
+    });
+  });
+
   describe("chat action refresh", () => {
     interface FakeScheduler {
       setIntervalFn: (fn: () => void, ms: number) => unknown;

@@ -394,9 +394,48 @@ export class MessageBuffer implements TurnCallbacks {
     if (!this.placeholderSent) this.commitStatus();
   }
 
-  onMessageStart(_message?: AgentMessage): void {}
+  onMessageStart(_message?: AgentMessage): void {
+    if (this.statusFrozen) return;
+    // Seal the current response segment so the next assistant message starts
+    // a fresh Telegram bubble. This is the primary boundary signal for
+    // follow-up turns where two assistant messages are emitted in one run.
+    if (this.accumulatedText.length > 0) {
+      log.debug("response: seal segment before message", {
+        accLen: this.accumulatedText.length,
+        msgId: this.responseMessageId,
+      });
+      const sealedTextSnapshot = this.accumulatedText;
+      const sealedMsgIdSnapshot = this.responseMessageId;
+      void (async () => {
+        await this.flushResponse(true);
+        // Guard: skip cleanup only if text changed WITHOUT a message id change.
+        // This happens when a concurrent text delta arrived during the flush.
+        // Rollover changes BOTH text (head removed) AND msgId (undefined→new),
+        // so we DO cleanup after rollover — the tail message was already sent.
+        const textChanged = this.accumulatedText !== sealedTextSnapshot;
+        const msgIdChanged = this.responseMessageId !== sealedMsgIdSnapshot;
+        if (textChanged && !msgIdChanged) {
+          return;
+        }
+        this.responseMessageId = undefined;
+        this.accumulatedText = "";
+        this.lastRenderedResponseText = "";
+        this.responseIsPlainText = false;
+      })();
+    }
+  }
 
-  onMessageEnd(_message?: AgentMessage): void {}
+  onMessageEnd(_message?: AgentMessage): void {
+    if (this.statusFrozen) return;
+    // Force-flush the current assistant message so the final text lands in
+    // full, but do not reset response state — the next assistant message
+    // start will do the seal.
+    log.debug("response: message end flush", {
+      accLen: this.accumulatedText.length,
+      msgId: this.responseMessageId,
+    });
+    void this.flushResponse(true);
+  }
 
   onAgentEnd(): void {
     this.isStreaming = false;

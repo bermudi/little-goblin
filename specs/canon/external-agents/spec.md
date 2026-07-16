@@ -1,6 +1,6 @@
 # external-agents
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: ExternalAgentRunner owns external-agent run lifecycle
 

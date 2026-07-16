@@ -42,6 +42,10 @@ export function transcriptPath(home: string, id: string): string {
   return join(sessionDir(home, id), "transcript.jsonl");
 }
 
+export function metricsPath(home: string, id: string): string {
+  return join(sessionDir(home, id), "metrics.jsonl");
+}
+
 export function configPath(home: string): string {
   return join(home, "state", "bindings.json");
 }

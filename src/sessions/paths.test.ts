@@ -5,6 +5,7 @@ import {
   sessionDir,
   statePath,
   transcriptPath,
+  metricsPath,
   configPath,
   topicSettingsPath,
   schedulesPath,
@@ -35,6 +36,12 @@ describe("sessions paths", () => {
   it("resolves a session transcript.jsonl by id", () => {
     expect(transcriptPath(home, VALID_HEX_ID)).toBe(
       join(home, "state", "sessions", VALID_HEX_ID, "transcript.jsonl"),
+    );
+  });
+
+  it("resolves a session metrics.jsonl by id", () => {
+    expect(metricsPath(home, VALID_HEX_ID)).toBe(
+      join(home, "state", "sessions", VALID_HEX_ID, "metrics.jsonl"),
     );
   });
 
@@ -72,5 +79,6 @@ describe("sessions paths", () => {
     expect(() => sessionDir(home, "abc")).toThrow();
     expect(() => statePath(home, "abc")).toThrow();
     expect(() => transcriptPath(home, "abc")).toThrow();
+    expect(() => metricsPath(home, "abc")).toThrow();
   });
 });

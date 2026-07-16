@@ -2,13 +2,13 @@
 
 ## Phase 1: Add metrics module and session file layout
 
-- [ ] Create `src/metrics/store.ts` with `MetricsStore`, `MetricsEvent`, `MetricsSummary`, and `readMetricsSummary`.
-- [ ] Create `src/metrics/mod.ts` barrel exporting `MetricsStore`, `MetricsEvent`, `MetricsSummary`, and `readMetricsSummary`.
-- [ ] Add `metricsPath(home, id)` to `src/sessions/paths.ts` (uses `sessionDir` and `validateSessionId`).
-- [ ] Update `ensureSessionFiles` in `src/sessions/manager.ts` to create an empty `metrics.jsonl`.
-- [ ] Add `src/metrics/store.test.ts` covering `record`, `incrementCounter`, `readMetricsSummary`, missing file, append, and invalid session id.
-- [ ] Run `bun run typecheck` and `bun test`.
-- [ ] Commit: `phase 1: add metrics module and session metrics.jsonl layout`
+- [x] Create `src/metrics/store.ts` with `MetricsStore`, `MetricsEvent`, `MetricsSummary`, and `readMetricsSummary`.
+- [x] Create `src/metrics/mod.ts` barrel exporting `MetricsStore`, `MetricsEvent`, `MetricsSummary`, and `readMetricsSummary`.
+- [x] Add `metricsPath(home, id)` to `src/sessions/paths.ts` (uses `sessionDir` and `validateSessionId`).
+- [x] Update `ensureSessionFiles` in `src/sessions/manager.ts` to create an empty `metrics.jsonl`.
+- [x] Add `src/metrics/store.test.ts` covering `record`, `incrementCounter`, `readMetricsSummary`, missing file, append, and invalid session id.
+- [x] Run `bun run typecheck` and `bun test`.
+- [x] Commit: `phase 1: add metrics module and session metrics.jsonl layout`
 
 ## Phase 2: Record turn metrics from AgentRunner
 

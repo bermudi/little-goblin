@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { SessionManager } from "./manager.ts";
 import type { Config } from "../config.ts";
 import type { ChatLocator, BindingsFile } from "./types.ts";
-import { configPath, sessionDir, sessionsDir, statePath, transcriptPath, topicSettingsPath } from "./paths.ts";
+import { configPath, metricsPath, sessionDir, sessionsDir, statePath, transcriptPath, topicSettingsPath } from "./paths.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -157,6 +157,12 @@ describe("SessionManager", () => {
       const loc: ChatLocator = { chatId: 123456 };
       const state = manager.createForChat(loc);
       expect(existsSync(transcriptPath(tmpDir, state.id))).toBe(true);
+    });
+
+    it("creates empty metrics.jsonl", () => {
+      const loc: ChatLocator = { chatId: 123456 };
+      const state = manager.createForChat(loc);
+      expect(existsSync(metricsPath(tmpDir, state.id))).toBe(true);
     });
 
     it("rebinding DM creates new session without deleting old", () => {

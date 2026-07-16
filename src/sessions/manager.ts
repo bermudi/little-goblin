@@ -7,7 +7,7 @@ import type { BindingsFile, ChatLocator, SessionState } from "./types.ts";
 import { loadBindings, saveBindings } from "./bindings.ts";
 import { loadState, saveState } from "./state.ts";
 import { getProjectDir as getProjectDirFromSettings, bindProjectDir as bindProjectDirInSettings, consumeProjectNotice as consumeProjectNoticeFromSettings } from "./topic-settings.ts";
-import { sessionsDir, sessionDir, transcriptPath } from "./paths.ts";
+import { sessionsDir, sessionDir, transcriptPath, metricsPath } from "./paths.ts";
 
 /**
  * Generate a short URL-safe session ID from a UUID.
@@ -67,10 +67,16 @@ function clearBindingsForSession(bindings: BindingsFile, sessionId: string): boo
 function ensureSessionFiles(home: string, id: string): void {
   const dir = sessionDir(home, id);
   mkdirSync(dir, { recursive: true });
-  // Create empty transcript.jsonl if missing
+  // Create empty transcript.jsonl and metrics.jsonl if missing
   const transcriptFile = transcriptPath(home, id);
   try {
     writeFileSync(transcriptFile, "", { flag: "wx" });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  }
+  const metricsFile = metricsPath(home, id);
+  try {
+    writeFileSync(metricsFile, "", { flag: "wx" });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
   }

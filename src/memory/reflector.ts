@@ -27,6 +27,7 @@ import { log } from "../log.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import { readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
 import { MemoryStore } from "./store.ts";
+import type { MetricsStore } from "../metrics/store.ts";
 import { checkMemorySafety } from "./safety.ts";
 import { appendQuarantine } from "./quarantine.ts";
 import {
@@ -405,6 +406,8 @@ interface SessionState {
 export interface MemoryReflectorOptions {
   goblinHome: string;
   store: MemoryStore;
+  /** Optional metrics store for reflection counters. */
+  metrics?: MetricsStore;
   /** Override the candidate extractor (defaults to deterministic). */
   extractor?: CandidateExtractor;
 }
@@ -412,12 +415,14 @@ export interface MemoryReflectorOptions {
 export class MemoryReflector {
   private home: string;
   private store: MemoryStore;
+  private metrics: MetricsStore | null;
   private extractor: CandidateExtractor;
   private sessions = new Map<string, SessionState>();
 
   constructor(opts: MemoryReflectorOptions) {
     this.home = opts.goblinHome;
     this.store = opts.store;
+    this.metrics = opts.metrics ?? null;
     this.extractor = opts.extractor ?? defaultCandidateExtractor;
   }
 
@@ -504,6 +509,7 @@ export class MemoryReflector {
 
     // Extract candidates from the new transcript range.
     const candidates = await this.extractor(newLines, { sessionId });
+    this.metrics?.incrementCounter("memory_reflection_candidate_total", null, candidates.length);
 
     // Process each candidate through the filtering pipeline.
     for (const candidate of candidates) {
@@ -537,6 +543,7 @@ export class MemoryReflector {
     // 2. Safety filter: quarantine unsafe candidates.
     const safety = checkMemorySafety(candidate.summary);
     if (!safety.ok) {
+      this.metrics?.incrementCounter("memory_reflection_quarantine_total", "unsafe", 1);
       appendQuarantine({
         goblinHome: this.home,
         sourceSession: candidate.source.sessionId,
@@ -550,6 +557,7 @@ export class MemoryReflector {
 
     // 3. Confidence filter: quarantine low-confidence candidates.
     if (candidate.confidence < CONFIDENCE_THRESHOLD) {
+      this.metrics?.incrementCounter("memory_reflection_quarantine_total", "low_confidence", 1);
       appendQuarantine({
         goblinHome: this.home,
         sourceSession: candidate.source.sessionId,
@@ -635,21 +643,25 @@ export class MemoryReflector {
       return currentBody.length === 0 ? entry : currentBody + DELIMITER + entry;
     });
 
-    if (!result.ok) {
-      // Cap overflow or other write failure — quarantine for review
-      // instead of silently dropping the candidate.
-      appendQuarantine({
-        goblinHome: this.home,
-        sourceSession: candidate.source.sessionId,
-        targetScope: scopeTag(scope),
-        category: candidate.category,
-        reason: "review",
-        content: candidate.summary,
-      });
-      log.warn("memory reflection: consolidation write failed; quarantined for review", {
-        scope: scopeTag(scope),
-        error: result.error,
-      });
+    if (result.ok) {
+      this.metrics?.incrementCounter("memory_reflection_persisted_total", null, 1);
+      return;
     }
+
+    // Cap overflow or other write failure — quarantine for review
+    // instead of silently dropping the candidate.
+    this.metrics?.incrementCounter("memory_reflection_quarantine_total", "review", 1);
+    appendQuarantine({
+      goblinHome: this.home,
+      sourceSession: candidate.source.sessionId,
+      targetScope: scopeTag(scope),
+      category: candidate.category,
+      reason: "review",
+      content: candidate.summary,
+    });
+    log.warn("memory reflection: consolidation write failed; quarantined for review", {
+      scope: scopeTag(scope),
+      error: result.error,
+    });
   }
 }

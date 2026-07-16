@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "./store.ts";
+import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
 import { formatSnapshot, SNAPSHOT_GUARDRAIL } from "./snapshot.ts";
 import { memoryDir, scopeMemoryPath } from "./paths.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
@@ -50,6 +51,22 @@ describe("formatSnapshot", () => {
     expect(guardrailStart).toBeLessThan(text.indexOf("## scope"));
     expect(text).toContain("stale or incomplete");
     expect(text).toContain("override memory");
+  });
+
+  it("records a snapshot_built metric event when metrics is provided", async () => {
+    await store.add("general", "fact-A");
+    const metrics = new MetricsStore(tmp, "abcdef1234");
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+      caller: { kind: "main" },
+      metrics,
+    });
+
+    expect(snap).not.toBeNull();
+    const summary = readMetricsSummary(tmp, "abcdef1234")!;
+    expect(summary.searchCount).toBe(0);
+    expect(summary.lastTurn).toBeNull();
   });
 
   it("renders a topic-bound snapshot with peer topics in the index", async () => {

@@ -8,6 +8,7 @@ import { agentsMdPath, skillsPath, soulMdPath, workdirPath } from "../workspace/
 import { memoryDir } from "../memory/paths.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import { ExternalAgentRunner } from "../external-agents/mod.ts";
+import { readMetricsSummary } from "../metrics/store.ts";
 import type { AgentBackend, AgentBackendOptions, AgentBackendInitArgs } from "./backend.ts";
 import type { ToolDefinition, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
@@ -1831,6 +1832,42 @@ describe("AgentRunner", () => {
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
       expect(names).not.toContain("external_agent");
+    });
+  });
+
+  describe("metrics", () => {
+    it("records a turn event with tool counts on assistant message_end", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      sessionHolder.emit({ type: "agent_start" });
+      sessionHolder.emit({ type: "tool_execution_start", toolName: "bash", args: {} });
+      sessionHolder.emit({ type: "tool_execution_end", toolName: "bash", isError: false });
+      sessionHolder.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+          stopReason: "stop",
+          usage: {
+            input: 10,
+            output: 5,
+            cacheRead: 1,
+            cacheWrite: 2,
+            totalTokens: 15,
+            cost: { total: 0.003 },
+          },
+        },
+      });
+      sessionHolder.emit({ type: "agent_end" });
+
+      const summary = readMetricsSummary(tmpDir, "abcdef1234")!;
+      expect(summary.turns).toBe(1);
+      expect(summary.totalTokens).toBe(15);
+      expect(summary.lastTurn).not.toBeNull();
+      expect(summary.lastTurn!.toolCount).toBe(1);
+      expect(summary.lastTurn!.toolErrorCount).toBe(0);
+      expect(summary.lastTurn!.usage.totalTokens).toBe(15);
     });
   });
 });

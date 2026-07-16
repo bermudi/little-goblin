@@ -12,6 +12,7 @@ import { atomicWrite } from "../fs.ts";
 import { log } from "../log.ts";
 import { archiveTopicPath, memoryDir, scopeMemoryPath, userPath } from "./paths.ts";
 import { scopeTag, type MemoryScope } from "./scope.ts";
+import type { MetricsStore } from "../metrics/store.ts";
 
 const MEMORY_CAP = 4000;
 const USER_CAP = 2000;
@@ -103,9 +104,11 @@ const GLOBAL_SCOPE_LOCK = new ScopeLock();
 
 export class MemoryStore {
   private home: string;
+  private metrics: MetricsStore | null;
 
-  constructor(goblinHome: string) {
+  constructor(goblinHome: string, metrics?: MetricsStore) {
     this.home = goblinHome;
+    this.metrics = metrics ?? null;
   }
 
   read(scope: StoreScope): ParsedMemory {
@@ -187,6 +190,11 @@ export class MemoryStore {
       description: trimmed.length === 0 ? undefined : trimmed,
       body,
     }));
+  }
+
+  recordSafetyReject(scope: MemoryScope | "user"): void {
+    const normalized = normalizeScope(scope);
+    this.metrics?.incrementCounter("memory_write_safety_reject_total", scopeTag(normalized));
   }
 
   async listIndex(opts: {
@@ -278,6 +286,7 @@ export class MemoryStore {
       }
       renameSync(source, dest);
       this.commitArchive(chatId, topicId);
+      this.metrics?.incrementCounter("memory_archive_orphan_total", scopeTag({ topic: { chatId, topicId } }));
       return true;
     } catch {
       return false;
@@ -311,9 +320,14 @@ export class MemoryStore {
       const next = op(current);
       if ("ok" in next) return next;
       const overflow = this.checkCap(scope, next.body);
-      if (overflow) return overflow;
+      if (overflow) {
+        this.metrics?.incrementCounter("memory_write_overflow_total", scopeKey);
+        return overflow;
+      }
       this.write(scope, formatMemoryFile(next));
       this.commit(action, scope);
+      this.metrics?.incrementCounter("memory_write_total", "all");
+      this.metrics?.incrementCounter(`memory_write_${action}_total`, scopeKey);
       return { ok: true };
     } finally {
       release();

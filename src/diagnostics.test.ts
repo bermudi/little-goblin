@@ -8,6 +8,7 @@ import {
   generateDiagnostics,
   type Diagnostics,
 } from "./diagnostics.ts";
+import { MetricsStore } from "./metrics/store.ts";
 import type { SessionState } from "./sessions/types.ts";
 import { sessionDir, transcriptPath } from "./sessions/paths.ts";
 import type { SubagentRunner } from "./subagents/mod.ts";
@@ -51,6 +52,7 @@ const baseDiagnostics: Diagnostics = {
   contextTokens: null,
   contextFiles: null,
   projectDir: null,
+  metrics: null,
 };
 
 describe("formatDiagnostics", () => {
@@ -201,6 +203,50 @@ describe("gatherDiagnostics", () => {
     expect(d.transcriptPath).toBe(transcriptFile);
     expect(d.transcriptLines).toBe(3);
     expect(d.transcriptBytes).toBe(24); // 3 × 8 bytes
+  });
+
+  it("reads session metrics when metrics.jsonl exists", () => {
+    const session = makeSession("abcdef1234");
+    const metrics = new MetricsStore(tmpDir, session.id);
+    metrics.record({
+      type: "turn",
+      turnStart: "2026-01-01T00:00:00.000Z",
+      turnEnd: "2026-01-01T00:00:01.000Z",
+      durationMs: 1000,
+      model: "gpt-test",
+      provider: "openai",
+      api: "chat-completions",
+      usage: {
+        input: 10,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 15,
+        cost: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0, total: 0.003 },
+      },
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.003,
+      toolCount: 0,
+      toolErrorCount: 0,
+      stopReason: "stop",
+      errorMessage: null,
+    });
+
+    const d = gatherDiagnostics({
+      session,
+      runner: stubRunner({ tools: ["bash"], modelName: "m1" }),
+      subagentRunner: stubSubagentRunner(),
+      goblinHome: tmpDir,
+      modelName: "m1",
+    });
+
+    expect(d.metrics).not.toBeNull();
+    expect(d.metrics!.turns).toBe(1);
+    expect(d.metrics!.totalTokens).toBe(15);
+    const out = formatDiagnostics(d);
+    expect(out).toContain("Turns: 1");
+    expect(out).toContain("Total tokens: 15");
   });
 
   it("reports null events stats when the file is missing", () => {

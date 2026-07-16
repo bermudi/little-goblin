@@ -1,4 +1,5 @@
 import { MemoryStore } from "./store.ts";
+import type { MetricsStore } from "../metrics/store.ts";
 import { activeMemoryScopeFor } from "./scope.ts";
 import type { ActiveScope } from "./scope.ts";
 import {
@@ -60,6 +61,8 @@ export interface FormatSnapshotArgs {
    * maximum of 5. Has no effect when `promptText` is absent.
    */
   relevantLimit?: number;
+  /** Optional metrics store to record the snapshot_built event. */
+  metrics?: MetricsStore;
 }
 
 /**
@@ -134,9 +137,32 @@ async function formatScopedSnapshot(args: ResolvedSnapshotArgs): Promise<MemoryS
     sections.push(`## other scopes\n${otherScopes.join("\n")}`);
   }
 
+  const content = sections.join("\n\n");
+
+  const countBodyEntries = (body: string): number => {
+    if (body.length === 0) return 0;
+    return body.split("\n§\n").filter((s) => s.trim().length > 0).length;
+  };
+  const entryCount =
+    countBodyEntries(memoryBody) +
+    countBodyEntries(userBody) +
+    (personaBody ? countBodyEntries(personaBody) : 0) +
+    relevantLines.length;
+
+  args.metrics?.record({
+    type: "event",
+    name: "snapshot_built",
+    scope: null,
+    extra: {
+      empty: false,
+      entryCount,
+      charLength: content.length,
+    },
+  });
+
   return {
     customType: "goblin.memory.snapshot",
-    content: sections.join("\n\n"),
+    content,
     display: false,
     details: undefined,
   };
@@ -167,6 +193,7 @@ async function formatRelevantMemory(
     persona,
     query: args.promptText ?? "",
     limit: 50, // fetch a wide net, then dedup + bound
+    metrics: args.metrics,
   });
 
   // Build the dedup set from the active scope's body. Strip reflected-entry

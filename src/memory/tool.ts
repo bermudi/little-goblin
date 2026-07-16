@@ -105,9 +105,13 @@ function jsonResult(value: unknown): {
  * check fails. The error message names the matched reason so the agent can
  * react without seeing the sensitive value.
  */
-function assertSafe(check: () => { ok: boolean; reason?: string; message?: string }): void {
+function assertSafe(
+  check: () => { ok: boolean; reason?: string; message?: string },
+  onReject?: () => void,
+): void {
   const r = check();
   if (!r.ok) {
+    onReject?.();
     throw new Error(`memory_write rejected by safety filter: ${r.reason ?? "unknown"} (${r.message ?? "no detail"})`);
   }
 }
@@ -220,6 +224,7 @@ export function createMemoryWriteTool(args: {
     async execute(_toolCallId, params: MemoryWriteInput) {
       const { action, target } = params;
       const scope = resolveWriteScope(args.activeScope, target);
+      const onReject = () => args.store.recordSafetyReject(scope);
       let result: StoreResult;
       switch (action) {
         case "add": {
@@ -229,7 +234,7 @@ export function createMemoryWriteTool(args: {
           if (params.content.length === 0) {
             throw new Error("memory_write.add requires non-empty `content`");
           }
-          assertSafe(() => checkMemorySafety(params.content!));
+          assertSafe(() => checkMemorySafety(params.content!), onReject);
           result = await args.store.add(scope, params.content);
           break;
         }
@@ -240,7 +245,7 @@ export function createMemoryWriteTool(args: {
           if (params.content === undefined) {
             throw new Error("memory_write.replace requires `content`");
           }
-          assertSafe(() => checkMemorySafety(params.content!));
+          assertSafe(() => checkMemorySafety(params.content!), onReject);
           result = await args.store.replace(scope, params.old_text, params.content);
           break;
         }
@@ -255,7 +260,7 @@ export function createMemoryWriteTool(args: {
           if (params.content === undefined) {
             throw new Error("memory_write.rewrite requires `content`");
           }
-          assertSafe(() => checkMemorySafety(params.content!));
+          assertSafe(() => checkMemorySafety(params.content!), onReject);
           result = await args.store.rewrite(scope, params.content);
           break;
         }
@@ -263,7 +268,7 @@ export function createMemoryWriteTool(args: {
           if (params.description === undefined) {
             throw new Error("memory_write.set_description requires `description`");
           }
-          assertSafe(() => checkDescriptionSafety(params.description!));
+          assertSafe(() => checkDescriptionSafety(params.description!), onReject);
           result = await args.store.setDescription(scope, params.description);
           break;
         }

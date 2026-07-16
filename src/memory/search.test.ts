@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MemoryStore } from "./store.ts";
+import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
 import {
   clampLimit,
   scoreEntry,
@@ -104,6 +105,23 @@ describe("memory search", () => {
       expect(r.text).toBe("Homelab backups run nightly");
       expect(r.score).toBeGreaterThan(0);
       expect(r.metadata).toBeNull();
+    });
+
+    it("records a memory_search metric event when metrics is provided", async () => {
+      setBody(tmp, { topic: { chatId: -100, topicId: 42 } }, "Homelab backups run nightly");
+      const metrics = new MetricsStore(tmp, "abcdef1234");
+
+      const out = await searchMemoryEntries({
+        store,
+        activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
+        query: "homelab backups",
+        metrics,
+      });
+
+      const summary = readMetricsSummary(tmp, "abcdef1234")!;
+      expect(summary.searchCount).toBe(1);
+      expect(summary.lastSearchResultCount).toBe(out.results.length);
     });
 
     it("returns empty results and does not throw when nothing matches", async () => {

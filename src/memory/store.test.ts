@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MemoryStore } from "./store.ts";
+import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
 import { archiveTopicPath, memoryDir, scopeMemoryPath, userPath } from "./paths.ts";
 
 const DELIMITER = "\n§\n";
@@ -595,6 +596,29 @@ describe("MemoryStore", () => {
       for (let i = 0; i < scopes.length; i++) {
         expect(store.readBody(scopes[i] as typeof scopes[number])).toBe(`entry-${i}`);
       }
+    });
+  });
+
+  describe("metrics", () => {
+    it("records write success and overflow counters", async () => {
+      const metrics = new MetricsStore(tmp, "abcdef1234");
+      const ms = new MemoryStore(tmp, metrics);
+      const overflow = await ms.add("general", "x".repeat(4001));
+      expect(overflow.ok).toBe(false);
+      const success = await ms.add("general", "hello");
+      expect(success.ok).toBe(true);
+      const summary = readMetricsSummary(tmp, "abcdef1234")!;
+      expect(summary.memoryWriteTotal).toBe(1);
+      expect(summary.memoryWriteOverflowTotal).toBe(1);
+    });
+
+    it("records safety reject counter", () => {
+      const metrics = new MetricsStore(tmp, "abcdef1234");
+      const ms = new MemoryStore(tmp, metrics);
+      ms.recordSafetyReject("general");
+      ms.recordSafetyReject("general");
+      const summary = readMetricsSummary(tmp, "abcdef1234")!;
+      expect(summary.memoryWriteSafetyRejectTotal).toBe(2);
     });
   });
 });

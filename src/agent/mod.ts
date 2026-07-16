@@ -28,6 +28,7 @@ import {
   resolveActiveScope,
 } from "../memory/mod.ts";
 import { MemoryReflector } from "../memory/reflector.ts";
+import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
 import type { ChatLocator } from "../sessions/types.ts";
 import type { ActiveScope } from "../memory/mod.ts";
@@ -102,6 +103,71 @@ function extractPromptText(content: string | (TextContent | ImageContent)[]): st
     .join("\n");
 }
 
+function asFiniteNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function extractUsage(message: Record<string, unknown>): MetricsUsage {
+  const usage = typeof message.usage === "object" && message.usage !== null
+    ? message.usage as Record<string, unknown>
+    : {};
+  const cost = typeof usage.cost === "object" && usage.cost !== null
+    ? usage.cost as Record<string, unknown>
+    : {};
+  return {
+    input: asFiniteNumber(usage.input),
+    output: asFiniteNumber(usage.output),
+    cacheRead: asFiniteNumber(usage.cacheRead),
+    cacheWrite: asFiniteNumber(usage.cacheWrite),
+    totalTokens: asFiniteNumber(usage.totalTokens),
+    cost: {
+      input: asFiniteNumber(cost.input),
+      output: asFiniteNumber(cost.output),
+      cacheRead: asFiniteNumber(cost.cacheRead),
+      cacheWrite: asFiniteNumber(cost.cacheWrite),
+      total: asFiniteNumber(cost.total),
+    },
+  };
+}
+
+function buildTurnMetricsEvent(args: {
+  message: Record<string, unknown>;
+  turnStart: string | null;
+  toolCount: number;
+  toolErrorCount: number;
+  resolvedModel: ResolvedModel | null;
+}): TurnMetricsEvent {
+  const turnEnd = new Date().toISOString();
+  const startTime = args.turnStart ?? turnEnd;
+  const durationMs = Math.max(0, Date.parse(turnEnd) - Date.parse(startTime));
+  const model = typeof args.message.model === "string" ? args.message.model : "";
+  const provider = typeof args.message.provider === "string" ? args.message.provider : "";
+  const api = typeof args.message.api === "string" ? args.message.api : "";
+  const responseModel = typeof args.message.responseModel === "string" ? args.message.responseModel : undefined;
+  const stopReason = args.message.stopReason;
+  const errorMessage = args.message.errorMessage;
+  const usage = extractUsage(args.message);
+
+  return {
+    type: "turn",
+    turnStart: startTime,
+    turnEnd,
+    durationMs,
+    model,
+    provider,
+    api,
+    responseModel,
+    usage,
+    cacheRead: asFiniteNumber(args.message.cacheRead),
+    cacheWrite: asFiniteNumber(args.message.cacheWrite),
+    cost: asFiniteNumber(args.message.cost),
+    toolCount: args.toolCount,
+    toolErrorCount: args.toolErrorCount,
+    stopReason: typeof stopReason === "string" || stopReason === null ? stopReason : null,
+    errorMessage: typeof errorMessage === "string" || errorMessage === null ? errorMessage : null,
+  };
+}
+
 /**
  * AgentRunner wraps a pi AgentSession for a single goblin session.
  * Manages lazy initialization and event dispatch.
@@ -127,6 +193,10 @@ export class AgentRunner {
   private _thinkingLevel: ThinkingLevel | undefined;
   private pendingProjectNotice: string | undefined;
   private resolvedModel: ResolvedModel | null = null;
+  private metrics: MetricsStore;
+  private turnStart: string | null = null;
+  private turnToolCount = 0;
+  private turnToolErrorCount = 0;
   /** The goblin system prompt value (text + provenance of loaded prompt files). */
   private goblinSystemPrompt: GoblinSystemPrompt | null = null;
   /**
@@ -160,6 +230,11 @@ export class AgentRunner {
     return this._prompting;
   }
 
+  /** The session metrics store. Exposed for diagnostics and tests. */
+  get metricsStore(): MetricsStore {
+    return this.metrics;
+  }
+
   /** If a cancel arrived before the first prompt, clear the flag and throw. */
   private throwIfAbortedBeforeInit(): void {
     if (this._abortBeforeInit) {
@@ -183,10 +258,11 @@ export class AgentRunner {
     this._thinkingLevel = opts.thinkingLevel;
     this.pendingProjectNotice = opts.pendingProjectNotice;
     this.resolvedModel = opts.resolvedModel ?? null;
+    this.metrics = new MetricsStore(opts.cfg.goblinHome, this.sessionId);
     // Construction is cheap (no I/O); the directory is created lazily on first write.
-    this.memoryStore = new MemoryStore(opts.cfg.goblinHome);
+    this.memoryStore = new MemoryStore(opts.cfg.goblinHome, this.metrics);
     this.memoryReflector = opts.memoryReflector ??
-      new MemoryReflector({ goblinHome: opts.cfg.goblinHome, store: this.memoryStore });
+      new MemoryReflector({ goblinHome: opts.cfg.goblinHome, store: this.memoryStore, metrics: this.metrics });
     const backendOpts: AgentBackendOptions = {
       cfg: this.cfg,
       sessionId: this.sessionId,
@@ -315,6 +391,11 @@ export class AgentRunner {
     // Append to transcript (compact message-level log)
     appendTranscriptEntry(this.sessionId, this.cfg.goblinHome, event);
 
+    // Update session metrics from backend events. This runs before the
+    // callback guard so turn and tool counters are recorded even when no
+    // UI callbacks are bound.
+    this.updateMetrics(event);
+
     if (!this.callbacks) return;
 
     // AgentRunner-specific text accumulation (not part of dispatch)
@@ -375,6 +456,55 @@ export class AgentRunner {
     }
   }
 
+  private updateMetrics(event: AgentSessionEvent): void {
+    const e = event as unknown as Record<string, unknown>;
+
+    switch (e.type) {
+      case "agent_start": {
+        this.turnStart = new Date().toISOString();
+        this.turnToolCount = 0;
+        this.turnToolErrorCount = 0;
+        break;
+      }
+      case "tool_execution_start": {
+        this.turnToolCount++;
+        break;
+      }
+      case "tool_execution_end": {
+        if (e.isError === true) {
+          this.turnToolErrorCount++;
+        }
+        break;
+      }
+      case "message_end": {
+        const message = e.message;
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          (message as Record<string, unknown>).role === "assistant"
+        ) {
+          const turn = buildTurnMetricsEvent({
+            message: message as Record<string, unknown>,
+            turnStart: this.turnStart,
+            toolCount: this.turnToolCount,
+            toolErrorCount: this.turnToolErrorCount,
+            resolvedModel: this.resolvedModel,
+          });
+          this.metrics.record(turn);
+          this.turnToolCount = 0;
+          this.turnToolErrorCount = 0;
+        }
+        break;
+      }
+      case "agent_end": {
+        this.turnStart = null;
+        this.turnToolCount = 0;
+        this.turnToolErrorCount = 0;
+        break;
+      }
+    }
+  }
+
   /**
    * Send a prompt to the agent. Accepts plain text or multimodal content
    * blocks (text + images). Creates the session lazily on first call.
@@ -405,6 +535,9 @@ export class AgentRunner {
 
       this.callbacks = callbacks;
       this.accumulatedText = "";
+      this.turnStart = new Date().toISOString();
+      this.turnToolCount = 0;
+      this.turnToolErrorCount = 0;
 
       // Apply any pending thinking-level override before the turn starts.
       if (this._thinkingLevel !== undefined && this.backend.isInitialized) {
@@ -425,6 +558,7 @@ export class AgentRunner {
         caller: { kind: "main" },
         getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
         promptText,
+        metrics: this.metrics,
       });
       if (aside !== null) {
         await this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" });

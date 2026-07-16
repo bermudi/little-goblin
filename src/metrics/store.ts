@@ -76,6 +76,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function isNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function getNumber(record: Record<string, unknown>, key: string): number {
+  const value = record[key];
+  return isNumber(value) ? value : 0;
+}
+
 function readMetricsFile(path: string): string | null {
   try {
     return readFileSync(path, "utf-8");
@@ -139,9 +148,62 @@ export class MetricsStore {
   }
 }
 
-function getLastCounters(raw: string): Map<string, number> {
+function getUsage(value: unknown): MetricsUsage | null {
+  if (!isRecord(value)) return null;
+  const cost = isRecord(value.cost) ? value.cost : {};
+  return {
+    input: getNumber(value, "input"),
+    output: getNumber(value, "output"),
+    cacheRead: getNumber(value, "cacheRead"),
+    cacheWrite: getNumber(value, "cacheWrite"),
+    totalTokens: getNumber(value, "totalTokens"),
+    cost: {
+      input: getNumber(cost, "input"),
+      output: getNumber(cost, "output"),
+      cacheRead: getNumber(cost, "cacheRead"),
+      cacheWrite: getNumber(cost, "cacheWrite"),
+      total: getNumber(cost, "total"),
+    },
+  };
+}
+
+function normalizeTurnEvent(event: Record<string, unknown>): TurnMetricsEvent | null {
+  if (event.type !== "turn") return null;
+  const usage = getUsage(event.usage);
+  if (usage === null) return null;
+
+  const stopReason = event.stopReason;
+  const errorMessage = event.errorMessage;
+
+  return {
+    type: "turn",
+    turnStart: typeof event.turnStart === "string" ? event.turnStart : "",
+    turnEnd: typeof event.turnEnd === "string" ? event.turnEnd : "",
+    durationMs: getNumber(event, "durationMs"),
+    model: typeof event.model === "string" ? event.model : "",
+    provider: typeof event.provider === "string" ? event.provider : "",
+    api: typeof event.api === "string" ? event.api : "",
+    responseModel: typeof event.responseModel === "string" ? event.responseModel : undefined,
+    usage,
+    cacheRead: getNumber(event, "cacheRead"),
+    cacheWrite: getNumber(event, "cacheWrite"),
+    cost: getNumber(event, "cost"),
+    toolCount: getNumber(event, "toolCount"),
+    toolErrorCount: getNumber(event, "toolErrorCount"),
+    stopReason: typeof stopReason === "string" || stopReason === null ? stopReason : null,
+    errorMessage: typeof errorMessage === "string" || errorMessage === null ? errorMessage : null,
+  };
+}
+
+function getSearchResultCount(event: Record<string, unknown>): number | null {
+  if (event.type !== "event" || event.name !== "memory_search") return null;
+  const extra = event.extra;
+  if (!isRecord(extra)) return null;
+  return getNumber(extra, "resultCount");
+}
+
+function getLastCounters(events: Record<string, unknown>[]): Map<string, number> {
   const counters = new Map<string, number>();
-  const events = parseLines(raw);
   for (const event of events) {
     if (event.type === "counter" && typeof event.name === "string") {
       const scope = event.scope === null || typeof event.scope === "string" ? event.scope : null;
@@ -167,7 +229,8 @@ export function readMetricsSummary(home: string, sessionId: string): MetricsSumm
   const raw = readMetricsFile(metricsPath(home, sessionId));
   if (raw === null) return null;
 
-  const counters = getLastCounters(raw);
+  const events = parseLines(raw);
+  const counters = getLastCounters(events);
 
   const summary: MetricsSummary = {
     lastTurn: null,
@@ -189,33 +252,29 @@ export function readMetricsSummary(home: string, sessionId: string): MetricsSumm
     averageSearchResultCount: 0,
   };
 
-  const events = parseLines(raw);
   let totalDuration = 0;
   let searchTotalResults = 0;
 
   for (const event of events) {
     switch (event.type) {
       case "turn": {
-        const turn = event as unknown as TurnMetricsEvent;
+        const turn = normalizeTurnEvent(event);
+        if (turn === null) break;
         summary.turns++;
-        summary.totalTokens += turn.usage.totalTokens ?? 0;
-        summary.cacheRead += turn.cacheRead ?? 0;
-        summary.cacheWrite += turn.cacheWrite ?? 0;
-        summary.totalCost += typeof turn.cost === "number" ? turn.cost : 0;
+        summary.totalTokens += turn.usage.totalTokens;
+        summary.cacheRead += turn.cacheRead;
+        summary.cacheWrite += turn.cacheWrite;
+        summary.totalCost += turn.cost;
         summary.lastTurn = turn;
-        if (typeof turn.durationMs === "number") {
-          totalDuration += turn.durationMs;
-        }
+        totalDuration += turn.durationMs;
         break;
       }
       case "event": {
-        if (event.name === "memory_search") {
-          const extra = isRecord(event.extra) ? event.extra : {};
-          const resultCount = typeof extra.resultCount === "number" ? extra.resultCount : 0;
-          summary.searchCount++;
-          summary.lastSearchResultCount = resultCount;
-          searchTotalResults += resultCount;
-        }
+        const resultCount = getSearchResultCount(event);
+        if (resultCount === null) break;
+        summary.searchCount++;
+        summary.lastSearchResultCount = resultCount;
+        searchTotalResults += resultCount;
         break;
       }
     }

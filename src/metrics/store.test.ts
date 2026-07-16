@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   closeSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
@@ -8,7 +9,7 @@ import {
   writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { MetricsStore, readMetricsSummary } from "./store.ts";
 
 const VALID_ID = "abc123def0";
@@ -232,6 +233,76 @@ describe("MetricsStore", () => {
       expect(summary.searchCount).toBe(2);
       expect(summary.lastSearchResultCount).toBe(7);
       expect(summary.averageSearchResultCount).toBe(4.5);
+    });
+
+    it("skips malformed turn events with missing usage", () => {
+      store.record(makeTurnEvent({ totalTokens: 30, cacheRead: 200, cacheWrite: 100, costTotal: 0.006 }));
+      const path = metricsFilePath(tmp);
+      const fd = openSync(path, "a");
+      try {
+        writeSync(fd, JSON.stringify({ type: "turn" }) + "\n");
+      } finally {
+        closeSync(fd);
+      }
+      const summary = readMetricsSummary(tmp, VALID_ID)!;
+      expect(summary.turns).toBe(1);
+      expect(summary.totalTokens).toBe(30);
+      expect(summary.lastTurn!.usage.totalTokens).toBe(30);
+    });
+
+    it("skips malformed turn events with null usage", () => {
+      store.record(makeTurnEvent({ totalTokens: 30, cacheRead: 200, cacheWrite: 100, costTotal: 0.006 }));
+      const path = metricsFilePath(tmp);
+      const fd = openSync(path, "a");
+      try {
+        writeSync(fd, JSON.stringify({ type: "turn", usage: null }) + "\n");
+      } finally {
+        closeSync(fd);
+      }
+      const summary = readMetricsSummary(tmp, VALID_ID)!;
+      expect(summary.turns).toBe(1);
+      expect(summary.totalTokens).toBe(30);
+    });
+
+    it("defaults missing numeric turn fields to zero", () => {
+      const path = metricsFilePath(tmp);
+      mkdirSync(dirname(path), { recursive: true });
+      const fd = openSync(path, "a");
+      try {
+        writeSync(
+          fd,
+          JSON.stringify({
+            type: "turn",
+            turnStart: "2026-01-01T00:00:00.000Z",
+            turnEnd: "2026-01-01T00:00:01.000Z",
+            usage: { totalTokens: 10 },
+          }) + "\n",
+        );
+      } finally {
+        closeSync(fd);
+      }
+      const summary = readMetricsSummary(tmp, VALID_ID)!;
+      expect(summary.turns).toBe(1);
+      expect(summary.totalTokens).toBe(10);
+      expect(summary.cacheRead).toBe(0);
+      expect(summary.cacheWrite).toBe(0);
+      expect(summary.totalCost).toBe(0);
+      expect(summary.averageDurationMs).toBe(0);
+    });
+
+    it("skips malformed memory_search events with non-record extra", () => {
+      store.record(makeTurnEvent({ totalTokens: 30 }));
+      const path = metricsFilePath(tmp);
+      const fd = openSync(path, "a");
+      try {
+        writeSync(fd, JSON.stringify({ type: "event", name: "memory_search", extra: null }) + "\n");
+        writeSync(fd, JSON.stringify({ type: "event", name: "memory_search", extra: { resultCount: 5 } }) + "\n");
+      } finally {
+        closeSync(fd);
+      }
+      const summary = readMetricsSummary(tmp, VALID_ID)!;
+      expect(summary.searchCount).toBe(1);
+      expect(summary.lastSearchResultCount).toBe(5);
     });
   });
 

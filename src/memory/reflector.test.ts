@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
+import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
 import {
   MemoryReflector,
   defaultCandidateExtractor,
@@ -469,6 +470,29 @@ describe("MemoryReflector", () => {
       expect(parsed!.metadata.category).toBe("project_fact");
       expect(parsed!.metadata.confidence).toBe(0.85);
       expect(parsed!.metadata.source_session).toBe("abcdef1234");
+    });
+
+    it("records reflection counters to metrics when provided", async () => {
+      appendTranscript(tmp, "abcdef1234", [
+        { role: "user", text: "the project uses TypeScript" },
+      ]);
+      writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
+      const metrics = new MetricsStore(tmp, "abcdef1234");
+
+      const reflector = new MemoryReflector({
+        goblinHome: tmp,
+        store,
+        metrics,
+        extractor: fixedExtractor([
+          makeCandidate({ summary: "the project uses TypeScript", confidence: 0.85 }),
+        ]),
+      });
+      await reflector.reflect("abcdef1234", GENERAL_SCOPE);
+
+      const summary = readMetricsSummary(tmp, "abcdef1234")!;
+      expect(summary.memoryReflectionCandidateTotal).toBe(1);
+      expect(summary.memoryReflectionPersistedTotal).toBe(1);
+      expect(summary.memoryReflectionQuarantineTotal).toBe(0);
     });
 
     it("writes a user preference candidate to user.md", async () => {

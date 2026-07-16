@@ -20,6 +20,7 @@ import type { SessionState } from "./sessions/types.ts";
 import { transcriptPath } from "./sessions/paths.ts";
 import type { AgentRunner } from "./agent/mod.ts";
 import type { SubagentRunner } from "./subagents/mod.ts";
+import { readMetricsSummary, type MetricsSummary } from "./metrics/store.ts";
 
 /** Structured diagnostics snapshot. `null` fields are rendered "unavailable". */
 export interface Diagnostics {
@@ -54,6 +55,8 @@ export interface Diagnostics {
   contextFiles: string[] | null;
   /** Bound project directory, or `null` if not set. */
   projectDir: string | null;
+  /** Session metrics summary, or `null` if no metrics have been recorded. */
+  metrics: MetricsSummary | null;
 }
 
 /** Inputs for `gatherDiagnostics`. */
@@ -118,6 +121,7 @@ export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
     contextTokens: deps.runner?.contextTokens ?? null,
     contextFiles: deps.runner?.contextFiles ?? null,
     projectDir: deps.projectDir ?? null,
+    metrics: readMetricsSummary(deps.goblinHome, deps.session.id),
   };
 }
 
@@ -154,6 +158,30 @@ function fmtContextFiles(files: string[] | null, initialized: boolean): string {
   return files.join(", ");
 }
 
+function fmtMetrics(metrics: MetricsSummary | null): string {
+  if (metrics === null) {
+    return `Metrics: ${UNAVAILABLE}`;
+  }
+  const lines = [
+    `Metrics:`,
+    `  Turns: ${metrics.turns}`,
+    `  Total tokens: ${metrics.totalTokens}`,
+    `  Cache read: ${metrics.cacheRead}, write: ${metrics.cacheWrite}`,
+    `  Total cost: ${metrics.totalCost.toFixed(6)}`,
+    `  Average duration: ${metrics.averageDurationMs.toFixed(0)} ms`,
+    `  Memory writes: ${metrics.memoryWriteTotal} (overflow: ${metrics.memoryWriteOverflowTotal}, safety rejects: ${metrics.memoryWriteSafetyRejectTotal})`,
+    `  Memory archives: ${metrics.memoryArchiveOrphanTotal}`,
+    `  Reflection candidates: ${metrics.memoryReflectionCandidateTotal}, persisted: ${metrics.memoryReflectionPersistedTotal}, quarantined: ${metrics.memoryReflectionQuarantineTotal}`,
+    `  Searches: ${metrics.searchCount} (last results: ${metrics.lastSearchResultCount ?? UNAVAILABLE}, average: ${metrics.averageSearchResultCount.toFixed(1)})`,
+  ];
+  if (metrics.lastTurn) {
+    lines.push(
+      `  Last turn: ${metrics.lastTurn.model} (${metrics.lastTurn.provider}/${metrics.lastTurn.api}) — ${metrics.lastTurn.toolCount} tools, ${metrics.lastTurn.toolErrorCount} errors`,
+    );
+  }
+  return lines.join("\n");
+}
+
 export function formatDiagnostics(d: Diagnostics): string {
   return [
     `Session: ${d.sessionId}`,
@@ -168,6 +196,7 @@ export function formatDiagnostics(d: Diagnostics): string {
     `Context: ${fmtRunnerNum(d.contextTokens, d.runnerInitialized)}`,
     `Context files: ${fmtContextFiles(d.contextFiles, d.runnerInitialized)}`,
     `Project: ${d.projectDir !== null ? d.projectDir : "(none)"}`,
+    fmtMetrics(d.metrics),
   ].join("\n");
 }
 

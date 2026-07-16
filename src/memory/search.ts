@@ -16,6 +16,7 @@
  */
 
 import type { MemoryStore } from "./store.ts";
+import type { MetricsStore } from "../metrics/store.ts";
 import {
   parseEntryMetadata,
   stripEntryMetadata,
@@ -341,6 +342,8 @@ export async function searchMemoryEntries(args: {
   allChats?: boolean;
   /** Override the wall clock for deterministic recency tests. */
   nowMs?: number;
+  /** Optional metrics store to record the search event. */
+  metrics?: MetricsStore;
 }): Promise<MemorySearchOutput> {
   const { persona } = args;
   const limit = clampLimit(args.limit);
@@ -395,6 +398,18 @@ export async function searchMemoryEntries(args: {
   });
 
   const ranked = results.slice(0, limit);
+
+  args.metrics?.record({
+    type: "event",
+    name: "memory_search",
+    scope: null,
+    extra: {
+      query: args.query,
+      scopes: scopes.length,
+      resultCount: ranked.length,
+      limit,
+    },
+  });
 
   return {
     query: args.query,

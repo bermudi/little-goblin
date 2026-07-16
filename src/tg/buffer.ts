@@ -3,6 +3,7 @@ import type { Bot } from "grammy";
 import { writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { TurnCallbacks } from "../agent/mod.ts";
 import { log } from "../log.ts";
 import { stripMdV2, isParseError } from "./format.ts";
@@ -392,6 +393,10 @@ export class MessageBuffer implements TurnCallbacks {
     this.startChatAction();
     if (!this.placeholderSent) this.commitStatus();
   }
+
+  onMessageStart(_message?: AgentMessage): void {}
+
+  onMessageEnd(_message?: AgentMessage): void {}
 
   onAgentEnd(): void {
     this.isStreaming = false;

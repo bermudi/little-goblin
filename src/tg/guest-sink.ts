@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { TurnCallbacks } from "../agent/mod.ts";
 
 /**
@@ -35,6 +36,10 @@ export class GuestReplySink implements TurnCallbacks {
   onStatusUpdate(_message: string): void {
     // no-op
   }
+
+  onMessageStart(_message?: AgentMessage): void {}
+
+  onMessageEnd(_message?: AgentMessage): void {}
 
   onAgentEnd(): void {
     // no-op — the caller reads `.text` after `prompt()` resolves.

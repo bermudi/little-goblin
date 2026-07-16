@@ -305,6 +305,8 @@ function nopCallbacks(): TurnCallbacks {
     onToolStart: mock(() => {}),
     onToolEnd: mock(() => {}),
     onStatusUpdate: mock(() => {}),
+    onMessageStart: mock(() => {}),
+    onMessageEnd: mock(() => {}),
     onAgentEnd: mock(() => {}),
   };
 }

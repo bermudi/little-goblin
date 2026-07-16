@@ -66,6 +66,8 @@ describe("AgentRunner pi-ai contract", () => {
       onToolStart: mock(() => {}),
       onToolEnd: mock(() => {}),
       onStatusUpdate: mock(() => {}),
+      onMessageStart: mock(() => {}),
+      onMessageEnd: mock(() => {}),
       onAgentEnd,
     };
 

@@ -166,6 +166,8 @@ describe("dispatchAgentEvent", () => {
       onToolStart: (name, input) => calls.push(`onToolStart:${name}:${JSON.stringify(input)}`),
       onToolEnd: (name, isError) => calls.push(`onToolEnd:${name}:${isError}`),
       onStatusUpdate: (msg) => calls.push(`onStatusUpdate:${msg}`),
+      onMessageStart: (message) => calls.push(`onMessageStart:${message?.role ?? "undefined"}`),
+      onMessageEnd: (message) => calls.push(`onMessageEnd:${message?.role ?? "undefined"}`),
       onAgentEnd: () => calls.push("onAgentEnd"),
     };
   }
@@ -263,6 +265,7 @@ describe("dispatchAgentEvent", () => {
       cb,
     );
     expect(cb.calls).toEqual([
+      "onMessageEnd:assistant",
       "onTextDelta:\n\n❌ error: 401 Incorrect API key provided.",
     ]);
   });
@@ -281,10 +284,13 @@ describe("dispatchAgentEvent", () => {
       } as any,
       cb,
     );
-    expect(cb.calls).toEqual(["onTextDelta:\n\n❌ aborted: user aborted"]);
+    expect(cb.calls).toEqual([
+      "onMessageEnd:assistant",
+      "onTextDelta:\n\n❌ aborted: user aborted",
+    ]);
   });
 
-  it("ignores message_end on successful assistant message", () => {
+  it("fires onMessageEnd on successful assistant message", () => {
     const cb = mockCallbacks();
     dispatchAgentEvent(
       {
@@ -297,10 +303,10 @@ describe("dispatchAgentEvent", () => {
       } as any,
       cb,
     );
-    expect(cb.calls).toEqual([]);
+    expect(cb.calls).toEqual(["onMessageEnd:assistant"]);
   });
 
-  it("ignores message_end with error stopReason but no errorMessage", () => {
+  it("fires onMessageEnd on assistant message_end with error stopReason but no errorMessage", () => {
     const cb = mockCallbacks();
     dispatchAgentEvent(
       {
@@ -309,7 +315,38 @@ describe("dispatchAgentEvent", () => {
       } as any,
       cb,
     );
+    expect(cb.calls).toEqual(["onMessageEnd:assistant"]);
+  });
+
+  it("ignores message_start on user/tool-result messages", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent(
+      {
+        type: "message_start",
+        message: { role: "user", content: "hello" },
+      } as any,
+      cb,
+    );
+    dispatchAgentEvent(
+      {
+        type: "message_start",
+        message: { role: "toolResult", toolCallId: "tc-1", toolName: "bash", content: [] },
+      } as any,
+      cb,
+    );
     expect(cb.calls).toEqual([]);
+  });
+
+  it("fires onMessageStart on assistant message_start", () => {
+    const cb = mockCallbacks();
+    dispatchAgentEvent(
+      {
+        type: "message_start",
+        message: { role: "assistant", content: [] },
+      } as any,
+      cb,
+    );
+    expect(cb.calls).toEqual(["onMessageStart:assistant"]);
   });
 
   it("ignores message_end on user/tool-result messages", () => {

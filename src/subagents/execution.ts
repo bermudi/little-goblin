@@ -261,6 +261,8 @@ export function handleEvent(
       isError ? `tool error: ${name}` : `tool ok: ${name}`,
     ),
     onStatusUpdate: (msg) => instance.onStatusUpdate?.(msg),
+    onMessageStart: () => {},
+    onMessageEnd: () => {},
     onAgentEnd: () => hooks.onEnd(),
   };
   dispatchAgentEvent(event, adapter);

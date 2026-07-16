@@ -1,4 +1,5 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 // The transcript seam — type, writer, reader — lives in sessions/transcript.ts.
 // events.ts re-exports the writers it still owns (turn-event translation) so
@@ -11,6 +12,8 @@ export interface TurnCallbacks {
   onToolStart: (name: string, input: unknown) => void;
   onToolEnd: (name: string, isError: boolean) => void;
   onStatusUpdate: (message: string) => void;
+  onMessageStart: (message?: AgentMessage) => void;
+  onMessageEnd: (message?: AgentMessage) => void;
   onAgentEnd: () => void;
 }
 
@@ -67,17 +70,26 @@ export function dispatchAgentEvent(event: AgentSessionEvent, callbacks: TurnCall
       break;
     }
 
+    case "message_start": {
+      const msg = (event as { message?: AgentMessage }).message;
+      if (msg?.role === "assistant") {
+        callbacks.onMessageStart(msg);
+      }
+      break;
+    }
+
     case "message_end": {
       // Surface assistant-side errors (bad API key, rate limit, aborted, etc.)
       // as visible text. Without this the user is stuck on "🤔 thinking…"
       // forever because no text_delta ever arrives and no tools observed
       // means buildStatusLine returns "" on the done transition.
-      const msg = (event as { message?: unknown }).message;
+      const msg = (event as { message?: AgentMessage }).message;
       if (
         typeof msg === "object" &&
         msg !== null &&
         (msg as { role?: unknown }).role === "assistant"
       ) {
+        callbacks.onMessageEnd(msg);
         const am = msg as { stopReason?: unknown; errorMessage?: unknown };
         if (
           (am.stopReason === "error" || am.stopReason === "aborted") &&

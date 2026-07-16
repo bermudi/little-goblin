@@ -148,6 +148,8 @@ describe("MessageBuffer", () => {
     expect(() => buffer.onToolStart("bash", {})).not.toThrow();
     expect(() => buffer.onToolEnd("bash", false)).not.toThrow();
     expect(() => buffer.onStatusUpdate("thinking")).not.toThrow();
+    expect(() => buffer.onMessageStart()).not.toThrow();
+    expect(() => buffer.onMessageEnd()).not.toThrow();
     expect(() => buffer.onAgentEnd()).not.toThrow();
     await tick();
   });

@@ -280,50 +280,74 @@ The `memory_write` tool's `target` parameter SHALL be wired to resolve to a scop
 
 ### Requirement: Shared event dispatch function in agent/events.ts
 
-`src/agent/events.ts` SHALL export `dispatchAgentEvent(event: AgentSessionEvent, callbacks: TurnCallbacks): void` that translates a single pi `AgentSessionEvent` into typed callback invocations. The function SHALL cover all event types that runners consume: `agent_start`, `message_update`, `tool_execution_start`, `tool_execution_end`, `agent_end`, `compaction_start`, and `compaction_end`. All other event types SHALL be ignored (no-op).
+`src/agent/events.ts` SHALL export `dispatchAgentEvent(event: AgentSessionEvent, callbacks: TurnCallbacks): void` that translates a single pi `AgentSessionEvent` into typed callback invocations. The function SHALL cover the following event types: `agent_start`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_end`, `agent_end`, `compaction_start`, and `compaction_end`. All other event types SHALL be ignored (no-op).
 
 The dispatch behavior for each event type SHALL be:
 
 - `agent_start` → `callbacks.onStatusUpdate("thinking...")`
-- `message_update` with `text_delta` → `callbacks.onTextDelta(event.assistantMessageEvent.delta)`
-- `message_update` with non-text-delta (e.g. `message_start`, `message_end`) → ignored
+- `message_start` with `event.message.role === "assistant"` → `callbacks.onMessageStart(event.message)`
+- `message_start` with any other role → ignored
+- `message_update` with `assistantMessageEvent.type === "text_delta"` → `callbacks.onTextDelta(event.assistantMessageEvent.delta)`
+- `message_update` with `assistantMessageEvent.type === "thinking_start"` or `thinking_delta` → `callbacks.onStatusUpdate("thinking...")`
+- `message_update` with any other assistant message event type → ignored
+- `message_end` with `event.message.role === "assistant"` → `callbacks.onMessageEnd(event.message)`
+- `message_end` with `event.message.role === "assistant"` and `stopReason === "error"` or `"aborted"` and a non-empty `errorMessage` → `callbacks.onTextDelta("\n\n❌ <label>: <errorMessage>")` after `onMessageEnd`
+- `message_end` with any other role → ignored
 - `tool_execution_start` → `callbacks.onToolStart(event.toolName, event.args)`
 - `tool_execution_end` → `callbacks.onToolEnd(event.toolName, event.isError === true)`
 - `agent_end` → `callbacks.onAgentEnd()`
 - `compaction_start` → `callbacks.onStatusUpdate("🗜 compacting…")`
-- `compaction_end` → `callbacks.onStatusUpdate(…)` with a summary formed from `event.result` (e.g. `"compacted from <tokensBefore> tokens"`)
+- `compaction_end` → `callbacks.onStatusUpdate(...)` with a summary formed from `event.result`
 
 The function MUST NOT perform any side effects beyond invoking callbacks — no logging, no event appending, no state mutation.
 
-#### Scenario: Compaction start event
+#### Scenario: Assistant message start emits onMessageStart
 
-- **WHEN** `dispatchAgentEvent` is called with a `compaction_start` event
-- **THEN** `callbacks.onStatusUpdate` SHALL be invoked with `"🗜 compacting…"`
+- **WHEN** `dispatchAgentEvent` is called with a `message_start` event whose `message.role` is `"assistant"`
+- **THEN** `callbacks.onMessageStart` SHALL be invoked with the message
 
-#### Scenario: Compaction end event
+#### Scenario: User message start does not emit onMessageStart
 
-- **WHEN** `dispatchAgentEvent` is called with a `compaction_end` event whose `result.tokensBefore` is `42000`
-- **THEN** `callbacks.onStatusUpdate` SHALL be invoked with a message indicating compaction completed (e.g. `"compacted from ~42k tokens"`)
+- **WHEN** `dispatchAgentEvent` is called with a `message_start` event whose `message.role` is `"user"`
+- **THEN** `callbacks.onMessageStart` SHALL NOT be invoked
 
-#### Scenario: Unknown event type
+#### Scenario: Assistant message end emits onMessageEnd
 
-- **WHEN** `dispatchAgentEvent` is called with an unrecognized event type (e.g., `turn_start`)
-- **THEN** no callback SHALL be invoked
-- **AND** no error SHALL be thrown
+- **WHEN** `dispatchAgentEvent` is called with a `message_end` event whose `message.role` is `"assistant"`
+- **THEN** `callbacks.onMessageEnd` SHALL be invoked with the message
+
+#### Scenario: Tool result message end does not emit onMessageEnd
+
+- **WHEN** `dispatchAgentEvent` is called with a `message_end` event whose `message.role` is `"toolResult"`
+- **THEN** `callbacks.onMessageEnd` SHALL NOT be invoked
 
 ### Requirement: TurnCallbacks interface defined in agent/events.ts
 
-The `TurnCallbacks` interface SHALL be defined in `src/agent/events.ts` with its existing five methods: `onTextDelta(text: string)`, `onToolStart(name: string, input: unknown)`, `onToolEnd(name: string, isError: boolean)`, `onStatusUpdate(message: string)`, `onAgentEnd()`. The interface SHALL be re-exported from `src/agent/mod.ts` for backward compatibility.
+The `TurnCallbacks` interface SHALL be defined in `src/agent/events.ts` with the following seven methods:
 
-#### Scenario: Existing importers continue to compile
+- `onTextDelta(text: string)`
+- `onToolStart(name: string, input: unknown)`
+- `onToolEnd(name: string, isError: boolean)`
+- `onStatusUpdate(message: string)`
+- `onMessageStart(message: AgentMessage | undefined)`
+- `onMessageEnd(message: AgentMessage | undefined)`
+- `onAgentEnd()`
 
-- **WHEN** `import { TurnCallbacks } from "../agent/mod.ts"` is used in `src/tg/buffer.ts`
-- **THEN** the import SHALL resolve and the type SHALL be identical to `import { TurnCallbacks } from "../agent/events.ts"`
+The interface SHALL be re-exported from `src/agent/mod.ts` for backward compatibility.
 
-#### Scenario: New consumers import from events.ts
+`onMessageStart` and `onMessageEnd` are boundary signals for assistant messages. Implementers that do not need per-message boundaries (e.g., `GuestReplySink`) MAY implement them as no-ops.
 
-- **WHEN** a new module imports `{ TurnCallbacks }` from `src/agent/events.ts`
-- **THEN** it SHALL receive the same interface as importing from `src/agent/mod.ts`
+#### Scenario: Existing consumers continue to compile
+
+- **WHEN** `import { TurnCallbacks } from "../agent/mod.ts"` is used
+- **THEN** the type SHALL include all seven methods
+- **AND** the type SHALL be identical to `import { TurnCallbacks } from "../agent/events.ts"`
+
+#### Scenario: Guest sink accepts boundaries as no-ops
+
+- **WHEN** `GuestReplySink` implements `TurnCallbacks`
+- **THEN** `onMessageStart` and `onMessageEnd` SHALL be present
+- **AND** they SHALL not modify the accumulated `.text`
 
 ### Requirement: Main agent skill discovery is configurable
 

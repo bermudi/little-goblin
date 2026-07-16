@@ -4,13 +4,18 @@
 
 ### Requirement: MessageBuffer implements TurnCallbacks interface
 
-The `MessageBuffer` class SHALL implement the `TurnCallbacks` interface with methods `onTextDelta`, `onToolStart`, `onToolEnd`, `onStatusUpdate`, `onAgentEnd`.
+The `MessageBuffer` class SHALL implement the `TurnCallbacks` interface with methods `onTextDelta`, `onToolStart`, `onToolEnd`, `onStatusUpdate`, `onMessageStart`, `onMessageEnd`, and `onAgentEnd`.
 
 #### Scenario: Callback dispatch
 
 - **WHEN** `AgentRunner` calls `buffer.onTextDelta("hello")`
 - **THEN** the buffer SHALL accumulate the delta internally
 - **AND** WHEN `buffer.onAgentEnd()` is called, the buffer SHALL flush accumulated content
+
+#### Scenario: Message boundary callbacks are accepted
+
+- **WHEN** `buffer.onMessageStart()` and `buffer.onMessageEnd()` are called around an assistant message
+- **THEN** the buffer SHALL seal the current response message and start a new one for the next assistant message
 
 ### Requirement: Status line coalesces tool activity
 
@@ -218,14 +223,7 @@ On `onAgentEnd`, the buffer SHALL force-flush the status line so the resting mes
 
 ### Requirement: Response message segments at tool boundaries
 
-The buffer SHALL seal the current response message when a visible-or-invisible tool starts mid-turn after assistant text has already streamed. The next assistant text after the tool SHALL begin a fresh response message rather than appending to the prior one. This produces one Telegram bubble per text segment between tool calls, so a turn that emits `text → tool → text → tool → text` produces three response bubbles in chat order, interleaved with the agent's tool activity (which remains summarized in the single status line, unchanged).
-
-Sealing semantics:
-
-- The seal SHALL force-flush the accumulated text before resetting state, so the just-completed segment lands in its bubble in full.
-- The seal SHALL clear `responseMessageId` (so the next text triggers a `sendMessage`), `accumulatedText`, and `lastRenderedResponseText`.
-- If a tool starts when no text has accumulated since the last seal (or since turn start), the buffer SHALL NOT send anything and SHALL NOT mutate state. A naked-tool-call turn (no preamble) therefore produces exactly one response bubble after the tool, not an empty stub before it.
-- If new text arrives during the in-flight seal flush (race not expected in practice — LLM tool calls do not interleave mid-token with text — but defended against), the buffer SHALL skip the seal and keep accumulating into the existing message. The next tool boundary or `onAgentEnd` will land it.
+The buffer SHALL seal the current response message when a visible-or-invisible tool starts mid-turn after assistant text has already streamed, or when an assistant `message_start` boundary fires while a response message is in progress. The next assistant text after any seal SHALL begin a fresh response message rather than appending to the prior one. Tool boundaries and assistant message boundaries share the same sealing state reset: `responseMessageId`, `accumulatedText`, `lastRenderedResponseText`, and `responseIsPlainText` are cleared.
 
 #### Scenario: Text → tool → text produces two bubbles
 
@@ -235,25 +233,13 @@ Sealing semantics:
 - **AND** a second response bubble SHALL be created via `sendMessage` for `"Done. Output was 42."`
 - **AND** the second bubble SHALL NOT be an edit of the first
 
-#### Scenario: Naked tool call emits no stub bubble
+#### Scenario: Two assistant messages produce two bubbles
 
-- **WHEN** `onToolStart("bash", ...)` fires as the very first content event of a turn (no `onTextDelta` yet)
-- **THEN** no `sendMessage` SHALL be issued for the response message
-- **AND** `responseMessageId` SHALL remain `undefined`
-- **AND** the first `onTextDelta` after the tool ends SHALL be the one that creates the response message
-
-#### Scenario: Three text segments around two tools produce three bubbles
-
-- **WHEN** the turn unfolds as `text "A." → tool → text "B." → tool → text "C."`
-- **THEN** exactly three response messages SHALL be sent (one `sendMessage` each)
-- **AND** none of them SHALL be edited to contain another segment's text
-
-#### Scenario: Final segment lands fully on agent_end
-
-- **GIVEN** the agent emitted `text → tool → text` and the final text is mid-stream when `onAgentEnd` fires
-- **WHEN** `onAgentEnd` runs
-- **THEN** the second (final) bubble SHALL be force-flushed to its complete accumulated text
-- **AND** the first bubble SHALL be untouched
+- **GIVEN** the agent has streamed `"First reply."`
+- **WHEN** `onMessageStart()` fires for a second assistant message, then `onTextDelta("Second reply.")` fires
+- **THEN** the first bubble SHALL contain `"First reply."`
+- **AND** a second response bubble SHALL be created via `sendMessage` for `"Second reply."`
+- **AND** the second bubble SHALL NOT be an edit of the first
 
 ### Requirement: Status renders per-tool slots in observation order
 
@@ -503,3 +489,37 @@ The existing `MessageBuffer` (streaming edits against a `chatId`) is unchanged. 
 - **WHEN** the agent turn errors before `onAgentEnd`
 - **THEN** `runner.prompt()` SHALL reject with the error (the sink itself does not expose a promise)
 - **AND** the intake module SHALL handle the rejection by sending a short fallback reply via `replyVia` (so the summoner is not left without acknowledgment)
+
+### Requirement: Response message segments at assistant message boundaries
+
+The buffer SHALL seal the current response message when an assistant `message_start` event fires and a response message is already in progress. The next assistant text delta after the boundary SHALL begin a fresh response message rather than appending to the prior one. This produces one Telegram bubble per assistant message, so a turn that emits two assistant messages (e.g., a follow-up turn after a `runner.followUp()` call) produces two separate response bubbles in chat order.
+
+Sealing semantics:
+
+- The seal SHALL force-flush the accumulated text before resetting state, so the just-completed assistant message lands in its bubble in full.
+- The seal SHALL clear `responseMessageId` (so the next text triggers a `sendMessage`), `accumulatedText`, `lastRenderedResponseText`, and `responseIsPlainText`.
+- If `onMessageStart` fires when no response message is in progress (no prior `onTextDelta` or tool has reset the response state), the buffer SHALL NOT send anything and SHALL NOT mutate response state.
+- If `onMessageEnd` fires for an assistant message with no response message in progress, the buffer SHALL NOT send anything and SHALL NOT mutate response state.
+- If new text arrives during the in-flight seal flush (race not expected in practice — assistant messages do not interleave mid-token — but defended against), the buffer SHALL skip the seal and keep accumulating into the existing message. The next `onMessageStart` or `onAgentEnd` will land it.
+
+#### Scenario: Two assistant messages in one turn produce two bubbles
+
+- **GIVEN** the agent has streamed `"First reply."` and `onMessageEnd()` has flushed it
+- **WHEN** `onMessageStart()` fires for a second assistant message, then `onTextDelta("Second reply.")` fires
+- **THEN** the first bubble SHALL contain `"First reply."`
+- **AND** a second response bubble SHALL be created via `sendMessage` for `"Second reply."`
+- **AND** the second bubble SHALL NOT be an edit of the first
+
+#### Scenario: No stub on first assistant message
+
+- **WHEN** `onMessageStart()` fires for the very first assistant message of a turn and no response message has been created yet
+- **THEN** no `sendMessage` SHALL be issued for the response message
+- **AND** `responseMessageId` SHALL remain `undefined`
+- **AND** the first `onTextDelta` after the boundary SHALL be the one that creates the response message
+
+#### Scenario: Plain-text fallback resets on new assistant message
+
+- **GIVEN** a prior assistant message fell back to plain text because of a MarkdownV2 parse error
+- **WHEN** `onMessageStart()` fires for the next assistant message
+- **THEN** `responseIsPlainText` SHALL be reset to `false`
+- **AND** the new message SHALL attempt MarkdownV2 on its first send

@@ -67,7 +67,9 @@ function clearBindingsForSession(bindings: BindingsFile, sessionId: string): boo
 function ensureSessionFiles(home: string, id: string): void {
   const dir = sessionDir(home, id);
   mkdirSync(dir, { recursive: true });
-  // Create empty transcript.jsonl and metrics.jsonl if missing
+  mkdirSync(join(dir, "workdir"), { recursive: true });
+
+  // Create empty session JSONL files if missing
   const transcriptFile = transcriptPath(home, id);
   try {
     writeFileSync(transcriptFile, "", { flag: "wx" });
@@ -77,6 +79,12 @@ function ensureSessionFiles(home: string, id: string): void {
   const metricsFile = metricsPath(home, id);
   try {
     writeFileSync(metricsFile, "", { flag: "wx" });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  }
+  const eventsFile = join(dir, "events.jsonl");
+  try {
+    writeFileSync(eventsFile, "", { flag: "wx" });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
   }

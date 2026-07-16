@@ -165,6 +165,18 @@ describe("SessionManager", () => {
       expect(existsSync(metricsPath(tmpDir, state.id))).toBe(true);
     });
 
+    it("creates empty events.jsonl", () => {
+      const loc: ChatLocator = { chatId: 123456 };
+      const state = manager.createForChat(loc);
+      expect(existsSync(join(sessionDir(tmpDir, state.id), "events.jsonl"))).toBe(true);
+    });
+
+    it("creates workdir", () => {
+      const loc: ChatLocator = { chatId: 123456 };
+      const state = manager.createForChat(loc);
+      expect(existsSync(join(sessionDir(tmpDir, state.id), "workdir"))).toBe(true);
+    });
+
     it("rebinding DM creates new session without deleting old", () => {
       const loc: ChatLocator = { chatId: 123456 };
       const first = manager.createForChat(loc);
@@ -221,6 +233,17 @@ describe("SessionManager", () => {
 
       const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
       expect(config.supergroups?.["555"]).toBeUndefined();
+    });
+
+    it("archives metrics.jsonl with the session", () => {
+      const loc: ChatLocator = { chatId: 123456 };
+      const created = manager.createForChat(loc);
+      expect(existsSync(metricsPath(tmpDir, created.id))).toBe(true);
+
+      manager.archive(created.id);
+
+      expect(existsSync(metricsPath(tmpDir, created.id))).toBe(false);
+      expect(existsSync(join(sessionsDir(tmpDir), "archive", created.id, "metrics.jsonl"))).toBe(true);
     });
 
     it("throws when session dir does not exist", () => {

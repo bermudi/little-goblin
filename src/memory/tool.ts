@@ -1,6 +1,7 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { MemoryStore, StoreResult } from "./store.ts";
+import type { MetricsStore } from "../metrics/store.ts";
 import { activeMemoryScopeFor, type ActiveScope, type MemoryScope } from "./scope.ts";
 import { VALID_NAME_RE } from "../subagents/named-agents.ts";
 import { checkDescriptionSafety, checkMemorySafety } from "./safety.ts";
@@ -183,6 +184,8 @@ export function createMemorySearchTool(args: {
    * `persona` knobs.
    */
   caller: MemoryCaller;
+  /** Optional metrics store to record memory_search events. */
+  metrics?: MetricsStore;
 }): ToolDefinition {
   return defineTool({
     name: "memory_search",
@@ -204,6 +207,7 @@ export function createMemorySearchTool(args: {
         query: params.query,
         limit: params.limit,
         allChats: params.all_chats,
+        metrics: args.metrics,
       });
       return jsonResult(output);
     },

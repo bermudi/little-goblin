@@ -1,6 +1,57 @@
-import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { metricsPath } from "../sessions/paths.ts";
+
+const LOCK_STALE_MS = 5000;
+const LOCK_MAX_ATTEMPTS = 100;
+const LOCK_RETRY_SLEEP_MS = 5;
+
+/**
+ * Acquire a file-scoped lock for the given metrics file using an atomic
+ * `O_EXCL` lock file. The lock is released by the returned function.
+ *
+ * If a stale lock file is detected (older than `LOCK_STALE_MS`), it is removed
+ * and acquisition is retried, so a crashed process does not block writers
+ * forever. Contended locks are retried briefly before throwing.
+ */
+function lockMetricsFile(filePath: string): () => void {
+  const lockPath = `${filePath}.lock`;
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+
+  for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
+    try {
+      const fd = openSync(lockPath, "wx");
+      closeSync(fd);
+      return () => {
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          // ENOENT is expected if another writer already cleaned up.
+        }
+      };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") {
+        // Another writer holds the lock. Check for staleness and retry.
+        try {
+          const s = statSync(lockPath);
+          if (Date.now() - s.mtimeMs > LOCK_STALE_MS) {
+            unlinkSync(lockPath);
+            continue;
+          }
+        } catch {
+          // Race: lock was released between check and stat; retry.
+        }
+        Bun.sleepSync(LOCK_RETRY_SLEEP_MS);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(`Failed to acquire metrics lock for ${filePath}`);
+}
 
 export interface MetricsUsage {
   input: number;
@@ -109,18 +160,41 @@ function parseLines(raw: string): Record<string, unknown>[] {
   return events;
 }
 
+function lastCounterValue(path: string, name: string, scope: string | null): number {
+  const raw = readMetricsFile(path);
+  if (raw === null) return 0;
+  const events = parseLines(raw);
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!;
+    if (event.type === "counter" && event.name === name && event.scope === scope) {
+      const value = event.value;
+      if (typeof value === "number") return value;
+    }
+  }
+  return 0;
+}
+
 export class MetricsStore {
-  private readonly path: string;
+  private readonly home: string;
+  private readonly sessionId: string;
 
   constructor(home: string, sessionId: string) {
-    this.path = metricsPath(home, sessionId);
+    this.home = home;
+    this.sessionId = sessionId;
+    // Validate eagerly; the absolute path is still re-resolved on every access.
+    metricsPath(home, sessionId);
+  }
+
+  /** Re-resolve the metrics path on every access so archived/moved sessions do not leave a stale absolute path cached. */
+  private get path(): string {
+    return metricsPath(this.home, this.sessionId);
   }
 
   record(event: MetricsEvent): void {
-    const dir = dirname(this.path);
-    mkdirSync(dir, { recursive: true });
+    const path = this.path;
+    mkdirSync(dirname(path), { recursive: true });
     const line = JSON.stringify(event) + "\n";
-    const fd = openSync(this.path, "a");
+    const fd = openSync(path, "a");
     try {
       writeSync(fd, line);
     } finally {
@@ -129,22 +203,21 @@ export class MetricsStore {
   }
 
   incrementCounter(name: string, scope: string | null = null, delta: number = 1): void {
-    const last = this.lastCounterValue(name, scope);
-    this.record({ type: "counter", name, scope, value: last + delta });
-  }
-
-  private lastCounterValue(name: string, scope: string | null): number {
-    const raw = readMetricsFile(this.path);
-    if (raw === null) return 0;
-    const events = parseLines(raw);
-    for (let i = events.length - 1; i >= 0; i--) {
-      const event = events[i]!;
-      if (event.type === "counter" && event.name === name && event.scope === scope) {
-        const value = event.value;
-        if (typeof value === "number") return value;
+    const path = this.path;
+    mkdirSync(dirname(path), { recursive: true });
+    const release = lockMetricsFile(path);
+    try {
+      const last = lastCounterValue(path, name, scope);
+      const fd = openSync(path, "a");
+      try {
+        const line = JSON.stringify({ type: "counter", name, scope, value: last + delta }) + "\n";
+        writeSync(fd, line);
+      } finally {
+        closeSync(fd);
       }
+    } finally {
+      release();
     }
-    return 0;
   }
 }
 

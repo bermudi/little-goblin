@@ -1836,38 +1836,109 @@ describe("AgentRunner", () => {
   });
 
   describe("metrics", () => {
-    it("records a turn event with tool counts on assistant message_end", async () => {
+    it("records a turn event with tool counts on assistant turn_end", async () => {
       const runner = makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
+      const assistantMessage = {
+        role: "assistant",
+        content: [{ type: "text", text: "done" }],
+        stopReason: "stop",
+        usage: {
+          input: 10,
+          output: 5,
+          cacheRead: 1,
+          cacheWrite: 2,
+          totalTokens: 15,
+          cost: { total: 0.003 },
+        },
+      };
+
       sessionHolder.emit({ type: "agent_start" });
+      sessionHolder.emit({ type: "turn_start" });
+      sessionHolder.emit({ type: "message_end", message: assistantMessage });
       sessionHolder.emit({ type: "tool_execution_start", toolName: "bash", args: {} });
       sessionHolder.emit({ type: "tool_execution_end", toolName: "bash", isError: false });
-      sessionHolder.emit({
-        type: "message_end",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "done" }],
-          stopReason: "stop",
-          usage: {
-            input: 10,
-            output: 5,
-            cacheRead: 1,
-            cacheWrite: 2,
-            totalTokens: 15,
-            cost: { total: 0.003 },
-          },
-        },
-      });
+      sessionHolder.emit({ type: "turn_end", message: assistantMessage, toolResults: [] });
       sessionHolder.emit({ type: "agent_end" });
 
       const summary = readMetricsSummary(tmpDir, "abcdef1234")!;
       expect(summary.turns).toBe(1);
       expect(summary.totalTokens).toBe(15);
+      expect(summary.totalCost).toBe(0.003);
+      expect(summary.cacheRead).toBe(1);
+      expect(summary.cacheWrite).toBe(2);
       expect(summary.lastTurn).not.toBeNull();
       expect(summary.lastTurn!.toolCount).toBe(1);
       expect(summary.lastTurn!.toolErrorCount).toBe(0);
       expect(summary.lastTurn!.usage.totalTokens).toBe(15);
+      expect(summary.lastTurn!.cacheRead).toBe(1);
+      expect(summary.lastTurn!.cacheWrite).toBe(2);
+      expect(summary.lastTurn!.cost).toBe(0.003);
+    });
+
+    it("exposes the metrics store before the first prompt", () => {
+      const runner = makeRunner(tmpDir);
+      expect(runner.metrics).toBeDefined();
+      runner.metrics.incrementCounter("manual", "session");
+      const summary = readMetricsSummary(tmpDir, "abcdef1234")!;
+      expect(summary.memoryWriteTotal).toBe(0); // manual counter is unrelated
+    });
+
+    it("does not record a turn event when the turn aborts before turn_end", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      sessionHolder.emit({ type: "agent_start" });
+      sessionHolder.emit({ type: "turn_start" });
+      sessionHolder.emit({ type: "tool_execution_start", toolName: "bash", args: {} });
+      sessionHolder.emit({ type: "tool_execution_end", toolName: "bash", isError: false });
+      sessionHolder.emit({ type: "agent_end" });
+
+      const summary = readMetricsSummary(tmpDir, "abcdef1234")!;
+      expect(summary.turns).toBe(0);
+      expect(summary.lastTurn).toBeNull();
+    });
+
+    it("uses the message timestamp for turnEnd when present", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      const assistantMessage = {
+        role: "assistant",
+        content: [{ type: "text", text: "done" }],
+        stopReason: "stop",
+        timestamp: 1_704_000_000_000,
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { total: 0 } },
+      };
+
+      sessionHolder.emit({ type: "agent_start" });
+      sessionHolder.emit({ type: "turn_start" });
+      sessionHolder.emit({ type: "turn_end", message: assistantMessage, toolResults: [] });
+      sessionHolder.emit({ type: "agent_end" });
+
+      const summary = readMetricsSummary(tmpDir, "abcdef1234")!;
+      expect(summary.lastTurn!.turnEnd).toBe(new Date(1_704_000_000_000).toISOString());
+    });
+
+    it("uses the agent_start/turn_start event ts for turnStart when present", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      const assistantMessage = {
+        role: "assistant",
+        content: [{ type: "text", text: "done" }],
+        stopReason: "stop",
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { total: 0 } },
+      };
+
+      sessionHolder.emit({ type: "agent_start", ts: "2026-01-02T00:00:00.000Z" });
+      sessionHolder.emit({ type: "turn_start", ts: "2026-01-02T00:00:01.000Z" });
+      sessionHolder.emit({ type: "turn_end", message: assistantMessage, toolResults: [] });
+      sessionHolder.emit({ type: "agent_end" });
+
+      const summary = readMetricsSummary(tmpDir, "abcdef1234")!;
+      expect(summary.lastTurn!.turnStart).toBe("2026-01-02T00:00:01.000Z");
     });
   });
 });

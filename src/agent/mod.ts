@@ -130,16 +130,32 @@ function extractUsage(message: Record<string, unknown>): MetricsUsage {
   };
 }
 
+function extractTimestamp(value: Record<string, unknown>): string | null {
+  const ts = value.ts;
+  if (typeof ts === "string" && ts.length > 0) return ts;
+
+  const timestamp = value.timestamp;
+  if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+    return new Date(timestamp).toISOString();
+  }
+  if (typeof timestamp === "string") {
+    const parsed = Date.parse(timestamp);
+    if (Number.isFinite(parsed)) return timestamp;
+  }
+
+  return null;
+}
+
 function buildTurnMetricsEvent(args: {
   message: Record<string, unknown>;
   turnStart: string | null;
+  turnEnd: string;
   toolCount: number;
   toolErrorCount: number;
   resolvedModel: ResolvedModel | null;
 }): TurnMetricsEvent {
-  const turnEnd = new Date().toISOString();
-  const startTime = args.turnStart ?? turnEnd;
-  const durationMs = Math.max(0, Date.parse(turnEnd) - Date.parse(startTime));
+  const startTime = args.turnStart ?? args.turnEnd;
+  const durationMs = Math.max(0, Date.parse(args.turnEnd) - Date.parse(startTime));
   const model = typeof args.message.model === "string" ? args.message.model : "";
   const provider = typeof args.message.provider === "string" ? args.message.provider : "";
   const api = typeof args.message.api === "string" ? args.message.api : "";
@@ -151,16 +167,16 @@ function buildTurnMetricsEvent(args: {
   return {
     type: "turn",
     turnStart: startTime,
-    turnEnd,
+    turnEnd: args.turnEnd,
     durationMs,
     model,
     provider,
     api,
     responseModel,
     usage,
-    cacheRead: asFiniteNumber(args.message.cacheRead),
-    cacheWrite: asFiniteNumber(args.message.cacheWrite),
-    cost: asFiniteNumber(args.message.cost),
+    cacheRead: usage.cacheRead,
+    cacheWrite: usage.cacheWrite,
+    cost: usage.cost.total,
     toolCount: args.toolCount,
     toolErrorCount: args.toolErrorCount,
     stopReason: typeof stopReason === "string" || stopReason === null ? stopReason : null,
@@ -193,7 +209,7 @@ export class AgentRunner {
   private _thinkingLevel: ThinkingLevel | undefined;
   private pendingProjectNotice: string | undefined;
   private resolvedModel: ResolvedModel | null = null;
-  private metrics: MetricsStore;
+  private metricsStore: MetricsStore;
   private turnStart: string | null = null;
   private turnToolCount = 0;
   private turnToolErrorCount = 0;
@@ -231,8 +247,8 @@ export class AgentRunner {
   }
 
   /** The session metrics store. Exposed for diagnostics and tests. */
-  get metricsStore(): MetricsStore {
-    return this.metrics;
+  get metrics(): MetricsStore {
+    return this.metricsStore;
   }
 
   /** If a cancel arrived before the first prompt, clear the flag and throw. */
@@ -258,11 +274,11 @@ export class AgentRunner {
     this._thinkingLevel = opts.thinkingLevel;
     this.pendingProjectNotice = opts.pendingProjectNotice;
     this.resolvedModel = opts.resolvedModel ?? null;
-    this.metrics = new MetricsStore(opts.cfg.goblinHome, this.sessionId);
+    this.metricsStore = new MetricsStore(opts.cfg.goblinHome, this.sessionId);
     // Construction is cheap (no I/O); the directory is created lazily on first write.
-    this.memoryStore = new MemoryStore(opts.cfg.goblinHome, this.metrics);
+    this.memoryStore = new MemoryStore(opts.cfg.goblinHome, this.metricsStore);
     this.memoryReflector = opts.memoryReflector ??
-      new MemoryReflector({ goblinHome: opts.cfg.goblinHome, store: this.memoryStore, metrics: this.metrics });
+      new MemoryReflector({ goblinHome: opts.cfg.goblinHome, store: this.memoryStore, metrics: this.metricsStore });
     const backendOpts: AgentBackendOptions = {
       cfg: this.cfg,
       sessionId: this.sessionId,
@@ -332,7 +348,12 @@ export class AgentRunner {
         caller: { kind: "main" },
         getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
       }),
-      createMemorySearchTool({ store: this.memoryStore, activeScope: this.activeScope, caller: { kind: "main" } }),
+      createMemorySearchTool({
+        store: this.memoryStore,
+        activeScope: this.activeScope,
+        caller: { kind: "main" },
+        metrics: this.metricsStore,
+      }),
       createMemoryWriteTool({ store: this.memoryStore, activeScope: this.activeScope }),
     ];
 
@@ -461,7 +482,13 @@ export class AgentRunner {
 
     switch (e.type) {
       case "agent_start": {
-        this.turnStart = new Date().toISOString();
+        this.turnStart = extractTimestamp(e) ?? new Date().toISOString();
+        this.turnToolCount = 0;
+        this.turnToolErrorCount = 0;
+        break;
+      }
+      case "turn_start": {
+        this.turnStart = extractTimestamp(e) ?? new Date().toISOString();
         this.turnToolCount = 0;
         this.turnToolErrorCount = 0;
         break;
@@ -476,21 +503,24 @@ export class AgentRunner {
         }
         break;
       }
-      case "message_end": {
+      case "turn_end": {
         const message = e.message;
         if (
           typeof message === "object" &&
           message !== null &&
           (message as Record<string, unknown>).role === "assistant"
         ) {
+          const messageRecord = message as Record<string, unknown>;
+          const turnEnd = extractTimestamp(messageRecord) ?? extractTimestamp(e) ?? new Date().toISOString();
           const turn = buildTurnMetricsEvent({
-            message: message as Record<string, unknown>,
+            message: messageRecord,
             turnStart: this.turnStart,
+            turnEnd,
             toolCount: this.turnToolCount,
             toolErrorCount: this.turnToolErrorCount,
             resolvedModel: this.resolvedModel,
           });
-          this.metrics.record(turn);
+          this.metricsStore.record(turn);
           this.turnToolCount = 0;
           this.turnToolErrorCount = 0;
         }
@@ -558,7 +588,7 @@ export class AgentRunner {
         caller: { kind: "main" },
         getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
         promptText,
-        metrics: this.metrics,
+        metrics: this.metricsStore,
       });
       if (aside !== null) {
         await this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" });

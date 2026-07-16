@@ -246,7 +246,10 @@ describe("gatherDiagnostics", () => {
     expect(d.metrics!.totalTokens).toBe(15);
     const out = formatDiagnostics(d);
     expect(out).toContain("Turns: 1");
-    expect(out).toContain("Total tokens: 15");
+    expect(out).toContain("Tokens: 15");
+    expect(out).toContain("Cost: $ 0.003000");
+    expect(out).toContain("Cache: 0 read / 0 write tokens in this session");
+    expect(out).toContain("Memory searches: 0");
   });
 
   it("reports null events stats when the file is missing", () => {

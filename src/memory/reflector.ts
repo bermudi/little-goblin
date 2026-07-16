@@ -21,7 +21,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { atomicWrite } from "../fs.ts";
 import { log } from "../log.ts";
 import { sessionDir } from "../sessions/paths.ts";
@@ -97,6 +97,41 @@ const CONFIDENCE_THRESHOLD = 0.5;
 const NEAR_DUPLICATE_THRESHOLD = 0.6;
 
 const DELIMITER = "\n§\n";
+
+// ---------------------------------------------------------------------------
+// Processed candidate tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks candidates that have been successfully processed by the reflection
+ * pipeline. Used as an idempotency guard so a rerun with a reset cursor (or
+ * a test double) does not double-count the same candidate in
+ * `memory_reflection_candidate_total` or re-persist/quarantine it.
+ *
+ * Keys are scoped by goblin home directory so tests using the same session id
+ * against different temporary homes do not interfere with each other.
+ */
+const processedCandidates = new Map<string, Set<string>>();
+
+function processedCandidateKey(home: string, sessionId: string, candidate: Candidate): string {
+  const [start, end] = candidate.source.lineRange;
+  return `${home}\x00${sessionId}\x00${start}:${end}:${candidate.summary.slice(0, 64)}`;
+}
+
+function isProcessedCandidate(home: string, sessionId: string, candidate: Candidate): boolean {
+  const set = processedCandidates.get(home);
+  return set !== undefined && set.has(processedCandidateKey(home, sessionId, candidate));
+}
+
+function markCandidateProcessed(home: string, sessionId: string, candidate: Candidate): void {
+  const key = processedCandidateKey(home, sessionId, candidate);
+  let set = processedCandidates.get(home);
+  if (set === undefined) {
+    set = new Set();
+    processedCandidates.set(home, set);
+  }
+  set.add(key);
+}
 
 // ---------------------------------------------------------------------------
 // Procedural noise patterns
@@ -509,11 +544,20 @@ export class MemoryReflector {
 
     // Extract candidates from the new transcript range.
     const candidates = await this.extractor(newLines, { sessionId });
-    this.metrics?.incrementCounter("memory_reflection_candidate_total", null, candidates.length);
 
-    // Process each candidate through the filtering pipeline.
-    for (const candidate of candidates) {
+    // Skip candidates that were already processed in this goblin process.
+    // This guards against a reset cursor or a test double re-running the same
+    // transcript range while still allowing a failed pass to retry unmarked
+    // candidates on the next run.
+    const home = resolve(this.home);
+    const newCandidates = candidates.filter((c) => !isProcessedCandidate(home, sessionId, c));
+
+    // Process each new candidate through the filtering pipeline and count it
+    // only after it has been successfully handled.
+    for (const candidate of newCandidates) {
       await this.processCandidate(candidate, activeScope);
+      markCandidateProcessed(home, sessionId, candidate);
+      this.metrics?.incrementCounter("memory_reflection_candidate_total", null, 1);
     }
 
     // Advance cursor only after the full range is processed.

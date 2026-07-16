@@ -165,14 +165,14 @@ function fmtMetrics(metrics: MetricsSummary | null): string {
   const lines = [
     `Metrics:`,
     `  Turns: ${metrics.turns}`,
-    `  Total tokens: ${metrics.totalTokens}`,
-    `  Cache read: ${metrics.cacheRead}, write: ${metrics.cacheWrite}`,
-    `  Total cost: ${metrics.totalCost.toFixed(6)}`,
+    `  Tokens: ${metrics.totalTokens}`,
+    `  Cost: $ ${metrics.totalCost.toFixed(6)}`,
+    `  Cache: ${metrics.cacheRead} read / ${metrics.cacheWrite} write tokens in this session`,
     `  Average duration: ${metrics.averageDurationMs.toFixed(0)} ms`,
     `  Memory writes: ${metrics.memoryWriteTotal} (overflow: ${metrics.memoryWriteOverflowTotal}, safety rejects: ${metrics.memoryWriteSafetyRejectTotal})`,
     `  Memory archives: ${metrics.memoryArchiveOrphanTotal}`,
     `  Reflection candidates: ${metrics.memoryReflectionCandidateTotal}, persisted: ${metrics.memoryReflectionPersistedTotal}, quarantined: ${metrics.memoryReflectionQuarantineTotal}`,
-    `  Searches: ${metrics.searchCount} (last results: ${metrics.lastSearchResultCount ?? UNAVAILABLE}, average: ${metrics.averageSearchResultCount.toFixed(1)})`,
+    `  Memory searches: ${metrics.searchCount} (last results: ${metrics.lastSearchResultCount ?? UNAVAILABLE}, average: ${metrics.averageSearchResultCount.toFixed(1)})`,
   ];
   if (metrics.lastTurn) {
     lines.push(

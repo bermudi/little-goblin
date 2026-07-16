@@ -27,7 +27,7 @@ Architecture lives in `specs/` (litespec). This file is just guardrails.
 ## Guardrails
 
 - **TypeScript strict.** No `any`. Use `unknown` and narrow. Validate at boundaries.
-- **Atomic writes.** tmp + `renameSync`. JSON for state, JSONL for logs. No database.
+- **Atomic writes.** tmp + `renameSync`. JSON for state, JSONL for logs. No database except the memory store at `$GOBLIN_HOME/state/memory/memory.sqlite`.
 - **Fail loud.** `ENOENT` is expected — return null. Everything else propagates.
 - **No `console.log`.** Use `log` from `src/log.ts`.
 - **One module, one job.** Flat modules with `mod.ts` barrels. Colocate tests.
@@ -36,15 +36,16 @@ Architecture lives in `specs/` (litespec). This file is just guardrails.
 
 ## Memory
 
-Curated, agent-controlled persistent memory lives at `$GOBLIN_HOME/state/memory/`:
+Persistent memory lives in a SQLite database at `$GOBLIN_HOME/state/memory/memory.sqlite`. Markdown files in `$GOBLIN_HOME/state/memory/` are an export-only view:
 
-- `memory.md` — notes about the environment, projects, conventions, decisions. Cap: **4000 chars**.
-- `user.md` — user preferences, communication style, recurring people/places. Cap: **2000 chars**.
-- Entries are separated by `\n§\n`. Single-entry files contain no delimiter.
-- Goblin curates this via the `memory` tool (`add` / `replace` / `remove`). Overflow returns an error to the agent telling it to consolidate; defrag is the agent's job, not the user's.
-- Every successful write commits to a git repo at `$GOBLIN_HOME/state/memory/.git` with subject `memory: <action> in <target>`.
-- Inspect: `cat $GOBLIN_HOME/state/memory/memory.md`, `git -C $GOBLIN_HOME/state/memory log --oneline`.
-- The whole snapshot is injected into every turn as a per-turn aside via pi's `sendCustomMessage(..., { deliverAs: "nextTurn" })`. The system prompt stays frozen so the provider prefix cache holds.
+- `memory.md` — notes about the environment, projects, conventions, decisions.
+- `user.md` — user preferences, communication style, recurring people/places.
+- `agents/<name>/memory.md` — named subagent persona memory.
+- Entries are stored as rows; `\n§\n` delimiters are used only during markdown export.
+- Goblin curates memory via the `memory_write` tool (`add` / `replace` / `remove` / `rewrite` / `set_description`). A global character budget (default **50,000 chars**) applies to curated memory; only auto-promoted "dreaming" entries are eligible for compaction, user entries are preserved.
+- The store is canonical; direct edits to markdown files are overwritten on the next `memory export`.
+- A frozen memory summary is injected into the system prompt at session creation. A per-turn `## relevant memory` aside is computed via hybrid search on the prompt text.
+- Inspect: `memory status` for counts, `memory export` to regenerate markdown, `cat $GOBLIN_HOME/state/memory/memory.md` after export.
 
 This file (`AGENTS.md`) is **not** auto-injected into the system prompt today; that's a separate concern.
 

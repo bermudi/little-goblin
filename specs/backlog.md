@@ -35,9 +35,24 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 - v1.x: Split long text across a command boundary. The coalescer flushes on the `bot_command` entity of the *current* fragment, so a long message split such that the second fragment begins with a command (or any fragment after the first is a command) is not detected as a command; the whole logical message is dispatched as plain text. The fix is to detect command entities across all fragments in a buffer, but the UX for a command whose first fragment is >4096 chars and whose second fragment is the rest of the text is still ambiguous (command name / args may be split). This is a known limitation; the current code has a comment in `src/bot.ts` and the user can re-send the command.
 - v1.x: Rebase per-fragment Telegram entity offsets for the `TelegramIntakeMessage` carried on a coalescer flush. Currently the first fragment's `message` is retained and `prepare`/`stripBotMention` uses that fragment's `entities`/`caption_entities`. This is benign for text, but entity ranges in later fragments are not re-based onto the concatenated text. Re-basing would be a full fix for the D9 edge case of a bot mention split across a >4096-char boundary; the current fallback strips bare `@handle` text in the merged string, so the residual risk is only when the first fragment already had a bot mention entity and the fallback is skipped. Graduate if a real scenario is observed.
 - v1.x: EphemeralReply / auto-delete for transient system messages — deferred from `reply-formatting`. System acks (`[queued]`, `[ok] Saved file.`) currently persist in the thread. An `EphemeralReply` wrapper (like Hermes') could auto-delete them after a TTL if the chat gets noisy. Not needed for single-user homelab today.
-- glossary: `memory_search`, `standing order`, `commitment` — deferred from `memory-retrieval` and `scheduled-turns` until wording stabilizes across both proposals.
 - v1.x: native interactive external-agent messaging — allow `external_agent` `message` to send text to a running Codex/Claude/Devin process when the native adapter supports interactive input, rather than only PTY fallback. Deferred from `external-agent-runner` because the native CLIs do not expose a stable non-interactive `send` channel in their structured modes.
 - v1.x: environment-based external-agent authentication — allow configuration of API keys or tokens that are selectively forwarded to specific external CLI processes. Deferred from `external-agent-runner` because the current security policy requires user-scoped CLI authentication and never forwards Goblin's provider keys.
+
+- **MCP bridge v2 (deferred from `mcp-bridge`):**
+  - Image and binary passthrough for vision servers (`zai-vision`, `gemini-media`).
+  - `/mcp` commands (`/mcp refresh`, `/mcp list`, `/mcp status`).
+  - Streaming MCP results to the Telegram buffer as they arrive.
+  - Dynamic catalog refresh beyond the manual `refreshCatalog()` escape hatch.
+  - Gateways to non-`mcporter` MCP servers (direct stdio/HTTP/SSE clients).
+  - MCP server lifecycle management (start/stop/restart `mcporter` daemon).
+  - Cap or warn on `mcp_call` description length as the `mcporter` catalog grows.
+
+- **memory-engine deferred scope.** Non-goals from the `memory-engine` change that may graduate as follow-up changes:
+  - Shadow databases for zero-downtime reindex — single process means reindex can block briefly; revisit if memory grows large enough to need non-blocking reindex.
+  - Reindex locks — a boolean flag suffices today; a proper lock mechanism may be needed if concurrent reindex becomes a concern.
+  - Plugin SDK or embedding provider registry — direct OpenAI calls only today; a registry would allow alternative embedding providers.
+  - Multi-provider fallback chains — one fallback path (`openai → fts-only`) today; a general-purpose state machine would support chained providers.
+  - Backfilling historical transcripts — `memory backfill` command to index transcripts from before the migration point; currently a non-goal with no-backfill rollout contract.
 
 ## Open Questions
 

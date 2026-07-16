@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-07-16T07:10:50Z
+dependsOn:
+  - external-agent-runner

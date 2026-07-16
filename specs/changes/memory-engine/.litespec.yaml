@@ -1,0 +1,7 @@
+schema: spec-driven
+created: 2026-07-16T05:28:09Z
+# Cross-change note: session-metrics is an active dependent. It will consume the
+# MetricsStore seams added to MemoryStore, searchMemoryEntries, and DreamingPipeline
+# in Phase 0 of this change. No hard dependency is declared because memory-engine
+# must land the seams before session-metrics can instrument them.
+dependsOn: []

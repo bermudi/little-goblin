@@ -1,4 +1,4 @@
-import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { metricsPath } from "../sessions/paths.ts";
 
@@ -193,6 +193,11 @@ export class MetricsStore {
   private writeLine(line: string): void {
     const path = this.path;
     mkdirSync(dirname(path), { recursive: true });
+    if (!existsSync(path)) {
+      // Create the file with an empty body before appending the first line.
+      const createFd = openSync(path, "a");
+      closeSync(createFd);
+    }
     const fd = openSync(path, "a");
     try {
       writeSync(fd, line);

@@ -285,7 +285,7 @@ export class TurnDispatcher {
     const prior = this.runners.get(sessionId);
     if (prior) {
       try {
-        prior.dispose();
+        await prior.dispose();
       } catch (err) {
         disposeErr = err;
         disposeFailed = true;

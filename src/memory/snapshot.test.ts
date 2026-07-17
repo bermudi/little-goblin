@@ -34,6 +34,20 @@ describe("formatSnapshot", () => {
     ).resolves.toBeNull();
   });
 
+  it("does not record a snapshot_built event when the snapshot is empty", async () => {
+    const metrics = new MetricsStore(tmp, "abcdef1234");
+    const snap = await formatSnapshot({
+      store,
+      activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+      caller: { kind: "main" },
+      metrics,
+    });
+
+    expect(snap).toBeNull();
+    const summary = readMetricsSummary(tmp, "abcdef1234");
+    expect(summary).toBeNull();
+  });
+
   it("includes the stale-prone guardrail after the header on every non-null snapshot", async () => {
     await store.add("general", "fact-A");
     const snap = await formatSnapshot({

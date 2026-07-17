@@ -124,18 +124,24 @@ describe("memory search", () => {
       expect(summary.lastSearchResultCount).toBe(out.results.length);
     });
 
-    it("returns empty results and does not throw when nothing matches", async () => {
+    it("returns empty results and records a memory_search event with resultCount 0", async () => {
       setBody(tmp, { topic: { chatId: -100, topicId: 42 } }, "note about cooking");
+      const metrics = new MetricsStore(tmp, "abcdef1234");
 
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
         persona: MAIN_PERSONA,
         query: "backups",
+        metrics,
       });
 
       expect(out.results).toEqual([]);
       expect(out.query).toBe("backups");
+
+      const summary = readMetricsSummary(tmp, "abcdef1234")!;
+      expect(summary.searchCount).toBe(1);
+      expect(summary.lastSearchResultCount).toBe(0);
     });
 
     it("returns ranked entries rather than whole file bodies", async () => {

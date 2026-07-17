@@ -419,15 +419,17 @@ describe("MemoryReflector", () => {
   // -------------------------------------------------------------------------
 
   describe("procedural-noise skip", () => {
-    it("skips a procedural command without writing memory or quarantine", async () => {
+    it("skips a procedural command without writing memory or a quarantine record", async () => {
       appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "run the tests now" },
       ]);
       writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
+      const metrics = new MetricsStore(tmp, "abcdef1234");
       const reflector = new MemoryReflector({
         goblinHome: tmp,
         store,
+        metrics,
         extractor: fixedExtractor([makeCandidate({ summary: "run the tests now" })]),
       });
       await reflector.reflect("abcdef1234", GENERAL_SCOPE);
@@ -436,23 +438,33 @@ describe("MemoryReflector", () => {
       expect(readQuarantine(tmp)).toHaveLength(0);
       // Cursor still advanced — the noise candidate was handled (skipped).
       expect(readCursor(tmp, "abcdef1234")!.processedLines).toBe(1);
+
+      const summary = readMetricsSummary(tmp, "abcdef1234")!;
+      expect(summary.memoryReflectionCandidateTotal).toBe(1);
+      expect(summary.memoryReflectionQuarantineTotal).toBe(1);
     });
 
-    it("skips greeting/small-talk without quarantine", async () => {
+    it("skips greeting/small-talk without a quarantine record", async () => {
       appendTranscript(tmp, "abcdef1234", [
         { role: "user", text: "hello" },
       ]);
       writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
+      const metrics = new MetricsStore(tmp, "abcdef1234");
       const reflector = new MemoryReflector({
         goblinHome: tmp,
         store,
+        metrics,
         extractor: fixedExtractor([makeCandidate({ summary: "hello" })]),
       });
       await reflector.reflect("abcdef1234", GENERAL_SCOPE);
 
       expect(store.read("general").body).toBe("");
       expect(readQuarantine(tmp)).toHaveLength(0);
+
+      const summary = readMetricsSummary(tmp, "abcdef1234")!;
+      expect(summary.memoryReflectionCandidateTotal).toBe(1);
+      expect(summary.memoryReflectionQuarantineTotal).toBe(1);
     });
   });
 

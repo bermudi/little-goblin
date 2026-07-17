@@ -796,9 +796,19 @@ export class AgentRunner {
   }
 
   /**
-   * Clean up resources.
+   * Clean up resources. Awaits any in-flight memory reflection so that a
+   * disposing runner does not leave background writes that race with session
+   * archive or rebinding.
    */
-  dispose(): void {
+  async dispose(): Promise<void> {
+    try {
+      await this.memoryReflector.awaitSettled(this.sessionId);
+    } catch (err) {
+      log.error("AgentRunner memory reflector await failed during dispose", {
+        sessionId: this.sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
     try {
       this.backend.dispose();
     } catch (err) {

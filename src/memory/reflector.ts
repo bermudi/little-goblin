@@ -576,8 +576,12 @@ export class MemoryReflector {
     candidate: Candidate,
     activeScope: ActiveScope,
   ): Promise<void> {
-    // 1. Procedural noise: skip without quarantine.
-    if (isProceduralNoise(candidate.summary)) return;
+    // 1. Procedural noise: skip without writing memory or a quarantine record,
+    // but count it as a quarantine-style reflection outcome.
+    if (isProceduralNoise(candidate.summary)) {
+      this.metrics?.incrementCounter("memory_reflection_quarantine_total", "procedural_noise", 1);
+      return;
+    }
 
     const scope = resolveScope(candidate.target, activeScope);
     const targetScopeTag = candidate.target === "user"

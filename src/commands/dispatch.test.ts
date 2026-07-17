@@ -175,11 +175,11 @@ describe("handleCommand", () => {
     expect(result.reply).toBe("Failed to reset session. Please try again.");
   });
 
-  it("/archive with an active session archives and disposes", async () => {
+  it("/archive with an active session archives and returns no further side effects", async () => {
     const harness = makeHarness();
     const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
     const result = expectReplied(await dispatch({ command: "/archive", session, harness }));
-    expect(result.sideEffects).toEqual([{ kind: "runner-disposed", sessionId: session.id }]);
+    expect(result.sideEffects).toEqual([]);
   });
 
   it("/archive without a session has no side effects", async () => {

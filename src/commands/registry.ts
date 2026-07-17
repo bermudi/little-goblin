@@ -204,19 +204,23 @@ const newHandler: CommandHandler = async ({ deps, locator, isSupergroup, session
 };
 
 const archiveHandler: CommandHandler = async ({ deps, session }) => {
-  const { manager, cfg } = deps;
-  const sideEffects: SideEffect[] = [];
+  const { manager, cfg, dispatcher } = deps;
   try {
+    // Dispose the runner (and await any background reflection) before moving
+    // the session directory, so late metrics writes do not recreate the live
+    // session path or leak a lock file into the archive.
+    if (session && dispatcher) {
+      await dispatcher.disposeRunner(session.id);
+    }
     const result = executeArchive({
       hasSession: session !== null,
       sessionExists: session !== null && existsSync(sessionDir(cfg.goblinHome, session.id)),
       archive: () => {
         manager.archive(session!.id);
-        sideEffects.push({ kind: "runner-disposed", sessionId: session!.id });
       },
     });
     const tag: SystemTag = result.kind === "archived" ? "ok" : "info";
-    return replied(result.reply, sideEffects, tag);
+    return replied(result.reply, [], tag);
   } catch (err) {
     log.error("archive failed", { error: String(err), sessionId: session?.id });
     return replied("Failed to archive session. Please try again.", [], "error");

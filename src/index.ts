@@ -33,10 +33,8 @@ async function main(): Promise<void> {
     await externalAgentRunner?.dispose();
     // Dispose subagents first (cancels running ones, releases sessions).
     await subagentRunner.dispose();
-    // Dispose agent runners (releases pi sessions).
-    for (const runner of agentRunners.values()) {
-      runner.dispose();
-    }
+    // Dispose agent runners (releases pi sessions and awaits reflection).
+    await Promise.all([...agentRunners.values()].map((runner) => runner.dispose()));
     await bot.stop();
     process.exit(0);
   };

@@ -8,7 +8,7 @@ import {
   generateDiagnostics,
   type Diagnostics,
 } from "./diagnostics.ts";
-import { MetricsStore } from "./metrics/mod.ts";
+import { MetricsStore, type MetricsEvent, type TelegramMetricsEvent } from "./metrics/mod.ts";
 import type { SessionState } from "./sessions/types.ts";
 import { sessionDir, transcriptPath } from "./sessions/paths.ts";
 import type { SubagentRunner } from "./subagents/mod.ts";
@@ -251,6 +251,32 @@ describe("gatherDiagnostics", () => {
     expect(out).toContain("Cache: 0 read / 0 write tokens in this session");
     expect(out).toContain("Memory searches: 0");
     expect(out).toContain("Last turn: gpt-test (openai/chat-completions) — 15 tokens, $ 0.003000, cache 0/0, stop: stop, 0 tools, 0 errors");
+  });
+
+  it("renders telegram metrics from recorded events", () => {
+    const session = makeSession("abcdef1234");
+    const metrics = new MetricsStore(tmpDir, session.id);
+    const events: TelegramMetricsEvent[] = [
+      { type: "telegram", op: "sendMessage", channel: "response", outcome: "success" },
+      { type: "telegram", op: "sendMessage", channel: "system", outcome: "success" },
+      { type: "telegram", op: "editMessageText", channel: "response", outcome: "success" },
+      { type: "telegram", op: "editMessageText", channel: "response", outcome: "rate_limited", errorCode: 429, errorDescription: "Too Many Requests", retryAfterSec: 2 },
+      { type: "telegram", op: "editMessageText", channel: "response", outcome: "topic_not_found", errorCode: 400, errorDescription: "Bad Request: topic not found" },
+    ];
+    for (const event of events) {
+      metrics.record(event as MetricsEvent);
+    }
+
+    const d = gatherDiagnostics({
+      session,
+      runner: stubRunner({ tools: ["bash"], modelName: "m1" }),
+      subagentRunner: stubSubagentRunner(),
+      goblinHome: tmpDir,
+      modelName: "m1",
+    });
+
+    const out = formatDiagnostics(d);
+    expect(out).toContain("Telegram sends: 2 (0 failed), edits: 3 (2 failed), throttled: 0, rate-limited: 1, topic not found: 1");
   });
 
   it("reports null events stats when the file is missing", () => {

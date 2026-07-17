@@ -13,6 +13,7 @@ import { parseCommand } from "../commands/parse.ts";
 import { resolveCommand, resolveTiming, type SideEffect } from "../commands/registry.ts";
 import { interruptAndCascade } from "../interrupt.ts";
 import { MemoryStore } from "../memory/mod.ts";
+import { MetricsStore } from "../metrics/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { TurnDispatcher, type PromptContent, type TurnSink } from "../orchestration/dispatcher.ts";
@@ -79,7 +80,7 @@ export interface TelegramIntakeOptions {
    * (Telegram rendering + the `onTopicNotFound` orphan-archive hook). Tests
    * inject a fake to observe sink creation without a real `MessageBuffer`.
    */
-  createMessageBuffer?: (locator: ChatLocator) => TurnSink;
+  createMessageBuffer?: (locator: ChatLocator, session?: SessionState) => TurnSink;
   /** Shared schedule store for `/schedule`. Wired in Phase 6 (bot.ts). */
   scheduleStore?: ScheduleStore;
   /** Shared external agent runner. Wired in Phase 6 (bot.ts). */
@@ -187,10 +188,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   // surface for a locator. This rendering logic lived inside the dispatcher
   // before relocation; it moves here (the Telegram layer) so the dispatcher
   // stays transport-agnostic. Tests override via `options.createMessageBuffer`.
-  const createMessageBuffer = options.createMessageBuffer ?? ((locator: ChatLocator): TurnSink => {
+  const createMessageBuffer = options.createMessageBuffer ?? ((locator: ChatLocator, session?: SessionState): TurnSink => {
     const topicId = locator.topicId;
+    const metrics = session ? new MetricsStore(cfg.goblinHome, session.id) : undefined;
     return new MessageBuffer(bot, locator.chatId, topicId, {
       visibility: cfg.toolVisibility,
+      metrics,
       onTopicNotFound:
         topicId !== undefined
           ? async () => {
@@ -248,7 +251,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     failureLog: string,
     opts?: { replyModelNotCapable?: boolean },
   ): void {
-    const buffer = dispatcher.createMessageBuffer(locator);
+    const buffer = dispatcher.createMessageBuffer(locator, session);
     dispatcher.schedulePrompt(
       session,
       runner,
@@ -418,8 +421,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     externalAgentRunner: options.externalAgentRunner,
   };
 
-  async function runPrompt(message: TelegramIntakeMessage, locator: ChatLocator, runner: AgentRunner, content: PromptContent): Promise<void> {
-    const buffer = dispatcher.createMessageBuffer(locator);
+  async function runPrompt(message: TelegramIntakeMessage, locator: ChatLocator, runner: AgentRunner, session: SessionState, content: PromptContent): Promise<void> {
+    const buffer = dispatcher.createMessageBuffer(locator, session);
     await runner.prompt(message.prepare(content), buffer);
   }
 
@@ -522,7 +525,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         content.push({ type: "image", data: photo.data, mimeType: photo.mimeType });
 
         if (!isCurrent()) return;
-        await runPrompt(message, turn.locator, runner, content);
+        await runPrompt(message, turn.locator, runner, turn.session, content);
       },
       "runner photo prompt failed",
       { replyModelNotCapable: true },
@@ -577,14 +580,14 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             : `User uploaded \`${escapedName}\` to the project directory.`;
 
           if (!isCurrent()) return;
-          await runPrompt(message, turn.locator, runner, promptText);
+          await runPrompt(message, turn.locator, runner, turn.session, promptText);
           return;
         }
 
         if (!isCurrent()) return;
         log.debug("dropping document: no projectDir", { mimeType: doc.mimeType, fileName: doc.fileName });
         if (doc.caption) {
-          await runPrompt(message, turn.locator, runner, doc.caption);
+          await runPrompt(message, turn.locator, runner, turn.session, doc.caption);
         } else {
           const replyText = "No project directory is set. Use /project <path> to enable file saving.";
           await sendSystemReply(message, replyText, "warn");
@@ -695,7 +698,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         }
 
         if (!isCurrent()) return;
-        await runPrompt(message, turn.locator, runner, promptText);
+        await runPrompt(message, turn.locator, runner, turn.session, promptText);
       },
       "runner voice prompt failed",
     );
@@ -754,14 +757,14 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             : `User uploaded audio \`${escapedName}\` to the project directory.`;
 
           if (!isCurrent()) return;
-          await runPrompt(message, turn.locator, runner, promptText);
+          await runPrompt(message, turn.locator, runner, turn.session, promptText);
           return;
         }
 
         if (!isCurrent()) return;
         log.debug("dropping audio: no projectDir");
         if (audio.caption) {
-          await runPrompt(message, turn.locator, runner, audio.caption);
+          await runPrompt(message, turn.locator, runner, turn.session, audio.caption);
         } else {
           const replyText = "No project directory is set. Use /project <path> to enable file saving.";
           await sendSystemReply(message, replyText, "warn");

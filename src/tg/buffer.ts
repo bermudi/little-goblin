@@ -6,7 +6,8 @@ import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { TurnCallbacks } from "../agent/mod.ts";
 import { log } from "../log.ts";
-import { stripMdV2, isParseError } from "./format.ts";
+import { MetricsStore, type TelegramMetricsEvent } from "../metrics/mod.ts";
+import { stripMdV2, isParseError, classifyTelegramError } from "./format.ts";
 
 /**
  * MessageBuffer turns AgentSession events (via TurnCallbacks) into Telegram
@@ -45,6 +46,12 @@ export interface MessageBufferOptions {
   onTopicNotFound?: () => void | Promise<void>;
   /** Called once after the turn's final status and response flushes. */
   onTurnEnd?: () => void | Promise<void>;
+  /**
+   * Optional session-scoped metrics store. When present, every
+   * `sendMessage`/`editMessageText` attempt (and local throttle short-circuit)
+   * is recorded as a `telegram` metrics event.
+   */
+  metrics?: MetricsStore;
 }
 
 /** Per-tool slot tracking running/completed invocations and error state. */
@@ -228,6 +235,8 @@ export class MessageBuffer implements TurnCallbacks {
   private onTopicNotFound: (() => void | Promise<void>) | undefined;
   /** Called once after the turn's final status and response flushes. */
   private onTurnEnd: (() => void | Promise<void>) | undefined;
+  /** Optional session-scoped metrics store. */
+  private metrics?: MetricsStore;
   /** Ensures onTopicNotFound is only called once. */
   private topicNotFoundReported: boolean = false;
 
@@ -287,6 +296,27 @@ export class MessageBuffer implements TurnCallbacks {
       ((handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]));
     this.onTopicNotFound = options.onTopicNotFound;
     this.onTurnEnd = options.onTurnEnd;
+    this.metrics = options.metrics;
+  }
+
+  /** Best-effort record of a `telegram` metrics event; swallows metric errors. */
+  private recordTelegramEvent(event: TelegramMetricsEvent): void {
+    if (!this.metrics) return;
+    try {
+      this.metrics.record(event);
+    } catch (err) {
+      log.warn("failed to record telegram metric", { error: String(err) });
+    }
+  }
+
+  /** Best-effort increment of the topic-not-found counter; swallows metric errors. */
+  private recordTopicNotFoundCounter(): void {
+    if (!this.metrics) return;
+    try {
+      this.metrics.incrementCounter("telegram_topic_not_found_total", null);
+    } catch (err) {
+      log.warn("failed to record topic not found counter", { error: String(err) });
+    }
   }
 
   onTextDelta(delta: string): void {
@@ -606,7 +636,17 @@ export class MessageBuffer implements TurnCallbacks {
     // Refuse any further edits — stray async events SHALL NOT mutate it.
     if (this.statusFrozen) return;
     const now = this.now();
-    if (!force && now - this.lastEditTime < this.statusThrottleMs) return;
+    if (!force && now - this.lastEditTime < this.statusThrottleMs) {
+      this.recordTelegramEvent({
+        type: "telegram",
+        op: null,
+        channel: "status",
+        outcome: "throttled",
+        elapsedMs: now - this.lastEditTime,
+        throttleMs: this.statusThrottleMs,
+      });
+      return;
+    }
 
     // Quick-exit before scheduling: nothing to render OR nothing changed.
     const initial = this.buildStatusLine();
@@ -632,6 +672,7 @@ export class MessageBuffer implements TurnCallbacks {
         if (this.statusFrozen) return;
         const t = this.buildStatusLine();
         if (!t || t === this.lastRenderedStatusText) return;
+        const op: "sendMessage" | "editMessageText" = this.statusMessageId === undefined ? "sendMessage" : "editMessageText";
         try {
           if (this.statusMessageId === undefined) {
             const msg = await this.bot.api.sendMessage(this.chatId, t, this.withThread());
@@ -644,9 +685,10 @@ export class MessageBuffer implements TurnCallbacks {
               this.withThread(),
             );
           }
+          this.recordTelegramEvent({ type: "telegram", op, channel: "status", outcome: "success" });
           this.lastRenderedStatusText = t;
         } catch (err) {
-          this.handleStatusError(err);
+          await this.handleStatusError(err, op);
           // Don't loop on errors; the next non-duplicate transition will
           // re-trigger via the normal flushStatus path.
           return;
@@ -666,8 +708,8 @@ export class MessageBuffer implements TurnCallbacks {
     await inFlight;
   }
 
-  private async handleStatusError(err: unknown): Promise<void> {
-    await this.handleApiError(err, "status", () => {
+  private async handleStatusError(err: unknown, op: "sendMessage" | "editMessageText"): Promise<void> {
+    await this.handleApiError(err, "status", op, () => {
       // Message gone — reset both id and lastRenderedStatusText so the
       // next flush re-sends a fresh placeholder.
       this.statusMessageId = undefined;
@@ -713,6 +755,14 @@ export class MessageBuffer implements TurnCallbacks {
   private async flushResponseOnce(force: boolean = false): Promise<void> {
     const now = this.now();
     if (!force && now - this.lastResponseEditTime < this.responseThrottleMs) {
+      this.recordTelegramEvent({
+        type: "telegram",
+        op: null,
+        channel: "response",
+        outcome: "throttled",
+        elapsedMs: now - this.lastResponseEditTime,
+        throttleMs: this.responseThrottleMs,
+      });
       log.debug("response: skip (throttled)", {
         elapsed: now - this.lastResponseEditTime,
         throttleMs: this.responseThrottleMs,
@@ -797,6 +847,7 @@ export class MessageBuffer implements TurnCallbacks {
         // can observe it and skip/wait. Clear it after the send resolves
         // (success or failure), regardless of which branch handled the error.
         const sentText = this.accumulatedText;
+        const op = "sendMessage" as const;
         const inFlight = (async () => {
           try {
             const msg = await this.bot.api.sendMessage(
@@ -810,12 +861,13 @@ export class MessageBuffer implements TurnCallbacks {
             // Track the raw captured text (not the stripped render) so the
             // guard compares raw-to-raw and correctly detects no-op edits.
             this.lastRenderedResponseText = sentText;
+            this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
             log.debug("response: sent", {
               msgId: msg.message_id,
               accLen: sentText.length,
             });
           } catch (err) {
-            await this.handleResponseError(err);
+            await this.handleResponseError(err, op);
           }
         })();
         this.creatingResponse = inFlight;
@@ -833,20 +885,27 @@ export class MessageBuffer implements TurnCallbacks {
         // an unchanged text already fired above.
         const text = this.accumulatedText;
         const messageId = this.responseMessageId;
+        const op = "editMessageText" as const;
         const inFlight = (async () => {
           try {
             await this.bot.api.editMessageText(this.chatId, messageId, this.responseText(text), this.responseOpts());
             this.lastRenderedResponseText = text;
+            this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
             log.debug("response: edited", {
               msgId: messageId,
               accLen: text.length,
             });
           } catch (err) {
-            await this.handleResponseError(err);
+            await this.handleResponseError(err, op);
             if (force && this.responseMessageId === undefined && this.accumulatedText.length > 0) {
-              const msg = await this.bot.api.sendMessage(this.chatId, this.responseText(), this.responseOpts());
-              this.responseMessageId = msg.message_id;
-              this.lastRenderedResponseText = this.accumulatedText;
+              try {
+                const msg = await this.bot.api.sendMessage(this.chatId, this.responseText(), this.responseOpts());
+                this.responseMessageId = msg.message_id;
+                this.lastRenderedResponseText = this.accumulatedText;
+                this.recordTelegramEvent({ type: "telegram", op: "sendMessage", channel: "response", outcome: "success" });
+              } catch (fallbackErr) {
+                throw fallbackErr;
+              }
             }
           }
         })();
@@ -875,6 +934,7 @@ export class MessageBuffer implements TurnCallbacks {
     const tmpPath = join(tmpdir(), tmpName);
 
     let wrote = false;
+    let documentError: unknown = null;
     try {
       await writeFile(tmpPath, text, "utf-8");
       wrote = true;
@@ -883,11 +943,33 @@ export class MessageBuffer implements TurnCallbacks {
         new InputFile(tmpPath, "reply.md"),
         this.withThread(),
       );
-      await this.bot.api.sendMessage(this.chatId, this.responseText(summary), this.responseOpts());
     } catch (err) {
-      await this.handleResponseError(err);
+      documentError = err;
     } finally {
       if (wrote) await unlink(tmpPath).catch(() => {});
+    }
+
+    if (documentError !== null) {
+      // Document upload failures are not recorded as `sendMessage` metrics.
+      // Still apply response error handling (e.g. backoff / topic-not-found).
+      await this.handleApiError(documentError, "response", null, () => {
+        this.responseMessageId = undefined;
+        this.lastRenderedResponseText = "";
+        this.responseIsPlainText = false;
+      });
+      // The active text has been "spent" — clear regardless of outcome.
+      this.accumulatedText = "";
+      this.responseMessageId = undefined;
+      this.lastRenderedResponseText = "";
+      this.responseIsPlainText = false;
+      return true;
+    }
+
+    try {
+      await this.bot.api.sendMessage(this.chatId, this.responseText(summary), this.responseOpts());
+      this.recordTelegramEvent({ type: "telegram", op: "sendMessage", channel: "response", outcome: "success" });
+    } catch (err) {
+      await this.handleResponseError(err, "sendMessage");
     }
 
     // The active in-memory text has been "spent" — clear regardless of
@@ -919,6 +1001,7 @@ export class MessageBuffer implements TurnCallbacks {
       splitAt = adjustForCodeSpan(this.accumulatedText, splitAt);
       const head = this.responseText(this.accumulatedText.slice(0, splitAt));
       const tail = this.accumulatedText.slice(splitAt);
+      const op: "sendMessage" | "editMessageText" = this.responseMessageId === undefined ? "sendMessage" : "editMessageText";
       try {
         if (this.responseMessageId !== undefined) {
           await this.bot.api.editMessageText(
@@ -930,6 +1013,7 @@ export class MessageBuffer implements TurnCallbacks {
         } else {
           await this.bot.api.sendMessage(this.chatId, head, this.responseOpts());
         }
+        this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
         // The previous message is now "closed"; the tail starts a new one.
         this.responseMessageId = undefined;
         this.lastRenderedResponseText = "";
@@ -937,14 +1021,14 @@ export class MessageBuffer implements TurnCallbacks {
         this.accumulatedText = tail;
         rolled = true;
       } catch (err) {
-        await this.handleResponseError(err);
+        await this.handleResponseError(err, op);
         return rolled;
       }
     }
     return rolled;
   }
 
-  private async handleResponseError(err: unknown): Promise<void> {
+  private async handleResponseError(err: unknown, op?: "sendMessage" | "editMessageText"): Promise<void> {
     // MarkdownV2 parse error: strip markdown and retry as plain text. The
     // sticky `responseIsPlainText` flag keeps subsequent sends/edits plain
     // for the rest of this response message's lifetime, so we don't loop.
@@ -956,6 +1040,7 @@ export class MessageBuffer implements TurnCallbacks {
       // Retry once with stripped markdown and no parse_mode. If the retry
       // also fails, fall through to the normal error handler.
       try {
+        const retryOp: "sendMessage" | "editMessageText" = this.responseMessageId === undefined ? "sendMessage" : "editMessageText";
         if (this.responseMessageId === undefined) {
           const msg = await this.bot.api.sendMessage(
             this.chatId,
@@ -973,11 +1058,13 @@ export class MessageBuffer implements TurnCallbacks {
           );
           this.lastRenderedResponseText = this.accumulatedText;
         }
+        this.recordTelegramEvent({ type: "telegram", op: retryOp, channel: "response", outcome: "success" });
         return;
       } catch (retryErr) {
         log.warn("response plain-text retry failed", { error: String(retryErr) });
         // Fall through to handleApiError for the retry error.
-        await this.handleApiError(retryErr, "response", () => {
+        const retryOp = this.responseMessageId === undefined ? "sendMessage" : "editMessageText";
+        await this.handleApiError(retryErr, "response", retryOp, () => {
           this.responseMessageId = undefined;
           this.lastRenderedResponseText = "";
           this.responseIsPlainText = false;
@@ -985,7 +1072,8 @@ export class MessageBuffer implements TurnCallbacks {
         return;
       }
     }
-    await this.handleApiError(err, "response", () => {
+    const actualOp = op ?? (this.responseMessageId === undefined ? "sendMessage" : "editMessageText");
+    await this.handleApiError(err, "response", actualOp, () => {
       this.responseMessageId = undefined;
       this.lastRenderedResponseText = "";
       this.responseIsPlainText = false;
@@ -996,25 +1084,33 @@ export class MessageBuffer implements TurnCallbacks {
    * Shared error policy for status and response flushes. 429 → log + skip;
    * 400 message-gone → reset id via `onMessageGone`; otherwise log.
    * Also detects "topic not found" errors to trigger orphan archival.
+   * Records a `telegram` metrics event when `op` is provided.
    */
   private async handleApiError(
     err: unknown,
     kind: "status" | "response",
+    op: "sendMessage" | "editMessageText" | null,
     onMessageGone: () => void,
   ): Promise<void> {
-    const e = err as {
-      error_code?: number;
-      description?: string;
-      parameters?: { retry_after?: number };
-    };
-    const code = e?.error_code;
-    const description = e?.description ?? String(err);
+    const channel = kind === "status" ? "status" : "response";
+    const { outcome, errorCode, errorDescription, retryAfterSec } = classifyTelegramError(err);
 
-    if (code === 429) {
+    if (op !== null) {
+      this.recordTelegramEvent({
+        type: "telegram",
+        op,
+        channel,
+        outcome,
+        errorCode,
+        errorDescription,
+        retryAfterSec,
+      });
+    }
+
+    if (outcome === "rate_limited") {
       // Honor `retry_after` (seconds) so we don't keep slamming the API and
       // making the server angrier. Store the synthetic "last edit" time that
       // makes the next flush eligible exactly when retry_after expires.
-      const retryAfterSec = e?.parameters?.retry_after;
       if (retryAfterSec && retryAfterSec > 0) {
         const until = this.now() + retryAfterSec * 1000;
         if (kind === "response") {
@@ -1024,7 +1120,7 @@ export class MessageBuffer implements TurnCallbacks {
         }
       }
       log.warn(`${kind} edit rate-limited, backing off`, {
-        description,
+        description: errorDescription ?? String(err),
         retryAfterSec,
       });
       return;
@@ -1032,8 +1128,9 @@ export class MessageBuffer implements TurnCallbacks {
 
     // Detect "topic not found" errors (distinct from "message not found")
     // Telegram returns these when the topic/thread ID is invalid (deleted topic)
-    if (code === 400 && /topic not found|message thread not found|invalid message thread id/i.test(description)) {
-      log.warn(`${kind} topic not found, archiving orphaned scope`, { description });
+    if (outcome === "topic_not_found") {
+      log.warn(`${kind} topic not found, archiving orphaned scope`, { description: errorDescription });
+      this.recordTopicNotFoundCounter();
       if (!this.topicNotFoundReported && this.onTopicNotFound) {
         this.topicNotFoundReported = true;
         try {
@@ -1045,22 +1142,22 @@ export class MessageBuffer implements TurnCallbacks {
       return;
     }
 
-    if (code === 400 && /not found|can't be edited|to edit/i.test(description)) {
+    if (outcome === "message_gone") {
       log.warn(`${kind} message gone, will re-create on next flush`, {
-        description,
+        description: errorDescription,
       });
       onMessageGone();
       return;
     }
-    if (code === 400 && /message is not modified/i.test(description)) {
+    if (outcome === "message_not_modified") {
       // Telegram already has the desired content — duplicate edit is a
       // no-op, not a failure. Belt-and-braces alongside the local
       // `lastRendered*Text` guards: covers any edge case where the
       // guard misses (e.g. concurrent edits with the same final text).
-      log.debug(`${kind} edit not modified, skipping`, { description });
+      log.debug(`${kind} edit not modified, skipping`, { description: errorDescription });
       return;
     }
-    log.warn(`${kind} flush failed`, { description });
+    log.warn(`${kind} flush failed`, { description: errorDescription ?? String(err) });
   }
 
   /** Internal accessors for tests — not part of the public API. */

@@ -1,6 +1,10 @@
 import { describe, it, expect } from "bun:test";
 import { InputFile } from "grammy";
 import type { Bot } from "grammy";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MetricsStore, readMetricsSummary, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import {
   MessageBuffer,
   MAX_MESSAGE_LEN,
@@ -116,6 +120,35 @@ function makeBot(): MockBot {
 /** Drain pending microtasks so fire-and-forget flushes settle. */
 async function tick(): Promise<void> {
   await new Promise((r) => setImmediate(r));
+}
+
+const TEST_SESSION_ID = "abcdef1234";
+
+function makeMetrics(): { store: MetricsStore; home: string; cleanup: () => void } {
+  const home = mkdtempSync(join(tmpdir(), "goblin-buffer-metrics-"));
+  const store = new MetricsStore(home, TEST_SESSION_ID);
+  return {
+    store,
+    home,
+    cleanup: () => {
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+}
+
+function metricsFilePath(home: string): string {
+  return join(home, "state", "sessions", TEST_SESSION_ID, "metrics.jsonl");
+}
+
+function readTelegramEvents(home: string): TelegramMetricsEvent[] {
+  try {
+    const raw = readFileSync(metricsFilePath(home), "utf-8").trim();
+    if (!raw) return [];
+    return raw.split("\n").map((line) => JSON.parse(line)).filter((e) => e.type === "telegram");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
+  }
 }
 
 describe("MessageBuffer", () => {
@@ -2749,6 +2782,203 @@ describe("MessageBuffer", () => {
     it("handles multiple code spans (even count)", () => {
       const text = "a `b` c `d` e f g h i j k";
       expect(adjustForCodeSpan(text, 15)).toBe(15);
+    });
+  });
+
+  describe("telegram metrics", () => {
+    it("records status sendMessage success", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        const buffer = new MessageBuffer(m.bot, 7, undefined, { metrics: metrics.store });
+        buffer.onStatusUpdate("thinking...");
+        await tick();
+        const events = readTelegramEvents(metrics.home);
+        expect(events.length).toBe(1);
+        expect(events[0]).toMatchObject({
+          type: "telegram",
+          op: "sendMessage",
+          channel: "status",
+          outcome: "success",
+        });
+      } finally {
+        metrics.cleanup();
+      }
+    });
+
+    it("records response throttled events", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        let t = 1000;
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+          now: () => t,
+          responseThrottleMs: 200,
+          visibility: "none",
+          metrics: metrics.store,
+        });
+        buffer.onTextDelta("a");
+        await tick();
+        expect(readTelegramEvents(metrics.home).filter((e) => e.outcome === "success").length).toBe(1);
+
+        t = 1100; // inside 200ms window
+        buffer.onTextDelta("b");
+        await tick();
+        const throttled = readTelegramEvents(metrics.home).find(
+          (e) => e.outcome === "throttled" && e.channel === "response" && e.op === null,
+        );
+        expect(throttled).toBeDefined();
+        expect(throttled?.elapsedMs).toBe(100);
+        expect(throttled?.throttleMs).toBe(200);
+      } finally {
+        metrics.cleanup();
+      }
+    });
+
+    it("records rate-limited response edit with retry_after", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        let t = 1000;
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+          now: () => t,
+          responseThrottleMs: 200,
+          visibility: "none",
+          metrics: metrics.store,
+        });
+        buffer.onTextDelta("a");
+        await tick();
+        expect(m.send.length).toBe(1);
+
+        m.failNext.edit = {
+          error_code: 429,
+          description: "Too Many Requests: retry later",
+          parameters: { retry_after: 2 },
+        };
+        t = 2500; // beyond 200ms throttle
+        buffer.onTextDelta("b");
+        await tick();
+
+        const events = readTelegramEvents(metrics.home);
+        const rate = events.find((e) => e.outcome === "rate_limited");
+        expect(rate).toBeDefined();
+        expect(rate?.op).toBe("editMessageText");
+        expect(rate?.channel).toBe("response");
+        expect(rate?.retryAfterSec).toBe(2);
+      } finally {
+        metrics.cleanup();
+      }
+    });
+
+    it("records topic-not-found response edit and increments counter", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        let t = 1000;
+        let topicNotFoundCalled = false;
+        const buffer = new MessageBuffer(m.bot, 1, 42, {
+          now: () => t,
+          responseThrottleMs: 200,
+          visibility: "none",
+          metrics: metrics.store,
+          onTopicNotFound: () => {
+            topicNotFoundCalled = true;
+          },
+        });
+        buffer.onTextDelta("a");
+        await tick();
+
+        m.failNext.edit = {
+          error_code: 400,
+          description: "Bad Request: topic not found",
+        };
+        t = 2500;
+        buffer.onTextDelta("b");
+        await tick();
+
+        const topic = readTelegramEvents(metrics.home).find((e) => e.outcome === "topic_not_found");
+        expect(topic).toBeDefined();
+        expect(topic?.op).toBe("editMessageText");
+        expect(topicNotFoundCalled).toBe(true);
+        const summary = readMetricsSummary(metrics.home, TEST_SESSION_ID);
+        expect(summary?.telegram.topicNotFound).toBe(2);
+      } finally {
+        metrics.cleanup();
+      }
+    });
+
+    it("records message-gone for response send failure", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+          visibility: "none",
+          metrics: metrics.store,
+        });
+        m.failNext.send = {
+          error_code: 400,
+          description: "Bad Request: message to edit not found",
+        };
+        buffer.onTextDelta("a");
+        await tick();
+
+        const gone = readTelegramEvents(metrics.home).find((e) => e.outcome === "message_gone");
+        expect(gone).toBeDefined();
+        expect(gone?.op).toBe("sendMessage");
+        expect(buffer._state().responseMessageId).toBeUndefined();
+      } finally {
+        metrics.cleanup();
+      }
+    });
+
+    it("records message-not-modified for duplicate response edit", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        let t = 1000;
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+          now: () => t,
+          responseThrottleMs: 200,
+          visibility: "none",
+          metrics: metrics.store,
+        });
+        buffer.onTextDelta("a");
+        await tick();
+
+        m.failNext.edit = {
+          error_code: 400,
+          description: "Bad Request: message is not modified: specified new message content and reply markup are exactly the same",
+        };
+        t = 2500;
+        buffer.onTextDelta("!");
+        await tick();
+
+        const notModified = readTelegramEvents(metrics.home).find((e) => e.outcome === "message_not_modified");
+        expect(notModified).toBeDefined();
+        expect(notModified?.op).toBe("editMessageText");
+      } finally {
+        metrics.cleanup();
+      }
+    });
+
+    it("does not record sendDocument failures as sendMessage", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+          visibility: "none",
+          metrics: metrics.store,
+        });
+        m.failNext.document = new Error("network");
+        buffer.onTextDelta("Z".repeat(BIG_OUTPUT_THRESHOLD + 5));
+        await buffer.flushResponse(true);
+        await tick();
+
+        const events = readTelegramEvents(metrics.home);
+        expect(events.length).toBe(0);
+      } finally {
+        metrics.cleanup();
+      }
     });
   });
 });

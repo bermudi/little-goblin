@@ -7,7 +7,7 @@ import type { Config } from "../config.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator } from "../sessions/mod.ts";
-import { transcriptPath } from "../sessions/paths.ts";
+import { metricsPath, transcriptPath } from "../sessions/paths.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { SchedulerLoop, type SchedulerClock } from "../scheduler/loop.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
@@ -131,9 +131,12 @@ function makeConfig(): Config {
 function fakeBot(editForumTopic = mock(async () => true)): Bot {
   return {
     api: {
+      sendMessage: mock(async (_chatId, text) => ({ message_id: 1, date: 1, chat: { id: 1, type: "private" }, text })),
+      sendChatAction: mock(async () => true),
       sendVoice: mock(async () => ({ message_id: 1 })),
       sendPhoto: mock(async () => ({ message_id: 1 })),
       sendDocument: mock(async () => ({ message_id: 1 })),
+      editMessageText: mock(async () => true),
       editForumTopic,
     },
   } as unknown as Bot;
@@ -1244,5 +1247,69 @@ describe("Telegram intake", () => {
         expect((r as { title: string }).title).toBe("Goblin");
       }
     });
+  });
+});
+
+describe("createMessageBuffer factory", () => {
+  it("creates a session-scoped MetricsStore for an active session", async () => {
+    const cfg = makeConfig();
+    const manager = new SessionManager(cfg);
+    const agentRunners = new Map<string, AgentRunner>();
+    const session = manager.createForChat({ chatId: 1 }, { isSupergroup: false });
+    const bot = fakeBot();
+    const intake = createTelegramIntake({
+      cfg,
+      bot,
+      manager,
+      subagentRunner: new SubagentRunner(cfg),
+      memoryStore: new MemoryStore(cfg.goblinHome),
+      agentRunners,
+      createAgentRunner: (opts) => {
+        const runner = new MockAgentRunner(opts);
+        runners.push(runner);
+        return runner as unknown as AgentRunner;
+      },
+    });
+
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    MockAgentRunner.nextPrompt = async (_content, buffer) => {
+      (buffer as { onStatusUpdate: (text: string) => void }).onStatusUpdate("thinking");
+      (buffer as { onTextDelta: (text: string) => void }).onTextDelta("hello");
+      await (buffer as { flushResponse: (force?: boolean) => Promise<void> }).flushResponse(true);
+    };
+
+    await intake.handleText(message, "hi");
+    await waitFor(() => {
+      try {
+        return readFileSync(metricsPath(cfg.goblinHome, session.id), "utf-8").trim() !== "";
+      } catch {
+        return false;
+      }
+    });
+
+    const raw = readFileSync(metricsPath(cfg.goblinHome, session.id), "utf-8").trim();
+    const events = raw.split("\n").map((line) => JSON.parse(line));
+    expect(events.some((e) => e.type === "telegram" && e.op === "sendMessage" && e.channel === "status")).toBe(true);
+  });
+
+  it("operates without a MetricsStore when no session exists", async () => {
+    const cfg = makeConfig();
+    const manager = new SessionManager(cfg);
+    const bot = fakeBot();
+    const intake = createTelegramIntake({
+      cfg,
+      bot,
+      manager,
+      subagentRunner: new SubagentRunner(cfg),
+      memoryStore: new MemoryStore(cfg.goblinHome),
+      agentRunners: new Map<string, AgentRunner>(),
+    });
+
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    await intake.handleText(message, "hi");
+    // No active session means the buffer has no metrics; nothing should throw.
+    expect(replies.length).toBe(1);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Context } from "grammy";
@@ -10,6 +10,7 @@ import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { replyNoActiveSession, buildBot } from "./bot.ts";
 import { memoryDir } from "./memory/paths.ts";
+import { metricsPath } from "./sessions/paths.ts";
 import { workdirPath, soulMdPath } from "./workspace/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
 import { TEXT_SPLIT_THRESHOLD, TEXT_SPLIT_WINDOW_MS } from "./tg/mod.ts";
@@ -98,6 +99,8 @@ function makeApi() {
   const sent: string[] = [];
   const edits: string[] = [];
   let failTopicNotFound = false;
+  let failParseOnce = false;
+  let parseErrorThrown = false;
   const getFile = mock(async (_fileId: unknown) => ({ file_path: "photos/x.jpg" }));
   const getChatMemberCount = mock(async (_chatId: unknown) => 1);
   const sendMessage = mock(async (_chatId: number | string, text: string) => {
@@ -123,6 +126,7 @@ function makeApi() {
       sendDocument: mock(async () => ({ message_id: 1 })),
       editForumTopic: mock(async () => true),
     },
+    failParseOnce(shouldFail = true) { failParseOnce = shouldFail; },
     async transform(method: string, payload: Record<string, unknown>) {
       if (method === "getMe") return { ok: true as const, result: await this.api.getMe() };
       if (method === "getChatMemberCount") return { ok: true as const, result: await getChatMemberCount(payload.chat_id) };
@@ -130,6 +134,10 @@ function makeApi() {
       if (method === "sendMessage") {
         if (failTopicNotFound && payload.message_thread_id !== undefined) {
           throw { error_code: 400, description: "Bad Request: topic not found" };
+        }
+        if (failParseOnce && !parseErrorThrown && (payload as Record<string, unknown>).parse_mode === "MarkdownV2") {
+          parseErrorThrown = true;
+          throw { error_code: 400, description: "Bad Request: can't parse markdown" };
         }
         return { ok: true as const, result: await sendMessage(payload.chat_id as number | string, payload.text as string) };
       }
@@ -296,6 +304,17 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 8; i += 1) await Promise.resolve();
+}
+
+function readTelegramEvents(home: string, sessionId: string): Record<string, unknown>[] {
+  try {
+    const raw = readFileSync(metricsPath(home, sessionId), "utf-8").trim();
+    if (!raw) return [];
+    return raw.split("\n").map((line) => JSON.parse(line)).filter((e) => e.type === "telegram");
+  } catch (e) {
+    if ((e as { code?: string }).code === "ENOENT") return [];
+    throw e;
+  }
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -643,6 +662,30 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate("/new", 2));
     expect(built.api.sent).toEqual([]);
     expect(built.manager.list()).toEqual([]);
+  });
+
+  it("records system reply sendMessage success metrics", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+    const session = built.manager.list()[0]!;
+    const events = readTelegramEvents(built.cfg.goblinHome, session.id);
+    const systemSuccess = events.find((e) => e.op === "sendMessage" && e.channel === "system" && e.outcome === "success");
+    expect(systemSuccess).toBeDefined();
+  });
+
+  it("records system reply parse-error failure and retry success", async () => {
+    const built = await makeBot();
+    built.api.failParseOnce();
+    await built.bot.handleUpdate(textUpdate("/new"));
+    const session = built.manager.list()[0]!;
+    const events = readTelegramEvents(built.cfg.goblinHome, session.id);
+    expect(events.filter((e) => e.op === "sendMessage" && e.channel === "system").length).toBe(2);
+    const first = events.find((e) => e.op === "sendMessage" && e.channel === "system" && e.outcome === "error");
+    expect(first).toBeDefined();
+    expect(first?.errorCode).toBe(400);
+    expect(first?.errorDescription).toContain("parse");
+    const second = events.find((e) => e.op === "sendMessage" && e.channel === "system" && e.outcome === "success");
+    expect(second).toBeDefined();
   });
 });
 

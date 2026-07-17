@@ -5,6 +5,8 @@ import { log } from "./log.ts";
 import { buildAllowlistMiddleware, locatorFromCtx, TextCoalescer } from "./tg/mod.ts";
 import { prepareUserContent } from "./tg/user-context.ts";
 import { MemoryStore } from "./memory/mod.ts";
+import { MetricsStore, type TelegramMetricsEvent } from "./metrics/mod.ts";
+import { classifyTelegramError, type ReplyOpts } from "./tg/format.ts";
 import { registerCommands } from "./commands/mod.ts";
 import { SessionManager, type ChatLocator } from "./sessions/mod.ts";
 import { AgentRunner } from "./agent/mod.ts";
@@ -36,14 +38,59 @@ const subagentToolFactory: SubagentToolFactory = (
   createReviveSubagentTool(runner, onStatusUpdate),
 ];
 
-function intakeMessageFromCtx(ctx: Context): TelegramIntakeMessage {
+function safeRecordTelegramEvent(metrics: MetricsStore | undefined, event: TelegramMetricsEvent): void {
+  if (!metrics) return;
+  try {
+    metrics.record(event);
+  } catch (err) {
+    log.warn("failed to record system reply metric", { error: String(err) });
+  }
+}
+
+function wrapReply(
+  reply: (text: string, opts?: ReplyOpts) => Promise<void>,
+  getMetrics: () => MetricsStore | undefined,
+): (text: string, opts?: ReplyOpts) => Promise<void> {
+  return async (text, opts) => {
+    try {
+      await reply(text, opts);
+      safeRecordTelegramEvent(getMetrics(), {
+        type: "telegram",
+        op: "sendMessage",
+        channel: "system",
+        outcome: "success",
+      });
+    } catch (err) {
+      const { outcome, errorCode, errorDescription, retryAfterSec } = classifyTelegramError(err);
+      safeRecordTelegramEvent(getMetrics(), {
+        type: "telegram",
+        op: "sendMessage",
+        channel: "system",
+        outcome,
+        errorCode,
+        errorDescription,
+        retryAfterSec,
+      });
+      throw err;
+    }
+  };
+}
+
+function intakeMessageFromCtx(ctx: Context, manager: SessionManager, cfg: Config): TelegramIntakeMessage {
+  const locator = locatorFromCtx(ctx);
+  const isSupergroup = ctx.chat?.type === "supergroup";
+  const getMetrics = (): MetricsStore | undefined => {
+    if (!locator) return undefined;
+    const session = manager.resolve(locator, { isSupergroup });
+    return session ? new MetricsStore(cfg.goblinHome, session.id) : undefined;
+  };
   return {
-    locator: locatorFromCtx(ctx),
-    isSupergroup: ctx.chat?.type === "supergroup",
+    locator,
+    isSupergroup,
     threadId: ctx.message?.message_thread_id,
-    reply: async (text, opts) => {
+    reply: wrapReply(async (text, opts) => {
       await ctx.reply(text, opts as Record<string, unknown> | undefined);
-    },
+    }, getMetrics),
     prepare: (content: PromptContent): PromptContent => {
       if (typeof content === "string") return prepareUserContent(ctx, content);
       return prepareUserContent(ctx, content);
@@ -125,7 +172,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   registerCommands(bot, manager);
 
   bot.on("message:text", async (ctx: Context) => {
-    const message = intakeMessageFromCtx(ctx);
+    const message = intakeMessageFromCtx(ctx, manager, cfg);
     // No valid chat → drop, same as the handler did before coalescing.
     if (!message.locator) return;
     // Telegram always populates `from` on user-originated text messages and
@@ -157,13 +204,13 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
 
   bot.on("message:photo", async (ctx: Context) => {
     const fileIds = ctx.msg?.photo?.map((photo) => photo.file_id) ?? [];
-    await intake.handlePhoto(intakeMessageFromCtx(ctx), ctx.api, fileIds, ctx.msg?.caption);
+    await intake.handlePhoto(intakeMessageFromCtx(ctx, manager, cfg), ctx.api, fileIds, ctx.msg?.caption);
   });
 
   bot.on("message:document", async (ctx: Context) => {
     const doc = ctx.msg?.document;
     if (!doc?.file_id) return;
-    await intake.handleDocument(intakeMessageFromCtx(ctx), ctx.api, {
+    await intake.handleDocument(intakeMessageFromCtx(ctx, manager, cfg), ctx.api, {
       fileId: doc.file_id,
       fileName: doc.file_name,
       mimeType: doc.mime_type,
@@ -174,7 +221,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   bot.on("message:voice", async (ctx: Context) => {
     const voice = ctx.msg?.voice;
     if (!voice?.file_id) return;
-    await intake.handleVoice(intakeMessageFromCtx(ctx), ctx.api, {
+    await intake.handleVoice(intakeMessageFromCtx(ctx, manager, cfg), ctx.api, {
       fileId: voice.file_id,
       mimeType: voice.mime_type,
     });
@@ -183,7 +230,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   bot.on("message:audio", async (ctx: Context) => {
     const audio = ctx.msg?.audio;
     if (!audio?.file_id) return;
-    await intake.handleAudio(intakeMessageFromCtx(ctx), ctx.api, {
+    await intake.handleAudio(intakeMessageFromCtx(ctx, manager, cfg), ctx.api, {
       fileId: audio.file_id,
       fileName: audio.file_name,
       performer: audio.performer,

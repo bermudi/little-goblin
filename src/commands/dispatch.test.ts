@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Config } from "../config.ts";
 import type { CascadeResult } from "../interrupt.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
+import { MetricsStore, type MetricsEvent, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { SubagentInfo, SubagentRunner } from "../subagents/mod.ts";
@@ -235,8 +236,18 @@ describe("handleCommand", () => {
   it("/debug reports diagnostics for active sessions", async () => {
     const harness = makeHarness();
     const session = harness.manager.createForChat(harness.locator, { isSupergroup: false });
+    const metrics = new MetricsStore(harness.cfg.goblinHome, session.id);
+    const events: TelegramMetricsEvent[] = [
+      { type: "telegram", op: "sendMessage", channel: "system", outcome: "success" },
+      { type: "telegram", op: "sendMessage", channel: "system", outcome: "error", errorCode: 400, errorDescription: "Bad Request: message not found" },
+      { type: "telegram", op: "editMessageText", channel: "response", outcome: "success" },
+      { type: "telegram", op: null, channel: "response", outcome: "throttled", elapsedMs: 50, throttleMs: 1100 },
+    ];
+    for (const event of events) metrics.record(event as MetricsEvent);
+
     const result = expectReplied(await dispatch({ command: "/debug", session, runner: makeRunner(), harness }));
     expect(result.reply).toContain(`Session: ${session.id}`);
+    expect(result.reply).toContain("Telegram sends: 2 (1 failed), edits: 1 (0 failed), throttled: 1, rate-limited: 0, topic not found: 0");
   });
 
   it("/debug without a session replies no active session", async () => {

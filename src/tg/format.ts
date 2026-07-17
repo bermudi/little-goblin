@@ -1,4 +1,5 @@
 import { log } from "../log.ts";
+import type { TelegramMetricsEvent } from "../metrics/mod.ts";
 
 /**
  * Send-options threaded through `TelegramIntakeMessage.reply`. Defined here so
@@ -139,6 +140,48 @@ export function isParseError(err: unknown): boolean {
   if (e?.error_code !== 400) return false;
   const desc = e.description ?? "";
   return /parse|markdown/i.test(desc);
+}
+
+export interface TelegramApiErrorInfo {
+  outcome: TelegramMetricsEvent["outcome"];
+  errorCode?: number;
+  errorDescription?: string;
+  retryAfterSec?: number;
+}
+
+/**
+ * Classify a Telegram API error into the outcome used for `telegram` metrics
+ * events. 429s carry `retryAfterSec`; topic-not-found, message-gone, and
+ * message-not-modified 400s are detected by their descriptions; everything else
+ * is a generic `error`.
+ */
+export function classifyTelegramError(err: unknown): TelegramApiErrorInfo {
+  const e = err as { error_code?: number; description?: string; parameters?: { retry_after?: number } } | undefined;
+  const code = e?.error_code;
+  const description = e?.description ?? String(err);
+
+  if (code === 429) {
+    return {
+      outcome: "rate_limited",
+      errorCode: code,
+      errorDescription: description,
+      retryAfterSec: e?.parameters?.retry_after,
+    };
+  }
+
+  if (code === 400 && /topic not found|message thread not found|invalid message thread id/i.test(description)) {
+    return { outcome: "topic_not_found", errorCode: code, errorDescription: description };
+  }
+
+  if (code === 400 && /not found|can't be edited|to edit/i.test(description)) {
+    return { outcome: "message_gone", errorCode: code, errorDescription: description };
+  }
+
+  if (code === 400 && /message is not modified/i.test(description)) {
+    return { outcome: "message_not_modified", errorCode: code, errorDescription: description };
+  }
+
+  return { outcome: "error", errorCode: code, errorDescription: description };
 }
 
 /**

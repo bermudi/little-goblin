@@ -52,7 +52,7 @@ export interface TurnDispatcherOptions {
    * never constructs a `MessageBuffer` itself — the Telegram-aware caller
    * (intake) injects this so rendering knowledge stays in `src/tg/`.
    */
-  createMessageBuffer: (locator: ChatLocator) => TurnSink;
+  createMessageBuffer: (locator: ChatLocator, session?: SessionState) => TurnSink;
   /**
    * Mandatory factory that builds Telegram-specific beta tools (voice, photo,
    * document, TTS) for a chat. The dispatcher does not import from `src/tg/`;
@@ -93,7 +93,7 @@ export class TurnDispatcher {
   private readonly subagentRunner: SubagentRunner;
   private readonly memoryStore: MemoryStore;
   private readonly createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
-  private readonly createMessageBufferFn: (locator: ChatLocator) => TurnSink;
+  private readonly createMessageBufferFn: (locator: ChatLocator, session?: SessionState) => TurnSink;
   private readonly createBetaToolsFn: (chatId: number, threadId?: number) => ToolDefinition[];
   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
   private readonly promptQueueMeta: Map<string, PromptQueueEntry>;
@@ -175,8 +175,8 @@ export class TurnDispatcher {
    * delegates to `createMessageBufferFn` — there is no fallback, the factory
    * is mandatory at construction.
    */
-  createMessageBuffer(locator: ChatLocator): TurnSink {
-    return this.createMessageBufferFn(locator);
+  createMessageBuffer(locator: ChatLocator, session?: SessionState): TurnSink {
+    return this.createMessageBufferFn(locator, session);
   }
 
   /**
@@ -359,7 +359,7 @@ export class TurnDispatcher {
   ): void {
     const threadId = locator.topicId;
     const runner = this.getOrCreateRunner(session, locator, threadId);
-    const buffer = this.createMessageBuffer(locator);
+    const buffer = this.createMessageBuffer(locator, session);
     this.schedulePrompt(
       session,
       runner,

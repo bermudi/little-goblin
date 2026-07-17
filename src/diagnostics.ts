@@ -162,8 +162,10 @@ function fmtMetrics(metrics: MetricsSummary | null): string {
   if (metrics === null) {
     return `Metrics: ${UNAVAILABLE}`;
   }
+  const tg = metrics.telegram;
   const lines = [
     `Metrics:`,
+    `  Telegram sends: ${tg.sendTotal} (${tg.sendError} failed), edits: ${tg.editTotal} (${tg.editError} failed), throttled: ${tg.throttled}, rate-limited: ${tg.rateLimited}, topic not found: ${tg.topicNotFound}`,
     `  Turns: ${metrics.turns}`,
     `  Tokens: ${metrics.totalTokens}`,
     `  Cost: $ ${metrics.totalCost.toFixed(6)}`,

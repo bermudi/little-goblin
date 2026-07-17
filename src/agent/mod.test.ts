@@ -8,7 +8,7 @@ import { agentsMdPath, skillsPath, soulMdPath, workdirPath } from "../workspace/
 import { memoryDir } from "../memory/paths.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import { ExternalAgentRunner } from "../external-agents/mod.ts";
-import { readMetricsSummary } from "../metrics/store.ts";
+import { readMetricsSummary } from "../metrics/mod.ts";
 import type { AgentBackend, AgentBackendOptions, AgentBackendInitArgs } from "./backend.ts";
 import type { ToolDefinition, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
@@ -1875,6 +1875,38 @@ describe("AgentRunner", () => {
       expect(summary.lastTurn!.cacheRead).toBe(1);
       expect(summary.lastTurn!.cacheWrite).toBe(2);
       expect(summary.lastTurn!.cost).toBe(0.003);
+    });
+
+    it("increments toolErrorCount when tool_execution_end reports isError: true", async () => {
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", nopCallbacks());
+
+      const assistantMessage = {
+        role: "assistant",
+        content: [{ type: "text", text: "done" }],
+        stopReason: "stop",
+        usage: {
+          input: 10,
+          output: 5,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 15,
+          cost: { total: 0.003 },
+        },
+      };
+
+      sessionHolder.emit({ type: "agent_start" });
+      sessionHolder.emit({ type: "turn_start" });
+      sessionHolder.emit({ type: "tool_execution_start", toolName: "bash", args: {} });
+      sessionHolder.emit({ type: "tool_execution_end", toolName: "bash", isError: true });
+      sessionHolder.emit({ type: "message_end", message: assistantMessage });
+      sessionHolder.emit({ type: "turn_end", message: assistantMessage, toolResults: [] });
+      sessionHolder.emit({ type: "agent_end" });
+
+      const summary = readMetricsSummary(tmpDir, "abcdef1234")!;
+      expect(summary.lastTurn).not.toBeNull();
+      expect(summary.lastTurn!.toolCount).toBe(1);
+      expect(summary.lastTurn!.toolErrorCount).toBe(1);
     });
 
     it("exposes the metrics store before the first prompt", () => {

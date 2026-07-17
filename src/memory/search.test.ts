@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MemoryStore } from "./store.ts";
-import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
+import { MetricsStore, readMetricsSummary } from "../metrics/mod.ts";
 import {
   clampLimit,
   scoreEntry,

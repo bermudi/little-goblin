@@ -1,5 +1,5 @@
 import { MemoryStore } from "./store.ts";
-import type { MetricsStore } from "../metrics/store.ts";
+import type { MetricsStore } from "../metrics/mod.ts";
 import { activeMemoryScopeFor } from "./scope.ts";
 import type { ActiveScope } from "./scope.ts";
 import {

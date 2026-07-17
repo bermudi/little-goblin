@@ -16,7 +16,7 @@
  */
 
 import type { MemoryStore } from "./store.ts";
-import type { MetricsStore } from "../metrics/store.ts";
+import type { MetricsStore } from "../metrics/mod.ts";
 import {
   parseEntryMetadata,
   stripEntryMetadata,

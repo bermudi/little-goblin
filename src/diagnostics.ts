@@ -20,7 +20,7 @@ import type { SessionState } from "./sessions/types.ts";
 import { transcriptPath } from "./sessions/paths.ts";
 import type { AgentRunner } from "./agent/mod.ts";
 import type { SubagentRunner } from "./subagents/mod.ts";
-import { readMetricsSummary, type MetricsSummary } from "./metrics/store.ts";
+import { readMetricsSummary, type MetricsSummary } from "./metrics/mod.ts";
 
 /** Structured diagnostics snapshot. `null` fields are rendered "unavailable". */
 export interface Diagnostics {
@@ -175,8 +175,10 @@ function fmtMetrics(metrics: MetricsSummary | null): string {
     `  Memory searches: ${metrics.searchCount} (last results: ${metrics.lastSearchResultCount ?? UNAVAILABLE}, average: ${metrics.averageSearchResultCount.toFixed(1)})`,
   ];
   if (metrics.lastTurn) {
+    const turn = metrics.lastTurn;
+    const error = turn.errorMessage ? `, error: ${turn.errorMessage}` : "";
     lines.push(
-      `  Last turn: ${metrics.lastTurn.model} (${metrics.lastTurn.provider}/${metrics.lastTurn.api}) — ${metrics.lastTurn.toolCount} tools, ${metrics.lastTurn.toolErrorCount} errors`,
+      `  Last turn: ${turn.model} (${turn.provider}/${turn.api}) — ${turn.usage.totalTokens} tokens, $ ${turn.cost.toFixed(6)}, cache ${turn.cacheRead}/${turn.cacheWrite}, stop: ${turn.stopReason ?? "none"}${error}, ${turn.toolCount} tools, ${turn.toolErrorCount} errors`,
     );
   }
   return lines.join("\n");

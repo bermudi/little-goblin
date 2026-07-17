@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "./store.ts";
-import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
+import { MetricsStore, readMetricsSummary } from "../metrics/mod.ts";
 import { formatSnapshot, SNAPSHOT_GUARDRAIL } from "./snapshot.ts";
 import { memoryDir, scopeMemoryPath } from "./paths.ts";
+import { metricsPath } from "../sessions/paths.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
 import { formatReflectedEntry, type EntryMetadata } from "./entry.ts";
 
@@ -67,6 +68,15 @@ describe("formatSnapshot", () => {
     const summary = readMetricsSummary(tmp, "abcdef1234")!;
     expect(summary.searchCount).toBe(0);
     expect(summary.lastTurn).toBeNull();
+
+    const raw = readFileSync(metricsPath(tmp, "abcdef1234"), "utf-8");
+    const events = raw.trim().split("\n").map((line) => JSON.parse(line) as { type: string; name?: string; extra?: Record<string, unknown> });
+    const built = events.find((e) => e.type === "event" && e.name === "snapshot_built");
+    expect(built).toBeDefined();
+    expect(built!.extra!.empty).toBe(false);
+    expect(typeof built!.extra!.entryCount).toBe("number");
+    expect(built!.extra!.entryCount).toBeGreaterThan(0);
+    expect(typeof built!.extra!.charLength).toBe("number");
   });
 
   it("renders a topic-bound snapshot with peer topics in the index", async () => {

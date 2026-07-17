@@ -27,7 +27,7 @@ import { log } from "../log.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import { readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
 import { MemoryStore } from "./store.ts";
-import type { MetricsStore } from "../metrics/store.ts";
+import type { MetricsStore } from "../metrics/mod.ts";
 import { checkMemorySafety } from "./safety.ts";
 import { appendQuarantine } from "./quarantine.ts";
 import {

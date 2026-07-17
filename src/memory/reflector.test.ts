@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
-import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
+import { MetricsStore, readMetricsSummary } from "../metrics/mod.ts";
 import {
   MemoryReflector,
   defaultCandidateExtractor,
@@ -351,9 +351,11 @@ describe("MemoryReflector", () => {
       ]);
       writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
+      const metrics = new MetricsStore(tmp, "abcdef1234");
       const reflector = new MemoryReflector({
         goblinHome: tmp,
         store,
+        metrics,
         extractor: fixedExtractor([
           makeCandidate({ summary: "the api key is sk-abcdefghijklmnopqrstuvwxyz1234567890" }),
         ]),
@@ -370,6 +372,11 @@ describe("MemoryReflector", () => {
       expect(record.preview).not.toContain("abcdefghijklmnopqrstuvwxyz1234567890");
       // Cursor still advanced (the candidate was handled — quarantined).
       expect(readCursor(tmp, "abcdef1234")!.processedLines).toBe(1);
+
+      const summary = readMetricsSummary(tmp, "abcdef1234")!;
+      expect(summary.memoryReflectionCandidateTotal).toBe(1);
+      expect(summary.memoryReflectionQuarantineTotal).toBe(1);
+      expect(summary.memoryReflectionPersistedTotal).toBe(0);
     });
   });
 
@@ -384,9 +391,11 @@ describe("MemoryReflector", () => {
       ]);
       writeCursor(tmp, "abcdef1234", { processedLines: 0, lastReflectedAt: "2026-07-01T00:00:00.000Z" });
 
+      const metrics = new MetricsStore(tmp, "abcdef1234");
       const reflector = new MemoryReflector({
         goblinHome: tmp,
         store,
+        metrics,
         extractor: fixedExtractor([
           makeCandidate({ summary: "maybe the project uses TypeScript", confidence: 0.2 }),
         ]),
@@ -397,6 +406,11 @@ describe("MemoryReflector", () => {
       const records = readQuarantine(tmp);
       expect(records).toHaveLength(1);
       expect((records[0] as { reason: string }).reason).toBe("low_confidence");
+
+      const summary = readMetricsSummary(tmp, "abcdef1234")!;
+      expect(summary.memoryReflectionCandidateTotal).toBe(1);
+      expect(summary.memoryReflectionQuarantineTotal).toBe(1);
+      expect(summary.memoryReflectionPersistedTotal).toBe(0);
     });
   });
 

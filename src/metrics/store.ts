@@ -190,10 +190,9 @@ export class MetricsStore {
     return metricsPath(this.home, this.sessionId);
   }
 
-  record(event: MetricsEvent): void {
+  private writeLine(line: string): void {
     const path = this.path;
     mkdirSync(dirname(path), { recursive: true });
-    const line = JSON.stringify(event) + "\n";
     const fd = openSync(path, "a");
     try {
       writeSync(fd, line);
@@ -202,19 +201,21 @@ export class MetricsStore {
     }
   }
 
+  record(event: MetricsEvent): void {
+    const release = lockMetricsFile(this.path);
+    try {
+      this.writeLine(JSON.stringify(event) + "\n");
+    } finally {
+      release();
+    }
+  }
+
   incrementCounter(name: string, scope: string | null = null, delta: number = 1): void {
     const path = this.path;
-    mkdirSync(dirname(path), { recursive: true });
     const release = lockMetricsFile(path);
     try {
       const last = lastCounterValue(path, name, scope);
-      const fd = openSync(path, "a");
-      try {
-        const line = JSON.stringify({ type: "counter", name, scope, value: last + delta }) + "\n";
-        writeSync(fd, line);
-      } finally {
-        closeSync(fd);
-      }
+      this.writeLine(JSON.stringify({ type: "counter", name, scope, value: last + delta }) + "\n");
     } finally {
       release();
     }

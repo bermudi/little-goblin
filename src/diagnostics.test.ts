@@ -8,7 +8,7 @@ import {
   generateDiagnostics,
   type Diagnostics,
 } from "./diagnostics.ts";
-import { MetricsStore } from "./metrics/store.ts";
+import { MetricsStore } from "./metrics/mod.ts";
 import type { SessionState } from "./sessions/types.ts";
 import { sessionDir, transcriptPath } from "./sessions/paths.ts";
 import type { SubagentRunner } from "./subagents/mod.ts";
@@ -250,6 +250,7 @@ describe("gatherDiagnostics", () => {
     expect(out).toContain("Cost: $ 0.003000");
     expect(out).toContain("Cache: 0 read / 0 write tokens in this session");
     expect(out).toContain("Memory searches: 0");
+    expect(out).toContain("Last turn: gpt-test (openai/chat-completions) — 15 tokens, $ 0.003000, cache 0/0, stop: stop, 0 tools, 0 errors");
   });
 
   it("reports null events stats when the file is missing", () => {

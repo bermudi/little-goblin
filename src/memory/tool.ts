@@ -1,7 +1,7 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { MemoryStore, StoreResult } from "./store.ts";
-import type { MetricsStore } from "../metrics/store.ts";
+import type { MetricsStore } from "../metrics/mod.ts";
 import { activeMemoryScopeFor, type ActiveScope, type MemoryScope } from "./scope.ts";
 import { VALID_NAME_RE } from "../subagents/named-agents.ts";
 import { checkDescriptionSafety, checkMemorySafety } from "./safety.ts";

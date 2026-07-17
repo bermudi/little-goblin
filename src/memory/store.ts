@@ -12,7 +12,7 @@ import { atomicWrite } from "../fs.ts";
 import { log } from "../log.ts";
 import { archiveTopicPath, memoryDir, scopeMemoryPath, userPath } from "./paths.ts";
 import { scopeTag, type MemoryScope } from "./scope.ts";
-import type { MetricsStore } from "../metrics/store.ts";
+import type { MetricsStore } from "../metrics/mod.ts";
 
 const MEMORY_CAP = 4000;
 const USER_CAP = 2000;

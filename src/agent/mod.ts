@@ -482,13 +482,13 @@ export class AgentRunner {
 
     switch (e.type) {
       case "agent_start": {
-        this.turnStart = extractTimestamp(e) ?? new Date().toISOString();
+        this.turnStart = extractTimestamp(e) ?? this.turnStart ?? new Date().toISOString();
         this.turnToolCount = 0;
         this.turnToolErrorCount = 0;
         break;
       }
       case "turn_start": {
-        this.turnStart = extractTimestamp(e) ?? new Date().toISOString();
+        this.turnStart = extractTimestamp(e) ?? this.turnStart ?? new Date().toISOString();
         this.turnToolCount = 0;
         this.turnToolErrorCount = 0;
         break;

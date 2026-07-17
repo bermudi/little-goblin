@@ -4,11 +4,11 @@
 
 ### Requirement: AgentRunner records per-turn metrics
 
-The `AgentRunner` SHALL record a `turn` metric event for every completed assistant turn. It SHALL compute `turnStart` from the `agent_start` event timestamp (or `prompt()` start when `agent_start` is not available), `turnEnd` from the assistant `message_end` timestamp, and `durationMs` as the difference. It SHALL copy `usage`, `model`, `provider`, `api`, `responseModel`, `stopReason`, and `errorMessage` from the `message_end` message. It SHALL count `toolCount` and `toolErrorCount` from `tool_execution_start` and `tool_execution_end` events that occur between the start and end of the turn. The event SHALL be written to the `MetricsStore` for the session.
+The `AgentRunner` SHALL record a `turn` metric event for every completed assistant turn. It SHALL compute `turnStart` from the `agent_start` event timestamp (or `prompt()` start when `agent_start` is not available), `turnEnd` from the `turn_end` event timestamp, and `durationMs` as the difference. It SHALL copy `usage`, `model`, `provider`, `api`, `responseModel`, `stopReason`, and `errorMessage` from the `turn_end` message. It SHALL count `toolCount` and `toolErrorCount` from `tool_execution_start` and `tool_execution_end` events that occur between the start and end of the turn. The event SHALL be written to the `MetricsStore` for the session.
 
 #### Scenario: Assistant turn completes with usage
 
-- **WHEN** `AgentRunner` handles a complete assistant turn with a `message_end` containing `usage` and `stopReason`
+- **WHEN** `AgentRunner` handles a complete assistant turn with a `turn_end` containing `usage` and `stopReason`
 - **THEN** a `turn` metric event SHALL be written to `metrics.jsonl`
 - **AND** the event SHALL contain `durationMs`, `usage`, `cacheRead`, `cacheWrite`, `cost`, `toolCount`, `toolErrorCount`, and `stopReason`
 
@@ -17,9 +17,9 @@ The `AgentRunner` SHALL record a `turn` metric event for every completed assista
 - **WHEN** a `tool_execution_end` event fires with `isError: true` during a turn
 - **THEN** the `turn` event for that turn SHALL have `toolErrorCount` incremented by one
 
-#### Scenario: Turn aborted before message_end
+#### Scenario: Turn aborted before turn_end
 
-- **WHEN** a turn is aborted and no assistant `message_end` arrives
+- **WHEN** a turn is aborted and no `turn_end` arrives
 - **THEN** no `turn` metric event SHALL be written
 - **AND** any partial tool counts from the turn SHALL be discarded
 

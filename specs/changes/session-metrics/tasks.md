@@ -44,3 +44,24 @@
 - [x] Run `litespec validate session-metrics` and fix any issues.
 - [x] Review `specs/changes/session-metrics/` for consistency with the implementation.
 - [x] Commit: `phase 5: validate session metrics change`
+
+## Phase 6: Address initial review findings
+
+- [x] Fix `AgentRunner` `turnStart` fallback to preserve the `prompt()` start time when `agent_start` or `turn_start` events lack a timestamp.
+- [x] Fix `MetricsStore.record` to use the counter lock for counter events.
+- [x] Extend `/debug` "Last turn" output with `usage.totalTokens`, `cost`, `cacheRead`, `cacheWrite`, `stopReason`, and `errorMessage`.
+- [x] Route metrics imports through the `src/metrics/mod.ts` barrel file.
+- [x] Add missing tests for tool error counts, `snapshot_built` metric events, and quarantine counter values.
+- [x] Run `bun run typecheck`, `bun test`, and `litespec validate session-metrics`.
+- [x] Commit: `phase 6: fix session-metrics review findings` and `fix: address review findings for session-metrics`
+
+## Phase 7: Address pre-archive review findings
+
+- [x] Dispose the runner and await in-flight memory reflection before archiving the session directory.
+- [x] Create an empty `metrics.jsonl` body before the first `MetricsStore` append.
+- [x] Count `procedural_noise` candidates in `memory_reflection_quarantine_total`.
+- [x] Add tests locking empty-snapshot and zero-result-search metric behavior.
+- [x] Align agent delta spec wording with the `turn_end` metric event behavior.
+- [x] Mark ADR `0014-metrics-file-location` as accepted.
+- [x] Run `bun run typecheck`, `bun test`, and `litespec validate session-metrics`.
+- [x] Commit: `fix: address pre-archive review findings for session-metrics`

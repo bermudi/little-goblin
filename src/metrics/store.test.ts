@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { MetricsStore, readMetricsSummary } from "./store.ts";
+import { MetricsStore, readMetricsSummary, type TelegramMetricsEvent } from "./store.ts";
 
 const VALID_ID = "abc123def0";
 
@@ -303,6 +303,118 @@ describe("MetricsStore", () => {
       const summary = readMetricsSummary(tmp, VALID_ID)!;
       expect(summary.searchCount).toBe(1);
       expect(summary.lastSearchResultCount).toBe(5);
+    });
+  });
+
+  describe("telegram metrics", () => {
+    it("persists a telegram event", () => {
+      const event: TelegramMetricsEvent = {
+        type: "telegram",
+        op: "sendMessage",
+        channel: "response",
+        outcome: "success",
+      };
+      store.record(event);
+      const raw = readFileSync(metricsFilePath(tmp), "utf-8");
+      const lines = raw.trim().split("\n");
+      expect(lines.length).toBe(1);
+      expect(JSON.parse(lines[0]!)).toEqual(event);
+    });
+
+    it("returns zero telegram fields when no telegram events or counters exist", () => {
+      store.record(makeTurnEvent());
+      const summary = readMetricsSummary(tmp, VALID_ID)!;
+      expect(summary.telegram).toEqual({
+        sendTotal: 0,
+        sendSuccess: 0,
+        sendError: 0,
+        editTotal: 0,
+        editSuccess: 0,
+        editError: 0,
+        messageNotModified: 0,
+        messageGone: 0,
+        throttled: 0,
+        rateLimited: 0,
+        topicNotFound: 0,
+      });
+    });
+
+    it("aggregates mixed telegram events", () => {
+      store.record({ type: "telegram", op: "sendMessage", channel: "status", outcome: "success" });
+      store.record({ type: "telegram", op: "editMessageText", channel: "response", outcome: "error" });
+      store.record({ type: "telegram", op: null, channel: "response", outcome: "throttled", elapsedMs: 100, throttleMs: 1100 });
+      const summary = readMetricsSummary(tmp, VALID_ID)!;
+      expect(summary.telegram.sendTotal).toBe(1);
+      expect(summary.telegram.sendSuccess).toBe(1);
+      expect(summary.telegram.editTotal).toBe(1);
+      expect(summary.telegram.editError).toBe(1);
+      expect(summary.telegram.throttled).toBe(1);
+    });
+
+    it("uses counter-only telegram metrics", () => {
+      store.incrementCounter("telegram_send_message_total", "response", 5);
+      store.incrementCounter("telegram_send_message_success_total", "response", 4);
+      const summary = readMetricsSummary(tmp, VALID_ID)!;
+      expect(summary.telegram.sendTotal).toBe(5);
+      expect(summary.telegram.sendSuccess).toBe(4);
+    });
+
+    it("combines counters and events", () => {
+      store.incrementCounter("telegram_send_message_success_total", null, 3);
+      store.record({ type: "telegram", op: "sendMessage", channel: "response", outcome: "success" });
+      const summary = readMetricsSummary(tmp, VALID_ID)!;
+      expect(summary.telegram.sendTotal).toBe(1);
+      expect(summary.telegram.sendSuccess).toBe(4);
+    });
+
+    it("counts rate-limited and topic-not-found outcomes", () => {
+      store.record({
+        type: "telegram",
+        op: "editMessageText",
+        channel: "response",
+        outcome: "rate_limited",
+        retryAfterSec: 30,
+      });
+      store.record({
+        type: "telegram",
+        op: "editMessageText",
+        channel: "response",
+        outcome: "topic_not_found",
+        errorCode: 400,
+        errorDescription: "Topic not found",
+      });
+      store.incrementCounter("telegram_topic_not_found_total", null, 2);
+      const summary = readMetricsSummary(tmp, VALID_ID)!;
+      expect(summary.telegram.editTotal).toBe(2);
+      expect(summary.telegram.editError).toBe(2);
+      expect(summary.telegram.rateLimited).toBe(1);
+      expect(summary.telegram.topicNotFound).toBe(3);
+    });
+
+    it("counts message-gone and message-not-modified for edits", () => {
+      store.record({ type: "telegram", op: "editMessageText", channel: "status", outcome: "message_not_modified" });
+      store.record({
+        type: "telegram",
+        op: "editMessageText",
+        channel: "response",
+        outcome: "message_gone",
+        errorCode: 400,
+        errorDescription: "Message not found",
+      });
+      store.record({
+        type: "telegram",
+        op: "sendMessage",
+        channel: "system",
+        outcome: "message_gone",
+        errorCode: 400,
+        errorDescription: "Message not found",
+      });
+      const summary = readMetricsSummary(tmp, VALID_ID)!;
+      expect(summary.telegram.editTotal).toBe(2);
+      expect(summary.telegram.messageNotModified).toBe(1);
+      expect(summary.telegram.messageGone).toBe(1);
+      expect(summary.telegram.sendTotal).toBe(1);
+      expect(summary.telegram.sendError).toBe(1);
     });
   });
 

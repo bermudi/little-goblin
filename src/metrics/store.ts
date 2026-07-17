@@ -101,7 +101,33 @@ export interface GenericMetricsEvent {
   extra: Record<string, unknown>;
 }
 
-export type MetricsEvent = TurnMetricsEvent | CounterMetricsEvent | GenericMetricsEvent;
+export interface TelegramMetricsEvent {
+  type: "telegram";
+  op: "sendMessage" | "editMessageText" | null;
+  channel: "status" | "response" | "system";
+  outcome: "success" | "error" | "rate_limited" | "topic_not_found" | "message_gone" | "message_not_modified" | "throttled";
+  errorCode?: number;
+  errorDescription?: string;
+  retryAfterSec?: number;
+  elapsedMs?: number;
+  throttleMs?: number;
+}
+
+export type MetricsEvent = TurnMetricsEvent | CounterMetricsEvent | GenericMetricsEvent | TelegramMetricsEvent;
+
+export interface TelegramMetricsSummary {
+  sendTotal: number;
+  sendSuccess: number;
+  sendError: number;
+  editTotal: number;
+  editSuccess: number;
+  editError: number;
+  messageNotModified: number;
+  messageGone: number;
+  throttled: number;
+  rateLimited: number;
+  topicNotFound: number;
+}
 
 export interface MetricsSummary {
   lastTurn: TurnMetricsEvent | null;
@@ -121,6 +147,7 @@ export interface MetricsSummary {
   lastSearchResultCount: number | null;
   searchCount: number;
   averageSearchResultCount: number;
+  telegram: TelegramMetricsSummary;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -304,6 +331,52 @@ function counterTotal(counters: Map<string, number>, name: string): number {
   return total;
 }
 
+const TELEGRAM_OPS = ["sendMessage", "editMessageText"] as const;
+type TelegramOp = (typeof TELEGRAM_OPS)[number];
+
+const TELEGRAM_OUTCOMES = [
+  "success",
+  "error",
+  "rate_limited",
+  "topic_not_found",
+  "message_gone",
+  "message_not_modified",
+  "throttled",
+] as const;
+
+function isTelegramOp(value: unknown): value is TelegramOp {
+  return value === "sendMessage" || value === "editMessageText";
+}
+
+function isTelegramOutcome(value: unknown): value is (typeof TELEGRAM_OUTCOMES)[number] {
+  return typeof value === "string" && (TELEGRAM_OUTCOMES as readonly string[]).includes(value);
+}
+
+function aggregateTelegramEvent(summary: TelegramMetricsSummary, event: Record<string, unknown>): void {
+  if (!isTelegramOutcome(event.outcome)) return;
+  const outcome = event.outcome;
+  const op = event.op === null ? null : isTelegramOp(event.op) ? event.op : null;
+
+  if (outcome === "throttled") {
+    summary.throttled++;
+    return;
+  }
+  if (outcome === "rate_limited") summary.rateLimited++;
+  if (outcome === "topic_not_found") summary.topicNotFound++;
+
+  if (op === "sendMessage") {
+    summary.sendTotal++;
+    if (outcome === "success") summary.sendSuccess++;
+    else if (outcome === "error" || outcome === "rate_limited" || outcome === "topic_not_found" || outcome === "message_gone") summary.sendError++;
+  } else if (op === "editMessageText") {
+    summary.editTotal++;
+    if (outcome === "success") summary.editSuccess++;
+    else if (outcome === "error" || outcome === "rate_limited" || outcome === "topic_not_found" || outcome === "message_gone") summary.editError++;
+    if (outcome === "message_not_modified") summary.messageNotModified++;
+    if (outcome === "message_gone") summary.messageGone++;
+  }
+}
+
 export function readMetricsSummary(home: string, sessionId: string): MetricsSummary | null {
   const raw = readMetricsFile(metricsPath(home, sessionId));
   if (raw === null) return null;
@@ -329,6 +402,19 @@ export function readMetricsSummary(home: string, sessionId: string): MetricsSumm
     lastSearchResultCount: null,
     searchCount: 0,
     averageSearchResultCount: 0,
+    telegram: {
+      sendTotal: counterTotal(counters, "telegram_send_message_total"),
+      sendSuccess: counterTotal(counters, "telegram_send_message_success_total"),
+      sendError: counterTotal(counters, "telegram_send_message_error_total"),
+      editTotal: counterTotal(counters, "telegram_edit_message_total"),
+      editSuccess: counterTotal(counters, "telegram_edit_message_success_total"),
+      editError: counterTotal(counters, "telegram_edit_message_error_total"),
+      messageNotModified: 0,
+      messageGone: 0,
+      throttled: counterTotal(counters, "telegram_response_throttled_total"),
+      rateLimited: 0,
+      topicNotFound: counterTotal(counters, "telegram_topic_not_found_total"),
+    },
   };
 
   let totalDuration = 0;
@@ -354,6 +440,10 @@ export function readMetricsSummary(home: string, sessionId: string): MetricsSumm
         summary.searchCount++;
         summary.lastSearchResultCount = resultCount;
         searchTotalResults += resultCount;
+        break;
+      }
+      case "telegram": {
+        aggregateTelegramEvent(summary.telegram, event);
         break;
       }
     }

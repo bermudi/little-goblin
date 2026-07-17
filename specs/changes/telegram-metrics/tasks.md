@@ -2,12 +2,12 @@
 
 ## Phase 1: Extend `metrics` module with Telegram events and aggregation
 
-- [ ] Add `telegram` variant to `MetricsEvent` in `src/metrics/store.ts`.
-- [ ] Extend `MetricsSummary` to include `telegram` counts and update `readMetricsSummary` to aggregate `telegram` events and `telegram_*` counters.
-- [ ] Update `src/metrics/mod.ts` to export the new `telegram` event type and updated `MetricsSummary` type.
-- [ ] Add `src/metrics/store.test.ts` cases for `telegram` event recording, `readMetricsSummary` aggregation, and counter+event combination.
-- [ ] Run `bun run typecheck` and `bun test src/metrics/`.
-- [ ] Commit: `phase 1: extend metrics with telegram event and summary aggregation`
+- [x] Add `telegram` variant to `MetricsEvent` in `src/metrics/store.ts`.
+- [x] Extend `MetricsSummary` to include `telegram` counts and update `readMetricsSummary` to aggregate `telegram` events and `telegram_*` counters.
+- [x] Update `src/metrics/mod.ts` to export the new `telegram` event type and updated `MetricsSummary` type.
+- [x] Add `src/metrics/store.test.ts` cases for `telegram` event recording, `readMetricsSummary` aggregation, and counter+event combination.
+- [x] Run `bun run typecheck` and `bun test src/metrics/`.
+- [x] Commit: `phase 1: extend metrics with telegram event and summary aggregation`
 
 ## Phase 2: Instrument `MessageBuffer` and system-reply path
 

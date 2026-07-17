@@ -2,6 +2,8 @@ export {
   MetricsStore,
   type MetricsEvent,
   type MetricsSummary,
+  type TelegramMetricsEvent,
+  type TelegramMetricsSummary,
   type TurnMetricsEvent,
   type CounterMetricsEvent,
   type GenericMetricsEvent,

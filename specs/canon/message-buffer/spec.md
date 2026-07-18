@@ -60,51 +60,46 @@ The buffer SHALL not edit the status message more than once per second. Intermed
 - **AND** it SHALL NOT retry or throw
 - **AND** if the response carries `parameters.retry_after`, the buffer SHALL push its throttle clock forward by that interval so subsequent flushes within the window short-circuit
 
-### Requirement: Response text streams via edits
+### Requirement: Response text streams via rich-message edits
 
-Text deltas from `onTextDelta` SHALL accumulate into a response message, edited periodically (not per-delta), and roll over to a new message at 4096 characters. Each contiguous run of assistant text between tool calls forms one such response message; tool boundaries seal the current message and start a new one as described in **Response message segments at tool boundaries**. Within a single segment, behavior is unchanged.
+Text deltas from `onTextDelta` SHALL accumulate into a response message, edited periodically (not per-delta), using Telegram's rich message API. A single rich message supports up to 32,768 UTF-8 characters of conventional Markdown, so there is no 4096-character rollover. Each contiguous run of assistant text between tool calls forms one such response message; tool boundaries seal the current message and start a new one as described in **Response message segments at tool boundaries**. Within a single segment, behavior is unchanged.
 
-Response `sendMessage` and `editMessageText` calls SHALL set `parse_mode: "MarkdownV2"` so the model's markdown (bold, italic, code spans, fenced code blocks, links) renders natively in Telegram. When Telegram returns a 400 parse error on a MarkdownV2 send or edit, the buffer SHALL strip markdown formatting from the text and retry the same call as plain text (no `parse_mode`). The plain-text retry SHALL use a cleanup function that removes MarkdownV2 escape backslashes and formatting markers (`*bold*`, `_italic_`, `~strike~`, `||spoiler||`, `` `code` ``) to produce readable text, not raw syntax. The retry SHALL occur at most once per send/edit attempt; if the plain-text retry also fails, the error SHALL be handled by the existing `handleApiError` path.
+The initial response message for a segment SHALL be created with `bot.api.sendRichMessage(chatId, { markdown: text }, opts)`, where `text` is the accumulated response text. Subsequent updates to the same message SHALL use `bot.api.editMessageText(chatId, messageId, { markdown: text }, opts)`. The `markdown` payload renders the model's markdown (bold, italic, code spans, fenced code blocks, links) natively in Telegram using the rich-message Markdown dialect.
 
-The rollover split logic SHALL escape MarkdownV2-special characters in the split boundary so that a split does not produce an unpaired formatting marker that triggers a 400. If the split lands inside an inline code span (odd backtick count before the split point), the split SHALL move backward to before the last unescaped backtick.
+When a rich-message `sendRichMessage` or `editMessageText` returns a 400 parse error, the buffer SHALL strip markdown formatting from the text and retry the same call as a plain `sendMessage` or `editMessageText` (text string, no `parse_mode`). The plain-text retry SHALL remove rich-message formatting markers (`**bold**`, `__bold__`, `*italic*`, `_italic_`, `~~strikethrough~~`, `==marked==`, `||spoiler||`, `` `code` ``), supported HTML tags (`<b>`, `<i>`, `<u>`, `<s>`, `<sub>`, `<sup>`, `<mark>`, `<code>`, `<tg-spoiler>`, `<a>`, etc.), fenced code fences, link URLs, heading/list/blockquote markers, and math fences. Backslashes SHALL NOT be un-escaped because rich markdown does not use backslash escaping. The retry SHALL occur at most once per send/edit attempt; if the plain-text retry also fails, the error SHALL be handled by the existing `handleApiError` path.
 
 #### Scenario: Text accumulation
 
 - **WHEN** `onTextDelta` is called 50 times with ~10 chars each within a single segment (no tool boundary)
 - **THEN** the buffer SHALL accumulate into one string
 - **AND** send at most ~1 edit per second (≥1100ms minimum between edits) to stay under Telegram's per-chat write budget
-- **AND** each edit SHALL set `parse_mode: "MarkdownV2"`
+- **AND** each update SHALL use `editMessageText` with a `{ markdown: text }` rich-message payload
 
-#### Scenario: 4096 rollover
+#### Scenario: Rich message length limit
 
-- **WHEN** accumulated text within a single segment exceeds 4096 characters
-- **THEN** the current message SHALL be sent as-is with `parse_mode: "MarkdownV2"`
-- **AND** a new response message SHALL be started for subsequent deltas in the same segment
+- **WHEN** accumulated text within a single segment approaches 32,768 characters
+- **THEN** the buffer SHALL continue to stream within the same rich message up to that limit
+- **AND** the `BIG_OUTPUT_THRESHOLD` (20 KB) file-escape path SHALL pre-empt the 32,768-character limit for text that exceeds the threshold before it is sent
+- **AND** if the rich message API still rejects the call as too long, the error SHALL be handled by the existing `handleApiError` path
 
-#### Scenario: MarkdownV2 parse error falls back to plain text
+#### Scenario: Rich message parse error falls back to plain text
 
-- **WHEN** a `sendMessage` or `editMessageText` with `parse_mode: "MarkdownV2"` returns a 400 error indicating a parse failure
+- **WHEN** a `sendRichMessage` or `editMessageText` with `{ markdown: text }` returns a 400 error indicating a parse failure
 - **THEN** the buffer SHALL strip markdown formatting from the text
-- **AND** retry the same send or edit without `parse_mode`
+- **AND** retry the same send or edit as a plain text message (no `parse_mode`)
 - **AND** the plain-text retry SHALL occur at most once
 - **AND** if the plain-text retry also fails, the existing `handleApiError` path SHALL handle the error
 
-#### Scenario: Rollover split avoids breaking inline code spans
-
-- **WHEN** a rollover split point falls inside an inline code span (odd unescaped backtick count before the split)
-- **THEN** the split SHALL move backward to before the last unescaped backtick
-- **AND** both resulting chunks SHALL be valid MarkdownV2
-
 ### Requirement: Big output escapes to file attachment
 
-When response text exceeds ~20KB, the buffer SHALL send the full content as a `reply.md` file attachment with a short summary text message. The summary message SHALL be sent with `parse_mode: "MarkdownV2"`.
+When response text exceeds ~20KB, the buffer SHALL send the full content as a `reply.md` file attachment with a short summary text message. The summary message SHALL be sent as a rich message (`sendRichMessage` with `{ markdown: summary }`) unless the `responseIsPlainText` fallback is active, in which case it SHALL be sent as a plain `sendMessage`.
 
 #### Scenario: Large output
 
 - **WHEN** accumulated text exceeds 20000 characters
 - **THEN** content SHALL be written to a temp file
-- **AND** sent as `InputFile` with caption "Full response attached"
-- **AND** the text message SHALL contain first 500 chars + "... [truncated, see file]"
+- **AND** sent as `InputFile` with filename `reply.md`
+- **AND** the summary text message SHALL contain first 500 chars + "... [truncated, see attached reply.md]"
 
 ### Requirement: Tool visibility config filters status display
 
@@ -189,7 +184,7 @@ The buffer SHALL send a placeholder status message on the first agent event of a
 #### Scenario: Status precedes response
 
 - **WHEN** `onStatusUpdate` and `onTextDelta` arrive within the same tick
-- **THEN** the status `sendMessage` SHALL be initiated before the response `sendMessage`
+- **THEN** the status `sendMessage` SHALL be initiated before the response `sendRichMessage`
 - **AND** the resulting status message_id SHALL be lower than the response message_id
 
 #### Scenario: No placeholder when visibility is none
@@ -230,7 +225,7 @@ The buffer SHALL seal the current response message when a visible-or-invisible t
 - **GIVEN** the agent has streamed `"Got it. Running bash now."` and `onTextDelta` has flushed it
 - **WHEN** `onToolStart("bash", ...)` fires, then later `onToolEnd("bash", false)` fires, then `onTextDelta("Done. Output was 42.")` fires
 - **THEN** the first bubble SHALL contain `"Got it. Running bash now."`
-- **AND** a second response bubble SHALL be created via `sendMessage` for `"Done. Output was 42."`
+- **AND** a second response bubble SHALL be created via `sendRichMessage` for `"Done. Output was 42."`
 - **AND** the second bubble SHALL NOT be an edit of the first
 
 #### Scenario: Two assistant messages produce two bubbles
@@ -238,7 +233,7 @@ The buffer SHALL seal the current response message when a visible-or-invisible t
 - **GIVEN** the agent has streamed `"First reply."`
 - **WHEN** `onMessageStart()` fires for a second assistant message, then `onTextDelta("Second reply.")` fires
 - **THEN** the first bubble SHALL contain `"First reply."`
-- **AND** a second response bubble SHALL be created via `sendMessage` for `"Second reply."`
+- **AND** a second response bubble SHALL be created via `sendRichMessage` for `"Second reply."`
 - **AND** the second bubble SHALL NOT be an edit of the first
 
 ### Requirement: Status renders per-tool slots in observation order
@@ -366,31 +361,26 @@ When visibility is `"none"`, `"minimal"`, or `"standard"`, the buffer SHALL NOT 
 
 ### Requirement: Plain-text fallback is sticky per message
 
-When a response message's MarkdownV2 send or edit fails with a 400 parse error and the buffer retries with plain text, the buffer SHALL set a `responseIsPlainText` flag for that message. All subsequent edits to the same message SHALL use plain text (no `parse_mode`) without attempting MarkdownV2 first. This prevents repeated MarkdownV2 failures on every subsequent edit as more tokens arrive.
+When a response message's rich-message `sendRichMessage` or `editMessageText` fails with a 400 parse error and the buffer retries with plain text, the buffer SHALL set a `responseIsPlainText` flag for that message. All subsequent edits to the same message SHALL use plain text (plain `sendMessage` or `editMessageText` with a string, no `parse_mode`) without attempting a rich message first. This prevents repeated parse failures on every subsequent edit as more tokens arrive.
 
-The flag SHALL be reset when a new response message is created (tool boundary seal, rollover to a new message, or `onAgentEnd` creating a final message). The reset allows MarkdownV2 to be attempted fresh on the new message, since different content may parse successfully.
+The flag SHALL be reset when a new response message is created (tool boundary seal, file escape, `onAgentEnd`/`onMessageEnd`/`onMessageStart` creating or finalizing a message). The reset allows a rich message to be attempted fresh on the new message, since different content may parse successfully.
 
 #### Scenario: Fallback sticks for subsequent edits
 
-- **WHEN** a MarkdownV2 edit fails with a 400 parse error and the plain-text retry succeeds
+- **WHEN** a rich-message `editMessageText` fails with a 400 parse error and the plain-text retry succeeds
 - **AND** more text deltas arrive and the next flush edits the same message
-- **THEN** the buffer SHALL send the edit without `parse_mode` (plain text)
-- **AND** SHALL NOT attempt MarkdownV2 first
+- **THEN** the buffer SHALL send the edit as a plain text string (no `parse_mode`)
+- **AND** SHALL NOT attempt a rich message first
 
 #### Scenario: Fallback resets on new message
 
 - **WHEN** a tool boundary seal creates a new response message after a plain-text fallback on the prior message
-- **THEN** the new message SHALL attempt MarkdownV2 on its first send
+- **THEN** the new message SHALL attempt `sendRichMessage` on its first send
 - **AND** the `responseIsPlainText` flag SHALL be `false` for the new message
-
-#### Scenario: Fallback resets on rollover
-
-- **WHEN** a 4096-char rollover creates a new response message after a plain-text fallback on the prior chunk
-- **THEN** the new message SHALL attempt MarkdownV2 on its first send
 
 ### Requirement: MarkdownV2 escape helper
 
-A `src/tg/format.ts` module SHALL export an `escapeMdV2(text: string): string` function that escapes all MarkdownV2-special characters (`_*[]()~`>#+-=|{}.!\\`) with a preceding backslash, except inside fenced code blocks (```...```) and inline code spans (`...`) where content SHALL be left untouched. The function SHALL be used by the system reply formatter and MAY be used by the buffer for split-boundary escaping.
+A `src/tg/format.ts` module SHALL export an `escapeMdV2(text: string): string` function that escapes all MarkdownV2-special characters (`_*[]()~`>#+-=|{}.!\\`) with a preceding backslash, except inside fenced code blocks (```...```) and inline code spans (`...`) where content SHALL be left untouched. The function SHALL be used by the system reply formatter. (Response streaming uses rich messages rather than MarkdownV2, so split-boundary escaping is no longer required.)
 
 #### Scenario: Plain text escaped
 
@@ -470,7 +460,7 @@ The existing `MessageBuffer` (streaming edits against a `chatId`) is unchanged. 
 
 - **WHEN** the agent emits `onTextDelta("hello")` followed by `onTextDelta(" world")` during a guest turn
 - **THEN** the sink SHALL accumulate `"hello world"` into its `.text` field
-- **AND** SHALL NOT call `sendMessage`, `editMessageText`, or `answerGuestQuery` during the turn
+- **AND** SHALL NOT call `sendMessage`, `sendRichMessage`, `editMessageText`, or `answerGuestQuery` during the turn
 
 #### Scenario: Tool events are ignored
 
@@ -497,7 +487,7 @@ The buffer SHALL seal the current response message when an assistant `message_st
 Sealing semantics:
 
 - The seal SHALL force-flush the accumulated text before resetting state, so the just-completed assistant message lands in its bubble in full.
-- The seal SHALL clear `responseMessageId` (so the next text triggers a `sendMessage`), `accumulatedText`, `lastRenderedResponseText`, and `responseIsPlainText`.
+- The seal SHALL clear `responseMessageId` (so the next text triggers a `sendRichMessage`), `accumulatedText`, `lastRenderedResponseText`, and `responseIsPlainText`.
 - If `onMessageStart` fires when no response message is in progress (no prior `onTextDelta` or tool has reset the response state), the buffer SHALL NOT send anything and SHALL NOT mutate response state.
 - If `onMessageEnd` fires for an assistant message with no response message in progress, the buffer SHALL NOT send anything and SHALL NOT mutate response state.
 - If new text arrives during the in-flight seal flush (race not expected in practice — assistant messages do not interleave mid-token — but defended against), the buffer SHALL skip the seal and keep accumulating into the existing message. The next `onMessageStart` or `onAgentEnd` will land it.
@@ -507,19 +497,19 @@ Sealing semantics:
 - **GIVEN** the agent has streamed `"First reply."` and `onMessageEnd()` has flushed it
 - **WHEN** `onMessageStart()` fires for a second assistant message, then `onTextDelta("Second reply.")` fires
 - **THEN** the first bubble SHALL contain `"First reply."`
-- **AND** a second response bubble SHALL be created via `sendMessage` for `"Second reply."`
+- **AND** a second response bubble SHALL be created via `sendRichMessage` for `"Second reply."`
 - **AND** the second bubble SHALL NOT be an edit of the first
 
 #### Scenario: No stub on first assistant message
 
 - **WHEN** `onMessageStart()` fires for the very first assistant message of a turn and no response message has been created yet
-- **THEN** no `sendMessage` SHALL be issued for the response message
+- **THEN** no response message (`sendRichMessage` or `sendMessage`) SHALL be issued
 - **AND** `responseMessageId` SHALL remain `undefined`
 - **AND** the first `onTextDelta` after the boundary SHALL be the one that creates the response message
 
 #### Scenario: Plain-text fallback resets on new assistant message
 
-- **GIVEN** a prior assistant message fell back to plain text because of a MarkdownV2 parse error
+- **GIVEN** a prior assistant message fell back to plain text because of a rich-message parse error
 - **WHEN** `onMessageStart()` fires for the next assistant message
 - **THEN** `responseIsPlainText` SHALL be reset to `false`
-- **AND** the new message SHALL attempt MarkdownV2 on its first send
+- **AND** the new message SHALL attempt `sendRichMessage` on its first send

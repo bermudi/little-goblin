@@ -7,11 +7,8 @@ import { join } from "node:path";
 import { MetricsStore, readMetricsSummary, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import {
   MessageBuffer,
-  MAX_MESSAGE_LEN,
   BIG_OUTPUT_THRESHOLD,
   SUMMARY_PREFIX_LEN,
-  findSafeSplit,
-  adjustForCodeSpan,
   shouldShowTool,
   VISIBILITY_TOOLS,
   VISIBILITY_LIMITS,
@@ -44,9 +41,10 @@ interface MockBot {
   edit: EditCall[];
   documents: DocumentCall[];
   chatActions: ChatActionCall[];
-  /** Set to throw the next sendMessage / editMessageText / sendDocument. */
+  /** Set to throw the next sendMessage / sendRichMessage / editMessageText / sendDocument. */
   failNext: {
     send?: unknown;
+    rich?: unknown;
     edit?: unknown;
     document?: unknown;
     chatAction?: unknown;
@@ -79,10 +77,19 @@ function makeBot(): MockBot {
         send.push({ chatId, text, opts });
         return { message_id: ++state.nextMessageId };
       },
+      sendRichMessage: async (chatId: number | string, richMessage: { markdown?: string }, opts?: Record<string, unknown>) => {
+        if (state.failNext.rich !== undefined) {
+          const err = state.failNext.rich;
+          state.failNext.rich = undefined;
+          throw err;
+        }
+        send.push({ chatId, text: richMessage.markdown ?? "", opts });
+        return { message_id: ++state.nextMessageId };
+      },
       editMessageText: async (
         chatId: number | string,
         messageId: number,
-        text: string,
+        textOrRichMessage: string | { markdown?: string },
         opts?: Record<string, unknown>,
       ) => {
         if (state.failNext.edit !== undefined) {
@@ -90,6 +97,7 @@ function makeBot(): MockBot {
           state.failNext.edit = undefined;
           throw err;
         }
+        const text = typeof textOrRichMessage === "string" ? textOrRichMessage : (textOrRichMessage.markdown ?? "");
         edit.push({ chatId, messageId, text, opts });
         return true;
       },
@@ -822,7 +830,7 @@ describe("MessageBuffer", () => {
       buffer.onTextDelta("Hello");
       await tick();
       expect(m.send.length).toBe(1);
-      expect(m.send[0]).toEqual({ chatId: 99, text: "Hello", opts: { parse_mode: "MarkdownV2" } });
+      expect(m.send[0]).toEqual({ chatId: 99, text: "Hello", opts: {} });
       expect(buffer._state().responseMessageId).toBe(101);
     });
 
@@ -846,7 +854,7 @@ describe("MessageBuffer", () => {
         chatId: 1,
         messageId: 101,
         text: "Hello, world!",
-        opts: { parse_mode: "MarkdownV2" },
+        opts: {},
       });
     });
 
@@ -1223,11 +1231,20 @@ describe("MessageBuffer", () => {
             sendPending.push(p);
             return p;
           },
+          sendRichMessage: (_chatId: number, richMessage: { markdown?: string }) => {
+            sends.push({ text: richMessage.markdown ?? "" });
+            const p = new Promise<{ message_id: number }>((resolve) => {
+              releaseSend = (id) => resolve({ message_id: id });
+            });
+            sendPending.push(p);
+            return p;
+          },
           editMessageText: async (
             _chatId: number,
             messageId: number,
-            text: string,
+            textOrRichMessage: string | { markdown?: string },
           ) => {
+            const text = typeof textOrRichMessage === "string" ? textOrRichMessage : (textOrRichMessage.markdown ?? "");
             edits.push({ messageId, text });
             return true;
           },
@@ -1287,7 +1304,11 @@ describe("MessageBuffer", () => {
           sendMessage: async (_c: number, _text: string) => {
             return { message_id: 200 };
           },
-          editMessageText: (_c: number, messageId: number, text: string) => {
+          sendRichMessage: async (_c: number, _richMessage: { markdown?: string }) => {
+            return { message_id: 200 };
+          },
+          editMessageText: (_c: number, messageId: number, textOrRichMessage: string | { markdown?: string }) => {
+            const text = typeof textOrRichMessage === "string" ? textOrRichMessage : (textOrRichMessage.markdown ?? "");
             const myCount = ++editCount;
             // First edit hangs until manually released; later edits resolve
             // immediately. This forces the second edit to be issued (or
@@ -1360,11 +1381,18 @@ describe("MessageBuffer", () => {
               releaseSend = (id) => resolve({ message_id: id });
             });
           },
+          sendRichMessage: (_chatId: number, richMessage: { markdown?: string }) => {
+            sends.push(richMessage.markdown ?? "");
+            return new Promise<{ message_id: number }>((resolve) => {
+              releaseSend = (id) => resolve({ message_id: id });
+            });
+          },
           editMessageText: async (
             _chatId: number,
             messageId: number,
-            text: string,
+            textOrRichMessage: string | { markdown?: string },
           ) => {
+            const text = typeof textOrRichMessage === "string" ? textOrRichMessage : (textOrRichMessage.markdown ?? "");
             edits.push({ messageId, text });
             return true;
           },
@@ -1419,215 +1447,6 @@ describe("MessageBuffer", () => {
       await tick();
       const lastEdit = m.edit[m.edit.length - 1];
       expect(lastEdit?.text).toBe("draft more");
-    });
-  });
-
-  describe("findSafeSplit (Unicode safety)", () => {
-    it("returns text.length when text is shorter than maxLen", () => {
-      expect(findSafeSplit("hi", 10)).toBe(2);
-    });
-
-    it("returns maxLen for plain ASCII at the boundary", () => {
-      expect(findSafeSplit("a".repeat(20), 10)).toBe(10);
-    });
-
-    it("backs up by one when split would land mid-surrogate-pair", () => {
-      // "😀" = U+1F600 → high surrogate 0xD83D + low surrogate 0xDE00.
-      // Build: 9 ASCII chars + "😀" (2 code units) + 9 ASCII = length 20.
-      const text = "a".repeat(9) + "😀" + "b".repeat(9);
-      // maxLen=10 would slice [0..10), keeping the high surrogate at index 9
-      // but cutting off the low surrogate at index 10. Back up to 9.
-      expect(findSafeSplit(text, 10)).toBe(9);
-      const head = text.slice(0, findSafeSplit(text, 10));
-      // Head must not end on a lone high surrogate.
-      const last = head.charCodeAt(head.length - 1);
-      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
-    });
-
-    it("does not back up when split is between full BMP characters", () => {
-      // "😀" at the very start, ASCII rest. maxLen=10 sits in the ASCII
-      // section, no surrogate to worry about.
-      const text = "😀" + "a".repeat(20);
-      expect(findSafeSplit(text, 10)).toBe(10);
-    });
-  });
-
-  describe("4096 rollover via maybeRollover", () => {
-    /**
-     * Disable both auto-flushes so the rollover tests are driven entirely
-     * by explicit `flushResponse(true)` calls. This avoids the race between
-     * `onTextDelta`'s fire-and-forget flush and the test's explicit flush.
-     */
-    const ALL_OFF = {
-      visibility: "none" as const,
-      responseThrottleMs: Number.MAX_SAFE_INTEGER,
-    };
-
-    it("does not roll over when accumulatedText fits", async () => {
-      const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
-      buffer.onTextDelta("a".repeat(MAX_MESSAGE_LEN));
-      await buffer.flushResponse(true);
-      expect(m.send.length).toBe(1);
-      expect(m.send[0]?.text.length).toBe(MAX_MESSAGE_LEN);
-      expect(buffer._state().accumulatedText.length).toBe(MAX_MESSAGE_LEN);
-    });
-
-    it("rolls over once when accumulatedText is just over the limit", async () => {
-      const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
-      // Pre-seed the response message id by sending a small chunk first.
-      buffer.onTextDelta("seed");
-      await buffer.flushResponse(true);
-      expect(m.send.length).toBe(1);
-      expect(buffer._state().responseMessageId).toBe(101);
-
-      // Now grow well past the limit. The first 4096 chars become the head
-      // (edit on msg 101); the remainder becomes a new message.
-      const big = "x".repeat(MAX_MESSAGE_LEN + 100);
-      buffer.onTextDelta(big);
-      await buffer.flushResponse(true);
-
-      // Head edit on msg 101 with 4096 chars.
-      expect(m.edit.length).toBe(1);
-      expect(m.edit[0]?.messageId).toBe(101);
-      expect(m.edit[0]?.text.length).toBe(MAX_MESSAGE_LEN);
-
-      // Tail send with the overflow.
-      expect(m.send.length).toBe(2);
-      expect(m.send[1]?.text.length).toBe("seed".length + 100);
-      expect(buffer._state().responseMessageId).toBe(102);
-      expect(buffer._state().accumulatedText.length).toBe(
-        "seed".length + 100,
-      );
-    });
-
-    it("rolls over multiple times for very large accumulated text", async () => {
-      const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
-      // 8200 chars from a fresh buffer (no prior responseMessageId).
-      const big = "y".repeat(MAX_MESSAGE_LEN * 2 + 8);
-      buffer.onTextDelta(big);
-      await buffer.flushResponse(true);
-
-      // 3 messages: head1 (4096), head2 (4096), tail (8). All sends, no edits
-      // since responseMessageId starts undefined.
-      expect(m.edit.length).toBe(0);
-      expect(m.send.length).toBe(3);
-      expect(m.send[0]?.text.length).toBe(MAX_MESSAGE_LEN);
-      expect(m.send[1]?.text.length).toBe(MAX_MESSAGE_LEN);
-      expect(m.send[2]?.text.length).toBe(8);
-      // The final tail message is the active responseMessageId.
-      expect(buffer._state().responseMessageId).toBe(103);
-      expect(buffer._state().accumulatedText.length).toBe(8);
-    });
-
-    it("preserves total content across rollovers", async () => {
-      const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
-      const total = "a".repeat(MAX_MESSAGE_LEN) + "b".repeat(MAX_MESSAGE_LEN) + "c".repeat(50);
-      buffer.onTextDelta(total);
-      await buffer.flushResponse(true);
-
-      const reconstructed =
-        m.send.map((s) => s.text).join("") + m.edit.map((e) => e.text).join("");
-      // No edits in this scenario (no pre-existing message), so concatenation
-      // of sends should equal the original.
-      expect(reconstructed).toBe(total);
-    });
-
-    it("does not split a UTF-16 surrogate pair across messages", async () => {
-      const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
-      // Put an emoji ("😀" = 2 code units) right at the boundary.
-      // Layout: (MAX_MESSAGE_LEN - 1) ASCII + emoji + filler.
-      const head = "a".repeat(MAX_MESSAGE_LEN - 1);
-      const text = head + "😀" + "b".repeat(50);
-      buffer.onTextDelta(text);
-      await buffer.flushResponse(true);
-
-      // First message must end before the surrogate pair (length = 4095).
-      expect(m.send[0]?.text.length).toBe(MAX_MESSAGE_LEN - 1);
-      const last = m.send[0]!.text.charCodeAt(m.send[0]!.text.length - 1);
-      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
-      // The emoji should be at the start of the next message, intact.
-      expect(m.send[1]?.text.startsWith("😀")).toBe(true);
-    });
-
-    it("subsequent edits target the new active message after rollover", async () => {
-      let t = 1000;
-      const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
-        ...ALL_OFF,
-        now: () => t,
-      });
-      buffer.onTextDelta("seed");
-      await buffer.flushResponse(true);
-      expect(buffer._state().responseMessageId).toBe(101);
-
-      buffer.onTextDelta("x".repeat(MAX_MESSAGE_LEN + 10));
-      t = 2000;
-      await buffer.flushResponse(true);
-      const newId = buffer._state().responseMessageId;
-      expect(newId).toBe(102);
-
-      // Append more; should edit msg 102, not 101.
-      t = 3000;
-      buffer.onTextDelta("after");
-      await buffer.flushResponse(true);
-      const lastEdit = m.edit[m.edit.length - 1];
-      expect(lastEdit?.messageId).toBe(102);
-    });
-
-    it("force flush waits for in-flight rollover and does not duplicate the tail", async () => {
-      let releaseEdit!: () => void;
-      const editGate = new Promise<void>((resolve) => {
-        releaseEdit = resolve;
-      });
-      const send: SendCall[] = [];
-      const edit: EditCall[] = [];
-      let nextMessageId = 100;
-      const bot = {
-        api: {
-          sendMessage: async (chatId: number | string, text: string) => {
-            send.push({ chatId, text });
-            return { message_id: ++nextMessageId };
-          },
-          editMessageText: async (
-            chatId: number | string,
-            messageId: number,
-            text: string,
-          ) => {
-            await editGate;
-            edit.push({ chatId, messageId, text });
-            return true;
-          },
-          sendChatAction: async () => true,
-        },
-      } as unknown as Bot;
-      const buffer = new MessageBuffer(bot, 1, undefined, ALL_OFF);
-
-      buffer.onTextDelta("seed");
-      await buffer.flushResponse(true);
-      expect(buffer._state().responseMessageId).toBe(101);
-
-      buffer.onTextDelta("x".repeat(MAX_MESSAGE_LEN + 10));
-      const rollover = buffer.flushResponse(false);
-      await tick();
-      const final = buffer.flushResponse(true);
-      await tick();
-
-      expect(send.length).toBe(1);
-      releaseEdit();
-      await rollover;
-      await final;
-
-      expect(edit).toHaveLength(1);
-      expect(send.map((s) => s.text)).toEqual([
-        "seed",
-        "x".repeat(14),
-      ]);
-      expect(buffer._state().responseMessageId).toBe(102);
     });
   });
 
@@ -2292,55 +2111,6 @@ describe("MessageBuffer", () => {
       expect(bubble1Edits.every((e) => !e.text.includes("Final"))).toBe(true);
     });
 
-    it("seal with rollover starts fresh segment (no cross-contamination)", async () => {
-      // Bug: when accumulatedText > 4096 triggers rollover DURING the seal flush,
-      // the old single-snapshot guard would see changed accumulatedText and
-      // skip cleanup, leaving the tail message active. The next segment's
-      // text would then edit that tail instead of creating a fresh message.
-      let t = 1000;
-      const m = makeBot();
-      // Disable auto-flush so rollover happens during seal, not before
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
-        now: () => t,
-        statusThrottleMs: Number.MAX_SAFE_INTEGER,
-        responseThrottleMs: Number.MAX_SAFE_INTEGER,
-        visibility: "none" as const,
-      });
-
-      // Accumulate >4096 chars WITHOUT flushing (auto-flush is disabled)
-      buffer.onTextDelta("a".repeat(MAX_MESSAGE_LEN + 100));
-      // No await tick() - don't let natural flush happen
-      expect(buffer._state().accumulatedText.length).toBe(MAX_MESSAGE_LEN + 100);
-      expect(buffer._state().responseMessageId).toBeUndefined();
-
-      // Tool boundary: seal triggers rollover DURING the flushResponse(true).
-      // After rollover, the guard should recognize that msgId changed and
-      // DO the cleanup — the tail message was already sent as message 102.
-      t = 2000;
-      buffer.onToolStart("bash", {});
-      await tick();
-
-      // Debug: check actual state after seal
-      const stateAfterSeal = buffer._state();
-      expect(stateAfterSeal.accumulatedText).toBe(""); // should be cleared
-      expect(stateAfterSeal.responseMessageId).toBeUndefined(); // should be cleared
-
-      buffer.onToolEnd("bash", false);
-
-      // Second segment: should create a FRESH message (103), not edit message 102
-      t = 3000;
-      buffer.onTextDelta("Second segment after tool.");
-      // Need explicit force-flush since auto-flush is disabled
-      await buffer.flushResponse(true);
-
-      // Should send a new message, not edit the tail
-      expect(m.send.length).toBe(3); // 101 (head), 102 (tail), 103 (new segment)
-      expect(m.send[2]?.text).toBe("Second segment after tool.");
-
-      // Message 102 should never have been edited (only sent during rollover)
-      const msg102Edits = m.edit.filter((e) => e.messageId === 102);
-      expect(msg102Edits.length).toBe(0);
-    });
   });
 
   describe("response message segments at assistant message boundaries", () => {
@@ -2428,7 +2198,7 @@ describe("MessageBuffer", () => {
 
     it("resets sticky plain-text flag on new assistant message", async () => {
       const m = makeBot();
-      m.failNext.send = { error_code: 400, description: "Bad Request: can't parse markdown" };
+      m.failNext.rich = { error_code: 400, description: "Bad Request: can't parse markdown" };
       const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
 
       // First assistant message falls back to plain text.
@@ -2444,14 +2214,14 @@ describe("MessageBuffer", () => {
       await tick();
 
       // Second assistant message_start should reset the sticky flag so the
-      // next response can attempt MarkdownV2 again.
+      // next response can attempt a rich message again.
       buffer.onMessageStart();
       await tick();
 
       buffer.onTextDelta("good");
       await tick();
       expect(m.send.length).toBe(2);
-      expect(m.send[1]?.opts).toEqual({ parse_mode: "MarkdownV2" });
+      expect(m.send[1]?.opts).toEqual({});
       expect(m.send[1]?.text).toBe("good");
     });
   });
@@ -2606,8 +2376,8 @@ describe("MessageBuffer", () => {
     });
   });
 
-  describe("MarkdownV2 parse mode on response sends", () => {
-    it("sends response with parse_mode MarkdownV2", async () => {
+  describe("rich message mode on response sends", () => {
+    it("sends response as a rich message", async () => {
       const m = makeBot();
       const buffer = new MessageBuffer(m.bot, 123, undefined, {
         responseThrottleMs: 0,
@@ -2616,10 +2386,11 @@ describe("MessageBuffer", () => {
       buffer.onTextDelta("hello");
       await tick();
       expect(m.send.length).toBe(1);
-      expect(m.send[0]!.opts).toEqual({ parse_mode: "MarkdownV2" });
+      expect(m.send[0]!.text).toBe("hello");
+      expect(m.send[0]!.opts).toEqual({});
     });
 
-    it("edits response with parse_mode MarkdownV2", async () => {
+    it("edits response as a rich message", async () => {
       const m = makeBot();
       const buffer = new MessageBuffer(m.bot, 123, undefined, {
         responseThrottleMs: 0,
@@ -2630,10 +2401,11 @@ describe("MessageBuffer", () => {
       buffer.onTextDelta(" world");
       await tick();
       expect(m.edit.length).toBeGreaterThanOrEqual(1);
-      expect(m.edit[0]!.opts).toEqual({ parse_mode: "MarkdownV2" });
+      expect(m.edit[0]!.text).toBe("hello world");
+      expect(m.edit[0]!.opts).toEqual({});
     });
 
-    it("status-line sends remain plain text (no parse_mode)", async () => {
+    it("status-line sends remain plain text (no rich content)", async () => {
       const m = makeBot();
       const buffer = new MessageBuffer(m.bot, 123, undefined, {
         statusThrottleMs: 0,
@@ -2646,13 +2418,14 @@ describe("MessageBuffer", () => {
       expect(m.send.length).toBeGreaterThanOrEqual(1);
       const statusSend = m.send[0]!;
       expect(statusSend.opts?.parse_mode).toBeUndefined();
+      expect(statusSend.text).toBe("🤔 thinking…");
     });
   });
 
   describe("400 parse-error plain-text fallback", () => {
     it("falls back to plain text on a 400 parse error and sets sticky flag", async () => {
       const m = makeBot();
-      m.failNext.send = { error_code: 400, description: "Bad Request: can't parse entities" };
+      m.failNext.rich = { error_code: 400, description: "Bad Request: can't parse entities" };
       const buffer = new MessageBuffer(m.bot, 123, undefined, {
         responseThrottleMs: 0,
         visibility: "none",
@@ -2667,9 +2440,9 @@ describe("MessageBuffer", () => {
       expect(retrySend.text).toBe("bold text");
     });
 
-    it("subsequent edits skip MarkdownV2 after sticky flag is set", async () => {
+    it("subsequent edits skip rich content after sticky flag is set", async () => {
       const m = makeBot();
-      m.failNext.send = { error_code: 400, description: "can't parse markdown" };
+      m.failNext.rich = { error_code: 400, description: "can't parse markdown" };
       const buffer = new MessageBuffer(m.bot, 123, undefined, {
         responseThrottleMs: 0,
         visibility: "none",
@@ -2678,7 +2451,7 @@ describe("MessageBuffer", () => {
       await tick();
       await tick();
       await tick();
-      // First send failed with parse error (not pushed); retry was plain text.
+      // First sendRichMessage failed with parse error (not pushed); retry was plain text.
       expect(m.send.length).toBe(1);
       expect(m.send[0]!.opts?.parse_mode).toBeUndefined();
       expect(m.send[0]!.text).toBe("bold");
@@ -2695,7 +2468,7 @@ describe("MessageBuffer", () => {
 
     it("resets sticky flag on tool boundary seal", async () => {
       const m = makeBot();
-      m.failNext.send = { error_code: 400, description: "can't parse markdown" };
+      m.failNext.rich = { error_code: 400, description: "can't parse markdown" };
       const buffer = new MessageBuffer(m.bot, 123, undefined, {
         responseThrottleMs: 0,
         statusThrottleMs: 0,
@@ -2715,74 +2488,15 @@ describe("MessageBuffer", () => {
       await tick();
       await tick();
 
-      // Next text delta should send with MarkdownV2 again.
+      // Next text delta should send as a rich message again.
       buffer.onTextDelta("good");
       await tick();
       await tick();
       const lastSend = m.send.at(-1)!;
-      expect(lastSend.opts).toEqual({ parse_mode: "MarkdownV2" });
+      expect(lastSend.opts).toEqual({});
+      expect(lastSend.text).toBe("good");
     });
 
-    it("rollover head is stripped when sticky flag is set", async () => {
-      const m = makeBot();
-      m.failNext.send = { error_code: 400, description: "can't parse markdown" };
-      const buffer = new MessageBuffer(m.bot, 123, undefined, {
-        responseThrottleMs: 0,
-        visibility: "none",
-      });
-      // Send markdown that triggers the parse-error fallback.
-      buffer.onTextDelta("*bold*");
-      await tick();
-      await tick();
-      await tick();
-      expect(m.send[0]!.text).toBe("bold");
-      expect(m.send[0]!.opts?.parse_mode).toBeUndefined();
-
-      // Now accumulate enough text to trigger a rollover. The head (which
-      // finalizes the current plain-text message) must be stripped.
-      const filler = "x".repeat(MAX_MESSAGE_LEN + 10);
-      buffer.onTextDelta(filler);
-      await tick();
-      await tick();
-      await tick();
-
-      // The rollover edit (head) should be plain text with stripped markdown.
-      // The head contains "*bold*" + filler prefix → stripped to "bold" + filler.
-      const rolloverEdit = m.edit.at(-1) ?? m.send.at(-1)!;
-      expect(rolloverEdit.opts?.parse_mode).toBeUndefined();
-      expect(rolloverEdit.text.startsWith("bold")).toBe(true);
-      expect(rolloverEdit.text.includes("*")).toBe(false);
-    });
-  });
-
-  describe("adjustForCodeSpan", () => {
-    it("returns splitAt unchanged when backtick count is even", () => {
-      const text = "hello `code` world more text here";
-      expect(adjustForCodeSpan(text, 20)).toBe(20);
-    });
-
-    it("returns splitAt unchanged when there are no backticks", () => {
-      const text = "no backticks here at all";
-      expect(adjustForCodeSpan(text, 10)).toBe(10);
-    });
-
-    it("moves split backward when backtick count is odd", () => {
-      const text = "hello `code without close here and more";
-      // Backtick at index 6. splitAt=20 → odd count → move to 6.
-      expect(adjustForCodeSpan(text, 20)).toBe(6);
-    });
-
-    it("does not count escaped backticks", () => {
-      const text = "escaped \\` and `real";
-      // The \` at index 9 is escaped (preceded by \). The unescaped backtick
-      // is at index 15. splitAt=20 → odd count → move to 15.
-      expect(adjustForCodeSpan(text, 20)).toBe(15);
-    });
-
-    it("handles multiple code spans (even count)", () => {
-      const text = "a `b` c `d` e f g h i j k";
-      expect(adjustForCodeSpan(text, 15)).toBe(15);
-    });
   });
 
   describe("telegram metrics", () => {
@@ -2915,7 +2629,7 @@ describe("MessageBuffer", () => {
           visibility: "none",
           metrics: metrics.store,
         });
-        m.failNext.send = {
+        m.failNext.rich = {
           error_code: 400,
           description: "Bad Request: message to edit not found",
         };
@@ -2924,7 +2638,7 @@ describe("MessageBuffer", () => {
 
         const gone = readTelegramEvents(metrics.home).find((e) => e.outcome === "message_gone");
         expect(gone).toBeDefined();
-        expect(gone?.op).toBe("sendMessage");
+        expect(gone?.op).toBe("sendRichMessage");
         expect(buffer._state().responseMessageId).toBeUndefined();
       } finally {
         metrics.cleanup();
@@ -2970,7 +2684,7 @@ describe("MessageBuffer", () => {
           visibility: "none",
           metrics: metrics.store,
         });
-        m.failNext.send = { error_code: 400, description: "Bad Request: can't parse markdown" };
+        m.failNext.rich = { error_code: 400, description: "Bad Request: can't parse markdown" };
         buffer.onTextDelta("*bold*");
         await tick();
 
@@ -2978,7 +2692,7 @@ describe("MessageBuffer", () => {
         expect(events.length).toBe(2);
         expect(events[0]).toMatchObject({
           type: "telegram",
-          op: "sendMessage",
+          op: "sendRichMessage",
           channel: "response",
           outcome: "error",
           errorCode: 400,

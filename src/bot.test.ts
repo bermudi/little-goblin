@@ -119,6 +119,11 @@ function makeApi() {
       getChatMemberCount,
       getFile,
       sendMessage,
+      sendRichMessage: mock(async (_chatId: number | string, richMessage: { markdown?: string }) => {
+        const text = richMessage.markdown ?? "";
+        sent.push(text);
+        return { message_id: sent.length, date: 1, chat: { id: 1, type: "private" }, text };
+      }),
       editMessageText,
       sendChatAction: mock(async () => true),
       sendVoice: mock(async () => ({ message_id: 1 })),
@@ -141,8 +146,23 @@ function makeApi() {
         }
         return { ok: true as const, result: await sendMessage(payload.chat_id as number | string, payload.text as string) };
       }
+      if (method === "sendRichMessage") {
+        if (failTopicNotFound && payload.message_thread_id !== undefined) {
+          throw { error_code: 400, description: "Bad Request: topic not found" };
+        }
+        const richMessage = payload.rich_message as { markdown?: string } | undefined;
+        const text = richMessage?.markdown ?? "";
+        return { ok: true as const, result: await sendMessage(payload.chat_id as number | string, text) };
+      }
       if (method === "editMessageText") {
-        return { ok: true as const, result: await editMessageText(payload.chat_id as number | string, payload.message_id as number, payload.text as string) };
+        let text: string;
+        if (typeof payload.text === "string") {
+          text = payload.text;
+        } else {
+          const richMessage = payload.rich_message as { markdown?: string } | undefined;
+          text = richMessage?.markdown ?? "";
+        }
+        return { ok: true as const, result: await editMessageText(payload.chat_id as number | string, payload.message_id as number, text) };
       }
       if (method === "sendChatAction") return { ok: true as const, result: true };
       if (method === "sendVoice" || method === "sendPhoto" || method === "sendDocument") return { ok: true as const, result: { message_id: 1 } };

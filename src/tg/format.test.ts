@@ -2,6 +2,7 @@ import { describe, it, expect, mock } from "bun:test";
 import {
   escapeMdV2,
   stripMdV2,
+  stripRichMarkdown,
   systemReply,
   sendSystemReply,
   classifyTelegramError,
@@ -78,6 +79,52 @@ describe("stripMdV2", () => {
 
   it("leaves unmatched markers intact", () => {
     expect(stripMdV2("a * b")).toBe("a * b");
+  });
+});
+
+describe("stripRichMarkdown", () => {
+  it("removes bold and italic markers", () => {
+    expect(stripRichMarkdown("**bold** and _italic_")).toBe("bold and italic");
+  });
+
+  it("treats __ as bold in rich markdown", () => {
+    expect(stripRichMarkdown("__bold__ and **also bold**")).toBe("bold and also bold");
+  });
+
+  it("removes GFM strikethrough and marked markers", () => {
+    expect(stripRichMarkdown("~~strike~~ and ==mark==")).toBe("strike and mark");
+  });
+
+  it("removes spoiler markers and tg-spoiler tags", () => {
+    expect(stripRichMarkdown("||spoiler|| and <tg-spoiler>secret</tg-spoiler>")).toBe("spoiler and secret");
+  });
+
+  it("removes supported inline HTML tags without touching literal angle brackets", () => {
+    expect(stripRichMarkdown("x < y and <u>underline</u>")).toBe("x < y and underline");
+  });
+
+  it("removes inline code backticks", () => {
+    expect(stripRichMarkdown("see `code` here")).toBe("see code here");
+  });
+
+  it("removes fenced code fence lines but keeps content", () => {
+    expect(stripRichMarkdown("```python\nprint('hi')\n```")).toBe("print('hi')\n");
+  });
+
+  it("reduces links to their label text", () => {
+    expect(stripRichMarkdown("[label](https://example.com)")).toBe("label");
+  });
+
+  it("does not strip backslash escapes", () => {
+    expect(stripRichMarkdown("Hello\\. World \\[test\\]")).toBe("Hello\\. World \\[test\\]");
+  });
+
+  it("cleans headings and list markers", () => {
+    expect(stripRichMarkdown("# Title\n- item one\n- item two")).toBe("Title\nitem one\nitem two");
+  });
+
+  it("leaves unmatched markers intact", () => {
+    expect(stripRichMarkdown("a * b")).toBe("a * b");
   });
 });
 

@@ -103,7 +103,7 @@ export interface GenericMetricsEvent {
 
 export interface TelegramMetricsEvent {
   type: "telegram";
-  op: "sendMessage" | "editMessageText" | null;
+  op: "sendMessage" | "sendRichMessage" | "editMessageText" | null;
   channel: "status" | "response" | "system";
   outcome: "success" | "error" | "rate_limited" | "topic_not_found" | "message_gone" | "message_not_modified" | "throttled";
   errorCode?: number;
@@ -331,7 +331,7 @@ function counterTotal(counters: Map<string, number>, name: string): number {
   return total;
 }
 
-const TELEGRAM_OPS = ["sendMessage", "editMessageText"] as const;
+const TELEGRAM_OPS = ["sendMessage", "sendRichMessage", "editMessageText"] as const;
 type TelegramOp = (typeof TELEGRAM_OPS)[number];
 
 const TELEGRAM_OUTCOMES = [
@@ -345,7 +345,7 @@ const TELEGRAM_OUTCOMES = [
 ] as const;
 
 function isTelegramOp(value: unknown): value is TelegramOp {
-  return value === "sendMessage" || value === "editMessageText";
+  return value === "sendMessage" || value === "sendRichMessage" || value === "editMessageText";
 }
 
 function isTelegramOutcome(value: unknown): value is (typeof TELEGRAM_OUTCOMES)[number] {
@@ -364,7 +364,7 @@ function aggregateTelegramEvent(summary: TelegramMetricsSummary, event: Record<s
   if (outcome === "rate_limited") summary.rateLimited++;
   if (outcome === "topic_not_found") summary.topicNotFound++;
 
-  if (op === "sendMessage") {
+  if (op === "sendMessage" || op === "sendRichMessage") {
     summary.sendTotal++;
     if (outcome === "success") summary.sendSuccess++;
     else if (outcome === "error" || outcome === "rate_limited" || outcome === "topic_not_found" || outcome === "message_gone") summary.sendError++;

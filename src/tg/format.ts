@@ -97,9 +97,10 @@ export function escapeMdV2(text: string): string {
 
 /**
  * Best-effort cleanup that removes MarkdownV2 formatting markers and escape
- * backslashes to produce readable plain text. Used as the plain-text fallback
- * when a MarkdownV2 send/edit returns a 400 parse error. Handles partial or
- * malformed markdown gracefully — unmatched markers are left as-is.
+ * backslashes to produce readable plain text. Used by {@link sendSystemReply}
+ * as the plain-text fallback when a MarkdownV2 `message.reply` returns a 400
+ * parse error. Handles partial or malformed markdown gracefully — unmatched
+ * markers are left as-is.
  */
 export function stripMdV2(text: string): string {
   let out = text;
@@ -120,6 +121,70 @@ export function stripMdV2(text: string): string {
   out = out.replace(/`([^`]*)`/g, "$1");
   // Strip escape backslashes before special chars.
   out = out.replace(/\\([_*\[\]()~`>#+\-=|{}.!\\])/g, "$1");
+  return out;
+}
+
+/**
+ * Best-effort cleanup that removes Telegram rich-message formatting markers and
+ * supported HTML tags to produce readable plain text. Used as the plain-text
+ * fallback when a rich-message `sendRichMessage` / `editMessageText` returns a
+ * 400 parse error.
+ *
+ * Rich markdown is GFM-compatible and differs from MarkdownV2: `__` and `**`
+ * are bold, `_` and `*` are italic, `~~` is strikethrough, `==` is marked,
+ * `||...||` and `<tg-spoiler>` are spoilers, and backslashes are **not**
+ * treated as escapes. Supported inline HTML tags (`<b>`, `<i>`, `<u>`, `<s>`,
+ * `<sub>`, `<sup>`, `<mark>`, `<code>`, `<tg-spoiler>`, `<a>`, etc.) are
+ * removed. Fenced code blocks and inline code backticks have their delimiters
+ * removed, leaving the raw code content. Links and images collapse to their
+ * label/alt text. Block markers (headings, lists, blockquotes) are lightly
+ * cleaned so the output remains readable.
+ *
+ * Handles partial or malformed markdown gracefully — unmatched markers are
+ * left as-is.
+ */
+export function stripRichMarkdown(text: string): string {
+  let out = text;
+  // Drop fenced-code fence lines (``` optionally followed by a language tag).
+  out = out.replace(/^```[^\n]*\n?/gm, "");
+  // Links: [text](url) -> text; images: ![alt](url) -> alt
+  out = out.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1");
+  // Strip supported rich-message HTML tag pairs and self-closing tags. This
+  // keeps literal `<` / `>` characters in code/math intact while removing the
+  // Telegram formatting wrappers.
+  out = out.replace(
+    /<\/?(?:b|strong|i|em|u|ins|s|strike|del|sub|sup|mark|code|tg-spoiler|tg-emoji|tg-reference|tg-map|tg-collage|tg-slideshow|a|img|video|figcaption|details|summary|aside|cite)(?:\s[^>]*)?\/?>/gi,
+    "",
+  );
+  // Inline formatting — order matters for nested markers.
+  out = out.replace(/\*\*\*([^*]*)\*\*\*/g, "$1"); // bold+italic
+  out = out.replace(/\*\*([^*]*)\*\*/g, "$1");     // bold
+  out = out.replace(/__([^_]*)__/g, "$1");          // bold in rich markdown
+  out = out.replace(/\*([^*]*)\*/g, "$1");          // italic
+  out = out.replace(/_([^_]*)_/g, "$1");            // italic
+  out = out.replace(/~~([^~]*)~~/g, "$1");          // strikethrough
+  out = out.replace(/==([^=]*)==/g, "$1");          // marked/highlight
+  out = out.replace(/\|\|([^|]*)\|\|/g, "$1");      // spoiler
+  // Inline code: `code` -> code
+  out = out.replace(/`([^`]*)`/g, "$1");
+  // Headings: remove leading `#` markers (up to 6) but keep the text.
+  out = out.replace(/^#{1,6}\s+/gm, "");
+  // Footnote markers and definitions.
+  out = out.replace(/^\[\^[^\]]+\]:.*$/gm, "");
+  out = out.replace(/\[\^[^\]]+\]/g, "");
+  // Blockquote markers and list/task markers at line start (keep the text).
+  out = out.replace(/^>\s?/gm, "");
+  out = out.replace(/^[-*+]\s+/gm, "");
+  out = out.replace(/^\d+\.\s+/gm, "");
+  out = out.replace(/^\[[ xX]\]\s+/gm, "");
+  // Horizontal rules.
+  out = out.replace(/^(?:-{3,}|_{3,}|\*{3,})\s*$/gm, "");
+  // Table formatting: separator lines and cell delimiters.
+  out = out.replace(/^\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/gm, "");
+  out = out.replace(/\|/g, " ");
+  // Math blocks and inline math: remove `$` fences but keep LaTeX source.
+  out = out.replace(/\$\$([\s\S]*?)\$\$/g, "$1");
+  out = out.replace(/\$([^$\n]+)\$/g, "$1");
   return out;
 }
 

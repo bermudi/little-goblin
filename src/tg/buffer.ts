@@ -7,7 +7,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { TurnCallbacks } from "../agent/mod.ts";
 import { log } from "../log.ts";
 import { MetricsStore, type TelegramMetricsEvent } from "../metrics/mod.ts";
-import { stripMdV2, isParseError, classifyTelegramError } from "./format.ts";
+import { stripRichMarkdown, isParseError, classifyTelegramError } from "./format.ts";
 
 /**
  * MessageBuffer turns AgentSession events (via TurnCallbacks) into Telegram
@@ -68,13 +68,10 @@ export interface ToolSlot {
   lastCompletedError: boolean;
 }
 
-/** Telegram's hard message length limit. */
-export const MAX_MESSAGE_LEN = 4096;
-
 /**
  * Threshold above which response text is escaped to a `reply.md` attachment
- * instead of being split across multiple Telegram messages. Past ~5 messages
- * (5 * 4096 = 20480) readability suffers; files are friendlier.
+ * instead of being sent as a rich message. Past ~20KB readability suffers;
+ * files are friendlier.
  */
 export const BIG_OUTPUT_THRESHOLD = 20000;
 
@@ -142,42 +139,6 @@ export function shouldShowTool(name: string, visibility: string): boolean {
   return list.includes(name);
 }
 
-/**
- * Pick a split index <= `maxLen` that does not cut a UTF-16 surrogate pair.
- * If the character at `maxLen - 1` is a high surrogate, the matching low
- * surrogate sits at `maxLen`; backing up by one keeps the pair intact.
- */
-export function findSafeSplit(text: string, maxLen: number): number {
-  if (text.length <= maxLen) return text.length;
-  const codeAtCut = text.charCodeAt(maxLen - 1);
-  if (codeAtCut >= 0xd800 && codeAtCut <= 0xdbff) {
-    return maxLen - 1;
-  }
-  return maxLen;
-}
-
-/**
- * Adjust a rollover split point so it does not break an inline code span.
- * Counts unescaped backticks (`` ` ``) in `text[0..splitAt]`; if the count
- * is odd, the head would open a span that never closes. Moves the split
- * backward to just before the last backtick so the head is self-contained.
- * A backtick preceded by `\` is escaped and skipped.
- */
-export function adjustForCodeSpan(text: string, splitAt: number): number {
-  let count = 0;
-  let lastBacktick = -1;
-  for (let i = 0; i < splitAt; i++) {
-    if (text[i] === "`" && text[i - 1] !== "\\") {
-      count++;
-      lastBacktick = i;
-    }
-  }
-  if (count % 2 === 1 && lastBacktick > 0) {
-    return lastBacktick;
-  }
-  return splitAt;
-}
-
 export class MessageBuffer implements TurnCallbacks {
   private bot: Bot;
   private chatId: number;
@@ -214,10 +175,10 @@ export class MessageBuffer implements TurnCallbacks {
    */
   private lastRenderedResponseText: string = "";
   /**
-   * Sticky flag: once a MarkdownV2 parse error forces a plain-text retry,
-   * subsequent response sends/edits skip `parse_mode` for the rest of the
-   * current response message's lifetime. Reset whenever `responseMessageId`
-   * is cleared (tool boundary seal, rollover, file escape).
+   * Sticky flag: once a rich-message parse error forces a plain-text retry,
+   * subsequent response sends use `sendMessage` and edits use `editMessageText`
+   * without `parse_mode` for the rest of the current response message's lifetime.
+   * Reset whenever `responseMessageId` is cleared (tool boundary seal, file escape).
    */
   private responseIsPlainText: boolean = false;
 
@@ -241,11 +202,12 @@ export class MessageBuffer implements TurnCallbacks {
   private topicNotFoundReported: boolean = false;
 
   /**
-   * Promise tracking an in-flight `sendMessage` that is creating the response
-   * message. Any concurrent flush whose throttle window opens before the send
-   * resolves would otherwise see `responseMessageId === undefined` and call
-   * `sendMessage` a second time — producing duplicate Telegram messages.
-   * Non-force flushes skip when this is set; force flushes await it.
+   * Promise tracking an in-flight `sendRichMessage` (or `sendMessage` during a
+   * plain-text fallback) that is creating the response message. Any concurrent
+   * flush whose throttle window opens before the send resolves would otherwise
+   * see `responseMessageId === undefined` and call `sendRichMessage` a second
+   * time — producing duplicate Telegram messages. Non-force flushes skip when
+   * this is set; force flushes await it.
    */
   private creatingResponse: Promise<void> | null = null;
 
@@ -272,10 +234,9 @@ export class MessageBuffer implements TurnCallbacks {
   private editingResponse: Promise<void> | null = null;
 
   /**
-   * Promise tracking the whole response flush, including 4096 rollover.
-   * Rollover mutates `accumulatedText` and `responseMessageId` across multiple
-   * Telegram calls, so serializing only send/edit is insufficient: a concurrent
-   * force flush can observe the half-rolled state and duplicate the tail bubble.
+   * Promise tracking the whole response flush. Serializing at this level keeps
+   * a concurrent force flush from observing a half-written state and duplicating
+   * the response bubble.
    */
   private flushingResponse: Promise<void> | null = null;
 
@@ -521,26 +482,35 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   /**
-   * Response-path send options: `parse_mode: "MarkdownV2"` unless the sticky
-   * `responseIsPlainText` flag is set (set by a 400 parse-error fallback).
-   * Status-line sends use `withThread()` directly — they stay plain text.
+   * Response-path content builder. By default the response is sent as a rich
+   * message using Telegram's Markdown dialect. When the sticky
+   * `responseIsPlainText` flag is set (after a 400 parse-error fallback),
+   * markdown is stripped and the message is sent/edited as plain text.
    */
-  private responseOpts(): Record<string, unknown> {
-    if (this.responseIsPlainText) return this.withThread();
-    return this.withThread({ parse_mode: "MarkdownV2" });
+  private responsePayload(text: string = this.accumulatedText):
+    | { kind: "rich"; richMessage: { markdown: string } }
+    | { kind: "plain"; text: string } {
+    if (this.responseIsPlainText) return { kind: "plain", text: stripRichMarkdown(text) };
+    return { kind: "rich", richMessage: { markdown: text } };
   }
 
-  /**
-   * Response-path send text: when the sticky `responseIsPlainText` flag is
-   * set (after a 400 parse-error fallback), markdown is stripped so the text
-   * is readable as plain text. Without the flag, the raw text is returned
-   * (Telegram renders it as MarkdownV2). Accepts an optional `text`
-   * parameter for derived slices (e.g. rollover head, file-escape summary);
-   * defaults to the full `accumulatedText`.
-   */
-  private responseText(text: string = this.accumulatedText): string {
-    if (this.responseIsPlainText) return stripMdV2(text);
-    return text;
+  /** Send the response text as a rich message, or as plain text when falling back. */
+  private async sendResponseContent(text: string): Promise<{ message_id: number }> {
+    const content = this.responsePayload(text);
+    if (content.kind === "rich") {
+      return this.bot.api.sendRichMessage(this.chatId, content.richMessage, this.withThread());
+    }
+    return this.bot.api.sendMessage(this.chatId, content.text, this.withThread());
+  }
+
+  /** Edit the response message with rich content, or with plain text when falling back. */
+  private async editResponseContent(messageId: number, text: string): Promise<void> {
+    const content = this.responsePayload(text);
+    if (content.kind === "rich") {
+      await this.bot.api.editMessageText(this.chatId, messageId, content.richMessage, this.withThread());
+    } else {
+      await this.bot.api.editMessageText(this.chatId, messageId, content.text, this.withThread());
+    }
   }
 
   /** Best-effort `sendChatAction("typing")`; never throws out. */
@@ -708,9 +678,9 @@ export class MessageBuffer implements TurnCallbacks {
   }
 
   /**
-   * Flush accumulated response text to Telegram. Implements ~5/sec
-   * throttle, 4096 rollover (phase 5), and basic error recovery. Phase 6
-   * will add 20KB file escape.
+   * Flush accumulated response text to Telegram. Implements the response
+   * throttle and basic error recovery. Big outputs are sent as a file
+   * attachment once they exceed the configured threshold.
    */
   async flushResponse(force: boolean = false): Promise<void> {
     // Ensure the status message lands before creating the first response
@@ -768,7 +738,7 @@ export class MessageBuffer implements TurnCallbacks {
     // edit, by which time `responseMessageId` is set). A force flush — used
     // by `onAgentEnd` to land the final state — must wait, otherwise it
     // would see `responseMessageId === undefined` and issue a duplicate
-    // `sendMessage`. See test "does not duplicate-send when sendMessage is
+    // `sendRichMessage`. See test "does not duplicate-send when sendMessage is
     // slower than the throttle window".
     if (this.responseMessageId === undefined && this.creatingResponse) {
       if (!force) {
@@ -801,15 +771,12 @@ export class MessageBuffer implements TurnCallbacks {
       msgId: this.responseMessageId,
     });
 
-    // Big output? Escape to file before doing anything else; we do not want
-    // to spam many rollover messages for a 50KB code dump.
+    // Big output? Escape to file before doing anything else; rich messages
+    // remove the 4096 limit but 20KB+ readability is still poor as chat text.
     if (await this.maybeFileEscape()) {
       this.lastResponseEditTime = now;
       return;
     }
-
-    // Drain any overflow first; this may send/edit several messages.
-    await this.maybeRollover();
 
     if (this.accumulatedText.length === 0) return;
 
@@ -837,27 +804,24 @@ export class MessageBuffer implements TurnCallbacks {
         // can observe it and skip/wait. Clear it after the send resolves
         // (success or failure), regardless of which branch handled the error.
         const sentText = this.accumulatedText;
-        const op = "sendMessage" as const;
+        const initialContent = this.responsePayload(sentText);
+        const initialOp: "sendRichMessage" | "sendMessage" = initialContent.kind === "rich" ? "sendRichMessage" : "sendMessage";
         const inFlight = (async () => {
           try {
-            const msg = await this.bot.api.sendMessage(
-              this.chatId,
-              this.responseText(sentText),
-              this.responseOpts(),
-            );
+            const msg = await this.sendResponseContent(sentText);
             this.responseMessageId = msg.message_id;
             // Seed the idempotence guard so a force-flush at agent_end
             // with the same text becomes a no-op rather than a 400.
             // Track the raw captured text (not the stripped render) so the
             // guard compares raw-to-raw and correctly detects no-op edits.
             this.lastRenderedResponseText = sentText;
-            this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
+            this.recordTelegramEvent({ type: "telegram", op: initialOp, channel: "response", outcome: "success" });
             log.debug("response: sent", {
               msgId: msg.message_id,
               accLen: sentText.length,
             });
           } catch (err) {
-            await this.handleResponseError(err, op);
+            await this.handleResponseError(err, initialOp);
           }
         })();
         this.creatingResponse = inFlight;
@@ -875,10 +839,10 @@ export class MessageBuffer implements TurnCallbacks {
         // an unchanged text already fired above.
         const text = this.accumulatedText;
         const messageId = this.responseMessageId;
-        const op = "editMessageText" as const;
+        const op: "editMessageText" = "editMessageText";
         const inFlight = (async () => {
           try {
-            await this.bot.api.editMessageText(this.chatId, messageId, this.responseText(text), this.responseOpts());
+            await this.editResponseContent(messageId, text);
             this.lastRenderedResponseText = text;
             this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
             log.debug("response: edited", {
@@ -889,10 +853,11 @@ export class MessageBuffer implements TurnCallbacks {
             await this.handleResponseError(err, op);
             if (force && this.responseMessageId === undefined && this.accumulatedText.length > 0) {
               try {
-                const msg = await this.bot.api.sendMessage(this.chatId, this.responseText(), this.responseOpts());
+                const msg = await this.sendResponseContent(this.accumulatedText);
                 this.responseMessageId = msg.message_id;
                 this.lastRenderedResponseText = this.accumulatedText;
-                this.recordTelegramEvent({ type: "telegram", op: "sendMessage", channel: "response", outcome: "success" });
+                const fallbackOp: "sendRichMessage" | "sendMessage" = this.responseIsPlainText ? "sendMessage" : "sendRichMessage";
+                this.recordTelegramEvent({ type: "telegram", op: fallbackOp, channel: "response", outcome: "success" });
               } catch (fallbackErr) {
                 throw fallbackErr;
               }
@@ -955,11 +920,13 @@ export class MessageBuffer implements TurnCallbacks {
       return true;
     }
 
+    const summaryContent = this.responsePayload(summary);
+    const summaryOp: "sendRichMessage" | "sendMessage" = summaryContent.kind === "rich" ? "sendRichMessage" : "sendMessage";
     try {
-      await this.bot.api.sendMessage(this.chatId, this.responseText(summary), this.responseOpts());
-      this.recordTelegramEvent({ type: "telegram", op: "sendMessage", channel: "response", outcome: "success" });
+      await this.sendResponseContent(summary);
+      this.recordTelegramEvent({ type: "telegram", op: summaryOp, channel: "response", outcome: "success" });
     } catch (err) {
-      await this.handleResponseError(err, "sendMessage");
+      await this.handleResponseError(err, summaryOp, summary);
     }
 
     // The active in-memory text has been "spent" — clear regardless of
@@ -971,60 +938,13 @@ export class MessageBuffer implements TurnCallbacks {
     return true;
   }
 
-  /**
-   * Split `accumulatedText` across multiple Telegram messages whenever it
-   * exceeds `MAX_MESSAGE_LEN`. The current `responseMessageId` is finalized
-   * with the head (edit if it exists, send if it does not), then a fresh
-   * tail becomes the new active message. Loops until the tail fits.
-   *
-   * Returns true if at least one rollover occurred.
-   */
-  private async maybeRollover(): Promise<boolean> {
-    let rolled = false;
-    while (this.accumulatedText.length > MAX_MESSAGE_LEN) {
-      let splitAt = findSafeSplit(this.accumulatedText, MAX_MESSAGE_LEN);
-      // Inline-code-span safety: if the split point has an odd number of
-      // unescaped backticks before it, the head would open a code span that
-      // never closes (Telegram rejects unterminated spans in MarkdownV2).
-      // Move the split backward to before the last backtick so the head is
-      // self-contained and the tail starts fresh.
-      splitAt = adjustForCodeSpan(this.accumulatedText, splitAt);
-      const head = this.responseText(this.accumulatedText.slice(0, splitAt));
-      const tail = this.accumulatedText.slice(splitAt);
-      const op: "sendMessage" | "editMessageText" = this.responseMessageId === undefined ? "sendMessage" : "editMessageText";
-      try {
-        if (this.responseMessageId !== undefined) {
-          await this.bot.api.editMessageText(
-            this.chatId,
-            this.responseMessageId,
-            head,
-            this.responseOpts(),
-          );
-        } else {
-          await this.bot.api.sendMessage(this.chatId, head, this.responseOpts());
-        }
-        this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
-        // The previous message is now "closed"; the tail starts a new one.
-        this.responseMessageId = undefined;
-        this.lastRenderedResponseText = "";
-        this.responseIsPlainText = false;
-        this.accumulatedText = tail;
-        rolled = true;
-      } catch (err) {
-        await this.handleResponseError(err, op);
-        return rolled;
-      }
-    }
-    return rolled;
-  }
-
-  private async handleResponseError(err: unknown, op?: "sendMessage" | "editMessageText"): Promise<void> {
-    // MarkdownV2 parse error: strip markdown and retry as plain text. The
+  private async handleResponseError(err: unknown, op?: "sendMessage" | "sendRichMessage" | "editMessageText", text: string = this.accumulatedText): Promise<void> {
+    // Rich-message parse error: strip markdown and retry as plain text. The
     // sticky `responseIsPlainText` flag keeps subsequent sends/edits plain
     // for the rest of this response message's lifetime, so we don't loop.
     if (!this.responseIsPlainText && isParseError(err)) {
       this.responseIsPlainText = true;
-      const initialOp: "sendMessage" | "editMessageText" = op ?? (this.responseMessageId === undefined ? "sendMessage" : "editMessageText");
+      const initialOp: "sendMessage" | "sendRichMessage" | "editMessageText" = op ?? (this.responseMessageId === undefined ? "sendRichMessage" : "editMessageText");
       const e = err as { error_code?: number; description?: string };
       this.recordTelegramEvent({
         type: "telegram",
@@ -1034,36 +954,25 @@ export class MessageBuffer implements TurnCallbacks {
         errorCode: e.error_code,
         errorDescription: e.description ?? String(err),
       });
-      log.warn("response MarkdownV2 parse error, falling back to plain text", {
-        description: (err as { description?: string }).description,
+      log.warn("response rich-message parse error, falling back to plain text", {
+        description: e.description,
       });
-      // Retry once with stripped markdown and no parse_mode. If the retry
-      // also fails, fall through to the normal error handler.
+      // Retry once with stripped markdown as a plain `sendMessage`/`editMessageText`.
+      // If the retry also fails, fall through to the normal error handler.
+      const retryOp: "sendMessage" | "editMessageText" = this.responseMessageId === undefined ? "sendMessage" : "editMessageText";
       try {
-        const retryOp: "sendMessage" | "editMessageText" = this.responseMessageId === undefined ? "sendMessage" : "editMessageText";
         if (this.responseMessageId === undefined) {
-          const msg = await this.bot.api.sendMessage(
-            this.chatId,
-            this.responseText(),
-            this.responseOpts(),
-          );
+          const msg = await this.sendResponseContent(text);
           this.responseMessageId = msg.message_id;
-          this.lastRenderedResponseText = this.accumulatedText;
         } else {
-          await this.bot.api.editMessageText(
-            this.chatId,
-            this.responseMessageId,
-            this.responseText(),
-            this.responseOpts(),
-          );
-          this.lastRenderedResponseText = this.accumulatedText;
+          await this.editResponseContent(this.responseMessageId, text);
         }
+        this.lastRenderedResponseText = text;
         this.recordTelegramEvent({ type: "telegram", op: retryOp, channel: "response", outcome: "success" });
         return;
       } catch (retryErr) {
         log.warn("response plain-text retry failed", { error: String(retryErr) });
         // Fall through to handleApiError for the retry error.
-        const retryOp = this.responseMessageId === undefined ? "sendMessage" : "editMessageText";
         await this.handleApiError(retryErr, "response", retryOp, () => {
           this.responseMessageId = undefined;
           this.lastRenderedResponseText = "";
@@ -1072,7 +981,7 @@ export class MessageBuffer implements TurnCallbacks {
         return;
       }
     }
-    const actualOp = op ?? (this.responseMessageId === undefined ? "sendMessage" : "editMessageText");
+    const actualOp: "sendMessage" | "sendRichMessage" | "editMessageText" = op ?? (this.responseMessageId === undefined ? (this.responseIsPlainText ? "sendMessage" : "sendRichMessage") : "editMessageText");
     await this.handleApiError(err, "response", actualOp, () => {
       this.responseMessageId = undefined;
       this.lastRenderedResponseText = "";
@@ -1089,7 +998,7 @@ export class MessageBuffer implements TurnCallbacks {
   private async handleApiError(
     err: unknown,
     kind: "status" | "response",
-    op: "sendMessage" | "editMessageText" | null,
+    op: "sendMessage" | "sendRichMessage" | "editMessageText" | null,
     onMessageGone: () => void,
   ): Promise<void> {
     const channel = kind === "status" ? "status" : "response";

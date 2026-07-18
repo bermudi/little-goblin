@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { McpRunner } from "./runner.ts";
@@ -15,14 +15,48 @@ const baseConfig: McpConfig = {
   maxResultChars: 100,
 };
 
+const outputFile = () => join(tmpDir, "mcp-fake-output");
+const exitFile = () => join(tmpDir, "mcp-fake-exit");
+const stderrFile = () => join(tmpDir, "mcp-fake-stderr");
+const sleepFile = () => join(tmpDir, "mcp-fake-sleep");
+
+function removeControlFiles(): void {
+  for (const path of [outputFile(), exitFile(), stderrFile(), sleepFile()]) {
+    if (existsSync(path)) {
+      rmSync(path);
+    }
+  }
+}
+
 beforeAll(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "mcp-runner-"));
   const bunxPath = join(tmpDir, "bunx");
   const script = `#!/usr/bin/env bash
-if [ -n "$MCP_FAKE_STDERR" ]; then printf '%s\\n' "$MCP_FAKE_STDERR" >&2; fi
-if [ -n "$MCP_FAKE_SLEEP" ]; then exec sleep "$MCP_FAKE_SLEEP"; fi
-printf '%s\\n' "\${MCP_FAKE_OUTPUT:-}"
-exit "\${MCP_FAKE_EXIT:-0}"
+DIR=$(cd "$(dirname "$0")" && pwd)
+OUTPUT_FILE="$DIR/mcp-fake-output"
+STDERR_FILE="$DIR/mcp-fake-stderr"
+EXIT_FILE="$DIR/mcp-fake-exit"
+SLEEP_FILE="$DIR/mcp-fake-sleep"
+
+if [ -f "$STDERR_FILE" ]; then
+  STDERR=$(cat "$STDERR_FILE")
+  if [ -n "$STDERR" ]; then printf '%s\\n' "$STDERR" >&2; fi
+fi
+
+if [ -f "$SLEEP_FILE" ]; then
+  SLEEP=$(cat "$SLEEP_FILE")
+  if [ -n "$SLEEP" ]; then exec sleep "$SLEEP"; fi
+fi
+
+if [ -f "$OUTPUT_FILE" ]; then
+  cat "$OUTPUT_FILE"
+fi
+
+if [ -f "$EXIT_FILE" ]; then
+  exit "$(cat "$EXIT_FILE")"
+fi
+
+exit 0
 `;
   writeFileSync(bunxPath, script, { mode: 0o755 });
   originalPath = process.env.PATH ?? "";
@@ -35,17 +69,23 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  delete process.env.MCP_FAKE_OUTPUT;
-  delete process.env.MCP_FAKE_STDERR;
-  delete process.env.MCP_FAKE_SLEEP;
-  process.env.MCP_FAKE_EXIT = "0";
+  removeControlFiles();
+  writeFileSync(exitFile(), "0");
 });
 
 function setOutput(value: string, exit = 0, stderr = "", sleep = ""): void {
-  process.env.MCP_FAKE_OUTPUT = value;
-  process.env.MCP_FAKE_EXIT = String(exit);
-  if (stderr) process.env.MCP_FAKE_STDERR = stderr;
-  if (sleep) process.env.MCP_FAKE_SLEEP = sleep;
+  writeFileSync(outputFile(), value);
+  writeFileSync(exitFile(), String(exit));
+  if (stderr) {
+    writeFileSync(stderrFile(), stderr);
+  } else if (existsSync(stderrFile())) {
+    rmSync(stderrFile());
+  }
+  if (sleep) {
+    writeFileSync(sleepFile(), sleep);
+  } else if (existsSync(sleepFile())) {
+    rmSync(sleepFile());
+  }
 }
 
 describe("McpRunner catalog", () => {

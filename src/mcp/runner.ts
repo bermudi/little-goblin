@@ -1,6 +1,7 @@
 import { spawn } from "bun";
 import { log } from "../log.ts";
 import { resolveMcporterConfigPath } from "./paths.ts";
+import { prepareMcpEnv } from "./env.ts";
 import type { McpConfig } from "../schema.ts";
 
 interface McpToolEntry {
@@ -33,6 +34,7 @@ export class McpRunner {
   private readonly defaultTimeoutMs: number;
   private readonly maxResultChars: number;
   private readonly enabled: string[] | undefined;
+  private readonly goblinHome: string;
   private catalog: Map<string, McpToolEntry[]>;
   ready: Promise<void>;
 
@@ -41,6 +43,7 @@ export class McpRunner {
     this.defaultTimeoutMs = config.defaultTimeoutMs;
     this.maxResultChars = config.maxResultChars;
     this.enabled = config.enabled;
+    this.goblinHome = goblinHome;
     this.catalog = new Map();
     this.ready = this.discoverCatalog()
       .then((catalog) => {
@@ -179,15 +182,14 @@ export class McpRunner {
       }
     }
 
-    const proc = spawn({
-      cmd,
-      env: process.env,
-      signal: controller.signal,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
     try {
+      const proc = spawn({
+        cmd,
+        env: prepareMcpEnv(this.goblinHome),
+        signal: controller.signal,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       const exitCode = await proc.exited;
       const stdout = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();

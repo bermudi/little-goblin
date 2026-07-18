@@ -488,11 +488,12 @@ The buffer SHALL seal the current response message or draft when an assistant `m
 
 Sealing semantics:
 
-- The seal SHALL force-flush the accumulated text, then finalize any active draft to a persistent message when `drafts` is `true`, before resetting state, so the just-completed assistant message lands in its bubble in full.
-- The seal SHALL clear `responseMessageId`, `responseDraftId` (so the next text triggers a `sendRichMessage` or `sendRichMessageDraft`), `accumulatedText`, `lastRenderedResponseText`, and `responseIsPlainText`.
+- The seal SHALL detach a snapshot of the segment's text from `accumulatedText` before the async flush, so any text that arrives after the boundary is not merged into the segment being sealed and instead becomes the next segment.
+- The seal SHALL force-flush the detached snapshot, then finalize any active draft to a persistent message when `drafts` is `true`, before resetting state, so the just-completed assistant message lands in its bubble in full.
+- The seal SHALL clear `responseMessageId`, `responseDraftId` (so the next text triggers a `sendRichMessage` or `sendRichMessageDraft`), `lastRenderedResponseText`, and `responseIsPlainText`.
 - If `onMessageStart` fires when no response message or draft is in progress (no prior `onTextDelta` or tool has reset the response state), the buffer SHALL NOT send anything and SHALL NOT mutate response state.
 - If `onMessageEnd` fires for an assistant message with no response message or draft in progress, the buffer SHALL NOT send anything and SHALL NOT mutate response state.
-- If new text arrives during the in-flight seal flush (race not expected in practice — assistant messages do not interleave mid-token — but defended against), the buffer SHALL skip the seal and keep accumulating into the existing message or draft. The next `onMessageStart` or `onAgentEnd` will land it.
+- The seal lifecycle (flush, finalize, reset) SHALL be serialized through a single promise so adjacent boundary events cannot finalize the same draft twice.
 
 #### Scenario: Two assistant messages in one turn produce two bubbles
 
@@ -522,7 +523,7 @@ When `MessageBufferOptions.drafts` is `true` (set by the intake layer for privat
 
 The first flush of a response segment with no existing response message or draft SHALL call `bot.api.sendRichMessageDraft(chatId, draftId, { markdown: text }, opts)`. Subsequent flushes within the same segment SHALL call `bot.api.sendRichMessageDraft` with the same `draftId` and the full accumulated text. If the rich draft call fails with a 400 parse error, the buffer SHALL strip markdown and retry the same `draftId` with `sendMessageDraft` (plain text). Once `responseIsPlainText` is set for the segment, all subsequent draft updates for that segment SHALL use `sendMessageDraft`.
 
-At segment boundaries (`onToolStart`, `onMessageStart`, `onMessageEnd`, `onAgentEnd`) the active draft SHALL be finalized to a persistent message by calling `sendRichMessage` (or `sendMessage` if the plain-text fallback is active) with the segment's accumulated text, and response state SHALL be reset so the next segment starts a fresh draft. The draft's 30-second lifetime is refreshed on every `sendRichMessageDraft`/`sendMessageDraft` call; finalization before expiry is the responsibility of these boundary events.
+At segment boundaries (`onToolStart`, `onMessageStart`, `onMessageEnd`, `onAgentEnd`) the active draft SHALL be finalized to a persistent message by calling `sendRichMessage` (or `sendMessage` if the plain-text fallback is active) with the segment's detached text snapshot, and response state SHALL be reset so the next segment starts a fresh draft. The boundary seal SHALL be serialized (flush, finalize, reset) so a rapid sequence of boundary events cannot finalize the same draft twice. The draft's 30-second lifetime is refreshed on every `sendRichMessageDraft`/`sendMessageDraft` call; finalization before expiry is the responsibility of these boundary events.
 
 #### Scenario: Draft mode creates and updates a rich draft
 

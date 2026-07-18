@@ -249,6 +249,20 @@ export class MessageBuffer implements TurnCallbacks {
    */
   private flushingResponse: Promise<void> | null = null;
 
+  /**
+   * Promise tracking a segment seal (boundary flush + draft finalization + state
+   * reset). Other response flushes await this so a follow-up `onTextDelta` does
+   * not update a draft that is about to be finalized.
+   */
+  private sealingResponse: Promise<void> | null = null;
+
+  /**
+   * True while `sealResponseSegment` is in the flush phase. Prevents the inner
+   * `flushResponse` from awaiting `sealingResponse` (which would deadlock) while
+   * still letting `finalizeResponse` block concurrent flushes.
+   */
+  private inSeal: boolean = false;
+
   constructor(bot: Bot, chatId: number, topicId: number | undefined, options: MessageBufferOptions = {}) {
     this.bot = bot;
     this.chatId = chatId;
@@ -310,34 +324,17 @@ export class MessageBuffer implements TurnCallbacks {
     // sits invisible in accumulatedText for the entire tool execution,
     // so the user sees a truncated prefix (e.g. "Let" instead of
     // "Let me check the pi docs...").
-    if (this.accumulatedText.length > 0) {
+    if (this.accumulatedText.length > 0 || this.responseMessageId !== undefined || this.responseDraftId !== undefined) {
       log.debug("response: seal segment before tool", {
         tool: name,
         accLen: this.accumulatedText.length,
         msgId: this.responseMessageId,
         draftId: this.responseDraftId,
       });
-      // Seal the current response segment: force-flush so the just-completed
-      // text lands, then finalize any active draft and clear response state so
-      // the next text delta after the tool creates a fresh response.
-      const sealedTextSnapshot = this.accumulatedText;
-      const sealedMsgIdSnapshot = this.responseMessageId;
-      const sealedDraftIdSnapshot = this.responseDraftId;
-      void (async () => {
-        await this.flushResponse(true);
-        // Guard: skip cleanup only if text changed WITHOUT an id change.
-        // This happens when a concurrent text delta arrived during the flush.
-        // Rollover/file-escape changes BOTH text (head removed/reset) AND id,
-        // so we DO cleanup after those — the segment was already sent.
-        const textChanged = this.accumulatedText !== sealedTextSnapshot;
-        const msgIdChanged = this.responseMessageId !== sealedMsgIdSnapshot;
-        const draftIdChanged = this.responseDraftId !== sealedDraftIdSnapshot;
-        if (textChanged && !msgIdChanged && !draftIdChanged) {
-          return;
-        }
-        await this.finalizeResponse();
-        this.resetResponse();
-      })();
+      // Seal the current response segment using a detached snapshot so any
+      // text that arrives after this boundary becomes the next segment.
+      const sealedText = this.accumulatedText;
+      void this.sealResponseSegment(sealedText);
     }
 
     if (!shouldShowTool(name, this.visibility)) return;
@@ -387,29 +384,16 @@ export class MessageBuffer implements TurnCallbacks {
     // Seal the current response segment so the next assistant message starts
     // a fresh Telegram bubble. This is the primary boundary signal for
     // follow-up turns where two assistant messages are emitted in one run.
-    if (this.accumulatedText.length > 0) {
+    if (this.accumulatedText.length > 0 || this.responseMessageId !== undefined || this.responseDraftId !== undefined) {
       log.debug("response: seal segment before message", {
         accLen: this.accumulatedText.length,
         msgId: this.responseMessageId,
         draftId: this.responseDraftId,
       });
-      // Seal the current response segment: force-flush so the just-completed
-      // text lands, then finalize any active draft and clear response state so
-      // the next assistant message creates a fresh response.
-      const sealedTextSnapshot = this.accumulatedText;
-      const sealedMsgIdSnapshot = this.responseMessageId;
-      const sealedDraftIdSnapshot = this.responseDraftId;
-      void (async () => {
-        await this.flushResponse(true);
-        const textChanged = this.accumulatedText !== sealedTextSnapshot;
-        const msgIdChanged = this.responseMessageId !== sealedMsgIdSnapshot;
-        const draftIdChanged = this.responseDraftId !== sealedDraftIdSnapshot;
-        if (textChanged && !msgIdChanged && !draftIdChanged) {
-          return;
-        }
-        await this.finalizeResponse();
-        this.resetResponse();
-      })();
+      // Seal the current response segment using a detached snapshot. The active
+      // message id (if any) is cleared so the next message becomes a new bubble.
+      const sealedText = this.accumulatedText;
+      void this.sealResponseSegment(sealedText);
     }
   }
 
@@ -417,28 +401,22 @@ export class MessageBuffer implements TurnCallbacks {
     if (this.statusFrozen) return;
     // Force-flush the current assistant message so the final text lands in
     // full. In draft mode this is a segment boundary, so finalize the active
-    // draft and reset state so the next assistant message starts fresh.
+    // draft and reset state so the next assistant message starts fresh. In
+    // persistent mode keep the responseMessageId so the following message_start
+    // can seal it into a fresh bubble.
     log.debug("response: message end flush", {
       accLen: this.accumulatedText.length,
       msgId: this.responseMessageId,
       draftId: this.responseDraftId,
     });
-    const sealedTextSnapshot = this.accumulatedText;
-    const sealedMsgIdSnapshot = this.responseMessageId;
-    const sealedDraftIdSnapshot = this.responseDraftId;
-    void (async () => {
-      await this.flushResponse(true);
-      const textChanged = this.accumulatedText !== sealedTextSnapshot;
-      const msgIdChanged = this.responseMessageId !== sealedMsgIdSnapshot;
-      const draftIdChanged = this.responseDraftId !== sealedDraftIdSnapshot;
-      if (textChanged && !msgIdChanged && !draftIdChanged) {
-        return;
-      }
-      if (this.responseDraftId !== undefined || sealedDraftIdSnapshot !== undefined) {
-        await this.finalizeResponse();
-        this.resetResponse();
-      }
-    })();
+    const sealedText = this.accumulatedText;
+    const isDraft = this.responseDraftId !== undefined || (this.useDrafts && this.responseMessageId === undefined && sealedText.length > 0);
+    if (sealedText.length > 0 || this.responseMessageId !== undefined || this.responseDraftId !== undefined) {
+      void this.sealResponseSegment(sealedText, {
+        finalizeDraft: isDraft,
+        clearState: isDraft,
+      });
+    }
   }
 
   onAgentEnd(): void {
@@ -459,9 +437,14 @@ export class MessageBuffer implements TurnCallbacks {
       void this.flushStatus(true);
     }
     this.statusFrozen = true;
+    const sealedText = this.accumulatedText;
     void (async () => {
-      await this.flushResponse(true);
-      await this.finalizeResponse();
+      await this.sealResponseSegment(sealedText, { finalizeDraft: true, clearState: false });
+      // End of turn: spend any remaining in-memory text and reset formatting,
+      // but keep responseMessageId so tests can observe the final message.
+      this.accumulatedText = "";
+      this.responseIsPlainText = false;
+      this.responseDraftId = undefined;
       await Promise.resolve(this.onTurnEnd?.());
     })();
   }
@@ -592,6 +575,55 @@ export class MessageBuffer implements TurnCallbacks {
     this.clearResponseIdentifiers();
     this.accumulatedText = "";
     this.responseIsPlainText = false;
+  }
+
+  /** Clear identifiers and sticky formatting flag while preserving accumulatedText. */
+  private clearResponseState(): void {
+    this.clearResponseIdentifiers();
+    this.responseIsPlainText = false;
+  }
+
+  /**
+   * Seal a response segment at a boundary (tool, assistant message, or agent end).
+   * Detaches `sealedText` from `accumulatedText` before the async flush so any
+   * text that arrives after the boundary is not merged into the segment being
+   * sealed. Finalizes an active draft when `finalizeDraft` is true and clears
+   * response identifiers when `clearState` is true.
+   */
+  private async sealResponseSegment(
+    sealedText: string,
+    { finalizeDraft = true, clearState = true }: { finalizeDraft?: boolean; clearState?: boolean } = {},
+  ): Promise<void> {
+    const prev = this.sealingResponse;
+    const work = (async () => {
+      await prev;
+      if (sealedText.length === 0 && this.responseMessageId === undefined && this.responseDraftId === undefined) {
+        if (clearState) this.clearResponseState();
+        return;
+      }
+
+      // Detach the snapshot. Subsequent onTextDelta calls append to the now
+      // empty accumulatedText and become the next segment.
+      const overflow = this.accumulatedText.slice(sealedText.length);
+      this.accumulatedText = overflow;
+
+      this.inSeal = true;
+      try {
+        await this.flushResponse(true, sealedText);
+      } finally {
+        this.inSeal = false;
+      }
+
+      if (finalizeDraft && this.responseDraftId !== undefined) {
+        await this.finalizeResponse(sealedText);
+      }
+
+      if (clearState) {
+        this.clearResponseState();
+      }
+    })();
+    this.sealingResponse = work;
+    await work;
   }
 
   /** Best-effort `sendChatAction("typing")`; never throws out. */
@@ -762,8 +794,18 @@ export class MessageBuffer implements TurnCallbacks {
    * Flush accumulated response text to Telegram. Implements the response
    * throttle and basic error recovery. Big outputs are sent as a file
    * attachment once they exceed the configured threshold.
+   *
+   * `sealedText` is used by boundary seal paths that have already detached a
+   * snapshot from `accumulatedText`; when provided, `accumulatedText` is not
+   * read or mutated by the flush itself.
    */
-  async flushResponse(force: boolean = false): Promise<void> {
+  async flushResponse(force: boolean = false, sealedText?: string): Promise<void> {
+    // Await any segment seal that is finalizing. The inner flush of a seal runs
+    // with `inSeal` true so it does not await itself.
+    if (this.sealingResponse && !this.inSeal) {
+      await this.sealingResponse;
+    }
+
     // Ensure the status message lands before creating the first response
     // message or streaming draft, so the status appears above the response
     // in the chat. editingStatus is set synchronously by commitStatus/flushStatus
@@ -773,16 +815,17 @@ export class MessageBuffer implements TurnCallbacks {
       await this.editingStatus;
     }
 
+    const textLen = (sealedText ?? this.accumulatedText).length;
     if (this.flushingResponse) {
       if (!force) {
-        log.debug("response: skip (flush in-flight)", { accLen: this.accumulatedText.length });
+        log.debug("response: skip (flush in-flight)", { accLen: textLen });
         return;
       }
-      log.debug("response: await flush in-flight (force)", { accLen: this.accumulatedText.length });
+      log.debug("response: await flush in-flight (force)", { accLen: textLen });
       await this.flushingResponse;
     }
 
-    const inFlight = this.flushResponseOnce(force);
+    const inFlight = this.flushResponseOnce(force, sealedText);
     this.flushingResponse = inFlight;
     try {
       await inFlight;
@@ -793,7 +836,8 @@ export class MessageBuffer implements TurnCallbacks {
     }
   }
 
-  private async flushResponseOnce(force: boolean = false): Promise<void> {
+  private async flushResponseOnce(force: boolean = false, sealedText?: string): Promise<void> {
+    const text = sealedText ?? this.accumulatedText;
     const now = this.now();
     if (!force && now - this.lastResponseEditTime < this.responseThrottleMs) {
       this.recordTelegramEvent({
@@ -807,12 +851,12 @@ export class MessageBuffer implements TurnCallbacks {
       log.debug("response: skip (throttled)", {
         elapsed: now - this.lastResponseEditTime,
         throttleMs: this.responseThrottleMs,
-        accLen: this.accumulatedText.length,
+        accLen: text.length,
       });
       return;
     }
 
-    if (this.accumulatedText.length === 0) return;
+    if (text.length === 0) return;
 
     // Coalesce concurrent sends. If the response message/draft is being created
     // by an earlier flush, a non-force flush skips (the next throttle tick will
@@ -821,10 +865,10 @@ export class MessageBuffer implements TurnCallbacks {
     // an unset id and issue a duplicate create.
     if (this.responseMessageId === undefined && this.responseDraftId === undefined && this.creatingResponse) {
       if (!force) {
-        log.debug("response: skip (send in-flight)", { accLen: this.accumulatedText.length });
+        log.debug("response: skip (send in-flight)", { accLen: text.length });
         return;
       }
-      log.debug("response: await send in-flight (force)", { accLen: this.accumulatedText.length });
+      log.debug("response: await send in-flight (force)", { accLen: text.length });
       await this.creatingResponse;
     }
 
@@ -832,20 +876,20 @@ export class MessageBuffer implements TurnCallbacks {
     // concurrent edits against the same message; a stale edit can land last and
     // overwrite the latest text. A non-force flush whose throttle window
     // opened while another update is in flight just skips — the next window
-    // will pick up the latest accumulatedText. The force flush from
-    // onAgentEnd MUST wait, so the final write contains the full text.
+    // will pick up the latest text. The force flush from onAgentEnd MUST wait,
+    // so the final write contains the full text.
     if (this.editingResponse) {
       if (!force) {
-        log.debug("response: skip (edit in-flight)", { accLen: this.accumulatedText.length });
+        log.debug("response: skip (edit in-flight)", { accLen: text.length });
         return;
       }
-      log.debug("response: await edit in-flight (force)", { accLen: this.accumulatedText.length });
+      log.debug("response: await edit in-flight (force)", { accLen: text.length });
       await this.editingResponse;
     }
 
     log.debug("response: flush", {
       force,
-      accLen: this.accumulatedText.length,
+      accLen: text.length,
       mode: this.responseMessageId !== undefined ? "edit" : this.responseDraftId !== undefined ? "draft" : this.useDrafts ? "create-draft" : "send",
       msgId: this.responseMessageId,
       draftId: this.responseDraftId,
@@ -853,12 +897,12 @@ export class MessageBuffer implements TurnCallbacks {
 
     // Big output? Escape to file before doing anything else; rich messages
     // remove the 4096 limit but 20KB+ readability is still poor as chat text.
-    if (await this.maybeFileEscape()) {
+    if (await this.maybeFileEscape(text)) {
       this.lastResponseEditTime = now;
       return;
     }
 
-    if (this.accumulatedText.length === 0) return;
+    if (text.length === 0) return;
 
     // Idempotence guard: if the message/draft already has this exact text we'd
     // just earn a 400 "message is not modified" or burn a no-op draft update.
@@ -867,12 +911,12 @@ export class MessageBuffer implements TurnCallbacks {
     // "edit" that never happened.
     if (
       (this.responseMessageId !== undefined || this.responseDraftId !== undefined) &&
-      this.accumulatedText === this.lastRenderedResponseText
+      text === this.lastRenderedResponseText
     ) {
       log.debug("response: skip (no-op update)", {
         msgId: this.responseMessageId,
         draftId: this.responseDraftId,
-        accLen: this.accumulatedText.length,
+        accLen: text.length,
       });
       return;
     }
@@ -882,7 +926,6 @@ export class MessageBuffer implements TurnCallbacks {
     try {
       if (this.responseMessageId !== undefined) {
         // Existing persistent message: edit it.
-        const text = this.accumulatedText;
         const messageId = this.responseMessageId;
         const op: "editMessageText" = "editMessageText";
         const inFlight = (async () => {
@@ -895,12 +938,12 @@ export class MessageBuffer implements TurnCallbacks {
               accLen: text.length,
             });
           } catch (err) {
-            await this.handleResponseError(err, op);
-            if (force && this.responseMessageId === undefined && this.accumulatedText.length > 0) {
+            await this.handleResponseError(err, op, text);
+            if (force && this.responseMessageId === undefined && text.length > 0) {
               try {
-                const msg = await this.sendResponseContent(this.accumulatedText);
+                const msg = await this.sendResponseContent(text);
                 this.responseMessageId = msg.message_id;
-                this.lastRenderedResponseText = this.accumulatedText;
+                this.lastRenderedResponseText = text;
                 const fallbackOp: "sendRichMessage" | "sendMessage" = this.responseIsPlainText ? "sendMessage" : "sendRichMessage";
                 this.recordTelegramEvent({ type: "telegram", op: fallbackOp, channel: "response", outcome: "success" });
               } catch (fallbackErr) {
@@ -916,8 +959,7 @@ export class MessageBuffer implements TurnCallbacks {
           if (this.editingResponse === inFlight) this.editingResponse = null;
         }
       } else if (this.responseDraftId !== undefined) {
-        // Active draft: update it with the latest accumulated text.
-        const text = this.accumulatedText;
+        // Active draft: update it with the latest text.
         const draftId = this.responseDraftId;
         const op: "sendRichMessageDraft" | "sendMessageDraft" = this.responseIsPlainText ? "sendMessageDraft" : "sendRichMessageDraft";
         const inFlight = (async () => {
@@ -930,7 +972,7 @@ export class MessageBuffer implements TurnCallbacks {
               accLen: text.length,
             });
           } catch (err) {
-            await this.handleResponseError(err, op);
+            await this.handleResponseError(err, op, text);
           }
         })();
         this.editingResponse = inFlight;
@@ -943,19 +985,18 @@ export class MessageBuffer implements TurnCallbacks {
         // No existing response: start a new streaming draft.
         const draftId = this.nextDraftId++;
         this.responseDraftId = draftId;
-        const sentText = this.accumulatedText;
         const op: "sendRichMessageDraft" | "sendMessageDraft" = this.responseIsPlainText ? "sendMessageDraft" : "sendRichMessageDraft";
         const inFlight = (async () => {
           try {
-            await this.sendResponseDraft(sentText, draftId);
-            this.lastRenderedResponseText = sentText;
+            await this.sendResponseDraft(text, draftId);
+            this.lastRenderedResponseText = text;
             this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
             log.debug("response: draft created", {
               draftId,
-              accLen: sentText.length,
+              accLen: text.length,
             });
           } catch (err) {
-            await this.handleResponseError(err, op);
+            await this.handleResponseError(err, op, text);
           }
         })();
         this.creatingResponse = inFlight;
@@ -966,25 +1007,24 @@ export class MessageBuffer implements TurnCallbacks {
         }
       } else {
         // No existing response and drafts disabled: create a persistent message.
-        const sentText = this.accumulatedText;
-        const initialContent = this.responsePayload(sentText);
+        const initialContent = this.responsePayload(text);
         const initialOp: "sendRichMessage" | "sendMessage" = initialContent.kind === "rich" ? "sendRichMessage" : "sendMessage";
         const inFlight = (async () => {
           try {
-            const msg = await this.sendResponseContent(sentText);
+            const msg = await this.sendResponseContent(text);
             this.responseMessageId = msg.message_id;
             // Seed the idempotence guard so a force-flush at agent_end
             // with the same text becomes a no-op rather than a 400.
             // Track the raw captured text (not the stripped render) so the
             // guard compares raw-to-raw and correctly detects no-op edits.
-            this.lastRenderedResponseText = sentText;
+            this.lastRenderedResponseText = text;
             this.recordTelegramEvent({ type: "telegram", op: initialOp, channel: "response", outcome: "success" });
             log.debug("response: sent", {
               msgId: msg.message_id,
-              accLen: sentText.length,
+              accLen: text.length,
             });
           } catch (err) {
-            await this.handleResponseError(err, initialOp);
+            await this.handleResponseError(err, initialOp, text);
           }
         })();
         this.creatingResponse = inFlight;
@@ -999,10 +1039,9 @@ export class MessageBuffer implements TurnCallbacks {
     }
   }
 
-  private async maybeFileEscape(): Promise<boolean> {
-    if (this.accumulatedText.length <= BIG_OUTPUT_THRESHOLD) return false;
+  private async maybeFileEscape(text: string = this.accumulatedText): Promise<boolean> {
+    if (text.length <= BIG_OUTPUT_THRESHOLD) return false;
 
-    const text = this.accumulatedText;
     const summary =
       text.slice(0, SUMMARY_PREFIX_LEN) +
       "... [truncated, see attached reply.md]";
@@ -1029,22 +1068,39 @@ export class MessageBuffer implements TurnCallbacks {
       if (wrote) await unlink(tmpPath).catch(() => {});
     }
 
+    // Preserve any text that arrived after the snapshot was detached. In a
+    // normal flush `accumulatedText === text`, so overflow is empty. During a
+    // boundary seal `accumulatedText` may already hold the next segment.
+    const overflow = this.accumulatedText === text ? "" : this.accumulatedText;
+
     if (documentError !== null) {
       // Document upload failures are not recorded as `sendMessage` metrics.
       // Still apply response error handling (e.g. backoff / topic-not-found).
       await this.handleApiError(documentError, "response", null, () => this.resetResponse());
       // The active text has been "spent" — clear regardless of outcome.
       this.resetResponse();
+      this.accumulatedText = overflow;
       return true;
     }
 
-    // In persistent mode there is no draft to finalize above, so send the
-    // summary as a new message after the file. Draft mode already finalized.
+    // In persistent mode there is no draft to finalize above, so surface the
+    // summary. If a response message already exists, edit it in place so the
+    // user doesn't see a separate partial bubble; otherwise send a new one.
     if (this.responseDraftId === undefined) {
       const summaryContent = this.responsePayload(summary);
-      const summaryOp: "sendRichMessage" | "sendMessage" = summaryContent.kind === "rich" ? "sendRichMessage" : "sendMessage";
+      const summaryOp: "sendRichMessage" | "sendMessage" | "editMessageText" =
+        this.responseMessageId !== undefined
+          ? "editMessageText"
+          : summaryContent.kind === "rich"
+            ? "sendRichMessage"
+            : "sendMessage";
       try {
-        await this.sendResponseContent(summary);
+        if (this.responseMessageId !== undefined) {
+          await this.editResponseContent(this.responseMessageId, summary);
+        } else {
+          const msg = await this.sendResponseContent(summary);
+          this.responseMessageId = msg.message_id;
+        }
         this.recordTelegramEvent({ type: "telegram", op: summaryOp, channel: "response", outcome: "success" });
       } catch (err) {
         await this.handleResponseError(err, summaryOp, summary);
@@ -1052,8 +1108,10 @@ export class MessageBuffer implements TurnCallbacks {
     }
 
     // The active in-memory text has been "spent" — clear regardless of
-    // outcome so we do not loop trying to upload it again.
+    // outcome so we do not loop trying to upload it again. Restore any
+    // overflow that belongs to the next segment.
     this.resetResponse();
+    this.accumulatedText = overflow;
     return true;
   }
 
@@ -1082,17 +1140,22 @@ export class MessageBuffer implements TurnCallbacks {
         description: e.description,
       });
       // Retry once with stripped markdown as a plain message/draft.
-      // If the retry also fails, fall through to the normal error handler.
+      // Derive the retry target from the initial operation, not from current
+      // identifiers, so finalizing a draft (sendRichMessage) falls back to a
+      // persistent plain message instead of re-updating the draft.
+      const retryWasDraft =
+        initialOp === "sendMessageDraft" || initialOp === "sendRichMessageDraft";
+      const retryWasEdit = initialOp === "editMessageText";
       const retryOp: "sendMessage" | "editMessageText" | "sendMessageDraft" =
-        this.responseMessageId !== undefined ? "editMessageText" : this.responseDraftId !== undefined ? "sendMessageDraft" : "sendMessage";
+        retryWasDraft ? "sendMessageDraft" : retryWasEdit ? "editMessageText" : "sendMessage";
       try {
-        if (this.responseDraftId !== undefined) {
+        if (retryWasDraft && this.responseDraftId !== undefined) {
           await this.sendResponseDraft(text, this.responseDraftId);
-        } else if (this.responseMessageId === undefined) {
+        } else if (!retryWasEdit) {
           const msg = await this.sendResponseContent(text);
           this.responseMessageId = msg.message_id;
         } else {
-          await this.editResponseContent(this.responseMessageId, text);
+          await this.editResponseContent(this.responseMessageId!, text);
         }
         this.lastRenderedResponseText = text;
         this.recordTelegramEvent({ type: "telegram", op: retryOp, channel: "response", outcome: "success" });

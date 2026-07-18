@@ -126,6 +126,15 @@ describe("stripRichMarkdown", () => {
   it("leaves unmatched markers intact", () => {
     expect(stripRichMarkdown("a * b")).toBe("a * b");
   });
+
+  it("preserves code and math content from surrounding cleanup", () => {
+    // Fenced code with a pipe that would otherwise become a space during table cleanup.
+    expect(stripRichMarkdown("```bash\necho a | grep a\n```")).toBe("echo a | grep a\n");
+    // Inline code with HTML-looking content.
+    expect(stripRichMarkdown("`<div>`")).toBe("<div>");
+    // Math content with asterisks/underscores.
+    expect(stripRichMarkdown("$a*b*c$ and $$x_y_z$$")).toBe("a*b*c and x_y_z");
+  });
 });
 
 describe("systemReply", () => {

@@ -152,6 +152,10 @@ function makeApi() {
         if (failTopicNotFound && payload.message_thread_id !== undefined) {
           throw { error_code: 400, description: "Bad Request: topic not found" };
         }
+        if (failParseOnce && !parseErrorThrown) {
+          parseErrorThrown = true;
+          throw { error_code: 400, description: "Bad Request: can't parse markdown" };
+        }
         const richMessage = payload.rich_message as { markdown?: string } | undefined;
         const text = richMessage?.markdown ?? "";
         return { ok: true as const, result: await sendMessage(payload.chat_id as number | string, text) };

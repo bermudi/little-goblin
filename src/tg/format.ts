@@ -140,13 +140,46 @@ export function stripMdV2(text: string): string {
  * label/alt text. Block markers (headings, lists, blockquotes) are lightly
  * cleaned so the output remains readable.
  *
+ * Code spans/blocks and math spans/blocks are protected with placeholders so
+ * their raw content (including `|`, `<`, `*`, `_`, etc.) survives the cleanup.
+ *
  * Handles partial or malformed markdown gracefully — unmatched markers are
  * left as-is.
  */
 export function stripRichMarkdown(text: string): string {
+  const codeBlocks: string[] = [];
+  const inlineCodes: string[] = [];
+  const mathBlocks: string[] = [];
+  const mathInlines: string[] = [];
   let out = text;
-  // Drop fenced-code fence lines (``` optionally followed by a language tag).
-  out = out.replace(/^```[^\n]*\n?/gm, "");
+
+  // Protect fenced code blocks before any other transformation. Use short
+  // placeholders with no markdown metacharacters (especially underscores).
+  out = out.replace(/^```[a-zA-Z0-9]*\n([\s\S]*?)```$/gm, (_match, content: string) => {
+    const placeholder = `@@FCB${codeBlocks.length}@@`;
+    codeBlocks.push(content);
+    return placeholder;
+  });
+
+  // Protect inline code spans.
+  out = out.replace(/`([^`]*)`/g, (_match, content: string) => {
+    const placeholder = `@@IC${inlineCodes.length}@@`;
+    inlineCodes.push(content);
+    return placeholder;
+  });
+
+  // Protect math blocks and inline math.
+  out = out.replace(/\$\$([\s\S]*?)\$\$/g, (_match, content: string) => {
+    const placeholder = `@@MB${mathBlocks.length}@@`;
+    mathBlocks.push(content);
+    return placeholder;
+  });
+  out = out.replace(/\$([^$\n]+)\$/g, (_match, content: string) => {
+    const placeholder = `@@MI${mathInlines.length}@@`;
+    mathInlines.push(content);
+    return placeholder;
+  });
+
   // Links: [text](url) -> text; images: ![alt](url) -> alt
   out = out.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1");
   // Strip supported rich-message HTML tag pairs and self-closing tags. This
@@ -165,8 +198,6 @@ export function stripRichMarkdown(text: string): string {
   out = out.replace(/~~([^~]*)~~/g, "$1");          // strikethrough
   out = out.replace(/==([^=]*)==/g, "$1");          // marked/highlight
   out = out.replace(/\|\|([^|]*)\|\|/g, "$1");      // spoiler
-  // Inline code: `code` -> code
-  out = out.replace(/`([^`]*)`/g, "$1");
   // Headings: remove leading `#` markers (up to 6) but keep the text.
   out = out.replace(/^#{1,6}\s+/gm, "");
   // Footnote markers and definitions.
@@ -182,9 +213,13 @@ export function stripRichMarkdown(text: string): string {
   // Table formatting: separator lines and cell delimiters.
   out = out.replace(/^\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/gm, "");
   out = out.replace(/\|/g, " ");
-  // Math blocks and inline math: remove `$` fences but keep LaTeX source.
-  out = out.replace(/\$\$([\s\S]*?)\$\$/g, "$1");
-  out = out.replace(/\$([^$\n]+)\$/g, "$1");
+
+  // Restore protected code and math content (delimiters already removed).
+  out = out.replace(/@@FCB(\d+)@@/g, (match, index) => codeBlocks[Number(index)] ?? match);
+  out = out.replace(/@@IC(\d+)@@/g, (match, index) => inlineCodes[Number(index)] ?? match);
+  out = out.replace(/@@MB(\d+)@@/g, (match, index) => mathBlocks[Number(index)] ?? match);
+  out = out.replace(/@@MI(\d+)@@/g, (match, index) => mathInlines[Number(index)] ?? match);
+
   return out;
 }
 

@@ -135,6 +135,18 @@ describe("McpRunner catalog", () => {
     expect(runner.buildCatalogText()).toBe("Available MCP servers (use mcp_call to invoke):");
   });
 
+  it("enabled: [] produces an empty catalog", async () => {
+    setOutput(JSON.stringify({
+      servers: [
+        { name: "tavily", tools: [{ name: "tavily_search", description: "Search" }] },
+        { name: "grep", tools: [{ name: "searchGitHub", description: "Grep" }] },
+      ],
+    }));
+    const runner = new McpRunner({ ...baseConfig, enabled: [] }, "/tmp/goblin");
+    await runner.ready;
+    expect(runner.buildCatalogText()).toBe("Available MCP servers (use mcp_call to invoke):");
+  });
+
   it("refreshCatalog replaces the catalog", async () => {
     setOutput(JSON.stringify({
       servers: [{ name: "tavily", tools: [{ name: "tavily_search", description: "Search" }] }],

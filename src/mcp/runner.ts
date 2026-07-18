@@ -22,13 +22,6 @@ export interface McpToolResult {
   text: string;
 }
 
-class TimeoutError extends Error {
-  constructor() {
-    super("MCP operation timed out");
-    this.name = "TimeoutError";
-  }
-}
-
 export class McpRunner {
   private readonly configPath: string | undefined;
   private readonly defaultTimeoutMs: number;
@@ -59,7 +52,12 @@ export class McpRunner {
 
   async callTool(server: string, tool: string, args: unknown, signal?: AbortSignal): Promise<McpToolResult> {
     await this.ready;
-    const argsJson = JSON.stringify(coerceArgs(args));
+    let argsJson: string;
+    try {
+      argsJson = JSON.stringify(coerceArgs(args));
+    } catch (err) {
+      return { kind: "error", text: `MCP call args serialization failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
     const result = await this.runMcporter(
       ["call", `${server}.${tool}`, "--args", argsJson, "--output", "json", "--timeout", String(this.defaultTimeoutMs)],
       signal,
@@ -157,8 +155,7 @@ export class McpRunner {
     const outerTimeout = AbortSignal.timeout(this.defaultTimeoutMs + 5000);
     const onTimeout = () => {
       if (!controller.signal.aborted) {
-        const reason = isTimeoutReason(outerTimeout.reason) ? outerTimeout.reason : new TimeoutError();
-        controller.abort(reason);
+        controller.abort(outerTimeout.reason);
       }
     };
     if (outerTimeout.aborted) {

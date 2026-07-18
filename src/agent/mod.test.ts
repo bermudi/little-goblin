@@ -9,6 +9,7 @@ import { memoryDir } from "../memory/paths.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import { ExternalAgentRunner } from "../external-agents/mod.ts";
 import { readMetricsSummary } from "../metrics/mod.ts";
+import type { McpRunner } from "../mcp/mod.ts";
 import type { AgentBackend, AgentBackendOptions, AgentBackendInitArgs } from "./backend.ts";
 import type { ToolDefinition, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
@@ -1832,6 +1833,119 @@ describe("AgentRunner", () => {
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
       expect(names).not.toContain("external_agent");
+    });
+  });
+
+  describe("mcp tool registration", () => {
+    function makeMcpRunnerStub(catalogText: string): McpRunner {
+      return {
+        ready: Promise.resolve(),
+        buildCatalogText: () => catalogText,
+        callTool: async () => ({ kind: "ok" as const, text: "" }),
+        describeTool: async () => "",
+        refreshCatalog: async () => {},
+      } as unknown as McpRunner;
+    }
+
+    it("registers mcp_call and mcp_describe when mcpRunner and cfg.mcp are present", async () => {
+      const cfg = {
+        ...makeConfig(tmpDir),
+        mcp: {
+          enabled: undefined,
+          configPath: undefined,
+          defaultTimeoutMs: 120_000,
+          maxResultChars: 16_000,
+        },
+      };
+      const runner = new AgentRunner({
+        cfg,
+        sessionId: "abcdef1234",
+        locator: { chatId: 123 },
+        customTools: [],
+        mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),
+        backendFactory: (opts) => new FakeAgentBackend(opts),
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).toContain("mcp_call");
+      expect(names).toContain("mcp_describe");
+    });
+
+    it("registers mcp_call and mcp_describe when cfg.mcp is { enabled: [] } and the catalog is empty", async () => {
+      const cfg = {
+        ...makeConfig(tmpDir),
+        mcp: {
+          enabled: [],
+          configPath: undefined,
+          defaultTimeoutMs: 120_000,
+          maxResultChars: 16_000,
+        },
+      };
+      const runner = new AgentRunner({
+        cfg,
+        sessionId: "abcdef1234",
+        locator: { chatId: 123 },
+        customTools: [],
+        mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):"),
+        backendFactory: (opts) => new FakeAgentBackend(opts),
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).toContain("mcp_call");
+      expect(names).toContain("mcp_describe");
+      const callTool = (tools as Array<{ name: string; description?: string }>).find((t) => t.name === "mcp_call");
+      expect(callTool?.description).toContain("Available MCP servers (use mcp_call to invoke):");
+      expect(callTool?.description).not.toContain("tavily");
+    });
+
+    it("does not register mcp_call or mcp_describe when mcpRunner is absent", async () => {
+      const cfg = {
+        ...makeConfig(tmpDir),
+        mcp: {
+          enabled: undefined,
+          configPath: undefined,
+          defaultTimeoutMs: 120_000,
+          maxResultChars: 16_000,
+        },
+      };
+      const runner = new AgentRunner({
+        cfg,
+        sessionId: "abcdef1234",
+        locator: { chatId: 123 },
+        customTools: [],
+        backendFactory: (opts) => new FakeAgentBackend(opts),
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).not.toContain("mcp_call");
+      expect(names).not.toContain("mcp_describe");
+    });
+
+    it("does not register mcp_call or mcp_describe when cfg.mcp is undefined", async () => {
+      const runner = new AgentRunner({
+        cfg: makeConfig(tmpDir),
+        sessionId: "abcdef1234",
+        locator: { chatId: 123 },
+        customTools: [],
+        mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),
+        backendFactory: (opts) => new FakeAgentBackend(opts),
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).not.toContain("mcp_call");
+      expect(names).not.toContain("mcp_describe");
     });
   });
 

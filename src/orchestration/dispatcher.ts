@@ -8,6 +8,7 @@ import { SessionManager, type ChatLocator, type SessionState } from "../sessions
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
+import type { McpRunner } from "../mcp/mod.ts";
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
@@ -67,6 +68,8 @@ export interface TurnDispatcherOptions {
    * `AgentRunner` and cancelled during `disposeRunner`.
    */
   externalAgentRunner?: ExternalAgentRunner;
+  /** Shared MCP runner. When present and configured, it is wired into every new `AgentRunner`. */
+  mcpRunner?: McpRunner;
 }
 
 /**
@@ -99,6 +102,7 @@ export class TurnDispatcher {
   private readonly promptQueueMeta: Map<string, PromptQueueEntry>;
   private readonly scheduleStore: ScheduleStore | undefined;
   private readonly externalAgentRunner: ExternalAgentRunner | undefined;
+  private readonly mcpRunner: McpRunner | undefined;
 
   constructor(options: TurnDispatcherOptions) {
     this.cfg = options.cfg;
@@ -114,6 +118,7 @@ export class TurnDispatcher {
     this.getTopicName = buildGetTopicName(this.memoryStore);
     this.scheduleStore = options.scheduleStore;
     this.externalAgentRunner = options.externalAgentRunner;
+    this.mcpRunner = options.mcpRunner;
   }
 
   /**
@@ -153,6 +158,7 @@ export class TurnDispatcher {
       pendingProjectNotice: this.manager.consumeProjectNotice(locator),
       scheduleStore: this.scheduleStore,
       externalAgentRunner: this.externalAgentRunner,
+      mcpRunner: this.mcpRunner,
     };
     return this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
   }

@@ -22,6 +22,15 @@ export const ExternalAgentsConfigSchema = z.object({
 
 export type ExternalAgentsConfig = z.infer<typeof ExternalAgentsConfigSchema>;
 
+export const McpConfigSchema = z.object({
+  enabled: z.array(z.string()).optional(),
+  configPath: z.string().optional(),
+  defaultTimeoutMs: z.number().int().min(5000).max(1800000).default(120000),
+  maxResultChars: z.number().int().min(1000).max(100000).default(16000),
+});
+
+export type McpConfig = z.infer<typeof McpConfigSchema>;
+
 /**
  * Zod schema for the JSON5 config file (goblin.json5).
  * Values are resolved via resolveConfigValue() before validation.
@@ -47,6 +56,7 @@ export const ConfigFileSchema = z.object({
   /** Groq Whisper model for voice-note ASR. */
   asrModel: z.enum(["whisper-large-v3-turbo", "whisper-large-v3"]).default("whisper-large-v3-turbo"),
   externalAgents: ExternalAgentsConfigSchema.optional(),
+  mcp: McpConfigSchema.optional(),
 });
 
 export type ConfigFile = z.infer<typeof ConfigFileSchema>;

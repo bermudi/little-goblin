@@ -1,12 +1,12 @@
 ## Phase 1: Config schema and path helper
 
-- [ ] Add `McpConfigSchema` to `src/schema.ts` with `enabled` (optional string array), `configPath` (optional string), `defaultTimeoutMs` (optional number, default 120000, min 5000, max 1800000), `maxResultChars` (optional number, default 16000, min 1000, max 100000). Export `McpConfig` type.
-- [ ] Add `mcp: McpConfigSchema.optional()` to `ConfigFileSchema` in `src/schema.ts`.
-- [ ] Add `mcp?: McpConfig` to the `Config` interface in `src/config.ts`. Set `config.mcp = cfg.mcp` in `loadConfig()` and `Object.freeze(config.mcp)` when present, matching the `externalAgents` freeze pattern.
-- [ ] Create `src/mcp/paths.ts` with `resolveMcporterConfigPath(configPath, goblinHome)`: expands `~` to `os.homedir()`, resolves relatives against `goblinHome`, returns `undefined` when input is `undefined`.
-- [ ] Create `src/mcp/paths.test.ts` covering: `undefined` → `undefined`, `~` expansion, relative resolution, absolute passthrough.
-- [ ] Create `src/mcp/mod.ts` barrel placeholder. Final re-exports (`McpRunner`, `McpToolResult`, `createMcpTools`) are added in Phases 2 and 3.
-- [ ] Run `bun test src/mcp/paths.test.ts` and `bun run validate-config` (or typecheck) to verify.
+- [x] Add `McpConfigSchema` to `src/schema.ts` with `enabled` (optional string array), `configPath` (optional string), `defaultTimeoutMs` (optional number, default 120000, min 5000, max 1800000), `maxResultChars` (optional number, default 16000, min 1000, max 100000). Export `McpConfig` type.
+- [x] Add `mcp: McpConfigSchema.optional()` to `ConfigFileSchema` in `src/schema.ts`.
+- [x] Add `mcp?: McpConfig` to the `Config` interface in `src/config.ts`. Set `config.mcp = cfg.mcp` in `loadConfig()` and `Object.freeze(config.mcp)` when present, matching the `externalAgents` freeze pattern.
+- [x] Create `src/mcp/paths.ts` with `resolveMcporterConfigPath(configPath, goblinHome)`: expands `~` to `os.homedir()`, resolves relatives against `goblinHome`, returns `undefined` when input is `undefined`.
+- [x] Create `src/mcp/paths.test.ts` covering: `undefined` → `undefined`, `~` expansion, relative resolution, absolute passthrough.
+- [x] Create `src/mcp/mod.ts` barrel placeholder. Final re-exports (`McpRunner`, `McpToolResult`, `createMcpTools`) are added in Phases 2 and 3.
+- [x] Run `bun test src/mcp/paths.test.ts` and `bun run validate-config` (or typecheck) to verify.
 
 ## Phase 2: McpRunner
 

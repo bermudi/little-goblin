@@ -124,6 +124,8 @@ function makeApi() {
         sent.push(text);
         return { message_id: sent.length, date: 1, chat: { id: 1, type: "private" }, text };
       }),
+      sendRichMessageDraft: mock(async () => true),
+      sendMessageDraft: mock(async () => true),
       editMessageText,
       sendChatAction: mock(async () => true),
       sendVoice: mock(async () => ({ message_id: 1 })),
@@ -165,6 +167,7 @@ function makeApi() {
         return { ok: true as const, result: await editMessageText(payload.chat_id as number | string, payload.message_id as number, text) };
       }
       if (method === "sendChatAction") return { ok: true as const, result: true };
+      if (method === "sendRichMessageDraft" || method === "sendMessageDraft") return { ok: true as const, result: true };
       if (method === "sendVoice" || method === "sendPhoto" || method === "sendDocument") return { ok: true as const, result: { message_id: 1 } };
       if (method === "editForumTopic") return { ok: true as const, result: true };
       throw new Error(`unexpected Telegram API method ${method}`);

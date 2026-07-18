@@ -64,7 +64,9 @@ The buffer SHALL not edit the status message more than once per second. Intermed
 
 Text deltas from `onTextDelta` SHALL accumulate into a response message, edited periodically (not per-delta), using Telegram's rich message API. A single rich message supports up to 32,768 UTF-8 characters of conventional Markdown, so there is no 4096-character rollover. Each contiguous run of assistant text between tool calls forms one such response message; tool boundaries seal the current message and start a new one as described in **Response message segments at tool boundaries**. Within a single segment, behavior is unchanged.
 
-The initial response message for a segment SHALL be created with `bot.api.sendRichMessage(chatId, { markdown: text }, opts)`, where `text` is the accumulated response text. Subsequent updates to the same message SHALL use `bot.api.editMessageText(chatId, messageId, { markdown: text }, opts)`. The `markdown` payload renders the model's markdown (bold, italic, code spans, fenced code blocks, links) natively in Telegram using the rich-message Markdown dialect.
+The default (non-draft) initial response message for a segment SHALL be created with `bot.api.sendRichMessage(chatId, { markdown: text }, opts)`, where `text` is the accumulated response text. Subsequent updates to the same message SHALL use `bot.api.editMessageText(chatId, messageId, { markdown: text }, opts)`. The `markdown` payload renders the model's markdown (bold, italic, code spans, fenced code blocks, links) natively in Telegram using the rich-message Markdown dialect.
+
+When `drafts` is `true` the buffer SHALL stream response previews via `sendRichMessageDraft` and finalize them at segment boundaries; see **Response text streams via drafts when enabled**.
 
 When a rich-message `sendRichMessage` or `editMessageText` returns a 400 parse error, the buffer SHALL strip markdown formatting from the text and retry the same call as a plain `sendMessage` or `editMessageText` (text string, no `parse_mode`). The plain-text retry SHALL remove rich-message formatting markers (`**bold**`, `__bold__`, `*italic*`, `_italic_`, `~~strikethrough~~`, `==marked==`, `||spoiler||`, `` `code` ``), supported HTML tags (`<b>`, `<i>`, `<u>`, `<s>`, `<sub>`, `<sup>`, `<mark>`, `<code>`, `<tg-spoiler>`, `<a>`, etc.), fenced code fences, link URLs, heading/list/blockquote markers, and math fences. Backslashes SHALL NOT be un-escaped because rich markdown does not use backslash escaping. The retry SHALL occur at most once per send/edit attempt; if the plain-text retry also fails, the error SHALL be handled by the existing `handleApiError` path.
 
@@ -218,7 +220,7 @@ On `onAgentEnd`, the buffer SHALL force-flush the status line so the resting mes
 
 ### Requirement: Response message segments at tool boundaries
 
-The buffer SHALL seal the current response message when a visible-or-invisible tool starts mid-turn after assistant text has already streamed, or when an assistant `message_start` boundary fires while a response message is in progress. The next assistant text after any seal SHALL begin a fresh response message rather than appending to the prior one. Tool boundaries and assistant message boundaries share the same sealing state reset: `responseMessageId`, `accumulatedText`, `lastRenderedResponseText`, and `responseIsPlainText` are cleared.
+The buffer SHALL seal the current response message or draft when a visible-or-invisible tool starts mid-turn after assistant text has already streamed, or when an assistant `message_start` boundary fires while a response message or draft is in progress. The next assistant text after any seal SHALL begin a fresh response message or draft rather than appending to the prior one. Tool boundaries and assistant message boundaries share the same sealing state reset: `responseMessageId`, `responseDraftId`, `accumulatedText`, `lastRenderedResponseText`, and `responseIsPlainText` are cleared. When `drafts` is `true`, the seal SHALL first finalize the active draft to a persistent message with `sendRichMessage` (or `sendMessage` if plain fallback is active).
 
 #### Scenario: Text → tool → text produces two bubbles
 
@@ -482,15 +484,15 @@ The existing `MessageBuffer` (streaming edits against a `chatId`) is unchanged. 
 
 ### Requirement: Response message segments at assistant message boundaries
 
-The buffer SHALL seal the current response message when an assistant `message_start` event fires and a response message is already in progress. The next assistant text delta after the boundary SHALL begin a fresh response message rather than appending to the prior one. This produces one Telegram bubble per assistant message, so a turn that emits two assistant messages (e.g., a follow-up turn after a `runner.followUp()` call) produces two separate response bubbles in chat order.
+The buffer SHALL seal the current response message or draft when an assistant `message_start` event fires and a response message or draft is already in progress. The next assistant text delta after the boundary SHALL begin a fresh response message or draft rather than appending to the prior one. This produces one Telegram bubble per assistant message, so a turn that emits two assistant messages (e.g., a follow-up turn after a `runner.followUp()` call) produces two separate response bubbles in chat order.
 
 Sealing semantics:
 
-- The seal SHALL force-flush the accumulated text before resetting state, so the just-completed assistant message lands in its bubble in full.
-- The seal SHALL clear `responseMessageId` (so the next text triggers a `sendRichMessage`), `accumulatedText`, `lastRenderedResponseText`, and `responseIsPlainText`.
-- If `onMessageStart` fires when no response message is in progress (no prior `onTextDelta` or tool has reset the response state), the buffer SHALL NOT send anything and SHALL NOT mutate response state.
-- If `onMessageEnd` fires for an assistant message with no response message in progress, the buffer SHALL NOT send anything and SHALL NOT mutate response state.
-- If new text arrives during the in-flight seal flush (race not expected in practice — assistant messages do not interleave mid-token — but defended against), the buffer SHALL skip the seal and keep accumulating into the existing message. The next `onMessageStart` or `onAgentEnd` will land it.
+- The seal SHALL force-flush the accumulated text, then finalize any active draft to a persistent message when `drafts` is `true`, before resetting state, so the just-completed assistant message lands in its bubble in full.
+- The seal SHALL clear `responseMessageId`, `responseDraftId` (so the next text triggers a `sendRichMessage` or `sendRichMessageDraft`), `accumulatedText`, `lastRenderedResponseText`, and `responseIsPlainText`.
+- If `onMessageStart` fires when no response message or draft is in progress (no prior `onTextDelta` or tool has reset the response state), the buffer SHALL NOT send anything and SHALL NOT mutate response state.
+- If `onMessageEnd` fires for an assistant message with no response message or draft in progress, the buffer SHALL NOT send anything and SHALL NOT mutate response state.
+- If new text arrives during the in-flight seal flush (race not expected in practice — assistant messages do not interleave mid-token — but defended against), the buffer SHALL skip the seal and keep accumulating into the existing message or draft. The next `onMessageStart` or `onAgentEnd` will land it.
 
 #### Scenario: Two assistant messages in one turn produce two bubbles
 
@@ -513,3 +515,39 @@ Sealing semantics:
 - **WHEN** `onMessageStart()` fires for the next assistant message
 - **THEN** `responseIsPlainText` SHALL be reset to `false`
 - **AND** the new message SHALL attempt `sendRichMessage` on its first send
+
+### Requirement: Response text streams via drafts when enabled
+
+When `MessageBufferOptions.drafts` is `true` (set by the intake layer for private chats), text deltas SHALL stream as animated drafts via `bot.api.sendRichMessageDraft` and `bot.api.sendMessageDraft`. The buffer SHALL allocate a `draftId` per response segment and reuse it for all updates to that segment. The `draftId` SHALL be a monotonically increasing integer starting at 1 for each `MessageBuffer` instance.
+
+The first flush of a response segment with no existing response message or draft SHALL call `bot.api.sendRichMessageDraft(chatId, draftId, { markdown: text }, opts)`. Subsequent flushes within the same segment SHALL call `bot.api.sendRichMessageDraft` with the same `draftId` and the full accumulated text. If the rich draft call fails with a 400 parse error, the buffer SHALL strip markdown and retry the same `draftId` with `sendMessageDraft` (plain text). Once `responseIsPlainText` is set for the segment, all subsequent draft updates for that segment SHALL use `sendMessageDraft`.
+
+At segment boundaries (`onToolStart`, `onMessageStart`, `onMessageEnd`, `onAgentEnd`) the active draft SHALL be finalized to a persistent message by calling `sendRichMessage` (or `sendMessage` if the plain-text fallback is active) with the segment's accumulated text, and response state SHALL be reset so the next segment starts a fresh draft. The draft's 30-second lifetime is refreshed on every `sendRichMessageDraft`/`sendMessageDraft` call; finalization before expiry is the responsibility of these boundary events.
+
+#### Scenario: Draft mode creates and updates a rich draft
+
+- **GIVEN** `drafts` is `true` and `onTextDelta("hello")` has flushed
+- **THEN** the buffer SHALL call `sendRichMessageDraft` with `draftId` 1 and `{ markdown: "hello" }`
+- **AND WHEN** `onTextDelta(" world")` flushes
+- **THEN** the buffer SHALL call `sendRichMessageDraft` again with the same `draftId` 1 and `{ markdown: "hello world" }`
+
+#### Scenario: Draft mode finalizes on agent_end
+
+- **GIVEN** `drafts` is `true` and the segment text is `"final answer"`
+- **WHEN** `onAgentEnd()` fires
+- **THEN** the buffer SHALL call `sendRichMessageDraft` with the full text, then call `sendRichMessage` with the same text to finalize the draft to a persistent message
+
+#### Scenario: Draft mode resets at tool boundaries
+
+- **GIVEN** `drafts` is `true` and text `"before tool"` has streamed as a draft
+- **WHEN** `onToolStart("bash", ...)` fires
+- **THEN** the buffer SHALL finalize the current draft with `sendRichMessage` and reset response state
+- **AND WHEN** `onTextDelta("after tool")` flushes
+- **THEN** the buffer SHALL create a new draft with the next `draftId`
+
+#### Scenario: Draft rich parse error falls back to plain draft
+
+- **GIVEN** `drafts` is `true` and `sendRichMessageDraft` returns a 400 parse error
+- **WHEN** the buffer retries the same `draftId` with `sendMessageDraft`
+- **THEN** the retry text SHALL be stripped of rich markdown formatting
+- **AND** subsequent updates to the same segment SHALL use `sendMessageDraft`

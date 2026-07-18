@@ -52,6 +52,12 @@ export interface MessageBufferOptions {
    * is recorded as a `telegram` metrics event.
    */
   metrics?: MetricsStore;
+  /**
+   * Use `sendRichMessageDraft` / `sendMessageDraft` for streaming response
+   * previews, finalizing to a persistent message at segment boundaries. Useful
+   * for private chats where Telegram animates draft updates. Defaults to false.
+   */
+  drafts?: boolean;
 }
 
 /** Per-tool slot tracking running/completed invocations and error state. */
@@ -148,9 +154,12 @@ export class MessageBuffer implements TurnCallbacks {
   // Telegram message tracking.
   private statusMessageId: number | undefined = undefined;
   private responseMessageId: number | undefined = undefined;
+  private responseDraftId: number | undefined = undefined;
   private accumulatedText: string = "";
   private lastEditTime: number = 0;
   private isStreaming: boolean = false;
+  private useDrafts: boolean = false;
+  private nextDraftId: number = 1;
 
   // Per-tool slot state. Ordered by first observation (Map insertion order).
   private slots: Map<string, ToolSlot> = new Map();
@@ -258,6 +267,7 @@ export class MessageBuffer implements TurnCallbacks {
     this.onTopicNotFound = options.onTopicNotFound;
     this.onTurnEnd = options.onTurnEnd;
     this.metrics = options.metrics;
+    this.useDrafts = options.drafts ?? false;
   }
 
   /** Best-effort record of a `telegram` metrics event; swallows metric errors. */
@@ -305,31 +315,15 @@ export class MessageBuffer implements TurnCallbacks {
         tool: name,
         accLen: this.accumulatedText.length,
         msgId: this.responseMessageId,
+        draftId: this.responseDraftId,
       });
       // Seal the current response segment: force-flush so the just-completed
-      // text lands in its bubble, then clear response state so the next text
-      // delta after the tool creates a fresh bubble. The snapshot guard
-      // prevents losing text if a delta sneaks in during the in-flight flush
-      // (not expected — LLM tool calls don't interleave with text — but
-      // cheap defense). See spec: "Response message segments at tool
-      // boundaries" in canon/message-buffer.
-      const sealedTextSnapshot = this.accumulatedText;
-      const sealedMsgIdSnapshot = this.responseMessageId;
+      // text lands, then finalize any active draft and clear response state so
+      // the next text delta after the tool creates a fresh response.
       void (async () => {
         await this.flushResponse(true);
-        // Guard: skip cleanup only if text changed WITHOUT a message id change.
-        // This happens when a concurrent text delta arrived during the flush.
-        // Rollover changes BOTH text (head removed) AND msgId (undefined→new),
-        // so we DO cleanup after rollover — the tail message was already sent.
-        const textChanged = this.accumulatedText !== sealedTextSnapshot;
-        const msgIdChanged = this.responseMessageId !== sealedMsgIdSnapshot;
-        if (textChanged && !msgIdChanged) {
-          return;
-        }
-        this.responseMessageId = undefined;
-        this.accumulatedText = "";
-        this.lastRenderedResponseText = "";
-        this.responseIsPlainText = false;
+        await this.finalizeResponse();
+        this.resetResponse();
       })();
     }
 
@@ -384,24 +378,15 @@ export class MessageBuffer implements TurnCallbacks {
       log.debug("response: seal segment before message", {
         accLen: this.accumulatedText.length,
         msgId: this.responseMessageId,
+        draftId: this.responseDraftId,
       });
-      const sealedTextSnapshot = this.accumulatedText;
-      const sealedMsgIdSnapshot = this.responseMessageId;
+      // Seal the current response segment: force-flush so the just-completed
+      // text lands, then finalize any active draft and clear response state so
+      // the next assistant message creates a fresh response.
       void (async () => {
         await this.flushResponse(true);
-        // Guard: skip cleanup only if text changed WITHOUT a message id change.
-        // This happens when a concurrent text delta arrived during the flush.
-        // Rollover changes BOTH text (head removed) AND msgId (undefined→new),
-        // so we DO cleanup after rollover — the tail message was already sent.
-        const textChanged = this.accumulatedText !== sealedTextSnapshot;
-        const msgIdChanged = this.responseMessageId !== sealedMsgIdSnapshot;
-        if (textChanged && !msgIdChanged) {
-          return;
-        }
-        this.responseMessageId = undefined;
-        this.accumulatedText = "";
-        this.lastRenderedResponseText = "";
-        this.responseIsPlainText = false;
+        await this.finalizeResponse();
+        this.resetResponse();
       })();
     }
   }
@@ -424,6 +409,7 @@ export class MessageBuffer implements TurnCallbacks {
     log.debug("response: agent_end", {
       accLen: this.accumulatedText.length,
       msgId: this.responseMessageId,
+      draftId: this.responseDraftId,
     });
 
     // Flush BEFORE freezing so this final write is the one that survives.
@@ -435,8 +421,11 @@ export class MessageBuffer implements TurnCallbacks {
       void this.flushStatus(true);
     }
     this.statusFrozen = true;
-    void this.flushResponse(true);
-    void Promise.resolve(this.onTurnEnd?.());
+    void (async () => {
+      await this.flushResponse(true);
+      await this.finalizeResponse();
+      await Promise.resolve(this.onTurnEnd?.());
+    })();
   }
 
   /**
@@ -511,6 +500,60 @@ export class MessageBuffer implements TurnCallbacks {
     } else {
       await this.bot.api.editMessageText(this.chatId, messageId, content.text, this.withThread());
     }
+  }
+
+  /**
+   * Update a streaming draft. When the sticky `responseIsPlainText` flag is set,
+   * the draft is sent as plain text via `sendMessageDraft`; otherwise it is sent
+   * as a rich message via `sendRichMessageDraft`.
+   */
+  private async sendResponseDraft(text: string, draftId: number): Promise<true> {
+    const content = this.responsePayload(text);
+    if (content.kind === "rich") {
+      return this.bot.api.sendRichMessageDraft(this.chatId, draftId, content.richMessage, this.withThread());
+    }
+    return this.bot.api.sendMessageDraft(this.chatId, draftId, content.text, this.withThread());
+  }
+
+  /**
+   * Convert the active draft into a persistent message. When `text` is provided
+   * it is used instead of `accumulatedText` (used by file-escape to finalize the
+   * draft with a short summary). Does nothing when no draft is active.
+   */
+  private async finalizeResponse(text?: string): Promise<void> {
+    if (this.responseDraftId === undefined) return;
+    const finalText = text ?? this.accumulatedText;
+    if (finalText.length === 0) return;
+    const op: "sendRichMessage" | "sendMessage" = this.responseIsPlainText ? "sendMessage" : "sendRichMessage";
+    try {
+      const msg = await this.sendResponseContent(finalText);
+      this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
+      log.debug("response: finalized draft", {
+        msgId: msg.message_id,
+        draftId: this.responseDraftId,
+        accLen: finalText.length,
+      });
+    } catch (err) {
+      await this.handleResponseError(err, op, finalText);
+    }
+  }
+
+  /**
+   * Clear response message/draft identifiers and the last-rendered guard while
+   * preserving `accumulatedText`. Used when a message is reported gone so the
+   * next flush can re-send the same content.
+   */
+  private clearResponseIdentifiers(): void {
+    this.responseMessageId = undefined;
+    this.responseDraftId = undefined;
+    this.lastRenderedResponseText = "";
+  }
+
+  /** Clear all response message/draft state. Called after a segment is sealed. */
+  private resetResponse(): void {
+    this.clearResponseIdentifiers();
+    this.accumulatedText = "";
+    this.responseIsPlainText = false;
   }
 
   /** Best-effort `sendChatAction("typing")`; never throws out. */
@@ -733,14 +776,12 @@ export class MessageBuffer implements TurnCallbacks {
 
     if (this.accumulatedText.length === 0) return;
 
-    // Coalesce concurrent sends. If the response message is being created by
-    // an earlier flush, a non-force flush skips (the next throttle tick will
-    // edit, by which time `responseMessageId` is set). A force flush — used
-    // by `onAgentEnd` to land the final state — must wait, otherwise it
-    // would see `responseMessageId === undefined` and issue a duplicate
-    // `sendRichMessage`. See test "does not duplicate-send when sendMessage is
-    // slower than the throttle window".
-    if (this.responseMessageId === undefined && this.creatingResponse) {
+    // Coalesce concurrent sends. If the response message/draft is being created
+    // by an earlier flush, a non-force flush skips (the next throttle tick will
+    // edit/update, by which time the id is set). A force flush — used by
+    // `onAgentEnd` to land the final state — must wait, otherwise it would see
+    // an unset id and issue a duplicate create.
+    if (this.responseMessageId === undefined && this.responseDraftId === undefined && this.creatingResponse) {
       if (!force) {
         log.debug("response: skip (send in-flight)", { accLen: this.accumulatedText.length });
         return;
@@ -749,10 +790,10 @@ export class MessageBuffer implements TurnCallbacks {
       await this.creatingResponse;
     }
 
-    // Serialize edits. Telegram does not guarantee ordering for concurrent
-    // edits against the same message; a stale edit can land last and
+    // Serialize edits/draft updates. Telegram does not guarantee ordering for
+    // concurrent edits against the same message; a stale edit can land last and
     // overwrite the latest text. A non-force flush whose throttle window
-    // opened while another edit is in flight just skips — the next window
+    // opened while another update is in flight just skips — the next window
     // will pick up the latest accumulatedText. The force flush from
     // onAgentEnd MUST wait, so the final write contains the full text.
     if (this.editingResponse) {
@@ -767,8 +808,9 @@ export class MessageBuffer implements TurnCallbacks {
     log.debug("response: flush", {
       force,
       accLen: this.accumulatedText.length,
-      op: this.responseMessageId === undefined ? "send" : "edit",
+      mode: this.responseMessageId !== undefined ? "edit" : this.responseDraftId !== undefined ? "draft" : this.useDrafts ? "create-draft" : "send",
       msgId: this.responseMessageId,
+      draftId: this.responseDraftId,
     });
 
     // Big output? Escape to file before doing anything else; rich messages
@@ -780,17 +822,18 @@ export class MessageBuffer implements TurnCallbacks {
 
     if (this.accumulatedText.length === 0) return;
 
-    // Idempotence guard for the edit path: if the message already has
-    // this exact text we'd just earn a 400 "message is not modified".
-    // Returning early here means we also do NOT touch
-    // `lastResponseEditTime` — otherwise a subsequent real delta would
-    // get throttled-out by a fake "edit" that never happened.
+    // Idempotence guard: if the message/draft already has this exact text we'd
+    // just earn a 400 "message is not modified" or burn a no-op draft update.
+    // Returning early here means we also do NOT touch `lastResponseEditTime` —
+    // otherwise a subsequent real delta would get throttled-out by a fake
+    // "edit" that never happened.
     if (
-      this.responseMessageId !== undefined &&
+      (this.responseMessageId !== undefined || this.responseDraftId !== undefined) &&
       this.accumulatedText === this.lastRenderedResponseText
     ) {
-      log.debug("response: skip (no-op edit)", {
+      log.debug("response: skip (no-op update)", {
         msgId: this.responseMessageId,
+        draftId: this.responseDraftId,
         accLen: this.accumulatedText.length,
       });
       return;
@@ -799,44 +842,8 @@ export class MessageBuffer implements TurnCallbacks {
     this.lastResponseEditTime = now;
 
     try {
-      if (this.responseMessageId === undefined) {
-        // Publish the in-flight promise BEFORE awaiting so concurrent flushes
-        // can observe it and skip/wait. Clear it after the send resolves
-        // (success or failure), regardless of which branch handled the error.
-        const sentText = this.accumulatedText;
-        const initialContent = this.responsePayload(sentText);
-        const initialOp: "sendRichMessage" | "sendMessage" = initialContent.kind === "rich" ? "sendRichMessage" : "sendMessage";
-        const inFlight = (async () => {
-          try {
-            const msg = await this.sendResponseContent(sentText);
-            this.responseMessageId = msg.message_id;
-            // Seed the idempotence guard so a force-flush at agent_end
-            // with the same text becomes a no-op rather than a 400.
-            // Track the raw captured text (not the stripped render) so the
-            // guard compares raw-to-raw and correctly detects no-op edits.
-            this.lastRenderedResponseText = sentText;
-            this.recordTelegramEvent({ type: "telegram", op: initialOp, channel: "response", outcome: "success" });
-            log.debug("response: sent", {
-              msgId: msg.message_id,
-              accLen: sentText.length,
-            });
-          } catch (err) {
-            await this.handleResponseError(err, initialOp);
-          }
-        })();
-        this.creatingResponse = inFlight;
-        try {
-          await inFlight;
-        } finally {
-          if (this.creatingResponse === inFlight) {
-            this.creatingResponse = null;
-          }
-        }
-      } else {
-        // Capture the text at scheduling time. The serialization above
-        // ensures the LATEST flush sees the LATEST accumulatedText,
-        // since each edit awaits prior edits. The no-op guard against
-        // an unchanged text already fired above.
+      if (this.responseMessageId !== undefined) {
+        // Existing persistent message: edit it.
         const text = this.accumulatedText;
         const messageId = this.responseMessageId;
         const op: "editMessageText" = "editMessageText";
@@ -868,9 +875,85 @@ export class MessageBuffer implements TurnCallbacks {
         try {
           await inFlight;
         } finally {
-          if (this.editingResponse === inFlight) {
-            this.editingResponse = null;
+          if (this.editingResponse === inFlight) this.editingResponse = null;
+        }
+      } else if (this.responseDraftId !== undefined) {
+        // Active draft: update it with the latest accumulated text.
+        const text = this.accumulatedText;
+        const draftId = this.responseDraftId;
+        const op: "sendRichMessageDraft" | "sendMessageDraft" = this.responseIsPlainText ? "sendMessageDraft" : "sendRichMessageDraft";
+        const inFlight = (async () => {
+          try {
+            await this.sendResponseDraft(text, draftId);
+            this.lastRenderedResponseText = text;
+            this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
+            log.debug("response: draft updated", {
+              draftId,
+              accLen: text.length,
+            });
+          } catch (err) {
+            await this.handleResponseError(err, op);
           }
+        })();
+        this.editingResponse = inFlight;
+        try {
+          await inFlight;
+        } finally {
+          if (this.editingResponse === inFlight) this.editingResponse = null;
+        }
+      } else if (this.useDrafts) {
+        // No existing response: start a new streaming draft.
+        const draftId = this.nextDraftId++;
+        this.responseDraftId = draftId;
+        const sentText = this.accumulatedText;
+        const op: "sendRichMessageDraft" | "sendMessageDraft" = this.responseIsPlainText ? "sendMessageDraft" : "sendRichMessageDraft";
+        const inFlight = (async () => {
+          try {
+            await this.sendResponseDraft(sentText, draftId);
+            this.lastRenderedResponseText = sentText;
+            this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
+            log.debug("response: draft created", {
+              draftId,
+              accLen: sentText.length,
+            });
+          } catch (err) {
+            await this.handleResponseError(err, op);
+          }
+        })();
+        this.creatingResponse = inFlight;
+        try {
+          await inFlight;
+        } finally {
+          if (this.creatingResponse === inFlight) this.creatingResponse = null;
+        }
+      } else {
+        // No existing response and drafts disabled: create a persistent message.
+        const sentText = this.accumulatedText;
+        const initialContent = this.responsePayload(sentText);
+        const initialOp: "sendRichMessage" | "sendMessage" = initialContent.kind === "rich" ? "sendRichMessage" : "sendMessage";
+        const inFlight = (async () => {
+          try {
+            const msg = await this.sendResponseContent(sentText);
+            this.responseMessageId = msg.message_id;
+            // Seed the idempotence guard so a force-flush at agent_end
+            // with the same text becomes a no-op rather than a 400.
+            // Track the raw captured text (not the stripped render) so the
+            // guard compares raw-to-raw and correctly detects no-op edits.
+            this.lastRenderedResponseText = sentText;
+            this.recordTelegramEvent({ type: "telegram", op: initialOp, channel: "response", outcome: "success" });
+            log.debug("response: sent", {
+              msgId: msg.message_id,
+              accLen: sentText.length,
+            });
+          } catch (err) {
+            await this.handleResponseError(err, initialOp);
+          }
+        })();
+        this.creatingResponse = inFlight;
+        try {
+          await inFlight;
+        } finally {
+          if (this.creatingResponse === inFlight) this.creatingResponse = null;
         }
       }
     } catch (err) {
@@ -887,6 +970,10 @@ export class MessageBuffer implements TurnCallbacks {
       "... [truncated, see attached reply.md]";
     const tmpName = `goblin-reply-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.md`;
     const tmpPath = join(tmpdir(), tmpName);
+
+    // If we were streaming a draft, finalize it with the summary so the user
+    // sees the summary bubble instead of the oversized draft text.
+    await this.finalizeResponse(summary);
 
     let wrote = false;
     let documentError: unknown = null;
@@ -907,44 +994,43 @@ export class MessageBuffer implements TurnCallbacks {
     if (documentError !== null) {
       // Document upload failures are not recorded as `sendMessage` metrics.
       // Still apply response error handling (e.g. backoff / topic-not-found).
-      await this.handleApiError(documentError, "response", null, () => {
-        this.responseMessageId = undefined;
-        this.lastRenderedResponseText = "";
-        this.responseIsPlainText = false;
-      });
+      await this.handleApiError(documentError, "response", null, () => this.resetResponse());
       // The active text has been "spent" — clear regardless of outcome.
-      this.accumulatedText = "";
-      this.responseMessageId = undefined;
-      this.lastRenderedResponseText = "";
-      this.responseIsPlainText = false;
+      this.resetResponse();
       return true;
     }
 
-    const summaryContent = this.responsePayload(summary);
-    const summaryOp: "sendRichMessage" | "sendMessage" = summaryContent.kind === "rich" ? "sendRichMessage" : "sendMessage";
-    try {
-      await this.sendResponseContent(summary);
-      this.recordTelegramEvent({ type: "telegram", op: summaryOp, channel: "response", outcome: "success" });
-    } catch (err) {
-      await this.handleResponseError(err, summaryOp, summary);
+    // In persistent mode there is no draft to finalize above, so send the
+    // summary as a new message after the file. Draft mode already finalized.
+    if (this.responseDraftId === undefined) {
+      const summaryContent = this.responsePayload(summary);
+      const summaryOp: "sendRichMessage" | "sendMessage" = summaryContent.kind === "rich" ? "sendRichMessage" : "sendMessage";
+      try {
+        await this.sendResponseContent(summary);
+        this.recordTelegramEvent({ type: "telegram", op: summaryOp, channel: "response", outcome: "success" });
+      } catch (err) {
+        await this.handleResponseError(err, summaryOp, summary);
+      }
     }
 
     // The active in-memory text has been "spent" — clear regardless of
     // outcome so we do not loop trying to upload it again.
-    this.accumulatedText = "";
-    this.responseMessageId = undefined;
-    this.lastRenderedResponseText = "";
-    this.responseIsPlainText = false;
+    this.resetResponse();
     return true;
   }
 
-  private async handleResponseError(err: unknown, op?: "sendMessage" | "sendRichMessage" | "editMessageText", text: string = this.accumulatedText): Promise<void> {
+  private async handleResponseError(
+    err: unknown,
+    op?: "sendMessage" | "sendRichMessage" | "sendMessageDraft" | "sendRichMessageDraft" | "editMessageText",
+    text: string = this.accumulatedText,
+  ): Promise<void> {
     // Rich-message parse error: strip markdown and retry as plain text. The
-    // sticky `responseIsPlainText` flag keeps subsequent sends/edits plain
+    // sticky `responseIsPlainText` flag keeps subsequent sends/edits/drafts plain
     // for the rest of this response message's lifetime, so we don't loop.
     if (!this.responseIsPlainText && isParseError(err)) {
       this.responseIsPlainText = true;
-      const initialOp: "sendMessage" | "sendRichMessage" | "editMessageText" = op ?? (this.responseMessageId === undefined ? "sendRichMessage" : "editMessageText");
+      const initialOp: "sendMessage" | "sendRichMessage" | "sendMessageDraft" | "sendRichMessageDraft" | "editMessageText" =
+        op ?? (this.responseMessageId === undefined ? (this.responseDraftId !== undefined ? "sendRichMessageDraft" : "sendRichMessage") : "editMessageText");
       const e = err as { error_code?: number; description?: string };
       this.recordTelegramEvent({
         type: "telegram",
@@ -957,11 +1043,14 @@ export class MessageBuffer implements TurnCallbacks {
       log.warn("response rich-message parse error, falling back to plain text", {
         description: e.description,
       });
-      // Retry once with stripped markdown as a plain `sendMessage`/`editMessageText`.
+      // Retry once with stripped markdown as a plain message/draft.
       // If the retry also fails, fall through to the normal error handler.
-      const retryOp: "sendMessage" | "editMessageText" = this.responseMessageId === undefined ? "sendMessage" : "editMessageText";
+      const retryOp: "sendMessage" | "editMessageText" | "sendMessageDraft" =
+        this.responseMessageId !== undefined ? "editMessageText" : this.responseDraftId !== undefined ? "sendMessageDraft" : "sendMessage";
       try {
-        if (this.responseMessageId === undefined) {
+        if (this.responseDraftId !== undefined) {
+          await this.sendResponseDraft(text, this.responseDraftId);
+        } else if (this.responseMessageId === undefined) {
           const msg = await this.sendResponseContent(text);
           this.responseMessageId = msg.message_id;
         } else {
@@ -973,20 +1062,13 @@ export class MessageBuffer implements TurnCallbacks {
       } catch (retryErr) {
         log.warn("response plain-text retry failed", { error: String(retryErr) });
         // Fall through to handleApiError for the retry error.
-        await this.handleApiError(retryErr, "response", retryOp, () => {
-          this.responseMessageId = undefined;
-          this.lastRenderedResponseText = "";
-          this.responseIsPlainText = false;
-        });
+        await this.handleApiError(retryErr, "response", retryOp, () => this.clearResponseIdentifiers());
         return;
       }
     }
-    const actualOp: "sendMessage" | "sendRichMessage" | "editMessageText" = op ?? (this.responseMessageId === undefined ? (this.responseIsPlainText ? "sendMessage" : "sendRichMessage") : "editMessageText");
-    await this.handleApiError(err, "response", actualOp, () => {
-      this.responseMessageId = undefined;
-      this.lastRenderedResponseText = "";
-      this.responseIsPlainText = false;
-    });
+    const actualOp: "sendMessage" | "sendRichMessage" | "sendMessageDraft" | "sendRichMessageDraft" | "editMessageText" =
+      op ?? (this.responseMessageId === undefined ? (this.responseDraftId !== undefined ? (this.responseIsPlainText ? "sendMessageDraft" : "sendRichMessageDraft") : (this.responseIsPlainText ? "sendMessage" : "sendRichMessage")) : "editMessageText");
+    await this.handleApiError(err, "response", actualOp, () => this.clearResponseIdentifiers());
   }
 
   /**
@@ -998,7 +1080,7 @@ export class MessageBuffer implements TurnCallbacks {
   private async handleApiError(
     err: unknown,
     kind: "status" | "response",
-    op: "sendMessage" | "sendRichMessage" | "editMessageText" | null,
+    op: "sendMessage" | "sendRichMessage" | "sendMessageDraft" | "sendRichMessageDraft" | "editMessageText" | null,
     onMessageGone: () => void,
   ): Promise<void> {
     const channel = kind === "status" ? "status" : "response";
@@ -1076,6 +1158,7 @@ export class MessageBuffer implements TurnCallbacks {
       visibility: this.visibility,
       statusMessageId: this.statusMessageId,
       responseMessageId: this.responseMessageId,
+      responseDraftId: this.responseDraftId,
       accumulatedText: this.accumulatedText,
       slots: Array.from(this.slots.entries()),
       statusFrozen: this.statusFrozen,
@@ -1085,6 +1168,8 @@ export class MessageBuffer implements TurnCallbacks {
       isStreaming: this.isStreaming,
       chatActionHandle: this.chatActionHandle,
       metrics: this.metrics,
+      useDrafts: this.useDrafts,
+      responseIsPlainText: this.responseIsPlainText,
     };
   }
 }

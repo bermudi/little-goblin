@@ -58,7 +58,7 @@ describe("buildStartHandler", () => {
     expect(replies[0]!.text).toBe("`[info]` Session `sess-abc-123` ready\\. Just start typing\\!");
     expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
     expect(calls.length).toBe(1);
-    expect(calls[0]!).toEqual({ chatId: 123, topicId: undefined });
+    expect(calls[0]!).toEqual({ chatId: 123, topicId: undefined, isPrivate: true });
   });
 
   it("welcomes back without creating when DM session already exists", async () => {

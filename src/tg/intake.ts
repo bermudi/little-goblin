@@ -197,6 +197,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     return new MessageBuffer(bot, locator.chatId, topicId, {
       visibility: cfg.toolVisibility,
       metrics,
+      drafts: locator.isPrivate,
       onTopicNotFound:
         topicId !== undefined
           ? async () => {

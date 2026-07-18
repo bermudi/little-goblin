@@ -6,6 +6,8 @@
 export interface ChatLocator {
   chatId: number;
   topicId?: number;
+  /** True when the source chat is a private (one-on-one) conversation. */
+  isPrivate?: boolean;
 }
 
 /** Per-session state persisted in sessions/<id>/state.json */

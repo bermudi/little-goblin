@@ -34,17 +34,26 @@ interface ChatActionCall {
   chatId: number | string;
   action: string;
 }
+interface DraftCall {
+  chatId: number | string;
+  draftId: number;
+  text: string;
+  opts?: Record<string, unknown>;
+}
 
 interface MockBot {
   bot: Bot;
   send: SendCall[];
   edit: EditCall[];
+  drafts: DraftCall[];
   documents: DocumentCall[];
   chatActions: ChatActionCall[];
   /** Set to throw the next sendMessage / sendRichMessage / editMessageText / sendDocument. */
   failNext: {
     send?: unknown;
     rich?: unknown;
+    richDraft?: unknown;
+    plainDraft?: unknown;
     edit?: unknown;
     document?: unknown;
     chatAction?: unknown;
@@ -55,12 +64,14 @@ interface MockBot {
 function makeBot(): MockBot {
   const send: SendCall[] = [];
   const edit: EditCall[] = [];
+  const drafts: DraftCall[] = [];
   const documents: DocumentCall[] = [];
   const chatActions: ChatActionCall[] = [];
   const state: MockBot = {
     bot: undefined as unknown as Bot,
     send,
     edit,
+    drafts,
     documents,
     chatActions,
     failNext: {},
@@ -85,6 +96,24 @@ function makeBot(): MockBot {
         }
         send.push({ chatId, text: richMessage.markdown ?? "", opts });
         return { message_id: ++state.nextMessageId };
+      },
+      sendRichMessageDraft: async (chatId: number | string, draftId: number, richMessage: { markdown?: string }, opts?: Record<string, unknown>) => {
+        if (state.failNext.richDraft !== undefined) {
+          const err = state.failNext.richDraft;
+          state.failNext.richDraft = undefined;
+          throw err;
+        }
+        drafts.push({ chatId, draftId, text: richMessage.markdown ?? "", opts });
+        return true;
+      },
+      sendMessageDraft: async (chatId: number | string, draftId: number, text: string, opts?: Record<string, unknown>) => {
+        if (state.failNext.plainDraft !== undefined) {
+          const err = state.failNext.plainDraft;
+          state.failNext.plainDraft = undefined;
+          throw err;
+        }
+        drafts.push({ chatId, draftId, text, opts });
+        return true;
       },
       editMessageText: async (
         chatId: number | string,
@@ -1447,6 +1476,96 @@ describe("MessageBuffer", () => {
       await tick();
       const lastEdit = m.edit[m.edit.length - 1];
       expect(lastEdit?.text).toBe("draft more");
+    });
+  });
+
+  describe("response streaming with drafts", () => {
+    const DRAFT_ON = { drafts: true as const, visibility: "none" as const, responseThrottleMs: 0 };
+
+    it("creates a rich draft on the first flush and updates it on subsequent deltas", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      buffer.onTextDelta("hello");
+      await tick();
+      expect(m.drafts.length).toBe(1);
+      expect(m.drafts[0]!.text).toBe("hello");
+      expect(m.drafts[0]!.draftId).toBe(1);
+      expect(buffer._state().responseDraftId).toBe(1);
+
+      buffer.onTextDelta(" world");
+      await tick();
+      expect(m.drafts.length).toBe(2);
+      expect(m.drafts[1]!.text).toBe("hello world");
+      expect(m.drafts[1]!.draftId).toBe(1);
+    });
+
+    it("finalizes the draft to a persistent message on agent_end", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      buffer.onTextDelta("final answer");
+      await tick();
+      expect(m.drafts.length).toBe(1);
+      expect(m.send.length).toBe(0);
+
+      buffer.onAgentEnd();
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]!.text).toBe("final answer");
+      // Draft finalized; no further draft updates after agent_end.
+      expect(m.drafts.length).toBe(1);
+    });
+
+    it("finalizes and resets draft at tool boundaries so post-tool text starts fresh", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      buffer.onTextDelta("before tool");
+      buffer.onToolStart("bash", {});
+      await tick();
+      await tick();
+
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]!.text).toBe("before tool");
+      expect(buffer._state().responseDraftId).toBeUndefined();
+
+      buffer.onToolEnd("bash", false);
+      buffer.onTextDelta("after tool");
+      await tick();
+      expect(m.drafts.length).toBe(2);
+      expect(m.drafts[1]!.text).toBe("after tool");
+
+      buffer.onAgentEnd();
+      await tick();
+      expect(m.send.length).toBe(2);
+      expect(m.send[1]!.text).toBe("after tool");
+    });
+
+    it("falls back to plain-text drafts after a rich parse error", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      m.failNext.richDraft = { error_code: 400, description: "Bad Request: can't parse markdown" };
+      buffer.onTextDelta("*bold*");
+      await tick();
+      await tick();
+
+      // The rich draft call failed; the plain-text retry lands as one draft.
+      expect(m.drafts.length).toBe(1);
+      expect(m.drafts[0]!.text).toBe("bold");
+      // Subsequent updates stay plain.
+      buffer.onTextDelta(" more");
+      await tick();
+      expect(m.drafts.length).toBe(2);
+      expect(m.drafts[1]!.text).toBe("bold more");
+      expect(buffer._state().responseIsPlainText).toBe(true);
+    });
+
+    it("does not use drafts when drafts option is false", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" as const, responseThrottleMs: 0 });
+      buffer.onTextDelta("plain path");
+      await tick();
+      expect(m.drafts.length).toBe(0);
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]!.text).toBe("plain path");
     });
   });
 

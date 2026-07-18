@@ -22,6 +22,7 @@ export function locatorFromCtx(ctx: Context): ChatLocator | null {
     typeof msg.message_thread_id === "number";
 
   const topicId = isTopic ? (msg as { message_thread_id: number }).message_thread_id : undefined;
+  const isPrivate = ctx.chat?.type === "private";
 
-  return { chatId, topicId };
+  return { chatId, topicId, isPrivate };
 }

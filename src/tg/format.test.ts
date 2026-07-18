@@ -4,6 +4,7 @@ import {
   stripMdV2,
   systemReply,
   sendSystemReply,
+  classifyTelegramError,
   type ReplyOpts,
 } from "./format.ts";
 
@@ -171,5 +172,87 @@ describe("sendSystemReply", () => {
     );
     await sendSystemReply({ reply: m.reply }, "x", "ok");
     expect(m.calls).toHaveLength(0);
+  });
+});
+
+describe("classifyTelegramError", () => {
+  it("classifies 429 as rate_limited with retryAfterSec", () => {
+    const info = classifyTelegramError({
+      error_code: 429,
+      description: "Too Many Requests: retry after 5",
+      parameters: { retry_after: 5 },
+    });
+    expect(info.outcome).toBe("rate_limited");
+    expect(info.retryAfterSec).toBe(5);
+    expect(info.errorCode).toBe(429);
+  });
+
+  it("classifies topic-not-found 400s", () => {
+    const info = classifyTelegramError({
+      error_code: 400,
+      description: "Bad Request: topic not found",
+    });
+    expect(info.outcome).toBe("topic_not_found");
+  });
+
+  it("classifies 'message to edit not found' as message_gone", () => {
+    const info = classifyTelegramError({
+      error_code: 400,
+      description: "Bad Request: message to edit not found",
+    });
+    expect(info.outcome).toBe("message_gone");
+  });
+
+  it("classifies 'message can't be edited' as message_gone", () => {
+    const info = classifyTelegramError({
+      error_code: 400,
+      description: "Bad Request: message can't be edited",
+    });
+    expect(info.outcome).toBe("message_gone");
+  });
+
+  it("classifies 'message not found' as message_gone", () => {
+    const info = classifyTelegramError({
+      error_code: 400,
+      description: "Bad Request: message not found",
+    });
+    expect(info.outcome).toBe("message_gone");
+  });
+
+  it("does NOT classify 'chat not found' as message_gone", () => {
+    const info = classifyTelegramError({
+      error_code: 400,
+      description: "Bad Request: chat not found",
+    });
+    expect(info.outcome).toBe("error");
+  });
+
+  it("does NOT classify 'user not found' as message_gone", () => {
+    const info = classifyTelegramError({
+      error_code: 400,
+      description: "Bad Request: user not found",
+    });
+    expect(info.outcome).toBe("error");
+  });
+
+  it("classifies 'message is not modified' as message_not_modified", () => {
+    const info = classifyTelegramError({
+      error_code: 400,
+      description: "Bad Request: message is not modified",
+    });
+    expect(info.outcome).toBe("message_not_modified");
+  });
+
+  it("classifies unknown 400s as error", () => {
+    const info = classifyTelegramError({
+      error_code: 400,
+      description: "Bad Request: something else",
+    });
+    expect(info.outcome).toBe("error");
+  });
+
+  it("classifies non-Telegram errors as error", () => {
+    const info = classifyTelegramError(new Error("network failure"));
+    expect(info.outcome).toBe("error");
   });
 });

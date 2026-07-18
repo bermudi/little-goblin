@@ -14,7 +14,7 @@
 - [x] Add optional `metrics` to `MessageBufferOptions` and store it in `MessageBuffer`.
 - [x] Record `telegram` events for `sendMessage`/`editMessageText` calls in `flushStatus`, `flushResponse`, `maybeRollover`, and plain-text retry paths.
 - [x] Record `telegram` `throttled` events in `flushResponse`/`flushStatus` short-circuits.
-- [x] Extend `handleApiError` to classify and record `telegram` outcomes and increment `telegram_topic_not_found_total`.
+- [x] Extend `handleApiError` to classify and record `telegram` outcomes, including `topic_not_found`. `readMetricsSummary` derives `topicNotFound` from `topic_not_found` events and can combine any separately-recorded `telegram_topic_not_found_total` counter values.
 - [x] Update `src/tg/intake.ts` `createMessageBuffer` factory to accept `SessionState` and create a session-scoped `MetricsStore`.
 - [x] Extend `src/orchestration/dispatcher.ts` `createMessageBuffer` signature to pass `SessionState` to the factory.
 - [x] Update `src/bot.ts` to wrap `TelegramIntakeMessage.reply` with `telegram` `sendMessage` event recording.

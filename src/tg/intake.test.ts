@@ -1312,4 +1312,22 @@ describe("createMessageBuffer factory", () => {
     // No active session means the buffer has no metrics; nothing should throw.
     expect(replies.length).toBe(1);
   });
+
+  it("createMessageBuffer with no session yields a buffer with no metrics", () => {
+    const cfg = makeConfig();
+    const manager = new SessionManager(cfg);
+    const bot = fakeBot();
+    const intake = createTelegramIntake({
+      cfg,
+      bot,
+      manager,
+      subagentRunner: new SubagentRunner(cfg),
+      memoryStore: new MemoryStore(cfg.goblinHome),
+      agentRunners: new Map<string, AgentRunner>(),
+    });
+
+    const locator: ChatLocator = { chatId: 1 };
+    const buffer = intake.dispatcher.createMessageBuffer(locator, undefined) as unknown as MessageBuffer;
+    expect(buffer._state().metrics).toBeUndefined();
+  });
 });

@@ -309,16 +309,6 @@ export class MessageBuffer implements TurnCallbacks {
     }
   }
 
-  /** Best-effort increment of the topic-not-found counter; swallows metric errors. */
-  private recordTopicNotFoundCounter(): void {
-    if (!this.metrics) return;
-    try {
-      this.metrics.incrementCounter("telegram_topic_not_found_total", null);
-    } catch (err) {
-      log.warn("failed to record topic not found counter", { error: String(err) });
-    }
-  }
-
   onTextDelta(delta: string): void {
     if (this.statusFrozen) return;
     const prevLen = this.accumulatedText.length;
@@ -1034,6 +1024,16 @@ export class MessageBuffer implements TurnCallbacks {
     // for the rest of this response message's lifetime, so we don't loop.
     if (!this.responseIsPlainText && isParseError(err)) {
       this.responseIsPlainText = true;
+      const initialOp: "sendMessage" | "editMessageText" = op ?? (this.responseMessageId === undefined ? "sendMessage" : "editMessageText");
+      const e = err as { error_code?: number; description?: string };
+      this.recordTelegramEvent({
+        type: "telegram",
+        op: initialOp,
+        channel: "response",
+        outcome: "error",
+        errorCode: e.error_code,
+        errorDescription: e.description ?? String(err),
+      });
       log.warn("response MarkdownV2 parse error, falling back to plain text", {
         description: (err as { description?: string }).description,
       });
@@ -1130,7 +1130,6 @@ export class MessageBuffer implements TurnCallbacks {
     // Telegram returns these when the topic/thread ID is invalid (deleted topic)
     if (outcome === "topic_not_found") {
       log.warn(`${kind} topic not found, archiving orphaned scope`, { description: errorDescription });
-      this.recordTopicNotFoundCounter();
       if (!this.topicNotFoundReported && this.onTopicNotFound) {
         this.topicNotFoundReported = true;
         try {
@@ -1176,6 +1175,7 @@ export class MessageBuffer implements TurnCallbacks {
       lastResponseEditTime: this.lastResponseEditTime,
       isStreaming: this.isStreaming,
       chatActionHandle: this.chatActionHandle,
+      metrics: this.metrics,
     };
   }
 }

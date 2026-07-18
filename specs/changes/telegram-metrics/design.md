@@ -81,7 +81,7 @@ This change extends the `session-metrics` `MetricsStore` foundation with Telegra
   - Add optional `metrics` to `MessageBufferOptions` and store it in the class.
   - Record `telegram` events for `sendMessage`/`editMessageText` calls in `flushStatus`, `flushResponse`, `maybeRollover`, and plain-text retries.
   - Record `telegram` `throttled` events when `flushResponse`/`flushStatus` short-circuits on the throttle window.
-  - Extend `handleApiError` to classify outcomes and record `telegram` events; increment `telegram_topic_not_found_total` on topic-not-found detection.
+  - Extend `handleApiError` to classify outcomes and record `telegram` events (including `topic_not_found`). `readMetricsSummary` derives `topicNotFound` from `topic_not_found` events and can still combine any separately-recorded `telegram_topic_not_found_total` counter values.
   - Relates to telegram spec `MessageBuffer records Telegram API call metrics`, `MessageBuffer records response and status throttling`, and `MessageBuffer receives a session-scoped MetricsStore`.
 
 - `src/tg/buffer.test.ts`

@@ -173,7 +173,7 @@ export function classifyTelegramError(err: unknown): TelegramApiErrorInfo {
     return { outcome: "topic_not_found", errorCode: code, errorDescription: description };
   }
 
-  if (code === 400 && /not found|can't be edited|to edit/i.test(description)) {
+  if (code === 400 && /message(?: to edit)? not found|message can't be edited|message cannot be edited/i.test(description)) {
     return { outcome: "message_gone", errorCode: code, errorDescription: description };
   }
 

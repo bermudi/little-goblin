@@ -17,7 +17,7 @@ The `MessageBuffer` class in `src/tg/buffer.ts` SHALL accept an optional `metric
   - `"error"` for all other failures.
 - Non-success outcomes SHALL include `errorCode` and `errorDescription` in the event.
 
-When a `topic_not_found` outcome is detected, the buffer SHALL also call `metrics.incrementCounter("telegram_topic_not_found_total", null)`.
+The `topic_not_found` outcome is recorded through the `telegram` event above; `readMetricsSummary` derives `topicNotFound` from `topic_not_found` events (and can still combine any separately-recorded `telegram_topic_not_found_total` counter values).
 
 #### Scenario: Status placeholder send succeeds
 
@@ -34,11 +34,18 @@ When a `topic_not_found` outcome is detected, the buffer SHALL also call `metric
 
 - **WHEN** `flushResponse` calls `editMessageText` and Telegram returns a 400 matching topic not found
 - **THEN** a `telegram` event with `op: "editMessageText"`, `channel: "response"`, `outcome: "topic_not_found"` SHALL be recorded
-- **AND** `telegram_topic_not_found_total` SHALL be incremented
+- **AND** `readMetricsSummary` for the session SHALL report `topicNotFound: 1`
+
+#### Scenario: Response send hits a MarkdownV2 parse error and retries as plain text
+
+- **WHEN** `flushResponse` calls `sendMessage` with `parse_mode: "MarkdownV2"` and Telegram returns a 400 parse error
+- **THEN** a `telegram` event with `op: "sendMessage"`, `channel: "response"`, `outcome: "error"`, `errorCode: 400`, and `errorDescription` containing parse SHALL be recorded
+- **AND** the buffer SHALL retry the same text as plain text
+- **AND** the retry `sendMessage` SHALL record a `success` event when it resolves
 
 ### Requirement: MessageBuffer records response and status throttling
 
-When `MessageBuffer.flushResponse` or `MessageBuffer.flushStatus` short-circuits because the elapsed time since the last edit is less than the configured throttle window, the buffer SHALL record a `telegram` `MetricsEvent` with `op: null`, `channel` set to `"status"` or `"response"`, `outcome: "throttled"`, and `extra` containing `elapsedMs` and `throttleMs`.
+When `MessageBuffer.flushResponse` or `MessageBuffer.flushStatus` short-circuits because the elapsed time since the last edit is less than the configured throttle window, the buffer SHALL record a `telegram` `MetricsEvent` with `op: null`, `channel` set to `"status"` or `"response"`, `outcome: "throttled"`, and top-level `elapsedMs` and `throttleMs` fields.
 
 #### Scenario: Response flush is throttled
 

@@ -2870,7 +2870,7 @@ describe("MessageBuffer", () => {
       }
     });
 
-    it("records topic-not-found response edit and increments counter", async () => {
+    it("records topic-not-found response edit", async () => {
       const m = makeBot();
       const metrics = makeMetrics();
       try {
@@ -2901,7 +2901,7 @@ describe("MessageBuffer", () => {
         expect(topic?.op).toBe("editMessageText");
         expect(topicNotFoundCalled).toBe(true);
         const summary = readMetricsSummary(metrics.home, TEST_SESSION_ID);
-        expect(summary?.telegram.topicNotFound).toBe(2);
+        expect(summary?.telegram.topicNotFound).toBe(1);
       } finally {
         metrics.cleanup();
       }
@@ -2956,6 +2956,39 @@ describe("MessageBuffer", () => {
         const notModified = readTelegramEvents(metrics.home).find((e) => e.outcome === "message_not_modified");
         expect(notModified).toBeDefined();
         expect(notModified?.op).toBe("editMessageText");
+      } finally {
+        metrics.cleanup();
+      }
+    });
+
+    it("records parse-error failure and plain-text retry success", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+          responseThrottleMs: 0,
+          visibility: "none",
+          metrics: metrics.store,
+        });
+        m.failNext.send = { error_code: 400, description: "Bad Request: can't parse markdown" };
+        buffer.onTextDelta("*bold*");
+        await tick();
+
+        const events = readTelegramEvents(metrics.home);
+        expect(events.length).toBe(2);
+        expect(events[0]).toMatchObject({
+          type: "telegram",
+          op: "sendMessage",
+          channel: "response",
+          outcome: "error",
+          errorCode: 400,
+        });
+        expect(events[1]).toMatchObject({
+          type: "telegram",
+          op: "sendMessage",
+          channel: "response",
+          outcome: "success",
+        });
       } finally {
         metrics.cleanup();
       }

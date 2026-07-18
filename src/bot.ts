@@ -47,6 +47,21 @@ function safeRecordTelegramEvent(metrics: MetricsStore | undefined, event: Teleg
   }
 }
 
+/**
+ * Resolve the `MetricsStore` for a system reply, swallowing resolution errors.
+ * `manager.resolve` can throw on non-`ENOENT` filesystem errors (fail-loud
+ * rule); a resolution failure after a successful `ctx.reply` must not be
+ * treated as a reply failure, so we log and return `undefined` instead.
+ */
+function safeGetMetrics(getMetrics: () => MetricsStore | undefined): MetricsStore | undefined {
+  try {
+    return getMetrics();
+  } catch (err) {
+    log.warn("failed to resolve metrics store for system reply", { error: String(err) });
+    return undefined;
+  }
+}
+
 function wrapReply(
   reply: (text: string, opts?: ReplyOpts) => Promise<void>,
   getMetrics: () => MetricsStore | undefined,
@@ -54,7 +69,7 @@ function wrapReply(
   return async (text, opts) => {
     try {
       await reply(text, opts);
-      safeRecordTelegramEvent(getMetrics(), {
+      safeRecordTelegramEvent(safeGetMetrics(getMetrics), {
         type: "telegram",
         op: "sendMessage",
         channel: "system",
@@ -62,7 +77,7 @@ function wrapReply(
       });
     } catch (err) {
       const { outcome, errorCode, errorDescription, retryAfterSec } = classifyTelegramError(err);
-      safeRecordTelegramEvent(getMetrics(), {
+      safeRecordTelegramEvent(safeGetMetrics(getMetrics), {
         type: "telegram",
         op: "sendMessage",
         channel: "system",
@@ -79,6 +94,15 @@ function wrapReply(
 function intakeMessageFromCtx(ctx: Context, manager: SessionManager, cfg: Config): TelegramIntakeMessage {
   const locator = locatorFromCtx(ctx);
   const isSupergroup = ctx.chat?.type === "supergroup";
+  // System-reply metrics are attributed to the session bound at reply
+  // completion time, not at message construction time. This differs from
+  // MessageBuffer, which pins its MetricsStore at createMessageBuffer time.
+  // Under concurrent updates that mutate bindings.json (e.g. a /resume or
+  // /archive racing with an in-flight reply), the metric may be attributed
+  // to the wrong session or dropped. This is accepted for system replies
+  // because they are fire-and-forget and single-user; pinning at construction
+  // would lose metrics for /new replies (the session does not exist yet at
+  // intakeMessageFromCtx time).
   const getMetrics = (): MetricsStore | undefined => {
     if (!locator) return undefined;
     const session = manager.resolve(locator, { isSupergroup });
@@ -108,9 +132,9 @@ export function replyNoActiveSession(ctx: Context, locator: ChatLocator, kind: s
     locator,
     isSupergroup: ctx.chat?.type === "supergroup",
     threadId: ctx.message?.message_thread_id,
-    reply: async (text, opts) => {
+    reply: wrapReply(async (text, opts) => {
       await ctx.reply(text, opts as Record<string, unknown> | undefined);
-    },
+    }, () => undefined),
     prepare: (content) => content,
   }, locator, kind);
 }

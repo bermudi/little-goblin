@@ -48,4 +48,4 @@
 - [x] Add an integration test that verifies `mcp_call` is absent when `cfg.mcp` is `undefined`.
 - [x] Add an integration test that verifies `mcp_call` is absent when `mcpRunner` is absent even if `cfg.mcp` is defined.
 - [x] Run `bun test` to verify all tests pass.
-- [ ] Manually verify against a real `mcporter` install: start Goblin with `mcp: { enabled: ["tavily"] }` in `goblin.json5`, send a message that should trigger `mcp_call`, and confirm the agent invokes the tool and returns a result.
+- [x] Manually verify against a real `mcporter` install: start Goblin with `mcp: { enabled: ["tavily"] }` in `goblin.json5`, send a message that should trigger `mcp_call`, and confirm the agent invokes the tool and returns a result.

@@ -320,8 +320,21 @@ export class MessageBuffer implements TurnCallbacks {
       // Seal the current response segment: force-flush so the just-completed
       // text lands, then finalize any active draft and clear response state so
       // the next text delta after the tool creates a fresh response.
+      const sealedTextSnapshot = this.accumulatedText;
+      const sealedMsgIdSnapshot = this.responseMessageId;
+      const sealedDraftIdSnapshot = this.responseDraftId;
       void (async () => {
         await this.flushResponse(true);
+        // Guard: skip cleanup only if text changed WITHOUT an id change.
+        // This happens when a concurrent text delta arrived during the flush.
+        // Rollover/file-escape changes BOTH text (head removed/reset) AND id,
+        // so we DO cleanup after those — the segment was already sent.
+        const textChanged = this.accumulatedText !== sealedTextSnapshot;
+        const msgIdChanged = this.responseMessageId !== sealedMsgIdSnapshot;
+        const draftIdChanged = this.responseDraftId !== sealedDraftIdSnapshot;
+        if (textChanged && !msgIdChanged && !draftIdChanged) {
+          return;
+        }
         await this.finalizeResponse();
         this.resetResponse();
       })();
@@ -383,8 +396,17 @@ export class MessageBuffer implements TurnCallbacks {
       // Seal the current response segment: force-flush so the just-completed
       // text lands, then finalize any active draft and clear response state so
       // the next assistant message creates a fresh response.
+      const sealedTextSnapshot = this.accumulatedText;
+      const sealedMsgIdSnapshot = this.responseMessageId;
+      const sealedDraftIdSnapshot = this.responseDraftId;
       void (async () => {
         await this.flushResponse(true);
+        const textChanged = this.accumulatedText !== sealedTextSnapshot;
+        const msgIdChanged = this.responseMessageId !== sealedMsgIdSnapshot;
+        const draftIdChanged = this.responseDraftId !== sealedDraftIdSnapshot;
+        if (textChanged && !msgIdChanged && !draftIdChanged) {
+          return;
+        }
         await this.finalizeResponse();
         this.resetResponse();
       })();
@@ -394,13 +416,29 @@ export class MessageBuffer implements TurnCallbacks {
   onMessageEnd(_message?: AgentMessage): void {
     if (this.statusFrozen) return;
     // Force-flush the current assistant message so the final text lands in
-    // full, but do not reset response state — the next assistant message
-    // start will do the seal.
+    // full. In draft mode this is a segment boundary, so finalize the active
+    // draft and reset state so the next assistant message starts fresh.
     log.debug("response: message end flush", {
       accLen: this.accumulatedText.length,
       msgId: this.responseMessageId,
+      draftId: this.responseDraftId,
     });
-    void this.flushResponse(true);
+    const sealedTextSnapshot = this.accumulatedText;
+    const sealedMsgIdSnapshot = this.responseMessageId;
+    const sealedDraftIdSnapshot = this.responseDraftId;
+    void (async () => {
+      await this.flushResponse(true);
+      const textChanged = this.accumulatedText !== sealedTextSnapshot;
+      const msgIdChanged = this.responseMessageId !== sealedMsgIdSnapshot;
+      const draftIdChanged = this.responseDraftId !== sealedDraftIdSnapshot;
+      if (textChanged && !msgIdChanged && !draftIdChanged) {
+        return;
+      }
+      if (this.responseDraftId !== undefined || sealedDraftIdSnapshot !== undefined) {
+        await this.finalizeResponse();
+        this.resetResponse();
+      }
+    })();
   }
 
   onAgentEnd(): void {
@@ -727,11 +765,11 @@ export class MessageBuffer implements TurnCallbacks {
    */
   async flushResponse(force: boolean = false): Promise<void> {
     // Ensure the status message lands before creating the first response
-    // message, so the status appears above the response in the chat.
-    // editingStatus is set synchronously by commitStatus/flushStatus and
-    // cleared when the status sendMessage resolves. Once the status
+    // message or streaming draft, so the status appears above the response
+    // in the chat. editingStatus is set synchronously by commitStatus/flushStatus
+    // and cleared when the status sendMessage resolves. Once the first response
     // exists this is a no-op (editingStatus is null).
-    if (this.responseMessageId === undefined && this.editingStatus) {
+    if (this.responseMessageId === undefined && this.responseDraftId === undefined && this.editingStatus) {
       await this.editingStatus;
     }
 

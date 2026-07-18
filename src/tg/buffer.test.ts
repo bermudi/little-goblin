@@ -1539,6 +1539,56 @@ describe("MessageBuffer", () => {
       expect(m.send[1]!.text).toBe("after tool");
     });
 
+    it("finalizes and resets draft at assistant message boundaries so the next message starts fresh", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      buffer.onMessageStart(); // first assistant message
+      buffer.onTextDelta("first reply");
+      await tick();
+
+      expect(m.drafts.length).toBe(1);
+      expect(m.drafts[0]!.text).toBe("first reply");
+      expect(buffer._state().responseDraftId).toBe(1);
+
+      // Second assistant message start seals the draft from the first message.
+      buffer.onMessageStart();
+      await tick();
+
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]!.text).toBe("first reply");
+      expect(buffer._state().responseDraftId).toBeUndefined();
+      expect(buffer._state().accumulatedText).toBe("");
+
+      buffer.onTextDelta("second reply");
+      await tick();
+      expect(m.drafts.length).toBe(2);
+      expect(m.drafts[1]!.text).toBe("second reply");
+      expect(m.drafts[1]!.draftId).toBe(2);
+    });
+
+    it("finalizes the draft on message_end so the next assistant message starts fresh", async () => {
+      const m = makeBot();
+      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      buffer.onMessageStart();
+      buffer.onTextDelta("first reply");
+      await tick();
+      expect(m.drafts.length).toBe(1);
+
+      buffer.onMessageEnd();
+      await tick();
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]!.text).toBe("first reply");
+      expect(buffer._state().responseDraftId).toBeUndefined();
+      expect(buffer._state().accumulatedText).toBe("");
+
+      buffer.onMessageStart();
+      buffer.onTextDelta("second reply");
+      await tick();
+      expect(m.drafts.length).toBe(2);
+      expect(m.drafts[1]!.text).toBe("second reply");
+      expect(m.drafts[1]!.draftId).toBe(2);
+    });
+
     it("falls back to plain-text drafts after a rich parse error", async () => {
       const m = makeBot();
       const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);

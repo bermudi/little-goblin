@@ -21,6 +21,7 @@ import {
   type TelegramIntakeMessage,
 } from "./tg/intake.ts";
 import { ExternalAgentRunner } from "./external-agents/mod.ts";
+import { McpRunner } from "./mcp/mod.ts";
 import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
 
 /**
@@ -147,7 +148,7 @@ interface BuildBotOptions {
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
 }
 
-export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner>; scheduleStore: ScheduleStore; dispatcher: TurnDispatcher; externalAgentRunner: ExternalAgentRunner | undefined } {
+export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner>; scheduleStore: ScheduleStore; dispatcher: TurnDispatcher; externalAgentRunner: ExternalAgentRunner | undefined; mcpRunner: McpRunner | undefined } {
   configureVoice(cfg);
   const bot = new Bot(cfg.botToken);
   const manager = new SessionManager(cfg);
@@ -160,6 +161,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   const scheduleStore = new ScheduleStore(cfg.goblinHome);
   // External agent runner is only created when at least one backend is enabled.
   const externalAgentRunner = cfg.externalAgents?.backends.length ? new ExternalAgentRunner(cfg) : undefined;
+  const mcpRunner = cfg.mcp ? new McpRunner(cfg.mcp, cfg.goblinHome) : undefined;
   const intake = createTelegramIntake({
     cfg,
     bot,
@@ -170,6 +172,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     createAgentRunner: options.createAgentRunner,
     scheduleStore,
     externalAgentRunner,
+    mcpRunner,
   });
 
   // Text coalescer: merges Telegram-split fragments before they reach intake.
@@ -314,5 +317,5 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     });
   });
 
-  return { bot, manager, subagentRunner, agentRunners: runners, scheduleStore, dispatcher: intake.dispatcher, externalAgentRunner };
+  return { bot, manager, subagentRunner, agentRunners: runners, scheduleStore, dispatcher: intake.dispatcher, externalAgentRunner, mcpRunner };
 }

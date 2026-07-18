@@ -18,6 +18,7 @@ import { SessionManager, type ChatLocator, type SessionState } from "../sessions
 import { SubagentRunner } from "../subagents/mod.ts";
 import { TurnDispatcher, type PromptContent, type TurnSink } from "../orchestration/dispatcher.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
+import type { McpRunner } from "../mcp/mod.ts";
 import { transcribeWithGroq } from "../asr/mod.ts";
 import { MessageBuffer, createTextToSpeechTool } from "./mod.ts";
 import { createSendDocumentTool, createSendPhotoTool, createSendVoiceTool } from "./tools.ts";
@@ -85,6 +86,8 @@ export interface TelegramIntakeOptions {
   scheduleStore?: ScheduleStore;
   /** Shared external agent runner. Wired in Phase 6 (bot.ts). */
   externalAgentRunner?: ExternalAgentRunner;
+  /** Shared MCP runner. Wired in buildBot. */
+  mcpRunner?: McpRunner;
 }
 
 type ActiveTurn = {
@@ -224,6 +227,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     createBetaTools,
     scheduleStore: options.scheduleStore,
     externalAgentRunner: options.externalAgentRunner,
+    mcpRunner: options.mcpRunner,
   });
 
   function recordAssistantReply(sessionId: string, text: string): void {

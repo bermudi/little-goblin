@@ -38,6 +38,7 @@ import { workdirPath } from "../workspace/paths.ts";
 import { AgentBackend, AgentBackendOptions, PiAgentBackend } from "./backend.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import { createExternalAgentTool } from "../external-agents/tool.ts";
+import { McpRunner, createMcpTools } from "../mcp/mod.ts";
 
 /** Options for constructing an AgentRunner. */
 export interface AgentRunnerOptions {
@@ -66,6 +67,8 @@ export interface AgentRunnerOptions {
   scheduleStore?: ScheduleStore;
   /** Shared external agent runner. When present and enabled, the agent gets the `external_agent` tool. */
   externalAgentRunner?: ExternalAgentRunner;
+  /** Shared MCP runner. When present and configured, the agent gets the `mcp_call` and `mcp_describe` tools. */
+  mcpRunner?: McpRunner;
   /**
    * Pre-resolved model to use. When present, the runner skips `resolveModel()`
    * and uses this value directly. Useful for tests that drive the SDK with a
@@ -196,6 +199,7 @@ export class AgentRunner {
   private subagentRunner: SubagentRunner | null;
   private scheduleStore: ScheduleStore | undefined;
   private externalAgentRunner: ExternalAgentRunner | null;
+  private mcpRunner: McpRunner | null;
   private backend: AgentBackend;
   private accumulatedText: string = "";
   private callbacks: TurnCallbacks | null = null;
@@ -268,6 +272,7 @@ export class AgentRunner {
     this.subagentRunner = opts.subagentRunner ?? null;
     this.scheduleStore = opts.scheduleStore;
     this.externalAgentRunner = opts.externalAgentRunner ?? null;
+    this.mcpRunner = opts.mcpRunner ?? null;
     this.getTopicName = opts.getTopicName;
     this.projectDir = opts.projectDir;
     this._modelName = opts.modelName ?? (opts.resolvedModel ? `${opts.resolvedModel.model.provider}/${opts.resolvedModel.model.id}` : undefined);
@@ -400,6 +405,11 @@ export class AgentRunner {
           onStatusUpdate: (msg) => this.callbacks?.onStatusUpdate(msg),
         }),
       );
+    }
+
+    if (this.mcpRunner && this.cfg.mcp) {
+      await this.mcpRunner.ready;
+      tools.push(...createMcpTools(this.mcpRunner));
     }
 
     return tools;

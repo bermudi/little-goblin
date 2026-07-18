@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import JSON5 from "json5";
-import { ConfigFileSchema, type ExternalAgentsConfig } from "./schema.ts";
+import { ConfigFileSchema, type ExternalAgentsConfig, type McpConfig } from "./schema.ts";
 import { resolveConfigValue } from "./resolve-value.ts";
 import { sessionsDir } from "./sessions/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
@@ -47,6 +47,8 @@ export interface Config {
   asrModel?: "whisper-large-v3-turbo" | "whisper-large-v3";
   /** External agent runner configuration. */
   externalAgents?: ExternalAgentsConfig;
+  /** MCP bridge configuration. */
+  mcp?: McpConfig;
 }
 
 /**
@@ -106,11 +108,19 @@ export function loadConfig(): Config {
     groqApiKey: cfg.groqApiKey,
     asrModel: cfg.asrModel,
     externalAgents: cfg.externalAgents,
+    mcp: cfg.mcp,
   });
 
   if (config.externalAgents) {
     Object.freeze(config.externalAgents);
     Object.freeze(config.externalAgents.backends);
+  }
+
+  if (config.mcp) {
+    Object.freeze(config.mcp);
+    if (config.mcp.enabled) {
+      Object.freeze(config.mcp.enabled);
+    }
   }
 
   return config;

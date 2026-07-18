@@ -306,6 +306,111 @@ describe("loadConfig", () => {
     const cfg = loadConfig();
     expect(cfg.groqApiKey).toBeUndefined();
   });
+
+  it("applies mcp defaults when the block is present but fields are omitted", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      mcp: {},
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.mcp).toBeDefined();
+    expect(cfg.mcp?.enabled).toBeUndefined();
+    expect(cfg.mcp?.configPath).toBeUndefined();
+    expect(cfg.mcp?.defaultTimeoutMs).toBe(120000);
+    expect(cfg.mcp?.maxResultChars).toBe(16000);
+  });
+
+  it("loads mcp.enabled from the config file", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      mcp: { enabled: ["tavily", "deepwiki"] },
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.mcp?.enabled).toEqual(["tavily", "deepwiki"]);
+  });
+
+  it("accepts an empty mcp.enabled array", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      mcp: { enabled: [] },
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.mcp?.enabled).toEqual([]);
+  });
+
+  it("rejects mcp.defaultTimeoutMs below the minimum", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      mcp: { defaultTimeoutMs: 1000 },
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    expect(() => loadConfig()).toThrow("Config validation failed");
+  });
+
+  it("rejects mcp.defaultTimeoutMs above the maximum", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      mcp: { defaultTimeoutMs: 3600000 },
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    expect(() => loadConfig()).toThrow("Config validation failed");
+  });
+
+  it("rejects mcp.maxResultChars below the minimum", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      mcp: { maxResultChars: 100 },
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    expect(() => loadConfig()).toThrow("Config validation failed");
+  });
+
+  it("leaves mcp undefined when the block is absent", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.mcp).toBeUndefined();
+  });
+
+  it("freezes the mcp block and its enabled array at load time", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      mcp: { enabled: ["tavily"] },
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(Object.isFrozen(cfg.mcp)).toBe(true);
+    expect(Object.isFrozen(cfg.mcp?.enabled)).toBe(true);
+  });
 });
 
 /** Minimal Config fixture for ensureGoblinHome — only goblinHome is read. */

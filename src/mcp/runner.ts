@@ -29,6 +29,7 @@ export class McpRunner {
   private readonly enabled: string[] | undefined;
   private readonly goblinHome: string;
   private catalog: Map<string, McpToolEntry[]>;
+  private refreshInFlight: Promise<void> | null = null;
   ready: Promise<void>;
 
   constructor(config: McpConfig, goblinHome: string) {
@@ -77,7 +78,8 @@ export class McpRunner {
 
   async describeTool(server: string, tool: string, signal?: AbortSignal): Promise<string> {
     await this.ready;
-    if (!this.catalog.has(server)) {
+    const catalog = this.catalog;
+    if (!catalog.has(server)) {
       return `${server} not in catalog`;
     }
     const result = await this.runMcporter(
@@ -107,7 +109,11 @@ export class McpRunner {
   }
 
   async refreshCatalog(): Promise<void> {
-    this.ready = this.discoverCatalog()
+    if (this.refreshInFlight) {
+      await this.refreshInFlight;
+      return;
+    }
+    const p = this.discoverCatalog()
       .then((catalog) => {
         this.catalog = catalog;
       })
@@ -117,7 +123,13 @@ export class McpRunner {
         });
         this.catalog = new Map();
       });
-    await this.ready;
+    this.refreshInFlight = p;
+    this.ready = p;
+    try {
+      await p;
+    } finally {
+      this.refreshInFlight = null;
+    }
   }
 
   buildCatalogText(): string {

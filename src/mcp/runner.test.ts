@@ -163,6 +163,35 @@ describe("McpRunner catalog", () => {
     expect(text).toContain("grep");
     expect(text).not.toContain("tavily");
   });
+
+  it("concurrent refreshCatalog calls serialize — only one discovery runs", async () => {
+    setOutput(JSON.stringify({
+      servers: [{ name: "tavily", tools: [{ name: "tavily_search", description: "Search" }] }],
+    }));
+    const runner = new McpRunner(baseConfig, "/tmp/goblin");
+    await runner.ready;
+
+    let discoverCalls = 0;
+    const originalRun = (runner as unknown as { runMcporter: (...args: unknown[]) => Promise<unknown> }).runMcporter.bind(runner);
+    (runner as unknown as { runMcporter: (...args: unknown[]) => Promise<unknown> }).runMcporter = function (...args: unknown[]): Promise<unknown> {
+      const first = args[0];
+      if (Array.isArray(first) && first[0] === "list" && first[1] === "--json") {
+        // discoverCatalog invokes ["list", "--json"]; count only catalog discoveries.
+        discoverCalls++;
+      }
+      return originalRun(...args);
+    };
+
+    setOutput(JSON.stringify({
+      servers: [{ name: "fresh", tools: [{ name: "new", description: "new" }] }],
+    }));
+    const p1 = runner.refreshCatalog();
+    const p2 = runner.refreshCatalog();
+    await Promise.all([p1, p2]);
+
+    expect(discoverCalls).toBe(1);
+    expect(runner.buildCatalogText()).toContain("fresh");
+  });
 });
 
 describe("McpRunner.callTool", () => {

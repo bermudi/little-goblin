@@ -75,13 +75,10 @@ export function resetPiMockState(): void {
 export function standardPiMock() {
   return {
     defineTool: <T>(definition: T) => definition,
-    AuthStorage: {
-      create: (_path: string) => ({
-        setRuntimeApiKey: (_provider: string, _key: string) => {},
+    ModelRuntime: {
+      create: async (_opts?: unknown) => ({
+        setRuntimeApiKey: async (_provider: string, _key: string) => {},
       }),
-    },
-    ModelRegistry: {
-      create: (_auth: unknown, _path: string) => ({}),
     },
     SettingsManager: {
       inMemory: (_obj: unknown) => ({}),

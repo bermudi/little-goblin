@@ -6,6 +6,8 @@ import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { AgentRunner } from "./mod.ts";
+import { PiAgentBackend } from "./backend.ts";
+import { createFauxPiServices } from "../test/faux-pi-services.ts";
 import type { TurnCallbacks } from "./mod.ts";
 import type { Config } from "../config.ts";
 import { soulMdPath, workdirPath } from "../workspace/paths.ts";
@@ -55,6 +57,11 @@ describe("AgentRunner pi-ai contract", () => {
       locator: { chatId: 1 },
       customTools: [],
       resolvedModel: { model, apiKey: "fake-key", thinkingLevel: "medium" },
+      backendFactory: (opts) =>
+        new PiAgentBackend({
+          ...opts,
+          deps: { createPiServices: (home) => createFauxPiServices(home, faux) },
+        }),
     });
 
     faux.setResponses([fauxAssistantMessage("Hello from faux")]);

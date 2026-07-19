@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
 import { AgentRunner } from "./agent/mod.ts";
+import { PiAgentBackend } from "./agent/backend.ts";
+import { createFauxPiServices } from "./test/faux-pi-services.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
@@ -212,6 +214,11 @@ async function makeBotWithRealRunner(cfgPatch: Partial<Config> = {}) {
         ...opts,
         modelName: "faux/faux-1",
         resolvedModel: { model: faux.getModel() as Model<Api>, apiKey: "fake-key", thinkingLevel: "medium" },
+        backendFactory: (bo) =>
+          new PiAgentBackend({
+            ...bo,
+            deps: { createPiServices: (home) => createFauxPiServices(home, faux) },
+          }),
       }),
   });
   const api = makeApi();

@@ -7,16 +7,22 @@
 
 import { readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Pi service factory
 // ---------------------------------------------------------------------------
 
-/** The trio of pi services shared across agent runners and subagents. */
+/**
+ * The pi services shared across agent runners and subagents.
+ *
+ * `modelRuntime` is the canonical async auth/model facade (pi-coding-agent
+ * 0.80.8+). It supersedes the old `AuthStorage` + `ModelRegistry` pair: a
+ * single `ModelRuntime` owns credential resolution (auth.json) and the model
+ * catalog (models.json), and is exactly what `createAgentSession` expects.
+ */
 export interface PiServices {
-  authStorage: AuthStorage;
-  modelRegistry: ModelRegistry;
+  modelRuntime: ModelRuntime;
   settingsManager: SettingsManager;
 }
 
@@ -26,12 +32,21 @@ export interface PiServices {
  * Stateless — returns new instances on every call. Caching is the caller's
  * responsibility.
  */
-export function createPiServices(home: string): PiServices {
+export async function createPiServices(home: string): Promise<PiServices> {
   const dir = piAgentDir(home);
-  const authStorage = AuthStorage.create(join(dir, "auth.json"));
-  const modelRegistry = ModelRegistry.create(authStorage, join(dir, "models.json"));
+  // `allowModelNetwork: false` keeps session init offline: model auth/catalog
+  // come from the built-in catalog + models.json, never a network refresh.
+  // This matches the pre-0.80.8 `AuthStorage`/`ModelRegistry` behaviour and
+  // avoids `ModelRuntime.create` blocking on a ~15s catalog refresh when the
+  // network is slow or `PI_OFFLINE` is unset. Live catalog refresh (if wanted)
+  // is a separate, on-demand concern (`/model`), not session startup.
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(dir, "auth.json"),
+    modelsPath: join(dir, "models.json"),
+    allowModelNetwork: false,
+  });
   const settingsManager = SettingsManager.inMemory({});
-  return { authStorage, modelRegistry, settingsManager };
+  return { modelRuntime, settingsManager };
 }
 
 // ---------------------------------------------------------------------------

@@ -38,8 +38,7 @@ describe("SubagentRunner — cancel guards", () => {
 
     mock.module("@earendil-works/pi-coding-agent", () => ({
       defineTool: <T>(definition: T) => definition,
-      AuthStorage: { create: () => ({ setRuntimeApiKey: () => {} }) },
-      ModelRegistry: { create: () => ({}) },
+      ModelRuntime: { create: async () => ({ setRuntimeApiKey: async () => {} }) },
       SettingsManager: { inMemory: () => ({}) },
       SessionManager: {
         create: (_cwd: string, dir: string) => {
@@ -123,8 +122,7 @@ describe("SubagentRunner — startup error handling", () => {
   it("marks meta as error when createAgentSession throws", async () => {
     mock.module("@earendil-works/pi-coding-agent", () => ({
       defineTool: <T>(definition: T) => definition,
-      AuthStorage: { create: () => ({ setRuntimeApiKey: () => {} }) },
-      ModelRegistry: { create: () => ({}) },
+      ModelRuntime: { create: async () => ({ setRuntimeApiKey: async () => {} }) },
       SettingsManager: { inMemory: () => ({}) },
       SessionManager: {
         create: (_cwd: string, dir: string) => {

@@ -103,7 +103,7 @@ async function _runInstanceInner(
   const memoryStore = new MemoryStore(cfg.goblinHome);
 
   const resolved = resolveModel(cfg);
-  services.authStorage.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
+  await services.modelRuntime.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
 
   const resourceLoader = await buildResourceLoader({
     home: cfg.goblinHome,
@@ -130,8 +130,7 @@ async function _runInstanceInner(
   const { session } = await createAgentSession({
     cwd,
     agentDir: piAgentDir(cfg.goblinHome),
-    authStorage: services.authStorage,
-    modelRegistry: services.modelRegistry,
+    modelRuntime: services.modelRuntime,
     settingsManager: services.settingsManager,
     sessionManager: instance.sessionManager,
     model: resolved.model,

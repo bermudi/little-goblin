@@ -225,9 +225,11 @@ export class SubagentRunner {
     // immediately so callers can choose between awaiting `handle.result` and
     // tracking via `list()`. Errors during startup land on `result` (the
     // tool handler awaits it and surfaces failures as tool errors).
-    runInstance(instance, cwd, this.executionDeps()).then(
-      (text) => resolveResult(text),
-      (err) => rejectResult(err),
+    this.executionDeps().then((deps) =>
+      runInstance(instance, cwd, deps).then(
+        (text) => resolveResult(text),
+        (err) => rejectResult(err),
+      ),
     );
 
     // Attach a noop catch to prevent unhandled-rejection noise when callers
@@ -353,15 +355,20 @@ export class SubagentRunner {
     log.debug("subagent revived", { id, role: meta.role, name: meta.name });
 
     // Kick off execution — same pipeline as spawn().
-    runInstance(instance, cwd, this.executionDeps()).then(
-      (text) => resolveResult(text),
-      (err) => rejectResult(err),
-    ).finally(() => {
-      this.revivesInProgress.delete(id);
-    });
+    this.executionDeps().then((deps) =>
+      runInstance(instance, cwd, deps).then(
+        (text) => resolveResult(text),
+        (err) => rejectResult(err),
+      ),
+    );
     result.catch(() => {});
 
-    return result;
+    // Resolve the revive only after its bookkeeping (revivesInProgress) is
+    // cleared, so a subsequent revive() of the same id observes a clean
+    // slate. (The await in callers thus sees the guard already removed.)
+    return result.finally(() => {
+      this.revivesInProgress.delete(id);
+    });
   }
 
   /**
@@ -653,18 +660,18 @@ export class SubagentRunner {
    * Lazy-init is safe without synchronization because Node.js' single-
    * threaded event loop serializes code between async ticks.
    */
-  private getPiServices(): PiServices {
-    return (this.services ??= createPiServices(this.cfg.goblinHome));
+  private async getPiServices(): Promise<PiServices> {
+    return (this.services ??= await createPiServices(this.cfg.goblinHome));
   }
 
   /**
    * Bundle the dependencies execution.ts needs. Per-call so the toolFactory
    * always sees the current `this`.
    */
-  private executionDeps(): ExecutionDeps {
+  private async executionDeps(): Promise<ExecutionDeps> {
     return {
       cfg: this.cfg,
-      services: this.getPiServices(),
+      services: await this.getPiServices(),
       buildTools: (depth, sessionId, activeScope, onStatusUpdate) =>
         this.toolFactory ? this.toolFactory(this, depth, sessionId, activeScope, onStatusUpdate) : [],
     };

@@ -6,6 +6,7 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   type CompactionResult,
+  type ModelRuntime,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
@@ -59,7 +60,7 @@ export interface AgentBackend {
 }
 
 interface PiAgentBackendDeps {
-  createPiServices: (home: string) => PiServices;
+  createPiServices: (home: string) => Promise<PiServices>;
   createAgentSession: typeof createAgentSession;
   DefaultResourceLoader: typeof DefaultResourceLoader;
   SessionManager: typeof SessionManager;
@@ -91,7 +92,7 @@ export class PiAgentBackend implements AgentBackend {
   private session: AgentSession | null = null;
   private unsubscribe: (() => void) | null = null;
   private resourceLoader: DefaultResourceLoader | null = null;
-  private authStorage: PiServices["authStorage"] | null = null;
+  private modelRuntime: ModelRuntime | null = null;
 
   constructor(opts: PiAgentBackendOptions) {
     this.cfg = opts.cfg;
@@ -117,10 +118,10 @@ export class PiAgentBackend implements AgentBackend {
     const home = this.cfg.goblinHome;
     const { resolvedModel, thinkingLevel, customTools, systemPrompt, cwd } = args;
 
-    const { authStorage, modelRegistry, settingsManager } = this.deps.createPiServices(home);
-    this.authStorage = authStorage;
+    const { modelRuntime, settingsManager } = await this.deps.createPiServices(home);
+    this.modelRuntime = modelRuntime;
 
-    authStorage.setRuntimeApiKey(resolvedModel.model.provider, resolvedModel.apiKey);
+    await modelRuntime.setRuntimeApiKey(resolvedModel.model.provider, resolvedModel.apiKey);
 
     const agentDir = this.deps.piAgentDir(home);
 
@@ -144,8 +145,7 @@ export class PiAgentBackend implements AgentBackend {
     const { session } = await this.deps.createAgentSession({
       cwd,
       agentDir,
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       settingsManager,
       sessionManager,
       model: resolvedModel.model,
@@ -196,7 +196,7 @@ export class PiAgentBackend implements AgentBackend {
 
   async setModel(model: Model<Api>, apiKey: string): Promise<void> {
     if (!this.session) return;
-    this.authStorage?.setRuntimeApiKey(model.provider, apiKey);
+    await this.modelRuntime?.setRuntimeApiKey(model.provider, apiKey);
     await this.session.setModel(model);
   }
 

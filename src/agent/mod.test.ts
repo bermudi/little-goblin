@@ -145,8 +145,7 @@ class FakeAgentBackend implements AgentBackend {
       sessionManagerCalls.push({ method: "create", args: [cwd, sessionDirPath] });
     }
 
-    const authStorage = { setRuntimeApiKey: (_provider: string, _key: string) => {} };
-    const modelRegistry = {};
+    const modelRuntime = { setRuntimeApiKey: async (_provider: string, _key: string) => {} };
     const settingsManager = {};
     const resourceLoader = {
       reload: async () => {},
@@ -159,8 +158,7 @@ class FakeAgentBackend implements AgentBackend {
     capturedCreateArgs.push({
       cwd,
       agentDir,
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       settingsManager,
       sessionManager: { cwd, sessionDir: sessionDirPath },
       resourceLoader,

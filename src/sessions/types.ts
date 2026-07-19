@@ -2,6 +2,8 @@
  * Core types for session management.
  */
 
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+
 /** Locator derived from a Telegram context: chat + optional topic. */
 export interface ChatLocator {
   chatId: number;
@@ -26,7 +28,7 @@ export interface SessionState {
   /** Session-scoped model override. Falls back to config default when absent. */
   modelName?: string;
   /** Session-scoped thinking level override. Falls back to model default when absent. */
-  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  thinkingLevel?: ThinkingLevel;
 }
 
 /** Root config.json shape */

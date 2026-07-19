@@ -15,7 +15,8 @@
     "backup": "bash scripts/backup.sh",
     "update:prod": "bash scripts/update.sh",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "e2e:smoke": "cd e2e && go run ."
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.1.0",

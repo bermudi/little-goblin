@@ -9,3 +9,8 @@ bun.lockb
 .pi/npm/
 .worktrees/
 .superpowers/
+
+# e2e smoke harness
+e2e/.env
+e2e/.session.json
+e2e/e2e

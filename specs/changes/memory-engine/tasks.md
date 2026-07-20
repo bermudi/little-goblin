@@ -2,22 +2,22 @@
 
 ## Phase 0: Source material and cross-cutting decisions
 
-- [ ] Vendor the OpenClaw `memory-core` source files under `src/memory/vendor/` with MIT license headers. Source is at `~/build/testing/the_claws/openclaw/extensions/memory-core/`. Reference files to vendor: `src/memory/hybrid.ts`, `src/memory/mmr.ts`, `src/memory/temporal-decay.ts`, `src/concept-vocabulary.ts`. These are the ported algorithms only — budget and dreaming are reimplemented from scratch and do not vendor openclaw source.
-- [ ] Verify decision `0015-memory-sqlite-canonical` exists and matches: SQLite is canonical, markdown is export-only, per-write git commits are removed.
-- [ ] Verify decision `0016-transcript-search-global` exists and matches: transcript search from `corpus="all"` is restricted to the current chat by default and crosses chat boundaries only when `all_chats=true`.
-- [ ] Verify decision `0018-memory-database-guardrail-carveout` exists and matches: update the AGENTS.md "No database" guardrail to carve out the memory SQLite database.
-- [ ] Verify decision `0020-memory-bun-sqlite` exists and matches: `bun:sqlite` builtin with pure-JS cosine similarity (not `node:sqlite` + `sqlite-vec`).
-- [ ] Verify decision `0021-memory-openai-embedding-direct` exists and matches: direct `fetch()` to OpenAI embeddings API, no provider registry.
-- [ ] Verify decision `0022-memory-frozen-summary` exists and matches: frozen system prompt summary at session creation, not per-turn snapshot.
-- [ ] Verify decision `0023-memory-two-tools` exists and matches: `memory_search` + `memory_write` replace four tools.
-- [ ] Verify decision `0024-memory-hybrid-weights` exists and matches: configurable fusion weights via env vars, defaults 0.7/0.3.
-- [ ] Verify decision `0025-dream-cross-session-promotion-rule` exists and matches: REM/deep sleep promote to scope with highest session count, ties by most recent `updated_at` then scope name ascending, default `general`.
-- [ ] Verify decision `0026-general-scope-shared-across-dms-and-no-topic-chats` exists and matches: `general` scope shared across all DMs and no-topic supergroup chats, no per-chat `general`.
-- [ ] Verify decision `0027-dreaming-model-driven-promotion` exists and matches: dreaming uses model-opinion confidence (not recall-based gating), with `recall_count`/`last_recalled_at` on `memory_entries` as a compaction quality signal.
-- [ ] Verify decision `0028-memory-scopes-table` exists and matches: per-scope `description` lives in `memory_scopes` table, not on `memory_entries` rows; `set_description` on empty scopes succeeds.
-- [ ] Verify decision `0029-dreaming-internal-session-dispatch` exists and matches: dreaming session created via `SessionManager.ensureInternal(id)` with `chatId: 0` sentinel; dreaming turns dispatched via `TurnDispatcher.enqueueInternalTurn` with capture buffer and `onComplete` return path; dreaming phases managed as scheduler timers, NOT in `ScheduleStore`.
-- [ ] Verify `AGENTS.md` Guardrails section already contains the "No database except the memory store" carve-out (it does as of this writing — no edit needed unless it has drifted).
-- [ ] Verify `AGENTS.md` memory section already reflects the SQLite-backed system, global budget, and `memory_write` tool actions (it does as of this writing — no edit needed unless it has drifted).
+- [x] Vendor the OpenClaw `memory-core` source files under `src/memory/vendor/` with MIT license headers. Source is at `~/build/testing/the_claws/openclaw/extensions/memory-core/`. Reference files to vendor: `src/memory/hybrid.ts`, `src/memory/mmr.ts`, `src/memory/temporal-decay.ts`, `src/concept-vocabulary.ts`. These are the ported algorithms only — budget and dreaming are reimplemented from scratch and do not vendor openclaw source.
+- [x] Verify decision `0015-memory-sqlite-canonical` exists and matches: SQLite is canonical, markdown is export-only, per-write git commits are removed.
+- [x] Verify decision `0016-transcript-search-global` exists and matches: transcript search from `corpus="all"` is restricted to the current chat by default and crosses chat boundaries only when `all_chats=true`.
+- [x] Verify decision `0018-memory-database-guardrail-carveout` exists and matches: update the AGENTS.md "No database" guardrail to carve out the memory SQLite database.
+- [x] Verify decision `0020-memory-bun-sqlite` exists and matches: `bun:sqlite` builtin with pure-JS cosine similarity (not `node:sqlite` + `sqlite-vec`).
+- [x] Verify decision `0021-memory-openai-embedding-direct` exists and matches: direct `fetch()` to OpenAI embeddings API, no provider registry.
+- [x] Verify decision `0022-memory-frozen-summary` exists and matches: frozen system prompt summary at session creation, not per-turn snapshot.
+- [x] Verify decision `0023-memory-two-tools` exists and matches: `memory_search` + `memory_write` replace four tools.
+- [x] Verify decision `0024-memory-hybrid-weights` exists and matches: configurable fusion weights via env vars, defaults 0.7/0.3.
+- [x] Verify decision `0025-dream-cross-session-promotion-rule` exists and matches: REM/deep sleep promote to scope with highest session count, ties by most recent `updated_at` then scope name ascending, default `general`.
+- [x] Verify decision `0026-general-scope-shared-across-dms-and-no-topic-chats` exists and matches: `general` scope shared across all DMs and no-topic supergroup chats, no per-chat `general`.
+- [x] Verify decision `0027-dreaming-model-driven-promotion` exists and matches: dreaming uses model-opinion confidence (not recall-based gating), with `recall_count`/`last_recalled_at` on `memory_entries` as a compaction quality signal.
+- [x] Verify decision `0028-memory-scopes-table` exists and matches: per-scope `description` lives in `memory_scopes` table, not on `memory_entries` rows; `set_description` on empty scopes succeeds.
+- [x] Verify decision `0029-dreaming-internal-session-dispatch` exists and matches: dreaming session created via `SessionManager.ensureInternal(id)` with `chatId: 0` sentinel; dreaming turns dispatched via `TurnDispatcher.enqueueInternalTurn` with capture buffer and `onComplete` return path; dreaming phases managed as scheduler timers, NOT in `ScheduleStore`.
+- [x] Verify `AGENTS.md` Guardrails section already contains the "No database except the memory store" carve-out (it does as of this writing — no edit needed unless it has drifted).
+- [x] Verify `AGENTS.md` memory section already reflects the SQLite-backed system, global budget, and `memory_write` tool actions (it does as of this writing — no edit needed unless it has drifted).
 
 ## Phase 1: SQLite database and schema
 

@@ -6,7 +6,7 @@ import { EmbeddingProvider } from "./embeddings.ts";
 import { MemoryBudget, MemoryOverflowError } from "./budget.ts";
 import { deriveConceptTags } from "./concept-vocabulary.ts";
 import { memoryDbPath, memoryDir } from "./paths.ts";
-import { scopeTag, type MemoryScope } from "./scope.ts";
+import { scopeTag, toMemoryScopePair, type MemoryScope } from "./scope.ts";
 
 const DESCRIPTION_CAP = 200;
 const DELIMITER = "\n§\n";
@@ -62,27 +62,6 @@ interface EntryRow {
   displayOrder: number;
 }
 
-function normalizeScope(scope: StoreScope): MemoryScope | "user" {
-  return scope === "memory" ? "general" : scope;
-}
-
-function scopeToTag(scope: MemoryScope | "user"): string {
-  if (scope === "user" || scope === "general") return scope;
-  if ("topic" in scope) {
-    return `topics/${scope.topic.chatId}/${scope.topic.topicId}`;
-  }
-  return `agents/${scope.agent.name}`;
-}
-
-function entryKind(scope: MemoryScope | "user"): "memory" | "user" {
-  return scope === "user" ? "user" : "memory";
-}
-
-function chatIdForScope(scope: MemoryScope | "user"): string | null {
-  if (scope === "user" || scope === "general") return null;
-  if ("topic" in scope) return String(scope.topic.chatId);
-  return null;
-}
 
 export interface MemoryEntryInput {
   id?: string;
@@ -147,8 +126,7 @@ export class MemoryStore {
   }
 
   read(scope: StoreScope): ParsedMemory {
-    const normalized = normalizeScope(scope);
-    const tag = scopeToTag(normalized);
+    const { scope: tag, entry_kind: kind } = toMemoryScopePair(scope);
     const rows = this.db.database
       .query<{ text: string | null; description: string | null }, { $scope: string; $entry_kind: string }>(
         `SELECT text, description, created_at, id
@@ -165,7 +143,7 @@ export class MemoryStore {
          )
          ORDER BY ord, display_order, created_at, id`,
       )
-      .all({ $scope: tag, $entry_kind: entryKind(normalized) });
+      .all({ $scope: tag, $entry_kind: kind });
     const description = rows.find((r) => r.description !== null)?.description ?? null;
     const body = rows
       .map((r) => r.text)
@@ -179,9 +157,7 @@ export class MemoryStore {
   }
 
   readEntries(scope: StoreScope): ScopeEntry[] {
-    const normalized = normalizeScope(scope);
-    const tag = scopeToTag(normalized);
-    const kind = entryKind(normalized);
+    const { scope: tag, entry_kind: kind } = toMemoryScopePair(scope);
 
     const rows = this.db.database
       .query<
@@ -528,8 +504,7 @@ export class MemoryStore {
   }
 
   async setDescription(scope: StoreScope, description: string): Promise<StoreResult> {
-    const normalized = normalizeScope(scope);
-    const tag = scopeToTag(normalized);
+    const { scope: tag } = toMemoryScopePair(scope);
     if (tag.startsWith("archive/") || this.isArchived(tag)) {
       return { ok: false, error: "cannot mutate archived scope" };
     }
@@ -800,10 +775,7 @@ export class MemoryStore {
     _content: string,
     op: (current: ParsedMemory) => ParsedMemory | StoreResult,
   ): Promise<StoreResult> {
-    const normalized = normalizeScope(inputScope);
-    const tag = scopeToTag(normalized);
-    const kind = entryKind(normalized);
-    const chatId = chatIdForScope(normalized);
+    const { scope: tag, entry_kind: kind, chatId } = toMemoryScopePair(inputScope);
 
     if (tag.startsWith("archive/") || this.isArchived(tag)) {
       return { ok: false, error: "cannot mutate archived scope" };
@@ -908,8 +880,8 @@ export class MemoryStore {
       }
 
       this.db.database.exec("COMMIT");
-      this.metrics?.incrementCounter("memory_write_total", scopeTag(normalized));
-      this.metrics?.incrementCounter(`memory_write_${action}_total`, scopeTag(normalized));
+      this.metrics?.incrementCounter("memory_write_total", tag);
+      this.metrics?.incrementCounter(`memory_write_${action}_total`, tag);
 
       // Embed new/changed entries after the transaction commits. Failures are
       // logged but do not fail the write — FTS still serves search.
@@ -920,7 +892,7 @@ export class MemoryStore {
       this.db.database.exec("ROLLBACK");
       log.error("memory store transaction failed", { action, error: err instanceof Error ? err.message : String(err) });
       if (err instanceof MemoryOverflowError) {
-        this.metrics?.incrementCounter("memory_write_overflow_total", scopeTag(normalized));
+        this.metrics?.incrementCounter("memory_write_overflow_total", tag);
         return { ok: false, error: err.message };
       }
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

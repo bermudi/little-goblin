@@ -9,16 +9,20 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { statSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { MemoryDatabase } from "./db.ts";
 import { MemoryStore } from "./store.ts";
 import { EmbeddingProvider } from "./embeddings.ts";
 import { searchMemoryEntries, type PersonaPolicy } from "./search.ts";
 import { exportToMarkdown } from "./export.ts";
-import { memoryDbPath } from "./paths.ts";
+import { memoryDbPath, memoryDir } from "./paths.ts";
 
 function goblinHome(): string {
   return process.env.GOBLIN_HOME ?? join(homedir(), ".goblin");
+}
+
+function ensureMemoryDir(home: string): void {
+  mkdirSync(memoryDir(home), { recursive: true });
 }
 
 function out(line: string): void {
@@ -37,6 +41,7 @@ function formatBytes(bytes: number): string {
 
 async function exportCommand(): Promise<void> {
   const home = goblinHome();
+  ensureMemoryDir(home);
   const db = new MemoryDatabase(memoryDbPath(home));
   const store = new MemoryStore(db);
   try {
@@ -49,6 +54,7 @@ async function exportCommand(): Promise<void> {
 
 async function statusCommand(): Promise<void> {
   const home = goblinHome();
+  ensureMemoryDir(home);
   const db = new MemoryDatabase(memoryDbPath(home));
   const embeddings = new EmbeddingProvider(db);
   const store = new MemoryStore(db, undefined, { embeddings });
@@ -79,6 +85,7 @@ async function statusCommand(): Promise<void> {
 
 async function searchCommand(query: string): Promise<void> {
   const home = goblinHome();
+  ensureMemoryDir(home);
   const db = new MemoryDatabase(memoryDbPath(home));
   const embeddings = new EmbeddingProvider(db);
   const store = new MemoryStore(db, undefined, { embeddings });

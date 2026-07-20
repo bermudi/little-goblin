@@ -54,7 +54,35 @@ export function scopeTag(scope: MemoryScope | "user"): string {
   return `agents/${scope.agent.name}`;
 }
 
-export type MemoryScopePair = { scope: string; entry_kind: "memory" | "user" };
+export type MemoryScopePair = {
+  scope: string;
+  entry_kind: "memory" | "user";
+  chatId: string | null;
+};
+
+function entryKindForScope(scope: MemoryScope | "user" | "memory"): "memory" | "user" {
+  return scope === "user" ? "user" : "memory";
+}
+
+function chatIdForScope(scope: MemoryScope | "user" | "memory"): string | null {
+  if (scope === "user" || scope === "general" || scope === "memory") return null;
+  if ("topic" in scope) return String(scope.topic.chatId);
+  return null;
+}
+
+/**
+ * Convert a memory scope to the three database-facing values that every
+ * consumer needs: scope tag, entry_kind, and chat_id. This is the single home
+ * for the conversion; was previously duplicated in `store.ts` and `dreaming.ts`.
+ */
+export function toMemoryScopePair(scope: MemoryScope | "user" | "memory"): MemoryScopePair {
+  const normalized = scope === "memory" ? "general" : scope;
+  return {
+    scope: scopeTag(normalized),
+    entry_kind: entryKindForScope(normalized),
+    chatId: chatIdForScope(normalized),
+  };
+}
 
 export function tagToMemoryScope(tag: string): MemoryScope | "user" | "archive" {
   if (tag === "user" || tag === "general") return tag;

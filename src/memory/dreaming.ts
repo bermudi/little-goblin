@@ -27,7 +27,7 @@ import {
   stripEntryMetadata,
   type EntrySourceRole,
 } from "./entry.ts";
-import { activeMemoryScopeFor, scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
+import { activeMemoryScopeFor, scopeTag, toMemoryScopePair, type ActiveScope, type MemoryScope } from "./scope.ts";
 import { memoryDir } from "./paths.ts";
 import { cosineSimilarity } from "./search.ts";
 
@@ -215,16 +215,6 @@ function resolveScope(target: "user" | "memory" | "agent", activeScope: ActiveSc
   return activeMemoryScopeFor(activeScope);
 }
 
-function chatIdForScope(scope: MemoryScope | "user"): string | null {
-  if (scope === "user" || scope === "general") return null;
-  if ("topic" in scope) return String(scope.topic.chatId);
-  return null;
-}
-
-function entryKindForScope(scope: MemoryScope | "user"): "memory" | "user" {
-  return scope === "user" ? "user" : "memory";
-}
-
 /**
  * Resolve the curated memory scope a session belongs to by reading its
  * persisted `state.json`. DMs and sessions without topic bindings map to
@@ -248,6 +238,7 @@ const REM_THEME_SESSION_THRESHOLD = 3;
 interface SessionState {
   running: Promise<void> | null;
   pending: boolean;
+  pendingAdvance: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -319,8 +310,23 @@ export class DreamingPipeline {
   /**
    * Advance the reflection cursor for a session to the current transcript end.
    * Called by AgentRunner after a completed main-agent turn.
+   *
+   * Cursor advances are serialized against light-sleep passes for the same
+   * session so the cursor file is never read-modified-written while a pass is
+   * in progress.
    */
   advanceCursor(sessionId: string): void {
+    const state = this.sessions.get(sessionId);
+    if (state !== undefined && state.running !== null) {
+      // A light-sleep pass is running; coalesce the cursor advance so it runs
+      // after the pass finishes and observes the updated cursor.
+      state.pendingAdvance = true;
+      return;
+    }
+    this.advanceCursorNow(sessionId);
+  }
+
+  private advanceCursorNow(sessionId: string): void {
     const cursor = this.readCursor(sessionId);
     const total = countTranscriptLines(this.home, sessionId);
     if (cursor === null) {
@@ -337,7 +343,7 @@ export class DreamingPipeline {
   async runLightSleep(sessionId: string, activeScope: ActiveScope): Promise<void> {
     let state = this.sessions.get(sessionId);
     if (state === undefined) {
-      state = { running: null, pending: false };
+      state = { running: null, pending: false, pendingAdvance: false };
       this.sessions.set(sessionId, state);
     }
     if (state.running !== null) {
@@ -356,6 +362,19 @@ export class DreamingPipeline {
       if (s.pending) {
         s.pending = false;
         void this.runLightSleep(sessionId, activeScope);
+      } else if (s.pendingAdvance) {
+        s.pendingAdvance = false;
+        try {
+          this.advanceCursor(sessionId);
+        } catch (err) {
+          log.warn("dreaming: deferred cursor advance failed", {
+            sessionId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        if (this.sessions.get(sessionId) === s) {
+          this.sessions.delete(sessionId);
+        }
       } else {
         this.sessions.delete(sessionId);
       }
@@ -702,7 +721,7 @@ export class DreamingPipeline {
     scope: MemoryScope | "user",
   ): Promise<string> {
     const now = Date.now();
-    const tag = scopeTag(scope);
+    const { scope: tag, entry_kind: entryKind, chatId } = toMemoryScopePair(scope);
     const entries = this.store.readEntries(scope).map((e) => ({ id: e.entry_id, text: e.text }));
 
     const match = await this.findNearDuplicate(candidate.text, entries);
@@ -739,7 +758,7 @@ export class DreamingPipeline {
     try {
       await this.store.addEntry({
         scope: tag,
-        entryKind: entryKindForScope(scope),
+        entryKind,
         text: candidate.text,
         origin: "dreaming",
         category: candidate.category,
@@ -747,7 +766,7 @@ export class DreamingPipeline {
         sourceSession: candidate.source.sessionId,
         sourceRole: candidate.source.sourceRole,
         promotedAt: now,
-        chatId: chatIdForScope(scope),
+        chatId,
         createdAt: now,
         updatedAt: now,
       });

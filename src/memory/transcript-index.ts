@@ -241,15 +241,17 @@ export class TranscriptIndexer {
 
   private deleteScopeEntries(scope: string): void {
     const db = this.store.db.database;
-    const ids = db
-      .query<{ id: string }, { $scope: string }>("SELECT id FROM memory_entries WHERE scope = $scope")
-      .all({ $scope: scope })
-      .map((r) => r.id);
-    for (const id of ids) {
-      db.query("DELETE FROM memory_entry_tags WHERE entry_id = $entry_id").run({ $entry_id: id });
-      db.query("DELETE FROM memory_embeddings WHERE entry_id = $entry_id").run({ $entry_id: id });
-      db.query("DELETE FROM memory_index_fts WHERE entry_id = $entry_id").run({ $entry_id: id });
-      db.query("DELETE FROM memory_entries WHERE id = $entry_id").run({ $entry_id: id });
-    }
+    db.transaction(() => {
+      const ids = db
+        .query<{ id: string }, { $scope: string }>("SELECT id FROM memory_entries WHERE scope = $scope")
+        .all({ $scope: scope })
+        .map((r) => r.id);
+      for (const id of ids) {
+        db.query("DELETE FROM memory_entry_tags WHERE entry_id = $entry_id").run({ $entry_id: id });
+        db.query("DELETE FROM memory_embeddings WHERE entry_id = $entry_id").run({ $entry_id: id });
+        db.query("DELETE FROM memory_index_fts WHERE entry_id = $entry_id").run({ $entry_id: id });
+        db.query("DELETE FROM memory_entries WHERE id = $entry_id").run({ $entry_id: id });
+      }
+    })();
   }
 }

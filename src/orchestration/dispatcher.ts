@@ -390,7 +390,6 @@ export class TurnDispatcher {
         embeddingProvider: this.embeddingProvider,
         dreamingPipeline: this.dreamingPipeline,
         getTopicName: this.getTopicName,
-        noDreaming: true,
       });
       this.runners.set(session.id, runner);
     }

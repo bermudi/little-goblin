@@ -679,7 +679,16 @@ export class DreamingPipeline {
     const targetScopeTag = scopeTag(scope);
 
     if (candidate.category === "skip") {
-      this.appendDreamDiary("skipped", candidate, targetScopeTag);
+      this.metrics?.incrementCounter("memory_dreaming_quarantine_total", "skip", 1);
+      appendQuarantine({
+        goblinHome: this.home,
+        sourceSession: candidate.source.sessionId,
+        targetScope: targetScopeTag,
+        category: candidate.category,
+        reason: "skip",
+        content: candidate.text,
+      });
+      this.appendDreamDiary("quarantine:skip", candidate, targetScopeTag);
       return;
     }
 

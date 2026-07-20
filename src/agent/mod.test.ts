@@ -1592,7 +1592,7 @@ describe("AgentRunner", () => {
       );
     }
 
-    it("advances the dreaming cursor after agent_end on a completed prompt turn", async () => {
+    it("does not advance the dreaming cursor on agent_end (light sleep owns the cursor)", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
       const advanceSpy = mock((_sessionId: string) => undefined);
       const runSpy = mock((_sessionId: string, _scope: unknown) => Promise.resolve());
@@ -1606,8 +1606,10 @@ describe("AgentRunner", () => {
 
       sessionHolder.emit({ type: "agent_end", messages: [] });
 
-      expect(advanceSpy).toHaveBeenCalledTimes(1);
-      expect(advanceSpy).toHaveBeenCalledWith("abcdef1234");
+      // agent_end must NOT advance the cursor — processSession reads new lines
+      // after the cursor during the scheduled light-sleep pass. Advancing here
+      // would skip past new lines and leave light sleep with nothing to process.
+      expect(advanceSpy).not.toHaveBeenCalled();
       expect(runSpy).not.toHaveBeenCalled();
     });
 
@@ -1630,7 +1632,7 @@ describe("AgentRunner", () => {
       expect(runSpy).not.toHaveBeenCalled();
     });
 
-    it("persists the per-session dreaming cursor file", async () => {
+    it("does not persist a dreaming cursor file on agent_end (cursor owned by light sleep)", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
 
       const runner = makeRunner(
@@ -1642,6 +1644,8 @@ describe("AgentRunner", () => {
 
       sessionHolder.emit({ type: "agent_end", messages: [] });
 
+      // No cursor should be written on agent_end — the cursor is seeded and
+      // advanced only by processSession during the scheduled light-sleep pass.
       const checkStore = new MemoryStore(tmpDir);
       try {
         const raw = checkStore.db.getMeta("dreaming_cursor:abcdef1234");
@@ -1651,23 +1655,7 @@ describe("AgentRunner", () => {
       }
 
       const cursorPath = join(sessionDir(tmpDir, "abcdef1234"), "memory-dreaming-cursor.json");
-      const cursor = JSON.parse(readFileSync(cursorPath, "utf-8")) as { processedLines: number };
-      expect(cursor.processedLines).toBe(1);
-    });
-
-    it("errors advancing the cursor are caught and logged, not thrown to the event handler", async () => {
-      const dreaming = makeDreamingPipeline(tmpDir);
-      dreaming.advanceCursor = () => {
-        throw new Error("cursor advance blew up");
-      };
-
-      const runner = makeRunner(
-        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
-      );
-      await runner.prompt("hello", nopCallbacks());
-
-      // Emitting agent_end should not throw even if cursor advancement fails.
-      expect(() => sessionHolder.emit({ type: "agent_end", messages: [] })).not.toThrow();
+      expect(existsSync(cursorPath)).toBe(false);
     });
   });
 

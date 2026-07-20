@@ -921,5 +921,18 @@ describe("SchedulerLoop", () => {
       const result = parse(raw, "session-1", sampleLines);
       expect(result).toHaveLength(0);
     });
+
+    it("defaults target to memory when absent", () => {
+      const loop = makeLoop();
+      const parse = (loop as unknown as { parseDreamingResponse: (raw: string, sessionId: string, lines: typeof sampleLines) => unknown[] }).parseDreamingResponse;
+      const raw = JSON.stringify({
+        candidates: [
+          { category: "fact", confidence: 0.85, text: "User likes tea.", lineRange: [0, 0] },
+        ],
+      });
+      const result = parse(raw, "session-1", sampleLines) as Array<{ target: string }>;
+      expect(result).toHaveLength(1);
+      expect(result[0]?.target).toBe("memory");
+    });
   });
 });

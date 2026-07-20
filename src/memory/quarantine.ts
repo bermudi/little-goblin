@@ -20,6 +20,7 @@ export type QuarantineReason =
   | "unsafe"
   | "low_confidence"
   | "procedural_noise"
+  | "skip"
   | "review"
   | "malformed";
 

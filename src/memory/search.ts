@@ -599,9 +599,15 @@ export async function searchMemoryEntries(args: {
   const ranked = merged.slice(0, limit);
 
   // Update recall stats for curated memory entries only (transcripts are not
-  // eligible for recall-aware compaction).
+  // eligible for recall-aware compaction). The update is deferred to the next
+  // event loop tick so it does not block the search response — per spec, the
+  // recall update SHALL occur after results are returned and SHALL NOT block.
+  // updateRecallStats catches its own errors, so a failure after the caller has
+  // received results is logged as a warning and never thrown.
   const memoryIds = ranked.filter((r) => r.entryKind === "memory" || r.entryKind === "user").map((r) => r.entryId);
-  updateRecallStats(args.store, memoryIds);
+  if (memoryIds.length > 0) {
+    setImmediate(() => updateRecallStats(args.store, memoryIds));
+  }
 
   const degraded = vector.degraded;
   const warning = degraded ? args.store.embeddingProvider?.status().lastError : undefined;

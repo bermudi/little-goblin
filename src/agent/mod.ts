@@ -64,12 +64,6 @@ export interface AgentRunnerOptions {
    */
   dreamingPipeline?: DreamingPipeline;
   /**
-   * When true, the runner does not trigger light-sleep dreaming after an
-   * `agent_end` event. Used for internal non-chat turns whose transcript should
-   * not be fed back into the dreaming pipeline.
-   */
-  noDreaming?: boolean;
-  /**
    * Shared embedding provider. When supplied, the runner creates a private
    * `MemoryStore` connection that uses this provider for vector indexing.
    */
@@ -219,7 +213,6 @@ export class AgentRunner {
   private memoryStore: MemoryStore;
   private ownsMemoryStore: boolean;
   private dreamingPipeline: DreamingPipeline;
-  private noDreaming: boolean;
   private activeScope: ActiveScope;
   private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
   private topicNameCache = new Map<string, string | null>();
@@ -307,7 +300,6 @@ export class AgentRunner {
         this.metricsStore,
         opts.embeddingProvider ? { embeddings: opts.embeddingProvider } : undefined,
       );
-    this.noDreaming = opts.noDreaming ?? false;
     this.dreamingPipeline = opts.dreamingPipeline ??
       new DreamingPipeline({ goblinHome: opts.cfg.goblinHome, store: this.memoryStore, metrics: this.metricsStore });
     const backendOpts: AgentBackendOptions = {
@@ -514,22 +506,13 @@ export class AgentRunner {
 
     dispatchAgentEvent(event, this.callbacks);
 
-    // Trigger a fire-and-log dreaming light-sleep pass after a completed
-    // main-agent turn. Light sleep reads the transcript tail after a persisted
-    // cursor and never blocks the turn path — errors are caught inside the
-    // pipeline and logged, never thrown here. followUp() steers a running turn
-    // without emitting an independent agent_end, so no separate pass is
-    // scheduled for steers. Internal (non-chat) runners skip dreaming entirely.
-    if (event.type === "agent_end" && !this.noDreaming) {
-      try {
-        this.dreamingPipeline.advanceCursor(this.sessionId);
-      } catch (err) {
-        log.warn("AgentRunner: failed to advance dreaming cursor", {
-          sessionId: this.sessionId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
+    // Dreaming light sleep is driven entirely by the scheduler. The cursor is
+    // owned by `processSession`, which reads transcript lines after the cursor,
+    // extracts candidates, and advances the cursor past what it processed.
+    // Advancing the cursor here on `agent_end` would skip past new lines before
+    // the scheduled pass could read them, leaving light sleep with nothing to
+    // do. followUp() steers a running turn without emitting an independent
+    // agent_end. Internal (non-chat) runners skip dreaming entirely.
   }
 
   private updateMetrics(event: AgentSessionEvent): void {

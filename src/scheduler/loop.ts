@@ -362,7 +362,7 @@ export class SchedulerLoop {
     return `You are the memory-dreaming extractor for a personal Telegram assistant. Review the transcript excerpt and identify durable memory candidates.
 
 Rules:
-- Extract only explicitly stated facts, short-term notes, recurring themes, commitments, standing orders, or anything that should not be persisted.
+- Extract only explicitly stated facts, short-term notes, recurring themes, commitments, standing orders, or anything that should be persisted.
 - Do not infer commitments or standing orders the user did not explicitly state.
 - Do not include procedural chit-chat, greetings, thanks, or questions.
 - category must be one of: "fact", "short_term", "theme", "commitment", "standing_order", "skip".
@@ -458,10 +458,14 @@ ${formatted}`;
       }
       const c = item as Record<string, unknown>;
       const rawTarget = c.target;
+      // `target` is optional per spec — defaults to "memory" when absent.
+      // A present-but-invalid value is malformed and quarantined below.
       const target: Candidate["target"] | undefined =
-        rawTarget === "user" || rawTarget === "memory" || rawTarget === "agent"
-          ? rawTarget
-          : undefined;
+        rawTarget === undefined
+          ? "memory"
+          : rawTarget === "user" || rawTarget === "memory" || rawTarget === "agent"
+            ? rawTarget
+            : undefined;
       const rawCategory = typeof c.category === "string" ? c.category : undefined;
       const category: DreamingCategory | undefined =
         rawCategory !== undefined && (DREAMING_CATEGORIES as readonly string[]).includes(rawCategory)

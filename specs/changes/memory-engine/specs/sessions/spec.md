@@ -66,3 +66,51 @@ The chunking helper SHALL accept a `TranscriptEntry` and return one or more boun
 
 - **WHEN** the chunking helper is called on an entry with 5 characters of displayable text
 - **THEN** the helper SHALL return an empty array
+
+## ADDED Requirements
+
+### Requirement: Internal session creation for dreaming
+
+The `SessionManager` SHALL support creating internal sessions that have no Telegram binding, via a new `ensureInternal(id: string): SessionState` method. Internal sessions are used by the dreaming pipeline (session id `__goblin_dreaming__`) and are not user-facing.
+
+`ensureInternal(id)` SHALL be idempotent: if `sessions/<id>/state.json` already exists, it SHALL load and return the existing state. Otherwise, it SHALL create the session directory + files (transcript.jsonl, events.jsonl, metrics.jsonl), write `state.json` with `{ id, createdAt: <now>, chatId: 0 }`, and return the new state. No binding entry SHALL be written to `bindings.json`.
+
+`chatId: 0` is a sentinel value. Telegram chat IDs are never 0 (user IDs are positive, group/channel IDs are negative). The sentinel is safe and distinguishes internal sessions from Telegram-bound sessions.
+
+Internal sessions SHALL be excluded from `SessionManager.list()`. The `list()` method scans `sessions/` and already skips `archive/`; it SHALL also skip any session whose `state.chatId === 0`.
+
+Internal sessions SHALL NOT be archived. `archive()` SHALL NOT be called on an internal session. The session persists for the lifetime of the goblin process.
+
+The `SchedulerSessionSource` seam SHALL gain `ensureInternal(id: string): SessionState` so the scheduler (and dreaming pipeline) can obtain the dreaming session without depending on the full `SessionManager`.
+
+#### Scenario: ensureInternal creates session on first call
+
+- **GIVEN** no session directory exists for id `__goblin_dreaming__`
+- **WHEN** `ensureInternal("__goblin_dreaming__")` is called
+- **THEN** a session directory SHALL be created at `sessions/__goblin_dreaming__/`
+- **AND** `state.json` SHALL be written with `{ id: "__goblin_dreaming__", createdAt: <ISO timestamp>, chatId: 0 }`
+- **AND** no binding entry SHALL be written to `bindings.json`
+- **AND** the `SessionState` SHALL be returned
+
+#### Scenario: ensureInternal is idempotent
+
+- **GIVEN** a session already exists for id `__goblin_dreaming__` with `chatId: 0`
+- **WHEN** `ensureInternal("__goblin_dreaming__")` is called again
+- **THEN** the existing `state.json` SHALL be loaded and returned
+- **AND** no new directory or files SHALL be created
+- **AND** no binding entry SHALL be written
+
+#### Scenario: Internal session excluded from list
+
+- **GIVEN** sessions `abc123` (chatId: 100), `def456` (chatId: -200), and `__goblin_dreaming__` (chatId: 0) exist
+- **WHEN** `SessionManager.list()` is called
+- **THEN** the result SHALL include `abc123` and `def456`
+- **AND** SHALL NOT include `__goblin_dreaming__`
+
+#### Scenario: Internal session is never archived
+
+- **GIVEN** the dreaming session `__goblin_dreaming__` exists with `chatId: 0`
+- **WHEN** `archive("__goblin_dreaming__")` is called
+- **THEN** the call SHALL be rejected (throw or no-op)
+- **AND** the session directory `sessions/__goblin_dreaming__/` SHALL remain in place
+- **AND** `state.json` SHALL remain unchanged

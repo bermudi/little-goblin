@@ -42,11 +42,11 @@ The `AgentRunner` SHALL NOT inject the full `[goblin memory snapshot]` per-turn 
 
 ### Requirement: Reflection cursor prevents duplicate processing
 
-The dreaming pipeline SHALL persist a cursor under the session directory that records which transcript entries have been processed by light sleep. A light sleep pass SHALL process only transcript entries after the cursor, and SHALL advance the cursor only after candidate extraction, safety filtering, and persistence/quarantine complete without an unrecoverable error.
+The dreaming pipeline SHALL persist a cursor at `$GOBLIN_HOME/state/sessions/<id>/memory-dreaming-cursor.json` that records which transcript entries have been processed by light sleep. The cursor format SHALL be a line offset into `transcript.jsonl`. A light sleep pass SHALL process only transcript entries after the cursor, and SHALL advance the cursor only after candidate extraction, safety filtering, and persistence/quarantine complete without an unrecoverable error.
 
-When light sleep first observes an existing session with no cursor file, it SHALL seed the cursor to the then-current end of `transcript.jsonl` before later completed turns are processed, and SHALL NOT process historical transcript entries from before that observation. This preserves the no-automatic-backfill rollout contract; historical transcript import requires a separate explicit backfill command outside this change.
+When light sleep first observes an existing session with no `memory-dreaming-cursor.json` file, it SHALL seed the cursor to the then-current end of `transcript.jsonl` before later completed turns are processed, and SHALL NOT process historical transcript entries from before that observation. This preserves the no-automatic-backfill rollout contract; historical transcript import requires a separate explicit backfill command outside this change.
 
-The existing `memory-reflection.json` cursor SHALL be migrated to the dreaming cursor. The cursor format SHALL remain a line offset into `transcript.jsonl`. Dreaming passes for the same session MUST be serialized in-process.
+The existing `memory-reflection.json` cursor SHALL be migrated to `memory-dreaming-cursor.json` on first observation: the cursor value (line offset) SHALL be preserved, the new file SHALL be written, and the old `memory-reflection.json` file SHALL be removed. Dreaming passes for the same session MUST be serialized in-process.
 
 The `AgentRunner` SHALL advance the cursor after `agent_end` (marking transcript entries as eligible for the next light sleep pass). Light sleep SHALL advance the cursor again after processing (marking entries as consumed).
 
@@ -85,7 +85,7 @@ The `AgentRunner` SHALL advance the cursor after `agent_end` (marking transcript
 
 ### Requirement: Reflection uses scoped memory context
 
-The dreaming pipeline SHALL resolve the same active memory scope as the user-facing turn. Light sleep SHALL target the session's active scope for promotions. REM and deep sleep SHALL aggregate across all scopes but promote each theme or short-term entry into the scope that originated it most frequently. The promotion rule is: for each theme or entry, collect its origin sessions; choose the scope with the highest session count; break ties by the most recent `updated_at`, then by scope name ascending. If the origin sessions are all from transcript scopes without a clear curated target, promote to `general`.
+The dreaming pipeline SHALL resolve the same active memory scope as the user-facing turn. The dreaming session (`__goblin_dreaming__`, `chatId: 0`) is the dispatch vehicle for model turns, NOT the promotion target — its `ActiveScope` (`{ chatId: 0, topicScope: "general" }`) is never written to. Light sleep SHALL target the **originating transcript's** session active scope for promotions (e.g. a transcript snippet from session bound to topic 42 promotes into `topics/<chatId>/42`). REM and deep sleep SHALL aggregate across all scopes but promote each theme or short-term entry into the scope that originated it most frequently. The promotion rule is: for each theme or entry, collect its origin sessions; choose the scope with the highest session count; break ties by the most recent `updated_at`, then by scope name ascending. If the origin sessions are all from transcript scopes without a clear curated target, promote to `general`.
 
 #### Scenario: Topic turn dreaming promotes into topic scope
 

@@ -6,11 +6,12 @@
 
 The system SHALL maintain a SQLite database at `$GOBLIN_HOME/state/memory/memory.sqlite` as the canonical store for all memory entries. The database SHALL contain the following tables:
 
-- `memory_entries` — one row per entry. Columns: `id` (text primary key), `scope` (text), `entry_kind` (text: `memory`, `user`, `transcript`), `text` (text: entry body), `description` (text nullable: one-line scope description, ≤ 200 characters), `created_at` (integer: unix ms), `updated_at` (integer: unix ms), `source_session` (text nullable), `updated_source_session` (text nullable), `source_role` (text nullable), `category` (text nullable), `confidence` (real nullable), `origin` (text: `user` or `dreaming`), `promoted_at` (integer nullable: unix ms, set when origin=dreaming), `chat_id` (text nullable: the Telegram chat id for transcript entries, used for chat-scoped search filtering; null for `memory` and `user` entries).
+- `memory_entries` — one row per entry. Columns: `id` (text primary key), `scope` (text), `entry_kind` (text: `memory`, `user`, `transcript`), `text` (text: entry body), `created_at` (integer: unix ms), `updated_at` (integer: unix ms), `source_session` (text nullable), `updated_source_session` (text nullable), `source_role` (text nullable), `category` (text nullable), `confidence` (real nullable), `origin` (text: `user` or `dreaming`), `promoted_at` (integer nullable: unix ms, set when origin=dreaming), `chat_id` (text nullable: the Telegram chat id for transcript entries, used for chat-scoped search filtering; null for `memory` and `user` entries), `recall_count` (integer NOT NULL DEFAULT 0: incremented by `memory_search` when this entry is returned in results), `last_recalled_at` (integer nullable: unix ms of the most recent `memory_search` return). The `description` column is NOT on this table — per-scope descriptions live in `memory_scopes` (see decision `0028-memory-scopes-table`).
+- `memory_scopes` — per-scope metadata normalization. Columns: `scope` (text primary key), `description` (text nullable: one-line scope description, ≤ 200 characters), `updated_at` (integer: unix ms). A row exists for each scope that has had a `set_description` call or a migrated frontmatter description. Scopes with no description have no row (or a row with `description = NULL`). This table is independent of `memory_entries` — `set_description` on an empty scope (zero entries) SHALL succeed and persist the description.
 - `memory_embeddings` — one row per embedded entry. Columns: `entry_id` (text primary key and foreign key to `memory_entries.id`), `provider` (text), `model` (text), `hash` (text: sha256 of entry text), `embedding` (blob), `dims` (integer), `updated_at` (integer).
-- `memory_index_fts` — FTS5 **contentful** virtual table storing its own copy of entry text. Columns: `text` (indexed content), `entry_id` (text: foreign key to `memory_entries.id`), `scope` (text), `entry_kind` (text), `chat_id` (text nullable). The table is NOT external-content and NOT contentless — it stores a duplicate of `memory_entries.text` in its `text` column. The system SHALL manually maintain the FTS index on every mutating path: `INSERT INTO memory_index_fts (text, entry_id, scope, entry_kind, chat_id) VALUES (?, ?, ?, ?, ?)` after each `memory_entries` insert; `DELETE FROM memory_index_fts WHERE entry_id = ?` before each `memory_entries` deletion (compaction, session removal, `remove`/`rewrite` of an existing entry). On `replace`/`rewrite`, the system SHALL delete the old FTS row and insert the new one within the same transaction. All FTS maintenance SHALL occur inside the same SQLite transaction as the corresponding `memory_entries` mutation.
+- `memory_index_fts` — FTS5 **contentful** virtual table storing its own copy of entry text. Columns: `text` (indexed content), `entry_id` (text: logical reference to `memory_entries.id`, maintained by manual INSERT/DELETE — NOT a SQLite FK constraint, since FTS5 virtual tables cannot enforce foreign keys), `scope` (text), `entry_kind` (text), `chat_id` (text nullable). The table is NOT external-content and NOT contentless — it stores a duplicate of `memory_entries.text` in its `text` column. The system SHALL manually maintain the FTS index on every mutating path: `INSERT INTO memory_index_fts (text, entry_id, scope, entry_kind, chat_id) VALUES (?, ?, ?, ?, ?)` after each `memory_entries` insert; `DELETE FROM memory_index_fts WHERE entry_id = ?` before each `memory_entries` deletion (compaction, session removal, `remove`/`rewrite` of an existing entry). On `replace`/`rewrite`, the system SHALL delete the old FTS row and insert the new one within the same transaction. All FTS maintenance SHALL occur inside the same SQLite transaction as the corresponding `memory_entries` mutation.
 - `memory_sources` — transcript file sync tracking. Columns: `path` (text primary key), `source` (text: `transcript`), `hash` (text nullable), `mtime` (integer), `size` (integer), `updated_at` (integer). `hash` is populated for transcript files and used to detect content changes not visible in mtime/size.
-- `memory_meta` — key-value store. Columns: `key` (text primary key), `value` (text), `updated_at` (integer: unix ms). Required keys: `schema_version`, `migrated_at`, `embedding_provider`, `embedding_model`, `reindexing`. The `reindexing` key SHALL be set to `"true"` while a model-change or full reindex is in progress and SHALL be cleared to `"false"` on completion. It SHALL be checked on startup to prevent concurrent reindex passes. On startup, if `reindexing = "true"` and no reindex process is actively running (single-process: no concurrent process can be running), the system SHALL reset it to `"false"` to recover from a previous crash that left the flag set.
+- `memory_meta` — key-value store. Columns: `key` (text primary key), `value` (text), `updated_at` (integer: unix ms). Required keys: `schema_version`, `migrated_at`, `embedding_provider`, `embedding_model`, `reindexing`. The `reindexing` key SHALL be set to `"true"` while a model-change or full reindex is in progress and SHALL be cleared to `"false"` on completion. It SHALL be checked on startup to prevent concurrent reindex passes. On startup, if `reindexing = "true"` and no reindex process is actively running (single-process: no concurrent process can be running), the system SHALL reset it to `"false"` to recover from a previous crash that left the flag set. While `reindexing = "true"`, `memory_search` SHALL continue to use existing (potentially stale) embeddings for vector search — search SHALL NOT block or degrade to FTS-only during reindex. The worst case is a transient ranking inconsistency during the reindex window.
 - `memory_entry_tags` — concept vocabulary tags. Columns: `entry_id` (text, foreign key to `memory_entries.id`), `tag` (text). Composite primary key `(entry_id, tag)`. Populated on write and recomputed when entry text changes. Limited to 8 tags per entry.
 
 `id` values SHALL be generated as Type-4 UUIDs (`crypto.randomUUID()`) and SHALL be collision-checked on insert.
@@ -68,7 +69,7 @@ The `memory_write` tool parameter `target` is a tool-level directive that resolv
 
 The system SHALL embed memory entries and transcript chunks using OpenAI's embedding API (default model: `text-embedding-3-small`). Embeddings SHALL be cached in the `memory_embeddings` table by text hash. An entry SHALL be re-embedded only when its text hash changes or the configured embedding model changes.
 
-The embedding provider SHALL be initialized lazily on first search or reindex. If the embedding API is unavailable (network error, rate limit, auth failure), the system SHALL degrade to FTS-only search and log a warning. The degraded state SHALL be retried on the next search attempt after a configurable cooldown (default 60 seconds).
+The embedding provider SHALL be constructed eagerly at startup (in `src/index.ts`) as part of the `MemoryEngine` bundle, so that configuration errors (missing API key, invalid base URL) surface immediately rather than on first search. If the embedding API is unavailable at runtime (network error, rate limit, auth failure), the system SHALL degrade to FTS-only search and log a warning. The degraded state SHALL be retried on the next search attempt after a configurable cooldown (default 60 seconds, configurable via `GOBLIN_MEMORY_EMBEDDING_COOLDOWN_SECONDS`).
 
 The embedding API key SHALL be read from `GOBLIN_MEMORY_EMBEDDING_API_KEY` and SHALL fall back to `OPENAI_API_KEY` for backward compatibility. The optional embedding base URL SHALL be read from `GOBLIN_MEMORY_EMBEDDING_BASE_URL` and SHALL fall back to `OPENAI_BASE_URL`. These credentials SHALL be independent of the chat provider configuration. The embedding model SHALL be configurable via `GOBLIN_MEMORY_EMBEDDING_MODEL` (default `text-embedding-3-small`).
 
@@ -137,6 +138,35 @@ Results SHALL be fused with weighted scoring: `score = vectorWeight * vectorScor
 - **THEN** the recent entry SHALL rank above the stale entry
 - **AND** the stale entry's decayed score SHALL be lower than its raw fusion score
 
+### Requirement: Search tracks recall for budget compaction
+
+`memory_search` SHALL increment `recall_count` and update `last_recalled_at` on every returned `memory_entries` row (entries with `entry_kind = "memory"` or `entry_kind = "user"`). Transcript entries (`entry_kind = "transcript"`) SHALL NOT have their recall counters updated — transcript snippets are not subject to budget compaction.
+
+The recall update SHALL occur after results are finalized and returned to the caller. It SHALL be a cheap follow-up write (a single `UPDATE ... WHERE entry_id IN (...)` statement). The recall update SHALL NOT block the search response — if the update fails, the search results SHALL still be returned.
+
+The `recall_count` and `last_recalled_at` columns provide a quality signal for budget compaction (see "Budget management with recall-aware auto-compaction" and decision `0027-dreaming-model-driven-promotion`). Entries that are never returned by any search are the first to be evicted during compaction.
+
+#### Scenario: Search increments recall_count on returned entries
+
+- **GIVEN** `memory_entries` contains entry E1 with `recall_count = 0` and `last_recalled_at = NULL`
+- **WHEN** `memory_search({query: "..."})` returns E1 in its results
+- **THEN** E1's `recall_count` SHALL be incremented to 1
+- **AND** E1's `last_recalled_at` SHALL be set to the current time
+
+#### Scenario: Search does not update transcript recall counters
+
+- **GIVEN** `memory_entries` contains a transcript entry T1 with `recall_count = 0`
+- **WHEN** `memory_search({query: "...", corpus: "all"})` returns T1 in its results
+- **THEN** T1's `recall_count` SHALL remain 0
+- **AND** T1's `last_recalled_at` SHALL remain NULL
+
+#### Scenario: Recall update failure does not block search
+
+- **GIVEN** `memory_search` returns 5 results
+- **WHEN** the recall update write fails (e.g. disk error)
+- **THEN** the 5 search results SHALL still be returned to the caller
+- **AND** the failure SHALL be logged as a warning
+
 ### Requirement: Concept vocabulary tagging
 
 The system SHALL extract concept tags from memory entries and search queries using a multi-language tokenizer. Tags SHALL be stored alongside entries and used as a search boost signal.
@@ -190,6 +220,16 @@ Search results SHALL distinguish `source: memory` from `source: transcript` in t
 - **THEN** the new transcript entries SHALL be chunked and inserted into `memory_entries` with `scope = "transcript/<sessionId>"` and `entry_kind = "transcript"`
 - **AND** each chunk SHALL be embedded and stored in `memory_embeddings`
 
+#### Scenario: First sync after migration indexes all existing transcripts
+
+- **GIVEN** the migration has completed and `memory_sources` is empty
+- **AND** multiple `transcript.jsonl` files exist from before migration
+- **WHEN** the first transcript sync tick runs
+- **THEN** every existing `transcript.jsonl` file SHALL be treated as "changed" (no `memory_sources` row to compare against)
+- **AND** every file SHALL be parsed, chunked, embedded, and inserted into `memory_entries`
+- **AND** `memory_sources` SHALL be populated with a row for each file
+- **AND** subsequent sync ticks SHALL skip unchanged files
+
 #### Scenario: Unchanged transcript skipped on sync
 
 - **WHEN** a transcript file's mtime and size match `memory_sources`
@@ -219,7 +259,7 @@ Search results SHALL distinguish `source: memory` from `source: transcript` in t
 
 The system SHALL run scheduled memory consolidation ("dreaming") via the existing scheduler loop. Dreaming SHALL have three phases, each on an independent configurable schedule:
 
-- **Light sleep** (default: every 4 hours): scan transcript entries within a lookback window (default 24 hours). Extract snippets worth remembering via a model-driven extraction pass (using the configured chat model with a focused prompt). Dedupe against existing memory entries using cosine similarity (threshold 0.85). Write a dream diary entry to `$GOBLIN_HOME/state/memory/dreams/<date>.md`. Promote high-confidence snippets to `memory_entries` with `origin = "dreaming"`.
+- **Light sleep** (default: every 4 hours): scan transcript entries within a lookback window (default 24 hours). Extract snippets worth remembering via a model-driven extraction pass (using the configured chat model with a focused prompt). Dedupe against existing memory entries using cosine similarity (threshold configurable via `GOBLIN_MEMORY_DEDUP_SIMILARITY_THRESHOLD`, default 0.85). Write a dream diary entry to `$GOBLIN_HOME/state/memory/dreams/<date>.md`. Promote high-confidence snippets (confidence ≥ `GOBLIN_MEMORY_DREAM_CONFIDENCE_THRESHOLD`, default 0.7) to `memory_entries` with `origin = "dreaming"`.
 
 - **REM sleep** (default: daily at 03:00 local): aggregate concept tags across all transcript entries in the lookback window. Detect recurring themes (tags appearing in 3+ distinct sessions). Promote cross-session patterns into durable memory entries with `origin = "dreaming"` and `category = "theme"`.
 
@@ -233,7 +273,7 @@ Dreaming SHALL use the existing subagent spawning mechanism for model-driven ext
 - `target` (string, optional) — one of `memory`, `user`, `agent`; defaults to `memory`.
 - `rationale` (string, optional) — a one-sentence explanation.
 
-Candidates with `category = "skip"` or `confidence` below the configured threshold SHALL be recorded in `quarantine.jsonl` and SHALL NOT be persisted to `memory_entries`. Malformed subagent output (non-JSON, missing required fields, or invalid enum values) SHALL be appended to `quarantine.jsonl` with reason `malformed` and SHALL NOT crash the dreaming pass.
+Candidates with `category = "skip"` or `confidence` below `GOBLIN_MEMORY_DREAM_CONFIDENCE_THRESHOLD` (default 0.7) SHALL be recorded in `quarantine.jsonl` and SHALL NOT be persisted to `memory_entries`. Malformed subagent output (non-JSON, missing required fields, or invalid enum values) SHALL be appended to `quarantine.jsonl` with reason `malformed` and SHALL NOT crash the dreaming pass.
 
 Dreaming schedule intervals SHALL be expressed as a non-negative integer number of minutes or the literal `off` (case-insensitive). `0` SHALL be equivalent to `off`. The default light sleep interval SHALL be 240 minutes. The default REM and deep sleep intervals SHALL be 1440 minutes. The scheduler SHALL align the first daily phase run to the configured local time (03:00 for REM, 04:00 for deep) by computing the next occurrence after startup; subsequent runs SHALL be spaced by the interval.
 
@@ -283,7 +323,7 @@ The dream diary at `$GOBLIN_HOME/state/memory/dreams/<date>.md` SHALL be human-r
 
 - **GIVEN** `memory_entries` already contains "user prefers concise summaries" with high confidence
 - **WHEN** light sleep extracts a similar snippet from a transcript of session `s2`
-- **THEN** the cosine similarity between the snippet embedding and the existing entry SHALL exceed 0.85
+- **THEN** the cosine similarity between the snippet embedding and the existing entry SHALL exceed `GOBLIN_MEMORY_DEDUP_SIMILARITY_THRESHOLD` (default 0.85)
 - **AND** the snippet SHALL NOT be inserted as a new entry
 - **AND** the existing entry's `updated_at` SHALL be refreshed
 - **AND** the existing entry's `source_session` SHALL remain unchanged
@@ -303,13 +343,18 @@ The dream diary at `$GOBLIN_HOME/state/memory/dreams/<date>.md` SHALL be human-r
 - **AND** no entry SHALL be inserted into `memory_entries`
 - **AND** the dreaming pass SHALL continue with the next transcript range
 
-### Requirement: Budget management with auto-compaction
+### Requirement: Budget management with recall-aware auto-compaction
 
-The system SHALL enforce a configurable character budget on the total memory store (default 50,000 chars across all `memory_entries` with `entry_kind = "memory"` or `entry_kind = "user"`). The budget counts only the `text` column — the `description` column SHALL NOT be counted toward the budget. The budget SHALL NOT be a per-file cap — it is a global budget across all scopes.
+The system SHALL enforce a configurable character budget on the total memory store (default 50,000 chars across all `memory_entries` with `entry_kind = "memory"` or `entry_kind = "user"`). The budget counts only the `text` column — descriptions in `memory_scopes` SHALL NOT be counted toward the budget. The budget SHALL NOT be a per-file cap — it is a global budget across all scopes.
 
-When a write (manual or dreaming-promoted) would push the total over the budget, the system SHALL compact by dropping the oldest entries with `origin = "dreaming"` first. Entries with `origin = "user"` (written via `memory_write`) SHALL be preserved unconditionally. If dropping all dreaming entries is insufficient, the write SHALL fail with an overflow error reporting the current size, budget, and overflow amount.
+When a write (manual or dreaming-promoted) would push the total over the budget, the system SHALL compact by dropping entries with `origin = "dreaming"` first. Entries with `origin = "user"` (written via `memory_write`) SHALL be preserved unconditionally. If dropping all dreaming entries is insufficient, the write SHALL fail with an overflow error reporting the current size, budget, and overflow amount.
 
-Compaction SHALL drop entries in ascending `promoted_at` order (oldest promoted first). When multiple entries share the same `promoted_at`, ties SHALL be broken by `created_at` ascending.
+Compaction SHALL use a recall-aware eviction order (see decision `0027-dreaming-model-driven-promotion`):
+
+1. **Never-recalled dreaming entries first:** entries with `recall_count = 0`, ordered by `promoted_at` ascending (oldest promoted first). These are entries that were promoted by dreaming but never surfaced by any `memory_search` — the lowest-quality promotions.
+2. **Recalled dreaming entries by least-recent recall:** entries with `recall_count > 0`, ordered by `last_recalled_at` ascending (least-recently-recalled first). When `last_recalled_at` ties, break by `promoted_at` ascending.
+
+This ensures that junk promotions (model-curated but never useful) are evicted before useful entries. Over time, the memory store converges toward entries that are both model-interesting and search-useful.
 
 The budget SHALL be configurable via `GOBLIN_MEMORY_BUDGET_CHARS` (default 50000).
 
@@ -345,6 +390,20 @@ The budget SHALL be configurable via `GOBLIN_MEMORY_BUDGET_CHARS` (default 50000
 - **WHEN** compaction runs to make room for a new promotion
 - **THEN** only dreaming entries SHALL be eligible for dropping
 - **AND** all 10 user-authored entries SHALL remain
+
+#### Scenario: Never-recalled dreaming entries evicted before recalled ones
+
+- **GIVEN** memory contains two dreaming entries: entry A (promoted 10 days ago, `recall_count = 5`, `last_recalled_at` = 1 day ago) and entry B (promoted 2 days ago, `recall_count = 0`)
+- **WHEN** compaction must drop one entry to make room
+- **THEN** entry B (never recalled) SHALL be dropped first despite being more recently promoted
+- **AND** entry A (frequently recalled) SHALL be preserved
+
+#### Scenario: Recalled dreaming entries evicted by least-recent recall
+
+- **GIVEN** memory contains two dreaming entries with `recall_count > 0`: entry A (last recalled 30 days ago) and entry B (last recalled 1 day ago)
+- **WHEN** compaction must drop one entry and both have non-zero recall_count
+- **THEN** entry A (least-recently recalled) SHALL be dropped first
+- **AND** entry B (recently recalled) SHALL be preserved
 
 ### Requirement: Memory CLI
 
@@ -401,9 +460,9 @@ The `archive/topics/` directory SHALL continue to hold orphaned topic scopes mov
 
 ### Requirement: Enforce character caps with overflow errors
 
-The system SHALL enforce a global character budget (default 50,000 chars) across all `memory_entries` with `entry_kind = "memory"` or `entry_kind = "user"`. The budget is configurable via `GOBLIN_MEMORY_BUDGET_CHARS`. Per-file caps (4000 for `memory.md`, 2000 for `user.md`) SHALL be removed — the global budget replaces them.
+The system SHALL enforce a global character budget (default 50,000 chars) across all `memory_entries` with `entry_kind = "memory"` or `entry_kind = "user"`. The budget is configurable via `GOBLIN_MEMORY_BUDGET_CHARS`. Per-file caps (4000 for `memory.md`, 2000 for `user.md`) SHALL be removed — the global budget replaces them. The budget counts only `memory_entries.text` — `memory_scopes.description` SHALL NOT be counted.
 
-When an `add`, `replace`, or `rewrite` operation would push the total over the budget, the system SHALL first attempt compaction (dropping oldest dreaming-promoted entries). If compaction is insufficient, the operation SHALL fail with an error message reporting the current total, the budget, and the overflow amount. The database MUST NOT be modified on overflow.
+When an `add`, `replace`, or `rewrite` operation would push the total over the budget, the system SHALL first attempt compaction (dropping dreaming-promoted entries in recall-aware order: `recall_count = 0` first by `promoted_at` ascending, then `last_recalled_at` ascending, then `promoted_at` ascending). If compaction is insufficient, the operation SHALL fail with an error message reporting the current total, the budget, and the overflow amount. The database MUST NOT be modified on overflow.
 
 #### Scenario: Add within budget succeeds
 
@@ -472,14 +531,14 @@ The tool MUST NOT accept a `scope` argument on writes. The active scope is deriv
 
 - **WHEN** `memory_write({action: "set_description", target: "memory", description: "<251 characters or string containing a newline>"})` is called
 - **THEN** the tool SHALL return a validation error
-- **AND** the description SHALL NOT be persisted
+- **AND** the description SHALL NOT be persisted to `memory_scopes`
 
 #### Scenario: set_description does not count toward the character budget
 
 - **WHEN** `memory_write({action: "set_description", target: "memory", description: "homelab + dotfiles"})` is called and the memory store is at 49,999 of 50,000 characters
-- **THEN** the description SHALL be persisted on the active scope's entries
+- **THEN** the description SHALL be persisted as a `memory_scopes` row for the active scope
 - **AND** the write SHALL NOT fail with a budget overflow error
-- **AND** the `description` column SHALL NOT be counted toward the global character budget (only `text` is counted)
+- **AND** the `memory_scopes.description` column SHALL NOT be counted toward the global character budget (only `memory_entries.text` is counted)
 
 #### Scenario: Corpus restriction to transcripts
 
@@ -739,15 +798,22 @@ Topic-scope keying SHALL use the numeric Telegram topic ID, not the topic's disp
 
 ### Requirement: Scope description provides progressive disclosure
 
-Each scope MAY carry a one-line description stored in the `description` column of `memory_entries` (≤ 200 characters, single line). The description is per-scope: it is stored on the scope's entries and surfaced in the cross-scope index of the frozen summary, formatted as `- <scope-id> — <description>`. When a scope has no description, the section SHALL fall back to the Telegram topic name for topic scopes (best-effort lookup) or the literal string `(no description)` otherwise.
+Each scope MAY carry a one-line description stored in the `memory_scopes` table (≤ 200 characters, single line). The description is per-scope: it is stored as a single row in `memory_scopes` and surfaced in the cross-scope index of the frozen summary, formatted as `- <scope-id> — <description>`. When a scope has no description (no `memory_scopes` row or `description = NULL`), the section SHALL fall back to the Telegram topic name for topic scopes (best-effort lookup) or the literal string `(no description)` otherwise.
 
-The `memory_write` tool SHALL expose a `set_description` action that updates the description column for the active scope's entries without modifying entry text. The `memory export` CLI SHALL write the description as a YAML-style frontmatter header in the exported `memory.md` file for inspectability.
+The `memory_write` tool SHALL expose a `set_description` action that upserts a single row in `memory_scopes` for the active scope without modifying any `memory_entries` rows. This SHALL succeed even when the scope has zero entries — the `memory_scopes` row is independent of `memory_entries` (see decision `0028-memory-scopes-table`). The `memory export` CLI SHALL write the description as a YAML-style frontmatter header in the exported `memory.md` file for inspectability.
 
 #### Scenario: Set description on a topic scope
 
 - **WHEN** `memory_write` is called with `{action: "set_description", target: "memory", description: "homelab + dotfiles"}` from a session bound to topic `7`
-- **THEN** the `description` column SHALL be updated to `homelab + dotfiles` for the active scope's entries
-- **AND** existing entry text SHALL be preserved
+- **THEN** a row SHALL be upserted in `memory_scopes` with `scope = "topics/<chat>/7"` and `description = "homelab + dotfiles"`
+- **AND** no `memory_entries` rows SHALL be modified
+
+#### Scenario: Set description on an empty scope succeeds
+
+- **GIVEN** scope `topics/-100123/42` has zero entries in `memory_entries`
+- **WHEN** `memory_write` is called with `{action: "set_description", target: "memory", description: "future project"}` from a session bound to topic `42`
+- **THEN** a row SHALL be inserted into `memory_scopes` with `scope = "topics/-100123/42"` and `description = "future project"`
+- **AND** the description SHALL persist and be surfaced in the cross-scope index even though the scope has no entries
 
 #### Scenario: Export writes description as frontmatter
 
@@ -867,7 +933,7 @@ The system SHALL maintain `$GOBLIN_HOME/state/memory/quarantine.jsonl` for rejec
 
 #### Scenario: Low-confidence candidate is quarantined
 
-- **WHEN** dreaming extracts a candidate below the configured confidence threshold and the candidate is not otherwise unsafe
+- **WHEN** dreaming extracts a candidate with `confidence < GOBLIN_MEMORY_DREAM_CONFIDENCE_THRESHOLD` (default 0.7) and the candidate is not otherwise unsafe
 - **THEN** a record SHALL be appended to `quarantine.jsonl` with reason `low_confidence`
 - **AND** the candidate SHALL NOT be inserted into `memory_entries`
 

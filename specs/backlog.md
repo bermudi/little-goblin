@@ -52,7 +52,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
   - Reindex locks — a boolean flag suffices today; a proper lock mechanism may be needed if concurrent reindex becomes a concern.
   - Plugin SDK or embedding provider registry — direct OpenAI calls only today; a registry would allow alternative embedding providers.
   - Multi-provider fallback chains — one fallback path (`openai → fts-only`) today; a general-purpose state machine would support chained providers.
-  - Backfilling historical transcripts — `memory backfill` command to index transcripts from before the migration point; currently a non-goal with no-backfill rollout contract.
+  - Memory metrics instrumentation seams — `MemoryStore`, `searchMemoryEntries`, and `DreamingPipeline` should accept optional `MetricsStore` injection points so the `session-metrics` change can instrument memory writes, searches, and dreaming without re-landing `memory-engine`. Land as a patch under `session-metrics` rather than ad-hoc during `memory-engine` build.
 
 ## Open Questions
 

@@ -4,7 +4,11 @@
 
 ### Overview
 
-The change replaces the markdown-file memory system with a SQLite-backed memory engine that includes hybrid search, transcript indexing, dreaming, and budget management. The engine adapts algorithms from OpenClaw's `memory-core` plugin (MIT) for a single-user, single-process, Bun-based agent. Before implementation, the referenced `memory-core` source files must be obtained, vendored with license headers, or the algorithms must be specified in enough detail to reimplement without reference code.
+The change replaces the markdown-file memory system with a SQLite-backed memory engine that includes hybrid search, transcript indexing, dreaming, and budget management. The engine adapts algorithms from OpenClaw's `memory-core` plugin (MIT) for a single-user, single-process, Bun-based agent.
+
+**Ported algorithms (vendored under `src/memory/vendor/` with MIT headers):** `hybrid.ts`, `mmr.ts`, `temporal-decay.ts`, `concept-vocabulary.ts`. These are self-contained mathematical functions. The source is studied, imports are inlined, and the logic is reimplemented in `src/memory/`.
+
+**Adapted components (reimplemented from scratch, not vendored):** `budget.ts` and `dreaming.ts`. OpenClaw's budget operates on markdown files; little-goblin's operates on SQLite rows. OpenClaw's dreaming uses a 2932-line recall store for promotion gating; little-goblin uses model-opinion confidence with a lightweight `recall_count`/`last_recalled_at` signal for compaction (see decision `0027-dreaming-model-driven-promotion`). The phase structure and REM concept-tag aggregation are inspired by openclaw; the promotion mechanism is replaced entirely.
 
 ### Component map
 
@@ -12,15 +16,15 @@ The change replaces the markdown-file memory system with a SQLite-backed memory 
 src/memory/
   db.ts              — SQLite database lifecycle (open, close, WAL, schema init)
   schema.ts          — table definitions, migrations, schema version
-  store.ts           — CRUD over memory_entries (replaces markdown store); includes `archiveOrphanTopic(chatId, topicId)` to prefix a topic scope with `archive/` on Telegram not-found errors
+  store.ts           — CRUD over memory_entries + memory_scopes (replaces markdown store); includes `archiveOrphanTopic(chatId, topicId)` to prefix a topic scope with `archive/` on Telegram not-found errors
   embeddings.ts      — OpenAI embedding provider + cache + FTS-only fallback
-  search.ts          — hybrid search (vector + BM25 + concept boost + MMR + decay)
+  search.ts          — hybrid search (vector + BM25 + concept boost + MMR + decay); increments recall_count/last_recalled_at on returned results
   concept-vocabulary.ts — tag extraction (ported from memory-core)
   hybrid.ts          — fusion scoring, MMR, temporal decay (ported from memory-core)
   transcript-index.ts — delta sync of transcript.jsonl → memory_entries
-  dreaming.ts        — light/REM/deep sleep phases, schedule integration
+  dreaming.ts        — light/REM/deep sleep phases, schedule integration (adapted, not ported — see decision 0027)
   dreaming-narrative.ts — optional dream diary narrative (subagent-driven)
-  budget.ts          — auto-compaction of dreaming entries (ported from memory-core)
+  budget.ts          — recall-aware auto-compaction of dreaming entries (adapted, not ported)
   snapshot.ts        — frozen system prompt summary (replaces per-turn snapshot)
   context.ts         — caller-typed context assembly (preserved unchanged; call sites in `snapshot.ts`/`tool.ts` switch from `formatSnapshot` to `formatRelevantMemory` but the `MemoryCaller` type and `derivePersonaPolicy` function are unchanged)
   safety.ts          — secret/PII filter (preserved unchanged)
@@ -33,21 +37,30 @@ src/memory/
   export.ts          — SQLite → markdown export for inspectability
   cli.ts             — `memory export`, `memory status`, `memory search` commands
   mod.ts             — barrel exports
+  vendor/            — vendored openclaw memory-core source (MIT headers) for algorithm reference: hybrid.ts, mmr.ts, temporal-decay.ts, concept-vocabulary.ts
 ```
 
 ### MemoryEngine bundle
 
-The `MemoryEngine` is a single bundle object passed to `SchedulerLoop` and `AgentRunner` to avoid threading three separate dependencies through every constructor. It wraps the three long-lived memory components:
+The `MemoryEngine` is a single bundle object passed to `SchedulerLoop` and `AgentRunner` to avoid threading four separate dependencies through every constructor. It wraps the four long-lived memory components:
 
 ```typescript
 type MemoryEngine = {
   database: MemoryDatabase;       // SQLite connection lifecycle
+  embeddings: EmbeddingProvider;  // OpenAI embedding API + cache + FTS-only fallback
   dreaming: DreamingPipeline;     // light/REM/deep sleep phases
   transcriptIndexer: TranscriptIndexer; // delta sync of transcript.jsonl
 };
 ```
 
-Constructed once in `src/index.ts` at startup, after `ensureGoblinHome()` and before `SchedulerLoop` initialization. The `MemoryDatabase` is shared (single connection, synchronous). `DreamingPipeline` and `TranscriptIndexer` receive the database handle at construction. `AgentRunner` receives the bundle for frozen summary construction and `memory_search`/`memory_write` tool wiring. `SchedulerLoop` receives it for dreaming schedule dispatch and transcript sync ticks.
+Constructed once in `src/index.ts` at startup, after `ensureGoblinHome()` and before `SchedulerLoop` initialization. Construction order:
+
+1. `MemoryDatabase` — open SQLite, run migration if needed.
+2. `EmbeddingProvider` — construct with API key/base URL/model from env vars. The provider is NOT a lazy singleton; it is constructed eagerly at startup so that configuration errors (missing API key, invalid base URL) surface immediately rather than on first search.
+3. `TranscriptIndexer` — receives `database` and `embeddings` at construction.
+4. `DreamingPipeline` — receives `database`, `embeddings`, and the dispatcher/session-source seams at construction.
+
+The `MemoryDatabase` is shared (single connection, synchronous). `AgentRunner` receives the bundle for frozen summary construction and `memory_search`/`memory_write` tool wiring (the tools use `database` for storage and `embeddings` for query embedding). `SchedulerLoop` receives it for dreaming schedule dispatch and transcript sync ticks. `search.ts`, `snapshot.ts`, `transcript-index.ts`, and `dreaming.ts` receive `embeddings` via the bundle or constructor injection — never via a hidden module-level singleton.
 
 ### Data flow
 
@@ -76,7 +89,7 @@ Constructed once in `src/index.ts` at startup, after `ensureGoblinHome()` and be
 
 **Write path (manual — `set_description`):**
 1-3. Same as `add` (resolve scope, description safety check).
-4. `store.ts` opens a transaction and updates the `description` column on all `memory_entries` rows in the active scope. No FTS, embedding, or tag changes. No budget check — `description` is not counted toward the budget.
+4. `store.ts` opens a transaction and upserts a single row in `memory_scopes` (scope, description, updated_at). No `memory_entries` changes. No FTS, embedding, or tag changes. No budget check — `description` is not counted toward the budget. This works even when the scope has zero entries (the `memory_scopes` row is independent of `memory_entries`).
 5. Transaction commits.
 
 **Write path (dreaming):**
@@ -101,6 +114,7 @@ Constructed once in `src/index.ts` at startup, after `ensureGoblinHome()` and be
 6. `hybrid.ts` applies temporal decay: `decayedScore = score * exp(-ln(2) * ageInDays / halfLifeDays)`, half-life default 30 days, configurable via `GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS`. Entries with no resolvable `updated_at` receive no decay.
 7. `hybrid.ts` applies MMR re-ranking if results exceed 2× limit: scores min-max normalized to [0,1], `mmrScore = lambda * normalizedRelevance - (1-lambda) * maxJaccardSimilarity`, lambda default 0.7, Jaccard on tokenized entry text, iterative selection with original decayed score as tiebreaker.
 8. Results are returned with scope, source, score, component scores, and entry text per the `SearchResult` schema in the spec.
+9. **Recall tracking:** `search.ts` increments `recall_count` and updates `last_recalled_at` on every returned `memory_entries` row (not transcript rows — transcript snippets are not subject to budget compaction). This is a cheap follow-up write after the search read completes. The recall signal drives budget compaction order (see `budget.ts`).
 
 **Transcript sync path:**
 1. Scheduler tick (every 5 min) calls `transcript-index.ts`.
@@ -120,9 +134,9 @@ Constructed once in `src/index.ts` at startup, after `ensureGoblinHome()` and be
 
 - **SQLite database** (`$GOBLIN_HOME/state/memory/memory.sqlite`): canonical store. WAL mode for concurrent read/write. Single `bun:sqlite` connection (synchronous, in-process).
 - **Dream diary** (`$GOBLIN_HOME/state/memory/dreams/<date>.md`): human-readable markdown, one file per day. Not indexed, not searched — inspection only.
-- **Reflection cursor** (`$GOBLIN_HOME/state/sessions/<id>/memory-reflection.json`): preserved from existing system. Advanced by `AgentRunner` on `agent_end` and by light sleep after processing.
+- **Dreaming cursor** (`$GOBLIN_HOME/state/sessions/<id>/memory-dreaming-cursor.json`): per-session cursor recording which transcript entries have been processed by light sleep. On first observation of a session with no cursor file, the cursor is seeded to the current transcript end (no backfill). If the legacy `memory-reflection.json` exists, its cursor value is migrated to `memory-dreaming-cursor.json` (same line offset) and the old file is removed.
 - **Quarantine** (`$GOBLIN_HOME/state/memory/quarantine.jsonl`): preserved format; extended to record low-confidence and `skip` candidates with reason `low_confidence`.
-- **`memory_meta.reindexing` flag**: boolean key in `memory_meta` set to `"true"` while a model-change or full reindex is running and cleared to `"false"` on completion. The flag prevents concurrent reindex passes and is checked on startup. On startup, if the flag is `"true"` (left over from a crash), the system resets it to `"false"` since no concurrent process can be running.
+- **`memory_meta.reindexing` flag**: boolean key in `memory_meta` set to `"true"` while a model-change or full reindex is running and cleared to `"false"` on completion. The flag prevents concurrent reindex passes and is checked on startup. On startup, if the flag is `"true"` (left over from a crash), the system resets it to `"false"` since no concurrent process can be running. **Search during reindex:** while `reindexing = "true"`, `memory_search` SHALL use the existing (potentially stale) embeddings for vector search. This is acceptable because the reindex is updating embeddings in-place; the worst case is a transient ranking inconsistency during the reindex window (seconds to minutes for a single-user store). Search SHALL NOT block or degrade to FTS-only during reindex.
 - **Markdown export** (`$GOBLIN_HOME/state/memory/{user,general/topics/.../agents/...}/*.md`): read-only export surface, regenerated by `memory export` CLI.
 
 ## Decisions
@@ -143,7 +157,7 @@ Constructed once in `src/index.ts` at startup, after `ensureGoblinHome()` and be
 
 **Why:** A dedicated embedding provider configuration keeps memory recall independent of the chat model provider. For a single-user agent, OpenAI's `text-embedding-3-small` is cheap ($0.02/1M tokens), fast, and good enough. The API key and base URL are sourced from memory-specific environment variables so the chat provider can be changed without breaking embeddings.
 
-**Trade-off:** If OpenAI is down, search degrades to FTS-only. This is acceptable — the agent still works, just with lexical-only recall. The degraded state is retried after a 60-second cooldown.
+**Trade-off:** If OpenAI is down, search degrades to FTS-only. This is acceptable — the agent still works, just with lexical-only recall. The degraded state is retried after a cooldown (`GOBLIN_MEMORY_EMBEDDING_COOLDOWN_SECONDS`, default 60).
 
 **Constraints:** The embedding model is configurable via `GOBLIN_MEMORY_EMBEDDING_MODEL`. The API key is read from `GOBLIN_MEMORY_EMBEDDING_API_KEY` and falls back to `OPENAI_API_KEY` for backward compatibility. The optional base URL is read from `GOBLIN_MEMORY_EMBEDDING_BASE_URL` and falls back to `OPENAI_BASE_URL`. If the user switches models, all embeddings are re-computed on the next reindex (detected by comparing the stored model against the configured model).
 
@@ -167,21 +181,25 @@ Constructed once in `src/index.ts` at startup, after `ensureGoblinHome()` and be
 
 **Constraints:** The frozen summary is bounded to 1200 chars total, with the cross-scope index trimmed first and then the active scope and `user.md` summaries truncated at word boundaries if over budget. The frozen summary header is `[goblin memory summary (frozen at session start)]` and is immediately followed by the guardrail text `Memory may be stale or incomplete. Current user messages, recent tool results, and explicit instructions override memory.` when any memory source is non-empty. The `## relevant memory` section is bounded to 3 entries by default and clamped to a maximum of 5. Both use the same hybrid search backend; `## relevant memory` searches only `corpus = "memory"` so transcript entries never appear in the per-turn aside.
 
-### D5: Dreaming replaces per-turn reflection
+### D5: Dreaming replaces per-turn reflection (adapted, not ported — see decision 0027)
 
-**Chosen:** The per-turn `MemoryReflector` (regex-based, scheduled after every `agent_end`) is replaced by scheduled dreaming phases (model-driven, run on intervals). The `AgentRunner` still advances the reflection cursor on `agent_end` so light sleep knows what's new.
+**Chosen:** The per-turn `MemoryReflector` (regex-based, scheduled after every `agent_end`) is replaced by scheduled dreaming phases (model-driven, run on intervals). The `AgentRunner` still advances the dreaming cursor on `agent_end` so light sleep knows what's new.
 
 **Why:** The current reflector runs after every turn, uses regex patterns, and cannot detect themes or nuance. Dreaming runs on intervals (4h light, daily REM, daily deep), uses a model-driven extraction subagent, and includes theme detection and budget compaction. This is a strict upgrade with less per-turn overhead.
 
+**Not a port of openclaw's dreaming.** OpenClaw's `memory-core` dreaming gates promotion on a 2932-line recall store (`short-term-promotion.ts`) that tracks behavioral recall signals: an entry only becomes durable after being surfaced by `memory_search` at least 3 times across 2 distinct queries on multiple days. Little-goblin uses model-opinion confidence (the LLM subagent's `confidence` field) as the promotion signal. This is a different architecture, not a simplification — the phase structure (light/REM/deep) and REM concept-tag aggregation are inspired by openclaw, but the promotion mechanism is replaced entirely. See decision `0027-dreaming-model-driven-promotion` for the full tradeoff analysis.
+
+**Trade-off:** Model-opinion confidence is a single-pass judgment; recall-based confidence is accumulated behavioral evidence. Junk promotion rates will be higher than openclaw's. This is mitigated by the recall-aware budget compaction (D6): dreaming entries with `recall_count = 0` (never recalled by any search) are evicted first. Over time, the memory store converges toward entries that are both model-interesting and search-useful.
+
 **Trade-off:** There is a delay between a conversation and memory promotion (up to 4 hours for light sleep). This is acceptable for a personal agent — the user can always say "remember this" and the `memory_write` tool persists immediately.
 
-**Constraints:** The dreaming session is an internal session with id `__goblin_dreaming__` (not a Telegram chat). It is created lazily on first dispatch and reused. It uses the existing subagent spawning mechanism. The subagent receives a focused prompt with transcript snippets and returns a JSON array of candidates with `text`, `category`, `confidence`, `target`, and `rationale` fields.
+**Constraints:** The dreaming session is an internal session with id `__goblin_dreaming__` (not a Telegram chat). It is created lazily on first dispatch and reused. It uses the existing subagent spawning mechanism. The subagent receives a focused prompt with transcript snippets and returns a JSON array of candidates with `text`, `category`, `confidence`, `target`, and `rationale` fields. The dreaming cursor is persisted at `$GOBLIN_HOME/state/sessions/<id>/memory-dreaming-cursor.json` (per-session, line offset into `transcript.jsonl`).
 
 REM and deep sleep aggregate concept tags and short-term entries across all sessions. Cross-session promotions target the scope where the theme or short-term entry originated most frequently. The promotion rule is: for each theme or entry, collect its origin sessions; promote to the scope associated with the highest session count; ties are broken by the most recent `updated_at`, then by scope name ascending. If the origin sessions are all from transcript scopes without a clear curated target, promote to `general`.
 
-### D6: Global budget replaces per-file caps
+### D6: Global budget replaces per-file caps (adapted, not ported — recall-aware compaction)
 
-**Chosen:** A single global character budget (default 50,000) replaces the per-file caps (4000 for memory.md, 2000 for user.md). User-authored entries are preserved during compaction; only dreaming-promoted entries are eligible for dropping.
+**Chosen:** A single global character budget (default 50,000) replaces the per-file caps (4000 for memory.md, 2000 for user.md). User-authored entries are preserved during compaction; only dreaming-promoted entries are eligible for dropping. Compaction is recall-aware: dreaming entries with `recall_count = 0` are evicted first, then dreaming entries by `last_recalled_at` ascending, then by `promoted_at` ascending.
 
 **Why:** The 6000-char total cap is the core limitation. A 50,000-char budget allows real memory growth. The compaction strategy (drop oldest dreaming entries first, preserve user entries) ensures that manually-curated facts survive while auto-promoted entries rotate naturally.
 
@@ -222,27 +240,41 @@ The following standing architectural rules have been recorded as decisions via `
 - **REM/deep sleep cross-session promotion rule** [decision 0025]: "for each theme or entry, collect its origin sessions; promote to the scope with the highest session count; ties by most recent `updated_at`, then scope name ascending; default `general`."
 - **`general` scope is shared across all DMs and supergroup-no-topic chats** [decision 0026]: all DMs and all no-topic supergroup chats resolve to `scope = "general"`. No per-chat `general` scope.
 
-### Future normalization candidate
+### D10: `memory_scopes` table normalizes per-scope metadata [decision 0028]
 
-The spec stores per-scope `description` in the `memory_entries` table, meaning `set_description` updates all rows in a scope and the description is duplicated across entries. A future change could normalize this into a `memory_scopes` table (scope, description, updated_at) to simplify the update path and avoid duplication. This is not in scope for `memory-engine` but is noted as a follow-up.
+**Chosen:** Per-scope `description` is stored in a dedicated `memory_scopes` table (scope, description, updated_at), not as a column on `memory_entries`. `set_description` upserts a single row in `memory_scopes`.
 
-**Known limitation:** because `description` is stored on `memory_entries` rows, `set_description` on an empty scope (zero entries) is a no-op — the update touches zero rows and the description is silently lost. A user who sets a description before writing any entries will see it disappear. The `memory_scopes` table normalization described above is the real fix. For now, this is a known minor gap; the tool SHALL succeed silently (no error) on an empty scope.
+**Why:** The original design stored `description` on `memory_entries` rows, duplicated across every row in the scope. This had two problems: (1) `set_description` on an empty scope (zero entries) was a silent no-op — the UPDATE touched zero rows and the description was lost; (2) dreaming inserts between a `set_description` call and the next read could carry a stale description. The `memory_scopes` table eliminates both problems: descriptions are independent of `memory_entries` rows, stored once per scope, and survive empty-scope writes.
+
+**Trade-off:** Reads that need descriptions (frozen summary, cross-scope index, scope-entries response) require a JOIN or separate lookup. This is a minor cost for correctness.
+
+**Constraints:** The `description` column is removed from `memory_entries`. Migration creates `memory_scopes` rows from existing markdown frontmatter descriptions. The frozen summary and cross-scope index join `memory_scopes` to `memory_entries` on `scope`.
+
+### D11: Dreaming internal session dispatch [decision 0029]
+
+**Chosen:** The dreaming session (`__goblin_dreaming__`) is created via `SessionManager.ensureInternal(id)` — a new method that creates a session with `chatId: 0` (sentinel), no Telegram binding, excluded from `list()`. Dreaming turns are dispatched via `TurnDispatcher.enqueueInternalTurn(session, content, onComplete, onError)` — a new method that uses no beta tools, a capture message buffer (no Telegram output), and an `onComplete(text)` return path. Both reuse the existing `schedulePrompt` per-session queue for serialization. Dreaming phases are managed by `SchedulerLoop` as separate timers, NOT registered in `ScheduleStore`.
+
+**Why:** The existing `enqueueScheduledTurn` is Telegram-coupled (beta tools, message buffer, project dir) and fire-and-forget (no return path). The dreaming pipeline needs the model's response to parse JSON candidates. `ScheduleStore` is for user-authored schedules with binding validation and agent-source caps — dreaming phases need none of that. The subagent runner returns the assistant text but creates its own session and doesn't use the per-session queue. The new methods are the minimal seam that satisfies all constraints: per-session serialization, no Telegram coupling, return path, no `ScheduleStore` pollution.
+
+**Trade-off:** `TurnDispatcher` and `SessionManager` each gain a method. `SchedulerLoop` gains timer management. `SchedulerSessionSource` and `SchedulerDispatcher` seams each gain a method. Test fakes need to implement the new methods. This is a small cost for clean separation.
+
+**Constraints:** `chatId: 0` is a sentinel — Telegram chat IDs are never 0. The dreaming session's `ActiveScope` (`{ chatId: 0, topicScope: "general" }`) is never written to. The capture buffer accumulates assistant text deltas; `onComplete` is called after `runner.prompt` resolves. Overlapping dreaming phases coalesce via the per-session queue (the second call waits behind the first).
 
 ## File Changes
 
 ### New files
 
-- `src/memory/db.ts` — SQLite database lifecycle. Opens `memory.sqlite`, enables WAL, creates tables on first run. Uses `bun:sqlite`. Reads `GOBLIN_MEMORY_VECTOR_WEIGHT` and `GOBLIN_MEMORY_TEXT_WEIGHT` on open.
-- `src/memory/schema.ts` — Table definitions (memory_entries with `chat_id` column, memory_embeddings, memory_index_fts as contentful FTS5 virtual table with columns text/entry_id/scope/entry_kind/chat_id, memory_sources, memory_meta, memory_entry_tags) with exact DDL, primary keys, and required `memory_meta` keys. Schema versioning and migrations. `memory_meta` keys include `reindexing` (boolean string, set during model-change reindex, cleared on completion, reset to `"false"` on startup if stale).
-- `src/memory/embeddings.ts` — OpenAI embedding provider. `embedQuery(text)`, `embedBatch(texts[])`, cache by hash, FTS-only fallback with a 60-second cooldown. API key from `GOBLIN_MEMORY_EMBEDDING_API_KEY` (fallback `OPENAI_API_KEY`); base URL from `GOBLIN_MEMORY_EMBEDDING_BASE_URL` (fallback `OPENAI_BASE_URL`); model from `GOBLIN_MEMORY_EMBEDDING_MODEL`.
-- `src/memory/concept-vocabulary.ts` — Tag extraction. Ported from `extensions/memory-core/src/concept-vocabulary.ts` (vendored before build). Inlines the one `string-coerce-runtime` import. ~500 lines.
-- `src/memory/hybrid.ts` — Fusion scoring, MMR, temporal decay, concept boost. Ported from `extensions/memory-core/src/memory/hybrid.ts` + `mmr.ts` + `temporal-decay.ts` (vendored before build). Adds concept tag boost (`min(0.1 * matchingTagCount, 0.3)`). Inlines imports. ~350 lines.
+- `src/memory/db.ts` — SQLite database lifecycle. Opens `memory.sqlite`, enables WAL, creates tables on first run. Uses `bun:sqlite`. Reads `GOBLIN_MEMORY_VECTOR_WEIGHT` and `GOBLIN_MEMORY_TEXT_WEIGHT` on open. Sets `PRAGMA foreign_keys = ON` so `memory_embeddings.entry_id` and `memory_entry_tags.entry_id` FK constraints are enforced (FTS5 `memory_index_fts.entry_id` is a logical reference, not a FK — see schema spec note).
+- `src/memory/schema.ts` — Table definitions (memory_entries with `chat_id`, `recall_count`, `last_recalled_at` columns and NO `description` column; memory_scopes for per-scope descriptions; memory_embeddings; memory_index_fts as contentful FTS5 virtual table with columns text/entry_id/scope/entry_kind/chat_id; memory_sources; memory_meta; memory_entry_tags) with exact DDL, primary keys, and required `memory_meta` keys. Schema versioning and migrations. `memory_meta` keys include `reindexing` (boolean string, set during model-change reindex, cleared on completion, reset to `"false"` on startup if stale).
+- `src/memory/embeddings.ts` — OpenAI embedding provider. `embedQuery(text)`, `embedBatch(texts[])`, cache by hash, FTS-only fallback with cooldown from `GOBLIN_MEMORY_EMBEDDING_COOLDOWN_SECONDS` (default 60). API key from `GOBLIN_MEMORY_EMBEDDING_API_KEY` (fallback `OPENAI_API_KEY`); base URL from `GOBLIN_MEMORY_EMBEDDING_BASE_URL` (fallback `OPENAI_BASE_URL`); model from `GOBLIN_MEMORY_EMBEDDING_MODEL`. Constructed eagerly at startup as part of the `MemoryEngine` bundle (not a lazy singleton).
+- `src/memory/concept-vocabulary.ts` — Tag extraction. Ported from `extensions/memory-core/src/concept-vocabulary.ts` (vendored under `src/memory/vendor/` before build). Inlines the one `string-coerce-runtime` import. Enforces the 8-tag-per-entry cap (keep highest-scoring on overflow). ~500 lines.
+- `src/memory/hybrid.ts` — Fusion scoring, MMR, temporal decay, concept boost. Ported from `extensions/memory-core/src/memory/hybrid.ts` + `mmr.ts` + `temporal-decay.ts` (vendored under `src/memory/vendor/` before build). Adds concept tag boost (`min(0.1 * matchingTagCount, 0.3)`). Inlines imports. ~350 lines.
 - `src/memory/transcript-index.ts` — Delta sync of transcript files into SQLite. Scans `state/sessions/`, compares against `memory_sources`, chunks and embeds changed transcripts. For each session, reads `state/sessions/<sessionId>/state.json` to resolve `chat_id` from the persisted `ChatLocator` binding.
-- `src/memory/dreaming.ts` — Light/REM/deep sleep phases. Reads transcript after cursor, spawns extraction subagent that returns JSON candidates (`text`, `category`, `confidence`, `target`, `rationale`), quarantines malformed/low-confidence/skip candidates, dedupes and consolidates remaining candidates against existing entries (preserving `created_at`/`source_session`, refreshing `updated_at`/`updated_source_session`), promotes novel candidates, compacts. REM/deep sleep aggregate across scopes and promote to the scope with the most frequent origin session (ties by most recent `updated_at`, then scope name ascending; default to `general`). Dispatched to internal session `__goblin_dreaming__`. Integrates with scheduler.
+- `src/memory/dreaming.ts` — Light/REM/deep sleep phases (adapted, not ported — see decision 0027). Reads transcript after cursor (`memory-dreaming-cursor.json`), spawns extraction subagent that returns JSON candidates (`text`, `category`, `confidence`, `target`, `rationale`), quarantines malformed/low-confidence/skip candidates, dedupes and consolidates remaining candidates against existing entries (preserving `created_at`/`source_session`, refreshing `updated_at`/`updated_source_session`), promotes novel candidates, compacts. REM/deep sleep aggregate across scopes and promote to the scope with the most frequent origin session (ties by most recent `updated_at`, then scope name ascending; default to `general`). Dispatched to internal session `__goblin_dreaming__`. Integrates with scheduler.
 - `src/memory/dreaming-narrative.ts` — Optional first-person dream diary generation via subagent. Off by default.
-- `src/memory/budget.ts` — Auto-compaction. Counts characters in `memory_entries.text` (only `text`, not `description`) across rows with `entry_kind = "memory"` or `entry_kind = "user"` and drops oldest `origin = "dreaming"` entries first. Handles net-change semantics for `replace`/`rewrite`. ~100 lines.
-- `src/memory/migration.ts` — One-shot markdown → SQLite migration on first startup. Parses existing `user.md`, `general/memory.md`, `topics/<chatId>/<topicId>/memory.md`, `agents/<name>/memory.md`, maps each file to a `(scope, entry_kind)` pair, inserts entries into SQLite.
-- `src/memory/export.ts` — SQLite → markdown export. Writes entries with `entry_kind = "memory"` or `entry_kind = "user"` back to the existing directory structure (`user.md`, `general/memory.md`, `topics/<chatId>/<topicId>/memory.md`, `agents/<name>/memory.md`). Entries with `entry_kind = "transcript"` or `scope` prefixed with `archive/` are not exported.
+- `src/memory/budget.ts` — Recall-aware auto-compaction (adapted, not ported). Counts characters in `memory_entries.text` across rows with `entry_kind = "memory"` or `entry_kind = "user"` and drops `origin = "dreaming"` entries in recall-aware order: `recall_count = 0` first (by `promoted_at` ascending), then `last_recalled_at` ascending, then `promoted_at` ascending. Handles net-change semantics for `replace`/`rewrite`. ~120 lines.
+- `src/memory/migration.ts` — One-shot markdown → SQLite migration on first startup. Parses existing `user.md`, `general/memory.md`, `topics/<chatId>/<topicId>/memory.md`, `agents/<name>/memory.md`, maps each file to a `(scope, entry_kind)` pair, inserts entries into SQLite. Creates `memory_scopes` rows from markdown frontmatter descriptions.
+- `src/memory/export.ts` — SQLite → markdown export. Writes entries with `entry_kind = "memory"` or `entry_kind = "user"` back to the existing directory structure (`user.md`, `general/memory.md`, `topics/<chatId>/<topicId>/memory.md`, `agents/<name>/memory.md`). Writes `memory_scopes` descriptions as YAML frontmatter. Entries with `entry_kind = "transcript"` or `scope` prefixed with `archive/` are not exported.
 - `src/memory/dreaming.test.ts` — Tests for dreaming phases.
 - `src/memory/embeddings.test.ts` — Tests for embedding provider and fallback.
 - `src/memory/hybrid.test.ts` — Tests for fusion scoring, MMR, temporal decay.
@@ -254,8 +286,8 @@ The spec stores per-scope `description` in the `memory_entries` table, meaning `
 
 ### Modified files
 
-- `src/memory/store.ts` — Rewritten to use SQLite instead of markdown files. Same public interface (`MemoryStore` class with `add`, `replace`, `remove`, `rewrite`, `setDescription`, `read`, `readIndex`). Internally backed by `db.ts`. The `MemoryCap` constants (4000/2000) are removed; the global budget from `budget.ts` replaces them. Adds `archiveOrphanTopic(chatId, topicId)` which updates all `memory_entries` rows for the topic scope by prefixing `scope` with `archive/` (no filesystem move in SQLite).
-- `src/memory/search.ts` — Rewritten to use hybrid search (vector + BM25 + concept boost + MMR + temporal decay) instead of lexical-only. Calls `embeddings.ts` for query embedding, `hybrid.ts` for fusion. Uses `GOBLIN_MEMORY_VECTOR_WEIGHT` and `GOBLIN_MEMORY_TEXT_WEIGHT` (default 0.7/0.3, clamped to [0, 1]). The `searchMemoryEntries` function signature changes to accept a `MemoryDatabase` instead of a `MemoryStore`. The `PersonaPolicy` type is preserved.
+- `src/memory/store.ts` — Rewritten to use SQLite instead of markdown files. Same public interface (`MemoryStore` class with `add`, `replace`, `remove`, `rewrite`, `setDescription`, `read`, `readIndex`). Internally backed by `db.ts`. The `MemoryCap` constants (4000/2000) are removed; the global budget from `budget.ts` replaces them. `setDescription` upserts into `memory_scopes` instead of updating `memory_entries` rows (works on empty scopes). `read` and `readIndex` join `memory_scopes` to surface descriptions. Adds `archiveOrphanTopic(chatId, topicId)` which updates all `memory_entries` rows for the topic scope by prefixing `scope` with `archive/` (no filesystem move in SQLite).
+- `src/memory/search.ts` — Rewritten to use hybrid search (vector + BM25 + concept boost + MMR + temporal decay) instead of lexical-only. Calls `embeddings.ts` for query embedding, `hybrid.ts` for fusion. Uses `GOBLIN_MEMORY_VECTOR_WEIGHT` and `GOBLIN_MEMORY_TEXT_WEIGHT` (default 0.7/0.3, clamped to [0, 1]). After results are finalized, increments `recall_count` and updates `last_recalled_at` on returned `memory_entries` rows (not transcript rows). The `searchMemoryEntries` function signature changes to accept a `MemoryDatabase` instead of a `MemoryStore`. The `PersonaPolicy` type is preserved.
 - `src/memory/tool.ts` — Four tools merged into two. `createMemoryReadTool` and `createMemoryReadIndexTool` are removed. `createMemorySearchTool` is modified to accept optional `query`, `scope`, `corpus` parameters and subsume read/read_index behavior. `createMemoryWriteTool` is modified to resolve the tool `target` (`memory` | `user` | `agent`) to a database `(scope, entry_kind)` pair and write via the SQLite-backed store. Tool schemas are updated.
 - `src/memory/snapshot.ts` — `formatSnapshot` is replaced with `formatFrozenSummary` (bounded summary for system prompt) and `formatRelevantMemory` (hybrid search on prompt text for per-turn aside). The header is `[goblin memory summary (frozen at session start)]`; non-empty summaries include the guardrail text `Memory may be stale or incomplete. Current user messages, recent tool results, and explicit instructions override memory.`. `formatRelevantMemory` searches `corpus = "memory"` so transcript entries never appear in the per-turn aside. The `MemorySnapshotPayload` type is preserved for the relevant-memory aside.
 - `src/memory/entry.ts` — Entry metadata parsing is adapted for SQLite columns. The `formatReflectedEntry` and `parseEntryMetadata` functions are simplified — metadata is now stored in columns, not inline comments. Legacy entries (migrated from markdown) are preserved with null metadata.
@@ -264,7 +296,9 @@ The spec stores per-scope `description` in the `memory_entries` table, meaning `
 - `src/memory/paths.ts` — Path helpers are preserved. `memoryDir`, `userPath`, `scopeMemoryPath` now point to export-only markdown paths. New: `memoryDbPath` (returns `$GOBLIN_HOME/state/memory/memory.sqlite`), `dreamsDir` (returns `$GOBLIN_HOME/state/memory/dreams/`).
 - `src/agent/mod.ts` — `AgentRunner` construction changes: `MemoryStore` is replaced with `MemoryDatabase` (wraps SQLite). The per-turn full snapshot injection is removed. A frozen summary is added to `_baseSystemPrompt` at session creation. The per-turn `## relevant memory` section (`formatRelevantMemory` + `sendCustomMessage`) is computed before each `prompt()`. The `memoryReflector` field is replaced with a `dreamingPipeline` field. The `agent_end` handler stops scheduling reflection and instead advances the cursor. Memory tool registration changes from 4 tools to 2.
 - `src/subagents/execution.ts` — Same changes as `src/agent/mod.ts` for subagent context: `MemoryStore` → `MemoryDatabase`, 4 tools → 2 tools, `formatSnapshot` → `formatRelevantMemory`, frozen summary in system prompt.
-- `src/scheduler/loop.ts` — The scheduler loop gains two new dispatch types: dreaming phases (light/REM/deep) and transcript sync. These are registered as internal schedules at startup. The `SchedulerLoop` constructor gains a `memoryEngine` dependency (a single `MemoryEngine` bundle object wrapping `MemoryDatabase` + `DreamingPipeline` + `TranscriptIndexer`). The `tick()` method checks for due dreaming and sync schedules alongside existing user schedules. For REM and deep sleep, the first dispatch is aligned to the configured local time (03:00 / 04:00) by computing the next occurrence after startup; subsequent dispatches are spaced by the interval. Light sleep starts from the first tick after startup.
+- `src/scheduler/loop.ts` — The scheduler loop gains two new dispatch types: dreaming phases (light/REM/deep) and transcript sync. Dreaming phases are managed as separate timers via `clock.setInterval` (NOT registered in `ScheduleStore`). The `SchedulerLoop` constructor gains a `memoryEngine` dependency (a single `MemoryEngine` bundle object wrapping `MemoryDatabase` + `DreamingPipeline` + `TranscriptIndexer`). On each dreaming timer fire, the loop calls `dreamingPipeline.runLightSleep()` / `runRemSleep()` / `runDeepSleep()`. The `SchedulerSessionSource` seam gains `ensureInternal(id: string): SessionState`. The `SchedulerDispatcher` seam gains `enqueueInternalTurn(session, content, onComplete, onError)`. For REM and deep sleep, the first dispatch is aligned to the configured local time (03:00 / 04:00) by computing the next occurrence after startup; subsequent dispatches are spaced by the interval. Light sleep starts from the first tick after startup. `stop()` clears all dreaming timers alongside the tick timer.
+- `src/sessions/manager.ts` — Gains `ensureInternal(id: string): SessionState` method: creates a session with fixed id, `chatId: 0` (sentinel), no binding. Idempotent. `list()` skips sessions with `chatId === 0` (alongside the existing `archive/` skip).
+- `src/orchestration/dispatcher.ts` — Gains `enqueueInternalTurn(session, content, onComplete, onError)` method: creates a runner with no beta tools (empty array) and a capture message buffer (accumulates assistant text, no Telegram output). Calls `schedulePrompt` for per-session serialization. `onComplete(text)` is called after `runner.prompt` resolves with the accumulated assistant text.
 - `src/sessions/transcript.ts` — New `chunkTranscriptEntry(entry, maxChars)` helper. Takes a `TranscriptEntry` and returns bounded text snippets for the transcript indexer. Skips entries with <8 chars displayable text. Skips tool-result entries with no displayable text.
 - `src/index.ts` — Composition root changes: construct `MemoryDatabase`, run migration if needed, construct `DreamingPipeline` and `TranscriptIndexer`, pass to `SchedulerLoop` and `AgentRunner`.
 

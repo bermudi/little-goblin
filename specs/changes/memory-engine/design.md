@@ -260,12 +260,22 @@ The following standing architectural rules have been recorded as decisions via `
 
 **Constraints:** `chatId: 0` is a sentinel — Telegram chat IDs are never 0. The dreaming session's `ActiveScope` (`{ chatId: 0, topicScope: "general" }`) is never written to. The capture buffer accumulates assistant text deltas; `onComplete` is called after `runner.prompt` resolves. Overlapping dreaming phases coalesce via the per-session queue (the second call waits behind the first).
 
+### D12: `display_order` column preserves user-authored entry order [decision 0030]
+
+**Chosen:** `memory_entries` includes an integer `display_order` column (default `0`) that determines presentation order within a scope. `rewrite`/`replace` set `display_order` to the entry's position in the new body, preserving the original `created_at` timestamp.
+
+**Why:** Ordering entries by `created_at` or `id` makes `rewrite`/`replace` reordering impossible without rewriting timestamps. The `rewrite` action (e.g. "reorder my notes") is meant to change presentation order, not creation history. `display_order` decouples presentation order from creation time.
+
+**Trade-off:** Every ordered read must sort by `display_order, created_at, id` instead of just `created_at, id`. This adds a small, indexed sort key.
+
+**Constraints:** New entries receive `display_order = MAX(existing) + 1` within their `(scope, entry_kind)`. Migration backfills `display_order` by counting earlier rows in the same scope ordered by `created_at, id`. `read`, `readEntries`, and export all sort by `display_order` first.
+
 ## File Changes
 
 ### New files
 
 - `src/memory/db.ts` — SQLite database lifecycle. Opens `memory.sqlite`, enables WAL, creates tables on first run. Uses `bun:sqlite`. Reads `GOBLIN_MEMORY_VECTOR_WEIGHT` and `GOBLIN_MEMORY_TEXT_WEIGHT` on open. Sets `PRAGMA foreign_keys = ON` so `memory_embeddings.entry_id` and `memory_entry_tags.entry_id` FK constraints are enforced (FTS5 `memory_index_fts.entry_id` is a logical reference, not a FK — see schema spec note).
-- `src/memory/schema.ts` — Table definitions (memory_entries with `chat_id`, `recall_count`, `last_recalled_at` columns and NO `description` column; memory_scopes for per-scope descriptions; memory_embeddings; memory_index_fts as contentful FTS5 virtual table with columns text/entry_id/scope/entry_kind/chat_id; memory_sources; memory_meta; memory_entry_tags) with exact DDL, primary keys, and required `memory_meta` keys. Schema versioning and migrations. `memory_meta` keys include `reindexing` (boolean string, set during model-change reindex, cleared on completion, reset to `"false"` on startup if stale).
+- `src/memory/schema.ts` — Table definitions (memory_entries with `chat_id`, `recall_count`, `last_recalled_at`, and `display_order` columns and NO `description` column; memory_scopes for per-scope descriptions; memory_embeddings; memory_index_fts as contentful FTS5 virtual table with columns text/entry_id/scope/entry_kind/chat_id; memory_sources; memory_meta; memory_entry_tags) with exact DDL, primary keys, and required `memory_meta` keys. Schema versioning and migrations. `memory_meta` keys include `reindexing` (boolean string, set during model-change reindex, cleared on completion, reset to `"false"` on startup if stale).
 - `src/memory/embeddings.ts` — OpenAI embedding provider. `embedQuery(text)`, `embedBatch(texts[])`, cache by hash, FTS-only fallback with cooldown from `GOBLIN_MEMORY_EMBEDDING_COOLDOWN_SECONDS` (default 60). API key from `GOBLIN_MEMORY_EMBEDDING_API_KEY` (fallback `OPENAI_API_KEY`); base URL from `GOBLIN_MEMORY_EMBEDDING_BASE_URL` (fallback `OPENAI_BASE_URL`); model from `GOBLIN_MEMORY_EMBEDDING_MODEL`. Constructed eagerly at startup as part of the `MemoryEngine` bundle (not a lazy singleton).
 - `src/memory/concept-vocabulary.ts` — Tag extraction. Ported from `extensions/memory-core/src/concept-vocabulary.ts` (vendored under `src/memory/vendor/` before build). Inlines the one `string-coerce-runtime` import. Enforces the 8-tag-per-entry cap (keep highest-scoring on overflow). ~500 lines.
 - `src/memory/hybrid.ts` — Fusion scoring, MMR, temporal decay, concept boost. Ported from `extensions/memory-core/src/memory/hybrid.ts` + `mmr.ts` + `temporal-decay.ts` (vendored under `src/memory/vendor/` before build). Adds concept tag boost (`min(0.1 * matchingTagCount, 0.3)`). Inlines imports. ~350 lines.

@@ -310,24 +310,22 @@ describe("memory tool", () => {
       expect(store.read("user")).toEqual(before);
     });
 
-    it("rejects set_description with a token and does not update frontmatter", async () => {
+    it("allows set_description with a token and updates the description", async () => {
       const target = { topic: { chatId: -100, topicId: 42 } };
       await store.setDescription(target, "safe description");
-      const before = store.read(target);
-      await expect(
-        writeTool.execute(
-          "call-unsafe-description",
-          {
-            action: "set_description",
-            target: "memory",
-            description: "api_key: abc123def456",
-          },
-          undefined,
-          undefined,
-          NULL_CTX,
-        ),
-      ).rejects.toThrow(/safety filter/);
-      expect(store.read(target)).toEqual(before);
+      const r = await writeTool.execute(
+        "call-unsafe-description",
+        {
+          action: "set_description",
+          target: "memory",
+          description: "api_key: abc123def456",
+        },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      expect(textOf(r)).toContain("set description");
+      expect(store.read(target).description).toBe("api_key: abc123def456");
     });
 
     it("accepts a safe add and persists it", async () => {

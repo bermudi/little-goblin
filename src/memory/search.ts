@@ -13,12 +13,16 @@ import { log } from "../log.ts";
 import { deriveConceptTags } from "./concept-vocabulary.ts";
 import { activeMemoryScopeFor, scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
 import {
+  ENTRY_CATEGORIES,
   parseEntryMetadata,
+  type EntryCategory,
   type EntryMetadata,
+  type EntrySourceRole,
 } from "./entry.ts";
 import {
   applyMMR,
   bm25RankToScore,
+  buildFtsQuery,
   mergeHybridResults,
   type HybridResult,
 } from "./hybrid.ts";
@@ -235,6 +239,13 @@ interface VectorCandidate {
   entryKind: string;
   text: string;
   updatedAt: number | null;
+  createdAt: number | null;
+  category: string | null;
+  confidence: number | null;
+  sourceSession: string | null;
+  updatedSourceSession: string | null;
+  sourceRole: string | null;
+  origin: string | null;
   vectorScore: number;
   embedding: Float32Array;
 }
@@ -251,26 +262,37 @@ async function vectorSearch(args: {
     return { rows: [], degraded: false };
   }
 
-  const { embedding, degraded } = await provider.embedQuery(args.query);
+  // Embed the query with the model recorded in memory_meta. During a model-
+  // change reindex that meta key still points to the old model until the
+  // reindex completes, so vector comparisons stay dimension-compatible and use
+  // the existing (potentially stale) embeddings rather than the new model.
+  const configuredModel = provider.modelName;
+  const storedModel = args.store.db.getMeta("embedding_model");
+  const queryModel = storedModel ?? configuredModel;
+
+  const { embedding, degraded } = await provider.embedQuery(args.query, queryModel);
   if (embedding === null) {
     return { rows: [], degraded };
   }
 
   const placeholders = args.scopes.map(() => "?").join(",");
   const kindPlaceholders = args.kinds.map(() => "?").join(",");
+  const modelFilter = " AND em.model = ?";
+  const params: (string | null)[] = [...args.scopes, ...args.kinds, args.chatId, queryModel];
   const rows = args.store.db.database
     .query<
-      { id: string; scope: string; entry_kind: string; text: string; updated_at: number | null; embedding: Uint8Array; dims: number },
+      { id: string; scope: string; entry_kind: string; text: string; updated_at: number | null; created_at: number | null; category: string | null; confidence: number | null; source_session: string | null; updated_source_session: string | null; source_role: string | null; origin: string | null; embedding: Uint8Array; dims: number },
       (string | null)[]
     >(
-      `SELECT e.id, e.scope, e.entry_kind, e.text, e.updated_at, em.embedding, em.dims
+      `SELECT e.id, e.scope, e.entry_kind, e.text, e.updated_at, e.created_at, e.category, e.confidence, e.source_session, e.updated_source_session, e.source_role, e.origin, em.embedding, em.dims
        FROM memory_entries e
        JOIN memory_embeddings em ON e.id = em.entry_id
        WHERE e.scope IN (${placeholders})
          AND e.entry_kind IN (${kindPlaceholders})
-         AND ($chatId IS NULL OR e.chat_id = $chatId OR (e.chat_id IS NULL AND e.entry_kind IN ('memory', 'user')))`,
+         AND ($chatId IS NULL OR e.chat_id = $chatId OR (e.chat_id IS NULL AND e.entry_kind IN ('memory', 'user')))
+         ${modelFilter}`,
     )
-    .all(...args.scopes, ...args.kinds, args.chatId);
+    .all(...params);
 
   const results: VectorCandidate[] = [];
   for (const row of rows) {
@@ -283,30 +305,27 @@ async function vectorSearch(args: {
       entryKind: row.entry_kind,
       text: row.text,
       updatedAt: row.updated_at,
+      createdAt: row.created_at,
+      category: row.category,
+      confidence: row.confidence,
+      sourceSession: row.source_session,
+      updatedSourceSession: row.updated_source_session,
+      sourceRole: row.source_role,
+      origin: row.origin,
       vectorScore: normalizeVectorScore(cosine),
       embedding: candidate,
     });
   }
 
-  return { rows: results, degraded };
+  return {
+    rows: results.map(({ embedding, ...r }) => r),
+    degraded,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Keyword search
 // ---------------------------------------------------------------------------
-
-const FTS_PHRASE_BONUS = 0.1;
-
-function buildFtsOrQuery(raw: string): string | null {
-  const tokens = raw.match(/[\p{L}\p{N}_]+/gu) ?? [];
-  const normalized = tokens.map((t) => t.toLowerCase()).filter((t) => t.length > 0);
-  if (normalized.length === 0) return null;
-  const quoted = normalized.map((t) => `"${t.replaceAll('"', "")}"`);
-  if (quoted.length === 1) {
-    return `text:${quoted[0]}`;
-  }
-  return `text:(${quoted.join(" OR ")})`;
-}
 
 function keywordSearch(args: {
   store: MemoryStore;
@@ -315,18 +334,17 @@ function keywordSearch(args: {
   kinds: string[];
   chatId: string | null;
 }): Array<Omit<HybridResult, "score" | "vectorScore" | "conceptBoost"> & { textScore: number }> {
-  const ftsQuery = buildFtsOrQuery(args.query);
+  const ftsQuery = buildFtsQuery(args.query);
   if (ftsQuery === null) return [];
 
-  const lowerQuery = args.query.toLowerCase().trim();
   const scopePlaceholders = args.scopes.map(() => "?").join(",");
   const kindPlaceholders = args.kinds.map(() => "?").join(",");
   const rows = args.store.db.database
     .query<
-      { entry_id: string; text: string; scope: string; entry_kind: string; updated_at: number | null; rank: number },
+      { entry_id: string; text: string; scope: string; entry_kind: string; updated_at: number | null; created_at: number | null; category: string | null; confidence: number | null; source_session: string | null; updated_source_session: string | null; source_role: string | null; origin: string | null; rank: number },
       (string | null)[]
     >(
-      `SELECT e.id AS entry_id, e.text, e.scope, e.entry_kind, e.updated_at, rank
+      `SELECT e.id AS entry_id, e.text, e.scope, e.entry_kind, e.updated_at, e.created_at, e.category, e.confidence, e.source_session, e.updated_source_session, e.source_role, e.origin, rank
        FROM memory_index_fts
        JOIN memory_entries e ON memory_index_fts.entry_id = e.id
        WHERE memory_index_fts MATCH ?
@@ -338,15 +356,20 @@ function keywordSearch(args: {
     .all(ftsQuery, ...args.scopes, ...args.kinds, args.chatId);
 
   return rows.map((row) => {
-    const hasPhrase = lowerQuery.length > 0 && row.text.toLowerCase().includes(lowerQuery);
-    const base = bm25RankToScore(row.rank);
     return {
       entryId: row.entry_id,
       scope: row.scope,
       entryKind: row.entry_kind,
       text: row.text,
       updatedAt: row.updated_at,
-      textScore: Math.min(1, base + (hasPhrase ? FTS_PHRASE_BONUS : 0)),
+      createdAt: row.created_at,
+      category: row.category,
+      confidence: row.confidence,
+      sourceSession: row.source_session,
+      updatedSourceSession: row.updated_source_session,
+      sourceRole: row.source_role,
+      origin: row.origin,
+      textScore: bm25RankToScore(row.rank),
     };
   });
 }
@@ -396,9 +419,44 @@ function targetForScope(scope: string): MemorySearchTarget {
   return "memory";
 }
 
+function buildEntryMetadata(result: HybridResult): EntryMetadata | null {
+  if (
+    result.category === null ||
+    result.category === undefined ||
+    result.confidence === null ||
+    result.confidence === undefined ||
+    result.createdAt === null ||
+    result.createdAt === undefined ||
+    result.updatedAt === null ||
+    result.updatedAt === undefined
+  ) {
+    return null;
+  }
+  if (!(ENTRY_CATEGORIES as readonly string[]).includes(result.category)) {
+    return null;
+  }
+  const sourceRole: EntrySourceRole =
+    result.sourceRole === "user" || result.sourceRole === "assistant" || result.sourceRole === "tool"
+      ? result.sourceRole
+      : "system";
+  const metadata: EntryMetadata = {
+    category: result.category as EntryCategory,
+    confidence: result.confidence,
+    created_at: new Date(result.createdAt).toISOString(),
+    updated_at: new Date(result.updatedAt).toISOString(),
+    source_session: result.sourceSession ?? "",
+    source_role: sourceRole,
+  };
+  if (result.updatedSourceSession !== null && result.updatedSourceSession !== undefined) {
+    metadata.updated_source_session = result.updatedSourceSession;
+  }
+  return metadata;
+}
+
 function buildMemoryResult(result: HybridResult, tags: string[]): MemorySearchResultEntry {
-  const parsed = parseEntryMetadata(result.text);
-  const body = parsed === null ? result.text : parsed.body;
+  const parsedFromText = parseEntryMetadata(result.text);
+  const body = parsedFromText?.body ?? result.text;
+  const metadata = buildEntryMetadata(result) ?? parsedFromText?.metadata ?? null;
   const entry: MemorySearchResultEntry = {
     entryId: result.entryId,
     scope: result.scope,
@@ -411,7 +469,7 @@ function buildMemoryResult(result: HybridResult, tags: string[]): MemorySearchRe
     conceptBoost: Number.isFinite(result.conceptBoost) ? result.conceptBoost : 0,
     tags,
     source: result.entryKind === "transcript" ? "transcript" : "memory",
-    metadata: parsed === null ? null : parsed.metadata,
+    metadata,
   };
   if (result.entryKind === "transcript") {
     const sessionId = sessionIdFromTranscriptScope(result.scope);

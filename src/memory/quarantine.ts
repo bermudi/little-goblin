@@ -3,15 +3,15 @@
  *
  * Appends redacted JSONL records to `$GOBLIN_HOME/state/memory/quarantine.jsonl`.
  * Quarantine is audit-only: its contents MUST NOT appear in per-turn
- * snapshots, `memory_read`, or `memory_read_index`. It exists for debugging
+ * snapshots or `memory_search` results. It exists for debugging
  * and future review, not for model context.
  *
  * Records contain: timestamp, source session, target scope tag, category,
  * reason, and a redacted candidate preview. The preview never copies the
  * sensitive value — it is produced by `redactPreview()` from safety.ts.
  */
-import { closeSync, openSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { memoryDir } from "./paths.ts";
 import { redactPreview } from "./safety.ts";
 import type { EntryCategory } from "./entry.ts";
@@ -46,6 +46,8 @@ export interface AppendQuarantineArgs {
   reason: QuarantineReason;
   /** Raw rejected candidate content; redacted before persistence. */
   content: string;
+  /** Maximum length of the redacted preview (defaults to safety.ts default). */
+  previewMaxLen?: number;
   /** Override the record timestamp (defaults to now). */
   timestamp?: string;
 }
@@ -63,9 +65,10 @@ export function appendQuarantine(args: AppendQuarantineArgs): QuarantineRecord {
     targetScope: args.targetScope,
     category: args.category,
     reason: args.reason,
-    preview: redactPreview(args.content),
+    preview: redactPreview(args.content, args.previewMaxLen),
   };
   const path = quarantinePath(args.goblinHome);
+  mkdirSync(dirname(path), { recursive: true });
   const line = JSON.stringify(record) + "\n";
   const fd = openSync(path, "a");
   try {

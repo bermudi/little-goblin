@@ -272,6 +272,10 @@ export class SessionManager {
     if (!existsSync(src)) {
       throw new Error(`session not found or already archived: ${sessionId}`);
     }
+    const state = loadState(this.home, sessionId);
+    if (state?.chatId === 0) {
+      throw new Error(`cannot archive internal session: ${sessionId}`);
+    }
     const archiveBase = join(sessionsDir(this.home), "archive");
     mkdirSync(archiveBase, { recursive: true });
     const dst = join(archiveBase, sessionId);
@@ -395,13 +399,17 @@ export class SessionManager {
    * They have `chatId: 0` and are skipped by `list()`.
    */
   ensureInternal(id: string): SessionState {
+    ensureSessionFiles(this.home, id);
+    const existing = loadState(this.home, id);
+    if (existing !== null) {
+      return existing;
+    }
     const state: SessionState = {
       id,
       createdAt: new Date().toISOString(),
       chatId: 0,
       title: undefined,
     };
-    ensureSessionFiles(this.home, id);
     saveState(this.home, state);
     log.debug("ensured internal session", { id });
     return state;

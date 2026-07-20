@@ -62,7 +62,8 @@ export function buildFtsQuery(raw: string): string | null {
   const normalized = tokens.map((t) => t.toLowerCase()).filter((t) => t.length > 0);
   if (normalized.length === 0) return null;
   const quoted = normalized.map((t) => `"${t.replaceAll('"', "")}"`);
-  return quoted.join(" AND ");
+  if (quoted.length === 1) return `text:${quoted[0]}`;
+  return `text:(${quoted.join(" OR ")})`;
 }
 
 export function bm25RankToScore(rank: number): number {
@@ -179,6 +180,13 @@ export interface HybridResult {
   textScore: number;
   conceptBoost: number;
   updatedAt: number | null;
+  createdAt?: number | null;
+  category?: string | null;
+  confidence?: number | null;
+  sourceSession?: string | null;
+  updatedSourceSession?: string | null;
+  sourceRole?: string | null;
+  origin?: string | null;
 }
 
 export function applyTemporalDecay(

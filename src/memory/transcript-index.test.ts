@@ -2,61 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chunkTranscriptEntry, TranscriptIndexer } from "./transcript-index.ts";
+import { TranscriptIndexer } from "./transcript-index.ts";
 import { MemoryStore } from "./store.ts";
 import { MemoryBudget } from "./budget.ts";
 import type { TranscriptEntry } from "../sessions/transcript.ts";
 
 const sessionId = "abcdef1234";
-
-describe("chunkTranscriptEntry", () => {
-  it("returns empty for text with fewer than 8 non-whitespace characters", () => {
-    const entry: TranscriptEntry = {
-      ts: "2026-07-04T12:00:00.000Z",
-      role: "user",
-      content: "hi",
-    };
-    expect(chunkTranscriptEntry(entry)).toEqual([]);
-  });
-
-  it("keeps short messages in a single chunk", () => {
-    const entry: TranscriptEntry = {
-      ts: "2026-07-04T12:00:00.000Z",
-      role: "user",
-      content: "Hello world, this is a user message.",
-    };
-    const chunks = chunkTranscriptEntry(entry, 500);
-    expect(chunks).toEqual(["Hello world, this is a user message."]);
-  });
-
-  it("splits by sentences when the whole text exceeds max chars", () => {
-    const text = "This is the first sentence. Here is the second. Finally the third.";
-    const entry: TranscriptEntry = {
-      ts: "2026-07-04T12:00:00.000Z",
-      role: "user",
-      content: text,
-    };
-    const chunks = chunkTranscriptEntry(entry, 50);
-    expect(chunks.length).toBe(2);
-    expect(chunks[0]).toBe("This is the first sentence. Here is the second.");
-    expect(chunks[1]).toBe("Finally the third.");
-    expect(chunks.every((c) => c.length <= 50)).toBe(true);
-    expect(chunks.join(" ")).toBe(text);
-  });
-
-  it("splits very long sentences by words", () => {
-    const text = "This sentence is intentionally quite long and will be broken by word boundaries.";
-    const entry: TranscriptEntry = {
-      ts: "2026-07-04T12:00:00.000Z",
-      role: "user",
-      content: text,
-    };
-    const chunks = chunkTranscriptEntry(entry, 30);
-    expect(chunks.length).toBeGreaterThan(1);
-    expect(chunks.every((c) => c.length <= 30)).toBe(true);
-    expect(chunks.join(" ")).toBe(text);
-  });
-});
 
 describe("TranscriptIndexer", () => {
   let tmp: string;

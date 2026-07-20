@@ -23,7 +23,6 @@ export {
 } from "./paths.ts";
 export {
   resolveActiveScope,
-  resolveMemoryScopePair,
   scopeTag,
   tagToMemoryScope,
   type ActiveScope,
@@ -46,7 +45,7 @@ export { mergeHybridResults, buildFtsQuery, bm25RankToScore, textSimilarity, tok
 export type { HybridResult, MMRConfig, TemporalDecayConfig } from "./hybrid.ts";
 export { migrateFromMarkdown } from "./migration.ts";
 export { exportToMarkdown } from "./export.ts";
-export { TranscriptIndexer, chunkTranscriptEntry } from "./transcript-index.ts";
+export { TranscriptIndexer } from "./transcript-index.ts";
 export type { TranscriptSyncResult } from "./transcript-index.ts";
-export { DreamingPipeline, defaultCandidateExtractor } from "./dreaming.ts";
-export type { Candidate, CandidateExtractor, DreamingCursor } from "./dreaming.ts";
+export { DreamingPipeline } from "./dreaming.ts";
+export type { Candidate, CandidateExtractor, DreamingCategory, DreamingCursor } from "./dreaming.ts";

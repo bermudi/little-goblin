@@ -5,8 +5,9 @@ import { heartbeatMdPathForSession } from "../sessions/paths.ts";
 import type { ChatLocator, SessionState } from "../sessions/mod.ts";
 import type { ActiveScope } from "../memory/scope.ts";
 import type { MemoryEngine } from "../memory/engine.ts";
-import { ENTRY_CATEGORIES } from "../memory/entry.ts";
+import { DREAMING_CATEGORIES, type DreamingCategory } from "../memory/dreaming.ts";
 import type { Candidate, CandidateExtractor } from "../memory/dreaming.ts";
+import { appendQuarantine } from "../memory/quarantine.ts";
 import type { TranscriptLine } from "../sessions/transcript.ts";
 import type { ScheduledTurn } from "./types.ts";
 import type { ScheduleStore } from "./store.ts";
@@ -19,21 +20,22 @@ import type { ScheduleStore } from "./store.ts";
  * can reference it.
  */
 export const DEFAULT_TICK_INTERVAL_MS = 60_000;
-export const DEFAULT_TRANSCRIPT_SYNC_INTERVAL_MS = parseIntervalMinutes("GOBLIN_MEMORY_TRANSCRIPT_SYNC_INTERVAL_MINUTES", 5);
+export const DEFAULT_TRANSCRIPT_SYNC_INTERVAL_MS = parseIntervalMinutes("GOBLIN_MEMORY_TRANSCRIPT_SYNC_INTERVAL", 5);
 export const DEFAULT_TRANSCRIPT_SYNC_MAX_MS = 30_000;
-export const DEFAULT_DREAMING_LIGHT_INTERVAL_MS = parseIntervalMinutes("GOBLIN_MEMORY_DREAM_LIGHT_INTERVAL_MINUTES", 4 * 60);
-export const DEFAULT_DREAMING_REM_INTERVAL_MS = parseIntervalMinutes("GOBLIN_MEMORY_DREAM_REM_INTERVAL_MINUTES", 24 * 60);
-export const DEFAULT_DREAMING_DEEP_INTERVAL_MS = parseIntervalMinutes("GOBLIN_MEMORY_DREAM_DEEP_INTERVAL_MINUTES", 24 * 60);
+export const DEFAULT_DREAMING_LIGHT_INTERVAL_MS = parseIntervalMinutes("GOBLIN_MEMORY_DREAM_LIGHT_INTERVAL", 4 * 60);
+export const DEFAULT_DREAMING_REM_INTERVAL_MS = parseIntervalMinutes("GOBLIN_MEMORY_DREAM_REM_INTERVAL", 24 * 60);
+export const DEFAULT_DREAMING_DEEP_INTERVAL_MS = parseIntervalMinutes("GOBLIN_MEMORY_DREAM_DEEP_INTERVAL", 24 * 60);
 
 const DEFAULT_REM_LOCAL_TIME = parseLocalTime("GOBLIN_MEMORY_DREAM_REM_LOCAL_TIME", "03:00");
 const DEFAULT_DEEP_LOCAL_TIME = parseLocalTime("GOBLIN_MEMORY_DREAM_DEEP_LOCAL_TIME", "04:00");
 
 function parseIntervalMinutes(key: string, fallbackMinutes: number): number {
   const raw = process.env[key];
-  if (raw === "off") return Number.POSITIVE_INFINITY;
   if (raw === undefined) return fallbackMinutes * 60_000;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "off" || normalized === "0") return Number.POSITIVE_INFINITY;
   const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n >= 0 ? n * 60_000 : fallbackMinutes * 60_000;
+  return Number.isFinite(n) && n > 0 ? n * 60_000 : fallbackMinutes * 60_000;
 }
 
 function parseLocalTime(key: string, fallback: string): { hour: number; minute: number } {
@@ -334,7 +336,7 @@ export class SchedulerLoop {
     return async (lines, ctx) => {
       const prompt = this.buildDreamingPrompt(ctx.sessionId, lines);
       const raw = await this.runInternalTurnForDreaming(ctx.sessionId, prompt);
-      return this.parseDreamingResponse(raw, ctx.sessionId);
+      return this.parseDreamingResponse(raw, ctx.sessionId, lines);
     };
   }
 
@@ -360,23 +362,26 @@ export class SchedulerLoop {
     return `You are the memory-dreaming extractor for a personal Telegram assistant. Review the transcript excerpt and identify durable memory candidates.
 
 Rules:
-- Extract only explicitly stated facts, preferences, decisions, conventions, gotchas, commitments, standing orders, or recurring themes.
+- Extract only explicitly stated facts, short-term notes, recurring themes, commitments, standing orders, or anything that should not be persisted.
 - Do not infer commitments or standing orders the user did not explicitly state.
 - Do not include procedural chit-chat, greetings, thanks, or questions.
-- category must be one of: "fact", "short_term", "theme", "commitment", "standing_order", "preference", "decision", "project_fact", "gotcha", "convention", "skip".
+- category must be one of: "fact", "short_term", "theme", "commitment", "standing_order", "skip".
 - Use "skip" for anything that should not be persisted.
-- target "user" for user preferences/communication style; target "memory" for project/session facts, decisions, conventions, gotchas, commitments, standing orders.
+- target is one of "memory" (default), "user" (preferences/communication style), or "agent" (named agent persona).
 - confidence is 0.0-1.0.
-- lineRange is the [start, end] logical line indices from the transcript (inclusive).
+- text is the durable memory verbatim as a concise statement.
+- rationale is an optional short reason for the choice.
+- lineRange is an optional [start, end] logical line index range from the transcript excerpt for provenance.
 
 Return ONLY a JSON object in this exact format:
 {
   "candidates": [
     {
-      "target": "user" | "memory",
+      "target": "memory" | "user" | "agent",
       "category": "...",
       "confidence": 0.0,
-      "summary": "string",
+      "text": "string",
+      "rationale": "string",
       "lineRange": [0, 0]
     }
   ]
@@ -386,38 +391,81 @@ Transcript excerpt for session ${sessionId}:
 ${formatted}`;
   }
 
-  private parseDreamingResponse(raw: string, sessionId: string): Candidate[] {
+  private parseDreamingResponse = (raw: string, sessionId: string, lines: TranscriptLine[]): Candidate[] => {
     const cleaned = raw
       .replace(/```(?:json)?\n([\s\S]*?)\n```/, "$1")
       .replace(/^```(?:json)?\s*/, "")
       .replace(/```\s*$/, "")
       .trim();
+
+    const quarantineMalformed = (preview: string): void => {
+      appendQuarantine({
+        goblinHome: this.home,
+        sourceSession: sessionId,
+        targetScope: `transcript/${sessionId}`,
+        category: null,
+        reason: "malformed",
+        content: preview,
+        previewMaxLen: 200,
+      });
+    };
+
     if (cleaned.length === 0) return [];
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(cleaned);
     } catch {
-      log.warn("dreaming model response was not valid JSON", { sessionId, response: cleaned.slice(0, 200) });
+      quarantineMalformed(cleaned);
       return [];
     }
 
     if (typeof parsed !== "object" || parsed === null || !("candidates" in parsed)) {
+      quarantineMalformed(cleaned);
       return [];
     }
     const candidates = (parsed as Record<string, unknown>).candidates;
-    if (!Array.isArray(candidates)) return [];
+    if (!Array.isArray(candidates)) {
+      quarantineMalformed(cleaned);
+      return [];
+    }
+
+    const defaultStart = lines[0]?.index ?? 0;
+    const defaultEnd = lines[lines.length - 1]?.index ?? defaultStart;
+
+    function lineForIndex(index: number): TranscriptLine | undefined {
+      return lines.find((l) => l.index === index);
+    }
+
+    function roleForLine(line: TranscriptLine | undefined): Candidate["source"]["sourceRole"] {
+      switch (line?.role) {
+        case "user":
+          return "user";
+        case "assistant":
+          return "assistant";
+        case "toolResult":
+          return "tool";
+        default:
+          return "system";
+      }
+    }
 
     const result: Candidate[] = [];
     for (const item of candidates) {
-      if (typeof item !== "object" || item === null) continue;
+      if (typeof item !== "object" || item === null) {
+        quarantineMalformed(JSON.stringify(item));
+        continue;
+      }
       const c = item as Record<string, unknown>;
-      const target = c.target === "user" || c.target === "memory" ? c.target : undefined;
+      const rawTarget = c.target;
+      const target: Candidate["target"] | undefined =
+        rawTarget === "user" || rawTarget === "memory" || rawTarget === "agent"
+          ? rawTarget
+          : undefined;
       const rawCategory = typeof c.category === "string" ? c.category : undefined;
-      const category =
-        rawCategory !== undefined &&
-        (ENTRY_CATEGORIES as readonly string[]).includes(rawCategory)
-          ? rawCategory
+      const category: DreamingCategory | undefined =
+        rawCategory !== undefined && (DREAMING_CATEGORIES as readonly string[]).includes(rawCategory)
+          ? (rawCategory as DreamingCategory)
           : undefined;
       const rawConfidence =
         typeof c.confidence === "number"
@@ -427,7 +475,9 @@ ${formatted}`;
         Number.isFinite(rawConfidence) && rawConfidence >= 0 && rawConfidence <= 1
           ? rawConfidence
           : undefined;
-      const summary = typeof c.summary === "string" ? c.summary.trim() : undefined;
+      const textValue =
+        typeof c.text === "string" ? c.text.trim() : typeof c.summary === "string" ? c.summary.trim() : undefined;
+
       const rawLineRange =
         Array.isArray(c.lineRange) && c.lineRange.length === 2 ? c.lineRange : undefined;
       const lineRange: [number, number] | undefined =
@@ -439,30 +489,42 @@ ${formatted}`;
         rawLineRange[0] <= rawLineRange[1]
           ? [rawLineRange[0], rawLineRange[1]]
           : undefined;
+
+      if (c.lineRange !== undefined && lineRange === undefined) {
+        quarantineMalformed(JSON.stringify(item));
+        continue;
+      }
+
       if (
         target === undefined ||
         category === undefined ||
         confidence === undefined ||
-        summary === undefined ||
-        summary.length === 0 ||
-        lineRange === undefined
+        textValue === undefined ||
+        textValue.length === 0
       ) {
+        quarantineMalformed(JSON.stringify(item));
         continue;
       }
+
+      const start = lineRange?.[0] ?? defaultStart;
+      const end = lineRange?.[1] ?? defaultEnd;
+      const startLine = lineForIndex(start);
+      const sourceRole = roleForLine(startLine);
+
       result.push({
         target,
-        category: category as Candidate["category"],
+        category,
         confidence,
-        summary,
+        text: textValue,
         source: {
           sessionId,
-          lineRange,
-          sourceRole: "system",
+          lineRange: [start, end],
+          sourceRole,
         },
       });
     }
     return result;
-  }
+  };
 
   private async runDreamingLightSleep(): Promise<void> {
     if (!this.memoryEngine) return;

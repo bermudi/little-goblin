@@ -79,8 +79,11 @@ export class EmbeddingProvider {
     return this.state.degraded;
   }
 
-  async embedQuery(text: string): Promise<{ embedding: Float32Array | null; degraded: boolean }> {
-    const results = await this.embedBatch([text]);
+  async embedQuery(
+    text: string,
+    model?: string,
+  ): Promise<{ embedding: Float32Array | null; degraded: boolean }> {
+    const results = await this.embedBatch([text], model);
     return { embedding: results[0]?.embedding ?? null, degraded: this.isDegraded() };
   }
 
@@ -88,7 +91,10 @@ export class EmbeddingProvider {
    * Embed a batch of arbitrary texts. Returns embeddings by hash but does NOT
    * persist them under an entry id — use embedEntries for stored entries.
    */
-  async embedBatch(texts: string[]): Promise<Array<{ hash: string; embedding: Float32Array | null }>> {
+  async embedBatch(
+    texts: string[],
+    model: string = this.model,
+  ): Promise<Array<{ hash: string; embedding: Float32Array | null }>> {
     if (this.isDegraded()) {
       return texts.map((text) => ({ hash: hashText(text), embedding: null }));
     }
@@ -103,11 +109,11 @@ export class EmbeddingProvider {
       if (!unique.has(hash)) unique.set(hash, text);
     }
 
-    const cache = this.loadCache(Array.from(unique.keys()), this.model, "openai");
+    const cache = this.loadCache(Array.from(unique.keys()), model, "openai");
     const toFetch: string[] = [];
     for (const [hash, text] of unique.entries()) {
       if (cache.has(hash)) continue;
-      const fetchedKey = `${this.model}:${hash}`;
+      const fetchedKey = `${model}:${hash}`;
       const cached = this.fetchedCache.get(fetchedKey);
       if (cached) {
         cache.set(hash, cached);
@@ -118,10 +124,10 @@ export class EmbeddingProvider {
 
     if (toFetch.length > 0) {
       try {
-        const fetched = await this.fetchEmbeddings(toFetch);
+        const fetched = await this.fetchEmbeddings(toFetch, model);
         for (const [hash, embedding] of fetched.entries()) {
           cache.set(hash, embedding);
-          this.fetchedCache.set(`${this.model}:${hash}`, embedding);
+          this.fetchedCache.set(`${model}:${hash}`, embedding);
         }
       } catch (err) {
         this.markDegraded(err instanceof Error ? err.message : String(err));
@@ -273,7 +279,7 @@ export class EmbeddingProvider {
     return cache;
   }
 
-  private async fetchEmbeddings(texts: string[]): Promise<Map<string, Float32Array>> {
+  private async fetchEmbeddings(texts: string[], model: string = this.model): Promise<Map<string, Float32Array>> {
     const result = new Map<string, Float32Array>();
     if (texts.length === 0) return result;
 
@@ -287,7 +293,7 @@ export class EmbeddingProvider {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
         },
-        body: JSON.stringify({ input: texts, model: this.model }),
+        body: JSON.stringify({ input: texts, model }),
         signal: controller.signal,
       });
       if (!response.ok) {

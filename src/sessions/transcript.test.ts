@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   appendAssistantTranscriptEntry,
   appendTranscriptEntry,
+  chunkTranscriptEntry,
   extractEntryText,
   readTranscriptAfter,
   type TranscriptEntry,
@@ -227,6 +228,46 @@ describe("transcript module", () => {
       expect(tail[0]!.text).toBe("second");
       expect(tail[1]!.index).toBe(2);
       expect(tail[1]!.text).toBe("third");
+    });
+  });
+
+  describe("chunkTranscriptEntry", () => {
+    it("returns empty for text with fewer than 8 non-whitespace characters", () => {
+      const entry: TranscriptEntry = { ts: "2026-07-04T12:00:00.000Z", role: "user", content: "hi" };
+      expect(chunkTranscriptEntry(entry, { sessionId: "s1" })).toEqual([]);
+    });
+
+    it("keeps short messages in a single prefixed chunk", () => {
+      const entry: TranscriptEntry = {
+        ts: "2026-07-04T12:00:00.000Z",
+        role: "user",
+        content: "Hello world.",
+      };
+      const chunks = chunkTranscriptEntry(entry, { sessionId: "s1", maxChars: 500 });
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]!.text).toContain("[2026-07-04T12:00:00.000Z] [user] [s1] Hello world.");
+    });
+
+    it("splits by sentences and respects maxChars", () => {
+      const entry: TranscriptEntry = {
+        ts: "2026-07-04T12:00:00.000Z",
+        role: "user",
+        content: "This is the first sentence. Here is the second. Finally the third.",
+      };
+      const chunks = chunkTranscriptEntry(entry, { sessionId: "s1", maxChars: 100 });
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((c) => c.text.length <= 100)).toBe(true);
+    });
+
+    it("splits long sentences by words and respects maxChars", () => {
+      const entry: TranscriptEntry = {
+        ts: "2026-07-04T12:00:00.000Z",
+        role: "user",
+        content: "This sentence is intentionally quite long and will be broken by word boundaries.",
+      };
+      const chunks = chunkTranscriptEntry(entry, { sessionId: "s1", maxChars: 80 });
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((c) => c.text.length <= 80)).toBe(true);
     });
   });
 });

@@ -5,7 +5,7 @@
  * WAL mode is enabled by the database lifecycle module.
  */
 
-export const MEMORY_SCHEMA_VERSION = 2;
+export const MEMORY_SCHEMA_VERSION = 4;
 
 export const DDL = `
 -- Schema metadata
@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS memory_entries (
   text TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  display_order INTEGER NOT NULL DEFAULT 0,
   source_session TEXT,
   updated_source_session TEXT,
   source_role TEXT,
@@ -33,7 +32,8 @@ CREATE TABLE IF NOT EXISTS memory_entries (
   promoted_at INTEGER,
   chat_id TEXT,
   recall_count INTEGER NOT NULL DEFAULT 0,
-  last_recalled_at INTEGER
+  last_recalled_at INTEGER,
+  display_order INTEGER NOT NULL DEFAULT 0
 );
 
 -- Per-scope metadata (description and last update).
@@ -85,5 +85,6 @@ export const INDEX_DDL = `
 CREATE INDEX IF NOT EXISTS idx_memory_entries_scope_kind ON memory_entries(scope, entry_kind);
 CREATE INDEX IF NOT EXISTS idx_memory_entries_chat_id ON memory_entries(chat_id) WHERE chat_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_memory_entries_origin ON memory_entries(origin);
+CREATE INDEX IF NOT EXISTS idx_memory_entries_created_at ON memory_entries(created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_entry_tags_tag ON memory_entry_tags(tag);
 `;

@@ -67,3 +67,8 @@ export function heartbeatMdPathForSession(home: string, id: string): string {
   validateSessionId(id);
   return join(sessionDir(home, id), "HEARTBEAT.md");
 }
+
+export function memoryDreamingCursorPath(home: string, id: string): string {
+  validateSessionId(id);
+  return join(sessionDir(home, id), "memory-dreaming-cursor.json");
+}

@@ -34,10 +34,31 @@ export class MemoryDatabase {
       .query<{ value: string }, { $key: string }>("SELECT value FROM memory_meta WHERE key = $key")
       .get({ $key: "schema_version" });
     const current = row ? Number.parseInt(row.value, 10) : 0;
+
+    // Schema migration: add display_order to existing databases.
+    const hasDisplayOrder = this.db
+      .query<{ name: string }, []>("PRAGMA table_info(memory_entries)")
+      .all()
+      .some((col) => col.name === "display_order");
+    if (!hasDisplayOrder) {
+      this.db.exec("ALTER TABLE memory_entries ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0");
+      this.db.exec(`
+        UPDATE memory_entries
+        SET display_order = (
+          SELECT COUNT(*)
+          FROM memory_entries e2
+          WHERE e2.scope = memory_entries.scope
+            AND e2.entry_kind = memory_entries.entry_kind
+            AND (
+              e2.created_at < memory_entries.created_at
+              OR (e2.created_at = memory_entries.created_at AND e2.id < memory_entries.id)
+            )
+        )
+      `);
+      log.info("memory database migrated", { addedColumn: "display_order" });
+    }
+
     if (!Number.isFinite(current) || current < MEMORY_SCHEMA_VERSION) {
-      if (current < 2) {
-        this.migrateToDisplayOrder();
-      }
       this.db
         .query(
           `INSERT OR REPLACE INTO memory_meta (key, value, updated_at) VALUES ($key, $value, $updated_at)`,
@@ -56,18 +77,16 @@ export class MemoryDatabase {
       this.setMeta("reindexing", "false");
       log.warn("memory reindexing flag was stale; reset to false");
     }
-  }
 
-  private migrateToDisplayOrder(): void {
-    const columns = this.db
-      .query<{ name: string }, []>("PRAGMA table_info(memory_entries)")
-      .all();
-    if (!columns.some((c) => c.name === "display_order")) {
-      this.db.exec("ALTER TABLE memory_entries ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0");
+    // Ensure required memory_meta keys exist even before the first embedding
+    // is computed. This makes the database self-describing and lets search
+    // pick a dimension-compatible query model from the first call.
+    if (this.getMeta("embedding_provider") === undefined) {
+      this.setMeta("embedding_provider", "openai");
     }
-    this.db
-      .query("UPDATE memory_entries SET display_order = created_at WHERE display_order = 0")
-      .run();
+    if (this.getMeta("embedding_model") === undefined) {
+      this.setMeta("embedding_model", process.env.GOBLIN_MEMORY_EMBEDDING_MODEL ?? "text-embedding-3-small");
+    }
   }
 
   get database(): Database {

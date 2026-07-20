@@ -869,54 +869,56 @@ describe("SchedulerLoop", () => {
   });
 
   describe("parseDreamingResponse", () => {
+    const sampleLines = [{ index: 0, role: "user" as const, text: "hello", ts: "2026-07-01T00:00:00.000Z" }];
+
     it("accepts valid candidates", () => {
       const loop = makeLoop();
-      const parse = (loop as unknown as { parseDreamingResponse: (raw: string, sessionId: string) => unknown[] }).parseDreamingResponse;
+      const parse = (loop as unknown as { parseDreamingResponse: (raw: string, sessionId: string, lines: typeof sampleLines) => unknown[] }).parseDreamingResponse;
       const raw = JSON.stringify({
         candidates: [
-          { target: "memory", category: "fact", confidence: 0.85, summary: "User likes tea.", lineRange: [0, 1] },
+          { target: "memory", category: "fact", confidence: 0.85, text: "User likes tea.", lineRange: [0, 0] },
         ],
       });
-      const result = parse(raw, "session-1");
+      const result = parse(raw, "session-1", sampleLines);
       expect(result).toHaveLength(1);
-      expect(result[0]).toMatchObject({ target: "memory", category: "fact", confidence: 0.85, summary: "User likes tea." });
+      expect(result[0]).toMatchObject({ target: "memory", category: "fact", confidence: 0.85, text: "User likes tea." });
     });
 
     it("rejects invalid categories", () => {
       const loop = makeLoop();
-      const parse = (loop as unknown as { parseDreamingResponse: (raw: string, sessionId: string) => unknown[] }).parseDreamingResponse;
+      const parse = (loop as unknown as { parseDreamingResponse: (raw: string, sessionId: string, lines: typeof sampleLines) => unknown[] }).parseDreamingResponse;
       const raw = JSON.stringify({
         candidates: [
-          { target: "memory", category: "bogus", confidence: 0.85, summary: "User likes tea.", lineRange: [0, 1] },
+          { target: "memory", category: "bogus", confidence: 0.85, text: "User likes tea.", lineRange: [0, 0] },
         ],
       });
-      const result = parse(raw, "session-1");
+      const result = parse(raw, "session-1", sampleLines);
       expect(result).toHaveLength(0);
     });
 
     it("rejects out-of-range confidence", () => {
       const loop = makeLoop();
-      const parse = (loop as unknown as { parseDreamingResponse: (raw: string, sessionId: string) => unknown[] }).parseDreamingResponse;
+      const parse = (loop as unknown as { parseDreamingResponse: (raw: string, sessionId: string, lines: typeof sampleLines) => unknown[] }).parseDreamingResponse;
       const raw = JSON.stringify({
         candidates: [
-          { target: "memory", category: "fact", confidence: 1.5, summary: "User likes tea.", lineRange: [0, 1] },
-          { target: "memory", category: "fact", confidence: -0.1, summary: "User likes coffee.", lineRange: [0, 1] },
+          { target: "memory", category: "fact", confidence: 1.5, text: "User likes tea.", lineRange: [0, 0] },
+          { target: "memory", category: "fact", confidence: -0.1, text: "User likes coffee.", lineRange: [0, 0] },
         ],
       });
-      const result = parse(raw, "session-1");
+      const result = parse(raw, "session-1", sampleLines);
       expect(result).toHaveLength(0);
     });
 
     it("rejects invalid or inverted line ranges", () => {
       const loop = makeLoop();
-      const parse = (loop as unknown as { parseDreamingResponse: (raw: string, sessionId: string) => unknown[] }).parseDreamingResponse;
+      const parse = (loop as unknown as { parseDreamingResponse: (raw: string, sessionId: string, lines: typeof sampleLines) => unknown[] }).parseDreamingResponse;
       const raw = JSON.stringify({
         candidates: [
-          { target: "memory", category: "fact", confidence: 0.85, summary: "User likes tea.", lineRange: [1, 0] },
-          { target: "memory", category: "fact", confidence: 0.85, summary: "User likes tea.", lineRange: [0] },
+          { target: "memory", category: "fact", confidence: 0.85, text: "User likes tea.", lineRange: [1, 0] },
+          { target: "memory", category: "fact", confidence: 0.85, text: "User likes tea.", lineRange: [0] },
         ],
       });
-      const result = parse(raw, "session-1");
+      const result = parse(raw, "session-1", sampleLines);
       expect(result).toHaveLength(0);
     });
   });

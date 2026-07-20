@@ -4,7 +4,7 @@ import type { MemoryStore, StoreResult } from "./store.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
 import { activeMemoryScopeFor, type ActiveScope, type MemoryScope } from "./scope.ts";
 import { VALID_NAME_RE } from "../subagents/named-agents.ts";
-import { checkDescriptionSafety, checkMemorySafety } from "./safety.ts";
+import { checkMemorySafety } from "./safety.ts";
 import { searchMemoryEntries, type MemorySearchOutput } from "./search.ts";
 import { stripEntryMetadata } from "./entry.ts";
 import { includeAgentsFor, personaPolicyForCaller, type MemoryCaller } from "./context.ts";
@@ -279,7 +279,6 @@ export function createMemoryWriteTool(args: {
           if (params.description === undefined) {
             throw new Error("memory_write.set_description requires `description`");
           }
-          assertSafe(() => checkDescriptionSafety(params.description!), onReject);
           result = await args.store.setDescription(scope, params.description);
           break;
         }

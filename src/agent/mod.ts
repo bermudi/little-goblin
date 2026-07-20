@@ -27,6 +27,7 @@ import {
   formatRelevantMemory,
   resolveActiveScope,
 } from "../memory/mod.ts";
+import { activeMemoryScopeFor } from "../memory/scope.ts";
 import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
@@ -235,6 +236,8 @@ export class AgentRunner {
   private goblinSystemPrompt: GoblinSystemPrompt | null = null;
   /** Frozen user.md body captured at session init for per-turn relevant-memory dedup. */
   private frozenUserBody: string = "";
+  /** Frozen active memory body captured at session init for per-turn relevant-memory dedup. */
+  private frozenActiveMemoryBody: string = "";
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
    * resolve within the cascade timeout. Once set, `isStreaming` reports
@@ -349,12 +352,12 @@ export class AgentRunner {
         systemPrompt = `${systemPrompt}\n\n${frozenSummary}`;
       }
 
-      // Capture the frozen user.md body for per-turn relevant-memory dedup.
-      // The system prompt is immutable after init, so user-preferences that
-      // were present at session start should not be repeated as relevant memory.
-      // New user entries (e.g. from dreaming) written after init are not in the
-      // frozen summary and can still surface per-turn.
+      // Capture the frozen user.md and active memory bodies for per-turn
+      // relevant-memory dedup. The system prompt is immutable after init, so
+      // entries present at session start should not be repeated as relevant
+      // memory. New entries written after init can still surface per-turn.
       this.frozenUserBody = this.memoryStore.read("user").body;
+      this.frozenActiveMemoryBody = this.memoryStore.read(activeMemoryScopeFor(this.activeScope)).body;
 
       this.throwIfAbortedBeforeInit();
       await this.backend.init({
@@ -518,7 +521,14 @@ export class AgentRunner {
     // without emitting an independent agent_end, so no separate pass is
     // scheduled for steers. Internal (non-chat) runners skip dreaming entirely.
     if (event.type === "agent_end" && !this.noDreaming) {
-      void this.dreamingPipeline.runLightSleep(this.sessionId, this.activeScope);
+      try {
+        this.dreamingPipeline.advanceCursor(this.sessionId);
+      } catch (err) {
+        log.warn("AgentRunner: failed to advance dreaming cursor", {
+          sessionId: this.sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
@@ -633,6 +643,7 @@ export class AgentRunner {
         promptText,
         metrics: this.metricsStore,
         frozenUserBody: this.frozenUserBody,
+        frozenActiveMemoryBody: this.frozenActiveMemoryBody,
       });
       if (aside !== null) {
         await this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" });

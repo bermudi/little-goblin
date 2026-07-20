@@ -11,11 +11,9 @@ import { readFileSync, statSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { log } from "../log.ts";
 import { sessionsDir } from "../sessions/paths.ts";
-import { statePath } from "../sessions/paths.ts";
-import { extractEntryText, type TranscriptEntry } from "../sessions/transcript.ts";
+import { loadState } from "../sessions/state.ts";
+import { chunkTranscriptEntry, readTranscriptEntries } from "../sessions/transcript.ts";
 import type { MemoryStore } from "./store.ts";
-
-const DEFAULT_MAX_CHUNK_CHARS = 500;
 
 function hashBuffer(data: Uint8Array): string {
   const hasher = new Bun.CryptoHasher("sha256");
@@ -32,65 +30,6 @@ function fileStat(filePath: string) {
   return { mtimeMs: Math.floor(s.mtimeMs), size: s.size };
 }
 
-function readJsonFile(filePath: string): unknown {
-  return JSON.parse(readFileSync(filePath, "utf-8")) as unknown;
-}
-
-function extractChatId(home: string, sessionId: string): string | null {
-  try {
-    const state = readJsonFile(statePath(home, sessionId)) as Record<string, unknown> | undefined;
-    if (state && typeof state.chatId === "number") {
-      return String(state.chatId);
-    }
-  } catch {
-    // Fall through to null.
-  }
-  return null;
-}
-
-/**
- * Chunk a transcript entry's text into bounded snippets (max 500 chars by
- * default). Keeps message-level granularity when the message fits; splits by
- * sentences and, only as a last resort, by words for very long messages.
- */
-export function chunkTranscriptEntry(entry: TranscriptEntry, maxChars = DEFAULT_MAX_CHUNK_CHARS): string[] {
-  const text = extractEntryText(entry.content).trim();
-  if (text.replace(/\s/g, "").length < 8) return [];
-  if (text.length <= maxChars) return [text];
-
-  const sentences = text.split(/(?<=[.!?])\s+/);
-  const chunks: string[] = [];
-  let current = "";
-  for (const sentence of sentences) {
-    if (sentence.length > maxChars) {
-      // Flush any pending smaller chunk first.
-      if (current.length > 0) {
-        chunks.push(current.trim());
-        current = "";
-      }
-      // Split the oversized sentence by words with a rough overlap.
-      const words = sentence.split(/\s+/);
-      let piece = "";
-      for (const word of words) {
-        if (piece.length + word.length + 1 > maxChars && piece.length > 0) {
-          chunks.push(piece.trim());
-          piece = "";
-        }
-        piece = piece.length === 0 ? word : `${piece} ${word}`;
-      }
-      if (piece.length > 0) chunks.push(piece.trim());
-      continue;
-    }
-    if (current.length + sentence.length + 1 > maxChars && current.length > 0) {
-      chunks.push(current.trim());
-      current = "";
-    }
-    current = current.length === 0 ? sentence : `${current} ${sentence}`;
-  }
-  if (current.length > 0) chunks.push(current.trim());
-  return chunks;
-}
-
 interface TranscriptFile {
   sessionId: string;
   path: string;
@@ -105,8 +44,8 @@ function discoverTranscripts(home: string): TranscriptFile[] {
       if (!entry.isDirectory()) continue;
       // Skip internal non-chat sessions (e.g. the dreaming extractor) so their
       // synthetic transcripts are not re-indexed as user conversation data.
-      const chatId = extractChatId(home, entry.name);
-      if (chatId === "0") continue;
+      const state = loadState(home, entry.name);
+      if (state?.chatId === 0) continue;
       const transcriptFile = join(dir, entry.name, "transcript.jsonl");
       result.push({ sessionId: entry.name, path: transcriptFile });
     }
@@ -207,7 +146,10 @@ export class TranscriptIndexer {
           continue;
         }
 
-        const chatId = extractChatId(this.home, tf.sessionId);
+        const chatId = (() => {
+          const state = loadState(this.home, tf.sessionId);
+          return state !== null ? String(state.chatId) : null;
+        })();
 
         const chunks: Array<{
           text: string;
@@ -216,40 +158,18 @@ export class TranscriptIndexer {
           sourceSession: string;
           sourceRole: string;
         }> = [];
-        const raw = readFileSync(tf.path, "utf-8");
-        const lines = raw.split("\n");
-        const timestampBase = stats.mtimeMs;
-        let lineIndex = 0;
-        for (const line of lines) {
-          if (line.trim().length === 0) continue;
-          let entry: TranscriptEntry;
-          try {
-            entry = JSON.parse(line) as TranscriptEntry;
-          } catch {
-            lineIndex++;
-            continue;
-          }
-          const displayText = extractEntryText(entry.content).trim();
-          if (displayText.replace(/\s/g, "").length < 8) {
-            lineIndex++;
-            continue;
-          }
-          const entryTime = typeof entry.timestamp === "number" ? entry.timestamp * 1000 : timestampBase;
-          const ts = typeof entry.ts === "string" ? entry.ts : new Date(entryTime).toISOString();
-          const role = entry.role ?? "unknown";
-          const prefix = `[${ts}] [${role}] [${tf.sessionId}] `;
-          const available = Math.max(8, DEFAULT_MAX_CHUNK_CHARS - prefix.length);
-          const rawChunks = chunkTranscriptEntry(entry, available);
+        for (const { entry } of readTranscriptEntries(this.home, tf.sessionId)) {
+          if (entry === null) continue;
+          const rawChunks = chunkTranscriptEntry(entry, { sessionId: tf.sessionId });
           for (const chunk of rawChunks) {
             chunks.push({
-              text: `${prefix}${chunk}`,
-              createdAt: entryTime + lineIndex,
-              updatedAt: entryTime,
-              sourceSession: tf.sessionId,
-              sourceRole: role,
+              text: chunk.text,
+              createdAt: chunk.createdAt,
+              updatedAt: chunk.updatedAt,
+              sourceSession: chunk.sessionId,
+              sourceRole: chunk.role,
             });
           }
-          lineIndex++;
         }
 
         if (chunks.length > 0) {
@@ -295,6 +215,15 @@ export class TranscriptIndexer {
       .query<{ path: string }, Record<string, never>>("SELECT path FROM memory_sources WHERE source = 'transcript'")
       .all({});
     for (const { path } of knownSources) {
+      if (elapsed() > maxDurationMs) {
+        log.warn("transcript sync exceeded time budget during purge; resuming on next tick", {
+          indexed,
+          inserted,
+          removed,
+          maxDurationMs,
+        });
+        return { indexed, removed, inserted };
+      }
       if (!seenPaths.has(path)) {
         const sessionId = relative(sessionsDir(this.home), path).split("/")[0];
         if (sessionId) {

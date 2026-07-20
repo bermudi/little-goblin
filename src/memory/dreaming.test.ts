@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultCandidateExtractor, DreamingPipeline, type TranscriptLine } from "./dreaming.ts";
+import { DreamingPipeline, type CandidateExtractor } from "./dreaming.ts";
 import { MemoryStore } from "./store.ts";
 import { sessionDir, transcriptPath } from "../sessions/paths.ts";
 import type { ActiveScope } from "./scope.ts";
@@ -10,72 +10,6 @@ import type { ActiveScope } from "./scope.ts";
 // Keep the global budget high so overflow/compaction behaviour does not
 // interfere with the deterministic assertions in this file.
 process.env.GOBLIN_MEMORY_BUDGET_CHARS = "1000000";
-
-function line(index: number, role: TranscriptLine["role"], text: string): TranscriptLine {
-  return { index, role, text, ts: new Date().toISOString() };
-}
-
-describe("defaultCandidateExtractor", () => {
-  it("extracts preferences from I prefer X", () => {
-    const entries = [line(0, "user", "I prefer TypeScript")];
-    const got = defaultCandidateExtractor(entries, { sessionId: "s1" });
-
-    expect(got.length).toBe(1);
-    expect(got[0]).toMatchObject({
-      target: "user",
-      category: "preference",
-      confidence: 0.8,
-      summary: "I prefer TypeScript",
-      source: { sessionId: "s1", lineRange: [0, 0], sourceRole: "user" },
-    });
-  });
-
-  it("extracts conventions from by convention", () => {
-    const entries = [line(1, "assistant", "By convention, we write tests first.")];
-    const got = defaultCandidateExtractor(entries, { sessionId: "s1" });
-
-    expect(got.length).toBe(1);
-    expect(got[0]).toMatchObject({
-      target: "memory",
-      category: "convention",
-      confidence: 0.75,
-      summary: "By convention, we write tests first.",
-      source: { sessionId: "s1", lineRange: [1, 1], sourceRole: "assistant" },
-    });
-  });
-
-  it("extracts decisions from we decided phrases", () => {
-    const entries = [line(2, "user", "we decided that we should use SQLite")];
-    const got = defaultCandidateExtractor(entries, { sessionId: "s1" });
-
-    expect(got.length).toBe(1);
-    expect(got[0]).toMatchObject({
-      target: "memory",
-      category: "decision",
-      confidence: 0.85,
-      summary: "we decided that we should use SQLite",
-      source: { sessionId: "s1", lineRange: [2, 2], sourceRole: "user" },
-    });
-  });
-
-  it("skips procedural noise like ok and thanks", () => {
-    const entries = [
-      line(0, "user", "ok"),
-      line(1, "assistant", "thanks"),
-      line(2, "user", "hello"),
-    ];
-    expect(defaultCandidateExtractor(entries, { sessionId: "s1" })).toEqual([]);
-  });
-
-  it("returns empty for unrelated lines", () => {
-    const entries = [
-      line(0, "user", "The weather is nice today."),
-      line(1, "toolResult", "I prefer TypeScript"),
-      line(2, "unknown", "by convention"),
-    ];
-    expect(defaultCandidateExtractor(entries, { sessionId: "s1" })).toEqual([]);
-  });
-});
 
 describe("DreamingPipeline", () => {
   let tmp: string;
@@ -85,7 +19,19 @@ describe("DreamingPipeline", () => {
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "goblin-dreaming-"));
     store = new MemoryStore(tmp);
-    pipeline = new DreamingPipeline({ goblinHome: tmp, store });
+    const extractor: CandidateExtractor = (lines) =>
+      lines.map((line) => ({
+        target: "user" as const,
+        category: "fact" as const,
+        confidence: 0.9,
+        text: line.text,
+        source: {
+          sessionId: "abcdef1234",
+          lineRange: [line.index, line.index] as [number, number],
+          sourceRole: line.role === "user" ? "user" : line.role === "assistant" ? "assistant" : line.role === "toolResult" ? "tool" : "system",
+        },
+      }));
+    pipeline = new DreamingPipeline({ goblinHome: tmp, store, extractor });
   });
 
   afterEach(() => {

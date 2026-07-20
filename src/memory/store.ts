@@ -59,6 +59,7 @@ interface EntryRow {
   origin: string;
   recallCount: number;
   promotedAt: number | null;
+  displayOrder: number;
 }
 
 function normalizeScope(scope: StoreScope): MemoryScope | "user" {
@@ -98,8 +99,8 @@ export interface MemoryEntryInput {
   chatId?: string | null;
   createdAt?: number;
   updatedAt?: number;
-  displayOrder?: number;
   recallCount?: number;
+  displayOrder?: number;
 }
 
 /**
@@ -148,13 +149,29 @@ export class MemoryStore {
   read(scope: StoreScope): ParsedMemory {
     const normalized = normalizeScope(scope);
     const tag = scopeToTag(normalized);
-    const description = this.readDescription(tag);
     const rows = this.db.database
-      .query<{ text: string }, { $scope: string; $entry_kind: string }>(
-        "SELECT text FROM memory_entries WHERE scope = $scope AND entry_kind = $entry_kind ORDER BY display_order, created_at, id",
+      .query<{ text: string | null; description: string | null }, { $scope: string; $entry_kind: string }>(
+        `SELECT text, description, created_at, id
+         FROM (
+           SELECT e.text, s.description, e.created_at, e.id, e.display_order, 0 AS ord
+           FROM memory_entries e
+           LEFT JOIN memory_scopes s ON e.scope = s.scope
+           WHERE e.scope = $scope AND e.entry_kind = $entry_kind
+           UNION ALL
+           SELECT NULL AS text, s.description, NULL AS created_at, NULL AS id, NULL AS display_order, 1 AS ord
+           FROM memory_scopes s
+           WHERE s.scope = $scope
+             AND NOT EXISTS (SELECT 1 FROM memory_entries e2 WHERE e2.scope = s.scope AND e2.entry_kind = $entry_kind)
+         )
+         ORDER BY ord, display_order, created_at, id`,
       )
       .all({ $scope: tag, $entry_kind: entryKind(normalized) });
-    return { description: description ?? undefined, body: rows.map((r) => r.text).join(DELIMITER) };
+    const description = rows.find((r) => r.description !== null)?.description ?? null;
+    const body = rows
+      .map((r) => r.text)
+      .filter((t): t is string => t !== null)
+      .join(DELIMITER);
+    return { description: description ?? undefined, body };
   }
 
   readBody(scope: StoreScope): string {
@@ -165,16 +182,21 @@ export class MemoryStore {
     const normalized = normalizeScope(scope);
     const tag = scopeToTag(normalized);
     const kind = entryKind(normalized);
-    const description = this.readDescription(tag);
 
     const rows = this.db.database
       .query<
-        { id: string; scope: string; entry_kind: string; text: string; created_at: number; updated_at: number; origin: string },
+        { id: string; scope: string; entry_kind: string; text: string; created_at: number; updated_at: number; origin: string; description: string | null },
         { $scope: string; $entry_kind: string }
       >(
-        "SELECT id, scope, entry_kind, text, created_at, updated_at, origin FROM memory_entries WHERE scope = $scope AND entry_kind = $entry_kind ORDER BY created_at, id",
+        `SELECT e.id, e.scope, e.entry_kind, e.text, e.created_at, e.updated_at, e.origin, s.description
+         FROM memory_entries e
+         LEFT JOIN memory_scopes s ON e.scope = s.scope
+         WHERE e.scope = $scope AND e.entry_kind = $entry_kind
+         ORDER BY e.display_order, e.created_at, e.id`,
       )
       .all({ $scope: tag, $entry_kind: kind });
+
+    const description = rows[0]?.description ?? null;
 
     if (rows.length === 0) return [];
 
@@ -251,7 +273,6 @@ export class MemoryStore {
    * indexing, dreaming, and migration.
    */
   async addEntry(input: MemoryEntryInput): Promise<string> {
-    const id = crypto.randomUUID();
     const now = Date.now();
     const createdAt = input.createdAt ?? now;
     const updatedAt = input.updatedAt ?? now;
@@ -259,14 +280,14 @@ export class MemoryStore {
     try {
       const currentChars = this.budget.currentChars(this.db);
       this.budget.enforce(this.db, currentChars + input.text.length);
-      this.addEntryInTransaction({ ...input, id, createdAt, updatedAt });
+      const id = this.addEntryInTransaction({ ...input, createdAt, updatedAt });
       this.db.database.exec("COMMIT");
+      await this.embeddings?.embedEntry(id, input.text);
+      return id;
     } catch (err) {
       this.db.database.exec("ROLLBACK");
       throw err;
     }
-    await this.embeddings?.embedEntry(id, input.text);
-    return id;
   }
 
   /**
@@ -433,9 +454,7 @@ export class MemoryStore {
       }
 
       for (const chunk of chunks) {
-        const id = crypto.randomUUID();
-        this.addEntryInTransaction({
-          id,
+        const id = this.addEntryInTransaction({
           scope,
           entryKind: "transcript",
           text: chunk.text,
@@ -489,8 +508,7 @@ export class MemoryStore {
         const updatedAt = input.updatedAt ?? now;
         const hasText = input.text.trim().length > 0;
         if (hasText) {
-          const id = crypto.randomUUID();
-          this.addEntryInTransaction({ ...input, id, createdAt, updatedAt });
+          const id = this.addEntryInTransaction({ ...input, createdAt, updatedAt });
           ids.push(id);
           toEmbed.push({ entryId: id, text: input.text });
         }
@@ -689,13 +707,20 @@ export class MemoryStore {
 
   /**
    * Compact the curated memory store down to the global budget by evicting
-   * low-recall dreaming entries. Returns the ids that were removed and the
-   * characters freed.
+   * low-recall dreaming entries. Runs inside a single SQLite transaction.
    */
   compact(): { deletedIds: string[]; freed: number; stillOver: boolean } {
-    const current = this.budget.currentChars(this.db);
-    const needed = Math.max(0, current - this.budget.budgetChars);
-    return this.budget.compact(this.db, needed);
+    this.db.database.exec("BEGIN");
+    try {
+      const current = this.budget.currentChars(this.db);
+      const needed = Math.max(0, current - this.budget.budgetChars);
+      const result = this.budget.compact(this.db, needed);
+      this.db.database.exec("COMMIT");
+      return result;
+    } catch (err) {
+      this.db.database.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   getEntryCount(): number {
@@ -728,10 +753,13 @@ export class MemoryStore {
     const oldScope = `topics/${chatId}/${topicId}`;
     const newScope = `archive/topics/${chatId}/${topicId}`;
 
-    const exists = this.db.database
+    const entryExists = this.db.database
       .query<{ count: number }, { $scope: string }>("SELECT COUNT(*) as count FROM memory_entries WHERE scope = $scope")
       .get({ $scope: oldScope });
-    if (!exists || exists.count === 0) return false;
+    const scopeExists = this.db.database
+      .query<{ count: number }, { $scope: string }>("SELECT COUNT(*) as count FROM memory_scopes WHERE scope = $scope")
+      .get({ $scope: oldScope });
+    if ((!entryExists || entryExists.count === 0) && (!scopeExists || scopeExists.count === 0)) return false;
 
     this.db.database.exec("BEGIN");
     try {
@@ -848,6 +876,8 @@ export class MemoryStore {
         this.deleteRow(row.id);
       }
 
+      // Recompute display_order for surviving rows so rewrite/replace can
+      // reorder entries without corrupting created_at timestamps.
       for (const { row, index } of toKeep) {
         this.db.database
           .query("UPDATE memory_entries SET display_order = $display_order WHERE id = $id")
@@ -855,11 +885,9 @@ export class MemoryStore {
       }
 
       for (const { text, index } of toInsert) {
-        const id = crypto.randomUUID();
         const createdAt = baseTime + index;
         const updatedAt = now;
-        this.addEntryInTransaction({
-          id,
+        const id = this.addEntryInTransaction({
           scope: tag,
           entryKind: kind,
           text,
@@ -868,6 +896,7 @@ export class MemoryStore {
           origin: "user",
           recallCount: 0,
           chatId,
+          displayOrder: baseTime + index,
         });
         toEmbed.push({ entryId: id, text });
       }
@@ -901,10 +930,10 @@ export class MemoryStore {
   private loadRows(tag: string, kind: "memory" | "user"): EntryRow[] {
     return this.db.database
       .query<
-        { id: string; text: string; created_at: number; updated_at: number; origin: string; recall_count: number; promoted_at: number | null },
+        { id: string; text: string; created_at: number; updated_at: number; origin: string; recall_count: number; promoted_at: number | null; display_order: number },
         { $scope: string; $entry_kind: string }
       >(
-        "SELECT id, text, created_at, updated_at, origin, recall_count, promoted_at FROM memory_entries WHERE scope = $scope AND entry_kind = $entry_kind ORDER BY display_order, created_at, id",
+        "SELECT id, text, created_at, updated_at, origin, recall_count, promoted_at, display_order FROM memory_entries WHERE scope = $scope AND entry_kind = $entry_kind ORDER BY display_order, created_at, id",
       )
       .all({ $scope: tag, $entry_kind: kind })
       .map((r) => ({
@@ -915,6 +944,7 @@ export class MemoryStore {
         origin: r.origin,
         recallCount: r.recall_count,
         promotedAt: r.promoted_at,
+        displayOrder: r.display_order,
       }));
   }
 
@@ -944,17 +974,39 @@ export class MemoryStore {
     }
   }
 
+  private idExists(id: string): boolean {
+    const row = this.db.database
+      .query<{ count: number }, { $id: string }>("SELECT 1 AS count FROM memory_entries WHERE id = $id LIMIT 1")
+      .get({ $id: id });
+    return row !== null;
+  }
+
   private addEntryInTransaction(input: MemoryEntryInput): string {
-    const id = input.id ?? crypto.randomUUID();
+    let id = input.id ?? crypto.randomUUID();
+    let attempts = 0;
+    while (this.idExists(id)) {
+      id = crypto.randomUUID();
+      attempts++;
+      if (attempts > 100) {
+        throw new Error("memory_entries id collision check failed after 100 attempts");
+      }
+    }
     const now = Date.now();
     const createdAt = input.createdAt ?? now;
     const updatedAt = input.updatedAt ?? now;
-    const displayOrder = input.displayOrder ?? createdAt;
+    const displayOrder =
+      input.displayOrder ??
+      ((this.db.database
+        .query<{ max: number | null }, { $scope: string; $entry_kind: string }>(
+          "SELECT MAX(display_order) AS max FROM memory_entries WHERE scope = $scope AND entry_kind = $entry_kind",
+        )
+        .get({ $scope: input.scope, $entry_kind: input.entryKind })?.max ?? 0) +
+        1);
     this.db.database
       .query(
         `INSERT INTO memory_entries
-         (id, scope, entry_kind, text, created_at, updated_at, display_order, source_session, updated_source_session, source_role, category, confidence, origin, promoted_at, chat_id, recall_count)
-         VALUES ($id, $scope, $entry_kind, $text, $created_at, $updated_at, $display_order, $source_session, $updated_source_session, $source_role, $category, $confidence, $origin, $promoted_at, $chat_id, $recall_count)`,
+         (id, scope, entry_kind, text, created_at, updated_at, source_session, updated_source_session, source_role, category, confidence, origin, promoted_at, chat_id, recall_count, display_order)
+         VALUES ($id, $scope, $entry_kind, $text, $created_at, $updated_at, $source_session, $updated_source_session, $source_role, $category, $confidence, $origin, $promoted_at, $chat_id, $recall_count, $display_order)`,
       )
       .run({
         $id: id,
@@ -963,7 +1015,6 @@ export class MemoryStore {
         $text: input.text,
         $created_at: createdAt,
         $updated_at: updatedAt,
-        $display_order: displayOrder,
         $source_session: input.sourceSession ?? null,
         $updated_source_session: input.updatedSourceSession ?? null,
         $source_role: input.sourceRole ?? null,
@@ -973,6 +1024,7 @@ export class MemoryStore {
         $promoted_at: input.promotedAt ?? null,
         $chat_id: input.chatId ?? null,
         $recall_count: input.recallCount ?? 0,
+        $display_order: displayOrder,
       });
     this.insertIndexAndTags(id, input.scope, input.entryKind, input.text, input.chatId ?? null);
     return id;

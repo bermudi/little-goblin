@@ -379,17 +379,21 @@ export class TurnDispatcher {
     onComplete: (text: string) => void,
     onError: (err: unknown) => void,
   ): void {
-    const runner = new AgentRunner({
-      cfg: this.cfg,
-      sessionId: session.id,
-      locator: { chatId: 0 },
-      customTools: [],
-      memoryStore: this.memoryStore,
-      embeddingProvider: this.embeddingProvider,
-      dreamingPipeline: this.dreamingPipeline,
-      getTopicName: this.getTopicName,
-      noDreaming: true,
-    });
+    let runner = this.runners.get(session.id);
+    if (!runner) {
+      runner = new AgentRunner({
+        cfg: this.cfg,
+        sessionId: session.id,
+        locator: { chatId: 0 },
+        customTools: [],
+        memoryStore: this.memoryStore,
+        embeddingProvider: this.embeddingProvider,
+        dreamingPipeline: this.dreamingPipeline,
+        getTopicName: this.getTopicName,
+        noDreaming: true,
+      });
+      this.runners.set(session.id, runner);
+    }
 
     const captured: string[] = [];
     const sink: TurnCallbacks = {
@@ -402,23 +406,16 @@ export class TurnDispatcher {
       onAgentEnd: () => {},
     };
 
-    void (async (): Promise<void> => {
-      try {
+    this.schedulePrompt(
+      session,
+      runner,
+      async () => {
         await runner.prompt(content, sink);
         onComplete(captured.join(""));
-      } catch (err) {
-        onError(err);
-      } finally {
-        try {
-          await runner.dispose();
-        } catch (disposeErr) {
-          log.error("internal turn runner dispose failed", {
-            sessionId: session.id,
-            err: disposeErr instanceof Error ? disposeErr.message : String(disposeErr),
-          });
-        }
-      }
-    })();
+      },
+      onError,
+      { isPrompt: false },
+    );
   }
 
   /**

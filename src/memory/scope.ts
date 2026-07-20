@@ -56,41 +56,6 @@ export function scopeTag(scope: MemoryScope | "user"): string {
 
 export type MemoryScopePair = { scope: string; entry_kind: "memory" | "user" };
 
-/**
- * Resolve an ActiveScope + tool target into the canonical (scope, entry_kind)
- * pair used by the SQLite-backed memory store.
- *
- * - `target: "user"` always maps to the global `user` scope.
- * - `target: "memory"` maps to the active chat/topic scope with entry_kind `memory`.
- * - `target: "agent"` maps to the named agent scope with entry_kind `memory`.
- */
-export function resolveMemoryScopePair(
-  activeScope: ActiveScope,
-  target: "user" | "memory" | "agent",
-  namedAgent?: string,
-): MemoryScopePair {
-  if (target === "user") {
-    return { scope: "user", entry_kind: "user" };
-  }
-  if (target === "agent") {
-    if (!namedAgent || namedAgent.length === 0) {
-      throw new Error("target 'agent' requires a named agent");
-    }
-    return { scope: `agents/${namedAgent}`, entry_kind: "memory" };
-  }
-  const memoryScope = activeMemoryScopeFor(activeScope);
-  if (memoryScope === "general") {
-    return { scope: "general", entry_kind: "memory" };
-  }
-  if ("topic" in memoryScope) {
-    return {
-      scope: `topics/${memoryScope.topic.chatId}/${memoryScope.topic.topicId}`,
-      entry_kind: "memory",
-    };
-  }
-  return { scope: `agents/${memoryScope.agent.name}`, entry_kind: "memory" };
-}
-
 export function tagToMemoryScope(tag: string): MemoryScope | "user" | "archive" {
   if (tag === "user" || tag === "general") return tag;
   if (tag.startsWith("topics/")) {

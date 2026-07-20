@@ -272,7 +272,6 @@ import type { ChatLocator } from "../sessions/types.ts";
 import { MemoryStore } from "../memory/store.ts";
 import {
   DreamingPipeline,
-  type Candidate,
   type CandidateExtractor,
 } from "../memory/dreaming.ts";
 
@@ -1570,7 +1569,7 @@ describe("AgentRunner", () => {
     });
   });
 
-  describe("dreaming light sleep scheduling", () => {
+  describe("dreaming cursor management", () => {
     /** Helper: create a dreaming pipeline backed by a real store on tmpDir. */
     function makeDreamingPipeline(
       home: string,
@@ -1578,19 +1577,6 @@ describe("AgentRunner", () => {
     ): DreamingPipeline {
       const store = new MemoryStore(home);
       return new DreamingPipeline({ goblinHome: home, store, extractor });
-    }
-
-    /** Pre-seed a dreaming cursor at processedLines=0 so the first pass processes all transcript entries. */
-    function seedCursorAtZero(home: string): void {
-      const store = new MemoryStore(home);
-      try {
-        store.db.setMeta(
-          "dreaming_cursor:abcdef1234",
-          JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
-        );
-      } finally {
-        store.close();
-      }
     }
 
     /** Write a single user transcript entry. */
@@ -1606,9 +1592,11 @@ describe("AgentRunner", () => {
       );
     }
 
-    it("schedules light sleep after agent_end on a completed prompt turn", async () => {
+    it("advances the dreaming cursor after agent_end on a completed prompt turn", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
+      const advanceSpy = mock((_sessionId: string) => undefined);
       const runSpy = mock((_sessionId: string, _scope: unknown) => Promise.resolve());
+      dreaming.advanceCursor = advanceSpy as never;
       dreaming.runLightSleep = runSpy as never;
 
       const runner = makeRunner(
@@ -1618,16 +1606,16 @@ describe("AgentRunner", () => {
 
       sessionHolder.emit({ type: "agent_end", messages: [] });
 
-      expect(runSpy).toHaveBeenCalledTimes(1);
-      expect(runSpy).toHaveBeenCalledWith(
-        "abcdef1234",
-        expect.objectContaining({ chatId: 123, topicScope: "general" }),
-      );
+      expect(advanceSpy).toHaveBeenCalledTimes(1);
+      expect(advanceSpy).toHaveBeenCalledWith("abcdef1234");
+      expect(runSpy).not.toHaveBeenCalled();
     });
 
-    it("does not schedule an independent light sleep pass for followUp (steer)", async () => {
+    it("does not advance the cursor or run light sleep for followUp (steer)", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
+      const advanceSpy = mock((_sessionId: string) => undefined);
       const runSpy = mock((_sessionId: string, _scope: unknown) => Promise.resolve());
+      dreaming.advanceCursor = advanceSpy as never;
       dreaming.runLightSleep = runSpy as never;
 
       const runner = makeRunner(
@@ -1637,142 +1625,49 @@ describe("AgentRunner", () => {
       sessionHolder.streaming = true;
       await runner.followUp("redirect");
 
-      // followUp steers the running turn — no agent_end is emitted, so no
-      // light sleep pass is scheduled for the steer itself.
+      // followUp steers the running turn — no agent_end is emitted.
+      expect(advanceSpy).not.toHaveBeenCalled();
       expect(runSpy).not.toHaveBeenCalled();
     });
 
-    it("dreaming errors are logged and swallowed, not thrown to the event handler", async () => {
-      const throwingExtractor: CandidateExtractor = () => {
-        throw new Error("extractor blew up");
-      };
-      const dreaming = makeDreamingPipeline(tmpDir, throwingExtractor);
+    it("persists the per-session dreaming cursor file", async () => {
+      const dreaming = makeDreamingPipeline(tmpDir);
 
       const runner = makeRunner(
         tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
       );
       await runner.prompt("hello", nopCallbacks());
 
-      seedCursorAtZero(tmpDir);
       writeTranscriptEntry(tmpDir, "I prefer terse answers");
 
-      // Emitting agent_end should not throw even though dreaming fails.
       sessionHolder.emit({ type: "agent_end", messages: [] });
-      await dreaming.awaitSettled("abcdef1234");
 
-      // The cursor should NOT have advanced — a failed pass retries the
-      // same range on the next schedule.
       const checkStore = new MemoryStore(tmpDir);
       try {
         const raw = checkStore.db.getMeta("dreaming_cursor:abcdef1234");
-        const cursor = raw !== undefined ? (JSON.parse(raw) as { processedLines?: number }) : null;
-        expect(cursor?.processedLines ?? null).toBe(0);
+        expect(raw).toBeUndefined();
       } finally {
         checkStore.close();
       }
+
+      const cursorPath = join(sessionDir(tmpDir, "abcdef1234"), "memory-dreaming-cursor.json");
+      const cursor = JSON.parse(readFileSync(cursorPath, "utf-8")) as { processedLines: number };
+      expect(cursor.processedLines).toBe(1);
     });
 
-    it("dreaming writes are visible in a subsequent turn's snapshot", async () => {
-      const candidate: Candidate = {
-        target: "user",
-        category: "preference",
-        confidence: 0.9,
-        summary: "User prefers terse engineering summaries.",
-        source: { sessionId: "abcdef1234", lineRange: [0, 0], sourceRole: "user" },
+    it("errors advancing the cursor are caught and logged, not thrown to the event handler", async () => {
+      const dreaming = makeDreamingPipeline(tmpDir);
+      dreaming.advanceCursor = () => {
+        throw new Error("cursor advance blew up");
       };
-      const extractor: CandidateExtractor = () => [candidate];
-      const dreaming = makeDreamingPipeline(tmpDir, extractor);
 
       const runner = makeRunner(
         tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
       );
-      await runner.prompt("I prefer terse summaries", nopCallbacks());
+      await runner.prompt("hello", nopCallbacks());
 
-      seedCursorAtZero(tmpDir);
-      writeTranscriptEntry(tmpDir, "I prefer terse summaries");
-
-      // Complete the turn — agent_end schedules light sleep.
-      sessionHolder.emit({ type: "agent_end", messages: [] });
-      await dreaming.awaitSettled("abcdef1234");
-
-      // The promoted entry should now be in user.md.
-      const checkStore = new MemoryStore(tmpDir);
-      try {
-        expect(checkStore.readBody("user")).toContain("User prefers terse engineering summaries.");
-      } finally {
-        checkStore.close();
-      }
-
-      // Next turn's relevant-memory aside should include the promoted entry
-      // when the prompt text matches it.
-      sessionHolder.sendCustomMessage.mockClear();
-      await runner.prompt("terse summaries", nopCallbacks());
-      expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
-      const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
-      const text = (payload as { content: string }).content;
-      expect(text).toContain("User prefers terse engineering summaries.");
-    });
-
-    // Spec: "System prompt unchanged across dreaming writes". The snapshot
-    // is injected via sendCustomMessage, never via the system prompt, so the
-    // value `_baseSystemPrompt` held at AgentSession creation MUST remain
-    // unchanged across dreaming writes and subsequent turns. The mock
-    // session does not expose `state.systemPrompt`/`_baseSystemPrompt`, so
-    // we assert the equivalent: the resource loader (which receives the
-    // system prompt) is constructed exactly once, the session is not
-    // recreated, and the post-dreaming turn's snapshot is delivered via
-    // sendCustomMessage with deliverAs:nextTurn — not via any system-prompt
-    // path.
-    it("system prompt is unchanged across dreaming writes", async () => {
-      const candidate: Candidate = {
-        target: "user",
-        category: "preference",
-        confidence: 0.9,
-        summary: "User prefers terse engineering summaries.",
-        source: { sessionId: "abcdef1234", lineRange: [0, 0], sourceRole: "user" },
-      };
-      const extractor: CandidateExtractor = () => [candidate];
-      const dreaming = makeDreamingPipeline(tmpDir, extractor);
-
-      const runner = makeRunner(
-        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
-      );
-      await runner.prompt("I prefer terse summaries", nopCallbacks());
-
-      // Capture the system prompt supplied at AgentSession creation.
-      expect(capturedResourceLoaderArgs).toHaveLength(1);
-      const baseSystemPrompt = (capturedResourceLoaderArgs[0] as { systemPrompt: string }).systemPrompt;
-      expect(capturedCreateArgs).toHaveLength(1);
-
-      seedCursorAtZero(tmpDir);
-      writeTranscriptEntry(tmpDir, "I prefer terse summaries");
-
-      // Complete the turn — agent_end schedules a dreaming pass that
-      // writes to user.md on disk.
-      sessionHolder.emit({ type: "agent_end", messages: [] });
-      await dreaming.awaitSettled("abcdef1234");
-
-      const checkStore = new MemoryStore(tmpDir);
-      try {
-        expect(checkStore.readBody("user")).toContain("User prefers terse engineering summaries.");
-      } finally {
-        checkStore.close();
-      }
-
-      // A subsequent turn must not recreate the session or resource loader
-      // — the system prompt is frozen from creation.
-      sessionHolder.sendCustomMessage.mockClear();
-      await runner.prompt("terse summaries", nopCallbacks());
-
-      expect(capturedCreateArgs).toHaveLength(1);
-      expect(capturedResourceLoaderArgs).toHaveLength(1);
-      expect((capturedResourceLoaderArgs[0] as { systemPrompt: string }).systemPrompt).toBe(baseSystemPrompt);
-
-      // The post-dreaming snapshot is delivered via sendCustomMessage
-      // (deliverAs:nextTurn), not via the system prompt.
-      expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
-      const [, opts] = sessionHolder.sendCustomMessage.mock.calls[0]!;
-      expect((opts as { deliverAs?: string }).deliverAs).toBe("nextTurn");
+      // Emitting agent_end should not throw even if cursor advancement fails.
+      expect(() => sessionHolder.emit({ type: "agent_end", messages: [] })).not.toThrow();
     });
   });
 

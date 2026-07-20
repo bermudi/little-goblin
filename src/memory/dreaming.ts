@@ -16,15 +16,15 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { log } from "../log.ts";
+import { atomicWrite } from "../fs.ts";
 import { sessionDir, statePath } from "../sessions/paths.ts";
-import { readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
+import { countTranscriptLines, readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
 import { MemoryStore } from "./store.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
 import { checkMemorySafety } from "./safety.ts";
 import { appendQuarantine } from "./quarantine.ts";
 import {
   stripEntryMetadata,
-  type EntryCategory,
   type EntrySourceRole,
 } from "./entry.ts";
 import { activeMemoryScopeFor, scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
@@ -37,11 +37,29 @@ import { cosineSimilarity } from "./search.ts";
 
 export type { TranscriptLine } from "../sessions/transcript.ts";
 
+export type DreamingCategory =
+  | "fact"
+  | "short_term"
+  | "theme"
+  | "commitment"
+  | "standing_order"
+  | "skip";
+
+export const DREAMING_CATEGORIES: readonly DreamingCategory[] = [
+  "fact",
+  "short_term",
+  "theme",
+  "commitment",
+  "standing_order",
+  "skip",
+];
+
 export interface Candidate {
-  target: "user" | "memory";
-  category: EntryCategory;
+  target: "user" | "memory" | "agent";
+  category: DreamingCategory;
   confidence: number;
-  summary: string;
+  text: string;
+  rationale?: string;
   source: {
     sessionId: string;
     lineRange: [number, number];
@@ -95,7 +113,7 @@ const processedCandidates = new Map<string, Set<string>>();
 
 function processedCandidateKey(home: string, sessionId: string, candidate: Candidate): string {
   const [start, end] = candidate.source.lineRange;
-  return `${home}\x00${sessionId}\x00${start}:${end}:${candidate.summary.slice(0, 64)}`;
+  return `${home}\x00${sessionId}\x00${start}:${end}:${candidate.text.slice(0, 64)}`;
 }
 
 function isProcessedCandidate(home: string, sessionId: string, candidate: Candidate): boolean {
@@ -122,171 +140,13 @@ const NOISE_PATTERNS: RegExp[] = [
   /^\s*(hi|hello|hey|thanks|thank you|ok|okay|sure|yes|no|yep|nope|cool|nice|great|lol|haha)\s*$/i,
 ];
 
-function isProceduralNoise(summary: string): boolean {
-  const trimmed = summary.trim();
+function isProceduralNoise(text: string): boolean {
+  const trimmed = text.trim();
   if (trimmed.length === 0) return true;
   for (const re of NOISE_PATTERNS) {
     if (re.test(trimmed)) return true;
   }
   return false;
-}
-
-// ---------------------------------------------------------------------------
-// Default deterministic candidate extractor
-// ---------------------------------------------------------------------------
-
-interface ExtractionRule {
-  category: EntryCategory;
-  confidence: number;
-  target: "user" | "memory";
-  patterns: RegExp[];
-}
-
-const EXTRACTION_RULES: ExtractionRule[] = [
-  {
-    category: "commitment",
-    confidence: 0.85,
-    target: "memory",
-    patterns: [
-      /\bI commit(?:ment)? to\b/i,
-      /\bI promise to\b/i,
-      /\bI will (?:make sure to|ensure|always)\b/i,
-      /\bcommitment:\s/i,
-    ],
-  },
-  {
-    category: "standing_order",
-    confidence: 0.85,
-    target: "memory",
-    patterns: [
-      /\bstanding order:\s/i,
-      /\brecurring reminder:\s/i,
-      /\balways (?:remind me to|check|verify)\b/i,
-      /\bevery\s+\w+\s+(?:remind me to|I(?:'ll| will)\s+(?:check|verify|review))\b/i,
-    ],
-  },
-  {
-    category: "preference",
-    confidence: 0.8,
-    target: "user",
-    patterns: [
-      /\bI prefer\b/i,
-      /\bI like\b/i,
-      /\bI'd rather\b/i,
-      /\bI always\b/i,
-      /\bremember that I\b/i,
-      /\bmy preference\b/i,
-      /\bI tend to\b/i,
-    ],
-  },
-  {
-    category: "preference",
-    confidence: 0.75,
-    target: "user",
-    patterns: [
-      /\bno,?\s*actually\b/i,
-      /\bcorrection[:\s]/i,
-      /\bthat'?s wrong\b/i,
-      /\bI meant\b/i,
-    ],
-  },
-  {
-    category: "decision",
-    confidence: 0.85,
-    target: "memory",
-    patterns: [
-      /\blet'?s decide\b/i,
-      /\bdecision[:\s]/i,
-      /\bwe'?ll go with\b/i,
-      /\bI'?ve decided\b/i,
-      /\bwe should use\b/i,
-      /\bwe'?re going with\b/i,
-    ],
-  },
-  {
-    category: "project_fact",
-    confidence: 0.7,
-    target: "memory",
-    patterns: [
-      /\bthe project uses\b/i,
-      /\bthe codebase\b/i,
-      /\bbuilt with\b/i,
-      /\bthis repo\b/i,
-      /\bthe code uses\b/i,
-    ],
-  },
-  {
-    category: "gotcha",
-    confidence: 0.7,
-    target: "memory",
-    patterns: [
-      /\bwatch out for\b/i,
-      /\bgotcha[:\s]/i,
-      /\bbe careful\b/i,
-      /\btricky because\b/i,
-      /\bmakes? sure to\b/i,
-    ],
-  },
-  {
-    category: "convention",
-    confidence: 0.75,
-    target: "memory",
-    patterns: [
-      /\bwe always\b/i,
-      /\bthe convention\b/i,
-      /\bby convention\b/i,
-      /\bin this project,?\s*we\b/i,
-      /\bour standard\b/i,
-    ],
-  },
-];
-
-function mapRole(role: TranscriptLine["role"]): EntrySourceRole {
-  switch (role) {
-    case "user":
-      return "user";
-    case "assistant":
-      return "assistant";
-    case "toolResult":
-      return "tool";
-    default:
-      return "system";
-  }
-}
-
-export function defaultCandidateExtractor(
-  entries: TranscriptLine[],
-  ctx: { sessionId: string },
-): Candidate[] {
-  const candidates: Candidate[] = [];
-  for (const entry of entries) {
-    if (entry.role !== "user" && entry.role !== "assistant") continue;
-    const text = entry.text.trim();
-    if (text.length < 3) continue;
-    for (const rule of EXTRACTION_RULES) {
-      let matched = false;
-      for (const re of rule.patterns) {
-        if (re.test(text)) {
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) continue;
-      candidates.push({
-        target: rule.target,
-        category: rule.category,
-        confidence: rule.confidence,
-        summary: text,
-        source: {
-          sessionId: ctx.sessionId,
-          lineRange: [entry.index, entry.index],
-          sourceRole: mapRole(entry.role),
-        },
-      });
-      break;
-    }
-  }
-  return candidates;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,31 +163,31 @@ interface ExistingEntry {
 }
 
 function textNearDuplicate(
-  summary: string,
+  text: string,
   entries: ExistingEntry[],
 ): { id: string; existingText: string; preserveExisting: boolean } | null {
-  const normalizedSummary = normalizeText(summary);
-  if (normalizedSummary.length === 0) return null;
-  const summaryWords = new Set(normalizedSummary.split(" "));
+  const normalizedText = normalizeText(text);
+  if (normalizedText.length === 0) return null;
+  const textWords = new Set(normalizedText.split(" "));
 
   for (const entry of entries) {
     const body = stripEntryMetadata(entry.text);
     const normalizedBody = normalizeText(body);
     if (normalizedBody.length === 0) continue;
 
-    if (normalizedBody === normalizedSummary) {
+    if (normalizedBody === normalizedText) {
       return { id: entry.id, existingText: body, preserveExisting: false };
     }
-    if (normalizedBody.includes(normalizedSummary) || normalizedSummary.includes(normalizedBody)) {
-      const preserveExisting = normalizedBody.length > normalizedSummary.length;
+    if (normalizedBody.includes(normalizedText) || normalizedText.includes(normalizedBody)) {
+      const preserveExisting = normalizedBody.length > normalizedText.length;
       return { id: entry.id, existingText: body, preserveExisting };
     }
     const bodyWords = new Set(normalizedBody.split(" "));
     let intersection = 0;
-    for (const w of summaryWords) {
+    for (const w of textWords) {
       if (bodyWords.has(w)) intersection++;
     }
-    const union = summaryWords.size + bodyWords.size - intersection;
+    const union = textWords.size + bodyWords.size - intersection;
     if (union > 0 && intersection / union > 0.6) {
       return { id: entry.id, existingText: body, preserveExisting: false };
     }
@@ -347,8 +207,12 @@ function legacyReflectionCursorPath(home: string, sessionId: string): string {
 // Scope resolution
 // ---------------------------------------------------------------------------
 
-function resolveScope(target: "user" | "memory", activeScope: ActiveScope): MemoryScope | "user" {
-  return target === "user" ? "user" : activeMemoryScopeFor(activeScope);
+function resolveScope(target: "user" | "memory" | "agent", activeScope: ActiveScope): MemoryScope | "user" {
+  if (target === "user") return "user";
+  if (target === "agent" && activeScope.namedAgent !== null) {
+    return { agent: { name: activeScope.namedAgent.name } };
+  }
+  return activeMemoryScopeFor(activeScope);
 }
 
 function chatIdForScope(scope: MemoryScope | "user"): string | null {
@@ -408,18 +272,25 @@ export class DreamingPipeline {
   private home: string;
   private store: MemoryStore;
   private metrics: MetricsStore | null;
-  private extractor: CandidateExtractor;
+  private extractor: CandidateExtractor | null;
   private confidenceThreshold: number;
   private lookbackHours: number;
   private dedupCosineThreshold: number;
   private maxModelLines: number;
   private sessions = new Map<string, SessionState>();
+  /**
+   * Global queue that serializes all dreaming phases (light sleep per session,
+   * REM, and deep) so they never overlap. This satisfies the spec requirement
+   * that at most one dreaming phase runs at a time for the internal dreaming
+   * session.
+   */
+  private globalPhaseQueue: Promise<void> = Promise.resolve();
 
   constructor(opts: DreamingPipelineOptions) {
     this.home = opts.goblinHome;
     this.store = opts.store;
     this.metrics = opts.metrics ?? null;
-    this.extractor = opts.extractor ?? defaultCandidateExtractor;
+    this.extractor = opts.extractor ?? null;
     this.confidenceThreshold = opts.confidenceThreshold ?? CONFIDENCE_THRESHOLD;
     this.lookbackHours = opts.lookbackHours ?? LOOKBACK_HOURS;
     this.dedupCosineThreshold = opts.dedupCosineThreshold ?? DEDUP_COSINE_THRESHOLD;
@@ -429,6 +300,34 @@ export class DreamingPipeline {
   /** Replace the candidate extractor at runtime (e.g. to wire a model-driven extractor). */
   setExtractor(extractor: CandidateExtractor): void {
     this.extractor = extractor;
+  }
+
+  /**
+   * Queue a dreaming phase on the global phase queue. All phases (light sleep
+   * work, REM, and deep) serialize through this queue so they never overlap.
+   * Errors propagate to the caller but do not block subsequent phases.
+   */
+  private async runGlobalPhase(fn: () => Promise<void>): Promise<void> {
+    const run = async (): Promise<void> => {
+      await fn();
+    };
+    const next = this.globalPhaseQueue.then(run, run);
+    this.globalPhaseQueue = next.catch(() => {});
+    await next;
+  }
+
+  /**
+   * Advance the reflection cursor for a session to the current transcript end.
+   * Called by AgentRunner after a completed main-agent turn.
+   */
+  advanceCursor(sessionId: string): void {
+    const cursor = this.readCursor(sessionId);
+    const total = countTranscriptLines(this.home, sessionId);
+    if (cursor === null) {
+      this.writeCursor(sessionId, { processedLines: total, lastDreamedAt: new Date().toISOString() });
+    } else if (total > cursor.processedLines) {
+      this.advanceCursorBy(sessionId, cursor, total - cursor.processedLines);
+    }
   }
 
   /**
@@ -443,6 +342,10 @@ export class DreamingPipeline {
     }
     if (state.running !== null) {
       state.pending = true;
+      return;
+    }
+    if (this.extractor === null) {
+      log.debug("dreaming: no extractor configured, skipping light sleep", { sessionId });
       return;
     }
     state.pending = false;
@@ -481,6 +384,10 @@ export class DreamingPipeline {
    * by most-recent update and then scope name ascending (per decision 0025).
    */
   async runRemSleep(): Promise<void> {
+    await this.runGlobalPhase(async () => this.remSleepInner());
+  }
+
+  private async remSleepInner(): Promise<void> {
     const now = Date.now();
     const cutoff = this.lookbackHours > 0 ? now - this.lookbackHours * 60 * 60 * 1000 : 0;
 
@@ -562,7 +469,7 @@ export class DreamingPipeline {
         target: "memory",
         category: "theme",
         confidence: 0.8,
-        summary: `Recurring theme: ${tag} (seen across ${sessions.size} sessions)`,
+        text: `Recurring theme: ${tag} (seen across ${sessions.size} sessions)`,
         source: {
           sessionId: firstSessionId!,
           lineRange: [0, 0],
@@ -583,6 +490,10 @@ export class DreamingPipeline {
    * Deep sleep: promote all short-term entries to durable facts and compact.
    */
   async runDeepSleep(): Promise<void> {
+    await this.runGlobalPhase(async () => this.deepSleepInner());
+  }
+
+  private async deepSleepInner(): Promise<void> {
     const now = Date.now();
     const promoted = this.store.db.database
       .query<{ changes: number }, { $now: number }>(
@@ -602,7 +513,7 @@ export class DreamingPipeline {
 
   private async lightSleepInner(sessionId: string, activeScope: ActiveScope): Promise<void> {
     try {
-      await this.processSession(sessionId, activeScope);
+      await this.runGlobalPhase(() => this.processSession(sessionId, activeScope));
     } catch (err) {
       log.warn("dreaming light sleep failed", {
         sessionId,
@@ -611,46 +522,25 @@ export class DreamingPipeline {
     }
   }
 
-  private cursorKey(sessionId: string): string {
-    return `dreaming_cursor:${sessionId}`;
+  private dreamingCursorPath(sessionId: string): string {
+    return join(sessionDir(this.home, sessionId), "memory-dreaming-cursor.json");
   }
 
   private readCursor(sessionId: string): DreamingCursor | null {
-    const key = this.cursorKey(sessionId);
-    const raw = this.store.db.getMeta(key);
-    if (raw !== undefined) {
+    const sidecar = this.dreamingCursorPath(sessionId);
+    if (existsSync(sidecar)) {
       try {
+        const raw = readFileSync(sidecar, "utf-8");
         const parsed = JSON.parse(raw) as Partial<DreamingCursor>;
         if (typeof parsed.processedLines === "number" && typeof parsed.lastDreamedAt === "string") {
           return { processedLines: parsed.processedLines, lastDreamedAt: parsed.lastDreamedAt };
         }
       } catch {
-        // malformed cursor; fall through to migrate/delete
+        // malformed sidecar; fall through to migrate legacy sources
       }
     }
 
-    // Migrate a pre-SQLite sidecar cursor if present.
-    const sidecar = join(sessionDir(this.home, sessionId), "memory-dreaming-cursor.json");
-    if (existsSync(sidecar)) {
-      try {
-        const sidecarRaw = readFileSync(sidecar, "utf-8");
-        const parsed = JSON.parse(sidecarRaw) as Partial<DreamingCursor>;
-        if (typeof parsed.processedLines === "number" && typeof parsed.lastDreamedAt === "string") {
-          const migrated: DreamingCursor = { processedLines: parsed.processedLines, lastDreamedAt: parsed.lastDreamedAt };
-          this.writeCursor(sessionId, migrated);
-          try {
-            rmSync(sidecar);
-          } catch {
-            // best-effort removal of migrated sidecar
-          }
-          return migrated;
-        }
-      } catch {
-        // ignore malformed sidecar cursor
-      }
-    }
-
-    // Migrate legacy reflection cursor if present.
+    // Migrate a legacy reflection cursor if present.
     const legacy = legacyReflectionCursorPath(this.home, sessionId);
     if (existsSync(legacy)) {
       try {
@@ -673,14 +563,33 @@ export class DreamingPipeline {
         // ignore malformed legacy cursor
       }
     }
+
+    // Migrate any cursor left in the legacy memory_meta key by earlier builds.
+    const metaKey = `dreaming_cursor:${sessionId}`;
+    const metaRaw = this.store.db.getMeta(metaKey);
+    if (metaRaw !== undefined) {
+      try {
+        const parsed = JSON.parse(metaRaw) as Partial<DreamingCursor>;
+        if (typeof parsed.processedLines === "number" && typeof parsed.lastDreamedAt === "string") {
+          const migrated: DreamingCursor = { processedLines: parsed.processedLines, lastDreamedAt: parsed.lastDreamedAt };
+          this.writeCursor(sessionId, migrated);
+          this.store.db.database
+            .query("DELETE FROM memory_meta WHERE key = $key")
+            .run({ $key: metaKey });
+          return migrated;
+        }
+      } catch {
+        // malformed meta cursor; leave it to be overwritten later
+      }
+    }
     return null;
   }
 
   private writeCursor(sessionId: string, cursor: DreamingCursor): void {
-    this.store.db.setMeta(this.cursorKey(sessionId), JSON.stringify(cursor));
+    atomicWrite(this.dreamingCursorPath(sessionId), JSON.stringify(cursor));
   }
 
-  private advanceCursor(sessionId: string, cursor: DreamingCursor, processedDelta: number): void {
+  private advanceCursorBy(sessionId: string, cursor: DreamingCursor, processedDelta: number): void {
     const advanced: DreamingCursor = {
       processedLines: cursor.processedLines + processedDelta,
       lastDreamedAt: new Date().toISOString(),
@@ -692,15 +601,17 @@ export class DreamingPipeline {
     if (this.lookbackHours <= 0) return lines;
     const cutoff = Date.now() - this.lookbackHours * 60 * 60 * 1000;
     const filtered = lines.filter((line) => new Date(line.ts).getTime() >= cutoff);
-    if (filtered.length > this.maxModelLines) return filtered.slice(-this.maxModelLines);
+    if (filtered.length > this.maxModelLines) return filtered.slice(0, this.maxModelLines);
     return filtered;
   }
 
   private async processSession(sessionId: string, activeScope: ActiveScope): Promise<void> {
+    if (this.extractor === null) return;
+
     const cursor = this.readCursor(sessionId);
 
     if (cursor === null) {
-      const total = readTranscriptAfter(this.home, sessionId, 0).length;
+      const total = countTranscriptLines(this.home, sessionId);
       const seeded: DreamingCursor = {
         processedLines: total,
         lastDreamedAt: new Date().toISOString(),
@@ -715,7 +626,7 @@ export class DreamingPipeline {
 
     const newLines = this.filterLines(rawLines);
     if (newLines.length === 0) {
-      this.advanceCursor(sessionId, cursor, rawLines.length);
+      this.advanceCursorBy(sessionId, cursor, rawLines.length);
       return;
     }
 
@@ -729,11 +640,18 @@ export class DreamingPipeline {
       this.metrics?.incrementCounter("memory_dreaming_candidate_total", null, 1);
     }
 
-    this.advanceCursor(sessionId, cursor, rawLines.length);
+    // Advance the cursor past the lines we actually processed, including any
+    // leading lines that fell outside the lookback window. Unprocessed tail
+    // lines (when the filtered window exceeded maxModelLines) remain for the
+    // next pass.
+    const lastIndex = newLines[newLines.length - 1]?.index;
+    const processedDelta =
+      lastIndex === undefined ? rawLines.length : lastIndex - cursor.processedLines + 1;
+    this.advanceCursorBy(sessionId, cursor, processedDelta);
   }
 
   private async processCandidate(candidate: Candidate, activeScope: ActiveScope): Promise<void> {
-    if (isProceduralNoise(candidate.summary)) {
+    if (isProceduralNoise(candidate.text)) {
       this.metrics?.incrementCounter("memory_dreaming_quarantine_total", "procedural_noise", 1);
       return;
     }
@@ -746,7 +664,7 @@ export class DreamingPipeline {
       return;
     }
 
-    const safety = checkMemorySafety(candidate.summary);
+    const safety = checkMemorySafety(candidate.text);
     if (!safety.ok) {
       this.metrics?.incrementCounter("memory_dreaming_quarantine_total", "unsafe", 1);
       appendQuarantine({
@@ -755,7 +673,7 @@ export class DreamingPipeline {
         targetScope: targetScopeTag,
         category: candidate.category,
         reason: "unsafe",
-        content: candidate.summary,
+        content: candidate.text,
       });
       this.appendDreamDiary("quarantine:unsafe", candidate, targetScopeTag);
       return;
@@ -769,7 +687,7 @@ export class DreamingPipeline {
         targetScope: targetScopeTag,
         category: candidate.category,
         reason: "low_confidence",
-        content: candidate.summary,
+        content: candidate.text,
       });
       this.appendDreamDiary("quarantine:low_confidence", candidate, targetScopeTag);
       return;
@@ -787,9 +705,9 @@ export class DreamingPipeline {
     const tag = scopeTag(scope);
     const entries = this.store.readEntries(scope).map((e) => ({ id: e.entry_id, text: e.text }));
 
-    const match = await this.findNearDuplicate(candidate.summary, entries);
+    const match = await this.findNearDuplicate(candidate.text, entries);
     if (match !== null) {
-      const bodyText = match.preserveExisting ? match.existingText : candidate.summary;
+      const bodyText = match.preserveExisting ? match.existingText : candidate.text;
       const result = await this.store.updateEntry(match.id, {
         text: bodyText,
         category: candidate.category,
@@ -809,7 +727,7 @@ export class DreamingPipeline {
         targetScope: tag,
         category: candidate.category,
         reason: "review",
-        content: candidate.summary,
+        content: candidate.text,
       });
       log.warn("dreaming: update failed; quarantined for review", {
         scope: tag,
@@ -822,7 +740,7 @@ export class DreamingPipeline {
       await this.store.addEntry({
         scope: tag,
         entryKind: entryKindForScope(scope),
-        text: candidate.summary,
+        text: candidate.text,
         origin: "dreaming",
         category: candidate.category,
         confidence: candidate.confidence,
@@ -844,7 +762,7 @@ export class DreamingPipeline {
         targetScope: tag,
         category: candidate.category,
         reason: "review",
-        content: candidate.summary,
+        content: candidate.text,
       });
       log.warn("dreaming: add failed; quarantined for review", {
         scope: tag,
@@ -855,16 +773,16 @@ export class DreamingPipeline {
   }
 
   private async findNearDuplicate(
-    summary: string,
+    text: string,
     entries: ExistingEntry[],
   ): Promise<{ id: string; existingText: string; preserveExisting: boolean } | null> {
-    const textMatch = textNearDuplicate(summary, entries);
+    const textMatch = textNearDuplicate(text, entries);
     if (textMatch !== null) return textMatch;
 
     const provider = this.store.embeddingProvider;
     if (!provider || provider.status().degraded) return null;
 
-    const allTexts = [summary, ...entries.map((e) => stripEntryMetadata(e.text))];
+    const allTexts = [text, ...entries.map((e) => stripEntryMetadata(e.text))];
     const embeddings = await provider.embedBatch(allTexts);
     const candidateEmbedding = embeddings[0]?.embedding;
     if (!candidateEmbedding) return null;
@@ -884,7 +802,7 @@ export class DreamingPipeline {
     }
     if (bestScore >= this.dedupCosineThreshold && bestId !== null) {
       const existingText = stripEntryMetadata(bestText);
-      const preserveExisting = existingText.length > summary.length;
+      const preserveExisting = existingText.length > text.length;
       return { id: bestId, existingText, preserveExisting };
     }
     return null;
@@ -898,7 +816,7 @@ export class DreamingPipeline {
     const date = new Date().toISOString().slice(0, 10);
     const path = join(dir, `${date}.md`);
     const ts = new Date().toISOString();
-    const line = `- ${ts} [${outcome}] scope=${targetScope} category=${candidate.category} confidence=${candidate.confidence.toFixed(2)} source=${candidate.source.sessionId} lines=${candidate.source.lineRange.join(":")} summary=${JSON.stringify(candidate.summary)}\n`;
+    const line = `- ${ts} [${outcome}] scope=${targetScope} category=${candidate.category} confidence=${candidate.confidence.toFixed(2)} source=${candidate.source.sessionId} lines=${candidate.source.lineRange.join(":")} summary=${JSON.stringify(candidate.text)}\n`;
     this.writeDreamDiaryLine(path, line);
   }
 

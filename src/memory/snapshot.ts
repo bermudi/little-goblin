@@ -1,6 +1,6 @@
 import { MemoryStore } from "./store.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
-import { activeMemoryScopeFor } from "./scope.ts";
+import { activeMemoryScopeFor, scopeTag } from "./scope.ts";
 import type { ActiveScope } from "./scope.ts";
 import {
   searchMemoryEntries,
@@ -156,26 +156,53 @@ export async function formatFrozenSummary(
   const activeBodyRaw = stripBodyMetadata(active.body);
   const userBodyRaw = stripBodyMetadata(user.body);
 
-  // Cross-scope index: same-chat topic scopes only, excluding the active topic.
+  // Cross-scope index: peer topics, the general scope (when not active), and
+  // agent persona scopes (for the main goblin agent). Excludes the active
+  // topic/agent and sorts by most-recently-updated scope first.
+  const includeAgents = includeAgentsFor(args.caller);
   const index = await args.store.listIndex({
     chatId: args.activeScope.chatId,
-    includeAgents: false,
+    includeAgents,
     getTopicName: args.getTopicName,
   });
   const activeTopicId = args.activeScope.topicScope === "general" ? null : args.activeScope.topicScope.topicId;
-  const peerTopics = index.topics.filter((t) => t.topicId !== activeTopicId);
-  const topicScopes = peerTopics.map((t) => `topics/${t.chatId}/${t.topicId}`);
-  const lastUpdated = args.store.getScopesLastUpdated(topicScopes);
+  const activeAgentName = args.activeScope.namedAgent?.name;
 
-  const indexEntries = peerTopics
-    .map((t) => {
-      const scope = `topics/${t.chatId}/${t.topicId}`;
-      return {
-        scope,
-        description: t.description ?? t.name ?? null,
-        updatedAt: lastUpdated.get(scope) ?? null,
-      };
-    })
+  const indexEntries: { scope: string; description: string | null; updatedAt: number | null }[] = [];
+
+  for (const t of index.topics) {
+    if (t.topicId === activeTopicId) continue;
+    indexEntries.push({
+      scope: `topics/${t.chatId}/${t.topicId}`,
+      description: t.description ?? t.name ?? null,
+      updatedAt: null,
+    });
+  }
+
+  if (args.activeScope.topicScope !== "general") {
+    const general = args.store.read("general");
+    if (general.description !== undefined || general.body.length > 0) {
+      indexEntries.push({ scope: "general", description: general.description ?? null, updatedAt: null });
+    }
+  }
+
+  if (includeAgents) {
+    for (const a of index.agents) {
+      if (a.name === activeAgentName) continue;
+      indexEntries.push({
+        scope: `agents/${a.name}`,
+        description: a.description ?? null,
+        updatedAt: null,
+      });
+    }
+  }
+
+  const lastUpdated = args.store.getScopesLastUpdated(indexEntries.map((e) => e.scope));
+  for (const e of indexEntries) {
+    e.updatedAt = lastUpdated.get(e.scope) ?? null;
+  }
+
+  const sorted = indexEntries
     .sort((a, b) => {
       const aUpdated = a.updatedAt ?? 0;
       const bUpdated = b.updatedAt ?? 0;
@@ -183,9 +210,7 @@ export async function formatFrozenSummary(
       return a.scope.localeCompare(b.scope);
     })
     .slice(0, 10);
-  const indexLines = indexEntries.map(
-    (e) => `- ${e.scope} — ${e.description ?? "(no description)"}`,
-  );
+  const indexLines = sorted.map((e) => `- ${e.scope} — ${e.description ?? "(no description)"}`);
 
   const hasAnyContent =
     activeBodyRaw.length > 0 ||
@@ -380,8 +405,16 @@ async function buildRelevantMemoryLines(
       .map(truncateResultText)
       .filter((t) => t.length > 0),
   );
+
+  // The active memory scope is already represented in the frozen summary (or
+  // the current turn's context); the per-turn aside is for cross-scope memory.
+  const activeMemoryScopeTag = scopeTag(activeMemoryScopeFor(args.activeScope));
   const lines: string[] = [];
   for (const r of out.results) {
+    // Skip results from the active scope itself; its contents are already in
+    // the conversation context. Verbatim dedup against active/user bodies
+    // handles remaining duplicates from other scopes.
+    if (r.scope === activeMemoryScopeTag) continue;
     // Verbatim dedup against the frozen-summary bodies: skip any result whose
     // display text already appears as an entry in `## memory.md` or `## user.md`.
     if (dedupSet.has(r.text)) continue;

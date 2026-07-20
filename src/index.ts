@@ -5,7 +5,7 @@ import { MemoryEngine } from "./memory/mod.ts";
 import { validateModelAtStartup } from "./agent/poe-validate.ts";
 import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
 import { syncTelegramMenu } from "./commands/registry.ts";
-import { SchedulerLoop } from "./scheduler/loop.ts";
+import { SchedulerLoop, DEFAULT_TRANSCRIPT_SYNC_MAX_MS } from "./scheduler/loop.ts";
 import { runPreflight } from "./preflight.ts";
 
 async function main(): Promise<void> {
@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   await runPreflight(cfg);
   await validateModelAtStartup(cfg, log);
   const { bot, manager, subagentRunner, agentRunners, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg, { memoryEngine });
-  await memoryEngine.syncTranscripts();
+  await memoryEngine.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS });
   await externalAgentRunner?.init();
   manager.init();
 

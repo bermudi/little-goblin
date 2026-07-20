@@ -1,16 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
-import {
-  createMemoryReadIndexTool,
-  createMemoryReadTool,
-  createMemorySearchTool,
-  createMemoryWriteTool,
-} from "./tool.ts";
-import { memoryDir, scopeMemoryPath, userPath } from "./paths.ts";
+import { createMemorySearchTool, createMemoryWriteTool } from "./tool.ts";
+import { memoryDir } from "./paths.ts";
 import type { ActiveScope } from "./scope.ts";
+
+// Pin a small global budget so the overflow test remains deterministic.
+process.env.GOBLIN_MEMORY_BUDGET_CHARS = "2000";
 
 // Context param is typed by pi-coding-agent but unused in these tests.
 // We cast an empty object to satisfy the type system without coupling to pi internals.
@@ -32,15 +30,13 @@ function textOf(result: Awaited<ReturnType<ReturnType<typeof createMemoryWriteTo
   return content?.type === "text" ? content.text : "";
 }
 
-function jsonOf<T>(result: Awaited<ReturnType<ReturnType<typeof createMemoryReadTool>["execute"]>>): T {
-  return JSON.parse(textOf(result)) as T;
+function jsonOf<T>(result: Awaited<ReturnType<ReturnType<typeof createMemorySearchTool>["execute"]>>): T {
+  return JSON.parse(textOf(result as Awaited<ReturnType<ReturnType<typeof createMemoryWriteTool>["execute"]>>)) as T;
 }
 
 describe("memory tool", () => {
   let tmp: string;
   let store: MemoryStore;
-  let readTool: ReturnType<typeof createMemoryReadTool>;
-  let readIndexTool: ReturnType<typeof createMemoryReadIndexTool>;
   let writeTool: ReturnType<typeof createMemoryWriteTool>;
   let searchTool: ReturnType<typeof createMemorySearchTool>;
 
@@ -48,12 +44,6 @@ describe("memory tool", () => {
     tmp = mkdtempSync(join(tmpdir(), "goblin-memory-tool-"));
     mkdirSync(memoryDir(tmp), { recursive: true });
     store = new MemoryStore(tmp);
-    readTool = createMemoryReadTool({ store, activeScope: TOPIC_SCOPE });
-    readIndexTool = createMemoryReadIndexTool({
-      store,
-      activeScope: TOPIC_SCOPE,
-      caller: { kind: "main" },
-    });
     writeTool = createMemoryWriteTool({ store, activeScope: TOPIC_SCOPE });
     searchTool = createMemorySearchTool({ store, activeScope: TOPIC_SCOPE, caller: { kind: "main" } });
   });
@@ -62,12 +52,10 @@ describe("memory tool", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("exposes the split canonical names and metadata", () => {
-    expect(readTool.name).toBe("memory_read");
-    expect(readIndexTool.name).toBe("memory_read_index");
+  it("exposes the canonical names and schemas", () => {
+    expect(searchTool.name).toBe("memory_search");
     expect(writeTool.name).toBe("memory_write");
-    expect(readTool.parameters).toBeDefined();
-    expect(readIndexTool.parameters).toBeDefined();
+    expect(searchTool.parameters).toBeDefined();
     expect(writeTool.parameters).toBeDefined();
   });
 
@@ -120,73 +108,9 @@ describe("memory tool", () => {
     expect(store.readBody({ topic: { chatId: -100, topicId: 42 } })).toBe("");
   });
 
-  it("memory_read with target=agent honors scope discriminator to read other agent persona", async () => {
-    // Setup: create another agent's persona memory
-    await store.add({ agent: { name: "coder" } }, "coder persona content");
-
-    // Read via target=agent with scope specifying the other agent
-    const r = await readTool.execute(
-      "call-read-other-agent",
-      { target: "agent", scope: { agent: { name: "coder" } } },
-      undefined,
-      undefined,
-      NULL_CTX,
-    );
-    expect(jsonOf<{ body: string }>(r).body).toBe("coder persona content");
-  });
-
-  it("memory_read can read another topic in the same chat without writing", async () => {
-    await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer fact");
-    const before = readFileSync(scopeMemoryPath(tmp, { topic: { chatId: -100, topicId: 7 } }), "utf-8");
-    const r = await readTool.execute(
-      "call-read-topic",
-      { target: "memory", scope: { topic: { chatId: -100, topicId: 7 } } },
-      undefined,
-      undefined,
-      NULL_CTX,
-    );
-    expect(jsonOf<{ body: string }>(r).body).toBe("peer fact");
-    expect(readFileSync(scopeMemoryPath(tmp, { topic: { chatId: -100, topicId: 7 } }), "utf-8")).toBe(before);
-  });
-
-  it("memory_read_index returns only active-chat topics by default, all chats when all_chats: true", async () => {
-    await store.setDescription({ topic: { chatId: -100, topicId: 7 } }, "same chat");
-    await store.setDescription({ topic: { chatId: -200, topicId: 9 } }, "other chat");
-    await store.setDescription({ agent: { name: "researcher" } }, "research persona");
-
-    // Default call returns only active chat topics
-    const current = jsonOf<{ topics: Array<{ chatId: number; topicId: number; description?: string }>; agents: unknown[] }>(
-      await readIndexTool.execute("call-index", {}, undefined, undefined, NULL_CTX),
-    );
-    expect(current.topics).toEqual([{ chatId: -100, topicId: 7, description: "same chat" }]);
-    expect(current.agents).toEqual([{ name: "researcher", description: "research persona" }]);
-
-    // all_chats:true returns topics from all chats
-    const allChats = jsonOf<{ topics: Array<{ chatId: number; topicId: number; description?: string }> }>(
-      await readIndexTool.execute("call-index-all", { all_chats: true }, undefined, undefined, NULL_CTX),
-    );
-    expect(allChats.topics).toEqual([
-      { chatId: -200, topicId: 9, description: "other chat" },
-      { chatId: -100, topicId: 7, description: "same chat" },
-    ]);
-  });
-
-  it("memory_read_index omits agents for an anonymous subagent caller", async () => {
-    await store.setDescription({ agent: { name: "researcher" } }, "research persona");
-    const tool = createMemoryReadIndexTool({
-      store,
-      activeScope: { chatId: -100, topicScope: { topicId: 42 }, namedAgent: null },
-      caller: { kind: "anonymous-subagent" },
-    });
-    const index = jsonOf<{ agents: unknown[] }>(
-      await tool.execute("call-index-no-agents", {}, undefined, undefined, NULL_CTX),
-    );
-    expect(index.agents).toEqual([]);
-  });
-
   it("rejects replace with no old_text and does not write", async () => {
     await store.add("user", "x");
-    const before = readFileSync(userPath(tmp), "utf-8");
+    const before = store.readBody("user");
     await expect(
       writeTool.execute(
         "call-2",
@@ -196,7 +120,7 @@ describe("memory tool", () => {
         NULL_CTX,
       ),
     ).rejects.toThrow(/old_text/);
-    expect(readFileSync(userPath(tmp), "utf-8")).toBe(before);
+    expect(store.readBody("user")).toBe(before);
   });
 
   it("rejects add with no content", async () => {
@@ -269,8 +193,8 @@ describe("memory tool", () => {
   });
 
   it("propagates overflow errors as thrown errors; store unchanged", async () => {
-    writeFileSync(userPath(tmp), "a".repeat(1999), "utf-8");
-    const before = readFileSync(userPath(tmp), "utf-8");
+    await store.add("user", "a".repeat(1999));
+    const before = store.read("user");
     await expect(
       writeTool.execute(
         "call-5",
@@ -280,7 +204,7 @@ describe("memory tool", () => {
         NULL_CTX,
       ),
     ).rejects.toThrow(/cap|overflow/i);
-    expect(readFileSync(userPath(tmp), "utf-8")).toBe(before);
+    expect(store.read("user")).toEqual(before);
   });
 
   it("propagates ambiguous-replace errors; store unchanged", async () => {
@@ -303,19 +227,6 @@ describe("memory tool", () => {
       ),
     ).rejects.toThrow(/unique/);
     expect(store.read(active)).toEqual(before);
-  });
-
-  it("rejects cross-chat memory_read scope access", async () => {
-    await store.add({ topic: { chatId: -999, topicId: 7 } }, "other chat fact");
-    await expect(
-      readTool.execute(
-        "call-cross-chat",
-        { target: "memory", scope: { topic: { chatId: -999, topicId: 7 } } },
-        undefined,
-        undefined,
-        NULL_CTX,
-      ),
-    ).rejects.toThrow(/active chat/);
   });
 
   it("remove action success path deletes entry from memory", async () => {
@@ -385,8 +296,8 @@ describe("memory tool", () => {
     });
 
     it("rejects rewrite with a token and leaves user.md unchanged", async () => {
-      writeFileSync(userPath(tmp), "original user content", "utf-8");
-      const before = readFileSync(userPath(tmp), "utf-8");
+      await store.rewrite("user", "original user content");
+      const before = store.read("user");
       await expect(
         writeTool.execute(
           "call-unsafe-rewrite",
@@ -396,7 +307,7 @@ describe("memory tool", () => {
           NULL_CTX,
         ),
       ).rejects.toThrow(/safety filter/);
-      expect(readFileSync(userPath(tmp), "utf-8")).toBe(before);
+      expect(store.read("user")).toEqual(before);
     });
 
     it("rejects set_description with a token and does not update frontmatter", async () => {
@@ -436,12 +347,24 @@ describe("memory tool", () => {
   describe("memory_search tool", () => {
     type SearchOut = {
       query: string;
-      searchedScopes: number;
-      results: Array<{ scope: string; target: string; text: string; score: number; metadata: unknown }>;
+      searched_scopes: number;
+      degraded: boolean;
+      results: Array<{
+        entry_id: string;
+        scope: string;
+        entry_kind: "memory" | "user" | "transcript";
+        source: "memory" | "transcript";
+        text: string;
+        score: number;
+        tags: string[];
+        session_id?: string;
+        timestamp?: number;
+        metadata: unknown;
+      }>;
     };
 
     function searchJson(r: Awaited<ReturnType<ReturnType<typeof createMemorySearchTool>["execute"]>>): SearchOut {
-      return JSON.parse(textOf(r)) as SearchOut;
+      return jsonOf(r);
     }
 
     it("exposes the canonical name and schema", () => {
@@ -459,8 +382,11 @@ describe("memory tool", () => {
       expect(out.results.length).toBe(2);
       const scopes = out.results.map((x) => x.scope).sort();
       expect(scopes).toEqual(["topics/-100/42", "topics/-100/7"]);
-      // Each result carries the entry body, not the whole file.
       expect(out.results[0]!.text).toContain("homelab backups note");
+      expect(typeof out.results[0]!.entry_id).toBe("string");
+      expect(out.results[0]!.source).toBe("memory");
+      expect(Array.isArray(out.results[0]!.tags)).toBe(true);
+      expect(out.degraded).toBe(false);
     });
 
     it("includes other-chat topic scopes when all_chats is true", async () => {
@@ -478,7 +404,7 @@ describe("memory tool", () => {
       expect(out.results.map((x) => x.scope).sort()).toEqual(["topics/-100/42", "topics/-200/9"]);
     });
 
-    it("rejects an empty/whitespace-only query without scanning", async () => {
+    it("rejects an empty/whitespace-only query in search mode", async () => {
       await store.add({ topic: { chatId: -100, topicId: 42 } }, "active note");
       await expect(
         searchTool.execute("call-empty", { query: "   " }, undefined, undefined, NULL_CTX),
@@ -510,7 +436,6 @@ describe("memory tool", () => {
         undefined,
         NULL_CTX,
       );
-      // No data, but the call must not throw on a huge limit.
       expect(searchJson(r).results).toEqual([]);
     });
 
@@ -565,6 +490,91 @@ describe("memory tool", () => {
         NULL_CTX,
       );
       expect(searchJson(r).results.map((x) => x.scope)).not.toContain("agents/researcher");
+    });
+
+    it("lists scope entries when query is omitted and scope is provided", async () => {
+      await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer fact");
+      await store.setDescription({ topic: { chatId: -100, topicId: 7 } }, "peer topic");
+
+      const r = await searchTool.execute(
+        "call-list-scope",
+        { scope: { topic: { chatId: -100, topicId: 7 } } },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      const out = jsonOf<{ entries: Array<{ scope: string; text: string; entry_kind: string; description: string | null }> }>(r);
+      expect(out.entries.length).toBe(1);
+      expect(out.entries[0]!.text).toBe("peer fact");
+      expect(out.entries[0]!.description).toBe("peer topic");
+    });
+
+    it("returns the scope index when query and scope are omitted", async () => {
+      await store.setDescription({ topic: { chatId: -100, topicId: 7 } }, "same chat");
+      await store.setDescription({ agent: { name: "researcher" } }, "research persona");
+      await store.add({ topic: { chatId: -100, topicId: 7 } }, "fact");
+
+      const r = await searchTool.execute("call-index", {}, undefined, undefined, NULL_CTX);
+      const out = jsonOf<{
+        topics: Array<{ scope: string; description: string | null; entry_count: number; total_chars: number }>;
+        agents: Array<{ scope: string; description: string | null; entry_count: number; total_chars: number }>;
+      }>(r);
+      expect(out.topics).toEqual([{ scope: "topics/-100/7", description: "same chat", entry_count: 1, total_chars: expect.any(Number) }]);
+      expect(out.agents).toEqual([{ scope: "agents/researcher", description: "research persona", entry_count: 0, total_chars: 0 }]);
+    });
+
+    it("honors corpus restriction to transcripts", async () => {
+      await store.addEntries([
+        {
+          scope: "transcript/session-1",
+          entryKind: "transcript",
+          text: "backup verification call",
+          origin: "user",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          chatId: String(-100),
+        },
+      ]);
+
+      const r = await searchTool.execute(
+        "call-corpus-transcripts",
+        { query: "backup", corpus: "transcripts" },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      const out = searchJson(r);
+      expect(out.results.length).toBe(1);
+      expect(out.results[0]!.entry_kind).toBe("transcript");
+      expect(out.results[0]!.source).toBe("transcript");
+      expect(out.results[0]!.session_id).toBe("session-1");
+    });
+
+    it("defaults corpus to all and includes transcripts", async () => {
+      await store.add({ topic: { chatId: -100, topicId: 42 } }, "active backup note");
+      await store.addEntries([
+        {
+          scope: "transcript/session-1",
+          entryKind: "transcript",
+          text: "backup verification call",
+          origin: "user",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          chatId: String(-100),
+        },
+      ]);
+
+      const r = await searchTool.execute(
+        "call-corpus-default",
+        { query: "backup" },
+        undefined,
+        undefined,
+        NULL_CTX,
+      );
+      const out = searchJson(r);
+      const sources = out.results.map((x) => x.source).sort();
+      expect(sources).toContain("memory");
+      expect(sources).toContain("transcript");
     });
   });
 });

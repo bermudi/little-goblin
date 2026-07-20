@@ -22,7 +22,12 @@ export type EntryCategory =
   | "gotcha"
   | "convention"
   | "commitment"
-  | "standing_order";
+  | "standing_order"
+  // dreaming-specific categories
+  | "fact"
+  | "short_term"
+  | "theme"
+  | "skip";
 
 export type EntrySourceRole = "user" | "assistant" | "tool" | "system";
 
@@ -93,11 +98,20 @@ export function stripEntryMetadata(entry: string): string {
   return parsed === null ? entry : parsed.body;
 }
 
+/**
+ * Strip metadata blocks from every entry in a multi-entry body joined by
+ * `\n§\n`. Returns a body string suitable for display in prompts.
+ */
+export function stripBodyMetadata(body: string): string {
+  if (body.length === 0) return body;
+  return body.split("\n§\n").map(stripEntryMetadata).join("\n§\n");
+}
+
 // ---------------------------------------------------------------------------
 // Field parsing
 // ---------------------------------------------------------------------------
 
-const CATEGORIES: readonly EntryCategory[] = [
+export const ENTRY_CATEGORIES: readonly EntryCategory[] = [
   "profile",
   "preference",
   "project_fact",
@@ -106,6 +120,11 @@ const CATEGORIES: readonly EntryCategory[] = [
   "convention",
   "commitment",
   "standing_order",
+  // dreaming-specific categories
+  "fact",
+  "short_term",
+  "theme",
+  "skip",
 ] as const;
 
 const ROLES: readonly EntrySourceRole[] = [
@@ -161,7 +180,7 @@ function parseMetadataFields(header: string): EntryMetadata | null {
 
 function readCategory(value: string | undefined): EntryCategory | null {
   if (value === undefined) return null;
-  return (CATEGORIES as readonly string[]).includes(value) ? (value as EntryCategory) : null;
+  return (ENTRY_CATEGORIES as readonly string[]).includes(value) ? (value as EntryCategory) : null;
 }
 
 function readRole(value: string | undefined): EntrySourceRole | null {

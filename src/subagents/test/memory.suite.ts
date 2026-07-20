@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
   MemoryStore,
-  createMemoryReadIndexTool,
-  createMemoryReadTool,
   createMemoryWriteTool,
   type ActiveScope,
-  type MemoryIndex,
+  type MemoryScope,
 } from "../../memory/mod.ts";
 import { memoryDir } from "../../memory/paths.ts";
 import { SubagentRunner } from "../mod.ts";
@@ -30,6 +28,17 @@ const TOPIC_SCOPE: ActiveScope = {
   topicScope: { topicId: 42 },
   namedAgent: null,
 };
+
+type SeedScope = "user" | "memory" | MemoryScope;
+
+async function seedMemory(
+  home: string,
+  records: Array<{ scope: SeedScope; content: string }>,
+): Promise<void> {
+  const store = new MemoryStore(home);
+  for (const r of records) await store.add(r.scope, r.content);
+  store.close();
+}
 
 describe("SubagentRunner — scoped memory", () => {
   let tmp: string;
@@ -66,9 +75,9 @@ describe("SubagentRunner — scoped memory", () => {
       content: "topic fact",
     });
 
-    expect(
-      readFileSync(join(memoryDir(tmp), "topics", "-100123", "42", "memory.md"), "utf-8"),
-    ).toBe("topic fact");
+    const check = new MemoryStore(tmp);
+    expect(check.readBody({ topic: { chatId: -100123, topicId: 42 } })).toBe("topic fact");
+    check.close();
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -77,6 +86,11 @@ describe("SubagentRunner — scoped memory", () => {
   it("named subagent keeps persona writes separate from active-scope writes", async () => {
     mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
+
+    await seedMemory(tmp, [
+      { scope: { topic: { chatId: -100123, topicId: 42 } }, content: "topic base" },
+      { scope: { agent: { name: "researcher" } }, content: "persona base" },
+    ]);
 
     const handle = await runner.spawn({
       prompt: "work",
@@ -104,12 +118,14 @@ describe("SubagentRunner — scoped memory", () => {
       content: "topic fact",
     });
 
-    expect(
-      readFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "utf-8"),
-    ).toBe("persona fact");
-    expect(
-      readFileSync(join(memoryDir(tmp), "topics", "-100123", "42", "memory.md"), "utf-8"),
-    ).toBe("topic fact");
+    const check = new MemoryStore(tmp);
+    expect(check.readBody({ topic: { chatId: -100123, topicId: 42 } })).toBe(
+      "topic base\n§\ntopic fact",
+    );
+    expect(check.readBody({ agent: { name: "researcher" } })).toBe(
+      "persona base\n§\npersona fact",
+    );
+    check.close();
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -151,27 +167,10 @@ describe("SubagentRunner — scoped memory", () => {
 
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
     const tools = opts.customTools as Array<{ name: string; parameters: unknown }>;
-    const readTool = tools.find((tool) => tool.name === "memory_read");
-    const readIndexTool = tools.find((tool) => tool.name === "memory_read_index");
+    const searchTool = tools.find((tool) => tool.name === "memory_search");
     const writeTool = tools.find((tool) => tool.name === "memory_write");
 
-    expect(JSON.stringify(readTool?.parameters)).toBe(
-      JSON.stringify(
-        createMemoryReadTool({
-          store: new MemoryStore(tmp),
-          activeScope: TOPIC_SCOPE,
-        }).parameters,
-      ),
-    );
-    expect(JSON.stringify(readIndexTool?.parameters)).toBe(
-      JSON.stringify(
-        createMemoryReadIndexTool({
-          store: new MemoryStore(tmp),
-          activeScope: TOPIC_SCOPE,
-          caller: { kind: "anonymous-subagent" },
-        }).parameters,
-      ),
-    );
+    expect(searchTool).toBeDefined();
     expect(JSON.stringify(writeTool?.parameters)).toBe(
       JSON.stringify(
         createMemoryWriteTool({
@@ -185,12 +184,15 @@ describe("SubagentRunner — scoped memory", () => {
     await handle.result;
   });
 
-  it("named subagents cannot discover peer persona scopes via memory_read_index", async () => {
+  it("named subagents cannot discover peer persona scopes via memory_search index", async () => {
     // Set up: create another named agent's persona
-    mkdirSync(join(memoryDir(tmp), "agents", "writer"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "agents", "writer", "memory.md"), "writer persona");
     mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
+
+    await seedMemory(tmp, [
+      { scope: { agent: { name: "writer" } }, content: "writer persona" },
+      { scope: { agent: { name: "researcher" } }, content: "researcher persona" },
+    ]);
 
     const handle = await runner.spawn({
       prompt: "work",
@@ -204,11 +206,11 @@ describe("SubagentRunner — scoped memory", () => {
       name: string;
       execute: (toolCallId: string, params: unknown) => Promise<unknown>;
     }>;
-    const readIndex = tools.find((tool) => tool.name === "memory_read_index");
+    const searchTool = tools.find((tool) => tool.name === "memory_search");
 
-    expect(readIndex).toBeDefined();
-    const index = await readIndex!.execute("ri-named", {});
-    const parsed = jsonOf<MemoryIndex>(index);
+    expect(searchTool).toBeDefined();
+    const index = await searchTool!.execute("ms-named", {});
+    const parsed = jsonOf<{ general: unknown[]; topics: unknown[]; agents: unknown[] }>(index);
 
     // Named subagent's index does NOT include other agents
     // This is intentional isolation - subagents don't see peer personas.
@@ -218,42 +220,57 @@ describe("SubagentRunner — scoped memory", () => {
     await handle.result;
   });
 
-  it("sends named-subagent snapshots with the persona section only for named agents", async () => {
-    mkdirSync(join(memoryDir(tmp), "topics", "-100123", "42"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "topics", "-100123", "42", "memory.md"), "topic memory");
-    writeFileSync(join(memoryDir(tmp), "user.md"), "user memory");
-    mkdirSync(join(memoryDir(tmp), "agents", "researcher"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "persona memory");
+  it("injects a frozen memory summary into the subagent system prompt and sends a bounded relevant-memory aside", async () => {
     mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
 
+    await seedMemory(tmp, [
+      { scope: "general", content: "general memory" },
+      { scope: "user", content: "user memory" },
+      { scope: { topic: { chatId: -100123, topicId: 42 } }, content: "topic memory" },
+      { scope: { agent: { name: "researcher" } }, content: "persona memory" },
+    ]);
+
     const namedHandle = await runner.spawn({
-      prompt: "work",
+      prompt: "persona",
       name: "researcher",
       activeScope: TOPIC_SCOPE,
     });
     await flush();
 
+    // Named subagent: system prompt is the agent's AGENTS.md plus the frozen
+    // memory summary; the per-turn aside is a bounded relevant-memory snapshot.
+    const namedOpts = getCapturedCreateArgs()[0] as { resourceLoader?: { options?: { systemPrompt?: string } } };
+    const namedSystem = namedOpts.resourceLoader?.options?.systemPrompt ?? "";
+    expect(namedSystem).toContain("# Researcher");
+    expect(namedSystem).toContain("[goblin memory summary (frozen at session start)]");
+    expect(namedSystem).toContain("## user.md\nuser memory");
+    expect(namedSystem).toContain("## memory.md\ntopic memory");
+
     expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
     const [namedPayload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
-    const namedContent = (namedPayload as { content: string }).content;
-    expect(namedContent).toContain("## user.md\nuser memory");
-    expect(namedContent).toContain("## memory.md\ntopic memory");
-    expect(namedContent).toContain("## agent persona\npersona memory");
+    const namedAside = (namedPayload as { content: string }).content;
+    expect(namedAside).toContain("## relevant memory");
+    expect(namedAside).toContain("persona memory");
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await namedHandle.result;
 
     resetPiMockState();
     const anonHandle = await runner.spawn({
-      prompt: "work",
+      prompt: "persona",
       activeScope: TOPIC_SCOPE,
     });
     await flush();
 
-    expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
-    const [anonPayload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
-    expect((anonPayload as { content: string }).content).not.toContain("## agent persona");
+    // Anonymous subagent: no agent AGENTS.md section and no persona memory in
+    // the relevant-memory aside (it is not allowed to search agent scopes).
+    const anonOpts = getCapturedCreateArgs()[0] as { resourceLoader?: { options?: { systemPrompt?: string } } };
+    const anonSystem = anonOpts.resourceLoader?.options?.systemPrompt ?? "";
+    expect(anonSystem).not.toContain("# Researcher");
+    expect(anonSystem).toContain("[goblin memory summary (frozen at session start)]");
+
+    expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(0);
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await anonHandle.result;
@@ -275,11 +292,12 @@ describe("SubagentRunner — scoped memory", () => {
   }
 
   it("subagent agent_end does not schedule memory reflection", async () => {
-    // Pre-seed a topic memory file so a reflector (if one were wired) would
+    // Pre-seed topic and user memory so a reflector (if one were wired) would
     // have a target to write to. The point is that no reflector runs.
-    mkdirSync(join(memoryDir(tmp), "topics", "-100123", "42"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "topics", "-100123", "42", "memory.md"), "topic memory");
-    writeFileSync(join(memoryDir(tmp), "user.md"), "user memory");
+    await seedMemory(tmp, [
+      { scope: { topic: { chatId: -100123, topicId: 42 } }, content: "topic memory" },
+      { scope: "user", content: "user memory" },
+    ]);
 
     const handle = await runner.spawn({
       prompt: "remember, I prefer concise summaries with test output",
@@ -300,17 +318,19 @@ describe("SubagentRunner — scoped memory", () => {
     // No quarantine file should have been created by automatic reflection.
     expect(existsSync(join(memoryDir(tmp), "quarantine.jsonl"))).toBe(false);
     // Trusted memory files are untouched — no automatic writes happened.
-    expect(
-      readFileSync(join(memoryDir(tmp), "topics", "-100123", "42", "memory.md"), "utf-8"),
-    ).toBe("topic memory");
-    expect(readFileSync(join(memoryDir(tmp), "user.md"), "utf-8")).toBe("user memory");
+    const check = new MemoryStore(tmp);
+    expect(check.readBody({ topic: { chatId: -100123, topicId: 42 } })).toBe("topic memory");
+    expect(check.readBody("user")).toBe("user memory");
+    check.close();
   });
 
   it("named subagent persona memory changes only via explicit memory_write", async () => {
-    mkdirSync(join(memoryDir(tmp), "agents", "researcher"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "persona memory");
     mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
+
+    await seedMemory(tmp, [
+      { scope: { agent: { name: "researcher" } }, content: "persona memory" },
+    ]);
 
     const handle = await runner.spawn({
       prompt: "remember, I prefer concise summaries with test output",
@@ -326,9 +346,9 @@ describe("SubagentRunner — scoped memory", () => {
     await flush();
 
     // Persona memory must be unchanged — automatic reflection never ran.
-    expect(
-      readFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "utf-8"),
-    ).toBe("persona memory");
+    const check = new MemoryStore(tmp);
+    expect(check.readBody({ agent: { name: "researcher" } })).toBe("persona memory");
+    check.close();
     // No reflection cursor anywhere under $GOBLIN_HOME.
     expect(findFilesNamed(tmp, "memory-reflection.json")).toEqual([]);
   });
@@ -372,17 +392,16 @@ describe("SubagentRunner — scoped memory", () => {
     // Own persona — searchable.
     mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher\n");
-    mkdirSync(join(memoryDir(tmp), "agents", "researcher"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "researcher deployment notes");
-    // Peer persona — MUST NOT be searched by the named subagent.
-    mkdirSync(join(memoryDir(tmp), "agents", "writer"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "agents", "writer", "memory.md"), "writer deployment notes");
-    // Same-chat topic scope — searchable.
-    mkdirSync(join(memoryDir(tmp), "topics", "-100123", "7"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "topics", "-100123", "7", "memory.md"), "topic deployment notes");
-    // Different-chat topic scope — MUST NOT be searched without all_chats.
-    mkdirSync(join(memoryDir(tmp), "topics", "-999", "1"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "topics", "-999", "1", "memory.md"), "other chat deployment notes");
+
+    await seedMemory(tmp, [
+      { scope: { agent: { name: "researcher" } }, content: "researcher deployment notes" },
+      // Peer persona — MUST NOT be searched by the named subagent.
+      { scope: { agent: { name: "writer" } }, content: "writer deployment notes" },
+      // Same-chat topic scope — searchable.
+      { scope: { topic: { chatId: -100123, topicId: 7 } }, content: "topic deployment notes" },
+      // Different-chat topic scope — MUST NOT be searched without all_chats.
+      { scope: { topic: { chatId: -999, topicId: 1 } }, content: "other chat deployment notes" },
+    ]);
 
     const handle = await runner.spawn({
       prompt: "work",
@@ -413,13 +432,12 @@ describe("SubagentRunner — scoped memory", () => {
 
   it("anonymous subagent searches no named-agent persona scopes", async () => {
     // Persona scopes exist but MUST NOT be searched by an anonymous subagent.
-    mkdirSync(join(memoryDir(tmp), "agents", "researcher"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "agents", "researcher", "memory.md"), "researcher deployment notes");
-    mkdirSync(join(memoryDir(tmp), "agents", "writer"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "agents", "writer", "memory.md"), "writer deployment notes");
-    // Same-chat topic is still in scope.
-    mkdirSync(join(memoryDir(tmp), "topics", "-100123", "7"), { recursive: true });
-    writeFileSync(join(memoryDir(tmp), "topics", "-100123", "7", "memory.md"), "topic deployment notes");
+    await seedMemory(tmp, [
+      { scope: { agent: { name: "researcher" } }, content: "researcher deployment notes" },
+      { scope: { agent: { name: "writer" } }, content: "writer deployment notes" },
+      // Same-chat topic is still in scope.
+      { scope: { topic: { chatId: -100123, topicId: 7 } }, content: "topic deployment notes" },
+    ]);
 
     const handle = await runner.spawn({ prompt: "work", activeScope: TOPIC_SCOPE });
     await flush();

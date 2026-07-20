@@ -1,26 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
 import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
-import { archiveTopicPath, memoryDir, scopeMemoryPath, userPath } from "./paths.ts";
 
 const DELIMITER = "\n§\n";
 
-function gitOut(cwd: string, args: string[]): string {
-  const r = spawnSync("git", args, { cwd, encoding: "utf-8" });
-  if (r.status !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
-  }
-  return (r.stdout ?? "").trim();
-}
-
-function commitCount(cwd: string): number {
-  const out = gitOut(cwd, ["rev-list", "--count", "HEAD"]);
-  return Number.parseInt(out, 10);
-}
+// Pin the global budget for these tests so overflow behavior is deterministic.
+process.env.GOBLIN_MEMORY_BUDGET_CHARS = "5000";
 
 describe("MemoryStore", () => {
   let tmp: string;
@@ -28,11 +16,11 @@ describe("MemoryStore", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "goblin-memory-"));
-    mkdirSync(memoryDir(tmp), { recursive: true });
     store = new MemoryStore(tmp);
   });
 
   afterEach(() => {
+    (store as unknown as { db: { close: () => void } }).db.close();
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -47,14 +35,10 @@ describe("MemoryStore", () => {
       expect(store.readBody("general")).toBe("hello");
     });
 
-    it("parses one-line description frontmatter separately from body", () => {
+    it("parses one-line description frontmatter separately from body", async () => {
       const scope = { topic: { chatId: -100, topicId: 42 } };
-      mkdirSync(join(memoryDir(tmp), "topics", "-100", "42"), { recursive: true });
-      writeFileSync(
-        scopeMemoryPath(tmp, scope),
-        "---\ndescription: health notes\n---\n\nalpha",
-        "utf-8",
-      );
+      expect((await store.setDescription(scope, "health notes")).ok).toBe(true);
+      expect((await store.add(scope, "alpha")).ok).toBe(true);
       expect(store.read(scope)).toEqual({ description: "health notes", body: "alpha" });
     });
   });
@@ -62,49 +46,49 @@ describe("MemoryStore", () => {
   describe("add", () => {
     it("first add to empty file produces no delimiter", async () => {
       expect((await store.add("general", "hello world")).ok).toBe(true);
-      const contents = readFileSync(scopeMemoryPath(tmp, "general"), "utf-8");
-      expect(contents).toBe("hello world");
-      expect(contents.includes(DELIMITER)).toBe(false);
+      const body = store.readBody("general");
+      expect(body).toBe("hello world");
+      expect(body.includes(DELIMITER)).toBe(false);
     });
 
     it("second add produces exactly one delimiter", async () => {
       expect((await store.add("general", "first")).ok).toBe(true);
       expect((await store.add("general", "second")).ok).toBe(true);
-      expect(readFileSync(scopeMemoryPath(tmp, "general"), "utf-8")).toBe(
-        `first${DELIMITER}second`,
-      );
+      expect(store.readBody("general")).toBe(`first${DELIMITER}second`);
     });
 
     it("creates scope directories lazily", async () => {
       const scope = { topic: { chatId: -100, topicId: 42 } };
       expect((await store.add(scope, "x")).ok).toBe(true);
-      expect(readFileSync(scopeMemoryPath(tmp, scope), "utf-8")).toBe("x");
+      expect(store.readBody(scope)).toBe("x");
     });
 
-    it("succeeds when result is exactly at the cap", async () => {
-      expect((await store.add("user", "a".repeat(2000))).ok).toBe(true);
-      expect(store.readBody("user").length).toBe(2000);
+    it("succeeds when total curated memory is within the global budget", async () => {
+      expect((await store.add("user", "a".repeat(5000))).ok).toBe(true);
+      expect(store.readBody("user").length).toBe(5000);
     });
 
-    it("rejects when add would exceed cap; file unchanged", async () => {
-      const initial = "a".repeat(1999);
-      mkdirSync(memoryDir(tmp), { recursive: true });
-      writeFileSync(userPath(tmp), initial, "utf-8");
+    it("rejects when add would exceed the global budget; file unchanged", async () => {
+      const initial = "a".repeat(4999);
+      expect((await store.add("user", initial)).ok).toBe(true);
+      const before = store.read("user");
       const r = await store.add("user", "bb");
       expect(r.ok).toBe(false);
       if (!r.ok) {
-        expect(r.error).toContain("2004");
-        expect(r.error).toContain("2000");
-        expect(r.error).toContain("4");
+        expect(r.error).toContain("5001");
+        expect(r.error).toContain("5000");
+        expect(r.error).toContain("1");
       }
-      expect(readFileSync(userPath(tmp), "utf-8")).toBe(initial);
+      expect(store.read("user")).toEqual(before);
     });
 
-    it("keeps caps independent per scope", async () => {
+    it("enforces the global budget across scopes", async () => {
       const topic42 = { topic: { chatId: -100, topicId: 42 } };
       const topic7 = { topic: { chatId: -100, topicId: 7 } };
       expect((await store.add(topic42, "m".repeat(4000))).ok).toBe(true);
-      expect((await store.add(topic42, "x")).ok).toBe(false);
+      expect((await store.add(topic42, "x")).ok).toBe(true);
+      // total is now 4001; adding 2000 chars to another scope would exceed 5000
+      expect((await store.add(topic7, "y".repeat(2000))).ok).toBe(false);
       expect((await store.add(topic7, "fresh")).ok).toBe(true);
       expect(store.readBody(topic7)).toBe("fresh");
     });
@@ -166,6 +150,7 @@ describe("MemoryStore", () => {
         await s2.add("user", "only");
         expect((await s2.remove("user", "only")).ok).toBe(true);
         expect(s2.readBody("user")).toBe("");
+        (s2 as unknown as { db: { close: () => void } }).db.close();
       } finally {
         rmSync(tmp2, { recursive: true, force: true });
       }
@@ -196,11 +181,9 @@ describe("MemoryStore", () => {
       const scope = { topic: { chatId: -100, topicId: 42 } };
       await store.add(scope, "alpha");
       expect((await store.setDescription(scope, "health notes")).ok).toBe(true);
-      expect(readFileSync(scopeMemoryPath(tmp, scope), "utf-8")).toBe(
-        "---\ndescription: health notes\n---\n\nalpha",
-      );
+      expect(store.read(scope)).toEqual({ description: "health notes", body: "alpha" });
       expect((await store.setDescription(scope, "")).ok).toBe(true);
-      expect(readFileSync(scopeMemoryPath(tmp, scope), "utf-8")).toBe("alpha");
+      expect(store.read(scope)).toEqual({ body: "alpha" });
     });
 
     it("round-trips description through add, replace, remove, and rewrite", async () => {
@@ -227,124 +210,28 @@ describe("MemoryStore", () => {
     });
   });
 
-  describe("atomic write", () => {
-    it("does not leave a non-tmp file behind on successful write", async () => {
-      await store.add("memory", "x");
-      const entries = readdirSync(join(memoryDir(tmp), "general"));
-      expect(entries.filter((n) => n.endsWith(".tmp"))).toEqual([]);
-    });
-
-    it("uses a hidden tmp filename pattern in target dir", async () => {
-      writeFileSync(userPath(tmp), "a".repeat(1999), "utf-8");
-      const before = readFileSync(userPath(tmp), "utf-8");
-      expect((await store.add("user", "bb")).ok).toBe(false);
-      expect(readFileSync(userPath(tmp), "utf-8")).toBe(before);
-      expect(readdirSync(memoryDir(tmp)).filter((n) => n.endsWith(".tmp"))).toEqual([]);
-    });
-  });
-
-  describe("git versioning", () => {
-    it("first successful write initializes .git", async () => {
-      const dir = memoryDir(tmp);
-      expect(existsSync(join(dir, ".git"))).toBe(false);
-      expect((await store.add("general", "first")).ok).toBe(true);
-      expect(existsSync(join(dir, ".git"))).toBe(true);
-      expect(commitCount(dir)).toBe(1);
-    });
-
-    it("each successful write produces exactly one commit", async () => {
-      const dir = memoryDir(tmp);
-      await store.add("general", "alpha");
-      expect(commitCount(dir)).toBe(1);
-      await store.add("user", "u-pref");
-      expect(commitCount(dir)).toBe(2);
-      await store.replace("general", "alpha", "ALPHA");
-      expect(commitCount(dir)).toBe(3);
-      await store.remove("general", "ALPHA");
-      expect(commitCount(dir)).toBe(4);
-    });
-
-    it("commit subjects include scope tags", async () => {
-      const dir = memoryDir(tmp);
-      await store.add("user", "x");
-      expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe("memory: add in user");
-      await store.add({ topic: { chatId: -100, topicId: 42 } }, "m1");
-      expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
-        "memory: add in topics/-100/42",
-      );
-      await store.setDescription("general", "general notes");
-      expect(gitOut(dir, ["log", "-1", "--format=%s"])).toBe(
-        "memory: set_description in general",
-      );
-    });
-
-    it("swallows commit failures: file persists, no throw, no commit", async () => {
-      const dir = memoryDir(tmp);
-      writeFileSync(join(dir, ".git"), "not a real repo", "utf-8");
-      expect((await store.add("general", "should-persist")).ok).toBe(true);
-      expect(store.readBody("general")).toBe("should-persist");
-      const rev = spawnSync("git", ["rev-list", "--count", "HEAD"], {
-        cwd: dir,
-        encoding: "utf-8",
-      });
-      expect(rev.status).not.toBe(0);
-    });
-
-    it("failed writes do not produce commits", async () => {
-      const dir = memoryDir(tmp);
-      await store.add("general", "seed");
-      const before = commitCount(dir);
-      writeFileSync(userPath(tmp), "a".repeat(1999), "utf-8");
-      expect((await store.add("user", "bb")).ok).toBe(false);
-      await store.add("general", "seed");
-      expect((await store.replace("general", "seed", "X")).ok).toBe(false);
-      expect(commitCount(dir)).toBe(before + 1);
-    });
-  });
-
   describe("archiveOrphan", () => {
-    it("moves a topic directory to archive and commits", async () => {
+    it("archives a topic scope and excludes it from the index", async () => {
       const scope = { topic: { chatId: -100, topicId: 42 } };
       await store.add(scope, "alpha");
       expect(await store.archiveOrphan(-100, 42)).toBe(true);
-      expect(existsSync(scopeMemoryPath(tmp, scope))).toBe(false);
-      expect(existsSync(join(archiveTopicPath(tmp, -100, 42), "memory.md"))).toBe(true);
-      expect(gitOut(memoryDir(tmp), ["log", "-1", "--format=%s"])).toBe(
-        "memory: archive orphan topics/-100/42",
-      );
-      const treePaths = gitOut(memoryDir(tmp), ["ls-tree", "-r", "--name-only", "HEAD"]).split("\n");
-      expect(treePaths).toContain("archive/topics/-100/42/memory.md");
-      expect(treePaths).not.toContain("topics/-100/42/memory.md");
-      expect(gitOut(memoryDir(tmp), ["status", "--short"])).toBe("");
+      expect(store.read(scope)).toEqual({ body: "" });
+      const index = await store.listIndex({ chatId: -100, includeAgents: false });
+      expect(index.topics).toEqual([]);
     });
 
     it("returns false when the source is missing", async () => {
       expect(await store.archiveOrphan(-100, 42)).toBe(false);
     });
 
-    it("returns false when a temp file exists in the source directory", async () => {
-      const scope = { topic: { chatId: -100, topicId: 42 } };
-      await store.add(scope, "alpha");
-      const sourceDir = dirname(scopeMemoryPath(tmp, scope));
-      writeFileSync(join(sourceDir, ".memory.md.abcdef.tmp"), "in-flight");
-      expect(await store.archiveOrphan(-100, 42)).toBe(false);
-      expect(existsSync(scopeMemoryPath(tmp, scope))).toBe(true);
-      expect(existsSync(archiveTopicPath(tmp, -100, 42))).toBe(false);
-    });
-
     it("overwrites an existing archive destination", async () => {
       const scope = { topic: { chatId: -100, topicId: 42 } };
       await store.add(scope, "alpha");
       expect(await store.archiveOrphan(-100, 42)).toBe(true);
-      // Move it back and change content
-      const source = dirname(scopeMemoryPath(tmp, scope));
-      const dest = archiveTopicPath(tmp, -100, 42);
-      mkdirSync(source, { recursive: true });
-      writeFileSync(join(source, "memory.md"), "beta");
-      // Archive again — should overwrite the previous archive
-      expect(await store.archiveOrphan(-100, 42)).toBe(true);
-      expect(existsSync(source)).toBe(false);
-      expect(readFileSync(join(dest, "memory.md"), "utf-8")).toBe("beta");
+      // The SQLite store does not allow public repopulation of an archived
+      // topic scope, so the source is empty and a second archive is a no-op.
+      expect(await store.archiveOrphan(-100, 42)).toBe(false);
+      expect(store.read(scope)).toEqual({ body: "" });
     });
   });
 
@@ -472,8 +359,7 @@ describe("MemoryStore", () => {
 
       // 2. Archive the topic (simulating /archive command)
       expect(await store.archiveOrphan(-100, 999)).toBe(true);
-      expect(existsSync(scopeMemoryPath(tmp, scope))).toBe(false);
-      expect(existsSync(archiveTopicPath(tmp, -100, 999))).toBe(true);
+      expect(store.read(scope)).toEqual({ body: "" });
 
       // 3. Try to write to the archived topic (simulating revived subagent writing)
       // This should fail because the topic was archived
@@ -483,13 +369,10 @@ describe("MemoryStore", () => {
         expect(result.error).toContain("archived");
       }
 
-      // 4. Verify the archive was not corrupted
-      expect(readFileSync(join(archiveTopicPath(tmp, -100, 999), "memory.md"), "utf-8")).toBe(
-        "original content",
-      );
-
-      // 5. Verify the topic directory was NOT recreated
-      expect(existsSync(dirname(scopeMemoryPath(tmp, scope)))).toBe(false);
+      // 4. Verify the topic scope is still empty and not in the index
+      expect(store.read(scope)).toEqual({ body: "" });
+      const index = await store.listIndex({ chatId: -100, includeAgents: false });
+      expect(index.topics).toEqual([]);
     });
 
     it("rejects all mutation operations on archived topic scopes", async () => {
@@ -541,6 +424,9 @@ describe("MemoryStore", () => {
       for (const entry of entries) {
         expect(parts).toContain(entry);
       }
+      for (const s of stores) {
+        (s as unknown as { db: { close: () => void } }).db.close();
+      }
     });
 
     it("serializes concurrent writes to user scope", async () => {
@@ -557,6 +443,9 @@ describe("MemoryStore", () => {
       expect(parts.length).toBe(entries.length);
       for (const entry of entries) {
         expect(parts).toContain(entry);
+      }
+      for (const s of stores) {
+        (s as unknown as { db: { close: () => void } }).db.close();
       }
     });
 
@@ -575,6 +464,9 @@ describe("MemoryStore", () => {
       expect(parts.length).toBe(entries.length);
       for (const entry of entries) {
         expect(parts).toContain(entry);
+      }
+      for (const s of stores) {
+        (s as unknown as { db: { close: () => void } }).db.close();
       }
     });
 
@@ -596,6 +488,9 @@ describe("MemoryStore", () => {
       for (let i = 0; i < scopes.length; i++) {
         expect(store.readBody(scopes[i] as typeof scopes[number])).toBe(`entry-${i}`);
       }
+      for (const s of stores) {
+        (s as unknown as { db: { close: () => void } }).db.close();
+      }
     });
   });
 
@@ -603,13 +498,14 @@ describe("MemoryStore", () => {
     it("records write success and overflow counters", async () => {
       const metrics = new MetricsStore(tmp, "abcdef1234");
       const ms = new MemoryStore(tmp, metrics);
-      const overflow = await ms.add("general", "x".repeat(4001));
+      const overflow = await ms.add("general", "x".repeat(5001));
       expect(overflow.ok).toBe(false);
       const success = await ms.add("general", "hello");
       expect(success.ok).toBe(true);
       const summary = readMetricsSummary(tmp, "abcdef1234")!;
       expect(summary.memoryWriteTotal).toBe(1);
       expect(summary.memoryWriteOverflowTotal).toBe(1);
+      (ms as unknown as { db: { close: () => void } }).db.close();
     });
 
     it("records safety reject counter", () => {
@@ -619,6 +515,7 @@ describe("MemoryStore", () => {
       ms.recordSafetyReject("general");
       const summary = readMetricsSummary(tmp, "abcdef1234")!;
       expect(summary.memoryWriteSafetyRejectTotal).toBe(2);
+      (ms as unknown as { db: { close: () => void } }).db.close();
     });
   });
 });

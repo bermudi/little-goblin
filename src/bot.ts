@@ -4,7 +4,7 @@ import type { Config } from "./config.ts";
 import { log } from "./log.ts";
 import { buildAllowlistMiddleware, locatorFromCtx, TextCoalescer } from "./tg/mod.ts";
 import { prepareUserContent } from "./tg/user-context.ts";
-import { MemoryStore } from "./memory/mod.ts";
+import { MemoryEngine } from "./memory/mod.ts";
 import { MetricsStore, type TelegramMetricsEvent } from "./metrics/mod.ts";
 import { classifyTelegramError, type ReplyOpts } from "./tg/format.ts";
 import { registerCommands } from "./commands/mod.ts";
@@ -146,15 +146,18 @@ export function replyNoActiveSession(ctx: Context, locator: ChatLocator, kind: s
  */
 interface BuildBotOptions {
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
+  /** Optional pre-built memory engine; a default one is constructed when absent. */
+  memoryEngine?: MemoryEngine;
 }
 
-export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner>; scheduleStore: ScheduleStore; dispatcher: TurnDispatcher; externalAgentRunner: ExternalAgentRunner | undefined; mcpRunner: McpRunner | undefined } {
+export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner>; scheduleStore: ScheduleStore; dispatcher: TurnDispatcher; externalAgentRunner: ExternalAgentRunner | undefined; mcpRunner: McpRunner | undefined; memoryEngine: MemoryEngine } {
   configureVoice(cfg);
   const bot = new Bot(cfg.botToken);
   const manager = new SessionManager(cfg);
   const runners = new Map<string, AgentRunner>();
-  const subagentRunner = new SubagentRunner(cfg, subagentToolFactory);
-  const memoryStore = new MemoryStore(cfg.goblinHome);
+  const memoryEngine = options.memoryEngine ?? new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
+  const memoryStore = memoryEngine.readStore;
+  const subagentRunner = new SubagentRunner(cfg, subagentToolFactory, memoryEngine.embeddingProvider);
   // One shared schedule store: `/schedule` mutates it from the command path,
   // and the scheduler loop reads/claims from it. Constructed here so both
   // intake and the loop (wired in index.ts) share a single instance.
@@ -173,6 +176,8 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     scheduleStore,
     externalAgentRunner,
     mcpRunner,
+    embeddingProvider: memoryEngine.embeddingProvider,
+    dreamingPipeline: memoryEngine.dreaming,
   });
 
   // Text coalescer: merges Telegram-split fragments before they reach intake.
@@ -317,5 +322,5 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     });
   });
 
-  return { bot, manager, subagentRunner, agentRunners: runners, scheduleStore, dispatcher: intake.dispatcher, externalAgentRunner, mcpRunner };
+  return { bot, manager, subagentRunner, agentRunners: runners, scheduleStore, dispatcher: intake.dispatcher, externalAgentRunner, mcpRunner, memoryEngine };
 }

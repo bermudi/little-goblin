@@ -390,7 +390,26 @@ export class SessionManager {
   }
 
   /**
-   * List all sessions by scanning the sessions directory.
+   * Ensure an internal non-chat session exists. Internal sessions are used for
+   * background work (e.g. the dreaming subagent) and are never bound to a chat.
+   * They have `chatId: 0` and are skipped by `list()`.
+   */
+  ensureInternal(id: string): SessionState {
+    const state: SessionState = {
+      id,
+      createdAt: new Date().toISOString(),
+      chatId: 0,
+      title: undefined,
+    };
+    ensureSessionFiles(this.home, id);
+    saveState(this.home, state);
+    log.debug("ensured internal session", { id });
+    return state;
+  }
+
+  /**
+   * List all sessions by scanning the sessions directory. Internal sessions
+   * (`chatId === 0`) and archived sessions are skipped.
    */
   list(): SessionState[] {
     const dir = sessionsDir(this.home);
@@ -400,7 +419,7 @@ export class SessionManager {
       for (const id of entries) {
         if (id === "archive") continue; // archived sessions live in their own subtree
         const s = loadState(this.home, id);
-        if (s) states.push(s);
+        if (s && s.chatId !== 0) states.push(s);
       }
       return states.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     } catch (e) {

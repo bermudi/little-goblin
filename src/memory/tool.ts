@@ -5,7 +5,8 @@ import type { MetricsStore } from "../metrics/mod.ts";
 import { activeMemoryScopeFor, type ActiveScope, type MemoryScope } from "./scope.ts";
 import { VALID_NAME_RE } from "../subagents/named-agents.ts";
 import { checkDescriptionSafety, checkMemorySafety } from "./safety.ts";
-import { searchMemoryEntries } from "./search.ts";
+import { searchMemoryEntries, type MemorySearchOutput } from "./search.ts";
+import { stripEntryMetadata } from "./entry.ts";
 import { includeAgentsFor, personaPolicyForCaller, type MemoryCaller } from "./context.ts";
 
 const targetSchema = Type.Union([
@@ -14,26 +15,25 @@ const targetSchema = Type.Union([
   Type.Literal("agent"),
 ]);
 
-const memoryReadSchema = Type.Object({
-  target: targetSchema,
-  scope: Type.Optional(
-    Type.Union([
-      Type.Literal("active"),
-      Type.Literal("general"),
-      Type.Object({ topic: Type.Object({ chatId: Type.Number(), topicId: Type.Number() }) }),
-      Type.Object({ agent: Type.Object({ name: Type.String() }) }),
-    ]),
-  ),
-});
+const scopeSchema = Type.Union([
+  Type.Literal("active"),
+  Type.Literal("general"),
+  Type.Literal("user"),
+  Type.Object({ topic: Type.Object({ chatId: Type.Number(), topicId: Type.Number() }) }),
+  Type.Object({ agent: Type.Object({ name: Type.String() }) }),
+]);
 
-const memoryReadIndexSchema = Type.Object({
-  all_chats: Type.Optional(Type.Boolean()),
-});
+const corpusSchema = Type.Union(
+  [Type.Literal("memory"), Type.Literal("transcripts"), Type.Literal("all")],
+  { default: "all" },
+);
 
 const memorySearchSchema = Type.Object({
-  query: Type.String(),
+  query: Type.Optional(Type.String()),
   limit: Type.Optional(Type.Number()),
+  scope: Type.Optional(scopeSchema),
   all_chats: Type.Optional(Type.Boolean()),
+  corpus: Type.Optional(corpusSchema),
 });
 
 const memoryWriteSchema = Type.Object({
@@ -50,14 +50,20 @@ const memoryWriteSchema = Type.Object({
   description: Type.Optional(Type.String()),
 });
 
-type MemoryReadInput = Static<typeof memoryReadSchema>;
-type MemoryReadIndexInput = Static<typeof memoryReadIndexSchema>;
 type MemorySearchInput = Static<typeof memorySearchSchema>;
 type MemoryWriteInput = Static<typeof memoryWriteSchema>;
 
-const READ_DESCRIPTION = "Read scoped goblin memory without modifying files.";
-const READ_INDEX_DESCRIPTION = "List available scoped goblin memories and their descriptions.";
-const SEARCH_DESCRIPTION = "Search curated goblin memory entries lexically and return ranked matches across the current chat's scopes.";
+const SEARCH_DESCRIPTION = `Hybrid search over goblin memory entries and indexed transcript chunks.
+
+- With ":{query}" returns ranked results.
+- With ":{scope}" (and no query) returns all entries in that scope.
+- With no query and no scope returns the scope index.
+
+Corpus:
+- ":{corpus:"all"}" — curated memory + transcripts (default).
+- ":{corpus:"memory"}" — only curated memory.
+- ":{corpus:"transcripts"}" — only transcript snippets.`;
+
 const WRITE_DESCRIPTION = `Curate persistent goblin memory.
 
 Targets:
@@ -74,9 +80,7 @@ Actions:
 
 If a write would overflow the cap, the call fails and you must consolidate before retrying.`;
 
-const READ_PROMPT_SNIPPET = "memory_read: read scoped memory.md, user.md, or named agent memory.";
-const READ_INDEX_PROMPT_SNIPPET = "memory_read_index: discover other memory scopes by description.";
-const SEARCH_PROMPT_SNIPPET = "memory_search: ranked lexical recall across the current chat's memory scopes.";
+const SEARCH_PROMPT_SNIPPET = "memory_search: hybrid recall across memory and transcripts; subsumes the old memory_read and memory_read_index tools.";
 const WRITE_PROMPT_SNIPPET = "memory_write: persist or revise curated facts in the active memory scope.";
 
 const WRITE_PROMPT_GUIDELINES = [
@@ -101,11 +105,31 @@ function jsonResult(value: unknown): {
   return textResult(JSON.stringify(value));
 }
 
-/**
- * Throw a safety error through the existing tool error path when a safety
- * check fails. The error message names the matched reason so the agent can
- * react without seeing the sensitive value.
- */
+function formatSearchOutput(output: MemorySearchOutput): unknown {
+  return {
+    query: output.query,
+    searched_scopes: output.searchedScopes,
+    degraded: output.degraded,
+    warning: output.warning,
+    results: output.results.map((r) => ({
+      entry_id: r.entryId,
+      scope: r.scope,
+      entry_kind: r.entryKind,
+      target: r.target,
+      text: r.text,
+      score: r.score,
+      vectorScore: r.vectorScore,
+      textScore: r.textScore,
+      conceptBoost: r.conceptBoost,
+      tags: r.tags,
+      source: r.source,
+      session_id: r.sessionId,
+      timestamp: r.timestamp,
+      metadata: r.metadata,
+    })),
+  };
+}
+
 function assertSafe(
   check: () => { ok: boolean; reason?: string; message?: string },
   onReject?: () => void,
@@ -132,58 +156,18 @@ function summarize(action: MemoryWriteAction, target: MemoryTarget): string {
   }
 }
 
-export function createMemoryReadTool(args: {
-  store: MemoryStore;
-  activeScope: ActiveScope;
-}): ToolDefinition {
-  return defineTool({
-    name: "memory_read",
-    label: "Memory Read",
-    description: READ_DESCRIPTION,
-    promptSnippet: READ_PROMPT_SNIPPET,
-    promptGuidelines: [],
-    parameters: memoryReadSchema,
-    async execute(_toolCallId, params: MemoryReadInput) {
-      return jsonResult(args.store.read(resolveReadScope(args.activeScope, params)));
-    },
-  });
-}
-
-export function createMemoryReadIndexTool(args: {
-  store: MemoryStore;
-  activeScope: ActiveScope;
-  caller: MemoryCaller;
-  getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
-}): ToolDefinition {
-  return defineTool({
-    name: "memory_read_index",
-    label: "Memory Read Index",
-    description: READ_INDEX_DESCRIPTION,
-    promptSnippet: READ_INDEX_PROMPT_SNIPPET,
-    promptGuidelines: [],
-    parameters: memoryReadIndexSchema,
-    async execute(_toolCallId, params: MemoryReadIndexInput) {
-      return jsonResult(
-        await args.store.listIndex({
-          chatId: params.all_chats ? undefined : args.activeScope.chatId,
-          includeAgents: includeAgentsFor(args.caller),
-          getTopicName: args.getTopicName,
-        }),
-      );
-    },
-  });
-}
-
 export function createMemorySearchTool(args: {
   store: MemoryStore;
   activeScope: ActiveScope;
   /**
    * Who is calling. The persona-eligibility policy is derived from the caller
    * kind: main searches all personas, a named subagent searches only its own,
-   * an anonymous subagent searches none. Replaces the former `includeAgents` +
-   * `persona` knobs.
+   * an anonymous subagent searches none. Replaces the former `memory_read_index`
+   * `agents` gating.
    */
   caller: MemoryCaller;
+  /** Optional topic-name resolver for the scope index. */
+  getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
   /** Optional metrics store to record memory_search events. */
   metrics?: MetricsStore;
 }): ToolDefinition {
@@ -195,21 +179,44 @@ export function createMemorySearchTool(args: {
     promptGuidelines: [],
     parameters: memorySearchSchema,
     async execute(_toolCallId, params: MemorySearchInput) {
-      const query = params.query.trim();
-      if (query.length === 0) {
+      if (params.query !== undefined && params.query.trim().length === 0) {
         throw new Error("memory_search requires a non-empty `query`");
       }
+      const query = params.query?.trim();
+      const scope = params.scope !== undefined ? resolveSearchScope(args.activeScope, params.scope) : undefined;
+
+      // No query: list entries for a scope, or the full scope index.
+      if (query === undefined) {
+        if (scope !== undefined) {
+          const entries = args.store.readEntries(scope).map((e) => ({ ...e, text: stripEntryMetadata(e.text) }));
+          return jsonResult({ entries });
+        }
+        const index = await args.store.listScopeIndex({
+          chatId: params.all_chats ? undefined : args.activeScope.chatId,
+          includeAgents: includeAgentsFor(args.caller),
+          getTopicName: args.getTopicName,
+        });
+        return jsonResult({
+          general: index.general,
+          topics: index.topics,
+          agents: index.agents,
+        });
+      }
+
+      // Search mode.
       const persona = personaPolicyForCaller(args.caller);
       const output = await searchMemoryEntries({
         store: args.store,
         activeScope: args.activeScope,
         persona,
-        query: params.query,
+        query,
         limit: params.limit,
         allChats: params.all_chats,
+        corpus: params.corpus ?? "all",
+        scope,
         metrics: args.metrics,
       });
-      return jsonResult(output);
+      return jsonResult(formatSearchOutput(output));
     },
   });
 }
@@ -285,38 +292,16 @@ export function createMemoryWriteTool(args: {
   });
 }
 
-function resolveReadScope(activeScope: ActiveScope, input: MemoryReadInput): MemoryScope | "user" {
-  if (input.target === "user") return "user";
-  if (input.target === "agent") {
-    // Honor scope discriminator: if input.scope specifies an agent, use that.
-    // Otherwise fall back to the active subagent's own persona.
-    if (input.scope !== undefined && typeof input.scope === "object" && "agent" in input.scope) {
-      if (!VALID_NAME_RE.test(input.scope.agent.name)) {
-        throw new Error(`Invalid agent name: must match ${VALID_NAME_RE.source}`);
-      }
-      return { agent: { name: input.scope.agent.name } };
-    }
-    if (activeScope.namedAgent === null) {
-      throw new Error('target = "agent" is only valid for named subagents');
-    }
-    if (!VALID_NAME_RE.test(activeScope.namedAgent.name)) {
+function resolveSearchScope(activeScope: ActiveScope, input: Static<typeof scopeSchema>): MemoryScope | "user" {
+  if (input === "active") return activeMemoryScopeFor(activeScope);
+  if (input === "user" || input === "general") return input;
+  if ("agent" in input) {
+    if (!VALID_NAME_RE.test(input.agent.name)) {
       throw new Error(`Invalid agent name: must match ${VALID_NAME_RE.source}`);
     }
-    return { agent: { name: activeScope.namedAgent.name } };
+    return { agent: { name: input.agent.name } };
   }
-  const scope = input.scope ?? "active";
-  if (scope === "active") return activeMemoryScopeFor(activeScope);
-  if (scope === "general") return "general";
-  if ("agent" in scope) {
-    if (!VALID_NAME_RE.test(scope.agent.name)) {
-      throw new Error(`Invalid agent name: must match ${VALID_NAME_RE.source}`);
-    }
-    return { agent: { name: scope.agent.name } };
-  }
-  if (scope.topic.chatId !== activeScope.chatId) {
-    throw new Error("memory_read topic scope must be in the active chat");
-  }
-  return { topic: { chatId: scope.topic.chatId, topicId: scope.topic.topicId } };
+  return { topic: { chatId: input.topic.chatId, topicId: input.topic.topicId } };
 }
 
 function resolveWriteScope(activeScope: ActiveScope, target: MemoryTarget): MemoryScope | "user" {

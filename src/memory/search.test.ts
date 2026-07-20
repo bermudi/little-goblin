@@ -1,18 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
 import { MetricsStore, readMetricsSummary } from "../metrics/mod.ts";
 import {
   clampLimit,
-  scoreEntry,
   searchMemoryEntries,
-  tokenize,
   type PersonaPolicy,
 } from "./search.ts";
 import { formatReflectedEntry, type EntryMetadata } from "./entry.ts";
-import { scopeMemoryPath, userPath, memoryDir } from "./paths.ts";
+import { memoryDir } from "./paths.ts";
 import type { ActiveScope } from "./scope.ts";
 
 const ACTIVE_TOPIC: ActiveScope = {
@@ -27,10 +25,9 @@ const NONE_PERSONA: PersonaPolicy = { kind: "none" };
 
 type BodyScope = "user" | "general" | { topic: { chatId: number; topicId: number } } | { agent: { name: string } };
 
-function setBody(home: string, scope: BodyScope, body: string): void {
-  const path = scope === "user" ? userPath(home) : scopeMemoryPath(home, scope);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, body, "utf-8");
+async function setBody(store: MemoryStore, scope: BodyScope, body: string): Promise<void> {
+  const r = await store.rewrite(scope, body);
+  if (!r.ok) throw new Error(r.error);
 }
 
 describe("memory search", () => {
@@ -45,20 +42,6 @@ describe("memory search", () => {
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
-  });
-
-  describe("tokenize", () => {
-    it("lowercases ASCII and splits on whitespace and punctuation", () => {
-      expect(tokenize("Homelab, BACKUPS!")).toEqual(["homelab", "backups"]);
-    });
-
-    it("keeps Unicode letters and digits as token characters", () => {
-      expect(tokenize("café naïve 漢字 123abc")).toEqual(["café", "naïve", "漢字", "123abc"]);
-    });
-
-    it("returns an empty array for whitespace-only input", () => {
-      expect(tokenize("   \n\t ")).toEqual([]);
-    });
   });
 
   describe("clampLimit", () => {
@@ -89,7 +72,7 @@ describe("memory search", () => {
 
   describe("searchMemoryEntries — basic matching", () => {
     it("returns ranked entry results from the active scope", async () => {
-      setBody(tmp, { topic: { chatId: -100, topicId: 42 } }, "Homelab backups run nightly\n§\nIrrelevant note about cooking");
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, "Homelab backups run nightly\n§\nIrrelevant note about cooking");
 
       const out = await searchMemoryEntries({
         store,
@@ -108,7 +91,7 @@ describe("memory search", () => {
     });
 
     it("records a memory_search metric event when metrics is provided", async () => {
-      setBody(tmp, { topic: { chatId: -100, topicId: 42 } }, "Homelab backups run nightly");
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, "Homelab backups run nightly");
       const metrics = new MetricsStore(tmp, "abcdef1234");
 
       const out = await searchMemoryEntries({
@@ -125,7 +108,7 @@ describe("memory search", () => {
     });
 
     it("returns empty results and records a memory_search event with resultCount 0", async () => {
-      setBody(tmp, { topic: { chatId: -100, topicId: 42 } }, "note about cooking");
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, "note about cooking");
       const metrics = new MetricsStore(tmp, "abcdef1234");
 
       const out = await searchMemoryEntries({
@@ -145,8 +128,8 @@ describe("memory search", () => {
     });
 
     it("returns ranked entries rather than whole file bodies", async () => {
-      setBody(
-        tmp,
+      await setBody(
+        store,
         { topic: { chatId: -100, topicId: 42 } },
         "backups run nightly\n§\nbackups to verify\n§\ncooking note",
       );
@@ -173,7 +156,7 @@ describe("memory search", () => {
         source_role: "user",
       };
       const entry = formatReflectedEntry(meta, "Decided: nightly homelab backups.");
-      setBody(tmp, { topic: { chatId: -100, topicId: 42 } }, entry);
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, entry);
 
       const out = await searchMemoryEntries({
         store,
@@ -192,8 +175,8 @@ describe("memory search", () => {
     });
 
     it("applies the result limit after ranking", async () => {
-      setBody(
-        tmp,
+      await setBody(
+        store,
         { topic: { chatId: -100, topicId: 42 } },
         "backups one\n§\nbackups two\n§\nbackups three\n§\nbackups four",
       );
@@ -212,9 +195,9 @@ describe("memory search", () => {
 
   describe("searchMemoryEntries — scope boundaries", () => {
     it("includes same-chat topic scopes and excludes other-chat topic scopes by default", async () => {
-      setBody(tmp, { topic: { chatId: -100, topicId: 42 } }, "active topic backups note");
-      setBody(tmp, { topic: { chatId: -100, topicId: 7 } }, "peer topic backups note");
-      setBody(tmp, { topic: { chatId: -200, topicId: 9 } }, "other chat backups note");
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, "active topic backups note");
+      await setBody(store, { topic: { chatId: -100, topicId: 7 } }, "peer topic backups note");
+      await setBody(store, { topic: { chatId: -200, topicId: 9 } }, "other chat backups note");
 
       const out = await searchMemoryEntries({
         store,
@@ -229,8 +212,8 @@ describe("memory search", () => {
     });
 
     it("includes other-chat topic scopes when allChats is true", async () => {
-      setBody(tmp, { topic: { chatId: -100, topicId: 42 } }, "active topic backups note");
-      setBody(tmp, { topic: { chatId: -200, topicId: 9 } }, "other chat backups note");
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, "active topic backups note");
+      await setBody(store, { topic: { chatId: -200, topicId: 9 } }, "other chat backups note");
 
       const out = await searchMemoryEntries({
         store,
@@ -245,8 +228,8 @@ describe("memory search", () => {
     });
 
     it("always includes user.md and general memory", async () => {
-      setBody(tmp, "user", "user prefers backups weekly");
-      setBody(tmp, "general", "general backups policy");
+      await setBody(store, "user", "user prefers backups weekly");
+      await setBody(store, "general", "general backups policy");
 
       const out = await searchMemoryEntries({
         store,
@@ -261,8 +244,8 @@ describe("memory search", () => {
     });
 
     it("main agent searches all persona scopes", async () => {
-      setBody(tmp, { agent: { name: "researcher" } }, "researcher backups persona note");
-      setBody(tmp, { agent: { name: "writer" } }, "writer backups persona note");
+      await setBody(store, { agent: { name: "researcher" } }, "researcher backups persona note");
+      await setBody(store, { agent: { name: "writer" } }, "writer backups persona note");
 
       const out = await searchMemoryEntries({
         store,
@@ -276,8 +259,8 @@ describe("memory search", () => {
     });
 
     it("named subagent searches only its own persona scope", async () => {
-      setBody(tmp, { agent: { name: "researcher" } }, "researcher backups persona note");
-      setBody(tmp, { agent: { name: "writer" } }, "writer backups persona note");
+      await setBody(store, { agent: { name: "researcher" } }, "researcher backups persona note");
+      await setBody(store, { agent: { name: "writer" } }, "writer backups persona note");
 
       const out = await searchMemoryEntries({
         store,
@@ -291,7 +274,7 @@ describe("memory search", () => {
     });
 
     it("does not search any persona scope for an anonymous subagent", async () => {
-      setBody(tmp, { agent: { name: "researcher" } }, "researcher backups persona note");
+      await setBody(store, { agent: { name: "researcher" } }, "researcher backups persona note");
 
       // Anonymous subagent: namedAgent present but policy forced to none.
       const out = await searchMemoryEntries({
@@ -307,8 +290,8 @@ describe("memory search", () => {
 
   describe("searchMemoryEntries — deterministic ordering", () => {
     it("orders results deterministically across calls (stable tie-break)", async () => {
-      setBody(
-        tmp,
+      await setBody(
+        store,
         { topic: { chatId: -100, topicId: 42 } },
         "backups alpha\n§\nbackups beta\n§\nbackups gamma",
       );
@@ -319,176 +302,95 @@ describe("memory search", () => {
     });
   });
 
-  describe("relative signal ordering (overlap > exact phrase > boosts > recency)", () => {
-    // The scoreEntry helper exposes the same scoring used by searchMemoryEntries.
-    // These crafted cases isolate each signal so the relative ordering is
-    // asserted directly — the spec pins only the ordering, not the weights.
-    const baseMeta: EntryMetadata = {
-      category: "preference",
-      confidence: 0.5,
-      created_at: "2026-07-01T00:00:00.000Z",
-      updated_at: "2026-07-01T00:00:00.000Z",
-      source_session: "s",
-      source_role: "user",
-    };
-    const NOW = Date.parse("2026-07-05T00:00:00.000Z");
-    const activeTag = "topics/-100/42";
+  describe("searchMemoryEntries — result shape", () => {
+    it("includes entry_id, entry_kind, source, and tags on every result", async () => {
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, "Homelab backups run nightly");
 
-    function score(args: {
-      query: string;
-      entry: string;
-      target: "user" | "memory" | "agent";
-      tag?: string;
-      metadata?: EntryMetadata | null;
-    }): number {
-      return scoreEntry({
-        queryTokens: tokenize(args.query),
-        lowerQuery: args.query.toLowerCase(),
-        lowerEntry: args.entry.toLowerCase(),
-        target: args.target,
-        scopeTag: args.tag ?? activeTag,
-        activeScopeTag: activeTag,
-        metadata: args.metadata === undefined ? null : args.metadata,
-        nowMs: NOW,
-      });
-    }
-
-    it("overlap dominates exact phrase: a higher-overlap entry beats a lower-overlap entry even when only the lower one has the phrase bonus", () => {
-      // A contiguous phrase match implies every query token is present, hence
-      // full overlap — so "phrase present" can only raise an already-full
-      // overlap score. The dominance assertion that actually exercises the
-      // band gap is: overlap=1.0 (no phrase) vs overlap=0.5 (with phrase).
-      // The 1.0-overlap band (OVERLAP_SCALE=1_000_000) beats the 0.5-overlap
-      // band (500_000) plus the phrase bonus (10_000) plus every boost.
-      const fullOverlapNoPhrase = score({
-        query: "alpha beta gamma",
-        entry: "gamma alpha beta scattered across the note", // 3/3 tokens, no contiguous run
-        target: "user",
-        tag: "user",
-      });
-      const halfOverlapWithPhraseAndBoosts = score({
-        query: "alpha beta gamma",
-        entry: "alpha beta note", // 2/3 tokens; contains no full phrase; give it the active boost
-        target: "memory",
-        tag: activeTag,
-        metadata: { ...baseMeta, category: "decision", updated_at: "2026-07-04T00:00:00.000Z" },
-      });
-      // Full overlap on the lower-boosted entry beats half overlap with every
-      // boost stacked — because OVERLAP_SCALE >> EXACT_PHRASE_BONUS + boosts.
-      expect(fullOverlapNoPhrase).toBeGreaterThan(halfOverlapWithPhraseAndBoosts);
-    });
-
-    it("exact phrase is a within-overlap tiebreaker: at equal overlap, the phrase match wins", () => {
-      // Both entries have full token overlap (3/3). Only one has the contiguous phrase.
-      const withPhrase = score({
-        query: "alpha beta gamma",
-        entry: "alpha beta gamma scattered note", // contains "alpha beta gamma"
-        target: "memory",
-        tag: activeTag,
-      });
-      const withoutPhrase = score({
-        query: "alpha beta gamma",
-        entry: "gamma alpha beta scattered note", // same tokens, no contiguous run
-        target: "memory",
-        tag: activeTag,
-      });
-      expect(withPhrase).toBeGreaterThan(withoutPhrase);
-      // And the difference is exactly the phrase bonus (tiebreak confirmed).
-      expect(withPhrase - withoutPhrase).toBe(10_000);
-    });
-
-    it("exact phrase dominates boosts: a phrase match on user scope beats a same-overlap active-scope entry without the phrase", () => {
-      // Query is a two-token phrase. Both entries share the same single
-      // overlapping token, but only one contains the full contiguous phrase.
-      const phraseYesUser = score({
-        query: "backups daily",
-        entry: "backups daily rotation", // contains "backups daily" + 2/2 token overlap, user scope
-        target: "user",
-        tag: "user",
-      });
-      const phraseNoActive = score({
-        query: "backups daily",
-        entry: "backups rotation", // 1/2 token overlap, active scope, no contiguous phrase
-        target: "memory",
-        tag: activeTag,
-      });
-      // phraseYesUser has higher overlap AND the phrase; it should win. This
-      // confirms the phrase band is not swamped by the active-scope boost
-      // when overlap is comparable. The dominance is checked directly below
-      // by holding overlap constant.
-      expect(phraseYesUser).toBeGreaterThan(phraseNoActive);
-
-      // Hold overlap constant (1/2 tokens) and toggle only the phrase. The
-      // phrase case must beat the no-phrase case by exactly the phrase bonus,
-      // independent of the active-scope boost on the no-phrase side.
-      const phrasePartial = score({
-        query: "backups daily",
-        entry: "backups daily-run note", // contains "backups daily"? Yes — "backups daily" is a substring.
-        target: "user",
-        tag: "user",
-      });
-      // Construct a no-phrase entry with the same single-token overlap but
-      // the active-scope boost. "backups weekly" shares only "backups".
-      const sameOverlapNoPhraseActive = score({
-        query: "backups daily",
-        entry: "backups weekly", // overlap on "backups" only, no "backups daily" substring, active scope
-        target: "memory",
-        tag: activeTag,
-      });
-      expect(phrasePartial).toBeGreaterThan(sameOverlapNoPhraseActive);
-    });
-
-    it("boosts dominate recency: an active-scope entry with stale metadata beats a same-overlap user-scope entry with fresh metadata", () => {
-      const fresh = "2026-07-04T00:00:00.000Z";
-      const stale = "2026-06-01T00:00:00.000Z";
-      const activeOld = score({
+      const out = await searchMemoryEntries({
+        store,
+        activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
         query: "backups",
-        entry: "backups note",
-        target: "memory",
-        tag: activeTag,
-        metadata: { ...baseMeta, updated_at: stale },
       });
-      const userFresh = score({
-        query: "backups",
-        entry: "backups note",
-        target: "user",
-        tag: "user",
-        metadata: { ...baseMeta, updated_at: fresh },
-      });
-      // The active-scope boost exceeds the maximum recency contribution, so
-      // the boosted entry wins regardless of recency.
-      expect(activeOld).toBeGreaterThan(userFresh);
+
+      expect(out.results.length).toBeGreaterThan(0);
+      const r = out.results[0]!;
+      expect(typeof r.entryId).toBe("string");
+      expect(r.entryKind).toBe("memory");
+      expect(r.source).toBe("memory");
+      expect(Array.isArray(r.tags)).toBe(true);
+      expect(out.degraded).toBe(false);
     });
 
-    it("recency breaks ties between otherwise-equal entries", () => {
-      const fresh = "2026-07-04T00:00:00.000Z";
-      const stale = "2026-05-01T00:00:00.000Z";
-      const a = score({
-        query: "backups",
-        entry: "backups note",
-        target: "memory",
-        tag: activeTag,
-        metadata: { ...baseMeta, updated_at: fresh },
-      });
-      const b = score({
-        query: "backups",
-        entry: "backups note",
-        target: "memory",
-        tag: activeTag,
-        metadata: { ...baseMeta, updated_at: stale },
-      });
-      expect(a).toBeGreaterThan(b);
-    });
+    it("truncates long entry text to 500 chars with an ellipsis", async () => {
+      const long = "backups ".repeat(200);
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, long);
 
-    it("end-to-end: ranking through searchMemoryEntries reflects overlap > exact phrase > boosts > recency", async () => {
-      // Seed three same-chat entries that isolate the overlap and phrase signals.
+      const out = await searchMemoryEntries({
+        store,
+        activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
+        query: "backups",
+      });
+
+      expect(out.results[0]!.text).toMatch(/\.\.\.$/);
+      expect(out.results[0]!.text.length).toBeLessThanOrEqual(503);
+    });
+  });
+
+  describe("searchMemoryEntries — corpus default", () => {
+    it("defaults corpus to all so transcript rows are eligible", async () => {
+      const sessionId = "transcript-session";
+      await store.addEntries([
+        {
+          scope: `transcript/${sessionId}`,
+          entryKind: "transcript",
+          text: "backup verification call",
+          origin: "user",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          chatId: String(-100),
+        },
+      ]);
+
+      const out = await searchMemoryEntries({
+        store,
+        activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
+        query: "backup",
+      });
+
+      const transcriptResult = out.results.find((r) => r.source === "transcript");
+      expect(transcriptResult).toBeDefined();
+      expect(transcriptResult!.sessionId).toBe(sessionId);
+      expect(transcriptResult!.entryKind).toBe("transcript");
+    });
+  });
+
+  describe("searchMemoryEntries — deterministic ordering", () => {
+    it("orders results deterministically across calls (stable tie-break)", async () => {
+      await setBody(
+        store,
+        { topic: { chatId: -100, topicId: 42 } },
+        "backups alpha\n§\nbackups beta\n§\nbackups gamma",
+      );
+
+      const a = await searchMemoryEntries({ store, activeScope: ACTIVE_TOPIC, persona: MAIN_PERSONA, query: "backups" });
+      const b = await searchMemoryEntries({ store, activeScope: ACTIVE_TOPIC, persona: MAIN_PERSONA, query: "backups" });
+      expect(a.results.map((r) => r.text)).toEqual(b.results.map((r) => r.text));
+    });
+  });
+
+  describe("searchMemoryEntries — end-to-end ranking", () => {
+    it("ranks full overlap + exact phrase above full overlap without phrase", async () => {
       // Topic 42 (active): full token overlap, no contiguous phrase.
-      setBody(tmp, { topic: { chatId: -100, topicId: 42 } }, "gamma alpha beta scattered across the note");
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, "gamma alpha beta scattered across the note");
       // Topic 7: full token overlap AND the contiguous phrase → highest score.
-      setBody(tmp, { topic: { chatId: -100, topicId: 7 } }, "alpha beta gamma — different topic");
+      await setBody(store, { topic: { chatId: -100, topicId: 7 } }, "alpha beta gamma — different topic");
       // Topic 8: partial token overlap only (1/3) — ranks below the full-overlap entries.
-      setBody(tmp, { topic: { chatId: -100, topicId: 8 } }, "alpha preference note");
+      await setBody(store, { topic: { chatId: -100, topicId: 8 } }, "alpha preference note");
 
+      const NOW = Date.now();
       const out = await searchMemoryEntries({
         store,
         activeScope: ACTIVE_TOPIC,
@@ -498,9 +400,7 @@ describe("memory search", () => {
       });
 
       expect(out.results.length).toBe(3);
-      // Top result: full overlap + phrase (topic 7) beats full overlap no phrase (topic 42).
       expect(out.results[0]!.scope).toBe("topics/-100/7");
-      // Both full-overlap entries beat the partial-overlap entry.
       expect(out.results[2]!.scope).toBe("topics/-100/8");
     });
   });

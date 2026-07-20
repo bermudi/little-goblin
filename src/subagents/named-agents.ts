@@ -68,10 +68,15 @@ export async function buildResourceLoader(opts: {
   role: SubagentRole;
   definition: NamedAgentDefinition | null;
   settingsManager: SettingsManager;
+  /** Optional memory summary to append to the system prompt. */
+  memorySystemPrompt?: string;
 }): Promise<ResourceLoader | undefined> {
-  const { home, cwd, role, definition, settingsManager } = opts;
+  const { home, cwd, role, definition, settingsManager, memorySystemPrompt } = opts;
 
   if (role === "named" && definition !== null) {
+    const systemPrompt = memorySystemPrompt
+      ? `${definition.agentsMd}\n\n${memorySystemPrompt}`
+      : definition.agentsMd;
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir: piAgentDir(home),
@@ -79,7 +84,7 @@ export async function buildResourceLoader(opts: {
       noContextFiles: true,
       noSkills: true,
       additionalSkillPaths: [definition.skillsDir],
-      systemPrompt: definition.agentsMd,
+      systemPrompt,
     });
     await loader.reload();
     return loader;
@@ -91,6 +96,7 @@ export async function buildResourceLoader(opts: {
       agentDir: piAgentDir(home),
       settingsManager,
       additionalSkillPaths: [skillsPath(home)],
+      ...(memorySystemPrompt ? { systemPrompt: memorySystemPrompt } : {}),
     });
     await loader.reload();
     return loader;

@@ -5,9 +5,11 @@ import type { ActiveScope } from "./scope.ts";
 import {
   searchMemoryEntries,
   stripEntryMetadata,
+  truncateResultText,
   type PersonaPolicy,
 } from "./search.ts";
 import { includeAgentsFor, personaPolicyForCaller, personaSectionFor, type MemoryCaller } from "./context.ts";
+import { stripBodyMetadata } from "./entry.ts";
 
 /**
  * Per-turn memory aside.
@@ -24,7 +26,7 @@ import { includeAgentsFor, personaPolicyForCaller, personaSectionFor, type Memor
  *  - empty individual files render as the literal `(empty)` body
  */
 export interface MemorySnapshotPayload {
-  customType: "goblin.memory.snapshot";
+  customType: "goblin.memory.snapshot" | "goblin.memory.relevant";
   content: string;
   display: false;
   details: undefined;
@@ -63,6 +65,17 @@ export interface FormatSnapshotArgs {
   relevantLimit?: number;
   /** Optional metrics store to record the snapshot_built event. */
   metrics?: MetricsStore;
+  /**
+   * Frozen user.md body captured at session start. When supplied, relevant
+   * memory dedups against this body instead of the current store state so new
+   * entries written after session creation can still surface per-turn.
+   */
+  frozenUserBody?: string;
+  /**
+   * Frozen active memory.md body captured at session start. When supplied,
+   * relevant memory dedups against this body instead of the current store state.
+   */
+  frozenActiveMemoryBody?: string;
 }
 
 /**
@@ -82,6 +95,155 @@ export async function formatSnapshot(
     includeAgents: includeAgentsFor(args.caller),
     personaPolicy: personaPolicyForCaller(args.caller),
   });
+}
+
+/**
+ * Build the per-turn `## relevant memory` aside. Uses hybrid search on the
+ * current prompt text, deduplicates against the active scope body, and bounds
+ * the result count (default 3, max 5). Returns `null` when there are no
+ * relevant curated entries.
+ */
+export async function formatRelevantMemory(
+  args: FormatSnapshotArgs,
+): Promise<MemorySnapshotPayload | null> {
+  if (args.promptText === undefined || args.promptText.trim().length === 0) {
+    return null;
+  }
+
+  const resolved: ResolvedSnapshotArgs = {
+    ...args,
+    includePersona: personaSectionFor(args.caller),
+    includeAgents: includeAgentsFor(args.caller),
+    personaPolicy: personaPolicyForCaller(args.caller),
+  };
+  const activeMemoryScope = activeMemoryScopeFor(args.activeScope);
+  const activeMemoryBody = args.frozenActiveMemoryBody ?? args.store.read(activeMemoryScope).body;
+  const userMemoryBody = args.frozenUserBody ?? args.store.read("user").body;
+  const lines = await buildRelevantMemoryLines(resolved, activeMemoryBody, userMemoryBody);
+  if (lines.length === 0) return null;
+
+  return {
+    customType: "goblin.memory.relevant",
+    content: `## relevant memory\n${lines.join("\n")}`,
+    display: false,
+    details: undefined,
+  };
+}
+
+const FROZEN_SUMMARY_HEADER = "[goblin memory summary (frozen at session start)]";
+const FROZEN_SUMMARY_SECTION_CAP = 500;
+
+/**
+ * Build a bounded frozen memory summary for injection into the system prompt.
+ *
+ * Spec contract (`specs/memory/spec.md`):
+ *  - header is `[goblin memory summary (frozen at session start)]`
+ *  - active scope description is always emitted (or `(no description)`)
+ *  - `user.md` and active `memory.md` summaries are each capped at 500 chars
+ *  - cross-scope index lists same-chat topics, max 10 entries, ordered by
+ *    most-recently-updated scope first, then scope name ascending
+ *  - if the total exceeds 1200 chars, trim the cross-scope index first, then
+ *    the active `memory.md` summary at a word boundary, then the `user.md`
+ *    summary; the header and active scope description are never truncated
+ */
+export async function formatFrozenSummary(
+  args: Omit<FormatSnapshotArgs, "promptText" | "relevantLimit">,
+): Promise<string | null> {
+  const activeMemoryScope = activeMemoryScopeFor(args.activeScope);
+  const active = args.store.read(activeMemoryScope);
+  const user = args.store.read("user");
+
+  const activeBodyRaw = stripBodyMetadata(active.body);
+  const userBodyRaw = stripBodyMetadata(user.body);
+
+  // Cross-scope index: same-chat topic scopes only, excluding the active topic.
+  const index = await args.store.listIndex({
+    chatId: args.activeScope.chatId,
+    includeAgents: false,
+    getTopicName: args.getTopicName,
+  });
+  const activeTopicId = args.activeScope.topicScope === "general" ? null : args.activeScope.topicScope.topicId;
+  const peerTopics = index.topics.filter((t) => t.topicId !== activeTopicId);
+  const topicScopes = peerTopics.map((t) => `topics/${t.chatId}/${t.topicId}`);
+  const lastUpdated = args.store.getScopesLastUpdated(topicScopes);
+
+  const indexEntries = peerTopics
+    .map((t) => {
+      const scope = `topics/${t.chatId}/${t.topicId}`;
+      return {
+        scope,
+        description: t.description ?? t.name ?? null,
+        updatedAt: lastUpdated.get(scope) ?? null,
+      };
+    })
+    .sort((a, b) => {
+      const aUpdated = a.updatedAt ?? 0;
+      const bUpdated = b.updatedAt ?? 0;
+      if (aUpdated !== bUpdated) return bUpdated - aUpdated;
+      return a.scope.localeCompare(b.scope);
+    })
+    .slice(0, 10);
+  const indexLines = indexEntries.map(
+    (e) => `- ${e.scope} — ${e.description ?? "(no description)"}`,
+  );
+
+  const hasAnyContent =
+    activeBodyRaw.length > 0 ||
+    userBodyRaw.length > 0 ||
+    indexLines.length > 0 ||
+    (active.description !== undefined && active.description.length > 0);
+  if (!hasAnyContent) return null;
+
+  const activeScopeLine = `Active scope: ${active.description ?? "(no description)"}`;
+
+  const activeIsEmpty = activeBodyRaw.length === 0;
+  const userIsEmpty = userBodyRaw.length === 0;
+  let activeSummary = activeIsEmpty ? "(empty)" : truncateWithEllipsis(activeBodyRaw, FROZEN_SUMMARY_SECTION_CAP);
+  let userSummary = userIsEmpty ? "(empty)" : truncateWithEllipsis(userBodyRaw, FROZEN_SUMMARY_SECTION_CAP);
+  let activeSummaryTrim = !activeIsEmpty;
+  let userSummaryTrim = !userIsEmpty;
+
+  function totalLength(): number {
+    const parts = [FROZEN_SUMMARY_HEADER, SNAPSHOT_GUARDRAIL, activeScopeLine];
+    if (userSummary.length > 0) parts.push(`## user.md\n${userSummary}`);
+    if (activeSummary.length > 0) parts.push(`## memory.md\n${activeSummary}`);
+    if (indexLines.length > 0) parts.push(`## other scopes\n${indexLines.join("\n")}`);
+    return parts.join("\n\n").length;
+  }
+
+  function buildSummary(): string {
+    const parts = [FROZEN_SUMMARY_HEADER, SNAPSHOT_GUARDRAIL, activeScopeLine];
+    if (userSummary.length > 0) parts.push(`## user.md\n${userSummary}`);
+    if (activeSummary.length > 0) parts.push(`## memory.md\n${activeSummary}`);
+    if (indexLines.length > 0) parts.push(`## other scopes\n${indexLines.join("\n")}`);
+    return parts.join("\n\n");
+  }
+
+  // Trim the cross-scope index first, then the active memory summary, then the
+  // user summary. The header and active scope line are never trimmed.
+  while (totalLength() > FROZEN_SUMMARY_CAP) {
+    if (indexLines.length > 0) {
+      indexLines.pop();
+      continue;
+    }
+    if (activeSummaryTrim && activeSummary.length > 3) {
+      activeSummary = truncateWithEllipsis(
+        activeSummary,
+        Math.max(3, Math.floor(activeSummary.length * 0.75)),
+      );
+      continue;
+    }
+    if (userSummaryTrim && userSummary.length > 3) {
+      userSummary = truncateWithEllipsis(
+        userSummary,
+        Math.max(3, Math.floor(userSummary.length * 0.75)),
+      );
+      continue;
+    }
+    break;
+  }
+
+  return buildSummary();
 }
 
 /** Internal args: the public `caller` resolved back into the knob dialect. */
@@ -104,7 +266,7 @@ async function formatScopedSnapshot(args: ResolvedSnapshotArgs): Promise<MemoryS
   // Relevant memory is computed only when prompt text is supplied. It is
   // omitted from follow-up steers (the caller does not pass prompt text).
   const relevantLines = args.promptText !== undefined && args.promptText.trim().length > 0
-    ? await formatRelevantMemory(args, memoryBody)
+    ? await buildRelevantMemoryLines(args, memoryBody, userBody)
     : [];
 
   if (
@@ -170,18 +332,30 @@ async function formatScopedSnapshot(args: ResolvedSnapshotArgs): Promise<MemoryS
 
 const DEFAULT_RELEVANT_LIMIT = 3;
 const MAX_RELEVANT_LIMIT = 5;
+const FROZEN_SUMMARY_CAP = 1200;
+
+function truncateWithEllipsis(text: string, max: number): string {
+  if (text.length <= max) return text;
+  if (max <= 3) return "...";
+  const limit = max - 3;
+  const candidate = text.slice(0, limit);
+  const boundary = candidate.lastIndexOf(" ");
+  // If the first word is longer than the limit, fall back to a hard slice.
+  const trimmed = boundary > 0 ? candidate.slice(0, boundary) : candidate;
+  return trimmed + "...";
+}
 
 /**
  * Build the `## relevant memory` section lines for the current prompt. Runs
- * the lexical search helper against the snapshot's scopes (same chat plus
- * eligible persona scopes), drops any result whose display text already
- * appears verbatim in the active `## memory.md` body, and bounds the result
- * count to the configured limit (default 3, max 5). Returns an empty array
- * when there are no matches after dedup.
+ * hybrid search on the prompt text, drops any result whose display text already
+ * appears in the active `## memory.md` or `## user.md` bodies (i.e. the frozen
+ * summary), and bounds the result count to the configured limit (default 3,
+ * max 5). Returns an empty array when there are no matches after dedup.
  */
-async function formatRelevantMemory(
+async function buildRelevantMemoryLines(
   args: ResolvedSnapshotArgs,
   activeMemoryBody: string,
+  userMemoryBody: string,
 ): Promise<string[]> {
   const persona = args.personaPolicy;
   const requested = args.relevantLimit ?? DEFAULT_RELEVANT_LIMIT;
@@ -192,21 +366,25 @@ async function formatRelevantMemory(
     activeScope: args.activeScope,
     persona,
     query: args.promptText ?? "",
+    corpus: "memory", // per-turn relevant memory is curated-only; transcripts never appear here
     limit: 50, // fetch a wide net, then dedup + bound
     metrics: args.metrics,
   });
 
-  // Build the dedup set from the active scope's body. Strip reflected-entry
-  // metadata so a reflected active entry (whose search display text omits the
-  // metadata comment) is matched against its stripped form, not the raw
-  // metadata-wrapped form. Otherwise reflected active entries would fail the
-  // verbatim check and reappear under `## relevant memory`.
-  const activeBodySet = new Set(splitEntries(activeMemoryBody).map(stripEntryMetadata));
+  // Build the dedup set from the active scope's body and user.md. Strip
+  // reflected-entry metadata and apply the same display truncation used for
+  // search results so long active entries match their truncated search forms.
+  const dedupSet = new Set(
+    [...splitEntries(activeMemoryBody), ...splitEntries(userMemoryBody)]
+      .map(stripEntryMetadata)
+      .map(truncateResultText)
+      .filter((t) => t.length > 0),
+  );
   const lines: string[] = [];
   for (const r of out.results) {
-    // Verbatim dedup against the active scope's body: skip any result whose
-    // display text already appears as an entry in `## memory.md`.
-    if (activeBodySet.has(r.text)) continue;
+    // Verbatim dedup against the frozen-summary bodies: skip any result whose
+    // display text already appears as an entry in `## memory.md` or `## user.md`.
+    if (dedupSet.has(r.text)) continue;
     lines.push(`- [${r.scope}] ${r.text}`);
     if (lines.length >= limit) break;
   }
@@ -240,7 +418,8 @@ async function formatScope(
 }
 
 function formatBody(body: string): string {
-  return body.length === 0 ? "(empty)" : body;
+  if (body.length === 0) return "(empty)";
+  return stripBodyMetadata(body);
 }
 
 async function formatOtherScopes(args: ResolvedSnapshotArgs): Promise<string[]> {

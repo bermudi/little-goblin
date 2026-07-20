@@ -1,28 +1,29 @@
 /**
- * File-native lexical memory search.
+ * Hybrid memory search: fuses vector cosine similarity, FTS5 BM25, concept-tag
+ * boosts, temporal decay, and optional MMR re-ranking.
  *
- * Pure read-only layer over the existing `MemoryStore`. Enumerates the
- * caller's eligible scopes, splits each memory body by the existing `\n§\n`
- * delimiter, parses/strips reflected-entry metadata, normalizes query and
- * entry text to lexical tokens, and ranks entries by a deterministic score.
- *
- * Spec contract (`Memory search ranks entries lexically`,
- * `Memory search defaults to current chat scopes`):
- *   - relative signal ordering is overlap > exact phrase > boosts > recency;
- *   - search defaults to the current chat's scopes plus `user.md` and
- *     eligible persona scopes, with `all_chats` broadening topic scope
- *     enumeration to every chat;
- *   - search never mutates any memory file.
+ * The search is read-only and never mutates memory files. It operates over the
+ * SQLite-backed store, using `memory_embeddings`, `memory_index_fts`, and
+ * `memory_entry_tags`.
  */
 
 import type { MemoryStore } from "./store.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
+import { log } from "../log.ts";
+import { deriveConceptTags } from "./concept-vocabulary.ts";
+import { activeMemoryScopeFor, scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
 import {
   parseEntryMetadata,
-  stripEntryMetadata,
   type EntryMetadata,
 } from "./entry.ts";
-import { activeMemoryScopeFor, scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
+import {
+  applyMMR,
+  bm25RankToScore,
+  mergeHybridResults,
+  type HybridResult,
+} from "./hybrid.ts";
+
+export { stripEntryMetadata } from "./entry.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,6 +32,13 @@ import { activeMemoryScopeFor, scopeTag, type ActiveScope, type MemoryScope } fr
 /** Where a searched entry lives — mirrors the memory tool's `target` concept. */
 export type MemorySearchTarget = "user" | "memory" | "agent";
 
+function temporalDecayFromEnv(): { halfLifeDays: number } | undefined {
+  const raw = process.env.GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS;
+  if (raw === undefined) return undefined;
+  const days = Number.parseFloat(raw);
+  return Number.isFinite(days) && days > 0 ? { halfLifeDays: days } : undefined;
+}
+
 export interface MemorySearchInput {
   /** Free-form query text. Whitespace-only/empty queries are rejected upstream. */
   query: string;
@@ -38,18 +46,45 @@ export interface MemorySearchInput {
   limit?: number;
   /** When true, enumerate topic scopes from every chat. Default: current chat only. */
   allChats?: boolean;
+  /**
+   * Which corpora to search:
+   * - `memory` (default): curated memory and user entries.
+   * - `transcripts`: indexed transcript chunks.
+   * - `all`: both.
+   */
+  corpus?: "memory" | "transcripts" | "all";
+  /** Restrict search to a single memory scope. When provided, corpus is treated as `memory`. */
+  scope?: MemoryScope | "user";
 }
 
 /** A single ranked search result. */
 export interface MemorySearchResultEntry {
+  /** Entry primary key in the SQLite store. */
+  entryId: string;
   /** Stable scope identifier, e.g. `user`, `general`, `topics/-100/42`, `agents/researcher`. */
   scope: string;
+  /** Raw entry_kind from the database: `memory`, `user`, or `transcript`. */
+  entryKind: "memory" | "user" | "transcript";
   /** Memory tool target equivalent: `user`, `memory` (active/general/topic), or `agent` (persona). */
   target: MemorySearchTarget;
-  /** Human-readable entry body with any metadata comment stripped. */
+  /** Human-readable entry body, truncated to 500 chars with `...` suffix. */
   text: string;
   /** Deterministic ranking score; higher is better. */
   score: number;
+  /** Vector component of the score, when available. */
+  vectorScore: number;
+  /** Keyword (BM25) component of the score, when available. */
+  textScore: number;
+  /** Concept-tag boost applied. */
+  conceptBoost: number;
+  /** Concept vocabulary tags attached to the entry. */
+  tags: string[];
+  /** Source corpus: `memory` for curated entries, `transcript` for transcript chunks. */
+  source: "memory" | "transcript";
+  /** Session id, present only for transcript results. */
+  sessionId?: string;
+  /** Approximate timestamp (unix ms), present only for transcript results. */
+  timestamp?: number;
   /** Parsed reflected-entry metadata when present, else null. */
   metadata: EntryMetadata | null;
 }
@@ -58,6 +93,10 @@ export interface MemorySearchOutput {
   query: string;
   /** Number of distinct scopes enumerated for the search (including empty/non-matching scopes). */
   searchedScopes: number;
+  /** True when the embedding provider was unavailable and search fell back to BM25-only. */
+  degraded: boolean;
+  /** Optional warning describing why the search was degraded. */
+  warning?: string;
   results: MemorySearchResultEntry[];
 }
 
@@ -76,151 +115,18 @@ export type PersonaPolicy =
   | { kind: "none" };
 
 // ---------------------------------------------------------------------------
-// Normalization
+// Limit clamping
 // ---------------------------------------------------------------------------
 
-/**
- * Normalize text to lexical tokens: ASCII-lowercase, then split on every run
- * of non-(letter-or-digit) code points. Unicode letters and digits are
- * preserved as token characters; everything else is a separator. No
- * stemming, no stop-word removal, no Unicode case folding beyond ASCII.
- *
- * Spec link: `Memory search ranks entries lexically`.
- */
-export function tokenize(text: string): string[] {
-  const lower = text.toLowerCase();
-  const tokens: string[] = [];
-  // \p{L} = Unicode letters, \p{N} = Unicode numbers. Everything else is a
-  // separator. The ASCII lowercasing above is the only case folding applied.
-  const re = /[\p{L}\p{N}]+/gu;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(lower)) !== null) {
-    tokens.push(m[0]);
-  }
-  return tokens;
-}
+const DEFAULT_LIMIT = 10;
+const MAX_LIMIT = 50;
 
-// ---------------------------------------------------------------------------
-// Scoring constants
-// ---------------------------------------------------------------------------
-
-/**
- * Concrete weights are implementation-defined; the spec pins only the
- * relative signal ordering (overlap > exact phrase > boosts > recency). The
- * unit tests in `search.test.ts` assert that ordering directly with crafted
- * entries that isolate each signal. These weights exist in one place so the
- * ordering is testable and adjustable.
- *
- * Signal buckets (each must dominate the next):
- *   1. Token overlap — encoded as the overlap ratio in [0, 1] scaled to the
- *      OVERLAP_SCALE band so it dominates boosts + recency.
- *   2. Exact phrase — a present/absent bonus.
- *   3. Boosts — target (active memory > user > other) and reflected category.
- *   4. Recency — tiny monotonic bump from `updated_at`/`created_at` age.
- */
-const OVERLAP_SCALE = 1_000_000;
-const EXACT_PHRASE_BONUS = 10_000;
-const ACTIVE_SCOPE_BOOST = 1_000;
-const USER_SCOPE_BOOST = 800;
-const AGENT_SCOPE_BOOST = 200;
-const CATEGORY_BOOST: Partial<Record<EntryMetadata["category"], number>> = {
-  decision: 90,
-  commitment: 90,
-  standing_order: 85,
-  convention: 80,
-  gotcha: 70,
-  preference: 60,
-  project_fact: 50,
-  profile: 40,
-};
-/** Maximum recency contribution. Small enough to never overtake a boost. */
-const RECENCY_MAX = 50;
-/** Recency decay half-life in days — older entries trend toward 0 recency. */
-const RECENCY_HALF_LIFE_DAYS = 180;
-
-// ---------------------------------------------------------------------------
-// Scoring helpers
-// ---------------------------------------------------------------------------
-
-/** Compute the Jaccard-style overlap ratio between query and entry tokens. */
-function overlapRatio(queryTokens: string[], entryTokens: string[]): number {
-  if (queryTokens.length === 0 || entryTokens.length === 0) return 0;
-  const entrySet = new Set(entryTokens);
-  let intersection = 0;
-  for (const t of queryTokens) {
-    if (entrySet.has(t)) intersection++;
-  }
-  // Use query coverage (matched query tokens / query tokens) as the primary
-  // signal — a query fully covered by an entry is more relevant than one
-  // partially covered, regardless of entry length. This keeps short entries
-  // with high coverage from being drowned out by long, token-heavy entries.
-  return intersection / queryTokens.length;
-}
-
-/** Whether the lowercased query appears as a contiguous substring. */
-function hasExactPhrase(lowerQuery: string, lowerEntry: string): boolean {
-  const q = lowerQuery.trim();
-  if (q.length === 0) return false;
-  return lowerEntry.includes(q);
-}
-
-/** Recency contribution in [0, RECENCY_MAX] from an ISO timestamp age. */
-function recencyScore(metadata: EntryMetadata | null, nowMs: number): number {
-  if (metadata === null) return 0;
-  // Prefer updated_at when present, else created_at.
-  const ts = Date.parse(metadata.updated_at);
-  if (!Number.isFinite(ts)) return 0;
-  const ageDays = Math.max(0, (nowMs - ts) / (24 * 60 * 60 * 1000));
-  // Exponential decay toward 0; recent entries score highest.
-  const factor = Math.pow(0.5, ageDays / RECENCY_HALF_LIFE_DAYS);
-  return Math.round(factor * RECENCY_MAX);
-}
-
-/**
- * Compute a single entry's score. The bucketed structure (each signal
- * multiplied into a non-overlapping band) guarantees the spec's relative
- * ordering: overlap dominates exact phrase dominates boosts dominates
- * recency.
- */
-export function scoreEntry(args: {
-  queryTokens: string[];
-  lowerQuery: string;
-  lowerEntry: string;
-  target: MemorySearchTarget;
-  scopeTag: string;
-  activeScopeTag: string;
-  metadata: EntryMetadata | null;
-  nowMs: number;
-}): number {
-  const overlap = overlapRatio(args.queryTokens, tokenize(args.lowerEntry));
-  // Overlap dominates: scale into the top band. Entries with zero overlap
-  // are filtered out before scoring, but the scale keeps partial-overlap
-  // entries well above any boost/recency sum.
-  let score = overlap * OVERLAP_SCALE;
-
-  if (hasExactPhrase(args.lowerQuery, args.lowerEntry)) {
-    score += EXACT_PHRASE_BONUS;
-  }
-
-  // Scope/target boost. Active memory scope ranks highest; user.md next;
-  // persona/agent scopes last. General memory uses the memory boost only
-  // when it is the active scope (handled via activeScopeTag equality).
-  if (args.scopeTag === args.activeScopeTag) {
-    score += ACTIVE_SCOPE_BOOST;
-  } else if (args.target === "user") {
-    score += USER_SCOPE_BOOST;
-  } else if (args.target === "agent") {
-    score += AGENT_SCOPE_BOOST;
-  }
-
-  if (args.metadata !== null) {
-    const cat = CATEGORY_BOOST[args.metadata.category];
-    if (cat !== undefined) score += cat;
-  }
-
-  score += recencyScore(args.metadata, args.nowMs);
-
-  return score;
+export function clampLimit(limit: number | undefined): number {
+  if (limit === undefined) return DEFAULT_LIMIT;
+  const floored = Math.floor(limit);
+  if (floored <= 0) return DEFAULT_LIMIT;
+  if (floored > MAX_LIMIT) return MAX_LIMIT;
+  return floored;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,14 +139,7 @@ interface EnumeratedScope {
   target: MemorySearchTarget;
 }
 
-/**
- * Enumerate the scopes eligible for search given the active scope, the
- * persona-eligibility policy, and the `all_chats` flag. Always includes
- * `user.md`, the active scope, and general memory. Topic scopes default to
- * the active chat; `all_chats` broadens to every chat. Persona scopes
- * follow the policy.
- */
-async function enumerateScopes(
+async function enumerateMemoryScopes(
   store: MemoryStore,
   activeScope: ActiveScope,
   persona: PersonaPolicy,
@@ -253,40 +152,28 @@ async function enumerateScopes(
 
   // 2. Active scope (topic or general).
   const activeMemory = activeMemoryScopeFor(activeScope);
-  scopes.push({
-    scope: activeMemory,
-    tag: scopeTag(activeMemory),
-    target: "memory",
-  });
+  scopes.push({ scope: activeMemory, tag: scopeTag(activeMemory), target: "memory" });
 
   // 3. General memory (always in scope; dedup with active when active IS general).
   if (activeMemory !== "general") {
     scopes.push({ scope: "general", tag: "general", target: "memory" });
   }
 
-  // 4. Same-chat (or all-chat) topic scopes from the index, excluding the
-  //    active topic to avoid double-scanning.
+  // 4. Same-chat (or all-chat) topic scopes from the index, excluding the active topic.
   const index = await store.listIndex({
     chatId: allChats ? undefined : activeScope.chatId,
     includeAgents: false,
   });
-  const activeTopicId =
-    activeScope.topicScope === "general" ? null : activeScope.topicScope.topicId;
+  const activeTopicId = activeScope.topicScope === "general" ? null : activeScope.topicScope.topicId;
   for (const topic of index.topics) {
-    if (!allChats && topic.chatId !== activeScope.chatId) continue;
-    if (topic.chatId === activeScope.chatId && topic.topicId === activeTopicId) {
-      continue;
-    }
+    if (topic.chatId === activeScope.chatId && topic.topicId === activeTopicId) continue;
     const scope: MemoryScope = { topic: { chatId: topic.chatId, topicId: topic.topicId } };
     scopes.push({ scope, tag: scopeTag(scope), target: "memory" });
   }
 
   // 5. Persona scopes per the eligibility policy.
   if (persona.kind === "all") {
-    const agentIndex = await store.listIndex({
-      chatId: activeScope.chatId,
-      includeAgents: true,
-    });
+    const agentIndex = await store.listIndex({ chatId: activeScope.chatId, includeAgents: true });
     for (const agent of agentIndex.agents) {
       const scope: MemoryScope = { agent: { name: agent.name } };
       scopes.push({ scope, tag: scopeTag(scope), target: "agent" });
@@ -299,40 +186,267 @@ async function enumerateScopes(
   return scopes;
 }
 
-// ---------------------------------------------------------------------------
-// Limit clamping
-// ---------------------------------------------------------------------------
-
-const DEFAULT_LIMIT = 10;
-const MAX_LIMIT = 50;
-
-/**
- * Clamp the requested limit per spec: values <= 0 collapse to the default
- * (10); values > 50 collapse to 50; otherwise the requested value. Fractional
- * values are floored first, so a value like 0.5 floors to 0 and then collapses
- * to the default (rather than producing an empty result slice).
- */
-export function clampLimit(limit: number | undefined): number {
-  if (limit === undefined) return DEFAULT_LIMIT;
-  const floored = Math.floor(limit);
-  if (floored <= 0) return DEFAULT_LIMIT;
-  if (floored > MAX_LIMIT) return MAX_LIMIT;
-  return floored;
+async function enumerateTranscriptScopes(
+  store: MemoryStore,
+  activeScope: ActiveScope,
+  allChats: boolean,
+): Promise<string[]> {
+  const chatId = activeScope.chatId;
+  const rows = store.db.database
+    .query<{ scope: string }, { $chatId: string | null }>(
+      `SELECT DISTINCT scope FROM memory_entries
+       WHERE entry_kind = 'transcript'
+         AND ($chatId IS NULL OR chat_id = $chatId)`,
+    )
+    .all({ $chatId: allChats ? null : String(chatId) });
+  return rows.map((r) => r.scope);
 }
 
 // ---------------------------------------------------------------------------
-// Entry-level search
+// Vector search
 // ---------------------------------------------------------------------------
 
-const DELIMITER = "\n§\n";
+export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  if (a.length !== b.length) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    const ai = a[i]!;
+    const bi = b[i]!;
+    dot += ai * bi;
+    normA += ai * ai;
+    normB += bi * bi;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  const cosine = dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  // OpenAI embeddings are normalized and non-negative for most practical text;
+  // clamp to [0, 1] so the score stays a standard similarity.
+  return Math.max(0, Math.min(1, cosine));
+}
 
-/**
- * Search curated memory entries lexically and return ranked matches.
- *
- * Never mutates any memory file. Returns at most `limit` (default 10, clamped
- * to [1, 50]) entries ranked by the deterministic scorer. Entries with zero
- * token overlap are excluded.
- */
+function normalizeVectorScore(score: number): number {
+  return Math.max(0, Math.min(1, score));
+}
+
+interface VectorCandidate {
+  entryId: string;
+  scope: string;
+  entryKind: string;
+  text: string;
+  updatedAt: number | null;
+  vectorScore: number;
+  embedding: Float32Array;
+}
+
+async function vectorSearch(args: {
+  store: MemoryStore;
+  query: string;
+  scopes: string[];
+  kinds: string[];
+  chatId: string | null;
+}): Promise<{ rows: Array<Omit<HybridResult, "score" | "textScore" | "conceptBoost"> & { vectorScore: number }>; degraded: boolean }> {
+  const provider = args.store.embeddingProvider;
+  if (!provider) {
+    return { rows: [], degraded: false };
+  }
+
+  const { embedding, degraded } = await provider.embedQuery(args.query);
+  if (embedding === null) {
+    return { rows: [], degraded };
+  }
+
+  const placeholders = args.scopes.map(() => "?").join(",");
+  const kindPlaceholders = args.kinds.map(() => "?").join(",");
+  const rows = args.store.db.database
+    .query<
+      { id: string; scope: string; entry_kind: string; text: string; updated_at: number | null; embedding: Uint8Array; dims: number },
+      (string | null)[]
+    >(
+      `SELECT e.id, e.scope, e.entry_kind, e.text, e.updated_at, em.embedding, em.dims
+       FROM memory_entries e
+       JOIN memory_embeddings em ON e.id = em.entry_id
+       WHERE e.scope IN (${placeholders})
+         AND e.entry_kind IN (${kindPlaceholders})
+         AND ($chatId IS NULL OR e.chat_id = $chatId OR (e.chat_id IS NULL AND e.entry_kind IN ('memory', 'user')))`,
+    )
+    .all(...args.scopes, ...args.kinds, args.chatId);
+
+  const results: VectorCandidate[] = [];
+  for (const row of rows) {
+    const bytes = new Uint8Array(row.embedding);
+    const candidate = new Float32Array(bytes.buffer, bytes.byteOffset, row.dims);
+    const cosine = cosineSimilarity(embedding, candidate);
+    results.push({
+      entryId: row.id,
+      scope: row.scope,
+      entryKind: row.entry_kind,
+      text: row.text,
+      updatedAt: row.updated_at,
+      vectorScore: normalizeVectorScore(cosine),
+      embedding: candidate,
+    });
+  }
+
+  return { rows: results, degraded };
+}
+
+// ---------------------------------------------------------------------------
+// Keyword search
+// ---------------------------------------------------------------------------
+
+const FTS_PHRASE_BONUS = 0.1;
+
+function buildFtsOrQuery(raw: string): string | null {
+  const tokens = raw.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  const normalized = tokens.map((t) => t.toLowerCase()).filter((t) => t.length > 0);
+  if (normalized.length === 0) return null;
+  const quoted = normalized.map((t) => `"${t.replaceAll('"', "")}"`);
+  if (quoted.length === 1) {
+    return `text:${quoted[0]}`;
+  }
+  return `text:(${quoted.join(" OR ")})`;
+}
+
+function keywordSearch(args: {
+  store: MemoryStore;
+  query: string;
+  scopes: string[];
+  kinds: string[];
+  chatId: string | null;
+}): Array<Omit<HybridResult, "score" | "vectorScore" | "conceptBoost"> & { textScore: number }> {
+  const ftsQuery = buildFtsOrQuery(args.query);
+  if (ftsQuery === null) return [];
+
+  const lowerQuery = args.query.toLowerCase().trim();
+  const scopePlaceholders = args.scopes.map(() => "?").join(",");
+  const kindPlaceholders = args.kinds.map(() => "?").join(",");
+  const rows = args.store.db.database
+    .query<
+      { entry_id: string; text: string; scope: string; entry_kind: string; updated_at: number | null; rank: number },
+      (string | null)[]
+    >(
+      `SELECT e.id AS entry_id, e.text, e.scope, e.entry_kind, e.updated_at, rank
+       FROM memory_index_fts
+       JOIN memory_entries e ON memory_index_fts.entry_id = e.id
+       WHERE memory_index_fts MATCH ?
+         AND e.scope IN (${scopePlaceholders})
+         AND e.entry_kind IN (${kindPlaceholders})
+         AND ($chatId IS NULL OR e.chat_id = $chatId OR (e.chat_id IS NULL AND e.entry_kind IN ('memory', 'user')))
+       ORDER BY rank ASC`,
+    )
+    .all(ftsQuery, ...args.scopes, ...args.kinds, args.chatId);
+
+  return rows.map((row) => {
+    const hasPhrase = lowerQuery.length > 0 && row.text.toLowerCase().includes(lowerQuery);
+    const base = bm25RankToScore(row.rank);
+    return {
+      entryId: row.entry_id,
+      scope: row.scope,
+      entryKind: row.entry_kind,
+      text: row.text,
+      updatedAt: row.updated_at,
+      textScore: Math.min(1, base + (hasPhrase ? FTS_PHRASE_BONUS : 0)),
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Concept tags
+// ---------------------------------------------------------------------------
+
+function loadEntryTags(store: MemoryStore, entryIds: string[]): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  if (entryIds.length === 0) return map;
+  const placeholders = entryIds.map(() => "?").join(",");
+  const rows = store.db.database
+    .query<{ entry_id: string; tag: string }, string[]>(
+      `SELECT entry_id, tag FROM memory_entry_tags WHERE entry_id IN (${placeholders})`,
+    )
+    .all(...entryIds);
+  for (const row of rows) {
+    const list = map.get(row.entry_id) ?? [];
+    list.push(row.tag);
+    map.set(row.entry_id, list);
+  }
+  return map;
+}
+
+// ---------------------------------------------------------------------------
+// Result helpers
+// ---------------------------------------------------------------------------
+
+export const RESULT_TEXT_MAX = 500;
+
+export function truncateResultText(text: string): string {
+  if (text.length <= RESULT_TEXT_MAX) return text;
+  return text.slice(0, RESULT_TEXT_MAX) + "...";
+}
+
+function sessionIdFromTranscriptScope(scope: string): string | undefined {
+  const prefix = "transcript/";
+  if (!scope.startsWith(prefix)) return undefined;
+  const id = scope.slice(prefix.length);
+  return id.length > 0 ? id : undefined;
+}
+
+function targetForScope(scope: string): MemorySearchTarget {
+  if (scope === "user") return "user";
+  if (scope.startsWith("agents/")) return "agent";
+  return "memory";
+}
+
+function buildMemoryResult(result: HybridResult, tags: string[]): MemorySearchResultEntry {
+  const parsed = parseEntryMetadata(result.text);
+  const body = parsed === null ? result.text : parsed.body;
+  const entry: MemorySearchResultEntry = {
+    entryId: result.entryId,
+    scope: result.scope,
+    entryKind: result.entryKind as "memory" | "user" | "transcript",
+    target: targetForScope(result.scope),
+    text: truncateResultText(body),
+    score: Number.isFinite(result.score) ? result.score : 0,
+    vectorScore: Number.isFinite(result.vectorScore) ? result.vectorScore : 0,
+    textScore: Number.isFinite(result.textScore) ? result.textScore : 0,
+    conceptBoost: Number.isFinite(result.conceptBoost) ? result.conceptBoost : 0,
+    tags,
+    source: result.entryKind === "transcript" ? "transcript" : "memory",
+    metadata: parsed === null ? null : parsed.metadata,
+  };
+  if (result.entryKind === "transcript") {
+    const sessionId = sessionIdFromTranscriptScope(result.scope);
+    if (sessionId) entry.sessionId = sessionId;
+    if (result.updatedAt !== null && Number.isFinite(result.updatedAt)) {
+      entry.timestamp = result.updatedAt;
+    }
+  }
+  return entry;
+}
+
+function updateRecallStats(store: MemoryStore, entryIds: string[]): void {
+  if (entryIds.length === 0) return;
+  try {
+    const placeholders = entryIds.map(() => "?").join(",");
+    const now = Date.now();
+    store.db.database
+      .query(
+        `UPDATE memory_entries
+         SET recall_count = COALESCE(recall_count, 0) + 1,
+             last_recalled_at = $now
+         WHERE id IN (${placeholders})`,
+      )
+      .run(now, ...entryIds);
+  } catch (err) {
+    log.warn("memory search: failed to update recall stats", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public search
+// ---------------------------------------------------------------------------
+
 export async function searchMemoryEntries(args: {
   store: MemoryStore;
   activeScope: ActiveScope;
@@ -340,64 +454,99 @@ export async function searchMemoryEntries(args: {
   query: string;
   limit?: number;
   allChats?: boolean;
+  corpus?: "memory" | "transcripts" | "all";
+  /** Restrict search to a single memory scope. When provided, corpus is treated as `memory`. */
+  scope?: MemoryScope | "user";
   /** Override the wall clock for deterministic recency tests. */
   nowMs?: number;
   /** Optional metrics store to record the search event. */
   metrics?: MetricsStore;
 }): Promise<MemorySearchOutput> {
-  const { persona } = args;
   const limit = clampLimit(args.limit);
+  const corpus = args.corpus ?? "all";
+  const allChats = args.allChats ?? false;
+  const noChatId = args.activeScope.chatId === 0;
+  const transcriptAllChats = allChats || noChatId;
   const nowMs = args.nowMs ?? Date.now();
-  const queryTokens = tokenize(args.query);
-  const lowerQuery = args.query.toLowerCase();
-  const activeMemoryTag = scopeTag(activeMemoryScopeFor(args.activeScope));
+  const weights = args.store.db.weights;
 
-  const scopes = await enumerateScopes(args.store, args.activeScope, persona, args.allChats ?? false);
+  const queryTags = deriveConceptTags({ snippet: args.query, limit: 8 });
 
-  const results: MemorySearchResultEntry[] = [];
-  for (const { scope, tag, target } of scopes) {
-    const body = args.store.readBody(scope);
-    if (body.length === 0) continue;
-    const rawEntries = body.split(DELIMITER);
-    for (const raw of rawEntries) {
-      const parsed = parseEntryMetadata(raw);
-      const metadata = parsed === null ? null : parsed.metadata;
-      const displayText = parsed === null ? raw : parsed.body;
-      const lowerEntry = displayText.toLowerCase();
-      const entryTokens = tokenize(lowerEntry);
-      // Skip entries with zero lexical overlap — they are never relevant.
-      if (overlapRatio(queryTokens, entryTokens) === 0) continue;
+  const memoryKinds = ["memory", "user"];
+  const transcriptKinds = ["transcript"];
+  const allKinds = corpus === "all" ? [...memoryKinds, ...transcriptKinds] : corpus === "memory" ? memoryKinds : transcriptKinds;
 
-      const score = scoreEntry({
-        queryTokens,
-        lowerQuery,
-        lowerEntry,
-        target,
-        scopeTag: tag,
-        activeScopeTag: activeMemoryTag,
-        metadata,
-        nowMs,
-      });
-
-      results.push({
-        scope: tag,
-        target,
-        text: displayText,
-        score,
-        metadata,
-      });
+  let memoryScopes: string[] = [];
+  if (corpus === "memory" || corpus === "all") {
+    if (args.scope !== undefined) {
+      memoryScopes = [scopeTag(args.scope)];
+    } else {
+      const enumerated = await enumerateMemoryScopes(args.store, args.activeScope, args.persona, allChats);
+      memoryScopes = enumerated.map((s) => s.tag);
     }
   }
 
-  // Deterministic ranking: higher score first; ties broken by scope tag then
-  // entry text so the order is stable across runs.
-  results.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    if (a.scope !== b.scope) return a.scope < b.scope ? -1 : 1;
-    return a.text < b.text ? -1 : a.text > b.text ? 1 : 0;
+  let transcriptScopes: string[] = [];
+  if (corpus === "transcripts" || corpus === "all" && args.scope === undefined) {
+    transcriptScopes = await enumerateTranscriptScopes(args.store, args.activeScope, transcriptAllChats);
+  }
+
+  const scopes = [...memoryScopes, ...transcriptScopes];
+  const searchedScopes = scopes.length;
+
+  if (scopes.length === 0) {
+    args.metrics?.record({
+      type: "event",
+      name: "memory_search",
+      scope: null,
+      extra: { query: args.query, scopes: 0, resultCount: 0, limit, degraded: false },
+    });
+    return { query: args.query, searchedScopes: 0, degraded: false, results: [] };
+  }
+
+  const activeChatId = ((): string | null => {
+    if (allChats || noChatId) return null;
+    if (args.scope === undefined) return String(args.activeScope.chatId);
+    if (args.scope === "user") return null;
+    if (typeof args.scope === "object" && "topic" in args.scope) return String(args.scope.topic.chatId);
+    return null; // general or agent scope
+  })();
+
+  const [vector, keywordRows] = await Promise.all([
+    vectorSearch({ store: args.store, query: args.query, scopes, kinds: allKinds, chatId: activeChatId }),
+    Promise.resolve(keywordSearch({ store: args.store, query: args.query, scopes, kinds: allKinds, chatId: activeChatId })),
+  ]);
+
+  const candidateIds = new Set<string>();
+  for (const r of vector.rows) candidateIds.add(r.entryId);
+  for (const r of keywordRows) candidateIds.add(r.entryId);
+  const entryTagsById = loadEntryTags(args.store, Array.from(candidateIds));
+
+  let merged = mergeHybridResults({
+    vector: vector.rows,
+    keyword: keywordRows,
+    vectorWeight: weights.vectorWeight,
+    textWeight: weights.textWeight,
+    queryTags,
+    entryTagsById,
+    nowMs,
+    temporalDecay: temporalDecayFromEnv(),
   });
 
-  const ranked = results.slice(0, limit);
+  // Apply MMR re-ranking when the candidate pool is more than twice the requested limit.
+  if (merged.length > limit * 2) {
+    merged = applyMMR(merged, { enabled: true, lambda: 0.7 });
+  }
+
+  const ranked = merged.slice(0, limit);
+
+  // Update recall stats for curated memory entries only (transcripts are not
+  // eligible for recall-aware compaction).
+  const memoryIds = ranked.filter((r) => r.entryKind === "memory" || r.entryKind === "user").map((r) => r.entryId);
+  updateRecallStats(args.store, memoryIds);
+
+  const degraded = vector.degraded;
+  const warning = degraded ? args.store.embeddingProvider?.status().lastError : undefined;
 
   args.metrics?.record({
     type: "event",
@@ -405,18 +554,20 @@ export async function searchMemoryEntries(args: {
     scope: null,
     extra: {
       query: args.query,
-      scopes: scopes.length,
+      scopes: searchedScopes,
       resultCount: ranked.length,
       limit,
+      degraded,
     },
   });
 
   return {
     query: args.query,
-    searchedScopes: scopes.length,
-    results: ranked,
+    searchedScopes,
+    degraded,
+    warning,
+    results: ranked.map((r) => buildMemoryResult(r, entryTagsById.get(r.entryId) ?? [])),
   };
 }
 
-// Re-export for callers that need the stripped body form.
-export { stripEntryMetadata };
+

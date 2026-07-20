@@ -1,6 +1,7 @@
 import { loadConfig, ensureGoblinHome } from "./config.ts";
 import { buildBot } from "./bot.ts";
 import { log, initLog } from "./log.ts";
+import { MemoryEngine } from "./memory/mod.ts";
 import { validateModelAtStartup } from "./agent/poe-validate.ts";
 import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
 import { syncTelegramMenu } from "./commands/registry.ts";
@@ -11,9 +12,13 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
   initLog(cfg.logLevel);
   ensureGoblinHome(cfg);
+  const memoryEngine = new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
+  await memoryEngine.migrate();
+  await memoryEngine.embeddingProvider.reindexIfNeeded();
   await runPreflight(cfg);
   await validateModelAtStartup(cfg, log);
-  const { bot, manager, subagentRunner, agentRunners, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg);
+  const { bot, manager, subagentRunner, agentRunners, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg, { memoryEngine });
+  await memoryEngine.syncTranscripts();
   await externalAgentRunner?.init();
   manager.init();
 
@@ -21,7 +26,7 @@ async function main(): Promise<void> {
   // peekBinding validation. Shares the same ScheduleStore and TurnDispatcher
   // as Telegram intake, so scheduled turns serialize through the same
   // per-session queue as /queue and media prompts.
-  const scheduler = new SchedulerLoop({ store: scheduleStore, sessionSource: manager, dispatcher, home: cfg.goblinHome });
+  const scheduler = new SchedulerLoop({ store: scheduleStore, sessionSource: manager, dispatcher, home: cfg.goblinHome, memoryEngine });
   scheduler.start();
 
   // Graceful shutdown. grammy's start() resolves when stop() is called.

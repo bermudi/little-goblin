@@ -1,7 +1,7 @@
 /**
  * Quarantine store for rejected memory candidates.
  *
- * Appends redacted JSONL records to `$GOBLIN_HOME/memory/quarantine.jsonl`.
+ * Appends redacted JSONL records to `$GOBLIN_HOME/state/memory/quarantine.jsonl`.
  * Quarantine is audit-only: its contents MUST NOT appear in per-turn
  * snapshots, `memory_read`, or `memory_read_index`. It exists for debugging
  * and future review, not for model context.
@@ -20,7 +20,8 @@ export type QuarantineReason =
   | "unsafe"
   | "low_confidence"
   | "procedural_noise"
-  | "review";
+  | "review"
+  | "malformed";
 
 export interface QuarantineRecord {
   /** ISO timestamp of the rejection. */

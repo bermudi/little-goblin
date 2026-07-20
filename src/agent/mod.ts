@@ -20,14 +20,14 @@ import { resolveModel, type ResolvedModel } from "./models.ts";
 import { type GoblinSystemPrompt, buildGoblinSystemPrompt } from "./system-prompt.ts";
 import {
   MemoryStore,
-  createMemoryReadIndexTool,
-  createMemoryReadTool,
+  EmbeddingProvider,
   createMemorySearchTool,
   createMemoryWriteTool,
-  formatSnapshot,
+  formatFrozenSummary,
+  formatRelevantMemory,
   resolveActiveScope,
 } from "../memory/mod.ts";
-import { MemoryReflector } from "../memory/reflector.ts";
+import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
 import type { ChatLocator } from "../sessions/types.ts";
@@ -57,12 +57,24 @@ export interface AgentRunnerOptions {
   /** Queued notice to inject as context on the first prompt. Consumed once. */
   pendingProjectNotice?: string;
   /**
-   * Memory reflector to use for background reflection after completed turns.
-   * When absent, a default `MemoryReflector` is constructed from `cfg.goblinHome`
-   * and the runner's `MemoryStore`. Tests inject a custom instance to control
-   * candidate extraction and observe reflection state.
+   * Dreaming pipeline to use for background memory promotion after completed
+   * turns. When absent, a default `DreamingPipeline` is constructed from
+   * `cfg.goblinHome` and the runner's `MemoryStore`.
    */
-  memoryReflector?: MemoryReflector;
+  dreamingPipeline?: DreamingPipeline;
+  /**
+   * When true, the runner does not trigger light-sleep dreaming after an
+   * `agent_end` event. Used for internal non-chat turns whose transcript should
+   * not be fed back into the dreaming pipeline.
+   */
+  noDreaming?: boolean;
+  /**
+   * Shared embedding provider. When supplied, the runner creates a private
+   * `MemoryStore` connection that uses this provider for vector indexing.
+   */
+  embeddingProvider?: EmbeddingProvider;
+  /** Optional pre-built memory store (tests may inject one). */
+  memoryStore?: MemoryStore;
   /** Shared schedule store. When present, the agent gets the `schedule_turn` tool. */
   scheduleStore?: ScheduleStore;
   /** Shared external agent runner. When present and enabled, the agent gets the `external_agent` tool. */
@@ -204,7 +216,9 @@ export class AgentRunner {
   private accumulatedText: string = "";
   private callbacks: TurnCallbacks | null = null;
   private memoryStore: MemoryStore;
-  private memoryReflector: MemoryReflector;
+  private ownsMemoryStore: boolean;
+  private dreamingPipeline: DreamingPipeline;
+  private noDreaming: boolean;
   private activeScope: ActiveScope;
   private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
   private topicNameCache = new Map<string, string | null>();
@@ -219,6 +233,8 @@ export class AgentRunner {
   private turnToolErrorCount = 0;
   /** The goblin system prompt value (text + provenance of loaded prompt files). */
   private goblinSystemPrompt: GoblinSystemPrompt | null = null;
+  /** Frozen user.md body captured at session init for per-turn relevant-memory dedup. */
+  private frozenUserBody: string = "";
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
    * resolve within the cascade timeout. Once set, `isStreaming` reports
@@ -280,10 +296,17 @@ export class AgentRunner {
     this.pendingProjectNotice = opts.pendingProjectNotice;
     this.resolvedModel = opts.resolvedModel ?? null;
     this.metricsStore = new MetricsStore(opts.cfg.goblinHome, this.sessionId);
-    // Construction is cheap (no I/O); the directory is created lazily on first write.
-    this.memoryStore = new MemoryStore(opts.cfg.goblinHome, this.metricsStore);
-    this.memoryReflector = opts.memoryReflector ??
-      new MemoryReflector({ goblinHome: opts.cfg.goblinHome, store: this.memoryStore, metrics: this.metricsStore });
+    this.ownsMemoryStore = opts.memoryStore === undefined;
+    this.memoryStore =
+      opts.memoryStore ??
+      new MemoryStore(
+        opts.cfg.goblinHome,
+        this.metricsStore,
+        opts.embeddingProvider ? { embeddings: opts.embeddingProvider } : undefined,
+      );
+    this.noDreaming = opts.noDreaming ?? false;
+    this.dreamingPipeline = opts.dreamingPipeline ??
+      new DreamingPipeline({ goblinHome: opts.cfg.goblinHome, store: this.memoryStore, metrics: this.metricsStore });
     const backendOpts: AgentBackendOptions = {
       cfg: this.cfg,
       sessionId: this.sessionId,
@@ -315,12 +338,30 @@ export class AgentRunner {
 
       const tools = await this.buildCustomTools();
 
+      let systemPrompt = goblinSystemPrompt.prompt;
+      const frozenSummary = await formatFrozenSummary({
+        store: this.memoryStore,
+        activeScope: this.activeScope,
+        caller: { kind: "main" },
+        getTopicName: this.getTopicName,
+      });
+      if (frozenSummary !== null) {
+        systemPrompt = `${systemPrompt}\n\n${frozenSummary}`;
+      }
+
+      // Capture the frozen user.md body for per-turn relevant-memory dedup.
+      // The system prompt is immutable after init, so user-preferences that
+      // were present at session start should not be repeated as relevant memory.
+      // New user entries (e.g. from dreaming) written after init are not in the
+      // frozen summary and can still surface per-turn.
+      this.frozenUserBody = this.memoryStore.read("user").body;
+
       this.throwIfAbortedBeforeInit();
       await this.backend.init({
         resolvedModel,
         thinkingLevel: this._thinkingLevel ?? resolvedModel.thinkingLevel,
         customTools: tools,
-        systemPrompt: goblinSystemPrompt.prompt,
+        systemPrompt,
         cwd,
       });
       this.throwIfAbortedBeforeInit();
@@ -346,17 +387,11 @@ export class AgentRunner {
   private async buildCustomTools(): Promise<ToolDefinition[]> {
     const tools: ToolDefinition[] = [
       ...this.customTools,
-      createMemoryReadTool({ store: this.memoryStore, activeScope: this.activeScope }),
-      createMemoryReadIndexTool({
-        store: this.memoryStore,
-        activeScope: this.activeScope,
-        caller: { kind: "main" },
-        getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
-      }),
       createMemorySearchTool({
         store: this.memoryStore,
         activeScope: this.activeScope,
         caller: { kind: "main" },
+        getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
         metrics: this.metricsStore,
       }),
       createMemoryWriteTool({ store: this.memoryStore, activeScope: this.activeScope }),
@@ -476,14 +511,14 @@ export class AgentRunner {
 
     dispatchAgentEvent(event, this.callbacks);
 
-    // Schedule a fire-and-log background memory reflection pass after a
-    // completed main-agent turn. Reflection reads the transcript tail after
-    // a persisted cursor and never blocks the turn path — errors are caught
-    // inside the reflector and logged, never thrown here. followUp() steers
-    // a running turn without emitting an independent agent_end, so no
-    // separate reflection pass is scheduled for steers.
-    if (event.type === "agent_end") {
-      this.memoryReflector.scheduleReflection(this.sessionId, this.activeScope);
+    // Trigger a fire-and-log dreaming light-sleep pass after a completed
+    // main-agent turn. Light sleep reads the transcript tail after a persisted
+    // cursor and never blocks the turn path — errors are caught inside the
+    // pipeline and logged, never thrown here. followUp() steers a running turn
+    // without emitting an independent agent_end, so no separate pass is
+    // scheduled for steers. Internal (non-chat) runners skip dreaming entirely.
+    if (event.type === "agent_end" && !this.noDreaming) {
+      void this.dreamingPipeline.runLightSleep(this.sessionId, this.activeScope);
     }
   }
 
@@ -585,20 +620,19 @@ export class AgentRunner {
         this._thinkingLevel = undefined;
       }
 
-      // Inject the curated memory snapshot as a per-turn aside.
-      // Pi queues it and flushes alongside the next user message; the system
-      // prompt stays frozen, preserving the provider prefix cache. When prompt
-      // text is available it drives a bounded `## relevant memory` section so
-      // the snapshot can surface related entries from other scopes. Steers do
-      // not pass prompt text and so never inject a relevant-memory section.
+      // Inject the `## relevant memory` per-turn aside computed from the
+      // prompt text. Pi queues it and flushes alongside the next user message;
+      // the system prompt stays frozen, preserving the provider prefix cache.
+      // Steers do not pass prompt text and so never inject a relevant-memory
+      // section.
       const promptText = extractPromptText(content);
-      const aside = await formatSnapshot({
+      const aside = await formatRelevantMemory({
         store: this.memoryStore,
         activeScope: this.activeScope,
         caller: { kind: "main" },
-        getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
         promptText,
         metrics: this.metricsStore,
+        frozenUserBody: this.frozenUserBody,
       });
       if (aside !== null) {
         await this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" });
@@ -806,15 +840,15 @@ export class AgentRunner {
   }
 
   /**
-   * Clean up resources. Awaits any in-flight memory reflection so that a
+   * Clean up resources. Awaits any in-flight dreaming light sleep so that a
    * disposing runner does not leave background writes that race with session
    * archive or rebinding.
    */
   async dispose(): Promise<void> {
     try {
-      await this.memoryReflector.awaitSettled(this.sessionId);
+      await this.dreamingPipeline.awaitSettled(this.sessionId);
     } catch (err) {
-      log.error("AgentRunner memory reflector await failed during dispose", {
+      log.error("AgentRunner dreaming pipeline await failed during dispose", {
         sessionId: this.sessionId,
         err: err instanceof Error ? err.message : String(err),
       });
@@ -826,6 +860,16 @@ export class AgentRunner {
         sessionId: this.sessionId,
         err: err instanceof Error ? err.message : String(err),
       });
+    }
+    if (this.ownsMemoryStore) {
+      try {
+        this.memoryStore.close();
+      } catch (err) {
+        log.error("AgentRunner memory store close failed", {
+          sessionId: this.sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 }

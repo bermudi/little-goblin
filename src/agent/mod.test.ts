@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { sessionDir, transcriptPath } from "../sessions/paths.ts";
 import { piAgentDir } from "../pi-host.ts";
 import { agentsMdPath, skillsPath, soulMdPath, workdirPath } from "../workspace/paths.ts";
-import { memoryDir } from "../memory/paths.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import { ExternalAgentRunner } from "../external-agents/mod.ts";
 import { readMetricsSummary } from "../metrics/mod.ts";
@@ -272,10 +271,10 @@ import { SubagentRunner } from "../subagents/mod.ts";
 import type { ChatLocator } from "../sessions/types.ts";
 import { MemoryStore } from "../memory/store.ts";
 import {
-  MemoryReflector,
+  DreamingPipeline,
   type Candidate,
   type CandidateExtractor,
-} from "../memory/reflector.ts";
+} from "../memory/dreaming.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -321,7 +320,7 @@ function makeRunner(
   projectDir?: string,
   pendingProjectNotice?: string,
   thinkingLevel?: string,
-  memoryReflector?: MemoryReflector,
+  dreamingPipeline?: DreamingPipeline,
 ) {
   return new AgentRunner({
     cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }), ...configOverrides },
@@ -332,7 +331,7 @@ function makeRunner(
     projectDir,
     pendingProjectNotice,
     thinkingLevel: thinkingLevel as never,
-    memoryReflector,
+    dreamingPipeline,
     backendFactory: (opts) => new FakeAgentBackend(opts),
   });
 }
@@ -423,7 +422,7 @@ describe("AgentRunner", () => {
   });
 
   describe("memory tool registration", () => {
-    it("appends the four memory tools to customTools when none are supplied", async () => {
+    it("appends the two memory tools to customTools when none are supplied", async () => {
       const runner = makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
@@ -431,8 +430,6 @@ describe("AgentRunner", () => {
       const tools = opts.customTools as Array<{ name: string }>;
       expect(Array.isArray(tools)).toBe(true);
       const names = tools.map((t) => t.name);
-      expect(names).toContain("memory_read");
-      expect(names).toContain("memory_read_index");
       expect(names).toContain("memory_search");
       expect(names).toContain("memory_write");
     });
@@ -446,10 +443,10 @@ describe("AgentRunner", () => {
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
-      expect(names).toEqual(["t1", "t2", "memory_read", "memory_read_index", "memory_search", "memory_write"]);
+      expect(names).toEqual(["t1", "t2", "memory_search", "memory_write"]);
     });
 
-    it("registers memory_search between memory_read_index and memory_write", async () => {
+    it("registers memory_search before memory_write", async () => {
       const runner = makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
@@ -457,10 +454,8 @@ describe("AgentRunner", () => {
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
       const searchIdx = names.indexOf("memory_search");
-      const readIndexIdx = names.indexOf("memory_read_index");
       const writeIdx = names.indexOf("memory_write");
       expect(searchIdx).toBeGreaterThan(-1);
-      expect(searchIdx).toBeGreaterThan(readIndexIdx);
       expect(searchIdx).toBeLessThan(writeIdx);
     });
 
@@ -479,15 +474,23 @@ describe("AgentRunner", () => {
         undefined,
         {},
       );
-      expect(readFileSync(join(memoryDir(tmpDir), "topics", "-100", "42", "memory.md"), "utf-8")).toBe("topic fact");
+      const verifyStore = new MemoryStore(tmpDir);
+      try {
+        expect(verifyStore.readBody({ topic: { chatId: -100, topicId: 42 } })).toBe("topic fact");
+      } finally {
+        verifyStore.close();
+      }
     });
 
     it("main agent memory_search includes all persona scopes", async () => {
       // Seed two persona scopes and the active topic, all matching the query.
-      mkdirSync(join(memoryDir(tmpDir), "agents", "researcher"), { recursive: true });
-      mkdirSync(join(memoryDir(tmpDir), "agents", "writer"), { recursive: true });
-      writeFileSync(join(memoryDir(tmpDir), "agents", "researcher", "memory.md"), "researcher backups persona note", "utf-8");
-      writeFileSync(join(memoryDir(tmpDir), "agents", "writer", "memory.md"), "writer backups persona note", "utf-8");
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add({ agent: { name: "researcher" } }, "researcher backups persona note");
+        await store.add({ agent: { name: "writer" } }, "writer backups persona note");
+      } finally {
+        store.close();
+      }
 
       const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
       await runner.prompt("hello", nopCallbacks());
@@ -512,12 +515,14 @@ describe("AgentRunner", () => {
 
     it("memory_search default scope is limited to the runner's active chat plus global memory", async () => {
       // Same-chat topic + other-chat topic both matching.
-      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "42"), { recursive: true });
-      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "7"), { recursive: true });
-      mkdirSync(join(memoryDir(tmpDir), "topics", "-200", "9"), { recursive: true });
-      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "42", "memory.md"), "active backups note", "utf-8");
-      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "7", "memory.md"), "peer backups note", "utf-8");
-      writeFileSync(join(memoryDir(tmpDir), "topics", "-200", "9", "memory.md"), "other chat backups note", "utf-8");
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add({ topic: { chatId: -100, topicId: 42 } }, "active backups note");
+        await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer backups note");
+        await store.add({ topic: { chatId: -200, topicId: 9 } }, "other chat backups note");
+      } finally {
+        store.close();
+      }
 
       const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
       await runner.prompt("hello", nopCallbacks());
@@ -541,55 +546,60 @@ describe("AgentRunner", () => {
   });
 
   describe("per-turn memory aside", () => {
-    function seedMemory(home: string, files: { memory?: string; user?: string }): void {
-      mkdirSync(memoryDir(home), { recursive: true });
-      if (files.memory !== undefined) {
-        mkdirSync(join(memoryDir(home), "general"), { recursive: true });
-        writeFileSync(join(memoryDir(home), "general", "memory.md"), files.memory, "utf-8");
-      }
-      if (files.user !== undefined) {
-        writeFileSync(join(memoryDir(home), "user.md"), files.user, "utf-8");
-      }
-    }
-
-    it("does NOT call sendCustomMessage when both memory files are empty/absent", async () => {
+    it("does NOT call sendCustomMessage when no relevant memory matches", async () => {
       const runner = makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
       expect(sessionHolder.sendCustomMessage).not.toHaveBeenCalled();
     });
 
-    it("calls sendCustomMessage with deliverAs:nextTurn and a snapshot payload when memory is non-empty", async () => {
-      seedMemory(tmpDir, { memory: "fact-A" });
-      const runner = makeRunner(tmpDir);
-      await runner.prompt("hello", nopCallbacks());
+    it("calls sendCustomMessage with deliverAs:nextTurn and a relevant-memory payload when memory is non-empty and matches", async () => {
+      // General scope has no match for "hello", but the active scope (general)
+      // plus a peer topic containing "backups" lets the prompt text match.
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add("general", "fact-A");
+        await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer backups note");
+      } finally {
+        store.close();
+      }
+
+      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      await runner.prompt("tell me about backups", nopCallbacks());
 
       expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
       const [payload, opts] = sessionHolder.sendCustomMessage.mock.calls[0]!;
       expect((opts as { deliverAs?: string }).deliverAs).toBe("nextTurn");
       const p = payload as { customType: string; content: string };
-      expect(p.customType).toBe("goblin.memory.snapshot");
+      expect(p.customType).toBe("goblin.memory.relevant");
       expect(typeof p.content).toBe("string");
-      expect(p.content.startsWith("[goblin memory snapshot]")).toBe(true);
-      // Stale-prone guardrail is present on every non-null snapshot.
-      expect(p.content).toContain("stale or incomplete");
-      expect(p.content).toContain("override memory");
+      expect(p.content.startsWith("## relevant memory")).toBe(true);
+      expect(p.content).toContain("- [topics/-100/7] peer backups note");
     });
 
-    it("renders `(empty)` for the absent file when only one is populated", async () => {
-      seedMemory(tmpDir, { memory: "fact-A" });
-      const runner = makeRunner(tmpDir);
-      await runner.prompt("hello", nopCallbacks());
+    it("omits the per-turn aside when the prompt text has no matches", async () => {
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add("general", "general note");
+      } finally {
+        store.close();
+      }
 
-      const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
-      const text = (payload as { content: string }).content;
-      expect(text).toContain("## memory.md\nfact-A");
-      expect(text).toContain("## user.md\n(empty)");
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hello world", nopCallbacks());
+
+      expect(sessionHolder.sendCustomMessage).not.toHaveBeenCalled();
     });
 
     it("dispatches the aside before sendUserMessage on a non-streaming turn", async () => {
-      seedMemory(tmpDir, { user: "pref-1" });
-      const runner = makeRunner(tmpDir);
-      await runner.prompt("hello", nopCallbacks());
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer backups note");
+      } finally {
+        store.close();
+      }
+
+      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      await runner.prompt("backups", nopCallbacks());
 
       expect(sessionHolder.callOrder).toEqual([
         "sendCustomMessage",
@@ -597,14 +607,20 @@ describe("AgentRunner", () => {
       ]);
     });
 
-    it("does NOT inject a memory snapshot on followUp (steer reuses the running turn's snapshot)", async () => {
-      seedMemory(tmpDir, { user: "pref-1" });
-      const runner = makeRunner(tmpDir);
-      // Start a turn while idle — this injects the snapshot.
-      await runner.prompt("first", nopCallbacks());
+    it("does NOT inject a memory aside on followUp (steer reuses the running turn's aside)", async () => {
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer backups note");
+      } finally {
+        store.close();
+      }
+
+      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      // Start a turn while idle — this injects the relevant-memory aside.
+      await runner.prompt("backups", nopCallbacks());
       const snapshotCallsBefore = sessionHolder.sendCustomMessage.mock.calls.length;
 
-      // Steer mid-turn: no additional snapshot should be injected.
+      // Steer mid-turn: no additional aside should be injected.
       sessionHolder.streaming = true;
       await runner.followUp("redirect");
 
@@ -612,44 +628,22 @@ describe("AgentRunner", () => {
       expect(sessionHolder.followUp).toHaveBeenCalledWith("redirect", undefined);
     });
 
-    it("injects a ## relevant memory section when the prompt text matches another scope", async () => {
-      // Active general scope + a peer topic in the same chat that matches the prompt.
-      mkdirSync(join(memoryDir(tmpDir), "general"), { recursive: true });
-      writeFileSync(join(memoryDir(tmpDir), "general", "memory.md"), "general note", "utf-8");
-      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "7"), { recursive: true });
-      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "7", "memory.md"), "peer backups note", "utf-8");
+    it("steer text never produces a relevant-memory section (no aside on followUp)", async () => {
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer backups note");
+      } finally {
+        store.close();
+      }
 
       const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
-      await runner.prompt("tell me about backups", nopCallbacks());
-
-      const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
-      const text = (payload as { content: string }).content;
-      expect(text).toContain("## relevant memory");
-      expect(text).toContain("- [topics/-100/7] peer backups note");
-    });
-
-    it("omits ## relevant memory when the prompt text has no matches", async () => {
-      mkdirSync(join(memoryDir(tmpDir), "general"), { recursive: true });
-      writeFileSync(join(memoryDir(tmpDir), "general", "memory.md"), "general note", "utf-8");
-
-      const runner = makeRunner(tmpDir);
-      await runner.prompt("hello world", nopCallbacks());
-
-      const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
-      const text = (payload as { content: string }).content;
-      expect(text).not.toContain("## relevant memory");
-    });
-
-    it("steer text never produces a relevant-memory section (no snapshot on followUp)", async () => {
-      seedMemory(tmpDir, { user: "pref-1" });
-      const runner = makeRunner(tmpDir);
-      await runner.prompt("first", nopCallbacks());
+      await runner.prompt("backups", nopCallbacks());
       const callsBefore = sessionHolder.sendCustomMessage.mock.calls.length;
 
       sessionHolder.streaming = true;
       await runner.followUp("backups");
 
-      // No new snapshot at all — relevant memory is never computed for a steer.
+      // No new aside at all — relevant memory is never computed for a steer.
       expect(sessionHolder.sendCustomMessage.mock.calls.length).toBe(callsBefore);
     });
   });
@@ -675,9 +669,13 @@ describe("AgentRunner", () => {
 
     it("does not recreate session when memory content changes between turns", async () => {
       // Seed initial memory
-      mkdirSync(join(memoryDir(tmpDir), "general"), { recursive: true });
-      writeFileSync(join(memoryDir(tmpDir), "general", "memory.md"), "initial", "utf-8");
-      writeFileSync(join(memoryDir(tmpDir), "user.md"), "user pref", "utf-8");
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add("general", "initial");
+        await store.add("user", "user pref");
+      } finally {
+        store.close();
+      }
 
       const runner = makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
@@ -687,17 +685,22 @@ describe("AgentRunner", () => {
       const callCountAfterFirst = capturedCreateArgs.length;
 
       // Modify memory between turns
-      writeFileSync(join(memoryDir(tmpDir), "general", "memory.md"), "modified content", "utf-8");
+      const modifyStore = new MemoryStore(tmpDir);
+      try {
+        await modifyStore.rewrite("general", "modified content");
+      } finally {
+        modifyStore.close();
+      }
 
-      // Second prompt should NOT recreate the session
-      await runner.prompt("second", nopCallbacks());
+      // Second prompt should NOT recreate the session or resource loader.
+      await runner.prompt("modified content", nopCallbacks());
       expect(capturedCreateArgs).toHaveLength(callCountAfterFirst);
+      expect(capturedResourceLoaderArgs).toHaveLength(1);
 
-      // Verify second sendCustomMessage contains the new content
-      // sendCustomMessage was called twice, second call should have new content
-      expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(2);
-      const secondCall = sessionHolder.sendCustomMessage.mock.calls[1];
-      expect((secondCall![0] as { content: string }).content).toContain("modified content");
+      // The per-turn aside deduplicates active-scope memory, so it is not
+      // re-sent; the user message is still delivered.
+      expect(sessionHolder.sendUserMessage).toHaveBeenLastCalledWith("modified content");
+      expect(sessionHolder.sendCustomMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -896,17 +899,23 @@ describe("AgentRunner", () => {
       expect(loaderOpts.systemPrompt).toContain("exact project guidance");
     });
 
-    it("does not concatenate memory snapshots into the system prompt", async () => {
-      mkdirSync(join(memoryDir(tmpDir), "general"), { recursive: true });
-      writeFileSync(join(memoryDir(tmpDir), "general", "memory.md"), "fresh memory fact", "utf-8");
+    it("injects a frozen memory summary into the system prompt and does not duplicate it as a per-turn aside", async () => {
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add("general", "fresh memory fact");
+      } finally {
+        store.close();
+      }
 
       const runner = makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
-      expect(loaderOpts.systemPrompt).not.toContain("fresh memory fact");
-      expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
-      expect((sessionHolder.sendCustomMessage.mock.calls[0]![1] as { deliverAs?: string }).deliverAs).toBe("nextTurn");
+      // Frozen summary lives in the system prompt and is bounded.
+      expect(loaderOpts.systemPrompt).toContain("fresh memory fact");
+      expect(loaderOpts.systemPrompt).toContain("[goblin memory summary (frozen at session start)]");
+      // The per-turn aside is only sent when prompt text matches relevant memory.
+      expect(sessionHolder.sendCustomMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -1411,20 +1420,23 @@ describe("AgentRunner", () => {
   });
 
   describe("cachedTopicName", () => {
-    it("caches getTopicName results and reuses them across snapshot calls", async () => {
+    it("caches getTopicName results and reuses them across frozen summary builds", async () => {
       let callCount = 0;
       const getTopicName = mock(async (_chatId: number, topicId: number) => {
         callCount++;
         return topicId === 7 ? "IT Topic" : null;
       });
 
-      // Seed memory with topics so getTopicName gets invoked
-      mkdirSync(join(memoryDir(tmpDir), "topics", "-100"), { recursive: true });
-      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "42"), { recursive: true });
-      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "7"), { recursive: true });
-      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "42", "memory.md"), "fact-42", "utf-8");
-      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "7", "memory.md"), "fact-7", "utf-8");
-      writeFileSync(join(memoryDir(tmpDir), "user.md"), "user pref", "utf-8");
+      // Seed memory with topics so getTopicName gets invoked while building
+      // the frozen summary during session init.
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add({ topic: { chatId: -100, topicId: 42 } }, "fact-42");
+        await store.add({ topic: { chatId: -100, topicId: 7 } }, "fact-7");
+        await store.add("user", "user pref");
+      } finally {
+        store.close();
+      }
 
       const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 }, getTopicName);
 
@@ -1433,14 +1445,10 @@ describe("AgentRunner", () => {
       expect(callCount).toBeGreaterThanOrEqual(1);
       const callsAfterFirst = callCount;
 
-      // Second prompt - should use cached values, not increase call count
+      // Second prompt - session is reused, so no new frozen summary build and
+      // no additional getTopicName calls.
       await runner.prompt("second", nopCallbacks());
       expect(callCount).toBe(callsAfterFirst);
-
-      // Verify the topic name was actually used in the snapshot
-      const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
-      const text = (payload as { content: string }).content;
-      expect(text).toContain("IT Topic");
     });
 
     it("caches null results and does not call getTopicName again for same topic", async () => {
@@ -1450,11 +1458,14 @@ describe("AgentRunner", () => {
         return null; // Always returns null
       });
 
-      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "42"), { recursive: true });
-      mkdirSync(join(memoryDir(tmpDir), "topics", "-100", "7"), { recursive: true });
-      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "42", "memory.md"), "fact-42", "utf-8");
-      writeFileSync(join(memoryDir(tmpDir), "topics", "-100", "7", "memory.md"), "fact-7", "utf-8");
-      writeFileSync(join(memoryDir(tmpDir), "user.md"), "user pref", "utf-8");
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add({ topic: { chatId: -100, topicId: 42 } }, "fact-42");
+        await store.add({ topic: { chatId: -100, topicId: 7 } }, "fact-7");
+        await store.add("user", "user pref");
+      } finally {
+        store.close();
+      }
 
       const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 }, getTopicName);
 
@@ -1462,7 +1473,7 @@ describe("AgentRunner", () => {
       const callsAfterFirst = callCount;
 
       await runner.prompt("second", nopCallbacks());
-      // Should not have made additional calls since null is cached
+      // Should not have made additional calls since null is cached.
       expect(callCount).toBe(callsAfterFirst);
     });
   });
@@ -1559,23 +1570,27 @@ describe("AgentRunner", () => {
     });
   });
 
-  describe("memory reflection scheduling", () => {
-    /** Helper: create a reflector backed by a real store on tmpDir. */
-    function makeReflector(
+  describe("dreaming light sleep scheduling", () => {
+    /** Helper: create a dreaming pipeline backed by a real store on tmpDir. */
+    function makeDreamingPipeline(
       home: string,
       extractor?: CandidateExtractor,
-    ): MemoryReflector {
+    ): DreamingPipeline {
       const store = new MemoryStore(home);
-      return new MemoryReflector({ goblinHome: home, store, extractor });
+      return new DreamingPipeline({ goblinHome: home, store, extractor });
     }
 
-    /** Pre-seed a reflection cursor at processedLines=0 so the first pass processes all transcript entries. */
+    /** Pre-seed a dreaming cursor at processedLines=0 so the first pass processes all transcript entries. */
     function seedCursorAtZero(home: string): void {
-      writeFileSync(
-        join(sessionDir(home, "abcdef1234"), "memory-reflection.json"),
-        JSON.stringify({ processedLines: 0, lastReflectedAt: new Date().toISOString() }) + "\n",
-        "utf-8",
-      );
+      const store = new MemoryStore(home);
+      try {
+        store.db.setMeta(
+          "dreaming_cursor:abcdef1234",
+          JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
+        );
+      } finally {
+        store.close();
+      }
     }
 
     /** Write a single user transcript entry. */
@@ -1591,69 +1606,73 @@ describe("AgentRunner", () => {
       );
     }
 
-    it("schedules a reflection pass after agent_end on a completed prompt turn", async () => {
-      const reflector = makeReflector(tmpDir);
-      const scheduleSpy = mock((_sessionId: string, _scope: unknown) => {});
-      reflector.scheduleReflection = scheduleSpy as never;
+    it("schedules light sleep after agent_end on a completed prompt turn", async () => {
+      const dreaming = makeDreamingPipeline(tmpDir);
+      const runSpy = mock((_sessionId: string, _scope: unknown) => Promise.resolve());
+      dreaming.runLightSleep = runSpy as never;
 
       const runner = makeRunner(
-        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, reflector,
+        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
       );
       await runner.prompt("hello", nopCallbacks());
 
       sessionHolder.emit({ type: "agent_end", messages: [] });
 
-      expect(scheduleSpy).toHaveBeenCalledTimes(1);
-      expect(scheduleSpy).toHaveBeenCalledWith(
+      expect(runSpy).toHaveBeenCalledTimes(1);
+      expect(runSpy).toHaveBeenCalledWith(
         "abcdef1234",
         expect.objectContaining({ chatId: 123, topicScope: "general" }),
       );
     });
 
-    it("does not schedule an independent reflection pass for followUp (steer)", async () => {
-      const reflector = makeReflector(tmpDir);
-      const scheduleSpy = mock((_sessionId: string, _scope: unknown) => {});
-      reflector.scheduleReflection = scheduleSpy as never;
+    it("does not schedule an independent light sleep pass for followUp (steer)", async () => {
+      const dreaming = makeDreamingPipeline(tmpDir);
+      const runSpy = mock((_sessionId: string, _scope: unknown) => Promise.resolve());
+      dreaming.runLightSleep = runSpy as never;
 
       const runner = makeRunner(
-        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, reflector,
+        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
       );
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
       await runner.followUp("redirect");
 
       // followUp steers the running turn — no agent_end is emitted, so no
-      // reflection is scheduled for the steer itself.
-      expect(scheduleSpy).not.toHaveBeenCalled();
+      // light sleep pass is scheduled for the steer itself.
+      expect(runSpy).not.toHaveBeenCalled();
     });
 
-    it("reflection errors are logged and swallowed, not thrown to the event handler", async () => {
+    it("dreaming errors are logged and swallowed, not thrown to the event handler", async () => {
       const throwingExtractor: CandidateExtractor = () => {
         throw new Error("extractor blew up");
       };
-      const reflector = makeReflector(tmpDir, throwingExtractor);
+      const dreaming = makeDreamingPipeline(tmpDir, throwingExtractor);
 
       const runner = makeRunner(
-        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, reflector,
+        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
       );
       await runner.prompt("hello", nopCallbacks());
 
       seedCursorAtZero(tmpDir);
       writeTranscriptEntry(tmpDir, "I prefer terse answers");
 
-      // Emitting agent_end should not throw even though reflection fails.
+      // Emitting agent_end should not throw even though dreaming fails.
       sessionHolder.emit({ type: "agent_end", messages: [] });
-      await reflector.awaitSettled("abcdef1234");
+      await dreaming.awaitSettled("abcdef1234");
 
       // The cursor should NOT have advanced — a failed pass retries the
       // same range on the next schedule.
-      const cursor = JSON.parse(
-        readFileSync(join(sessionDir(tmpDir, "abcdef1234"), "memory-reflection.json"), "utf-8"),
-      );
-      expect(cursor.processedLines).toBe(0);
+      const checkStore = new MemoryStore(tmpDir);
+      try {
+        const raw = checkStore.db.getMeta("dreaming_cursor:abcdef1234");
+        const cursor = raw !== undefined ? (JSON.parse(raw) as { processedLines?: number }) : null;
+        expect(cursor?.processedLines ?? null).toBe(0);
+      } finally {
+        checkStore.close();
+      }
     });
 
-    it("reflected writes are visible in a subsequent turn's snapshot", async () => {
+    it("dreaming writes are visible in a subsequent turn's snapshot", async () => {
       const candidate: Candidate = {
         target: "user",
         category: "preference",
@@ -1662,44 +1681,49 @@ describe("AgentRunner", () => {
         source: { sessionId: "abcdef1234", lineRange: [0, 0], sourceRole: "user" },
       };
       const extractor: CandidateExtractor = () => [candidate];
-      const reflector = makeReflector(tmpDir, extractor);
+      const dreaming = makeDreamingPipeline(tmpDir, extractor);
 
       const runner = makeRunner(
-        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, reflector,
+        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
       );
       await runner.prompt("I prefer terse summaries", nopCallbacks());
 
       seedCursorAtZero(tmpDir);
       writeTranscriptEntry(tmpDir, "I prefer terse summaries");
 
-      // Complete the turn — agent_end schedules reflection.
+      // Complete the turn — agent_end schedules light sleep.
       sessionHolder.emit({ type: "agent_end", messages: [] });
-      await reflector.awaitSettled("abcdef1234");
+      await dreaming.awaitSettled("abcdef1234");
 
-      // The reflected entry should now be in user.md.
-      const userMd = readFileSync(join(memoryDir(tmpDir), "user.md"), "utf-8");
-      expect(userMd).toContain("User prefers terse engineering summaries.");
+      // The promoted entry should now be in user.md.
+      const checkStore = new MemoryStore(tmpDir);
+      try {
+        expect(checkStore.readBody("user")).toContain("User prefers terse engineering summaries.");
+      } finally {
+        checkStore.close();
+      }
 
-      // Next turn's snapshot should include the reflected entry.
+      // Next turn's relevant-memory aside should include the promoted entry
+      // when the prompt text matches it.
       sessionHolder.sendCustomMessage.mockClear();
-      await runner.prompt("next message", nopCallbacks());
+      await runner.prompt("terse summaries", nopCallbacks());
       expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
       const [payload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
       const text = (payload as { content: string }).content;
       expect(text).toContain("User prefers terse engineering summaries.");
     });
 
-    // Spec: "System prompt unchanged across reflection writes". The snapshot
+    // Spec: "System prompt unchanged across dreaming writes". The snapshot
     // is injected via sendCustomMessage, never via the system prompt, so the
     // value `_baseSystemPrompt` held at AgentSession creation MUST remain
-    // unchanged across reflection writes and subsequent turns. The mock
+    // unchanged across dreaming writes and subsequent turns. The mock
     // session does not expose `state.systemPrompt`/`_baseSystemPrompt`, so
     // we assert the equivalent: the resource loader (which receives the
     // system prompt) is constructed exactly once, the session is not
-    // recreated, and the post-reflection turn's snapshot is delivered via
+    // recreated, and the post-dreaming turn's snapshot is delivered via
     // sendCustomMessage with deliverAs:nextTurn — not via any system-prompt
     // path.
-    it("system prompt is unchanged across reflection writes", async () => {
+    it("system prompt is unchanged across dreaming writes", async () => {
       const candidate: Candidate = {
         target: "user",
         category: "preference",
@@ -1708,10 +1732,10 @@ describe("AgentRunner", () => {
         source: { sessionId: "abcdef1234", lineRange: [0, 0], sourceRole: "user" },
       };
       const extractor: CandidateExtractor = () => [candidate];
-      const reflector = makeReflector(tmpDir, extractor);
+      const dreaming = makeDreamingPipeline(tmpDir, extractor);
 
       const runner = makeRunner(
-        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, reflector,
+        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
       );
       await runner.prompt("I prefer terse summaries", nopCallbacks());
 
@@ -1723,24 +1747,28 @@ describe("AgentRunner", () => {
       seedCursorAtZero(tmpDir);
       writeTranscriptEntry(tmpDir, "I prefer terse summaries");
 
-      // Complete the turn — agent_end schedules a reflection pass that
+      // Complete the turn — agent_end schedules a dreaming pass that
       // writes to user.md on disk.
       sessionHolder.emit({ type: "agent_end", messages: [] });
-      await reflector.awaitSettled("abcdef1234");
+      await dreaming.awaitSettled("abcdef1234");
 
-      const userMd = readFileSync(join(memoryDir(tmpDir), "user.md"), "utf-8");
-      expect(userMd).toContain("User prefers terse engineering summaries.");
+      const checkStore = new MemoryStore(tmpDir);
+      try {
+        expect(checkStore.readBody("user")).toContain("User prefers terse engineering summaries.");
+      } finally {
+        checkStore.close();
+      }
 
       // A subsequent turn must not recreate the session or resource loader
       // — the system prompt is frozen from creation.
       sessionHolder.sendCustomMessage.mockClear();
-      await runner.prompt("next message", nopCallbacks());
+      await runner.prompt("terse summaries", nopCallbacks());
 
       expect(capturedCreateArgs).toHaveLength(1);
       expect(capturedResourceLoaderArgs).toHaveLength(1);
       expect((capturedResourceLoaderArgs[0] as { systemPrompt: string }).systemPrompt).toBe(baseSystemPrompt);
 
-      // The post-reflection snapshot is delivered via sendCustomMessage
+      // The post-dreaming snapshot is delivered via sendCustomMessage
       // (deliverAs:nextTurn), not via the system prompt.
       expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
       const [, opts] = sessionHolder.sendCustomMessage.mock.calls[0]!;

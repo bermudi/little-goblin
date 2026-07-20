@@ -96,8 +96,6 @@ describe("SubagentRunner.revive", () => {
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
     expect(opts.cwd).toBe(workdirPath(tmp));
     expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
-      "memory_read",
-      "memory_read_index",
       "memory_search",
       "memory_write",
     ]);

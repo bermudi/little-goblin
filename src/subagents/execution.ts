@@ -24,11 +24,10 @@ import { dispatchAgentEvent, type TurnCallbacks } from "../agent/events.ts";
 import type { Config } from "../config.ts";
 import {
   MemoryStore,
-  createMemoryReadIndexTool,
-  createMemoryReadTool,
   createMemorySearchTool,
   createMemoryWriteTool,
-  formatSnapshot,
+  formatFrozenSummary,
+  formatRelevantMemory,
   type MemoryCaller,
 } from "../memory/mod.ts";
 import { resolveModel } from "../agent/models.ts";
@@ -48,6 +47,7 @@ import type { SubagentInstance, SubagentStatus } from "./types.ts";
 export interface ExecutionDeps {
   cfg: Config;
   services: PiServices;
+  memoryStore: MemoryStore;
   buildTools: (
     depth: number,
     sessionId: string,
@@ -91,6 +91,15 @@ export async function runInstance(
       markErrored(instance, err);
     }
     throw err;
+  } finally {
+    try {
+      deps.memoryStore.close();
+    } catch (err) {
+      log.error("subagent memory store close failed", {
+        id: instance.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 
@@ -99,19 +108,10 @@ async function _runInstanceInner(
   cwd: string,
   deps: ExecutionDeps,
 ): Promise<string> {
-  const { cfg, services, buildTools } = deps;
-  const memoryStore = new MemoryStore(cfg.goblinHome);
+  const { cfg, services, buildTools, memoryStore } = deps;
 
   const resolved = resolveModel(cfg);
   await services.modelRuntime.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
-
-  const resourceLoader = await buildResourceLoader({
-    home: cfg.goblinHome,
-    cwd,
-    role: instance.role,
-    definition: instance.definition,
-    settingsManager: services.settingsManager,
-  });
 
   // Guard: if cancel() was called before we created the session, stop here.
   const statusBeforeCreate: SubagentStatus = instance.status;
@@ -127,6 +127,24 @@ async function _runInstanceInner(
       ? { kind: "named-subagent", name: instance.name }
       : { kind: "anonymous-subagent" };
 
+  // Frozen memory summary is injected into the subagent's system prompt at
+  // session creation (mirrors the main AgentRunner init path). The bounded
+  // per-turn relevant-memory aside is sent as a next-turn custom message.
+  const frozenSummary = await formatFrozenSummary({
+    store: memoryStore,
+    activeScope: instance.activeScope,
+    caller,
+  });
+
+  const resourceLoader = await buildResourceLoader({
+    home: cfg.goblinHome,
+    cwd,
+    role: instance.role,
+    definition: instance.definition,
+    settingsManager: services.settingsManager,
+    memorySystemPrompt: frozenSummary ?? undefined,
+  });
+
   const { session } = await createAgentSession({
     cwd,
     agentDir: piAgentDir(cfg.goblinHome),
@@ -140,16 +158,9 @@ async function _runInstanceInner(
     // Pass rawStatusCallback to nested subagent to prevent prefix stacking.
     customTools: [
       ...buildTools(instance.depth, instance.id, instance.activeScope, instance.rawStatusCallback),
-      createMemoryReadTool({ store: memoryStore, activeScope: instance.activeScope }),
-      createMemoryReadIndexTool({
-        store: memoryStore,
-        activeScope: instance.activeScope,
-        caller,
-      }),
-      // memory_search mirrors memory_read_index gating but with finer persona
-      // control: a named subagent searches its own persona scope; an anonymous
-      // subagent searches none. See spec scenario "Named subagent searches
-      // own persona only".
+      // memory_search subsumes the old memory_read and memory_read_index tools.
+      // Persona gating: a named subagent searches its own persona scope; an
+      // anonymous subagent searches none.
       createMemorySearchTool({
         store: memoryStore,
         activeScope: instance.activeScope,
@@ -219,13 +230,14 @@ async function _runInstanceInner(
   // before any events stream), the outer .then in spawn() turns it into
   // a rejected `handle.result`.
   try {
-    const aside = await formatSnapshot({
+    const relevantAside = await formatRelevantMemory({
       store: memoryStore,
       activeScope: instance.activeScope,
       caller,
+      promptText: instance.initialPrompt,
     });
-    if (aside !== null) {
-      await session.sendCustomMessage(aside, { deliverAs: "nextTurn" });
+    if (relevantAside !== null) {
+      await session.sendCustomMessage(relevantAside, { deliverAs: "nextTurn" });
     }
     await session.sendUserMessage(instance.initialPrompt);
   } catch (err) {

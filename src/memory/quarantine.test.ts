@@ -6,26 +6,23 @@ import { MemoryStore } from "./store.ts";
 import { appendQuarantine, quarantinePath, type QuarantineRecord } from "./quarantine.ts";
 import { memoryDir } from "./paths.ts";
 import { formatSnapshot } from "./snapshot.ts";
-import {
-  createMemoryReadIndexTool,
-  createMemoryReadTool,
-} from "./tool.ts";
+import { createMemorySearchTool } from "./tool.ts";
 import type { ActiveScope } from "./scope.ts";
 
-const NULL_CTX = {} as Parameters<ReturnType<typeof createMemoryReadTool>["execute"]>[4];
+const NULL_CTX = {} as Parameters<ReturnType<typeof createMemorySearchTool>["execute"]>[4];
 const TOPIC_SCOPE: ActiveScope = {
   chatId: -100,
   topicScope: { topicId: 42 },
   namedAgent: null,
 };
 
-function textOf(result: Awaited<ReturnType<ReturnType<typeof createMemoryReadTool>["execute"]>>): string {
+function textOf(result: Awaited<ReturnType<ReturnType<typeof createMemorySearchTool>["execute"]>>): string {
   const content = result.content[0];
   expect(content?.type).toBe("text");
   return content?.type === "text" ? content.text : "";
 }
 
-function jsonOf<T>(result: Awaited<ReturnType<ReturnType<typeof createMemoryReadTool>["execute"]>>): T {
+function jsonOf<T>(result: Awaited<ReturnType<ReturnType<typeof createMemorySearchTool>["execute"]>>): T {
   return JSON.parse(textOf(result)) as T;
 }
 
@@ -122,7 +119,7 @@ describe("quarantine store", () => {
     expect(() => new Date(record.timestamp).toISOString()).not.toThrow();
   });
 
-  describe("snapshots and reads ignore quarantine by construction", () => {
+  describe("snapshots and search ignore quarantine by construction", () => {
     it("formatSnapshot returns null when only quarantine has content", async () => {
       appendQuarantine({
         goblinHome: tmp,
@@ -140,7 +137,7 @@ describe("quarantine store", () => {
       expect(snapshot).toBeNull();
     });
 
-    it("memory_read_index does not mention quarantine", async () => {
+    it("memory_search index does not mention quarantine", async () => {
       appendQuarantine({
         goblinHome: tmp,
         sourceSession: "s_1",
@@ -149,23 +146,23 @@ describe("quarantine store", () => {
         reason: "low_confidence",
         content: "maybe a fact",
       });
-      const readIndexTool = createMemoryReadIndexTool({
+      const searchTool = createMemorySearchTool({
         store,
         activeScope: TOPIC_SCOPE,
         caller: { kind: "main" },
       });
       const index = jsonOf<{
-        general: unknown;
+        general: unknown[];
         topics: unknown[];
         agents: unknown[];
-      }>(await readIndexTool.execute("call-idx", {}, undefined, undefined, NULL_CTX));
+      }>(await searchTool.execute("call-idx", {}, undefined, undefined, NULL_CTX));
       const serialized = JSON.stringify(index);
       expect(serialized).not.toContain("quarantine");
       expect(index.topics).toEqual([]);
       expect(index.agents).toEqual([]);
     });
 
-    it("memory_read does not mention quarantine", async () => {
+    it("memory_search scope entries do not mention quarantine", async () => {
       appendQuarantine({
         goblinHome: tmp,
         sourceSession: "s_1",
@@ -174,12 +171,15 @@ describe("quarantine store", () => {
         reason: "review",
         content: "some content",
       });
-      const readTool = createMemoryReadTool({ store, activeScope: TOPIC_SCOPE });
-      const result = jsonOf<{ body: string; description?: string }>(
-        await readTool.execute("call-read", { target: "memory" }, undefined, undefined, NULL_CTX),
+      const searchTool = createMemorySearchTool({
+        store,
+        activeScope: TOPIC_SCOPE,
+        caller: { kind: "main" },
+      });
+      const result = jsonOf<{ entries: Array<{ text: string }> }>(
+        await searchTool.execute("call-read", { scope: "user" }, undefined, undefined, NULL_CTX),
       );
-      expect(result.body).toBe("");
-      expect(JSON.stringify(result)).not.toContain("quarantine");
+      expect(result.entries).toEqual([]);
     });
   });
 });

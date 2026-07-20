@@ -11,7 +11,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { replyNoActiveSession, buildBot } from "./bot.ts";
-import { memoryDir } from "./memory/paths.ts";
+import { MemoryStore } from "./memory/store.ts";
 import { metricsPath } from "./sessions/paths.ts";
 import { workdirPath, soulMdPath } from "./workspace/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
@@ -201,7 +201,6 @@ async function makeBotWithRealRunner(cfgPatch: Partial<Config> = {}) {
   const home = cfg.goblinHome;
   mkdirSync(workdirPath(home), { recursive: true });
   mkdirSync(piAgentDir(home), { recursive: true });
-  mkdirSync(memoryDir(home), { recursive: true });
   mkdirSync(dirname(soulMdPath(home)), { recursive: true });
   writeFileSync(soulMdPath(home), "test goblin identity\n", "utf-8");
 
@@ -676,9 +675,12 @@ describe("buildBot integration", () => {
   it("archives orphaned topic memory when Telegram reports topic not found", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(topicTextUpdate("/new") as never);
-    const topicMemoryDir = join(memoryDir(built.cfg.goblinHome), "topics", "-100", "42");
-    mkdirSync(topicMemoryDir, { recursive: true });
-    writeFileSync(join(topicMemoryDir, "memory.md"), "orphaned memory");
+    const seedStore = new MemoryStore(built.cfg.goblinHome);
+    try {
+      await seedStore.add({ topic: { chatId: -100, topicId: 42 } }, "orphaned memory");
+    } finally {
+      seedStore.close();
+    }
     built.api.failTopicNotFound();
     MockAgentRunner.nextPrompt = async (_content, buffer) => {
       const callbacks = buffer as { onTextDelta: (text: string) => void; flushResponse: (force?: boolean) => Promise<void> };
@@ -688,7 +690,13 @@ describe("buildBot integration", () => {
 
     await built.bot.handleUpdate(topicTextUpdate("hello") as never);
 
-    expect(existsSync(join(memoryDir(built.cfg.goblinHome), "archive", "topics", "-100", "42", "memory.md"))).toBe(true);
+    const verifyStore = new MemoryStore(built.cfg.goblinHome);
+    try {
+      expect(verifyStore.readBody({ topic: { chatId: -100, topicId: 42 } })).toBe("");
+      expect(await verifyStore.archiveOrphan(-100, 42)).toBe(false);
+    } finally {
+      verifyStore.close();
+    }
   });
 
   it("allowlist drops non-allowed DMs before commands run", async () => {

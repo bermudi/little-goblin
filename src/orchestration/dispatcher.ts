@@ -3,7 +3,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { AgentRunner, type TurnCallbacks } from "../agent/mod.ts";
-import { MemoryStore } from "../memory/mod.ts";
+import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
@@ -48,6 +48,17 @@ export interface TurnDispatcherOptions {
   promptQueues?: Map<string, Promise<void>>;
   promptQueueMeta?: Map<string, PromptQueueEntry>;
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
+  /**
+   * Shared embedding provider for agent memory stores. When present, each
+   * runner gets its own SQLite connection using this provider.
+   */
+  embeddingProvider?: EmbeddingProvider;
+  /**
+   * Shared dreaming pipeline for background memory promotion. When present,
+   * all chat runners use the same pipeline instance so cursor state and the
+   * model-driven extractor are consistent across per-turn and scheduled passes.
+   */
+  dreamingPipeline?: DreamingPipeline;
   /**
    * Mandatory factory that builds the turn sink for a locator. The dispatcher
    * never constructs a `MessageBuffer` itself — the Telegram-aware caller
@@ -95,6 +106,8 @@ export class TurnDispatcher {
   private readonly manager: SessionManager;
   private readonly subagentRunner: SubagentRunner;
   private readonly memoryStore: MemoryStore;
+  private readonly embeddingProvider?: EmbeddingProvider;
+  private readonly dreamingPipeline?: DreamingPipeline;
   private readonly createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
   private readonly createMessageBufferFn: (locator: ChatLocator, session?: SessionState) => TurnSink;
   private readonly createBetaToolsFn: (chatId: number, threadId?: number) => ToolDefinition[];
@@ -109,6 +122,8 @@ export class TurnDispatcher {
     this.manager = options.manager;
     this.subagentRunner = options.subagentRunner;
     this.memoryStore = options.memoryStore;
+    this.embeddingProvider = options.embeddingProvider;
+    this.dreamingPipeline = options.dreamingPipeline;
     this.runners = options.agentRunners;
     this.promptQueues = options.promptQueues ?? new Map<string, Promise<void>>();
     this.promptQueueMeta = options.promptQueueMeta ?? new Map<string, PromptQueueEntry>();
@@ -159,6 +174,8 @@ export class TurnDispatcher {
       scheduleStore: this.scheduleStore,
       externalAgentRunner: this.externalAgentRunner,
       mcpRunner: this.mcpRunner,
+      embeddingProvider: this.embeddingProvider,
+      dreamingPipeline: this.dreamingPipeline,
     };
     return this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
   }
@@ -348,6 +365,60 @@ export class TurnDispatcher {
     this.runners.set(session.id, runner);
     log.debug("created runner", { sessionId: session.id });
     return runner;
+  }
+
+  /**
+   * Enqueue an internal turn for a non-chat session. Used for background
+   * work such as the dreaming pipeline. The runner has no beta tools and writes
+   * assistant text into an in-memory capture buffer. `onComplete(text)` is
+   * called after `runner.prompt` resolves with the captured assistant text.
+   */
+  enqueueInternalTurn(
+    session: SessionState,
+    content: PromptContent,
+    onComplete: (text: string) => void,
+    onError: (err: unknown) => void,
+  ): void {
+    const runner = new AgentRunner({
+      cfg: this.cfg,
+      sessionId: session.id,
+      locator: { chatId: 0 },
+      customTools: [],
+      memoryStore: this.memoryStore,
+      embeddingProvider: this.embeddingProvider,
+      dreamingPipeline: this.dreamingPipeline,
+      getTopicName: this.getTopicName,
+      noDreaming: true,
+    });
+
+    const captured: string[] = [];
+    const sink: TurnCallbacks = {
+      onTextDelta: (text) => captured.push(text),
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onStatusUpdate: () => {},
+      onMessageStart: () => {},
+      onMessageEnd: () => {},
+      onAgentEnd: () => {},
+    };
+
+    void (async (): Promise<void> => {
+      try {
+        await runner.prompt(content, sink);
+        onComplete(captured.join(""));
+      } catch (err) {
+        onError(err);
+      } finally {
+        try {
+          await runner.dispose();
+        } catch (disposeErr) {
+          log.error("internal turn runner dispose failed", {
+            sessionId: session.id,
+            err: disposeErr instanceof Error ? disposeErr.message : String(disposeErr),
+          });
+        }
+      }
+    })();
   }
 
   /**

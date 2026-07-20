@@ -23,7 +23,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { memoryDir, type ActiveScope } from "../memory/mod.ts";
+import { memoryDir, MemoryStore, EmbeddingProvider, type ActiveScope } from "../memory/mod.ts";
 import { createPiServices, type PiServices } from "../pi-host.ts";
 import { workdirPath } from "../workspace/paths.ts";
 import {
@@ -72,15 +72,18 @@ export class SubagentRunner {
   private services: PiServices | null = null;
   /** Produces tools (e.g. spawn_subagent) injected into each spawned subagent. */
   private readonly toolFactory: SubagentToolFactory | null;
+  /** Shared embedding provider for memory stores created per subagent run. */
+  private readonly embeddingProvider?: EmbeddingProvider;
   /** Prevents new spawns after dispose(). */
   private disposed = false;
   /** Guards against concurrent revive() of the same subagent ID. */
   private readonly revivesInProgress: Set<string> = new Set();
 
-  constructor(cfg: Config, toolFactory?: SubagentToolFactory) {
+  constructor(cfg: Config, toolFactory?: SubagentToolFactory, embeddingProvider?: EmbeddingProvider) {
     this.cfg = cfg;
     this.goblinHome = cfg.goblinHome;
     this.toolFactory = toolFactory ?? null;
+    this.embeddingProvider = embeddingProvider;
   }
 
   /**
@@ -669,11 +672,15 @@ export class SubagentRunner {
    * always sees the current `this`.
    */
   private async executionDeps(): Promise<ExecutionDeps> {
+    const memoryStore = this.embeddingProvider
+      ? new MemoryStore(this.cfg.goblinHome, undefined, { embeddings: this.embeddingProvider })
+      : new MemoryStore(this.cfg.goblinHome);
     return {
       cfg: this.cfg,
       services: await this.getPiServices(),
       buildTools: (depth, sessionId, activeScope, onStatusUpdate) =>
         this.toolFactory ? this.toolFactory(this, depth, sessionId, activeScope, onStatusUpdate) : [],
+      memoryStore,
     };
   }
 }

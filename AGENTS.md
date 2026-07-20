@@ -54,6 +54,7 @@ This file (`AGENTS.md`) is **not** auto-injected into the system prompt today; t
 - **Colocated.** `foo.ts` ↔ `foo.test.ts` in the same directory. `bun test` discovers them automatically.
 - **One exception: `src/subagents/`.** Its tests live in `src/subagents/test/*.suite.ts`, bootstrapped from `mod.test.ts`. The reason: `bun:test` `mock.module()` is process-global, so the suites must run under a single mock install. The `.suite.ts` extension prevents bun from auto-discovering them (which would race the mock). If bun ever gets per-file mock scoping, collapse this back to colocated `.test.ts` files.
 - Add `"test": "bun test"` to package.json if it's still missing.
+- Run `bun run typecheck` (`tsc --noEmit`) before committing.
 
 ## Things not to do
 

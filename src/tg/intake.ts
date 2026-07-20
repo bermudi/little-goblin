@@ -12,7 +12,7 @@ import { handleCommand, type DispatchDeps } from "../commands/dispatch.ts";
 import { parseCommand } from "../commands/parse.ts";
 import { resolveCommand, resolveTiming, type SideEffect } from "../commands/registry.ts";
 import { interruptAndCascade } from "../interrupt.ts";
-import { MemoryStore } from "../memory/mod.ts";
+import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
 import { MetricsStore } from "../metrics/mod.ts";
 import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -75,6 +75,10 @@ export interface TelegramIntakeOptions {
   agentRunners: Map<string, AgentRunner>;
   promptQueues?: Map<string, Promise<void>>;
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
+  /** Shared embedding provider for agent memory stores. */
+  embeddingProvider?: EmbeddingProvider;
+  /** Shared dreaming pipeline for background memory promotion. */
+  dreamingPipeline?: DreamingPipeline;
   /**
    * Optional override for the turn-sink factory. Production leaves this unset
    * and `createTelegramIntake` builds the default `MessageBuffer` factory
@@ -186,7 +190,7 @@ export function replyNoActiveSession(message: TelegramIntakeMessage, locator: Ch
 }
 
 export function createTelegramIntake(options: TelegramIntakeOptions) {
-  const { cfg, bot, manager, subagentRunner, memoryStore } = options;
+  const { cfg, bot, manager, subagentRunner, memoryStore, embeddingProvider, dreamingPipeline } = options;
   // The turn-sink factory: builds a `MessageBuffer` targeting the Telegram
   // surface for a locator. This rendering logic lived inside the dispatcher
   // before relocation; it moves here (the Telegram layer) so the dispatcher
@@ -229,6 +233,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     scheduleStore: options.scheduleStore,
     externalAgentRunner: options.externalAgentRunner,
     mcpRunner: options.mcpRunner,
+    embeddingProvider,
+    dreamingPipeline,
   });
 
   function recordAssistantReply(sessionId: string, text: string): void {
@@ -787,7 +793,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         { topic: { chatId, topicId } },
         name,
       );
-    } catch {
+    } catch (err) {
+      log.warn("failed to set topic description", {
+        chatId,
+        topicId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

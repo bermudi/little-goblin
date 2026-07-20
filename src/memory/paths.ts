@@ -12,6 +12,14 @@ export function memoryDir(home: string): string {
   return join(home, "state", "memory");
 }
 
+export function memoryDbPath(home: string): string {
+  return join(memoryDir(home), "memory.sqlite");
+}
+
+export function dreamsDir(home: string): string {
+  return join(memoryDir(home), "dreams");
+}
+
 function topicScopeDir(home: string, chatId: number, topicId: number): string {
   return join(memoryDir(home), "topics", String(chatId), String(topicId));
 }

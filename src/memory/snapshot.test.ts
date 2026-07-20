@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "./store.ts";
 import { MetricsStore, readMetricsSummary } from "../metrics/mod.ts";
 import { formatSnapshot, SNAPSHOT_GUARDRAIL } from "./snapshot.ts";
-import { memoryDir, scopeMemoryPath } from "./paths.ts";
+import { memoryDir } from "./paths.ts";
 import { metricsPath } from "../sessions/paths.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
 import { formatReflectedEntry, type EntryMetadata } from "./entry.ts";
@@ -375,9 +375,7 @@ describe("formatSnapshot", () => {
         source_session: "s_test",
         source_role: "user",
       };
-      const activePath = scopeMemoryPath(tmp, activeScope);
-      mkdirSync(dirname(activePath), { recursive: true });
-      writeFileSync(activePath, formatReflectedEntry(meta, "backups run nightly"), "utf-8");
+      await store.rewrite(activeScope, formatReflectedEntry(meta, "backups run nightly"));
       // Peer scope holds the same body as a plain entry.
       await store.add({ topic: { chatId: -100123, topicId: 7 } }, "backups run nightly");
       await store.add({ topic: { chatId: -100123, topicId: 8 } }, "backups run weekly");

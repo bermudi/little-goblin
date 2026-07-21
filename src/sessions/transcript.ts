@@ -85,6 +85,20 @@ function readNumber(obj: Record<string, unknown>, key: string): number | undefin
   return typeof value === "number" ? value : undefined;
 }
 
+function readCost(value: unknown): TranscriptUsage["cost"] {
+  if (typeof value !== "object" || value === null) {
+    return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  }
+  const c = value as Record<string, unknown>;
+  return {
+    input: typeof c.input === "number" ? c.input : 0,
+    output: typeof c.output === "number" ? c.output : 0,
+    cacheRead: typeof c.cacheRead === "number" ? c.cacheRead : 0,
+    cacheWrite: typeof c.cacheWrite === "number" ? c.cacheWrite : 0,
+    total: typeof c.total === "number" ? c.total : 0,
+  };
+}
+
 function normalizeTranscriptContent(content: unknown): string | TranscriptContent[] {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return [{ type: "unknown", value: content }];
@@ -151,9 +165,7 @@ function transcriptEntryFromEvent(event: object): TranscriptEntry | null {
         cacheRead: typeof u.cacheRead === "number" ? u.cacheRead : 0,
         cacheWrite: typeof u.cacheWrite === "number" ? u.cacheWrite : 0,
         totalTokens: typeof u.totalTokens === "number" ? u.totalTokens : 0,
-        cost: typeof u.cost === "object" && u.cost !== null
-          ? u.cost as TranscriptUsage["cost"]
-          : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        cost: readCost(u.cost),
       };
     }
   }
@@ -253,10 +265,7 @@ function parseTranscriptEntry(value: unknown): TranscriptEntry | null {
         cacheRead: typeof u.cacheRead === "number" ? u.cacheRead : 0,
         cacheWrite: typeof u.cacheWrite === "number" ? u.cacheWrite : 0,
         totalTokens: typeof u.totalTokens === "number" ? u.totalTokens : 0,
-        cost:
-          typeof u.cost === "object" && u.cost !== null
-            ? (u.cost as TranscriptUsage["cost"])
-            : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        cost: readCost(u.cost),
       };
     }
   }
@@ -375,6 +384,16 @@ function chunkText(text: string, maxChars: number): string[] {
       const words = sentence.split(/\s+/);
       let piece = "";
       for (const word of words) {
+        if (word.length > maxChars) {
+          if (piece.length > 0) {
+            chunks.push(piece.trim());
+            piece = "";
+          }
+          for (let i = 0; i < word.length; i += maxChars) {
+            chunks.push(word.slice(i, i + maxChars));
+          }
+          continue;
+        }
         if (piece.length + word.length + 1 > maxChars && piece.length > 0) {
           chunks.push(piece.trim());
           piece = "";
@@ -411,7 +430,8 @@ export function chunkTranscriptEntry(
   const ts = entry.ts ?? new Date().toISOString();
   const role = entry.role ?? "unknown";
   const prefix = `[${ts}] [${role}] [${opts.sessionId}] `;
-  const available = Math.max(8, maxChars - prefix.length);
+  const effectivePrefix = prefix.length >= maxChars ? "" : prefix;
+  const available = Math.max(1, maxChars - effectivePrefix.length);
   const rawChunks = chunkText(text, available);
 
   const baseTime = (() => {
@@ -420,7 +440,7 @@ export function chunkTranscriptEntry(
     return Number.isFinite(parsedTs) ? parsedTs : Date.now();
   })();
   return rawChunks.map((chunk) => ({
-    text: `${prefix}${chunk}`,
+    text: `${effectivePrefix}${chunk}`,
     ts,
     role,
     sessionId: opts.sessionId,

@@ -293,6 +293,11 @@ export class DreamingPipeline {
     this.maxModelLines = opts.maxModelLines ?? MAX_MODEL_LINES;
   }
 
+  /** Close the dreaming store. Safe to call multiple times. */
+  close(): void {
+    this.store.close();
+  }
+
   /** Replace the candidate extractor at runtime (e.g. to wire a model-driven extractor). */
   setExtractor(extractor: CandidateExtractor): void {
     this.extractor = extractor;

@@ -36,8 +36,11 @@ async function seedMemory(
   records: Array<{ scope: SeedScope; content: string }>,
 ): Promise<void> {
   const store = new MemoryStore(home);
-  for (const r of records) await store.add(r.scope, r.content);
-  store.close();
+  try {
+    for (const r of records) await store.add(r.scope, r.content);
+  } finally {
+    store.close();
+  }
 }
 
 describe("SubagentRunner — scoped memory", () => {
@@ -171,6 +174,7 @@ describe("SubagentRunner — scoped memory", () => {
     const writeTool = tools.find((tool) => tool.name === "memory_write");
 
     expect(searchTool).toBeDefined();
+    expect(writeTool).toBeDefined();
     expect(JSON.stringify(writeTool?.parameters)).toBe(
       JSON.stringify(
         createMemoryWriteTool({

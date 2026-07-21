@@ -70,4 +70,13 @@ export class MemoryEngine {
   newStore(metrics?: import("../metrics/mod.ts").MetricsStore): MemoryStore {
     return new MemoryStore(this.home, metrics, { embeddings: this.embeddingProvider });
   }
+
+  /**
+   * Close the engine's read store and the dreaming pipeline's store.
+   * Callers should close any stores returned by `newStore()` separately.
+   */
+  close(): void {
+    this.readStore.close();
+    this.dreaming.close();
+  }
 }

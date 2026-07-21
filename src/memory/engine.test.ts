@@ -19,8 +19,7 @@ describe("MemoryEngine", () => {
   });
 
   afterEach(() => {
-    engine.readStore.close();
-    ((engine.dreaming as unknown) as { store: { close: () => void } }).store.close();
+    engine.close();
     rmSync(tmp, { recursive: true, force: true });
   });
 

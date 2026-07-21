@@ -42,6 +42,8 @@ function discoverTranscripts(home: string): TranscriptFile[] {
     const entries = readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
+      // Archived sessions live under their own subtree; skip like SessionManager.list().
+      if (entry.name === "archive") continue;
       // Skip internal non-chat sessions (e.g. the dreaming extractor) so their
       // synthetic transcripts are not re-indexed as user conversation data.
       const state = loadState(home, entry.name);
@@ -132,8 +134,8 @@ export class TranscriptIndexer {
 
       try {
         const hash = fileHash(tf.path);
-        if (existing && existing.hash === hash && existing.mtime === stats.mtimeMs && existing.size === stats.size) {
-          // Hash matches despite mtime/size drift (unlikely); update source row.
+        if (existing && existing.hash === hash) {
+          // Hash matches despite mtime/size drift; update source row.
           db.query(
             "INSERT OR REPLACE INTO memory_sources (path, source, hash, mtime, size, updated_at) VALUES ($path, 'transcript', $hash, $mtime, $size, $updated_at)",
           ).run({

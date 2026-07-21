@@ -7,13 +7,14 @@ import { exportToMarkdown } from "./export.ts";
 
 const DELIMITER = "\n§\n";
 
-process.env.GOBLIN_MEMORY_BUDGET_CHARS = "5000";
+const originalBudget = process.env.GOBLIN_MEMORY_BUDGET_CHARS;
 
 describe("exportToMarkdown", () => {
   let tmp: string;
   let store: MemoryStore;
 
   beforeEach(() => {
+    process.env.GOBLIN_MEMORY_BUDGET_CHARS = "5000";
     tmp = mkdtempSync(join(tmpdir(), "goblin-memory-export-"));
     store = new MemoryStore(tmp);
   });
@@ -21,6 +22,11 @@ describe("exportToMarkdown", () => {
   afterEach(() => {
     store.close();
     rmSync(tmp, { recursive: true, force: true });
+    if (originalBudget === undefined) {
+      delete process.env.GOBLIN_MEMORY_BUDGET_CHARS;
+    } else {
+      process.env.GOBLIN_MEMORY_BUDGET_CHARS = originalBudget;
+    }
   });
 
   it("exports entries ordered by display_order", async () => {
@@ -70,11 +76,20 @@ describe("exportToMarkdown", () => {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       },
+      {
+        scope: "archive/topics/-100/1",
+        entryKind: "memory",
+        text: "archived memory",
+        origin: "dreaming",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
     ]);
 
     exportToMarkdown(tmp, store);
 
     expect(existsSync(join(tmp, "state", "memory", "general", "memory.md"))).toBe(true);
     expect(existsSync(join(tmp, "state", "memory", "transcript", "session-1", "memory.md"))).toBe(false);
+    expect(existsSync(join(tmp, "state", "memory", "archive", "topics", "-100", "1", "memory.md"))).toBe(false);
   });
 });

@@ -545,7 +545,7 @@ export async function searchMemoryEntries(args: {
   }
 
   let transcriptScopes: string[] = [];
-  if (corpus === "transcripts" || corpus === "all" && args.scope === undefined) {
+  if ((corpus === "transcripts" || corpus === "all") && args.scope === undefined) {
     transcriptScopes = await enumerateTranscriptScopes(args.store, args.activeScope, transcriptAllChats);
   }
 

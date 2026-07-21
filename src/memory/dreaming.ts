@@ -17,7 +17,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join, resolve } from "node:path";
 import { log } from "../log.ts";
 import { atomicWrite } from "../fs.ts";
-import { sessionDir, statePath } from "../sessions/paths.ts";
+import { sessionDir } from "../sessions/paths.ts";
+import { loadState } from "../sessions/state.ts";
 import { countTranscriptLines, readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
 import { MemoryStore } from "./store.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
@@ -131,6 +132,15 @@ function markCandidateProcessed(home: string, sessionId: string, candidate: Cand
   set.add(key);
 }
 
+function pruneProcessedCandidates(home: string, sessionId: string): void {
+  const prefix = `${home}\x00${sessionId}\x00`;
+  const set = processedCandidates.get(home);
+  if (set === undefined) return;
+  for (const key of Array.from(set)) {
+    if (key.startsWith(prefix)) set.delete(key);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Noise patterns
 // ---------------------------------------------------------------------------
@@ -221,14 +231,9 @@ function resolveScope(target: "user" | "memory" | "agent", activeScope: ActiveSc
  * `"general"`; topic sessions map to the corresponding topic scope.
  */
 function resolveSessionScope(home: string, sessionId: string): MemoryScope | "general" {
-  try {
-    const raw = readFileSync(statePath(home, sessionId), "utf-8");
-    const state = JSON.parse(raw) as { chatId?: number; topicId?: number } | undefined;
-    if (state && typeof state.topicId === "number") {
-      return { topic: { chatId: state.chatId ?? 0, topicId: state.topicId } };
-    }
-  } catch {
-    // Missing or malformed state.json — fall through to general.
+  const state = loadState(home, sessionId);
+  if (state !== null && typeof state.topicId === "number") {
+    return { topic: { chatId: state.chatId ?? 0, topicId: state.topicId } };
   }
   return "general";
 }
@@ -643,14 +648,15 @@ export class DreamingPipeline {
     const rawLines = readTranscriptAfter(this.home, sessionId, cursor.processedLines);
     if (rawLines.length === 0) return;
 
+    const home = resolve(this.home);
     const newLines = this.filterLines(rawLines);
     if (newLines.length === 0) {
       this.advanceCursorBy(sessionId, cursor, rawLines.length);
+      pruneProcessedCandidates(home, sessionId);
       return;
     }
 
     const candidates = await this.extractor(newLines, { sessionId });
-    const home = resolve(this.home);
     const newCandidates = candidates.filter((c) => !isProcessedCandidate(home, sessionId, c));
 
     for (const candidate of newCandidates) {
@@ -667,6 +673,7 @@ export class DreamingPipeline {
     const processedDelta =
       lastIndex === undefined ? rawLines.length : lastIndex - cursor.processedLines + 1;
     this.advanceCursorBy(sessionId, cursor, processedDelta);
+    pruneProcessedCandidates(home, sessionId);
   }
 
   private async processCandidate(candidate: Candidate, activeScope: ActiveScope): Promise<void> {

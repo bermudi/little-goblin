@@ -186,8 +186,8 @@ export class SubagentRunner {
 
     // The result promise is wired during runInstance; capture the resolver
     // pair here so the instance carries it before execution kicks off.
-    let resolveResult: (text: string) => void;
-    let rejectResult: (err: unknown) => void;
+    let resolveResult!: (text: string) => void;
+    let rejectResult!: (err: unknown) => void;
     const result = new Promise<string>((res, rej) => {
       resolveResult = res;
       rejectResult = rej;
@@ -228,11 +228,13 @@ export class SubagentRunner {
     // immediately so callers can choose between awaiting `handle.result` and
     // tracking via `list()`. Errors during startup land on `result` (the
     // tool handler awaits it and surfaces failures as tool errors).
-    this.executionDeps().then((deps) =>
-      runInstance(instance, cwd, deps).then(
-        (text) => resolveResult(text),
-        (err) => rejectResult(err),
-      ),
+    this.executionDeps().then(
+      (deps) =>
+        runInstance(instance, cwd, deps).then(
+          (text) => resolveResult(text),
+          (err) => rejectResult(err),
+        ),
+      rejectResult,
     );
 
     // Attach a noop catch to prevent unhandled-rejection noise when callers
@@ -316,8 +318,8 @@ export class SubagentRunner {
     }
 
     // Wire result promise the same way spawn() does.
-    let resolveResult: (text: string) => void;
-    let rejectResult: (err: unknown) => void;
+    let resolveResult!: (text: string) => void;
+    let rejectResult!: (err: unknown) => void;
     const result = new Promise<string>((res, rej) => {
       resolveResult = res;
       rejectResult = rej;
@@ -358,11 +360,13 @@ export class SubagentRunner {
     log.debug("subagent revived", { id, role: meta.role, name: meta.name });
 
     // Kick off execution — same pipeline as spawn().
-    this.executionDeps().then((deps) =>
-      runInstance(instance, cwd, deps).then(
-        (text) => resolveResult(text),
-        (err) => rejectResult(err),
-      ),
+    this.executionDeps().then(
+      (deps) =>
+        runInstance(instance, cwd, deps).then(
+          (text) => resolveResult(text),
+          (err) => rejectResult(err),
+        ),
+      rejectResult,
     );
     result.catch(() => {});
 

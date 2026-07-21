@@ -381,7 +381,7 @@ export class TurnDispatcher {
   ): void {
     let runner = this.runners.get(session.id);
     if (!runner) {
-      runner = new AgentRunner({
+      const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
         cfg: this.cfg,
         sessionId: session.id,
         locator: { chatId: 0 },
@@ -390,7 +390,8 @@ export class TurnDispatcher {
         embeddingProvider: this.embeddingProvider,
         dreamingPipeline: this.dreamingPipeline,
         getTopicName: this.getTopicName,
-      });
+      };
+      runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
       this.runners.set(session.id, runner);
     }
 

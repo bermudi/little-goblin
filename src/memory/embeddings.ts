@@ -55,7 +55,8 @@ export class EmbeddingProvider {
     this.apiKey = env("GOBLIN_MEMORY_EMBEDDING_API_KEY") ?? apiKey ?? env("OPENAI_API_KEY");
     this.baseUrl = env("GOBLIN_MEMORY_EMBEDDING_BASE_URL", env("OPENAI_BASE_URL", "https://api.openai.com"))!;
     this.model = env("GOBLIN_MEMORY_EMBEDDING_MODEL", "text-embedding-3-small")!;
-    this.cooldownSeconds = Number(env("GOBLIN_MEMORY_EMBEDDING_COOLDOWN_SECONDS", "60"));
+    const cooldown = Number(env("GOBLIN_MEMORY_EMBEDDING_COOLDOWN_SECONDS", "60"));
+    this.cooldownSeconds = Number.isFinite(cooldown) && cooldown >= 0 ? cooldown : 60;
     this.state = { degraded: false, degradedUntil: 0, errorCount: 0, lastError: "" };
     this.fetchedCache = new Map();
   }
@@ -241,12 +242,21 @@ export class EmbeddingProvider {
       .all();
 
     const batchSize = 64;
+    let failed = 0;
     for (let i = 0; i < rows.length; i += batchSize) {
       const chunk = rows.slice(i, i + batchSize);
-      await this.embedEntries(
+      const res = await this.embedEntries(
         chunk.map((r) => ({ entryId: r.id, text: r.text })),
         { skipMeta: true },
       );
+      for (const v of res.values()) {
+        if (v === null) failed++;
+      }
+    }
+
+    if (failed > 0 || this.isDegraded()) {
+      log.warn("memory embedding reindex incomplete; will retry", { failed });
+      return;
     }
 
     this.db.setMeta("embedding_model", this.model);

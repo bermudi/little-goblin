@@ -138,7 +138,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  err(err instanceof Error ? err.message : String(err));
+main().catch((error) => {
+  err(error instanceof Error ? error.message : String(error));
   process.exit(1);
 });

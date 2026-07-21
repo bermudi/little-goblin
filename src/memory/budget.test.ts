@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { MemoryDatabase } from "./db.ts";
+import { MemoryStore } from "./store.ts";
 import { MemoryBudget, DEFAULT_MEMORY_BUDGET_CHARS, MemoryOverflowError } from "./budget.ts";
 
 describe("MemoryBudget", () => {
@@ -168,6 +169,56 @@ describe("MemoryBudget", () => {
         .all()
         .map((r) => r.id);
       expect(remaining).toEqual(["protected"]);
+    });
+  });
+
+  describe("replace/rewrite rollback at budget boundary", () => {
+    let store: MemoryStore;
+
+    afterEach(() => {
+      store.close();
+    });
+
+    it("rolls back replace when net growth exceeds the budget", async () => {
+      const db = new MemoryDatabase(":memory:");
+      store = new MemoryStore(db, undefined, {
+        budget: new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "10" }),
+      });
+      await store.add("general", "x".repeat(10));
+
+      const result = await store.replace("general", "x".repeat(10), "x".repeat(20));
+
+      expect(result.ok).toBe(false);
+      expect(store.readBody("general")).toBe("x".repeat(10));
+    });
+
+    it("rolls back rewrite when the new body exceeds the budget", async () => {
+      const db = new MemoryDatabase(":memory:");
+      store = new MemoryStore(db, undefined, {
+        budget: new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "10" }),
+      });
+      await store.add("general", "x".repeat(10));
+
+      const result = await store.rewrite("general", "x".repeat(20));
+
+      expect(result.ok).toBe(false);
+      expect(store.readBody("general")).toBe("x".repeat(10));
+    });
+  });
+
+  describe("setDescription at budget boundary", () => {
+    it("succeeds because descriptions are not counted against the budget", async () => {
+      const db = new MemoryDatabase(":memory:");
+      const store = new MemoryStore(db, undefined, {
+        budget: new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "10" }),
+      });
+      await store.add("general", "x".repeat(10));
+
+      const result = await store.setDescription("general", "budget boundary");
+
+      expect(result.ok).toBe(true);
+      expect(store.read("general").description).toBe("budget boundary");
+      store.close();
     });
   });
 });

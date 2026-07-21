@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { log } from "../log.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
 import { MemoryDatabase } from "./db.ts";
@@ -1127,17 +1127,39 @@ function discoverMarkdownFiles(dir: string): string[] {
   return results;
 }
 
-function fileCommitTimeMs(filePath: string): number | null {
+let gitRepoRoot: string | null | undefined;
+
+function getGitRepoRoot(): string | null {
+  if (gitRepoRoot !== undefined) return gitRepoRoot;
+  try {
+    const out = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: "pipe",
+    }).trim();
+    gitRepoRoot = out.length > 0 ? out : null;
+  } catch {
+    gitRepoRoot = null;
+  }
+  return gitRepoRoot;
+}
+
+/** Exported for regression testing — see migration.test.ts. */
+export function fileCommitTimeMs(filePath: string): number | null {
+  const repo = getGitRepoRoot();
+  if (repo === null) return null;
+  const rel = relative(repo, filePath);
+  if (rel.startsWith("..") || isAbsolute(rel)) return null;
   try {
     const out = execFileSync(
       "git",
       ["log", "-1", "--format=%ct", "--", filePath],
-      { encoding: "utf-8", timeout: 5000 },
+      { encoding: "utf-8", timeout: 5000, stdio: "pipe", cwd: repo },
     );
     const seconds = Number.parseInt(out.trim(), 10);
     if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
   } catch {
-    // Not a git repo, file not tracked, or git unavailable.
+    // File not tracked or git unavailable.
   }
   return null;
 }

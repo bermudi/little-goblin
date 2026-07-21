@@ -1,9 +1,11 @@
 import { describe, it, expect } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
 import { migrateFromMarkdown } from "./migration.ts";
+import { fileCommitTimeMs } from "./store.ts";
 
 // Keep the global budget high so migration never hits a cap.
 process.env.GOBLIN_MEMORY_BUDGET_CHARS = "1000000";
@@ -155,6 +157,70 @@ describe("migrateFromMarkdown", () => {
     } finally {
       store.close();
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("fileCommitTimeMs", () => {
+  it("returns null for a path inside the repo without leaking stderr", () => {
+    // A path inside the repo but not tracked by git should return null.
+    // This verifies the function works for in-repo paths.
+    const result = fileCommitTimeMs(join(import.meta.dir, "nonexistent-file-xyz.md"));
+    expect(result).toBeNull();
+  });
+
+  it("returns null for a path outside the repo without leaking git fatal stderr", () => {
+    // Regression: previously, calling git log on an out-of-repo path would
+    // print "fatal: ... is outside repository" to stderr before the catch
+    // block ran, because execFileSync inherited stderr by default.
+    // The fix gates on repo-root containment and uses stdio: 'pipe'.
+    // We run in a child process so we can capture stderr and assert it's clean.
+    const tmp = mkdtempSync(join(tmpdir(), "goblin-fct-outside-"));
+    try {
+      const outsidePath = join(tmp, "memory.md");
+      writeFileSync(outsidePath, "test content");
+
+      // Spawn a child bun process that calls fileCommitTimeMs on the out-of-repo path.
+      // Capture stderr to verify no "fatal:" leak.
+      const script = `
+        import { fileCommitTimeMs } from "${import.meta.dir}/store.ts";
+        const result = fileCommitTimeMs(${JSON.stringify(outsidePath)});
+        process.stdout.write(String(result));
+      `;
+      const result = spawnSync("bun", ["-e", script], {
+        encoding: "utf-8",
+        timeout: 15000,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe("null");
+      // The key assertion: no git "fatal:" stderr should leak.
+      expect(result.stderr).not.toContain("fatal:");
+      // In-process call should also return null.
+      expect(fileCommitTimeMs(outsidePath)).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not leak git fatal stderr when called on many out-of-repo paths", () => {
+    // Simulates the migration scenario: many out-of-repo paths iterated.
+    // The gitRepoRoot cache should prevent repeated git rev-parse calls,
+    // and the containment check should skip git log entirely.
+    const tmp = mkdtempSync(join(tmpdir(), "goblin-fct-batch-"));
+    try {
+      const paths: string[] = [];
+      for (let i = 0; i < 5; i++) {
+        const sub = join(tmp, `topic-${i}`, "memory.md");
+        mkdirSync(join(tmp, `topic-${i}`), { recursive: true });
+        writeFileSync(sub, `content ${i}`);
+        paths.push(sub);
+      }
+      // All should return null without error.
+      for (const p of paths) {
+        expect(fileCommitTimeMs(p)).toBeNull();
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
   });
 });

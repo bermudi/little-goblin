@@ -31,12 +31,15 @@ describe("EmbeddingProvider", () => {
   let provider: EmbeddingProvider;
   let originalApiKey: string | undefined;
   let originalModel: string | undefined;
+  let originalProviderEnv: string | undefined;
 
   beforeEach(() => {
     originalApiKey = process.env.GOBLIN_MEMORY_EMBEDDING_API_KEY;
     originalModel = process.env.GOBLIN_MEMORY_EMBEDDING_MODEL;
+    originalProviderEnv = process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER;
     process.env.GOBLIN_MEMORY_EMBEDDING_API_KEY = "test-api-key";
     process.env.GOBLIN_MEMORY_EMBEDDING_MODEL = "test-model";
+    delete process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER;
 
     db = new MemoryDatabase(":memory:");
     provider = new EmbeddingProvider(db);
@@ -57,6 +60,12 @@ describe("EmbeddingProvider", () => {
       delete process.env.GOBLIN_MEMORY_EMBEDDING_MODEL;
     } else {
       process.env.GOBLIN_MEMORY_EMBEDDING_MODEL = originalModel;
+    }
+
+    if (originalProviderEnv === undefined) {
+      delete process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER;
+    } else {
+      process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER = originalProviderEnv;
     }
 
     db.close();
@@ -154,5 +163,42 @@ describe("EmbeddingProvider", () => {
     expect(out[0]!.embedding).toBeNull();
     expect(provider.status().degraded).toBe(true);
     expect(provider.status().lastError).toContain("500");
+  });
+
+  it("providerName defaults to openai when GOBLIN_MEMORY_EMBEDDING_PROVIDER is unset", () => {
+    expect(provider.providerName).toBe("openai");
+  });
+
+  it("setting a different provider via env triggers reindex and stores the new provider label", async () => {
+    const insertEntry = db.database.query(
+      "INSERT INTO memory_entries (id, scope, entry_kind, text, created_at, updated_at, origin) VALUES ($id, $scope, $kind, $text, $created, $updated, $origin)",
+    );
+    insertEntry.run({
+      $id: "entry-1",
+      $scope: "general",
+      $kind: "memory",
+      $text: "hello world",
+      $created: 1,
+      $updated: 1,
+      $origin: "user",
+    });
+    db.setMeta("embedding_model", "test-model");
+    db.setMeta("embedding_provider", "openai");
+
+    const fetchMock = successFetch();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER = "ollama";
+    const newProvider = new EmbeddingProvider(db);
+    expect(newProvider.providerName).toBe("ollama");
+    await newProvider.reindexIfNeeded();
+
+    expect(fetchMock.mock.calls.length).toBe(1);
+    const row = db.database
+      .query<{ provider: string }, { $entryId: string }>("SELECT provider FROM memory_embeddings WHERE entry_id = $entryId")
+      .get({ $entryId: "entry-1" });
+    expect(row?.provider).toBe("ollama");
+    expect(db.getMeta("embedding_provider")).toBe("ollama");
+    expect(db.getMeta("reindexing")).toBe("false");
   });
 });

@@ -35,6 +35,10 @@ interface EmbeddingProviderState {
  * - API key from GOBLIN_MEMORY_EMBEDDING_API_KEY, fallback OPENAI_API_KEY.
  * - Optional base URL from GOBLIN_MEMORY_EMBEDDING_BASE_URL, fallback OPENAI_BASE_URL.
  * - Model from GOBLIN_MEMORY_EMBEDDING_MODEL, default text-embedding-3-small.
+ * - Provider label from GOBLIN_MEMORY_EMBEDDING_PROVIDER, default openai. Used as
+ *   the `provider` column in memory_embeddings and as a reindex trigger: changing
+ *   it (or the model) forces a full reindex. Set to e.g. "ollama" when serving
+ *   embeddings from a local inference server so metadata stays accurate.
  * - Degraded state with a cooldown after network/auth failures.
  *
  * Embeddings are cached in memory_embeddings keyed by the entry's id (foreign
@@ -46,6 +50,7 @@ export class EmbeddingProvider {
   private apiKey: string | undefined;
   private baseUrl: string;
   private model: string;
+  private provider: string;
   private cooldownSeconds: number;
   private state: EmbeddingProviderState;
   private fetchedCache: Map<string, Float32Array>;
@@ -55,6 +60,7 @@ export class EmbeddingProvider {
     this.apiKey = env("GOBLIN_MEMORY_EMBEDDING_API_KEY") ?? apiKey ?? env("OPENAI_API_KEY");
     this.baseUrl = env("GOBLIN_MEMORY_EMBEDDING_BASE_URL", env("OPENAI_BASE_URL", "https://api.openai.com"))!;
     this.model = env("GOBLIN_MEMORY_EMBEDDING_MODEL", "text-embedding-3-small")!;
+    this.provider = env("GOBLIN_MEMORY_EMBEDDING_PROVIDER", "openai")!;
     const cooldown = Number(env("GOBLIN_MEMORY_EMBEDDING_COOLDOWN_SECONDS", "60"));
     this.cooldownSeconds = Number.isFinite(cooldown) && cooldown >= 0 ? cooldown : 60;
     this.state = { degraded: false, degradedUntil: 0, errorCount: 0, lastError: "" };
@@ -63,6 +69,10 @@ export class EmbeddingProvider {
 
   get modelName(): string {
     return this.model;
+  }
+
+  get providerName(): string {
+    return this.provider;
   }
 
   status(): EmbeddingStatus {
@@ -110,7 +120,7 @@ export class EmbeddingProvider {
       if (!unique.has(hash)) unique.set(hash, text);
     }
 
-    const cache = this.loadCache(Array.from(unique.keys()), model, "openai");
+    const cache = this.loadCache(Array.from(unique.keys()), model, this.provider);
     const toFetch: string[] = [];
     for (const [hash, text] of unique.entries()) {
       if (cache.has(hash)) continue;
@@ -172,9 +182,9 @@ export class EmbeddingProvider {
         existing &&
         existing.hash === hash &&
         existing.model === this.model &&
-        existing.provider === "openai"
+        existing.provider === this.provider
       ) {
-        const cached = this.loadCache([hash], this.model, "openai").get(hash);
+        const cached = this.loadCache([hash], this.model, this.provider).get(hash);
         result.set(req.entryId, cached ?? null);
         continue;
       }
@@ -191,7 +201,7 @@ export class EmbeddingProvider {
     }
 
     const model = this.model;
-    const provider = "openai";
+    const provider = this.provider;
     const now = Date.now();
     const insert = this.db.database.query(
       `INSERT OR REPLACE INTO memory_embeddings (entry_id, provider, model, hash, embedding, dims, updated_at)
@@ -231,7 +241,7 @@ export class EmbeddingProvider {
     const storedModel = this.db.getMeta("embedding_model");
     const storedProvider = this.db.getMeta("embedding_provider");
     const reindexing = this.db.getMeta("reindexing") === "true";
-    const needsReindex = reindexing || storedModel !== this.model || storedProvider !== "openai";
+    const needsReindex = reindexing || storedModel !== this.model || storedProvider !== this.provider;
     if (!needsReindex) return;
 
     log.info("starting memory embedding reindex", { fromModel: storedModel, toModel: this.model });
@@ -260,7 +270,7 @@ export class EmbeddingProvider {
     }
 
     this.db.setMeta("embedding_model", this.model);
-    this.db.setMeta("embedding_provider", "openai");
+    this.db.setMeta("embedding_provider", this.provider);
     this.db.setMeta("reindexing", "false");
     log.info("memory embedding reindex complete", { count: rows.length });
   }

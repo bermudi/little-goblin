@@ -28,6 +28,7 @@ import { createPiServices, type PiServices } from "../pi-host.ts";
 import { workdirPath } from "../workspace/paths.ts";
 import {
   type ExecutionDeps,
+  markErrored,
   prefixStatusCallback,
   runInstance,
   teardownInstance,
@@ -228,14 +229,19 @@ export class SubagentRunner {
     // immediately so callers can choose between awaiting `handle.result` and
     // tracking via `list()`. Errors during startup land on `result` (the
     // tool handler awaits it and surfaces failures as tool errors).
-    this.executionDeps().then(
-      (deps) =>
-        runInstance(instance, cwd, deps).then(
-          (text) => resolveResult(text),
-          (err) => rejectResult(err),
-        ),
-      rejectResult,
-    );
+    this.executionDeps()
+      .catch((err) => {
+        markErrored(instance, err);
+        throw err;
+      })
+      .then(
+        (deps) =>
+          runInstance(instance, cwd, deps).then(
+            (text) => resolveResult(text),
+            (err) => rejectResult(err),
+          ),
+        rejectResult,
+      );
 
     // Attach a noop catch to prevent unhandled-rejection noise when callers
     // delay observing `result` (e.g. polling via `list()` first). The
@@ -360,14 +366,19 @@ export class SubagentRunner {
     log.debug("subagent revived", { id, role: meta.role, name: meta.name });
 
     // Kick off execution — same pipeline as spawn().
-    this.executionDeps().then(
-      (deps) =>
-        runInstance(instance, cwd, deps).then(
-          (text) => resolveResult(text),
-          (err) => rejectResult(err),
-        ),
-      rejectResult,
-    );
+    this.executionDeps()
+      .catch((err) => {
+        markErrored(instance, err);
+        throw err;
+      })
+      .then(
+        (deps) =>
+          runInstance(instance, cwd, deps).then(
+            (text) => resolveResult(text),
+            (err) => rejectResult(err),
+          ),
+        rejectResult,
+      );
     result.catch(() => {});
 
     // Resolve the revive only after its bookkeeping (revivesInProgress) is
@@ -676,12 +687,13 @@ export class SubagentRunner {
    * always sees the current `this`.
    */
   private async executionDeps(): Promise<ExecutionDeps> {
+    const services = await this.getPiServices();
     const memoryStore = this.embeddingProvider
       ? new MemoryStore(this.cfg.goblinHome, undefined, { embeddings: this.embeddingProvider })
       : new MemoryStore(this.cfg.goblinHome);
     return {
       cfg: this.cfg,
-      services: await this.getPiServices(),
+      services,
       buildTools: (depth, sessionId, activeScope, onStatusUpdate) =>
         this.toolFactory ? this.toolFactory(this, depth, sessionId, activeScope, onStatusUpdate) : [],
       memoryStore,

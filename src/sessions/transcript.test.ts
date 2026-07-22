@@ -139,6 +139,17 @@ describe("transcript module", () => {
       expect(extractEntryText({})).toBe("");
     });
 
+    it("strips C0 control characters from binary content (e.g. ZIP file headers)", () => {
+      // Simulates a toolResult that read a .xlsx file (ZIP format: PK\x03\x04...)
+      const zipHeader = "PK\x03\x04\x14\x00\x06\x00\x08\x00some binary garbage";
+      // Each control char is replaced with a space
+      expect(extractEntryText(zipHeader)).toBe("PK        some binary garbage");
+      // Newlines, tabs, and carriage returns are preserved
+      expect(extractEntryText("line1\nline2\ttabbed\r\n")).toBe("line1\nline2\ttabbed\r\n");
+      // Array content with binary text blocks is also sanitized
+      expect(extractEntryText([{ type: "text", text: "PK\x03\x04\x00garbage" }])).toBe("PK   garbage");
+    });
+
     it("handles the assistant synthetic entry's prefixed string", () => {
       appendAssistantTranscriptEntry(sessionId, tmpDir, "sorry, can't do that");
       const lines = readTranscriptAfter(tmpDir, sessionId, 0);

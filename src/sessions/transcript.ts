@@ -220,6 +220,14 @@ export function appendAssistantTranscriptEntry(
  * are ignored). Non-array/non-string content yields "".
  */
 export function extractEntryText(content: unknown): string {
+  const raw = extractEntryTextRaw(content);
+  // Strip control characters that indicate binary content (e.g. ZIP headers
+  // from file-read tool results). Keep \n \r \t; replace everything else in
+  // the C0 control range with a space so the text is at least searchable.
+  return raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, " ");
+}
+
+function extractEntryTextRaw(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   let text = "";

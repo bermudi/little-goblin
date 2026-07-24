@@ -1,5 +1,7 @@
 # Durable External-Agent Runs
 
+> **Superseded:** `acp-external-agents` replaces PTY process adoption with ACP session continuation. This artifact is retained as historical fallback analysis and should not be built.
+
 ## Motivation
 
 `ExternalAgentRunner` persists run metadata and output, but execution is intentionally non-resumable. A Goblin restart cancels every live external agent during graceful shutdown; after a crash, startup kills surviving `agent-pty` sessions and marks their records `interrupted`. This makes a service restart, deploy, or transient Goblin failure terminate long coding tasks even though the detached `agent-pty` daemon may still own a healthy process.

@@ -1,5 +1,7 @@
 # External Agent Metrics
 
+> **Blocked for replan:** `acp-external-agents` removes PTY fallback and generalizes backend ids. Replan PTY counters, adapter-kind fields, and per-agent summaries after that change lands.
+
 ## Motivation
 
 `session-metrics` introduces a per-session `metrics.jsonl` and a `MetricsStore` API for turn, memory, and `/debug` observability. `ExternalAgentRunner` already owns run lifecycle, status transitions, concurrency limits, and PTY fallback, but it records none of this to the session metrics stream. As a result users cannot see how many external-agent runs succeeded or failed, how long they ran, how often the concurrency limit or PTY fallback was hit, or which backends are used most.

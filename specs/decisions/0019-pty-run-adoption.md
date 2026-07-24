@@ -2,7 +2,9 @@
 
 ## Status
 
-proposed
+abandoned
+
+Superseded by proposed decision 0030. ACP session continuation addresses the common external-agent path without adopting PTY processes.
 
 ## Context
 

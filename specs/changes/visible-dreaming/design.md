@@ -12,15 +12,16 @@ REM sleep (3 AM, existing)
   │  promoted themes (tags + session counts)
   ├─► Dream distillation (NEW)
   │     │  enqueueInternalTurn → model → first-person fragment ≤400 chars
-  │     └─► writeFragment() → fragment.json
+  │     ├─► writeFragment() → fragment.json
+  │     └─► appendDreamHistory() → dreams/history.json
   │
   ├─► Dream message delivery (NEW, if enabled)
   │     │  read prefs.json → enabled?
-  │     │  read delivered.json → already delivered this fragment?
-  │     │  resolve primary session (DM or most recent)
+  │     │  read delivered.json → already delivered within 24h?
+  │     │  resolve primary session (DM or most recently created)
   │     └─► enqueueScheduledTurn → Telegram message "🌙 <fragment>"
   │
-  └─► (existing) appendDreamDiarySummary → dreams/YYYY-MM-DD.md
+  └─► (existing) appendDreamDiarySummary → dreams/YYYY-MM-DD.md (export-only)
 
 Per-turn (every prompt):
   AgentRunner.prompt()
@@ -37,10 +38,10 @@ On-demand:
 ### Component relationships
 
 - **DreamingPipeline** (`src/memory/dreaming.ts`): gains a `distillDream()` method called at the end of `remSleepInner()` when themes were promoted. Uses the existing `enqueueInternalTurn` path (via a callback injected by the scheduler loop, same pattern as the candidate extractor).
-- **Dream fragment store** (`src/memory/dream-fragment.ts`, new): `readFragment`, `writeFragment`, `readDreamPrefs`, `writeDreamPrefs`, `readDeliveryRecord`, `writeDeliveryRecord`, `readDreamDiarySummary`. All use atomic writes. All read paths return `null`/defaults on ENOENT.
+- **Dream fragment store** (`src/memory/dream-fragment.ts`, new): `readFragment`, `writeFragment`, `readDreamPrefs`, `writeDreamPrefs`, `readDeliveryRecord`, `writeDeliveryRecord`, `readDreamDiarySummary`. All use atomic writes. All read paths return `null`/defaults on ENOENT. `readDreamDiarySummary` reads the operational JSON history, not the export-only markdown diary.
 - **AgentRunner** (`src/agent/mod.ts`): `prompt()` gains a second `sendCustomMessage` call for the dream aside, after the memory aside (line 633) and before `sendUserMessage` (line 636).
-- **SchedulerLoop** (`src/scheduler/loop.ts`): after `runRemSleep()` resolves, calls `distillDream()` on the pipeline, then checks prefs and delivers the message via `enqueueScheduledTurn`. The loop already has `this.dispatcher.enqueueScheduledTurn` and `this.sessionSource.list()` available.
-- **Commands** (`src/commands/dreams.ts`, new + registry entry): instant-timing command reading from the fragment store and diary files.
+- **SchedulerLoop** (`src/scheduler/loop.ts`): after `runRemSleep()` resolves, `distillDream()` has already run inside the pipeline; the loop checks prefs and delivers the fragment via `enqueueScheduledTurn` when throttling allows. The loop already has `this.dispatcher.enqueueScheduledTurn` and `this.sessionSource.list()` available.
+- **Commands** (`src/commands/dreams.ts`, new + registry entry): instant-timing command reading from the fragment store and operational dream history.
 
 ## Decisions
 
@@ -52,13 +53,13 @@ The dream distillation prompt is dispatched through the existing `__goblin_dream
 
 **Constraint:** The distillation prompt must complete before the fragment is written. If the internal turn fails (model error, abort), no fragment is written and no message is delivered. This is acceptable — a failed distillation is a quiet night.
 
-### Decision: Fragment store is JSON files, not SQLite
+### Decision: Dream state is operational JSON, not canonical memory
 
-`fragment.json`, `prefs.json`, and `delivered.json` are simple JSON files in `$GOBLIN_HOME/state/memory/dreams/`. The dream diary remains markdown files.
+`fragment.json`, `prefs.json`, and `delivered.json` are simple operational state files in `$GOBLIN_HOME/state/memory/dreams/`. They hold transient runtime state for the dream feature and are not part of the canonical curated memory store in SQLite. The dream diary markdown files are export-only views generated from the dreaming pipeline's output; the `/dreams` command reads the operational JSON state, not the markdown export.
 
-**Why not SQLite:** The fragment store is a single current record (one fragment, overwritten each cycle). A database table for one row is overkill. The prefs and delivery record are equally minimal. The memory SQLite store is for curated memory entries with search, scopes, and metadata — the dream fragment is ephemeral narrative content that doesn't need query infrastructure.
+**Why not SQLite:** The fragment store is a single current record (one fragment, overwritten each cycle). A database table for one row is overkill. The prefs and delivery record are equally minimal. The memory SQLite store is for curated memory entries with search, scopes, and metadata — the dream fragment is ephemeral narrative content that doesn't need query infrastructure. Nightly `/dreams` history is stored in a small operational JSON file and exported to markdown for human inspection.
 
-**Constraint:** All writes use atomic write (tmp + renameSync) per the AGENTS.md guardrail. Reads return `null`/defaults on ENOENT.
+**Constraint:** All writes use atomic write (tmp + renameSync) per the AGENTS.md guardrail. Reads return `null`/defaults on ENOENT. Markdown diary files are export-only and must not be treated as authoritative by application code.
 
 ### Decision: Dream aside is a separate `sendCustomMessage` from the memory aside
 
@@ -74,14 +75,14 @@ The dream fragment is injected as its own `sendCustomMessage` call, independent 
 
 Dream messages are delivered to the user's primary session, resolved as:
 1. The DM session (a session with `chatId > 0` and no `topicId`) if one exists and is not archived.
-2. The most recently active non-archived, non-internal session (by `createdAt` descending) if no DM session exists.
+2. The most recently created non-archived, non-internal session (the last element from `SessionManager.list()`, which sorts by `createdAt` ascending) if no DM session exists.
 3. Silently skip if no suitable session exists.
 
 **Why not deliver to every session:** Dreams reflect cross-session patterns and are not topic-specific. Delivering to multiple chats would spam. A single delivery to the primary session is sufficient.
 
 **Why not a fixed chat ID:** The user may not have a DM session yet (they might only use topics). The resolution logic handles this gracefully.
 
-**Constraint:** The `SessionManager.list()` method already returns non-archived, non-internal sessions sorted by `createdAt`. The resolution logic filters for DM sessions first (positive `chatId`, no `topicId`), then falls back to the most recent.
+**Constraint:** The `SessionManager.list()` method already returns non-archived, non-internal sessions sorted by `createdAt` ascending. The resolution logic filters for DM sessions first (positive `chatId`, no `topicId`), then falls back to the last session in the list.
 
 ### Decision: `/dreams off` instead of react-to-mute
 
@@ -95,16 +96,16 @@ The distillation model receives the promoted theme tags and their session counts
 
 ### New files
 
-- **`src/memory/dream-fragment.ts`** — Dream fragment store, prefs, delivery record, and diary summary reader. Exports `readFragment`, `writeFragment`, `readDreamPrefs`, `writeDreamPrefs`, `readDeliveryRecord`, `writeDeliveryRecord`, `readDreamDiarySummary`, and the `DreamFragment` / `DreamDiaryNight` types. All reads return `null`/defaults on ENOENT; all writes use `atomicWrite` from `src/fs.ts`. Satisfies "Dream fragment store", "Dream message preferences", and "Dream diary summary line for /dreams command" requirements.
+- **`src/memory/dream-fragment.ts`** — Dream fragment store, prefs, delivery record, and diary summary reader. Exports `readFragment`, `writeFragment`, `readDreamPrefs`, `writeDreamPrefs`, `readDeliveryRecord`, `writeDeliveryRecord`, `readDreamDiarySummary`, `appendDreamHistory`, and the `DreamFragment` / `DreamDiaryNight` types. All reads return `null`/defaults on ENOENT; all writes use `atomicWrite` from `src/fs.ts`. `readDreamDiarySummary` reads the operational JSON history; the markdown diary remains an export-only view. Satisfies "Dream fragment store", "Dream message preferences", and "Dream diary summary line for /dreams command" requirements.
 - **`src/memory/dream-fragment.test.ts`** — Colocated tests for the fragment store.
 - **`src/commands/dreams.ts`** — The `/dreams` command handler. Reads from `dream-fragment.ts` functions. Returns `DispatchResult` with the formatted reply. Satisfies "Implement /dreams command" requirement.
 - **`src/commands/dreams.test.ts`** — Colocated tests for the command.
 
 ### Modified files
 
-- **`src/memory/dreaming.ts`** — Add `distillDream()` method to `DreamingPipeline`. Called at the end of `remSleepInner()` (after line 515) when `promoted > 0`. The method builds a distillation prompt from the promoted theme tags and session counts, dispatches it via a new `distillCallback` (injected the same way as the `extractor` — set by the scheduler loop), parses the response, truncates to 400 chars, and calls `writeFragment()`. The `DreamingPipelineOptions` gains an optional `distillCallback?: (prompt: string) => Promise<string>` field, set by the scheduler loop's `createModelExtractor`-equivalent for distillation. Satisfies "Dream distillation after REM sleep" requirement.
+- **`src/memory/dreaming.ts`** — Add `distillDream()` method to `DreamingPipeline`. Called at the end of `remSleepInner()` (after line 515) when `promoted > 0`. The method builds a distillation prompt from the promoted theme tags and session counts, dispatches it via a new `distillCallback` (injected the same way as the `extractor` — set by the scheduler loop), parses the response, truncates to 400 chars, and calls `writeFragment()`. It also appends a nightly summary to the operational dream history via `appendDreamHistory()`. The `DreamingPipelineOptions` gains an optional `distillCallback?: (prompt: string) => Promise<string>` field, set by the scheduler loop's `createModelExtractor`-equivalent for distillation. Satisfies "Dream distillation after REM sleep" requirement.
 - **`src/agent/mod.ts`** — In `prompt()`, after the memory aside injection (line 633) and before `sendUserMessage` (line 636), add a dream aside injection: read `fragment.json` via `readFragment(this.cfg.goblinHome)`, format the `## last dream` aside, and call `this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" })`. Omit when `readFragment` returns `null`. Satisfies "AgentRunner injects dream fragment as per-turn aside" requirement.
-- **`src/scheduler/loop.ts`** — After `this.memoryEngine!.dreaming.runRemSleep()` resolves (line 289-292), add a dream surfacing step: call `distillDream()` on the pipeline (wired via a new `distillCallback` set in `startMemoryTimers`, same pattern as `createModelExtractor`), then check `readDreamPrefs()`, `readDeliveryRecord()`, resolve the primary session via `this.sessionSource.list()`, and call `this.dispatcher.enqueueScheduledTurn()` with the formatted dream message. Satisfies "Dream message delivery" requirement.
+- **`src/scheduler/loop.ts`** — Add `createDistillCallback()` (same pattern as `createModelExtractor`) and set it on `this.memoryEngine.dreaming` in `startMemoryTimers()`. After `this.memoryEngine!.dreaming.runRemSleep()` resolves (line 289-292), add a dream delivery step: check `readDreamPrefs()`, `readDeliveryRecord()`, resolve the primary session via `this.sessionSource.list()`, and call `this.dispatcher.enqueueScheduledTurn()` with the formatted dream message when the last `deliveredAt` is absent or more than 24 hours ago. Write `deliveredAt` to `delivered.json` after successful dispatch. Satisfies "Dream distillation after REM sleep" and "Dream message delivery" requirements.
 - **`src/commands/registry.ts`** — Add a `dreams` entry to `COMMAND_REGISTRY` with `timing: "instant"`, `argsHint: "[full|on|off]"`, and a `handler` that delegates to `executeDreams` from `src/commands/dreams.ts`. Satisfies "/dreams is registered in the command registry and help" requirement.
 
 ### Files NOT modified

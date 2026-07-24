@@ -4,7 +4,7 @@
 
 ### Requirement: Implement /dreams command
 
-The system SHALL provide a `/dreams` command that surfaces the dream diary. The command SHALL be instant-timing: it runs immediately regardless of streaming state and does not abort or defer the current turn. The command SHALL NOT require a bound session — it reads from the dream diary files directly, not from session state.
+The system SHALL provide a `/dreams` command that surfaces the dream diary. The command SHALL be instant-timing: it runs immediately regardless of streaming state and does not abort or defer the current turn. The command SHALL NOT require a bound session — it reads from the operational dream history, not from session state.
 
 The command SHALL accept an optional argument:
 

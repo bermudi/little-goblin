@@ -53,10 +53,10 @@
 
 ## Phase 7: Repair General-topic delivery divergence
 
-- [ ] Split `src/tg/delivery.ts` into `deliveryOpts(surface)` for normal send/edit/media/draft/rich-message options and `chatActionDeliveryOpts(surface)` for `sendChatAction` options, keeping both helpers Telegram-native and `Surface`-driven.
-- [ ] Make `deliveryOpts` omit `message_thread_id` when `container === "supergroup"` and `topicId === 1`, while `chatActionDeliveryOpts` retains `message_thread_id = 1` for that same General topic surface.
-- [ ] Update all affected send paths — `MessageBuffer` send/edit/draft/document/photo/voice factories, command replies (`/voice`, `/ping`), file fallback, and rich-message sends — to call `deliveryOpts`.
-- [ ] Update `MessageBuffer.sendChatActionSafe()` to call `chatActionDeliveryOpts` instead of the normal-send helper.
-- [ ] Backfill `src/tg/delivery.test.ts` with cases for ordinary forum topic, supergroup General normal send, supergroup General chat action, private topic, direct-messages topic, topicless surfaces, and guest rejection.
-- [ ] Run `bun run typecheck`, touched `src/tg/` tests, and `bun test`.
-- [ ] Run `litespec validate telegram-surface-identity` and keep the change in pre-archive review mode.
+- [x] Split `src/tg/delivery.ts` into `deliveryOpts(surface)` for normal send/edit/media/draft/rich-message options and `chatActionDeliveryOpts(surface)` for `sendChatAction` options, keeping both helpers Telegram-native and `Surface`-driven.
+- [x] Make `deliveryOpts` omit `message_thread_id` when `container === "supergroup"` and `topicId === 1`, while `chatActionDeliveryOpts` retains `message_thread_id = 1` for that same General topic surface.
+- [x] Update all affected send paths — `MessageBuffer` send/edit/draft/document/photo/voice factories, command replies (`/voice`, `/ping`), file fallback, and rich-message sends — to call `deliveryOpts`.
+- [x] Update `MessageBuffer.sendChatActionSafe()` to call `chatActionDeliveryOpts` instead of the normal-send helper.
+- [x] Backfill `src/tg/delivery.test.ts` with cases for ordinary forum topic, supergroup General normal send, supergroup General chat action, private topic, direct-messages topic, topicless surfaces, and guest rejection.
+- [x] Run `bun run typecheck`, touched `src/tg/` tests, and `bun test`.
+- [x] Run `litespec validate telegram-surface-identity` and keep the change in pre-archive review mode.

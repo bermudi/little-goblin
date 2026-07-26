@@ -8,7 +8,7 @@ import type { TurnCallbacks } from "../agent/mod.ts";
 import { log } from "../log.ts";
 import { MetricsStore, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import type { Surface } from "../surface.ts";
-import { deliveryOpts } from "./delivery.ts";
+import { chatActionDeliveryOpts, deliveryOpts } from "./delivery.ts";
 import { sendSystemReply, type ReplyOpts, stripRichMarkdown, isParseError, classifyTelegramError } from "./format.ts";
 
 /**
@@ -664,7 +664,7 @@ export class MessageBuffer implements TurnCallbacks {
 
   /** Best-effort `sendChatAction("typing")`; never throws out. */
   private sendChatActionSafe(): void {
-    Promise.resolve(this.bot.api.sendChatAction(this.chatId, "typing", this.withThread())).catch(
+    Promise.resolve(this.bot.api.sendChatAction(this.chatId, "typing", chatActionDeliveryOpts(this.surface))).catch(
       (err: unknown) => {
         log.warn("sendChatAction failed", { error: String(err) });
       },

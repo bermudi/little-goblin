@@ -109,7 +109,7 @@ describe("buildStartHandler", () => {
     expect(replies[0]!.text).toBe(
       "`[info]` No active conversation\\. Send any message to start one, or use /new to create one explicitly\\.",
     );
-    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true, message_thread_id: 1 });
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
     expect(inspectCalls.length).toBe(1);
     expect(inspectCalls[0]!).toEqual(topicSurface("supergroup", -789, 1));
   });

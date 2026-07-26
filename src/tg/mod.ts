@@ -13,7 +13,7 @@ export {
   topicSurface,
 } from "../surface.ts";
 export type { DmSurface, GuestSurface, SupergroupSurface, Surface, SurfaceId, TopicContainer, TopicSurface } from "../surface.ts";
-export { deliveryOpts, sendTarget, isPrivateChat } from "./delivery.ts";
+export { deliveryOpts, chatActionDeliveryOpts, sendTarget, isPrivateChat } from "./delivery.ts";
 export { MessageBuffer, DEFAULT_VISIBILITY, VISIBILITY_TOOLS, VISIBILITY_LIMITS, shouldShowTool, getVisibilityLimits } from "./buffer.ts";
 export { createTextToSpeechTool } from "./tools.ts";
 export { GuestReplySink } from "./guest-sink.ts";

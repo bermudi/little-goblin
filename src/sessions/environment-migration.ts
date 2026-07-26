@@ -13,7 +13,7 @@
  * aborts the whole run.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../log.ts";
@@ -205,35 +205,148 @@ function normalizePiHistoryFile(filePath: string, env: ExecutionEnvironment, hom
   log.info("normalized pi history header", { file: filePath, cwd: normalizedCwd });
 }
 
+interface WorkdirManifestEntry {
+  source: string;
+  destination: string;
+}
+
+interface WorkdirPromotionManifest {
+  version: 1;
+  entries: WorkdirManifestEntry[];
+}
+
+function workdirManifestPath(home: string): string {
+  return join(home, "state", "workdir-promotion-manifest.json");
+}
+
+function readWorkdirManifest(home: string): WorkdirManifestEntry[] | null {
+  const path = workdirManifestPath(home);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`corrupt workdir promotion manifest: ${path}`);
+  }
+  if (parsed === null || typeof parsed !== "object" || !Array.isArray((parsed as Record<string, unknown>).entries)) {
+    throw new Error(`corrupt workdir promotion manifest: ${path}`);
+  }
+  const entries = (parsed as Record<string, unknown>).entries as unknown[];
+  const result: WorkdirManifestEntry[] = [];
+  for (const entry of entries) {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      typeof (entry as Record<string, unknown>).source !== "string" ||
+      typeof (entry as Record<string, unknown>).destination !== "string"
+    ) {
+      throw new Error(`corrupt workdir promotion manifest entry: ${path}`);
+    }
+    result.push({
+      source: (entry as Record<string, unknown>).source as string,
+      destination: (entry as Record<string, unknown>).destination as string,
+    });
+  }
+  return result;
+}
+
+function saveWorkdirManifest(home: string, entries: WorkdirManifestEntry[]): void {
+  saveJsonFile(workdirManifestPath(home), { version: 1, entries } as WorkdirPromotionManifest);
+}
+
 /**
- * Promote regular files/directories from `$GOBLIN_HOME/scratch/workdir` to
- * `$GOBLIN_HOME/workspace`. A collision with an existing workspace path fails
- * loudly. The legacy workdir is removed once it is empty.
+ * Apply a manifest from a previous interrupted run. Returns the list of entries
+ * that are now complete (destination present, source absent). Throws on
+ * corruption (both missing) or collision (both present).
  */
-function promotePersonalWorkdir(home: string): void {
+function applyWorkdirManifest(manifest: WorkdirManifestEntry[]): WorkdirManifestEntry[] {
+  const completed: WorkdirManifestEntry[] = [];
+  for (const entry of manifest) {
+    const srcExists = existsSync(entry.source);
+    const dstExists = existsSync(entry.destination);
+    if (!srcExists && dstExists) {
+      completed.push(entry);
+      continue;
+    }
+    if (srcExists && !dstExists) {
+      renameSync(entry.source, entry.destination);
+      log.info("promoted personal workdir entry", { from: entry.source, to: entry.destination });
+      completed.push(entry);
+      continue;
+    }
+    if (!srcExists && !dstExists) {
+      throw new Error(
+        `workdir promotion corruption: both source and destination missing for ${entry.source} -> ${entry.destination}`,
+      );
+    }
+    throw new Error(`workspace collision while promoting personal workdir: ${entry.destination}`);
+  }
+  return completed;
+}
+
+function scanWorkdirEntries(home: string): WorkdirManifestEntry[] {
   const src = workdirPath(home);
   const dst = workspacePath(home);
-  if (!existsSync(src)) return;
-  mkdirSync(dst, { recursive: true });
-  const entries = readdirSync(src);
-  for (const name of entries) {
+  const entries: WorkdirManifestEntry[] = [];
+  for (const name of readdirSync(src)) {
     const srcPath = join(src, name);
     const dstPath = join(dst, name);
+    const st = statSync(srcPath);
+    if (!st.isFile() && !st.isDirectory()) {
+      throw new Error(`personal workdir contains non-promotable entry: ${srcPath}`);
+    }
     if (existsSync(dstPath)) {
       throw new Error(`workspace collision while promoting personal workdir: ${dstPath}`);
     }
-    const st = statSync(srcPath);
-    if (st.isFile() || st.isDirectory()) {
-      renameSync(srcPath, dstPath);
-      log.info("promoted personal workdir entry", { from: srcPath, to: dstPath });
-    } else {
-      throw new Error(`personal workdir contains non-promotable entry: ${srcPath}`);
+    entries.push({ source: srcPath, destination: dstPath });
+  }
+  return entries;
+}
+
+/**
+ * Promote regular files/directories from `$GOBLIN_HOME/scratch/workdir` to
+ * `$GOBLIN_HOME/workspace`. A migration manifest is written before any rename
+ * so an interrupted run can resume safely. A collision with an existing
+ * workspace path fails loudly. The legacy workdir and manifest are removed
+ * only once every entry is complete.
+ */
+function promotePersonalWorkdir(home: string): void {
+  const src = workdirPath(home);
+  if (!existsSync(src)) return;
+
+  const dst = workspacePath(home);
+  mkdirSync(dst, { recursive: true });
+
+  let manifest = readWorkdirManifest(home) ?? [];
+  manifest = applyWorkdirManifest(manifest);
+
+  const completedSources = new Set(manifest.map((e) => e.source));
+  const newEntries = scanWorkdirEntries(home).filter((e) => !completedSources.has(e.source));
+  if (newEntries.length > 0) {
+    manifest = manifest.concat(newEntries);
+    saveWorkdirManifest(home, manifest);
+    for (const entry of newEntries) {
+      renameSync(entry.source, entry.destination);
+      log.info("promoted personal workdir entry", { from: entry.source, to: entry.destination });
     }
   }
+
   try {
     rmdirSync(src);
   } catch (err) {
     throw new Error(`failed to remove empty personal workdir ${src}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  try {
+    unlinkSync(workdirManifestPath(home));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
 }
 

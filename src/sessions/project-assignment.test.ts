@@ -8,9 +8,9 @@ import {
   buildProjectSessionState,
   clearPendingProjectAssignment,
   loadPendingProjectAssignment,
-  pendingProjectAssignmentPath,
   savePendingProjectAssignment,
 } from "./project-assignment.ts";
+import { pendingProjectAssignmentPath } from "./paths.ts";
 
 function makeIntent(id: SurfaceId, projectRoot: string, previousSessionId?: string) {
   return {

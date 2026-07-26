@@ -99,6 +99,9 @@ fi
 echo "Validating configuration..."
 su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run validate-config"
 
+echo "Running offline state migration..."
+su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run migrate"
+
 echo "Installing systemd service..."
 "${repo_dir}/scripts/install-service.sh"
 

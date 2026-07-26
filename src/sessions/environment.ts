@@ -22,7 +22,7 @@ export type ExecutionEnvironment =
  * - Resolves symlinks to their real path so two spellings of the same root
  *   compare equal.
  * - Throws if the path does not exist, is not a directory, or is not both
- *   readable and searchable by the Goblin process.
+ *   readable, writable, and searchable by the Goblin process.
  */
 export function resolveProjectRoot(input: string): string {
   const expanded = expandTilde(input);
@@ -35,7 +35,7 @@ export function resolveProjectRoot(input: string): string {
     throw new Error(`Project root is not a directory: ${input}`);
   }
   try {
-    accessSync(canonical, constants.R_OK | constants.X_OK);
+    accessSync(canonical, constants.R_OK | constants.X_OK | constants.W_OK);
   } catch {
     throw new Error(`Project root is not accessible: ${input}`);
   }

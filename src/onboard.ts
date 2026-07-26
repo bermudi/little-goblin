@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { ConfigFileSchema } from "./schema.ts";
+import { runMigrations } from "./migrate.ts";
 import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
 
 const DEFAULT_MODEL = "poe/Claude-Sonnet-4.6";
@@ -260,6 +261,10 @@ export async function main(): Promise<void> {
   mkdirSync(goblinHome, { recursive: true });
   writeFileSync(configPath, configContent + "\n");
   const promptResult = createMissingPromptFiles(goblinHome, answers.agentName ?? "Goblin");
+
+  // Run offline state migration so a fresh install has a current state-version
+  // and any legacy layout is canonicalized before the bot starts.
+  runMigrations(goblinHome);
 
   console.log(`\n✅ Created ${configPath}`);
   if (promptResult.createdSoul) console.log(`✅ Created ${soulMdPath(goblinHome)}`);

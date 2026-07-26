@@ -86,6 +86,81 @@ describe("environment-migration", () => {
 
     expect(existsSync(join(workspace, "notes.md"))).toBe(true);
     expect(existsSync(workdir)).toBe(false);
+    expect(existsSync(join(tmpDir, "state", "workdir-promotion-manifest.json"))).toBe(false);
+  });
+
+  it("resumes a partial workdir promotion from an existing manifest", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const workdir = workdirPath(tmpDir);
+    const workspace = workspacePath(tmpDir);
+    mkdirSync(workdir, { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(workspace, "already.md"), "moved");
+    writeFileSync(join(workdir, "pending.md"), "move me");
+
+    const manifestPath = join(tmpDir, "state", "workdir-promotion-manifest.json");
+    mkdirSync(join(tmpDir, "state"), { recursive: true });
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          { source: join(workdir, "already.md"), destination: join(workspace, "already.md") },
+          { source: join(workdir, "pending.md"), destination: join(workspace, "pending.md") },
+        ],
+      }),
+    );
+
+    migrateExecutionEnvironments(tmpDir);
+
+    expect(existsSync(join(workspace, "pending.md"))).toBe(true);
+    expect(existsSync(join(workdir, "pending.md"))).toBe(false);
+    expect(existsSync(workdir)).toBe(false);
+    expect(existsSync(manifestPath)).toBe(false);
+  });
+
+  it("throws when a workdir promotion manifest entry is corrupt", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const workdir = workdirPath(tmpDir);
+    const workspace = workspacePath(tmpDir);
+    mkdirSync(workdir, { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+
+    const manifestPath = join(tmpDir, "state", "workdir-promotion-manifest.json");
+    mkdirSync(join(tmpDir, "state"), { recursive: true });
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          { source: join(workdir, "missing.md"), destination: join(workspace, "missing.md") },
+        ],
+      }),
+    );
+
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/corruption/);
+  });
+
+  it("throws on workspace collision during workdir promotion", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const workdir = workdirPath(tmpDir);
+    const workspace = workspacePath(tmpDir);
+    mkdirSync(workdir, { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(workdir, "dup.md"), "src");
+    writeFileSync(join(workspace, "dup.md"), "dst");
+
+    const manifestPath = join(tmpDir, "state", "workdir-promotion-manifest.json");
+    mkdirSync(join(tmpDir, "state"), { recursive: true });
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        version: 1,
+        entries: [{ source: join(workdir, "dup.md"), destination: join(workspace, "dup.md") }],
+      }),
+    );
+
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/collision/);
   });
 
   it("canonicalizes topic settings projectDir to projectRoot", () => {

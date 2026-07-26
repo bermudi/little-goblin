@@ -31,7 +31,8 @@ bun install
 cp .env.example .env
 
 # 3. Run the interactive onboarding wizard.
-#    It creates $GOBLIN_HOME/goblin.json5 and the SOUL.md/AGENTS.md prompt files.
+#    It creates $GOBLIN_HOME/goblin.json5 and the SOUL.md/AGENTS.md prompt files
+#    and runs the offline state migration for you.
 bun run onboard
 
 # 4. Start the bot

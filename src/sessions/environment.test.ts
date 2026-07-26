@@ -78,6 +78,17 @@ describe("environment", () => {
         chmodSync(dir, 0o755);
       }
     });
+
+    it("throws when the directory is not writable", () => {
+      const dir = join(tmpDir, "no-write");
+      mkdirSync(dir, { recursive: true });
+      chmodSync(dir, 0o555);
+      try {
+        expect(() => resolveProjectRoot(dir)).toThrow(/not accessible/);
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+    });
   });
 
   describe("environment constructors and predicates", () => {

@@ -8,11 +8,11 @@
  * the assignment is complete.
  */
 
-import { join } from "node:path";
 import type { Surface, SurfaceId } from "../surface.ts";
 import type { SessionState } from "./types.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 import { log } from "../log.ts";
+import { pendingProjectAssignmentPath } from "./paths.ts";
 
 export interface ProjectAssignmentIntent {
   version: 1;
@@ -20,10 +20,6 @@ export interface ProjectAssignmentIntent {
   previousSessionId?: string;
   plannedSessionId: string;
   projectRoot: string;
-}
-
-export function pendingProjectAssignmentPath(home: string): string {
-  return join(home, "state", "pending-project-assignment.json");
 }
 
 function isPendingIntent(value: unknown): value is ProjectAssignmentIntent {

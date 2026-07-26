@@ -609,3 +609,128 @@ External-run activity caused by the current tool call SHALL report coarse status
 - **WHEN** `external_agent` starts a run during a main-agent turn
 - **THEN** the current turn callback SHALL receive a coarse start status
 - **AND** later background adapter output SHALL NOT retain or invoke that turn callback after the tool call returns
+
+### Requirement: Scheduler dispatches dreaming phases
+
+The scheduler SHALL dispatch three dreaming phases on independent configurable schedules:
+
+- **Light sleep:** recurring interval, default 240 minutes. Dispatches a light sleep turn that scans recent transcripts, extracts candidates via subagent, and promotes novel snippets.
+- **REM sleep:** recurring interval, default 1440 minutes (aligned to 03:00 local time on first run). Dispatches a REM sleep turn that detects recurring themes and promotes cross-session patterns.
+- **Deep sleep:** recurring interval, default 1440 minutes (aligned to 04:00 local time on first run). Dispatches a deep sleep turn that promotes short-term entries to durable and runs budget compaction.
+
+Each dreaming phase SHALL be dispatched as a model turn through the existing per-session queue (`TurnDispatcher.schedulePrompt`). The dreaming turns SHALL target a dedicated internal session identified by the constant session id `__goblin_dreaming__` (not a Telegram chat). The session SHALL be created lazily on first dispatch via `SessionManager.ensureInternal(id)`, SHALL have `chatId: 0` (sentinel — Telegram chat IDs are never 0), SHALL have no Telegram binding, and SHALL be excluded from `SessionManager.list()`. The dispatcher SHALL use a new `enqueueInternalTurn(session, content, onComplete, onError)` method — no beta tools, no Telegram message buffer (a capture buffer accumulates the assistant's text), and an `onComplete(text)` return path so the dreaming pipeline can parse JSON candidates from the model's response. The per-session queue is shared with scheduled turns — no new dispatch infrastructure (see decision `0029-dreaming-internal-session-dispatch`).
+
+Dreaming schedule intervals SHALL be expressed as a non-negative integer number of minutes or the literal `off` (case-insensitive); `0` is equivalent to `off`. Dreaming phases SHALL NOT be registered in `ScheduleStore` — they are system-internal timers managed by `SchedulerLoop` directly (via `clock.setInterval`), separate from the user-authored schedule tick. The phases SHALL be registered at startup. The intervals SHALL be configurable via `GOBLIN_MEMORY_DREAM_LIGHT_INTERVAL`, `GOBLIN_MEMORY_DREAM_REM_INTERVAL`, and `GOBLIN_MEMORY_DREAM_DEEP_INTERVAL`. Setting any interval to `0` or `off` SHALL disable that phase.
+
+For REM and deep sleep, the scheduler SHALL align the first run to the configured local time (03:00 for REM, 04:00 for deep) by computing the next occurrence of that time after startup. Subsequent runs SHALL be spaced by the configured interval. Light sleep SHALL start from the first tick after startup and repeat at the configured interval — no local-time alignment.
+
+The scheduler SHALL NOT dispatch a dreaming phase while a previous dreaming phase for the same session is still running. Overlapping schedules SHALL coalesce into at most one follow-up dispatch.
+
+#### Scenario: Light sleep dispatched on interval
+
+- **GIVEN** light sleep is configured with a 240-minute interval
+- **WHEN** the scheduler ticks and the interval has elapsed
+- **THEN** a light sleep turn SHALL be dispatched to the dreaming session
+- **AND** the turn SHALL be enqueued through the per-session queue
+- **AND** the dreaming session id SHALL be `__goblin_dreaming__`
+- **AND** the dreaming session SHALL have no Telegram `chatId` or `topicId`
+
+#### Scenario: Dreaming phase disabled
+
+- **GIVEN** `GOBLIN_MEMORY_DREAM_LIGHT_INTERVAL=off`
+- **WHEN** the scheduler ticks
+- **THEN** no light sleep turn SHALL be dispatched
+- **AND** the schedule SHALL not be registered
+
+#### Scenario: Overlapping dreaming phases coalesce
+
+- **GIVEN** a light sleep turn is running for the dreaming session
+- **WHEN** the scheduler ticks and REM sleep is due
+- **THEN** the REM sleep turn SHALL wait behind the light sleep turn via the per-session queue
+- **AND** SHALL run after the light sleep turn completes
+
+#### Scenario: REM sleep first run aligns to 03:00 local
+
+- **GIVEN** goblin starts at 22:00 local time and REM sleep is configured with a 1440-minute interval
+- **WHEN** the scheduler registers the REM schedule at startup
+- **THEN** the first REM dispatch SHALL be scheduled for 03:00 local time (5 hours after startup)
+- **AND** the second REM dispatch SHALL be 1440 minutes after the first (03:00 the next day)
+
+#### Scenario: Dreaming does not block user turns
+
+- **GIVEN** a dreaming turn is running for the dreaming session
+- **WHEN** a user sends a message to a different session
+- **THEN** the user's turn SHALL be processed immediately
+- **AND** the dreaming turn SHALL continue without interruption
+
+### Requirement: Transcript sync runs on scheduler interval
+
+The scheduler SHALL dispatch a transcript sync tick on a configurable interval (default 5 minutes). The sync tick SHALL scan `$GOBLIN_HOME/state/sessions/*/transcript.jsonl` for changes since the last sync, reindex changed files into the memory SQLite database, and remove entries for deleted sessions.
+
+The sync tick SHALL be dispatched as a lightweight scheduled task (not a full agent turn) — it does not require model invocation. The sync SHALL run in the scheduler loop and SHALL NOT block user turns or dreaming phases. The sync task SHALL yield between files and SHALL be bounded to a configurable maximum duration per tick (default 30 seconds); if the bound is exceeded, the remaining work SHALL resume on the next tick.
+
+The sync interval SHALL be configurable via `GOBLIN_MEMORY_TRANSCRIPT_SYNC_INTERVAL` (minutes, default 5). Setting it to `0` SHALL disable transcript indexing.
+
+#### Scenario: Changed transcript reindexed on sync tick
+
+- **WHEN** the sync tick runs and a transcript file's mtime has changed since the last sync
+- **THEN** the file SHALL be re-parsed, chunked, and embedded into `memory_entries`
+- **AND** the `memory_sources` table SHALL be updated with the new mtime and hash
+
+#### Scenario: Sync tick does not block user turns
+
+- **GIVEN** a sync tick is running
+- **WHEN** a user sends a message
+- **THEN** the user's turn SHALL be processed without waiting for the sync to complete
+- **AND** the sync SHALL continue in the background
+
+#### Scenario: Transcript sync disabled
+
+- **GIVEN** `GOBLIN_MEMORY_TRANSCRIPT_SYNC_INTERVAL=0`
+- **WHEN** the scheduler ticks
+- **THEN** no transcript sync SHALL run
+- **AND** transcript entries SHALL NOT be indexed
+
+#### Scenario: Long sync tick yields and resumes
+
+- **GIVEN** a sync tick begins with 100 transcript files to process and the per-tick duration bound is 30 seconds
+- **WHEN** the tick has processed 40 files after 30 seconds
+- **THEN** the sync task SHALL yield and the remaining 60 files SHALL resume on the next tick
+- **AND** user turns received during the sync SHALL be processed without waiting for sync completion
+
+### Requirement: MCP runner is threaded through to AgentRunner
+
+The `TurnDispatcher` SHALL accept an optional `mcpRunner?: McpRunner` via `TurnDispatcherOptions` and forward it to the `AgentRunner` constructor in `createRunner()`. The `TelegramIntake` SHALL accept an optional `mcpRunner?: McpRunner` via `TelegramIntakeOptions` and pass it to the `TurnDispatcher` constructor. The dispatcher SHALL NOT inspect or use the `McpRunner` directly; it is pure pass-through.
+
+The composition root (`src/bot.ts`) SHALL construct the `McpRunner` from `cfg.mcp` and `cfg.goblinHome` and inject it into `createTelegramIntake`. When `cfg.mcp` is absent, no `McpRunner` is constructed and none is passed through.
+
+#### Scenario: MCP runner threaded through to AgentRunner
+
+- **WHEN** `TurnDispatcherOptions` includes `mcpRunner: runner`
+- **AND** `createRunner()` constructs a new `AgentRunner`
+- **THEN** the `AgentRunnerOptions` SHALL include `mcpRunner: runner`
+- **AND** the resulting runner SHALL expose the `mcp_call` and `mcp_describe` tools when `cfg.mcp` is defined
+
+#### Scenario: MCP runner absent from dispatcher options
+
+- **WHEN** `TurnDispatcherOptions` does not include `mcpRunner`
+- **THEN** `createRunner()` SHALL construct the `AgentRunner` without `mcpRunner`
+- **AND** the resulting runner SHALL NOT expose MCP tools
+
+#### Scenario: Telegram intake passes mcpRunner to dispatcher
+
+- **WHEN** `TelegramIntake` is constructed with `mcpRunner: runner`
+- **THEN** the `TurnDispatcher` it creates SHALL be constructed with `mcpRunner: runner`
+
+#### Scenario: buildBot constructs mcpRunner from config
+
+- **WHEN** `cfg.mcp` is defined
+- **THEN** `buildBot` SHALL construct an `McpRunner` from `cfg.mcp` and `cfg.goblinHome`
+- **AND** it SHALL pass that runner to `createTelegramIntake`
+- **AND** the bot SHALL start normally
+
+#### Scenario: buildBot omits mcpRunner when config absent
+
+- **WHEN** `cfg.mcp` is `undefined`
+- **THEN** `buildBot` SHALL NOT construct an `McpRunner`
+- **AND** it SHALL pass `undefined` as the `mcpRunner` option to `createTelegramIntake`

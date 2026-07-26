@@ -228,55 +228,49 @@ The `AgentRunner` SHALL expose an `abort()` method that calls pi's `AgentSession
 
 ### Requirement: AgentRunner injects memory snapshot as per-turn aside
 
-The `AgentRunner` SHALL build a per-turn snapshot from the active memory scope (resolved from the runner's `(chatId, topicId)` or named-agent identity), the global `user.md`, and the cross-scope index, and inject it into the next turn via `AgentSession.sendCustomMessage(snapshot, { deliverAs: "nextTurn" })` before each `prompt()` call. The snapshot MUST be loaded fresh for every turn so that writes performed in earlier turns or by completed reflection passes become visible on subsequent turns. The snapshot MUST NOT be added to pi's `_baseSystemPrompt`; whatever value `_baseSystemPrompt` holds at AgentSession creation MUST remain unchanged across turns by this change.
+The `AgentRunner` SHALL build a bounded frozen memory summary at session creation and append it to `_baseSystemPrompt`. The frozen summary SHALL include the active scope description, a bounded `user.md` summary, a bounded active scope `memory.md` summary, and a cross-scope index, bounded to 1200 characters total. The frozen summary SHALL NOT be refreshed mid-session.
 
-#### Scenario: Subsequent turn after reflection write
+The `AgentRunner` SHALL NOT inject the full `[goblin memory snapshot]` per-turn aside. Instead, before each `prompt()` call it SHALL compute a `## relevant memory` section via hybrid search on the current prompt text and inject it via `sendCustomMessage(..., { deliverAs: "nextTurn" })`. The `## relevant memory` section SHALL be bounded to 3 results by default and clamped to a maximum of 5.
 
-- **WHEN** background reflection writes a memory entry after turn N completes
-- **AND** the user sends a new message that triggers turn N+1 in the same scope
-- **THEN** the snapshot loaded for turn N+1 SHALL include the reflected entry
+#### Scenario: Session creation injects frozen summary into system prompt
 
-#### Scenario: System prompt unchanged across reflection writes
+- **WHEN** `AgentRunner` creates a new `AgentSession`
+- **THEN** `_baseSystemPrompt` SHALL include the frozen memory summary
+- **AND** the frozen summary SHALL remain unchanged for the lifetime of the session
 
-- **WHEN** any reflection pass changes memory files on disk between turns
-- **THEN** `agent.state.systemPrompt` between turns SHALL remain equal to the value `_baseSystemPrompt` held at AgentSession creation
+#### Scenario: Per-turn prompt injects relevant memory, not full snapshot
+
+- **WHEN** a new user turn is dispatched via `prompt()`
+- **THEN** `sendCustomMessage` SHALL be called with a `## relevant memory` section computed from the prompt text
+- **AND** the message SHALL be delivered as `nextTurn`
+- **AND** the full `[goblin memory snapshot]` SHALL NOT be injected
+
+#### Scenario: Mid-turn steer does not advance cursor independently
+
+- **WHEN** `followUp()` steers a running turn
+- **THEN** the cursor SHALL not advance until the combined turn reaches `agent_end`
+- **AND** the completed combined turn SHALL advance the cursor once
 
 ### Requirement: AgentRunner registers the memory write tool
 
-The `AgentRunner` SHALL include four memory tool definitions in the `customTools` it passes to `createAgentSession`, in addition to any tools provided by the caller:
+The `AgentRunner` SHALL include two memory tool definitions in the `customTools` it passes to `createAgentSession`, in addition to any tools provided by the caller:
 
-1. `memory_read` — read the active scope, user.md, or any allowed cross-scope memory.
-2. `memory_read_index` — list available topic and named-agent persona scopes with descriptions.
-3. `memory_search` — search curated memory entries lexically and return ranked matches.
-4. `memory_write` — mutate the active scope only.
+1. `memory_search` — hybrid search over memory entries and transcript chunks. Subsumes the former `memory_read` (query omitted + scope provided → return entries) and `memory_read_index` (query omitted + scope omitted → return index).
+2. `memory_write` — mutate the active scope only.
 
-The `memory_write` tool's `target` parameter SHALL be wired to resolve to a scope based on the runner's `(chatId, topicId)` or named-agent identity. The agent MUST NOT be given the ability to supply an arbitrary scope on writes. The `memory_search` tool SHALL use the same active scope and chat boundary as `memory_read_index` unless `all_chats` is explicitly requested. Persona scope eligibility for `memory_search` SHALL match the `memory_read_index` `agents` gating: the main goblin agent searches all persona scopes; a named subagent searches only its own persona scope; anonymous subagents search none.
+The `memory_read` and `memory_read_index` tools SHALL be removed. The `memory_write` tool's `target` parameter SHALL be wired to resolve to a `(scope, entry_kind)` pair based on the runner's `(chatId, topicId)` or named-agent identity. The agent MUST NOT be given the ability to supply an arbitrary scope on writes. The `memory_search` tool SHALL use the same active scope and chat boundary as the former `memory_read_index` unless `all_chats` is explicitly requested. Persona scope eligibility for `memory_search` SHALL match the former `memory_read_index` `agents` gating: the main goblin agent searches all persona scopes; a named subagent searches only its own persona scope; anonymous subagents search none.
 
 #### Scenario: Runner constructed for a topic
 
 - **WHEN** `AgentRunner` is constructed for a session bound to topic `42` in chat `-100123`
-- **THEN** the `customTools` array passed to `createAgentSession` SHALL include `memory_read`, `memory_read_index`, `memory_search`, and `memory_write`
-- **AND** the `memory_write` tool's invocation handler SHALL resolve `target = "memory"` to `topics/-100123/42/memory.md`
+- **THEN** the `customTools` array passed to `createAgentSession` SHALL include `memory_search` and `memory_write`
+- **AND** SHALL NOT include `memory_read` or `memory_read_index`
+- **AND** the `memory_write` tool's invocation handler SHALL resolve `target = "memory"` to `scope = "topics/-100123/42"`, `entry_kind = "memory"`
 
 #### Scenario: Caller-supplied tools preserved
 
 - **WHEN** `AgentRunner` is constructed with `customTools = [t1, t2]`
-- **THEN** the `customTools` array passed to `createAgentSession` SHALL include `t1`, `t2`, plus the four memory tools
-
-#### Scenario: Search tool uses active chat boundary
-
-- **WHEN** a topic-bound runner exposes `memory_search`
-- **THEN** a default search SHALL be limited to the runner's active chat plus global user/general memory
-
-#### Scenario: Main agent searches all persona scopes
-
-- **WHEN** the main goblin agent's runner exposes `memory_search`
-- **THEN** default search SHALL include every `agents/<name>/memory.md` persona scope
-
-#### Scenario: Named subagent searches own persona only
-
-- **WHEN** a named subagent `researcher` exposes `memory_search`
-- **THEN** default search SHALL include `agents/researcher/memory.md` and SHALL NOT include other persona scopes
+- **THEN** the `customTools` array passed to `createAgentSession` SHALL include `t1`, `t2`, plus `memory_search` and `memory_write`
 
 ### Requirement: Shared event dispatch function in agent/events.ts
 
@@ -476,72 +470,153 @@ The `AgentRunner` SHALL continue injecting memory snapshots as per-turn asides w
 
 ### Requirement: AgentRunner schedules background memory reflection after completed turns
 
-After a main-agent turn reaches `agent_end`, the `AgentRunner` SHALL schedule a non-blocking memory reflection pass for that session. Reflection MUST NOT delay Telegram response flushing, MUST NOT run for `followUp()` events independently, and MUST NOT start while the turn is still streaming.
+After a main-agent turn reaches `agent_end`, the `AgentRunner` SHALL advance the reflection cursor for that session to the current transcript end. It SHALL NOT schedule a non-blocking memory reflection pass. Reflection MUST NOT delay Telegram response flushing, MUST NOT run for `followUp()` events independently, and MUST NOT start while the turn is still streaming.
 
-#### Scenario: Completed prompt schedules reflection
+The per-turn reflection pass is replaced by the dreaming pipeline's light sleep phase, which SHALL run on a configurable interval (default 4 hours) via the scheduler. The `AgentRunner` SHALL continue to advance the reflection cursor after `agent_end` so that light sleep knows which transcript entries are new.
+
+#### Scenario: Completed prompt advances cursor
 
 - **WHEN** a main-agent prompt turn emits `agent_end`
-- **THEN** the runner SHALL schedule a background reflection pass for that session and active scope
-- **AND** user-visible turn completion SHALL not wait for the reflection result
-
-#### Scenario: Mid-turn steer does not schedule independent reflection
-
-- **WHEN** `followUp()` steers a running turn
-- **THEN** no separate reflection pass SHALL be scheduled for the follow-up itself
-- **AND** the completed combined turn SHALL be eligible for one reflection pass at `agent_end`
+- **THEN** the runner SHALL advance the reflection cursor for that session to the current transcript end
+- **AND** user-visible turn completion SHALL not wait for any reflection work
+- **AND** no per-turn reflection pass SHALL be scheduled
 
 ### Requirement: Reflection cursor prevents duplicate processing
 
-The memory reflection system SHALL persist a cursor under the session directory that records which transcript entries have been reflected. A reflection pass SHALL process only transcript entries after the cursor, and SHALL advance the cursor only after candidate extraction, safety filtering, and persistence/quarantine complete without an unrecoverable error.
+The dreaming pipeline SHALL persist a cursor at `$GOBLIN_HOME/state/sessions/<id>/memory-dreaming-cursor.json` that records which transcript entries have been processed by light sleep. The cursor format SHALL be a line offset into `transcript.jsonl`. A light sleep pass SHALL process only transcript entries after the cursor, and SHALL advance the cursor only after candidate extraction, safety filtering, and persistence/quarantine complete without an unrecoverable error.
 
-When reflection first observes an existing session with no cursor file, it SHALL seed the cursor to the then-current end of `transcript.jsonl` before later completed turns are reflected, and SHALL NOT process historical transcript entries from before that observation. This preserves the no-automatic-backfill rollout contract; historical transcript import requires a separate explicit backfill command outside this change.
+When light sleep first observes an existing session with no `memory-dreaming-cursor.json` file, it SHALL seed the cursor to the then-current end of `transcript.jsonl` before later completed turns are processed, and SHALL NOT process historical transcript entries from before that observation. This preserves the no-automatic-backfill rollout contract; historical transcript import requires a separate explicit backfill command outside this change.
 
-Reflection passes for the same session MUST be serialized in-process. If a second reflection schedule arrives while one is already running for that session, the system SHALL coalesce it into at most one follow-up pass after the current pass completes rather than running two passes against the same cursor concurrently.
+The existing `memory-reflection.json` cursor SHALL be migrated to `memory-dreaming-cursor.json` on first observation: the cursor value (line offset) SHALL be preserved, the new file SHALL be written, and the old `memory-reflection.json` file SHALL be removed. Dreaming passes for the same session MUST be serialized in-process.
 
-#### Scenario: Existing session seeds cursor before future reflection
+The `AgentRunner` SHALL advance the cursor after `agent_end` (marking transcript entries as eligible for the next light sleep pass). Light sleep SHALL advance the cursor again after processing (marking entries as consumed).
+
+#### Scenario: Existing session seeds cursor before future light sleep
 
 - **GIVEN** a session already has `transcript.jsonl` entries and no `memory-reflection.json`
-- **WHEN** the runner or reflection system first observes that session after this feature is enabled
-- **THEN** the reflection system SHALL write a cursor at the current transcript end
-- **AND** it SHALL NOT extract candidates from the pre-existing transcript entries
-- **AND** a later completed turn in the same session SHALL be eligible for reflection because it occurs after the seeded cursor
+- **WHEN** light sleep first observes that session after this feature is enabled
+- **THEN** light sleep SHALL write a cursor at the current transcript end
+- **AND** SHALL NOT extract candidates from the pre-existing transcript entries
+- **AND** a later completed turn in the same session SHALL be eligible for light sleep because it occurs after the seeded cursor
 
-#### Scenario: First observation of new session reflects future turns only
+#### Scenario: Existing memory-reflection.json cursor is migrated to dreaming cursor
 
-- **GIVEN** a newly-created session has no reflection cursor
-- **WHEN** reflection first observes it after a completed turn
-- **THEN** that completed turn MAY be considered new work and reflected
-- **AND** later passes SHALL process only entries after the cursor
+- **GIVEN** a session already has a `memory-reflection.json` cursor at line 200 from the previous reflection system
+- **WHEN** light sleep first observes that session after this feature is enabled
+- **THEN** the existing cursor value SHALL be migrated to the dreaming cursor format (same line offset)
+- **AND** light sleep SHALL process entries starting from line 201
+- **AND** the `memory-reflection.json` file SHALL be removed or superseded by the dreaming cursor file
 
-#### Scenario: Overlapping schedules coalesce per session
+#### Scenario: Cursor advances after successful light sleep
 
-- **WHEN** a reflection pass is already running for session `s1`
-- **AND** another turn completion schedules reflection for `s1`
-- **THEN** the second schedule SHALL NOT start a concurrent pass with the same cursor
-- **AND** the system SHALL run at most one follow-up pass for `s1` after the current pass completes
+- **WHEN** light sleep processes transcript entries 100-150 and all candidates are persisted or quarantined
+- **THEN** the cursor SHALL advance to line 150
+- **AND** the next light sleep pass SHALL start from line 151
 
-#### Scenario: Restart after successful reflection
+#### Scenario: Failed light sleep retries same range
 
-- **WHEN** a turn has already been reflected and Goblin restarts
-- **THEN** the next reflection pass for that session SHALL skip the already-reflected transcript entries
+- **WHEN** light sleep fails before advancing the cursor
+- **THEN** a later light sleep pass SHALL retry the same transcript range
 
-#### Scenario: Failed reflection retries same range
+#### Scenario: AgentRunner advances cursor on agent_end
 
-- **WHEN** reflection fails before advancing the cursor
-- **THEN** a later reflection pass SHALL retry the same transcript range
+- **WHEN** a main-agent turn reaches `agent_end` and the transcript has grown to line 200
+- **THEN** the cursor SHALL be advanced to line 200
+- **AND** the next light sleep pass SHALL process entries from the previous cursor position to line 200
 
 ### Requirement: Reflection uses scoped memory context
 
-The reflection pass SHALL resolve the same active memory scope as the user-facing turn and SHALL consider the current `user.md`, active `memory.md`, and cross-scope descriptions when deciding where and whether to persist candidates. Automatic reflection writes SHALL target only `user.md` or the active main-agent memory scope.
+The dreaming pipeline SHALL resolve the same active memory scope as the user-facing turn. The dreaming session (`__goblin_dreaming__`, `chatId: 0`) is the dispatch vehicle for model turns, NOT the promotion target — its `ActiveScope` (`{ chatId: 0, topicScope: "general" }`) is never written to. Light sleep SHALL target the **originating transcript's** session active scope for promotions (e.g. a transcript snippet from session bound to topic 42 promotes into `topics/<chatId>/42`). REM and deep sleep SHALL aggregate across all scopes but promote each theme or short-term entry into the scope that originated it most frequently. The promotion rule is: for each theme or entry, collect its origin sessions; choose the scope with the highest session count; break ties by the most recent `updated_at`, then by scope name ascending. If the origin sessions are all from transcript scopes without a clear curated target, promote to `general`.
 
-#### Scenario: Topic turn reflects into topic scope
+#### Scenario: Topic turn dreaming promotes into topic scope
 
-- **WHEN** a completed turn occurred in topic `42`
-- **THEN** automatic project/session facts from that turn SHALL be considered for `topics/<chat>/42/memory.md`
-- **AND** stable user preferences SHALL be considered for `user.md`
-- **AND** no other topic scope SHALL be written automatically
+- **WHEN** light sleep processes a transcript from a session in topic `42`
+- **THEN** promoted entries SHALL be inserted with `scope = "topics/<chatId>/42"` and `entry_kind = "memory"`
 
-#### Scenario: General turn reflects into general scope
+#### Scenario: General turn dreaming promotes into general scope
 
-- **WHEN** a completed turn occurred in a DM or supergroup without topic
-- **THEN** automatic non-user facts SHALL target `general/memory.md`
+- **WHEN** light sleep processes a transcript from a DM or supergroup-without-topic session
+- **THEN** promoted entries SHALL be inserted with `scope = "general"` and `entry_kind = "memory"`
+
+#### Scenario: REM sleep promotes a recurring theme to its dominant scope
+
+- **GIVEN** the concept tag "backup" appears in transcript entries from sessions scoped to `topics/-100123/7` in 3 sessions and in `topics/-100123/11` in 1 session
+- **WHEN** REM sleep detects "backup" as a recurring theme
+- **THEN** the theme SHALL be promoted to `scope = "topics/-100123/7"` because it originated there most frequently
+
+### Requirement: AgentRunner conditionally registers MCP tools
+
+The `AgentRunner` constructor SHALL accept an optional `mcpRunner?: McpRunner`. When `mcpRunner` is present and `cfg.mcp` is defined, `buildCustomTools()` SHALL append the tools returned by `createMcpTools(this.mcpRunner)` to the array passed to `createAgentSession`. When `mcpRunner` is absent or `cfg.mcp` is undefined, no MCP tools SHALL be added.
+
+The presence or absence of enabled/reachable MCP servers SHALL NOT affect whether `mcp_call` and `mcp_describe` are registered; an empty catalog or unreachable `mcporter` simply produces an empty or error-bearing tool surface. Caller-supplied `customTools` pass-through is governed by the existing `AgentRunner accepts session-bound custom tools` requirement in the agent canon and is not modified by this change.
+
+#### Scenario: MCP runner present and config defined
+
+- **WHEN** `AgentRunner` is constructed with `mcpRunner: runner` and `cfg.mcp` is defined
+- **THEN** `buildCustomTools()` SHALL include the `mcp_call` and `mcp_describe` tools after the caller-supplied custom tools and memory tools
+
+#### Scenario: MCP runner present with empty enabled list
+
+- **WHEN** `AgentRunner` is constructed with `mcpRunner: runner` and `cfg.mcp` is `{ enabled: [] }`
+- **THEN** `buildCustomTools()` SHALL still include `mcp_call` and `mcp_describe`
+- **AND** the `mcp_call` description SHALL contain an empty catalog
+
+#### Scenario: MCP runner absent
+
+- **WHEN** `AgentRunner` is constructed without `mcpRunner`
+- **THEN** `buildCustomTools()` SHALL NOT include `mcp_call` or `mcp_describe`
+
+#### Scenario: MCP runner present but config absent
+
+- **WHEN** `AgentRunner` is constructed with `mcpRunner: runner` but `cfg.mcp` is `undefined`
+- **THEN** `buildCustomTools()` SHALL NOT include `mcp_call` or `mcp_describe`
+
+### Requirement: AgentRunner records per-turn metrics
+
+The `AgentRunner` SHALL record a `turn` metric event for every completed assistant turn. It SHALL compute `turnStart` from the `agent_start` event timestamp (or `prompt()` start when `agent_start` is not available), `turnEnd` from the `turn_end` event timestamp, and `durationMs` as the difference. It SHALL copy `usage`, `model`, `provider`, `api`, `responseModel`, `stopReason`, and `errorMessage` from the `turn_end` message. It SHALL count `toolCount` and `toolErrorCount` from `tool_execution_start` and `tool_execution_end` events that occur between the start and end of the turn. The event SHALL be written to the `MetricsStore` for the session.
+
+#### Scenario: Assistant turn completes with usage
+
+- **WHEN** `AgentRunner` handles a complete assistant turn with a `turn_end` containing `usage` and `stopReason`
+- **THEN** a `turn` metric event SHALL be written to `metrics.jsonl`
+- **AND** the event SHALL contain `durationMs`, `usage`, `cacheRead`, `cacheWrite`, `cost`, `toolCount`, `toolErrorCount`, and `stopReason`
+
+#### Scenario: Tool error is counted
+
+- **WHEN** a `tool_execution_end` event fires with `isError: true` during a turn
+- **THEN** the `turn` event for that turn SHALL have `toolErrorCount` incremented by one
+
+#### Scenario: Turn aborted before turn_end
+
+- **WHEN** a turn is aborted and no `turn_end` arrives
+- **THEN** no `turn` metric event SHALL be written
+- **AND** any partial tool counts from the turn SHALL be discarded
+
+### Requirement: AgentRunner provides MetricsStore to MemoryReflector
+
+The `AgentRunner` SHALL pass a `MetricsStore` (or its session-scoped accessor) to `MemoryReflector` when constructing the default reflector. When a `MemoryReflector` is provided via `AgentRunnerOptions`, the `AgentRunner` SHALL NOT override it.
+
+#### Scenario: Default MemoryReflector receives metrics
+
+- **WHEN** `AgentRunner` is constructed without a `memoryReflector` option
+- **THEN** the default `MemoryReflector` SHALL receive the `MetricsStore` for the runner's session
+
+#### Scenario: Injected MemoryReflector is preserved
+
+- **WHEN** `AgentRunner` is constructed with `memoryReflector` set
+- **THEN** the provided `MemoryReflector` SHALL be used unchanged
+- **AND** the runner SHALL NOT replace it with a new one
+
+### Requirement: AgentRunner exposes metrics API on the runner
+
+The `AgentRunner` SHALL expose a `metrics: MetricsStore` getter (or equivalent) so callers can record additional events for the session. The `MetricsStore` SHALL be available immediately after construction, before `init()` is called.
+
+#### Scenario: Command handler records a counter
+
+- **WHEN** `/debug` or another caller calls `runner.metrics.incrementCounter("manual", "session")`
+- **THEN** the counter event SHALL be written to the current session's `metrics.jsonl`
+
+#### Scenario: Metrics are available before the first prompt
+
+- **WHEN** `AgentRunner` is constructed and `metrics` is accessed before `prompt()` is called
+- **THEN** it SHALL return a `MetricsStore` bound to the runner's session

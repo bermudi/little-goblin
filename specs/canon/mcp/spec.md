@@ -1,6 +1,6 @@
 # mcp
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: McpRunner wraps the mcporter CLI as a subprocess
 

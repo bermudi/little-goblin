@@ -110,9 +110,12 @@ export class ConversationStore {
       if (envFilter !== undefined && !environmentsEqual(raw.executionEnvironment, envFilter)) {
         continue;
       }
+      if (raw.id !== undefined && raw.id !== id) {
+        throw new Error(`conversation ${id} state file id mismatch: ${String(raw.id)}`);
+      }
 
       states.push({
-        id: raw.id as ConversationId,
+        id: id as ConversationId,
         createdAt: raw.createdAt,
         title: raw.title,
         executionEnvironment: raw.executionEnvironment,
@@ -130,7 +133,7 @@ export class ConversationStore {
     if (state === null) {
       throw new Error(`conversation not found: ${id}`);
     }
-    const updated: ConversationState = { ...state, title };
+    const updated: ConversationState = { ...state, id, title };
     saveConversationState(this.home, updated);
     log.info("set conversation title", { id, title });
   }

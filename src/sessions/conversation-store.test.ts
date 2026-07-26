@@ -97,6 +97,16 @@ describe("ConversationStore", () => {
       expect(loaded).not.toHaveProperty("modelName");
       expect(loaded).not.toHaveProperty("thinkingLevel");
     });
+
+    it("throws when state.json id field points to a different conversation", () => {
+      const a = store.create(personalEnvironment(), "A");
+      const b = store.create(personalEnvironment(), "B");
+      const raw = JSON.parse(readFileSync(statePath(tmpDir, a.id), "utf-8"));
+      raw.id = b.id;
+      writeFileSync(statePath(tmpDir, a.id), JSON.stringify(raw));
+
+      expect(() => store.load(a.id)).toThrow(/state file id mismatch/);
+    });
   });
 
   describe("list", () => {
@@ -147,6 +157,26 @@ describe("ConversationStore", () => {
       mkdirSync(sessionDir(tmpDir, "deadbeef00"), { recursive: true });
       expect(store.list()).toEqual([]);
     });
+
+    it("uses the directory name as the conversation id when state.json omits id", () => {
+      const a = store.create(personalEnvironment(), "A");
+      const raw = JSON.parse(readFileSync(statePath(tmpDir, a.id), "utf-8"));
+      delete raw.id;
+      writeFileSync(statePath(tmpDir, a.id), JSON.stringify(raw));
+
+      const list = store.list();
+      expect(list.map((c) => c.id)).toEqual([a.id]);
+    });
+
+    it("throws when a state.json id field points to a different conversation", () => {
+      const a = store.create(personalEnvironment(), "A");
+      const b = store.create(personalEnvironment(), "B");
+      const raw = JSON.parse(readFileSync(statePath(tmpDir, a.id), "utf-8"));
+      raw.id = b.id;
+      writeFileSync(statePath(tmpDir, a.id), JSON.stringify(raw));
+
+      expect(() => store.list()).toThrow(/state file id mismatch/);
+    });
   });
 
   describe("setTitle", () => {
@@ -166,6 +196,19 @@ describe("ConversationStore", () => {
       const raw = JSON.parse(readFileSync(statePath(tmpDir, conv.id), "utf-8"));
       expect(raw.title).toBe("new");
       expect(raw).not.toHaveProperty("chatId");
+    });
+
+    it("does not overwrite another conversation when state.json id is tampered", () => {
+      const a = store.create(personalEnvironment(), "A");
+      const b = store.create(personalEnvironment(), "B");
+      const raw = JSON.parse(readFileSync(statePath(tmpDir, a.id), "utf-8"));
+      raw.id = b.id;
+      writeFileSync(statePath(tmpDir, a.id), JSON.stringify(raw));
+
+      expect(() => store.setTitle(a.id, "hijacked")).toThrow(/state file id mismatch/);
+      expect(store.load(b.id)?.title).toBe("B");
+      const aRaw = JSON.parse(readFileSync(statePath(tmpDir, a.id), "utf-8"));
+      expect(aRaw.title).toBe("A");
     });
   });
 

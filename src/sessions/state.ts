@@ -34,8 +34,13 @@ export function loadConversationState(home: string, id: string): ConversationSta
   if (!isValidExecutionEnvironment(raw.executionEnvironment)) {
     throw new Error(`conversation ${id} has missing or invalid executionEnvironment`);
   }
+  if (raw.id !== undefined && raw.id !== id) {
+    throw new Error(`conversation ${id} state file id mismatch: ${String(raw.id)}`);
+  }
+  // The directory name is the source of truth for the conversation identity.
+  // The JSON id field is only validated, never used as a path component.
   return {
-    id: raw.id as ConversationId,
+    id: id as ConversationId,
     createdAt: raw.createdAt,
     title: raw.title,
     executionEnvironment: raw.executionEnvironment,
@@ -70,7 +75,12 @@ export function saveConversationState(home: string, state: ConversationState): v
  */
 export function loadState(home: string, id: string): SessionState | null {
   const state = loadJsonFile<SessionState | null>(statePath(home, id), null);
-  return validateState(state);
+  const validated = validateState(state);
+  if (validated === null) return null;
+  if (validated.id !== id) {
+    throw new Error(`session ${id} state file id mismatch: ${String(validated.id)}`);
+  }
+  return validated;
 }
 
 /**

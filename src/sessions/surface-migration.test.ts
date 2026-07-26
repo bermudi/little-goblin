@@ -12,6 +12,9 @@ const CHAT_ID = 123456;
 const TOPIC_ID = 7;
 const SG_ID = -100123456;
 const SESSION_ID = "a1b2c3d4e5";
+const DM_SESSION = "b2c3d4e5f6";
+const SG_SESSION = "c3d4e5f6a7";
+const GUEST_SESSION = "d4e5f6a7b8";
 
 describe("migrateSurfaceState", () => {
   let tmpDir: string;
@@ -39,9 +42,9 @@ describe("migrateSurfaceState", () => {
 
   it("migrates legacy DM, supergroup, and guest bindings", () => {
     writeLegacyBindings({
-      dm: { [CHAT_ID]: SESSION_ID },
-      supergroups: { [SG_ID]: SESSION_ID },
-      guest: { [789]: SESSION_ID },
+      dm: { [CHAT_ID]: DM_SESSION },
+      supergroups: { [SG_ID]: SG_SESSION },
+      guest: { [789]: GUEST_SESSION },
       topics: {},
     });
     writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
@@ -50,9 +53,9 @@ describe("migrateSurfaceState", () => {
 
     const bindings = loadBindings(tmpDir);
     expect(bindings.version).toBe(1);
-    expect(bindings.surfaces[surfaceId(dmSurface(CHAT_ID))]).toBe(SESSION_ID);
-    expect(bindings.surfaces[surfaceId(supergroupSurface(SG_ID))]).toBe(SESSION_ID);
-    expect(bindings.surfaces[surfaceId(guestSurface(789))]).toBe(SESSION_ID);
+    expect(bindings.surfaces[surfaceId(dmSurface(CHAT_ID))]).toBe(DM_SESSION);
+    expect(bindings.surfaces[surfaceId(supergroupSurface(SG_ID))]).toBe(SG_SESSION);
+    expect(bindings.surfaces[surfaceId(guestSurface(789))]).toBe(GUEST_SESSION);
   });
 
   it("migrates a legacy topic binding using private schedule evidence", () => {
@@ -130,9 +133,9 @@ describe("migrateSurfaceState", () => {
   it("keeps numerically similar surfaces separate", () => {
     const sameChatId = 111;
     writeLegacyBindings({
-      dm: { [sameChatId]: "dm-session" },
-      supergroups: { [sameChatId]: "sg-session" },
-      guest: { [sameChatId]: "guest-session" },
+      dm: { [sameChatId]: DM_SESSION },
+      supergroups: { [sameChatId]: SG_SESSION },
+      guest: { [sameChatId]: GUEST_SESSION },
       topics: {},
     });
     writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
@@ -141,9 +144,9 @@ describe("migrateSurfaceState", () => {
 
     const bindings = loadBindings(tmpDir);
     expect(Object.keys(bindings.surfaces)).toHaveLength(3);
-    expect(bindings.surfaces[surfaceId(dmSurface(sameChatId))]).toBe("dm-session");
-    expect(bindings.surfaces[surfaceId(supergroupSurface(sameChatId))]).toBe("sg-session");
-    expect(bindings.surfaces[surfaceId(guestSurface(sameChatId))]).toBe("guest-session");
+    expect(bindings.surfaces[surfaceId(dmSurface(sameChatId))]).toBe(DM_SESSION);
+    expect(bindings.surfaces[surfaceId(supergroupSurface(sameChatId))]).toBe(SG_SESSION);
+    expect(bindings.surfaces[surfaceId(guestSurface(sameChatId))]).toBe(GUEST_SESSION);
   });
 
   it("is idempotent: canonical files are accepted and unchanged", () => {

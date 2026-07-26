@@ -167,7 +167,8 @@ export function getThinkingLevel(home: string, surface: Surface): string | undef
 
 /** Read the validated thinking level override for a complete Surface, or undefined if invalid/unset. */
 export function getThinkingLevelValidated(home: string, surface: Surface): ThinkingLevel | undefined {
-  return isValidThinkingLevel(getThinkingLevel(home, surface));
+  const level = getThinkingLevel(home, surface);
+  return isValidThinkingLevel(level) ? level : undefined;
 }
 
 /** Bind (or clear) the model override for a complete Surface. */

@@ -5,7 +5,7 @@ import type { SubagentRunner } from "../subagents/mod.ts";
 import type { MemoryStore } from "../memory/mod.ts";
 import type { SessionState } from "../sessions/mod.ts";
 import type { Config } from "../config.ts";
-import { dmSurface, type Surface } from "../surface.ts";
+import type { Surface } from "../surface.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import type { TurnSink, SurfaceSettings } from "./dispatcher.ts";

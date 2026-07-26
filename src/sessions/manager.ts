@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { surfaceId, parseSurfaceId, type Surface } from "../surface.ts";
-import type { SessionState, ConversationId } from "./types.ts";
+import type { SessionState, ConversationState, ConversationId } from "./types.ts";
 import { FileBindingStore } from "./bindings.ts";
 import { loadState, saveState } from "./state.ts";
 import {

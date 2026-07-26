@@ -74,7 +74,7 @@ export function clearPendingProjectAssignment(home: string): void {
  */
 export function createOrVerifyProjectSession(
   store: ConversationStore,
-  surface: Surface,
+  _surface: Surface,
   id: string,
   projectRoot: string,
 ): ReturnType<ConversationStore["createWithId"]> {

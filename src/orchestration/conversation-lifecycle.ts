@@ -347,7 +347,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
    * binding. This keeps ordinary message resolution from creating a fresh
    * conversation that conflicts with a not-yet-cleared assignment intent.
    */
-  private async reconcilePendingAssignment(surfaceKey: string): Promise<void> {
+  private async reconcilePendingAssignment(surfaceKey: SurfaceId): Promise<void> {
     const before = this.bindings.load();
     reconcilePendingProjectAssignment(this.home, this.store, this.bindings);
     const after = this.bindings.load();

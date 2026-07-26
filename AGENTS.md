@@ -19,6 +19,13 @@ Before proposing or implementing feature work:
 
 New feature work resumes when its architectural dependencies are explicit and the relevant stabilization changes are accepted. “It fits the current code” is not sufficient.
 
+### Planning discipline
+
+- **WIP limit: one change in progress, one fully specced next.** Follow the implementation train in [`ARCHITECTURE.md`](ARCHITECTURE.md). Everything further out stays a paragraph in `specs/backlog.md`. Writing specs feels like progress and costs nothing to start; that is exactly why the pile grows.
+- **`dependsOn` holds hard edges only** — the change's own tasks consume a type, persisted format, or module interface the dependency introduces. Vocabulary sharing, Non-Goals deferral, and correctness sequencing are soft edges and belong in `ARCHITECTURE.md`, not in the DAG.
+- **The litespec ≤3-capability guardrail is spec hygiene, not a delivery plan.** Splitting a change to satisfy it does not mean the pieces ship separately.
+- **Do not `litespec archive` an unimplemented change.** Archive merges deltas into canon and asserts the behavior exists. Delete it and record the reasoning in `specs/backlog.md`; git keeps the artifacts.
+
 ## Run
 
 ```sh

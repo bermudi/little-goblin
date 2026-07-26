@@ -1,5 +1,8 @@
 schema: spec-driven
 created: 2026-07-25T23:16:27Z
+# dependsOn holds HARD edges only. See ARCHITECTURE.md "Implementation train".
 dependsOn:
   - telegram-surface-identity
-  - pi-native-skill-layout
+# Demoted to soft 2026-07-26 — pi-native-skill-layout is referenced only as a
+# path in design.md:77; no task consumes its helpers. skill-catalog-resolution
+# owns the real coupling.

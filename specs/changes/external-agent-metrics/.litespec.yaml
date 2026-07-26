@@ -1,5 +1,0 @@
-schema: spec-driven
-created: 2026-07-16T04:25:01Z
-dependsOn:
-  - session-metrics
-  - acp-external-agents

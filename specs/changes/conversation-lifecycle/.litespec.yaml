@@ -1,9 +1,18 @@
 schema: spec-driven
 created: 2026-07-25T22:54:02Z
+# dependsOn holds HARD edges only: this change's tasks directly consume a type,
+# persisted format, or module interface introduced by the dependency.
+# Soft edges (vocabulary, Non-Goals deferral, correctness sequencing) are
+# recorded in ARCHITECTURE.md under "Implementation train", not here.
 dependsOn:
   - telegram-surface-identity
-  - surface-derived-memory-context
-  - transcript-surface-provenance
   - immutable-project-environments
-  - personal-attachment-intake
-  - surface-skill-policy
+# Demoted to soft 2026-07-26 — no task in tasks.md consumes these:
+#   surface-derived-memory-context  (0 `memory` matches in tasks.md)
+#   transcript-surface-provenance   (0 `provenance` matches in tasks.md)
+#   surface-skill-policy            (1 passive "preserve the prerequisite-defined
+#                                    destination skill policy" in tasks.md:41)
+#   personal-attachment-intake      (Non-Goals deferral only)
+# SAFETY SEQUENCING: cross-Surface `/resume` movement is only *correct* once
+# surface-derived-memory-context and transcript-surface-provenance have landed.
+# See ARCHITECTURE.md "Implementation train".

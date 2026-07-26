@@ -217,17 +217,21 @@ The dispatcher verifies the current Binding and environment agreement before con
 
 Pi context-file auto-discovery stays disabled for the main runtime. Project guidance is supplemental and must not replace deployment identity. Prompt reads use path helpers and fail loudly according to required/optional semantics.
 
-### Open workspace-write question
+### Prompt-file write authority
 
-Making `$GOBLIN_HOME/workspace` the personal CWD means pi's file tools can potentially edit `SOUL.md`, `AGENTS.md`, personal-environment skills, and ordinary files. Tools accepting absolute paths may also reach the Goblin-wide catalog at `$GOBLIN_HOME/.agents/skills/`. Existing decision 0009 only discusses code-owned prompt reads and does not settle model-tool write authority.
+**TARGET — settled by decision 0039.** Prompt files are **agent-owned**. Goblin MAY rewrite `workspace/SOUL.md`, `AGENTS.md`, and `HEARTBEAT.md` with ordinary file tools during a user-facing turn. Onboarding creates them from templates and never overwrites; `SOUL.md` remains required at startup.
 
-Before declaring the workspace migration build-ready, decide whether reserved prompt files are:
+There is no reserved-path write guard. The main runtime already has `bash` active (`src/agent/backend.ts:145-155` passes no tool allowlist; pi's default active set is `[read, bash, edit, write]`), and pi resolves absolute paths, so a guard could prevent accidents but never constitute a boundary. Per decision 0012, real isolation is an OS-level concern.
 
-- model-writable by design;
-- protected except through an explicit self-modification operation; or
-- protected absolutely during normal turns.
+Three constraints bound the authority:
 
-Attachment confinement alone does not answer this question.
+- every prompt-file write posts a bounded notice to the Surface whose runtime performed it;
+- inner-life wakes cannot write prompt files — expressed as an absence in the decision 0035 capability profile, not as a file guard; autonomous reflection may propose an identity change, never apply one;
+- subagents do not receive deployment prompt files; named agents keep their own `workspace/agents/<name>/AGENTS.md`.
+
+Recovery is git in `$GOBLIN_HOME/workspace`, documented for the operator. Goblin builds no snapshot or undo store.
+
+Three canon statements still contradict this and need a patch: `specs/glossary.md:75` and `specs/canon/agent/spec.md:415` call `SOUL.md` "deployment-owned". A small `agent-owned-prompt-files` change owns the canon amendment, the notice, and the subagent bootstrap filter; it belongs immediately after step 2 of the implementation train.
 
 ## Skill architecture
 
@@ -339,30 +343,39 @@ $GOBLIN_HOME/
     └── external-agents/               # proposed durable run records
 ```
 
-There is no target `$GOBLIN_HOME/scratch/` tree. True temporary data belongs in the OS temp directory or atomic sibling temp files and must not be authoritative. Existing `scratch/workdir`, `scratch/subagents`, and `scratch/external-agents` require explicit collision-safe, restart-safe migrations before startup stops creating the old tree.
+There is no target `$GOBLIN_HOME/scratch/` tree. True temporary data belongs in the OS temp directory or atomic sibling temp files and must not be authoritative. Existing `scratch/workdir`, `scratch/subagents`, and `scratch/external-agents` require explicit collision-safe migration steps before startup stops creating the old tree.
 
 Named-agent definitions and machine-managed instances must not share one workspace directory in the target layout.
 
-## Startup and migration order
+## Startup, migration, and reconciliation
+
+**TARGET — proposed decision 0038.** Migration and reconciliation are different operations and must stop sharing the word "startup".
+
+| | Migration | Reconciliation |
+|---|---|---|
+| What | One-time transformation of old-format persisted data | Recovery of in-flight state after an unclean stop |
+| How often | Once per deployment, ever | Every boot, forever |
+| When | Offline, `bun run migrate`, service stopped | At startup, before polling |
+| Crash-safe | No — restore the backup the command took | Yes; a crash is its normal input |
+| Owner | One module, one ordered append-only step list, one `stateVersion` | Each owning subsystem |
+
+Reconciliation covers interrupted inner-life wakes, durable delegated runs, pending completion deliveries, and replayable project-assignment intent. It operates only on current-version data.
 
 Target startup is fail-before-polling:
 
 1. load and validate deployment configuration;
-2. create only migration-safe base roots through path helpers;
-3. inspect, validate, and run restart-safe filesystem layout migrations before creating their final destinations;
-4. create remaining canonical directories;
-5. migrate Surface identity, refusing legacy topics whose container cannot be uniquely proven;
-6. migrate memory provenance schema and transcript Surface provenance, then invalidate guessed transcript indexes and rebuild from event-time evidence;
-7. migrate Execution Environments, validating every retained pi-history header and normalizing only authority-equivalent paths;
-8. reconcile pending project-assignment operations;
-9. migrate Conversation ownership/bindings/settings/schedules, refusing ambiguous multi-bindings;
-10. migrate remaining memory and delegated-run schemas;
-11. reconcile pending lifecycle operations, delegated completions, and durable runs;
-12. run preflight and model/tool dependency checks;
-13. construct modules and start scheduler;
-14. synchronize Telegram commands and begin polling.
+2. create canonical directories through path helpers;
+3. read `state/` `stateVersion`; refuse to poll on mismatch, naming the required version and the `bun run migrate` remedy;
+4. run memory SQLite schema migration (decisions 0015, 0020 — a database schema, not filesystem layout);
+5. reconcile pending project-assignment operations;
+6. reconcile pending lifecycle operations, delegated completions, durable runs, and inner-life wakes;
+7. run preflight and model/tool dependency checks;
+8. construct modules and start scheduler;
+9. synchronize Telegram commands and begin polling.
 
-Migrations compute and validate before writing, use atomic replacement per file, and use durable operation records when a transition spans files. Cross-file operations must provide an idempotent restart mechanism rather than claiming filesystem-wide atomicity.
+Migrations compute and validate every transformation before the first write, use atomic replacement per file, and fail loudly on ambiguity without selecting a winner. They are *not* required to be idempotent, restart-safe, or mixed-generation tolerant; recovery from a failed migration is restoration from backup.
+
+Six changes currently specify their own restart-safe startup migration and need a patch stripping that language before they are built: `telegram-surface-identity`, `immutable-project-environments`, `pi-native-skill-layout`, `conversation-lifecycle`, `transcript-surface-provenance`, and `delegated-work-ownership`.
 
 ## Current-to-target repair map
 
@@ -386,26 +399,77 @@ Migrations compute and validate before writing, use atomic replacement per file,
 
 ## Stabilization dependency graph
 
+Two kinds of edge exist, and conflating them produced a chain far deeper than the domain requires.
+
+- **Hard edge** — the dependent change's own tasks consume a type, persisted format, or module interface the dependency introduces. Implementing out of order means writing throwaway code. Hard edges live in `dependsOn` in each change's `.litespec.yaml`.
+- **Soft edge** — shared vocabulary, a Non-Goals deferral, or a correctness-sequencing concern. Recorded here and in `.litespec.yaml` comments, never in `dependsOn`.
+
+The litespec planning guardrail (*"if your proposal touches more than 3 capabilities, pause and ask whether this should be split"*) is a **spec-hygiene** rule. It keeps a delta spec reviewable. It is not a delivery-planning rule, and treating it as one is what produced a six-deep chain in front of `conversation-lifecycle`. Keep specs narrow; deliver along the train below.
+
+### Hard edges only
+
 ```text
-telegram-surface-identity ─┬─► immutable-project-environments ◄─ pi-native-skill-layout
-                           └─► surface-derived-memory-context ─► transcript-surface-provenance
+telegram-surface-identity ─┬─► immutable-project-environments ─┬─► conversation-lifecycle
+                           │                                   ├─► personal-attachment-intake
+                           │                                   └─► skill-catalog-resolution
+                           ├─► surface-derived-memory-context ─► transcript-surface-provenance
+                           └─► surface-skill-policy
 
-immutable-project-environments ─┬─► personal-attachment-intake
-                                └─► skill-catalog-resolution ─► surface-skill-policy
-
-telegram-surface-identity ────────────────┐
-immutable-project-environments ───────────┤
-surface-derived-memory-context ───────────┤
-transcript-surface-provenance ────────────┼─► conversation-lifecycle
-personal-attachment-intake ───────────────┤
-surface-skill-policy ────────────────┬────┘
-                                     └─► subagent-skill-inheritance
+pi-native-skill-layout ─► skill-catalog-resolution ─► surface-skill-policy ─► subagent-skill-inheritance
 
 conversation-lifecycle ─┬─► inner-life ─► visible-dreaming rewrite
-                        └─► delegated-work-ownership ◄─ acp-external-agents
+                        └─► delegated-work-ownership ◄─ immutable-project-environments, ACP boundary
 ```
 
-`delegated-work-ownership` depends on immutable environments, Conversation lifecycle, and ACP external agents. Storage-layout cleanup and workspace write authority also cross this chain and must declare dependencies before implementation. `visible-dreaming` must not be built from its placeholder.
+`conversation-lifecycle` has exactly two hard prerequisites, not six. None of its 45 tasks reference memory context, transcript provenance, or attachment destination, and it references skill policy only passively.
+
+### Soft edges (sequencing, not blocking)
+
+| Edge | Why it is soft | Consequence of ignoring it |
+|---|---|---|
+| `immutable-project-environments` → `pi-native-skill-layout` | Referenced as a path string only; no task consumes its helpers | None; `skill-catalog-resolution` owns the real coupling |
+| `conversation-lifecycle` → `personal-attachment-intake` | Non-Goals deferral; lifecycle only preserves the stale-runtime guard | None |
+| `conversation-lifecycle` → `surface-skill-policy` | One passive task clause: "preserve the prerequisite-defined destination skill policy" | Runtime assembly carries no skill policy field until the skill train lands |
+| `conversation-lifecycle` → `surface-derived-memory-context` | **Correctness sequencing.** No task consumes it | Cross-Surface `/resume` moves a Conversation whose memory scope still derives from legacy session metadata |
+| `conversation-lifecycle` → `transcript-surface-provenance` | **Correctness sequencing.** No task consumes it | A moved Conversation's prior transcript entries keep file-level chat attribution and can be indexed or dream-promoted into the wrong topic |
+
+The last two are the only ones with teeth. `conversation-lifecycle` may therefore land before them **provided cross-Surface `/resume` is restricted to same-Surface reactivation until both have landed.** Same-Surface `/resume` is the `pi -r` behavior the operator actually asked for; cross-Surface movement is the part that needs provenance. Enforce this restriction in the change, do not leave it to discipline.
+
+## Implementation train
+
+One ordered sequence, walked end to end. The unit of specification is a litespec change; the unit of delivery is this train.
+
+| # | Change | Tasks | Value delivered |
+|--:|---|--:|---|
+| 1 | `telegram-surface-identity` | 32 | None user-visible. Unblocks everything; removes chat-ID-sign inference |
+| 2 | `immutable-project-environments` | 24 | `/project` becomes set-once; personal CWD moves to `workspace/`; `scratch/workdir` dies |
+| 3 | `personal-attachment-intake` | patch | **First user-visible fix**: captioned uploads stop being silently discarded |
+| 3b | `agent-owned-prompt-files` | — | Decision 0039: canon amendment, prompt-file write notice, subagent bootstrap filter. Not yet specced |
+| 4 | `conversation-lifecycle` | 45 | Surface/Binding/Conversation split; stale-runner and multi-binding bugs fixed. Same-Surface `/resume` only |
+| 5 | `surface-derived-memory-context` | 27 | Memory scope derives from Surface, not session metadata |
+| 6 | `transcript-surface-provenance` | 29 | Event-time provenance; **unlocks cross-Surface `/resume`** |
+| 7 | `pi-native-skill-layout` | 9 | `workspace/skills/` → `.agents/skills/` |
+| 8 | `skill-catalog-resolution` | 16 | Explicit catalog roots; `skillSources` switch dies |
+| 9 | `surface-skill-policy` | 16 | Per-Surface `/skills` selection |
+| 10 | `subagent-skill-inheritance` | patch | Generic subagents inherit the frozen resolved manifest |
+| 11 | `inner-life` | 25 | Bounded wake/effect authority |
+| 12 | `delegated-work-ownership` | 36 | Attached vs durable work; origin-Surface delivery |
+| 13 | `visible-dreaming` | — | Rewrite against `inner-life`; must not be built from its placeholder |
+
+Steps 1–2 are behavior-preserving refactors with no user-visible payoff; step 3 is deliberately placed immediately after them so the train produces something the operator can feel before step 4's 45 tasks. Steps 7–9 may be walked in parallel with 5–6 by a second worker; nothing else may.
+
+**WIP limit: one change in progress, one fully specced next.** Everything beyond position 2 in the train stays a paragraph in `specs/backlog.md` until its predecessor lands. Discovery has outpaced closure since 2026-07-22; the only thing that closes the gap is building.
+
+Storage-layout cleanup and workspace write authority cross this chain and must declare dependencies before implementation.
+
+### Overlapping requirement targets
+
+`litespec validate --changes` currently reports two changes editing the same canonical requirement:
+
+- `immutable-project-environments` and `surface-skill-policy` both target *"Surface settings are keyed by SurfaceId"* (`sessions`)
+- `delegated-work-ownership` and `surface-derived-memory-context` both target *"Subagent revival loads persisted session"* (`subagents`)
+
+These are merge conflicts waiting to happen. Whichever lands first wins; the second must be re-based against the new canon before it is built, not after.
 
 ## Feature readiness gate
 
@@ -427,8 +491,8 @@ If the answer to 1–4 is “the caller coordinates it,” the design is not rea
 
 These decisions or implementation plans block a stable baseline:
 
-1. **Workspace write authority:** whether normal model tools may modify deployment prompts and either user-authored skill catalog.
-2. **No-scratch migration:** final destinations and migrations for subagent and external-agent records.
+1. ~~**Workspace write authority.**~~ Settled by decision 0039: prompt files are agent-owned, no write guard, bounded Telegram notice per write, inner-life excluded, subagents excluded, recovery via git in `workspace/`. Remaining work is the `agent-owned-prompt-files` change, not a decision.
+2. **No-scratch migration:** final destinations and migration steps for subagent and external-agent records.
 3. **Delegated-work implementation:** cancellation races, durable storage, completion wakes, reachability input, and pending-delivery reconciliation under decision 0036.
 4. **Surface lifecycle:** Telegram topic deletion/reachability, schedule suspension, pending outputs, and project recovery.
 5. **Inner-life implementation:** wake/effect schemas, per-effect guarantees, consent persistence, and observability under decision 0035; heartbeat conversion remains undecided.

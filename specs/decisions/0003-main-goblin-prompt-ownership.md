@@ -4,6 +4,8 @@
 
 accepted
 
+Amended by decision 0039 (prompt-files-are-agent-owned): this record's description of `SOUL.md` as *deployment-owned* refers to the file's role as the required identity source, not to write authority. Goblin MAY rewrite `SOUL.md`, `AGENTS.md`, and `HEARTBEAT.md` with ordinary file tools during a user-facing turn. Prompt layering, required/optional semantics, and disabled pi context-file discovery are unchanged.
+
 ## Context
 
 Little Goblin runs inside `pi-coding-agent`, whose default resource loading can discover

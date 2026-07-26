@@ -41,6 +41,47 @@ describe("delivery", () => {
       });
     });
 
+    it("strips caller-supplied thread keys for a DM", () => {
+      expect(deliveryOpts(dmSurface(123), { message_thread_id: 999, direct_messages_topic_id: 888, disable_notification: true })).toEqual({
+        disable_notification: true,
+      });
+    });
+
+    it("strips caller-supplied thread keys for a topicless supergroup", () => {
+      expect(deliveryOpts(supergroupSurface(-100123), { message_thread_id: 999, direct_messages_topic_id: 888, disable_notification: true })).toEqual({
+        disable_notification: true,
+      });
+    });
+
+    it("strips caller-supplied thread keys for a supergroup General topic normal send", () => {
+      expect(deliveryOpts(topicSurface("supergroup", -100456, 1), { message_thread_id: 999, direct_messages_topic_id: 888 })).toEqual({});
+    });
+
+    it("overrides caller-supplied thread keys for an ordinary forum topic", () => {
+      expect(deliveryOpts(topicSurface("supergroup", -100456, 42), { message_thread_id: 999, direct_messages_topic_id: 888 })).toEqual({
+        message_thread_id: 42,
+      });
+    });
+
+    it("overrides caller-supplied thread keys for a private topic", () => {
+      expect(deliveryOpts(topicSurface("private", 456, 7), { message_thread_id: 999, direct_messages_topic_id: 888 })).toEqual({
+        message_thread_id: 7,
+      });
+    });
+
+    it("overrides caller-supplied thread keys for a direct-messages topic", () => {
+      expect(deliveryOpts(topicSurface("direct-messages", 789, 3), { message_thread_id: 999, direct_messages_topic_id: 888 })).toEqual({
+        direct_messages_topic_id: 3,
+      });
+    });
+
+    it("returns a fresh options object and does not mutate extra", () => {
+      const extra = { message_thread_id: 999, direct_messages_topic_id: 888, disable_notification: true };
+      const result = deliveryOpts(dmSurface(123), extra);
+      expect(result).not.toBe(extra);
+      expect(extra).toEqual({ message_thread_id: 999, direct_messages_topic_id: 888, disable_notification: true });
+    });
+
     it("throws for guest surfaces", () => {
       expect(() => deliveryOpts(guestSurface(99))).toThrow("Guest surfaces do not support normal Telegram send/edit methods");
     });
@@ -76,6 +117,49 @@ describe("delivery", () => {
 
     it("adds direct_messages_topic_id for a direct-messages topic", () => {
       expect(chatActionDeliveryOpts(topicSurface("direct-messages", 789, 3))).toEqual({ direct_messages_topic_id: 3 });
+    });
+
+    it("strips caller-supplied thread keys for a DM", () => {
+      expect(chatActionDeliveryOpts(dmSurface(123), { message_thread_id: 999, direct_messages_topic_id: 888, disable_notification: true })).toEqual({
+        disable_notification: true,
+      });
+    });
+
+    it("strips caller-supplied thread keys for a topicless supergroup", () => {
+      expect(chatActionDeliveryOpts(supergroupSurface(-100123), { message_thread_id: 999, direct_messages_topic_id: 888, disable_notification: true })).toEqual({
+        disable_notification: true,
+      });
+    });
+
+    it("overrides caller-supplied thread keys for a supergroup General topic chat action", () => {
+      expect(chatActionDeliveryOpts(topicSurface("supergroup", -100456, 1), { message_thread_id: 999, direct_messages_topic_id: 888 })).toEqual({
+        message_thread_id: 1,
+      });
+    });
+
+    it("overrides caller-supplied thread keys for an ordinary forum topic", () => {
+      expect(chatActionDeliveryOpts(topicSurface("supergroup", -100456, 42), { message_thread_id: 999, direct_messages_topic_id: 888 })).toEqual({
+        message_thread_id: 42,
+      });
+    });
+
+    it("overrides caller-supplied thread keys for a private topic", () => {
+      expect(chatActionDeliveryOpts(topicSurface("private", 456, 7), { message_thread_id: 999, direct_messages_topic_id: 888 })).toEqual({
+        message_thread_id: 7,
+      });
+    });
+
+    it("overrides caller-supplied thread keys for a direct-messages topic", () => {
+      expect(chatActionDeliveryOpts(topicSurface("direct-messages", 789, 3), { message_thread_id: 999, direct_messages_topic_id: 888 })).toEqual({
+        direct_messages_topic_id: 3,
+      });
+    });
+
+    it("returns a fresh options object and does not mutate extra", () => {
+      const extra = { message_thread_id: 999, direct_messages_topic_id: 888, disable_notification: true };
+      const result = chatActionDeliveryOpts(dmSurface(123), extra);
+      expect(result).not.toBe(extra);
+      expect(extra).toEqual({ message_thread_id: 999, direct_messages_topic_id: 888, disable_notification: true });
     });
 
     it("throws for guest surfaces", () => {

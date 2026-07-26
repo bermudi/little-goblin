@@ -25,15 +25,20 @@ function assertNotGuest(surface: Surface): void {
 export function deliveryOpts(surface: Surface, extra: Record<string, unknown> = {}): Record<string, unknown> {
   assertNotGuest(surface);
 
+  const opts = { ...extra };
+  delete opts.message_thread_id;
+  delete opts.direct_messages_topic_id;
+
   if (surface.kind !== "topic") {
-    return extra;
+    return opts;
   }
 
   if (surface.container === "supergroup" && surface.topicId === 1) {
-    return extra;
+    return opts;
   }
 
-  return { ...extra, [threadKey(surface)]: surface.topicId };
+  opts[threadKey(surface)] = surface.topicId;
+  return opts;
 }
 
 /**
@@ -45,11 +50,16 @@ export function deliveryOpts(surface: Surface, extra: Record<string, unknown> = 
 export function chatActionDeliveryOpts(surface: Surface, extra: Record<string, unknown> = {}): Record<string, unknown> {
   assertNotGuest(surface);
 
+  const opts = { ...extra };
+  delete opts.message_thread_id;
+  delete opts.direct_messages_topic_id;
+
   if (surface.kind !== "topic") {
-    return extra;
+    return opts;
   }
 
-  return { ...extra, [threadKey(surface)]: surface.topicId };
+  opts[threadKey(surface)] = surface.topicId;
+  return opts;
 }
 
 /**

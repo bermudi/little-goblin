@@ -126,6 +126,7 @@ export class SessionManager {
    * - Stale bindings are repaired according to the surface kind.
    */
   resolve(surface: Surface): SessionState | null {
+    this.reconcilePendingAssignments();
     const key = surfaceId(surface);
     const bindings = loadBindings(this.home);
     const existingId = bindings.surfaces[key];
@@ -154,6 +155,7 @@ export class SessionManager {
    * Create a new session for a complete Surface and bind it.
    */
   createForSurface(surface: Surface, opts?: { title?: string }): SessionState {
+    this.reconcilePendingAssignments();
     const id = makeSessionId();
     const state: SessionState = {
       id,
@@ -180,6 +182,7 @@ export class SessionManager {
    * before changing the binding.
    */
   bindExistingToSurface(sessionId: string, surface: Surface): SessionState {
+    this.reconcilePendingAssignments();
     const state = loadState(this.home, sessionId);
     if (!state) {
       throw new Error(`session not found: ${sessionId}`);
@@ -204,6 +207,7 @@ export class SessionManager {
    * and remove every surface binding that references it.
    */
   archive(sessionId: string): void {
+    this.reconcilePendingAssignments();
     const src = sessionDir(this.home, sessionId);
     if (!existsSync(src)) {
       throw new Error(`session not found or already archived: ${sessionId}`);
@@ -434,6 +438,7 @@ export class SessionManager {
    * its captured session surface before dispatch.
    */
   peekBinding(surface: Surface): { sessionId: string; state: SessionState } | null {
+    this.reconcilePendingAssignments();
     const key = surfaceId(surface);
     const bindings = loadBindings(this.home);
     const boundId = bindings.surfaces[key];

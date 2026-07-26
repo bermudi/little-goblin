@@ -516,7 +516,7 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
   {
     name: "project",
     argsHint: "<dir>",
-    description: "bind session to a project directory (or clear with /project)",
+    description: "assign this chat to a canonical project directory (one-time, immutable)",
     timing: "queue",
     handler: projectHandler,
   },

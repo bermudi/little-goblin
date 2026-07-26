@@ -6,6 +6,8 @@ import {
   loadTopicSettings,
   saveTopicSettings,
   getProjectDir,
+  getProjectRoot,
+  bindProjectRoot,
   bindProjectDir,
   consumeProjectNotice,
   type TopicSettingsFile,
@@ -142,6 +144,41 @@ describe("topic-settings", () => {
       });
       expect(getProjectDir(tmpDir, sg)).toBe("/sg");
       expect(getProjectDir(tmpDir, dmWithSgNumber)).toBe("/dm");
+    });
+  });
+
+  describe("getProjectRoot / bindProjectRoot", () => {
+    function makeProjectDir(name: string): string {
+      const dir = join(tmpDir, name);
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+
+    it("getProjectRoot falls back to projectDir for legacy settings", () => {
+      saveTopicSettings(tmpDir, { version: 1, surfaces: { [topicKey]: { projectDir: "/legacy" } } });
+      expect(getProjectRoot(tmpDir, topic)).toBe("/legacy");
+    });
+
+    it("getProjectRoot prefers projectRoot over projectDir", () => {
+      saveTopicSettings(tmpDir, { version: 1, surfaces: { [topicKey]: { projectRoot: "/canonical", projectDir: "/legacy" } } });
+      expect(getProjectRoot(tmpDir, topic)).toBe("/canonical");
+    });
+
+    it("bindProjectRoot stores a canonical projectRoot and clears legacy fields", () => {
+      const projectDir = makeProjectDir("project");
+      bindProjectRoot(tmpDir, topic, projectDir);
+
+      const loaded = loadTopicSettings(tmpDir);
+      expect(loaded.surfaces[topicKey]).toEqual({ projectRoot: projectDir });
+      expect(getProjectRoot(tmpDir, topic)).toBe(projectDir);
+    });
+
+    it("bindProjectRoot clears the project root", () => {
+      bindProjectRoot(tmpDir, topic, makeProjectDir("project"));
+      bindProjectRoot(tmpDir, topic, undefined);
+
+      const loaded = loadTopicSettings(tmpDir);
+      expect(loaded.surfaces[topicKey]).toBeUndefined();
     });
   });
 

@@ -3,26 +3,27 @@
  * ExecutionEnvironment values.
  *
  * This runs after surface migration. It:
+ *  - promotes legacy `scratch/workdir` personal contents to `workspace`
  *  - canonicalizes legacy `projectDir` topic settings to `projectRoot`
  *  - infers an immutable execution environment for every session without one
- *  - validates/normalizes pi JSONL history headers against the selected env
- *  - promotes legacy `scratch/workdir` personal contents to `workspace`
+ *  - validates and normalizes pi JSONL history headers against the selected env
  *
- * All mutations are computed in memory or applied per-file atomically. The
- * migration fails before any state/history write when a session has ambiguous
- * or incompatible environment authority.
+ * The migration is two-phase: every transformation is computed and validated
+ * before the first state or history write. Any ambiguity fails loudly and
+ * aborts the whole run.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../log.ts";
 import { workdirPath, workspacePath } from "../workspace/paths.ts";
-import { readPiSessionHeader, validatePiSessionHeaders } from "../pi-host.ts";
+import { readPiSessionHeader } from "../pi-host.ts";
 import { loadBindings } from "./bindings.ts";
 import { loadTopicSettings, saveTopicSettings } from "./topic-settings.ts";
-import { loadLegacyState, saveState } from "./state.ts";
-import { sessionsDir, piSessionDir } from "./paths.ts";
+import { loadLegacyState } from "./state.ts";
+import { saveJsonFile } from "./state-file.ts";
+import { sessionsDir, piSessionDir, sessionDir } from "./paths.ts";
 import { surfaceId, parseSurfaceId, type Surface, type SurfaceId } from "../surface.ts";
 import {
   environmentCwd,
@@ -39,38 +40,45 @@ function isHexSessionId(id: string): boolean {
   return /^[0-9a-f]{10}$/.test(id);
 }
 
-/** Canonicalize a stored project path. Throws if the path is missing or not a directory. */
+/** Canonicalize a stored project path. Returns null if it is missing, not a directory, or inaccessible. */
 function canonicalizeProjectPath(raw: string | undefined): string | null {
   if (!raw) return null;
-  return resolveProjectRoot(raw);
+  try {
+    return resolveProjectRoot(raw);
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Migrate topic settings: every `projectDir` is resolved to a canonical
- * `projectRoot`; the legacy field is removed. Empty records are dropped.
+ * `projectRoot`; the legacy field and any pending notice are removed.
+ * Empty records are dropped.
  */
 function migrateTopicSettings(home: string): void {
   const settings = loadTopicSettings(home);
   let changed = false;
   for (const [key, value] of Object.entries(settings.surfaces)) {
-    if (!value?.projectDir) continue;
-    const canonical = canonicalizeProjectPath(value.projectDir);
+    const raw = value?.projectRoot ?? value?.projectDir;
+    if (!raw) continue;
+    const canonical = canonicalizeProjectPath(raw);
     if (canonical === null) {
-      log.warn("removing topic setting with missing projectDir", { surfaceId: key, projectDir: value.projectDir });
+      log.warn("removing topic setting with missing/inaccessible project path", { surfaceId: key, raw });
       delete settings.surfaces[key as SurfaceId];
       changed = true;
       continue;
     }
-    settings.surfaces[key as SurfaceId] = {
-      projectRoot: canonical,
-    };
+    settings.surfaces[key as SurfaceId] = { projectRoot: canonical };
     changed = true;
   }
   if (changed) saveTopicSettings(home, settings);
 }
 
-function projectRootForSurface(settings: TopicSettingsFile, surface: Surface): string | undefined {
-  return settings.surfaces[surfaceId(surface)]?.projectRoot;
+function canonicalProjectRootForSurface(settings: TopicSettingsFile, surface: Surface): string | undefined {
+  const s = settings.surfaces[surfaceId(surface)];
+  const raw = s?.projectRoot ?? s?.projectDir;
+  if (!raw) return undefined;
+  return canonicalizeProjectPath(raw) ?? undefined;
 }
 
 function collectSessionSurfaces(bindings: BindingsFile): Map<string, Surface[]> {
@@ -99,18 +107,25 @@ function inferSessionEnvironment(
 
   // Bound surfaces: all must agree on the environment.
   const roots = new Set<string>();
+  let hasPersonalSurface = false;
   for (const surface of surfaces) {
-    const root = projectRootForSurface(settings, surface);
-    if (root) roots.add(root);
+    const root = canonicalProjectRootForSurface(settings, surface);
+    if (root) {
+      roots.add(root);
+    } else {
+      hasPersonalSurface = true;
+    }
   }
   const rootArray = Array.from(roots);
-  if (rootArray.length > 1) {
-    throw new Error(
-      `session ${id} is bound to surfaces with conflicting project roots: ${rootArray.join(", ")}`,
-    );
+  if (rootArray.length > 1 || (rootArray.length === 1 && hasPersonalSurface)) {
+    const details = hasPersonalSurface ? [...rootArray, "<personal>"].join(", ") : rootArray.join(", ");
+    throw new Error(`session ${id} is bound to surfaces with conflicting environments: ${details}`);
   }
   if (rootArray.length === 1) {
     return projectEnvironment(rootArray[0]!);
+  }
+  if (hasPersonalSurface) {
+    return personalEnvironment();
   }
 
   // Unbound session: use legacy projectDir from state if present.
@@ -124,55 +139,62 @@ function inferSessionEnvironment(
 }
 
 /**
+ * Select the canonical cwd a pi header should be rewritten to.
+ * Returns the original cwd when no rewrite is needed, the normalized cwd when
+ * the header is an allowed legacy spelling, or undefined when incompatible.
+ */
+function selectNormalizedCwd(headerCwd: string, env: ExecutionEnvironment, home: string): string | undefined {
+  const expectedCwd = env.kind === "personal" ? workspacePath(home) : env.projectRoot;
+  if (headerCwd === expectedCwd) return headerCwd;
+
+  if (env.kind === "personal") {
+    if (headerCwd === workdirPath(home)) return expectedCwd;
+  } else {
+    try {
+      if (realpathSync(headerCwd) === env.projectRoot) return expectedCwd;
+    } catch {
+      // realpath failed; cannot normalize
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Validate all `.jsonl` session files in a directory against the selected
+ * environment. Throws on the first malformed or incompatible header.
+ */
+function validatePiSessionFiles(piDir: string, env: ExecutionEnvironment, home: string): void {
+  if (!existsSync(piDir)) return;
+  const files = readdirSync(piDir).filter((f) => f.endsWith(".jsonl"));
+  for (const f of files) {
+    const path = join(piDir, f);
+    const header = readPiSessionHeader(path);
+    if (selectNormalizedCwd(header.cwd, env, home) === undefined) {
+      throw new Error(
+        `session has incompatible pi history: ${path} records cwd ${header.cwd} but environment expects ${environmentCwd(env, home)}`,
+      );
+    }
+  }
+}
+
+/**
  * Normalize a pi session history file's header cwd to the selected environment.
  * Only two normalizations are allowed:
  *  - personal `scratch/workdir` -> `workspace`
  *  - project header whose realpath equals the project root -> projectRoot
  * Everything else is preserved byte-for-byte.
  */
-function normalizePiHistory(
-  home: string,
-  id: string,
-  filePath: string,
-  env: ExecutionEnvironment,
-): void {
-  let header: { cwd: string };
-  try {
-    header = readPiSessionHeader(filePath);
-  } catch {
-    throw new Error(`session ${id} has malformed pi history header: ${filePath}`);
-  }
-
-  const expectedCwd = env.kind === "personal" ? workspacePath(home) : env.projectRoot;
-  const headerCwd = header.cwd;
-
-  // Already matches: nothing to do.
-  if (headerCwd === expectedCwd) return;
-
-  let normalizedCwd: string | undefined;
-
-  if (env.kind === "personal") {
-    const workdir = workdirPath(home);
-    if (headerCwd === workdir) {
-      normalizedCwd = expectedCwd;
-    }
-  } else {
-    try {
-      if (realpathSync(headerCwd) === env.projectRoot) {
-        normalizedCwd = expectedCwd;
-      }
-    } catch {
-      // realpath failed; cannot normalize
-    }
-  }
-
+function normalizePiHistoryFile(filePath: string, env: ExecutionEnvironment, home: string): void {
+  const header = readPiSessionHeader(filePath);
+  const normalizedCwd = selectNormalizedCwd(header.cwd, env, home);
   if (normalizedCwd === undefined) {
     throw new Error(
-      `session ${id} has incompatible pi history: ${filePath} records cwd ${headerCwd} but environment expects ${expectedCwd}`,
+      `session has incompatible pi history: ${filePath} records cwd ${header.cwd} but environment expects ${environmentCwd(env, home)}`,
     );
   }
+  if (normalizedCwd === header.cwd) return;
 
-  // Rewrite only the first line; preserve every non-header line exactly.
   const raw = readFileSync(filePath, "utf-8");
   const firstNl = raw.indexOf("\n");
   const firstLine = raw.slice(0, firstNl >= 0 ? firstNl : undefined);
@@ -180,13 +202,13 @@ function normalizePiHistory(
   const parsed = JSON.parse(firstLine);
   const newHeader = JSON.stringify({ ...parsed, cwd: normalizedCwd });
   atomicWrite(filePath, newHeader + "\n" + rest);
-  log.info("normalized pi history header", { sessionId: id, file: filePath, cwd: normalizedCwd });
+  log.info("normalized pi history header", { file: filePath, cwd: normalizedCwd });
 }
 
 /**
  * Promote regular files/directories from `$GOBLIN_HOME/scratch/workdir` to
  * `$GOBLIN_HOME/workspace`. A collision with an existing workspace path fails
- * loudly.
+ * loudly. The legacy workdir is removed once it is empty.
  */
 function promotePersonalWorkdir(home: string): void {
   const src = workdirPath(home);
@@ -204,24 +226,44 @@ function promotePersonalWorkdir(home: string): void {
     if (st.isFile() || st.isDirectory()) {
       renameSync(srcPath, dstPath);
       log.info("promoted personal workdir entry", { from: srcPath, to: dstPath });
+    } else {
+      throw new Error(`personal workdir contains non-promotable entry: ${srcPath}`);
     }
+  }
+  try {
+    rmdirSync(src);
+  } catch (err) {
+    throw new Error(`failed to remove empty personal workdir ${src}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
-function migrateSession(home: string, id: string, state: SessionState | null, env: ExecutionEnvironment): SessionState {
-  if (state === null) {
-    throw new Error(`session directory ${id} has no state.json`);
+function loadArchivedLegacyState(home: string, id: string): SessionState | null {
+  const path = join(sessionsDir(home), "archive", id, "state.json");
+  try {
+    const raw = readFileSync(path, "utf-8");
+    return JSON.parse(raw) as SessionState;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
   }
-  if (state.executionEnvironment && environmentsEqual(state.executionEnvironment, env)) {
-    return state;
-  }
-  const next: SessionState = { ...state, executionEnvironment: env };
-  saveState(home, next);
-  return next;
+}
+
+function saveSessionState(home: string, id: string, state: SessionState, archived: boolean): void {
+  const dir = archived ? join(sessionsDir(home), "archive", id) : sessionDir(home, id);
+  saveJsonFile(join(dir, "state.json"), state);
+}
+
+interface MigrationPlan {
+  id: string;
+  state: SessionState;
+  env: ExecutionEnvironment;
+  archived: boolean;
 }
 
 export function migrateExecutionEnvironments(home: string): void {
   migrateTopicSettings(home);
+  promotePersonalWorkdir(home);
+
   const settings = loadTopicSettings(home);
   const bindings = loadBindings(home);
   const sessionSurfaces = collectSessionSurfaces(bindings);
@@ -229,30 +271,45 @@ export function migrateExecutionEnvironments(home: string): void {
   const sessionsDirPath = sessionsDir(home);
   if (!existsSync(sessionsDirPath)) return;
 
-  const entries = readdirSync(sessionsDirPath);
-  for (const id of entries) {
-    if (id === "archive" || !isHexSessionId(id)) continue;
-    const state = loadLegacyState(home, id);
-    if (state === null) continue;
+  const plans: MigrationPlan[] = [];
+
+  function planSession(id: string, archived: boolean): void {
+    const state = archived ? loadArchivedLegacyState(home, id) : loadLegacyState(home, id);
+    if (state === null) return;
 
     const surfaces = sessionSurfaces.get(id) ?? [];
     const env = inferSessionEnvironment(id, state, surfaces, settings);
-    const migrated = migrateSession(home, id, state, env);
+    const piDir = archived ? join(sessionsDirPath, "archive", id, "pi") : piSessionDir(home, id);
+    validatePiSessionFiles(piDir, env, home);
 
-    const piDir = piSessionDir(home, id);
-    if (existsSync(piDir)) {
-      const expectedCwd = environmentCwd(migrated.executionEnvironment, home);
-      const incompatible = validatePiSessionHeaders(piDir, expectedCwd);
-      if (incompatible.length > 0) {
-        const details = incompatible.map((i) => `${i.path} (cwd ${i.headerCwd})`).join("; ");
-        throw new Error(`session ${id} has incompatible pi history headers: ${details}`);
-      }
-      const files = readdirSync(piDir).filter((f) => f.endsWith(".jsonl"));
-      for (const f of files) {
-        normalizePiHistory(home, id, join(piDir, f), migrated.executionEnvironment);
-      }
+    plans.push({ id, state, env, archived });
+  }
+
+  for (const id of readdirSync(sessionsDirPath)) {
+    if (!isHexSessionId(id)) continue;
+    planSession(id, false);
+  }
+
+  const archiveDir = join(sessionsDirPath, "archive");
+  if (existsSync(archiveDir)) {
+    for (const id of readdirSync(archiveDir)) {
+      if (!isHexSessionId(id)) continue;
+      planSession(id, true);
     }
   }
 
-  promotePersonalWorkdir(home);
+  // Second pass: every plan has been validated, so writes are safe to perform.
+  for (const plan of plans) {
+    const next = plan.state.executionEnvironment && environmentsEqual(plan.state.executionEnvironment, plan.env)
+      ? plan.state
+      : { ...plan.state, executionEnvironment: plan.env };
+    saveSessionState(home, plan.id, next, plan.archived);
+
+    const piDir = plan.archived ? join(sessionsDirPath, "archive", plan.id, "pi") : piSessionDir(home, plan.id);
+    if (existsSync(piDir)) {
+      for (const f of readdirSync(piDir).filter((f) => f.endsWith(".jsonl"))) {
+        normalizePiHistoryFile(join(piDir, f), plan.env, home);
+      }
+    }
+  }
 }

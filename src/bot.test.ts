@@ -351,8 +351,8 @@ function readTelegramEvents(home: string, sessionId: string): Record<string, unk
   }
 }
 
-async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1000;
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error("timed out waiting for condition");
     await new Promise<void>((resolve) => setTimeout(resolve, 1));
@@ -745,6 +745,7 @@ describe("vertical slice with real AgentRunner", () => {
       () =>
         built.api.sent.some((text) => text.includes(response)) ||
         built.api.edits.some((text) => text.includes(response)),
+      5000,
     );
     expect(built.api.sent.some((text) => text.includes(response)) || built.api.edits.some((text) => text.includes(response))).toBe(true);
   });

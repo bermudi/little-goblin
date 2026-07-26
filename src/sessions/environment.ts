@@ -6,7 +6,7 @@
  * (`$GOBLIN_HOME/workspace`) or a canonical project root directory.
  */
 
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync, accessSync, constants } from "node:fs";
 import { resolve } from "node:path";
 import { workspacePath } from "../workspace/paths.ts";
 
@@ -21,7 +21,8 @@ export type ExecutionEnvironment =
  * - Resolves relative paths against the current working directory.
  * - Resolves symlinks to their real path so two spellings of the same root
  *   compare equal.
- * - Throws if the path does not exist or is not a directory.
+ * - Throws if the path does not exist, is not a directory, or is not both
+ *   readable and searchable by the Goblin process.
  */
 export function resolveProjectRoot(input: string): string {
   const expanded = expandTilde(input);
@@ -32,6 +33,11 @@ export function resolveProjectRoot(input: string): string {
   const canonical = realpathSync(absolute);
   if (!existsSync(canonical) || !isDirectorySync(canonical)) {
     throw new Error(`Project root is not a directory: ${input}`);
+  }
+  try {
+    accessSync(canonical, constants.R_OK | constants.X_OK);
+  } catch {
+    throw new Error(`Project root is not accessible: ${input}`);
   }
   return canonical;
 }

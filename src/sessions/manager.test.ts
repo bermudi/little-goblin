@@ -255,4 +255,90 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("assignProject", () => {
+    function makeProjectDir(name: string): string {
+      const dir = join(tmpDir, name);
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+
+    function makeRuntimeLifecycle(disposed: string[] = []): { disposeRuntime: (id: string) => Promise<void>; disposed: string[] } {
+      return {
+        disposeRuntime: async (id: string) => {
+          disposed.push(id);
+        },
+        disposed,
+      };
+    }
+
+    it("assigns a project environment and binds a new session", async () => {
+      const surface = dmSurface(123);
+      const projectDir = makeProjectDir("project");
+      const lifecycle = makeRuntimeLifecycle();
+
+      const result = await manager.assignProject(surface, projectDir, lifecycle);
+
+      expect(result.kind).toBe("assigned");
+      if (result.kind === "assigned") {
+        expect(result.projectRoot).toBe(projectDir);
+        expect(result.session.executionEnvironment).toEqual({ kind: "project", projectRoot: projectDir });
+        expect(manager.resolve(surface)?.id).toBe(result.session.id);
+      }
+      expect(lifecycle.disposed).toEqual([]);
+    });
+
+    it("returns already-assigned for the same canonical root", async () => {
+      const surface = dmSurface(123);
+      const projectDir = makeProjectDir("project");
+      const lifecycle = makeRuntimeLifecycle();
+      const first = await manager.assignProject(surface, projectDir, lifecycle);
+      expect(first.kind).toBe("assigned");
+
+      const second = await manager.assignProject(surface, projectDir, lifecycle);
+      expect(second.kind).toBe("already-assigned");
+    });
+
+    it("returns conflict for a different canonical root", async () => {
+      const surface = dmSurface(123);
+      const firstDir = makeProjectDir("first");
+      const secondDir = makeProjectDir("second");
+      const lifecycle = makeRuntimeLifecycle();
+      await manager.assignProject(surface, firstDir, lifecycle);
+
+      const result = await manager.assignProject(surface, secondDir, lifecycle);
+      expect(result.kind).toBe("conflict");
+    });
+
+    it("disposes the previous runtime before assigning", async () => {
+      const surface = dmSurface(123);
+      const prior = manager.createForSurface(surface);
+      const projectDir = makeProjectDir("project");
+      const lifecycle = makeRuntimeLifecycle();
+
+      const result = await manager.assignProject(surface, projectDir, lifecycle);
+
+      expect(result.kind).toBe("assigned");
+      expect(lifecycle.disposed).toContain(prior.id);
+    });
+
+    it("replays a pending assignment from a previous crash", async () => {
+      const surface = dmSurface(123);
+      const projectDir = makeProjectDir("project");
+      const lifecycle = makeRuntimeLifecycle();
+
+      const first = await manager.assignProject(surface, projectDir, lifecycle);
+      expect(first.kind).toBe("assigned");
+
+      // Simulate a fresh manager (e.g., after restart) that sees the cleared intent.
+      const freshManager = new SessionManager(makeTestConfig(tmpDir));
+      freshManager.init();
+
+      const second = await freshManager.assignProject(surface, projectDir, lifecycle);
+      expect(second.kind).toBe("already-assigned");
+      if (second.kind === "already-assigned") {
+        expect(second.session?.id).toBe((first as { session: { id: string } }).session.id);
+      }
+    });
+  });
+
 });

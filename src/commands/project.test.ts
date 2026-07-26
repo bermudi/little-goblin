@@ -4,7 +4,7 @@
 
 import { describe, it, expect, mock } from "bun:test";
 import { homedir } from "node:os";
-import { mkdtempSync, rmdirSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { executeProject, MISSING_ARG_REPLY, BAD_PATH_REPLY } from "./project.ts";
@@ -120,6 +120,21 @@ describe("executeProject", () => {
     expect(result.kind).toBe("bad-path");
     expect(result.reply).toBe(BAD_PATH_REPLY);
     expect(assignProject).not.toHaveBeenCalled();
+  });
+
+  it("rejects directories the process cannot read", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "project-no-read-"));
+    chmodSync(dir, 0o000);
+    try {
+      const assignProject = mock();
+      const result = await executeProject({ rawText: `/project ${dir}`, assignProject });
+      expect(result.kind).toBe("bad-path");
+      expect(result.reply).toBe(BAD_PATH_REPLY);
+      expect(assignProject).not.toHaveBeenCalled();
+    } finally {
+      chmodSync(dir, 0o755);
+      rmdirSync(dir);
+    }
   });
 
   it("rejects clearing project assignment", async () => {

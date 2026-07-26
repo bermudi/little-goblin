@@ -2,11 +2,11 @@
 
 ## Phase 1: Introduce canonical Surface identity
 
-- [ ] Create `src/surface.ts` with the discriminated `Surface`, `TopicContainer`, branded `SurfaceId`, strict validation, canonical `tg:v1` encode/decode, and narrowing helpers. Satisfies “Telegram surfaces are complete discriminated values” and “SurfaceId is canonical and reversible.”
-- [ ] Create `src/surface.test.ts` covering every variant, cross-kind/container collisions, safe-integer bounds, malformed/non-canonical input, and round trips.
-- [ ] Create `src/tg/context-surface.ts` and tests for DM, private topic, forum topic, direct-messages topic, topicless supergroup, guest, unsupported chat, and invalid IDs; retain a temporary locator compatibility adapter so downstream code still compiles.
-- [ ] Re-export Surface identity/normalization from `src/tg/mod.ts` without making `src/surface.ts` import grammy.
-- [ ] Run `bun test src/surface.test.ts src/tg/context-surface.test.ts` and `bun run typecheck`.
+- [x] Create `src/surface.ts` with the discriminated `Surface`, `TopicContainer`, branded `SurfaceId`, strict validation, canonical `tg:v1` encode/decode, and narrowing helpers. Satisfies “Telegram surfaces are complete discriminated values” and “SurfaceId is canonical and reversible.”
+- [x] Create `src/surface.test.ts` covering every variant, cross-kind/container collisions, safe-integer bounds, malformed/non-canonical input, and round trips.
+- [x] Create `src/tg/context-surface.ts` and tests for DM, private topic, forum topic, direct-messages topic, topicless supergroup, guest, unsupported chat, and invalid IDs; retain a temporary locator compatibility adapter so downstream code still compiles.
+- [x] Re-export Surface identity/normalization from `src/tg/mod.ts` without making `src/surface.ts` import grammy.
+- [x] Run `bun test src/surface.test.ts src/tg/context-surface.test.ts` and `bun run typecheck`.
 
 ## Phase 2: Canonicalize binding and settings persistence
 

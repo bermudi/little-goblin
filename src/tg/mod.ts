@@ -1,5 +1,19 @@
 export { buildAllowlistMiddleware } from "./middleware.ts";
 export { locatorFromCtx } from "./locator.ts";
+export { surfaceFromCtx } from "./context-surface.ts";
+export {
+  dmSurface,
+  guestSurface,
+  isDm,
+  isGuestSurface,
+  isSupergroupSurface,
+  isTopic,
+  parseSurfaceId,
+  supergroupSurface,
+  surfaceId,
+  topicSurface,
+} from "../surface.ts";
+export type { DmSurface, GuestSurface, SupergroupSurface, Surface, SurfaceId, TopicContainer, TopicSurface } from "../surface.ts";
 export { MessageBuffer, DEFAULT_VISIBILITY, VISIBILITY_TOOLS, VISIBILITY_LIMITS, shouldShowTool, getVisibilityLimits } from "./buffer.ts";
 export { createTextToSpeechTool } from "./tools.ts";
 export { GuestReplySink } from "./guest-sink.ts";

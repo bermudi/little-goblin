@@ -83,10 +83,10 @@ describe("SchedulerLoop", () => {
   let dispatcher: ReturnType<typeof makeFakeDispatcher>;
   let clock: ReturnType<typeof makeFakeClock>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-loop-test-"));
     manager = new SessionManager(makeTestConfig(tmpDir));
-    manager.init();
+    await manager.init();
     store = new ScheduleStore(tmpDir);
     dispatcher = makeFakeDispatcher();
     clock = makeFakeClock(NOW_MS);
@@ -118,7 +118,7 @@ describe("SchedulerLoop", () => {
   describe("due dispatch", () => {
     it("dispatches a due schedule whose session is still bound", async () => {
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -143,7 +143,7 @@ describe("SchedulerLoop", () => {
       // route through it rather than any followUp path. Asserting the call
       // went through enqueueScheduledTurn (not a followUp field) is the proof.
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -168,7 +168,7 @@ describe("SchedulerLoop", () => {
       // dispatcher and does not await prompt completion itself. The fake
       // dispatcher records the call synchronously and returns immediately.
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -190,7 +190,7 @@ describe("SchedulerLoop", () => {
   describe("overlapping ticks", () => {
     it("does not double-dispatch the same due occurrence", async () => {
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -210,7 +210,7 @@ describe("SchedulerLoop", () => {
 
     it("re-entrant tick is a no-op while one is in flight", async () => {
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -230,7 +230,7 @@ describe("SchedulerLoop", () => {
   describe("one-shot completion", () => {
     it("marks a one-shot completed before dispatch and does not re-run it", async () => {
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -250,7 +250,7 @@ describe("SchedulerLoop", () => {
   describe("recurring advancement", () => {
     it("advances nextRunAt by the interval before dispatch", async () => {
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -270,7 +270,7 @@ describe("SchedulerLoop", () => {
 
     it("does not dispatch the same occurrence again on a later tick", async () => {
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -289,7 +289,7 @@ describe("SchedulerLoop", () => {
 
     it("dispatches a one-shot missed during downtime exactly once after restart", async () => {
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -299,7 +299,7 @@ describe("SchedulerLoop", () => {
       });
       const restartedStore = new ScheduleStore(tmpDir);
       const restartedManager = new SessionManager(makeTestConfig(tmpDir));
-      restartedManager.init();
+      await restartedManager.init();
       const restartedLoop = new SchedulerLoop({ store: restartedStore, sessionSource: restartedManager, dispatcher, clock: clock.clock, home: tmpDir });
 
       await restartedLoop.tick();
@@ -315,7 +315,7 @@ describe("SchedulerLoop", () => {
 
     it("catches up a recurring schedule missed during downtime without replaying every missed interval", async () => {
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -326,7 +326,7 @@ describe("SchedulerLoop", () => {
       });
       const restartedStore = new ScheduleStore(tmpDir);
       const restartedManager = new SessionManager(makeTestConfig(tmpDir));
-      restartedManager.init();
+      await restartedManager.init();
       const restartedLoop = new SchedulerLoop({ store: restartedStore, sessionSource: restartedManager, dispatcher, clock: clock.clock, home: tmpDir });
 
       await restartedLoop.tick();
@@ -448,7 +448,7 @@ describe("SchedulerLoop", () => {
   describe("tick errors", () => {
     it("logs a tick error and continues on the next tick", async () => {
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -491,7 +491,7 @@ describe("SchedulerLoop", () => {
       // dispatch; the throw records outcome "error" so the record reflects
       // reality.
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -522,7 +522,7 @@ describe("SchedulerLoop", () => {
   describe("heartbeat prompt content", () => {
     it("dispatches the heartbeat prompt for a due heartbeat schedule", async () => {
       const loc: Surface = dmSurface(100);
-      const session = manager.createForSurface(loc);
+      const session = await manager.createForSurface(loc);
       store.setHeartbeat({
         sessionId: session.id,
         surface: loc,
@@ -628,8 +628,8 @@ describe("SchedulerLoop", () => {
       writeFileSync(path, content, "utf-8");
     }
 
-    function enableHeartbeat(loc: Surface): string {
-      const session = manager.createForSurface(loc);
+    async function enableHeartbeat(loc: Surface): Promise<string> {
+      const session = await manager.createForSurface(loc);
       store.setHeartbeat({
         sessionId: session.id,
         surface: loc,
@@ -641,7 +641,7 @@ describe("SchedulerLoop", () => {
 
     it("dispatches HEARTBEAT.md content with exactly one [heartbeat] marker when the file exists", async () => {
       const loc: Surface = dmSurface(100);
-      enableHeartbeat(loc);
+      await enableHeartbeat(loc);
       writeHeartbeat(tmpDir, "Check the build; if red, ping me.");
 
       await makeLoop().tick();
@@ -656,7 +656,7 @@ describe("SchedulerLoop", () => {
 
     it("dispatches the constant fallback when HEARTBEAT.md is absent", async () => {
       const loc: Surface = dmSurface(100);
-      enableHeartbeat(loc);
+      await enableHeartbeat(loc);
       // No workspace/HEARTBEAT.md in tmpDir.
 
       await makeLoop().tick();
@@ -668,7 +668,7 @@ describe("SchedulerLoop", () => {
 
     it("dispatches the constant fallback when HEARTBEAT.md is empty/whitespace-only", async () => {
       const loc: Surface = dmSurface(100);
-      enableHeartbeat(loc);
+      await enableHeartbeat(loc);
       writeHeartbeat(tmpDir, "   \n\t \n");
 
       await makeLoop().tick();
@@ -679,7 +679,7 @@ describe("SchedulerLoop", () => {
 
     it("uses updated HEARTBEAT.md content on the next tick after an edit (no restart)", async () => {
       const loc: Surface = dmSurface(100);
-      const sessionId = enableHeartbeat(loc);
+      const sessionId = await enableHeartbeat(loc);
       writeHeartbeat(tmpDir, "first body");
 
       const loop = makeLoop();
@@ -711,7 +711,7 @@ describe("SchedulerLoop", () => {
       // failure by pointing the loop's `home` at a path where workspace/ resolves
       // under a non-directory, then assert a co-due one-shot still dispatches.
       const heartbeatLoc: Surface = dmSurface(100);
-      const heartbeatSession = manager.createForSurface(heartbeatLoc);
+      const heartbeatSession = await manager.createForSurface(heartbeatLoc);
       store.setHeartbeat({
         sessionId: heartbeatSession.id,
         surface: heartbeatLoc,
@@ -721,7 +721,7 @@ describe("SchedulerLoop", () => {
 
       // A second, unrelated schedule also due in this tick.
       const otherLoc: Surface = dmSurface(200);
-      const otherSession = manager.createForSurface(otherLoc);
+      const otherSession = await manager.createForSurface(otherLoc);
       store.create({
         sessionId: otherSession.id,
         surface: otherLoc,
@@ -762,7 +762,7 @@ describe("SchedulerLoop", () => {
       // synchronous-dispatcher-throw path (processOne re-throws after recording
       // an "error" outcome). The throw must stop only its own schedule.
       const firstLoc: Surface = dmSurface(100);
-      const firstSession = manager.createForSurface(firstLoc);
+      const firstSession = await manager.createForSurface(firstLoc);
       store.create({
         sessionId: firstSession.id,
         surface: firstLoc,
@@ -771,7 +771,7 @@ describe("SchedulerLoop", () => {
         nextRunAt: new Date(NOW_MS - 2000).toISOString(),
       });
       const secondLoc: Surface = dmSurface(200);
-      const secondSession = manager.createForSurface(secondLoc);
+      const secondSession = await manager.createForSurface(secondLoc);
       store.create({
         sessionId: secondSession.id,
         surface: secondLoc,

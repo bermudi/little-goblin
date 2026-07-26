@@ -39,22 +39,22 @@ describe("rapid command spam integration", () => {
   let manager: SessionManager;
   let cfg: Config;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-cmd-int-"));
     cfg = makeTestConfig(tmpDir);
     manager = new SessionManager(cfg);
-    manager.init();
+    await manager.init();
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("/new then /archive leaves session archived and binding cleared (W2)", () => {
+  it("/new then /archive leaves session archived and binding cleared (W2)", async () => {
     const surface = dmSurface(123456);
 
     // Step 1: /new creates a session
-    const newResult = executeNew({
+    const newResult = await executeNew({
       createSession: () => manager.createForSurface(surface),
     });
     expect(newResult.kind).toBe("created");
@@ -62,16 +62,16 @@ describe("rapid command spam integration", () => {
     expect(existsSync(sessionDir(cfg.goblinHome, sessionId))).toBe(true);
 
     // Verify binding exists
-    const afterNew = manager.resolve(surface);
+    const afterNew = await manager.resolve(surface);
     expect(afterNew).not.toBeNull();
     expect(afterNew?.id).toBe(sessionId);
 
     // Step 2: /archive moves it and clears binding
-    const archiveResult = executeArchive({
+    const archiveResult = await executeArchive({
       hasSession: true,
       sessionExists: true,
-      archive: () => {
-        manager.archive(sessionId);
+      archive: async () => {
+        await manager.archive(sessionId);
       },
     });
     expect(archiveResult.kind).toBe("archived");
@@ -81,21 +81,21 @@ describe("rapid command spam integration", () => {
     expect(existsSync(join(sessionsDir(cfg.goblinHome), "archive", sessionId))).toBe(true);
 
     // Final state: binding is cleared (DM returns null on resolve)
-    const afterArchive = manager.resolve(surface);
+    const afterArchive = await manager.resolve(surface);
     expect(afterArchive).toBeNull();
   });
 
-  it("rapid /new → /new → /archive leaves prior sessions resumable and archives only the last", () => {
+  it("rapid /new → /new → /archive leaves prior sessions resumable and archives only the last", async () => {
     const surface = dmSurface(123456);
 
     // First /new
-    const first = executeNew({
+    const first = await executeNew({
       createSession: () => manager.createForSurface(surface),
     });
     const firstId = first.session.id;
 
     // Second /new switches to a fresh session without archiving the prior one.
-    const second = executeNew({
+    const second = await executeNew({
       createSession: () => manager.createForSurface(surface),
     });
     const secondId = second.session.id;
@@ -105,26 +105,26 @@ describe("rapid command spam integration", () => {
     expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
     expect(existsSync(join(sessionsDir(cfg.goblinHome), "archive", firstId))).toBe(false);
     expect(existsSync(sessionDir(cfg.goblinHome, secondId))).toBe(true);
-    expect(manager.resolve(surface)?.id).toBe(secondId);
+    expect((await manager.resolve(surface))?.id).toBe(secondId);
 
     // Archive second
-    const archiveResult = executeArchive({
+    const archiveResult = await executeArchive({
       hasSession: true,
       sessionExists: true,
-      archive: () => manager.archive(secondId),
+      archive: async () => manager.archive(secondId),
     });
     expect(archiveResult.kind).toBe("archived");
 
     // Only second is archived; first remains resumable but unbound.
     expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
     expect(existsSync(join(sessionsDir(cfg.goblinHome), "archive", secondId))).toBe(true);
-    expect(manager.resolve(surface)).toBeNull();
+    expect(await manager.resolve(surface)).toBeNull();
   });
 
-  it("/name → /new → /resume switches back to the named prior session", () => {
+  it("/name → /new → /resume switches back to the named prior session", async () => {
     const surface = dmSurface(123456);
 
-    const first = executeNew({
+    const first = await executeNew({
       createSession: () => manager.createForSurface(surface),
     });
     const firstId = first.session.id;
@@ -137,22 +137,22 @@ describe("rapid command spam integration", () => {
     });
     expect(nameResult.kind).toBe("renamed");
 
-    const second = executeNew({
+    const second = await executeNew({
       createSession: () => manager.createForSurface(surface),
     });
     const secondId = second.session.id;
     expect(secondId).not.toBe(firstId);
-    expect(manager.resolve(surface)?.id).toBe(secondId);
+    expect((await manager.resolve(surface))?.id).toBe(secondId);
     expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
 
-    const resumeResult = executeResume({
+    const resumeResult = await executeResume({
       rawText: "/resume ttt",
       sessions: manager.list(),
       bindSession: (sessionId) => manager.bindExistingToSurface(sessionId, surface),
     });
 
     expect(resumeResult.kind).toBe("resumed");
-    expect(manager.resolve(surface)?.id).toBe(firstId);
+    expect((await manager.resolve(surface))?.id).toBe(firstId);
     expect(existsSync(sessionDir(cfg.goblinHome, secondId))).toBe(true);
   });
 });

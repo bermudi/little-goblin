@@ -1148,7 +1148,7 @@ describe("Telegram intake", () => {
 
       // First summon starts a streaming turn. Don't await it — it stays open.
       const first = intake.handleGuestMessage(makeGuestMessage().message, "first");
-      await waitFor(() => runners[0]!.isStreaming);
+      await waitFor(() => runners[0]?.isStreaming ?? false);
 
       // Second summon while busy: must not prompt, must reply busy fallback.
       const { message: message2, results: results2 } = makeGuestMessage();
@@ -1207,9 +1207,9 @@ describe("Telegram intake", () => {
       await intake.handleGuestMessage(message, "first");
 
       // A guest binding for chat 7777 now exists.
-      expect(manager.peekBinding(guestSurface(7777))).not.toBeNull();
+      expect(await manager.peekBinding(guestSurface(7777))).not.toBeNull();
       // And NOT a DM binding for the same id.
-      expect(manager.peekBinding(dmSurface(7777))).toBeNull();
+      expect(await manager.peekBinding(dmSurface(7777))).toBeNull();
       expect(results).toHaveLength(1);
     });
 
@@ -1220,11 +1220,11 @@ describe("Telegram intake", () => {
       };
 
       await intake.handleGuestMessage(makeGuestMessage(7777).message, "first");
-      const firstSession = manager.peekBinding(guestSurface(7777));
+      const firstSession = await manager.peekBinding(guestSurface(7777));
       expect(firstSession).not.toBeNull();
 
       await intake.handleGuestMessage(makeGuestMessage(7777).message, "second");
-      const secondSession = manager.peekBinding(guestSurface(7777));
+      const secondSession = await manager.peekBinding(guestSurface(7777));
 
       expect(secondSession!.sessionId).toBe(firstSession!.sessionId);
       // Only one session was ever created.
@@ -1255,7 +1255,7 @@ describe("createMessageBuffer factory", () => {
     const cfg = makeConfig();
     const manager = new SessionManager(cfg);
     const agentRunners = new Map<string, AgentRunner>();
-    const session = manager.createForSurface(dmSurface(1));
+    const session = await manager.createForSurface(dmSurface(1));
     const bot = fakeBot();
     const intake = createTelegramIntake({
       cfg,

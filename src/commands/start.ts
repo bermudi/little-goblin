@@ -59,7 +59,7 @@ export function buildStartHandler(manager: SessionManager) {
 
     // Private chat (DM): reuse existing session if any, else create one.
     // /start is idempotent — use /new to force a fresh session.
-    const existing = manager.resolve(surface);
+    const existing = await manager.resolve(surface);
     if (existing) {
       await ctx.reply(
         systemReply(`Welcome back. Session \`${existing.id}\` is active. Use /new for a fresh one.`, "info"),
@@ -70,7 +70,7 @@ export function buildStartHandler(manager: SessionManager) {
 
     let state;
     try {
-      state = manager.createForSurface(surface);
+      state = await manager.createForSurface(surface);
     } catch (e) {
       await ctx.reply(
         systemReply("Failed to create session. Please try again.", "error"),

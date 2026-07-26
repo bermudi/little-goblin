@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   const { bot, manager, subagentRunner, agentRunners, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg, { memoryEngine });
   await memoryEngine.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS });
   await externalAgentRunner?.init();
-  manager.init();
+  await manager.init();
 
   // Scheduler: start after manager.init() so bindings/state are available for
   // peekBinding validation. Shares the same ScheduleStore and TurnDispatcher

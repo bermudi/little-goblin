@@ -3,7 +3,7 @@ import type { SessionState } from "../sessions/types.ts";
 export interface ResumeCommandDeps {
   rawText: string;
   sessions: SessionState[];
-  bindSession: (sessionId: string) => SessionState;
+  bindSession: (sessionId: string) => SessionState | Promise<SessionState>;
 }
 
 export type ResumeCommandResult =
@@ -33,7 +33,7 @@ export function formatNamedSessionsList(sessions: SessionState[]): string {
   return `Named sessions:\n${named.map(formatSessionLine).join("\n")}`;
 }
 
-export function executeResume(deps: ResumeCommandDeps): ResumeCommandResult {
+export async function executeResume(deps: ResumeCommandDeps): Promise<ResumeCommandResult> {
   const target = parseResumeTarget(deps.rawText);
   if (!target) return { kind: "list", reply: formatNamedSessionsList(deps.sessions) };
 
@@ -47,7 +47,7 @@ export function executeResume(deps: ResumeCommandDeps): ResumeCommandResult {
   }
 
   const [match] = matches;
-  const session = deps.bindSession(match!.id);
+  const session = await deps.bindSession(match!.id);
   return {
     kind: "resumed",
     session,

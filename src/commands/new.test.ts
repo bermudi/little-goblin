@@ -8,10 +8,10 @@ function makeSession(id: string): SessionState {
 }
 
 describe("executeNew", () => {
-  it("creates a fresh session", () => {
+  it("creates a fresh session", async () => {
     const created = makeSession("abc1234567");
     let createCalls = 0;
-    const result = executeNew({
+    const result = await executeNew({
       createSession: () => {
         createCalls += 1;
         return created;
@@ -24,13 +24,13 @@ describe("executeNew", () => {
     expect(result.reply).toBe(createdReply("abc1234567"));
   });
 
-  it("treats every chat surface the same: helper has no topic special-case", () => {
+  it("treats every chat surface the same: helper has no topic special-case", async () => {
     // The chat-surface decision (DM vs topic vs supergroup) is the
     // caller's responsibility. The helper just creates the new session.
     // Pins that /new in a topic resets the topic's session, contra the
     // pre-flip behavior where the helper rejected with a hardcoded reply.
     const created = makeSession("topic12345");
-    const result = executeNew({
+    const result = await executeNew({
       createSession: () => created,
     });
     expect(result.kind).toBe("created");

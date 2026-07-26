@@ -7,9 +7,9 @@ import {
 } from "./archive.ts";
 
 describe("executeArchive", () => {
-  it("returns no-session without invoking archive when hasSession is false", () => {
+  it("returns no-session without invoking archive when hasSession is false", async () => {
     let called = 0;
-    const result = executeArchive({
+    const result = await executeArchive({
       hasSession: false,
       sessionExists: false,
       archive: () => {
@@ -21,9 +21,9 @@ describe("executeArchive", () => {
     expect(called).toBe(0);
   });
 
-  it("returns already-archived without invoking archive when sessionExists is false", () => {
+  it("returns already-archived without invoking archive when sessionExists is false", async () => {
     let called = 0;
-    const result = executeArchive({
+    const result = await executeArchive({
       hasSession: true,
       sessionExists: false,
       archive: () => {
@@ -35,9 +35,9 @@ describe("executeArchive", () => {
     expect(called).toBe(0);
   });
 
-  it("invokes archive and returns archived reply on the happy path", () => {
+  it("invokes archive and returns archived reply on the happy path", async () => {
     let called = 0;
-    const result = executeArchive({
+    const result = await executeArchive({
       hasSession: true,
       sessionExists: true,
       archive: () => {
@@ -49,8 +49,8 @@ describe("executeArchive", () => {
     expect(result.reply).toBe(ARCHIVED_REPLY);
   });
 
-  it("propagates errors from the archive callback", () => {
-    expect(() =>
+  it("propagates errors from the archive callback", async () => {
+    await expect(
       executeArchive({
         hasSession: true,
         sessionExists: true,
@@ -58,6 +58,6 @@ describe("executeArchive", () => {
           throw new Error("boom");
         },
       }),
-    ).toThrow(/boom/);
+    ).rejects.toThrow(/boom/);
   });
 });

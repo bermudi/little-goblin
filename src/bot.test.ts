@@ -710,6 +710,7 @@ describe("buildBot integration", () => {
   it("records system reply sendMessage success metrics", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
+    await flushMicrotasks();
     const session = built.manager.list()[0]!;
     const events = readTelegramEvents(built.cfg.goblinHome, session.id);
     const systemSuccess = events.find((e) => e.op === "sendMessage" && e.channel === "system" && e.outcome === "success");
@@ -720,7 +721,15 @@ describe("buildBot integration", () => {
     const built = await makeBot();
     built.api.failParseOnce();
     await built.bot.handleUpdate(textUpdate("/new"));
+    await flushMicrotasks();
     const session = built.manager.list()[0]!;
+    await waitFor(
+      () =>
+        readTelegramEvents(built.cfg.goblinHome, session.id).filter(
+          (e) => e.op === "sendMessage" && e.channel === "system",
+        ).length === 2,
+      1000,
+    );
     const events = readTelegramEvents(built.cfg.goblinHome, session.id);
     expect(events.filter((e) => e.op === "sendMessage" && e.channel === "system").length).toBe(2);
     const first = events.find((e) => e.op === "sendMessage" && e.channel === "system" && e.outcome === "error");

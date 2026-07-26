@@ -23,7 +23,7 @@ export interface ArchiveCommandDeps {
   /** True iff `sessions/<id>/` still exists on disk. */
   sessionExists: boolean;
   /** Performs the actual archive. Only invoked on the normal path. */
-  archive: () => void;
+  archive: () => void | Promise<void>;
 }
 
 export type ArchiveCommandResult =
@@ -35,13 +35,13 @@ export const NO_SESSION_REPLY = "No active session to archive.";
 export const ALREADY_ARCHIVED_REPLY = "Session already archived.";
 export const ARCHIVED_REPLY = "Session archived.";
 
-export function executeArchive(deps: ArchiveCommandDeps): ArchiveCommandResult {
+export async function executeArchive(deps: ArchiveCommandDeps): Promise<ArchiveCommandResult> {
   if (!deps.hasSession) {
     return { kind: "no-session", reply: NO_SESSION_REPLY };
   }
   if (!deps.sessionExists) {
     return { kind: "already-archived", reply: ALREADY_ARCHIVED_REPLY };
   }
-  deps.archive();
+  await deps.archive();
   return { kind: "archived", reply: ARCHIVED_REPLY };
 }

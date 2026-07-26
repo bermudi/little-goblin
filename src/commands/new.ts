@@ -20,7 +20,7 @@ import type { SessionState } from "../sessions/types.ts";
 
 export interface NewCommandDeps {
   /** Caller-supplied session factory. */
-  createSession: () => SessionState;
+  createSession: () => SessionState | Promise<SessionState>;
 }
 
 export type NewCommandResult = {
@@ -33,8 +33,8 @@ export function createdReply(sessionId: string): string {
   return `Created new session \`${sessionId}\``;
 }
 
-export function executeNew(deps: NewCommandDeps): NewCommandResult {
-  const session = deps.createSession();
+export async function executeNew(deps: NewCommandDeps): Promise<NewCommandResult> {
+  const session = await deps.createSession();
   return {
     kind: "created",
     session,

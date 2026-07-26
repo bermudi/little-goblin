@@ -190,7 +190,7 @@ const newHandler: CommandHandler = async ({ deps, surface, session }) => {
   const sideEffects: SideEffect[] = [];
   const priorSession = session;
   try {
-    const result = executeNew({
+    const result = await executeNew({
       createSession: () => manager.createForSurface(surface),
     });
     if (priorSession) sideEffects.push({ kind: "runner-disposed", sessionId: priorSession.id });
@@ -211,11 +211,11 @@ const archiveHandler: CommandHandler = async ({ deps, session }) => {
     if (session && dispatcher) {
       await dispatcher.disposeRunner(session.id);
     }
-    const result = executeArchive({
+    const result = await executeArchive({
       hasSession: session !== null,
       sessionExists: session !== null && existsSync(sessionDir(cfg.goblinHome, session.id)),
-      archive: () => {
-        manager.archive(session!.id);
+      archive: async () => {
+        await manager.archive(session!.id);
       },
     });
     const tag: SystemTag = result.kind === "archived" ? "ok" : "info";
@@ -252,7 +252,7 @@ const projectHandler: CommandHandler = async ({ deps, surface, rawText }) => {
       : "error";
     return replied(result.reply, sideEffects, tag);
   } catch (err) {
-    const sessionId = deps.manager.peekBinding(surface)?.sessionId;
+    const sessionId = (await deps.manager.peekBinding(surface))?.sessionId;
     log.error("project failed", { error: String(err), sessionId });
     return replied("Failed to assign project. Please try again.", [], "error");
   }
@@ -373,7 +373,7 @@ const resumeHandler: CommandHandler = async ({ deps, surface, session, rawText }
   const { manager } = deps;
   const sideEffects: SideEffect[] = [];
   try {
-    const result = executeResume({
+    const result = await executeResume({
       rawText,
       sessions: manager.list(),
       bindSession: (sessionId) => manager.bindExistingToSurface(sessionId, surface),

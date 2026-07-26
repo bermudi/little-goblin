@@ -93,9 +93,11 @@ export class SessionManager {
   /**
    * Ensure base directories exist and replay any pending project assignment.
    */
-  init(): void {
+  async init(): Promise<void> {
     mkdirSync(sessionsDir(this.home), { recursive: true });
-    this.reconcilePendingAssignments();
+    await withLifecycleTransitionLock(async () => {
+      this.reconcilePendingAssignments();
+    });
     log.debug("session manager initialized", { home: this.home });
   }
 
@@ -125,107 +127,115 @@ export class SessionManager {
    * - `topic`, `supergroup`, `guest`: auto-create on first resolve
    * - Stale bindings are repaired according to the surface kind.
    */
-  resolve(surface: Surface): SessionState | null {
-    this.reconcilePendingAssignments();
-    const key = surfaceId(surface);
-    const bindings = loadBindings(this.home);
-    const existingId = bindings.surfaces[key];
+  resolve(surface: Surface): Promise<SessionState | null> {
+    return withLifecycleTransitionLock(async () => {
+      this.reconcilePendingAssignments();
+      const key = surfaceId(surface);
+      const bindings = loadBindings(this.home);
+      const existingId = bindings.surfaces[key];
 
-    if (surface.kind === "dm") {
-      if (!existingId) return null;
-      const state = loadState(this.home, existingId);
-      if (state) return state;
-      log.warn("stale DM binding, clearing", { surfaceId: key, sessionId: existingId });
-      delete bindings.surfaces[key];
-      saveBindings(this.home, bindings);
-      return null;
-    }
+      if (surface.kind === "dm") {
+        if (!existingId) return null;
+        const state = loadState(this.home, existingId);
+        if (state) return state;
+        log.warn("stale DM binding, clearing", { surfaceId: key, sessionId: existingId });
+        delete bindings.surfaces[key];
+        saveBindings(this.home, bindings);
+        return null;
+      }
 
-    // topic, supergroup, guest: auto-create / repair stale binding
-    if (existingId) {
-      const state = loadState(this.home, existingId);
-      if (state) return state;
-      log.warn("stale surface binding, recreating session", { surfaceId: key, sessionId: existingId, kind: surface.kind });
-    }
+      // topic, supergroup, guest: auto-create / repair stale binding
+      if (existingId) {
+        const state = loadState(this.home, existingId);
+        if (state) return state;
+        log.warn("stale surface binding, recreating session", { surfaceId: key, sessionId: existingId, kind: surface.kind });
+      }
 
-    return this.createForSurface(surface);
+      return this.createForSurface(surface);
+    });
   }
 
   /**
    * Create a new session for a complete Surface and bind it.
    */
-  createForSurface(surface: Surface, opts?: { title?: string }): SessionState {
-    this.reconcilePendingAssignments();
-    const id = makeSessionId();
-    const state: SessionState = {
-      id,
-      createdAt: new Date().toISOString(),
-      chatId: surface.chatId,
-      topicId: surface.kind === "topic" ? surface.topicId : undefined,
-      title: opts?.title,
-      executionEnvironment: this.effectiveEnvironment(surface),
-    };
+  createForSurface(surface: Surface, opts?: { title?: string }): Promise<SessionState> {
+    return withLifecycleTransitionLock(async () => {
+      this.reconcilePendingAssignments();
+      const id = makeSessionId();
+      const state: SessionState = {
+        id,
+        createdAt: new Date().toISOString(),
+        chatId: surface.chatId,
+        topicId: surface.kind === "topic" ? surface.topicId : undefined,
+        title: opts?.title,
+        executionEnvironment: this.effectiveEnvironment(surface),
+      };
 
-    ensureSessionFiles(this.home, id);
-    saveState(this.home, state);
+      ensureSessionFiles(this.home, id);
+      saveState(this.home, state);
 
-    const bindings = loadBindings(this.home);
-    bindings.surfaces[surfaceId(surface)] = id;
-    saveBindings(this.home, bindings);
+      const bindings = loadBindings(this.home);
+      bindings.surfaces[surfaceId(surface)] = id;
+      saveBindings(this.home, bindings);
 
-    log.info("created session", { id, kind: surface.kind, surfaceId: surfaceId(surface) });
-    return state;
+      log.info("created session", { id, kind: surface.kind, surfaceId: surfaceId(surface) });
+      return state;
+    });
   }
 
   /**
    * Bind an existing session to a Surface. Rejects environment mismatches
    * before changing the binding.
    */
-  bindExistingToSurface(sessionId: string, surface: Surface): SessionState {
-    this.reconcilePendingAssignments();
-    const state = loadState(this.home, sessionId);
-    if (!state) {
-      throw new Error(`session not found: ${sessionId}`);
-    }
+  bindExistingToSurface(sessionId: string, surface: Surface): Promise<SessionState> {
+    return withLifecycleTransitionLock(async () => {
+      this.reconcilePendingAssignments();
+      const state = loadState(this.home, sessionId);
+      if (!state) {
+        throw new Error(`session not found: ${sessionId}`);
+      }
 
-    const surfaceEnv = this.effectiveEnvironment(surface);
-    if (!environmentsEqual(state.executionEnvironment, surfaceEnv)) {
-      throw new Error(
-        `environment mismatch: session ${sessionId} is ${state.executionEnvironment.kind}, surface ${surfaceId(surface)} is ${surfaceEnv.kind}`,
-      );
-    }
+      const surfaceEnv = this.effectiveEnvironment(surface);
+      if (!environmentsEqual(state.executionEnvironment, surfaceEnv)) {
+        throw new Error(
+          `environment mismatch: session ${sessionId} is ${state.executionEnvironment.kind}, surface ${surfaceId(surface)} is ${surfaceEnv.kind}`,
+        );
+      }
 
-    const bindings = loadBindings(this.home);
-    bindings.surfaces[surfaceId(surface)] = sessionId;
-    saveBindings(this.home, bindings);
-    log.info("bound existing session", { sessionId, surfaceId: surfaceId(surface) });
-    return state;
+      const bindings = loadBindings(this.home);
+      bindings.surfaces[surfaceId(surface)] = sessionId;
+      saveBindings(this.home, bindings);
+      log.info("bound existing session", { sessionId, surfaceId: surfaceId(surface) });
+      return state;
+    });
   }
 
   /**
    * Archive a session: move `sessions/<id>/` to `sessions/archive/<id>/`
    * and remove every surface binding that references it.
    */
-  archive(sessionId: string): void {
-    this.reconcilePendingAssignments();
-    const src = sessionDir(this.home, sessionId);
-    if (!existsSync(src)) {
-      throw new Error(`session not found or already archived: ${sessionId}`);
-    }
-    const state = loadState(this.home, sessionId);
-    if (state?.chatId === 0) {
-      throw new Error(`cannot archive internal session: ${sessionId}`);
-    }
-    const archiveBase = join(sessionsDir(this.home), "archive");
-    mkdirSync(archiveBase, { recursive: true });
-    const dst = join(archiveBase, sessionId);
-    renameSync(src, dst);
+  archive(sessionId: string): Promise<void> {
+    return withLifecycleTransitionLock(async () => {
+      this.reconcilePendingAssignments();
+      const src = sessionDir(this.home, sessionId);
+      if (!existsSync(src)) {
+        throw new Error(`session not found or already archived: ${sessionId}`);
+      }
+      const state = loadState(this.home, sessionId);
+      if (state?.chatId === 0) {
+        throw new Error(`cannot archive internal session: ${sessionId}`);
+      }
+      const archiveBase = join(sessionsDir(this.home), "archive");
+      mkdirSync(archiveBase, { recursive: true });
+      const dst = join(archiveBase, sessionId);
+      renameSync(src, dst);
 
-    const bindings = loadBindings(this.home);
-    const changed = clearSessionBindings(bindings, sessionId);
-    if (changed) saveBindings(this.home, bindings);
+      const bindings = loadBindings(this.home);
+      const changed = clearSessionBindings(bindings, sessionId);
+      if (changed) saveBindings(this.home, bindings);
 
-    log.info("archived session", { id: sessionId });
+      log.info("archived session", { id: sessionId });
+    });
   }
 
   /**
@@ -435,17 +445,20 @@ export class SessionManager {
    * Non-mutating read of the binding for a complete Surface.
    *
    * Used by the scheduler to validate that a captured schedule still targets
-   * its captured session surface before dispatch.
+   * its captured session surface before dispatch. Runs under the lifecycle lock
+   * so pending assignments are replayed before the binding is read.
    */
-  peekBinding(surface: Surface): { sessionId: string; state: SessionState } | null {
-    this.reconcilePendingAssignments();
-    const key = surfaceId(surface);
-    const bindings = loadBindings(this.home);
-    const boundId = bindings.surfaces[key];
-    if (!boundId) return null;
-    const state = loadState(this.home, boundId);
-    if (!state) return null;
-    return { sessionId: boundId, state };
+  peekBinding(surface: Surface): Promise<{ sessionId: string; state: SessionState } | null> {
+    return withLifecycleTransitionLock(async () => {
+      this.reconcilePendingAssignments();
+      const key = surfaceId(surface);
+      const bindings = loadBindings(this.home);
+      const boundId = bindings.surfaces[key];
+      if (!boundId) return null;
+      const state = loadState(this.home, boundId);
+      if (!state) return null;
+      return { sessionId: boundId, state };
+    });
   }
 
   /**

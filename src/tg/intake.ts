@@ -379,14 +379,14 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     });
   }
 
-  function resolveActiveTurn(message: TelegramIntakeMessage, kind: string): ActiveTurn | null {
+  async function resolveActiveTurn(message: TelegramIntakeMessage, kind: string): Promise<ActiveTurn | null> {
     const surface = message.surface;
     if (!surface) {
       log.debug(`dropping ${kind}: no surface`);
       return null;
     }
 
-    const session = manager.resolve(surface);
+    const session = await manager.resolve(surface);
     if (!session) {
       replyNoActiveSession(message, surface, kind);
       return null;
@@ -450,7 +450,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       return;
     }
 
-    const session = manager.resolve(surface);
+    const session = await manager.resolve(surface);
     const existingRunner = session ? dispatcher.getRunner(session.id) : null;
     const command = parseCommand(rawText);
     if (command !== null) {
@@ -521,7 +521,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   async function handlePhoto(message: TelegramIntakeMessage, api: Bot["api"], fileIds: string[], caption?: string): Promise<void> {
-    const turn = resolveActiveTurn(message, "photo");
+    const turn = await resolveActiveTurn(message, "photo");
     if (!turn) return;
 
     turn.schedule(
@@ -550,7 +550,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   async function handleDocument(message: TelegramIntakeMessage, api: Bot["api"], doc: TelegramDocumentInput): Promise<void> {
-    const turn = resolveActiveTurn(message, "document");
+    const turn = await resolveActiveTurn(message, "document");
     if (!turn) return;
 
     turn.schedule(
@@ -616,7 +616,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   async function handleVoice(message: TelegramIntakeMessage, api: Bot["api"], voice: TelegramVoiceInput): Promise<void> {
-    const turn = resolveActiveTurn(message, "voice");
+    const turn = await resolveActiveTurn(message, "voice");
     if (!turn) return;
 
     turn.schedule(
@@ -722,7 +722,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   async function handleAudio(message: TelegramIntakeMessage, api: Bot["api"], audio: TelegramAudioInput): Promise<void> {
-    const turn = resolveActiveTurn(message, "audio");
+    const turn = await resolveActiveTurn(message, "audio");
     if (!turn) return;
 
     turn.schedule(
@@ -824,7 +824,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
    */
   async function handleGuestMessage(message: GuestMessage, text: string): Promise<void> {
     const surface = guestSurface(message.chatId);
-    const session = manager.resolve(surface);
+    const session = await manager.resolve(surface);
     // resolve(surface) auto-creates like topics/supergroups, so null is
     // unreachable in practice. Fail loud if it ever returns null.
     if (!session) {

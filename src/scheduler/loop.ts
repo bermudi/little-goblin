@@ -158,7 +158,7 @@ export interface SchedulerDispatcher {
  * Injected so eligibility tests can fake sessions without a filesystem.
  */
 export interface SchedulerSessionSource {
-  peekBinding(surface: Surface): { sessionId: string; state: SessionState } | null;
+  peekBinding(surface: Surface): { sessionId: string; state: SessionState } | null | Promise<{ sessionId: string; state: SessionState } | null>;
   isArchived(sessionId: string): boolean;
   list?(): SessionState[];
   ensureInternal?(id: string): SessionState;
@@ -613,7 +613,7 @@ ${formatted}`;
 
     // Validate the captured binding via the NON-MUTATING peek. Never resolve(),
     // which auto-creates sessions for topic/supergroup locators.
-    const peeked = this.sessionSource.peekBinding(schedule.surface);
+    const peeked = await this.sessionSource.peekBinding(schedule.surface);
 
     if (peeked === null) {
       // No binding resolves to a live session. Distinguish archived (the

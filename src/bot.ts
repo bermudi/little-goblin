@@ -55,9 +55,11 @@ function safeRecordTelegramEvent(metrics: MetricsStore | undefined, event: Teleg
  * rule); a resolution failure after a successful `ctx.reply` must not be
  * treated as a reply failure, so we log and return `undefined` instead.
  */
-function safeGetMetrics(getMetrics: () => MetricsStore | undefined): MetricsStore | undefined {
+async function safeGetMetrics(
+  getMetrics: () => MetricsStore | undefined | Promise<MetricsStore | undefined>,
+): Promise<MetricsStore | undefined> {
   try {
-    return getMetrics();
+    return await getMetrics();
   } catch (err) {
     log.warn("failed to resolve metrics store for system reply", { error: String(err) });
     return undefined;
@@ -66,12 +68,12 @@ function safeGetMetrics(getMetrics: () => MetricsStore | undefined): MetricsStor
 
 function wrapReply(
   reply: (text: string, opts?: ReplyOpts) => Promise<void>,
-  getMetrics: () => MetricsStore | undefined,
+  getMetrics: () => MetricsStore | undefined | Promise<MetricsStore | undefined>,
 ): (text: string, opts?: ReplyOpts) => Promise<void> {
   return async (text, opts) => {
     try {
       await reply(text, opts);
-      safeRecordTelegramEvent(safeGetMetrics(getMetrics), {
+      safeRecordTelegramEvent(await safeGetMetrics(getMetrics), {
         type: "telegram",
         op: "sendMessage",
         channel: "system",
@@ -79,7 +81,7 @@ function wrapReply(
       });
     } catch (err) {
       const { outcome, errorCode, errorDescription, retryAfterSec } = classifyTelegramError(err);
-      safeRecordTelegramEvent(safeGetMetrics(getMetrics), {
+      safeRecordTelegramEvent(await safeGetMetrics(getMetrics), {
         type: "telegram",
         op: "sendMessage",
         channel: "system",
@@ -104,9 +106,9 @@ function intakeMessageFromCtx(ctx: Context, manager: SessionManager, cfg: Config
   // because they are fire-and-forget and single-user; pinning at construction
   // would lose metrics for /new replies (the session does not exist yet at
   // intakeMessageFromCtx time).
-  const getMetrics = (): MetricsStore | undefined => {
+  const getMetrics = async (): Promise<MetricsStore | undefined> => {
     if (!surface) return undefined;
-    const session = manager.resolve(surface);
+    const session = await manager.resolve(surface);
     return session ? new MetricsStore(cfg.goblinHome, session.id) : undefined;
   };
   return {

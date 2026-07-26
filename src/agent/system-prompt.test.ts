@@ -82,21 +82,21 @@ describe("buildGoblinSystemPrompt", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("includes required SOUL, optional deployment AGENTS, product shell, and exact project AGENTS", async () => {
+  it("includes required SOUL, optional agent AGENTS, product shell, and exact project AGENTS", async () => {
     const projectDir = join(tmpDir, "project");
     mkdirSync(projectDir);
     writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
-    writeFileSync(agentsMdPath(tmpDir), "deployment rules\n", "utf-8");
+    writeFileSync(agentsMdPath(tmpDir), "agent rules\n", "utf-8");
     writeFileSync(join(projectDir, "AGENTS.md"), "project rules\n", "utf-8");
 
     const { prompt, sources } = await buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: projectEnvironment(projectDir) });
 
-    expect(prompt).toContain("## Deployment Identity and Voice (SOUL.md)\n\nsoul identity");
-    expect(prompt).toContain("## Deployment Operating Rules (AGENTS.md)\n\ndeployment rules");
+    expect(prompt).toContain("## Agent Identity and Voice (SOUL.md)\n\nsoul identity");
+    expect(prompt).toContain("## Agent Operating Rules (AGENTS.md)\n\nagent rules");
     expect(prompt).toContain(GOBLIN_PRODUCT_SHELL);
     expect(prompt).toContain("## Project Guidance (projectRoot/AGENTS.md)\n\nproject rules");
-    expect(prompt.indexOf("soul identity")).toBeLessThan(prompt.indexOf("deployment rules"));
-    expect(prompt.indexOf("deployment rules")).toBeLessThan(prompt.indexOf("## Runtime Mechanics"));
+    expect(prompt.indexOf("soul identity")).toBeLessThan(prompt.indexOf("agent rules"));
+    expect(prompt.indexOf("agent rules")).toBeLessThan(prompt.indexOf("## Runtime Mechanics"));
     expect(prompt.indexOf("## Runtime Mechanics")).toBeLessThan(prompt.indexOf("project rules"));
     expect(sources).toEqual([soulMdPath(tmpDir), agentsMdPath(tmpDir), join(projectDir, "AGENTS.md")]);
   });
@@ -105,7 +105,7 @@ describe("buildGoblinSystemPrompt", () => {
     await expect(buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: personalEnvironment() })).rejects.toBeInstanceOf(MissingSoulError);
   });
 
-  it("continues when optional deployment and project AGENTS files are missing", async () => {
+  it("continues when optional agent and project AGENTS files are missing", async () => {
     const projectDir = join(tmpDir, "project");
     mkdirSync(projectDir);
     writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
@@ -114,7 +114,7 @@ describe("buildGoblinSystemPrompt", () => {
 
     expect(prompt).toContain("soul identity");
     expect(prompt).toContain(GOBLIN_PRODUCT_SHELL);
-    expect(prompt).not.toContain("Deployment Operating Rules");
+    expect(prompt).not.toContain("Agent Operating Rules");
     expect(prompt).not.toContain("Project Guidance");
     expect(sources).toEqual([soulMdPath(tmpDir)]);
   });
@@ -156,9 +156,9 @@ describe("buildGoblinSystemPrompt", () => {
     }
   });
 
-  it("propagates non-ENOENT read failures for optional deployment AGENTS.md", async () => {
+  it("propagates non-ENOENT read failures for optional agent AGENTS.md", async () => {
     writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
-    writeFileSync(agentsMdPath(tmpDir), "deployment rules\n", "utf-8");
+    writeFileSync(agentsMdPath(tmpDir), "agent rules\n", "utf-8");
     chmodSync(agentsMdPath(tmpDir), 0o000);
 
     await expect(buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: personalEnvironment() })).rejects.toThrow();

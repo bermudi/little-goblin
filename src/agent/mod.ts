@@ -41,6 +41,10 @@ import { createExternalAgentTool } from "../external-agents/tool.ts";
 import { McpRunner, createMcpTools } from "../mcp/mod.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { environmentCwd, projectRootOf } from "../sessions/environment.ts";
+import { heartbeatMdPathForSession } from "../sessions/paths.ts";
+import { homedir } from "node:os";
+import { basename, resolve } from "node:path";
+import { agentsMdPath, heartbeatMdPath, soulMdPath } from "../workspace/paths.ts";
 
 /** Options for constructing an AgentRunner. */
 export interface AgentRunnerOptions {
@@ -196,6 +200,36 @@ function buildTurnMetricsEvent(args: {
 }
 
 /**
+ * Resolve a tool `path` argument the same way pi's `write`/`edit` tools do:
+ * expand a leading `~` to the user's home directory, then resolve relative
+ * paths against the runtime CWD.
+ */
+function resolveToolPath(cwd: string, rawPath: string): string {
+  let expanded = rawPath;
+  if (expanded === "~") {
+    expanded = homedir();
+  } else if (expanded.startsWith("~/")) {
+    expanded = resolve(homedir(), expanded.slice(2));
+  }
+  return resolve(cwd, expanded);
+}
+
+/** Summarize a `write` or `edit` tool without including file contents. */
+function summarizeToolChange(toolName: string, args: Record<string, unknown>): string {
+  if (toolName === "write") {
+    const content = typeof args.content === "string" ? args.content : "";
+    if (content.length === 0) return "wrote empty file";
+    const lines = content.split("\n").length;
+    return `wrote ${lines} line${lines === 1 ? "" : "s"} (${content.length} chars)`;
+  }
+  if (toolName === "edit") {
+    const edits = Array.isArray(args.edits) ? args.edits.length : 0;
+    return `${edits} edit${edits === 1 ? "" : "s"}`;
+  }
+  return "modified";
+}
+
+/**
  * AgentRunner wraps a pi AgentSession for a single goblin session.
  * Manages lazy initialization and event dispatch.
  */
@@ -252,6 +286,8 @@ export class AgentRunner {
   private _prompting: boolean = false;
   /** True while the backend is being initialized (between init() start and end). */
   private _initInProgress: boolean = false;
+  /** Args for in-flight tool calls, keyed by pi `toolCallId`. */
+  private pendingToolCalls = new Map<string, { toolName: string; args: unknown }>();
 
   /** Exposed for the interrupt layer and intake. */
   get isAbortTimedOut(): boolean {
@@ -459,6 +495,16 @@ export class AgentRunner {
     // UI callbacks are bound.
     this.updateMetrics(event);
 
+    // Track tool args and surface bounded notices for prompt-file writes.
+    // These run before the callback guard so the runner still records and
+    // reports tool usage when no UI sink is bound.
+    if (event.type === "tool_execution_start") {
+      this.trackToolStart(event);
+    }
+    if (event.type === "tool_execution_end") {
+      this.handleToolEnd(event);
+    }
+
     if (!this.callbacks) return;
 
     // AgentRunner-specific text accumulation (not part of dispatch)
@@ -573,6 +619,67 @@ export class AgentRunner {
         break;
       }
     }
+  }
+
+  /** Remember a tool call's arguments so we can inspect them on completion. */
+  private trackToolStart(event: AgentSessionEvent): void {
+    const e = event as unknown as Record<string, unknown>;
+    const toolCallId = typeof e.toolCallId === "string" ? e.toolCallId : undefined;
+    const toolName = typeof e.toolName === "string" ? e.toolName : undefined;
+    if (toolCallId === undefined || toolName === undefined) return;
+    this.pendingToolCalls.set(toolCallId, { toolName, args: e.args });
+  }
+
+  /**
+   * On a successful `write` or `edit`, resolve the target path and post a
+   * bounded notice if it is one of the reserved prompt files. The notice is
+   * best-effort and non-blocking; a delivery failure MUST NOT fail the write.
+   */
+  private handleToolEnd(event: AgentSessionEvent): void {
+    const e = event as unknown as Record<string, unknown>;
+    const toolCallId = typeof e.toolCallId === "string" ? e.toolCallId : undefined;
+    if (toolCallId === undefined) return;
+
+    const pending = this.pendingToolCalls.get(toolCallId);
+    this.pendingToolCalls.delete(toolCallId);
+    if (pending === undefined) return;
+    if (e.isError === true) return;
+    if (pending.toolName !== "write" && pending.toolName !== "edit") return;
+
+    const args = pending.args;
+    if (typeof args !== "object" || args === null) return;
+    const a = args as Record<string, unknown>;
+    const rawPath = typeof a.path === "string" ? a.path : typeof a.file_path === "string" ? a.file_path : undefined;
+    if (rawPath === undefined) return;
+
+    const cwd = environmentCwd(this.executionEnvironment, this.cfg.goblinHome);
+    const resolvedPath = resolveToolPath(cwd, rawPath);
+    if (!this.isReservedPromptFilePath(resolvedPath)) return;
+
+    const fileName = basename(resolvedPath);
+    const summary = summarizeToolChange(pending.toolName, a);
+    this.sendNotice(`Modified prompt file \`${fileName}\`: ${summary}`);
+  }
+
+  /** Resolve `~` and relative paths the same way pi's file tools do. */
+  private isReservedPromptFilePath(resolvedPath: string): boolean {
+    const home = this.cfg.goblinHome;
+    const reserved = new Set([
+      resolve(soulMdPath(home)),
+      resolve(agentsMdPath(home)),
+      resolve(heartbeatMdPath(home)),
+      resolve(heartbeatMdPathForSession(home, this.sessionId)),
+    ]);
+    return reserved.has(resolve(resolvedPath));
+  }
+
+  /** Fire-and-forget delivery of a bounded notice to the turn's surface sink. */
+  private sendNotice(text: string): void {
+    const send = this.callbacks?.sendNotice;
+    if (send === undefined) return;
+    send(text).catch((err: unknown) => {
+      log.warn("prompt-file notice failed", { error: String(err), sessionId: this.sessionId });
+    });
   }
 
   /**

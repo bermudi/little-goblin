@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { SubagentRunner, type SubagentToolFactory } from "../mod.ts";
-import { skillsPath, workdirPath } from "../../workspace/paths.ts";
+import { agentsMdPath, heartbeatMdPath, skillsPath, soulMdPath, workdirPath } from "../../workspace/paths.ts";
 import {
   MAX_SUBAGENT_DEPTH,
   type SubagentMeta,
@@ -315,6 +316,31 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     const loader = opts.resourceLoader as { options: Record<string, unknown> } | undefined;
     expect(loader).toBeDefined();
     expect((loader!.options.additionalSkillPaths as string[])[0]).toBe(skillsPath(tmp));
+  });
+
+  it("filters deployment prompt files out of generic subagent context discovery", async () => {
+    const handle = await runner.spawn({ prompt: "go", activeScope: DEFAULT_SCOPE });
+    handle.result.catch(() => {});
+    await flush();
+
+    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
+    const loader = opts.resourceLoader as {
+      options: {
+        agentsFilesOverride?: (base: { agentsFiles: { path: string; content: string }[] }) => { agentsFiles: { path: string; content: string }[] };
+      };
+    };
+    expect(loader).toBeDefined();
+    const override = loader.options.agentsFilesOverride;
+    expect(override).toBeDefined();
+
+    const input = [
+      { path: soulMdPath(tmp), content: "soul" },
+      { path: agentsMdPath(tmp), content: "agents" },
+      { path: heartbeatMdPath(tmp), content: "heartbeat" },
+      { path: join(tmp, "project", "AGENTS.md"), content: "project" },
+    ];
+    const result = override!({ agentsFiles: input });
+    expect(result.agentsFiles.map((f) => f.path)).toEqual([join(tmp, "project", "AGENTS.md")]);
   });
 
   it("for named subagents, builds a DefaultResourceLoader pinned to the agent's skills dir", async () => {

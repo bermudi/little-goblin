@@ -12,13 +12,14 @@
  */
 
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   DefaultResourceLoader,
   type ResourceLoader,
   type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { piAgentDir } from "../pi-host.ts";
-import { skillsPath } from "../workspace/paths.ts";
+import { agentsMdPath, heartbeatMdPath, skillsPath, soulMdPath } from "../workspace/paths.ts";
 import { namedAgentAgentsMdPath, namedAgentDir, namedAgentSkillsDir } from "./paths.ts";
 import type { NamedAgentDefinition, SubagentRole } from "./types.ts";
 
@@ -52,6 +53,20 @@ export function loadNamedAgent(home: string, name: string): NamedAgentDefinition
 }
 
 /**
+ * Resolved paths of the three goblin deployment prompt files. Any context
+ * file discovered by pi whose absolute path matches one of these is filtered
+ * out of a subagent's bootstrap so subagents do not receive deployment
+ * identity or operating rules.
+ */
+function deploymentPromptFilePaths(home: string): Set<string> {
+  return new Set([
+    resolve(soulMdPath(home)),
+    resolve(agentsMdPath(home)),
+    resolve(heartbeatMdPath(home)),
+  ]);
+}
+
+/**
  * Build the pi `ResourceLoader` for a subagent.
  *
  * Named subagents get strict isolation: goblin's project AGENTS.md is not
@@ -60,7 +75,9 @@ export function loadNamedAgent(home: string, name: string): NamedAgentDefinition
  *
  * Generic subagents use pi's defaults but explicitly pin
  * `additionalSkillPaths` to `~/goblin/skills/` so they always discover
- * goblin's skills regardless of pi's default traversal behaviour.
+ * goblin's skills regardless of pi's default traversal behaviour. They also
+ * filter goblin's deployment prompt files (`SOUL.md`, `AGENTS.md`,
+ * `HEARTBEAT.md`) out of any context-file discovery.
  */
 export async function buildResourceLoader(opts: {
   home: string;
@@ -91,12 +108,16 @@ export async function buildResourceLoader(opts: {
   }
 
   if (role === "generic") {
+    const deploymentFiles = deploymentPromptFilePaths(home);
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir: piAgentDir(home),
       settingsManager,
       additionalSkillPaths: [skillsPath(home)],
       ...(memorySystemPrompt ? { systemPrompt: memorySystemPrompt } : {}),
+      agentsFilesOverride: ({ agentsFiles }) => ({
+        agentsFiles: agentsFiles.filter((f) => !deploymentFiles.has(resolve(f.path))),
+      }),
     });
     await loader.reload();
     return loader;

@@ -307,6 +307,7 @@ function nopCallbacks(): TurnCallbacks {
     onMessageStart: mock(() => {}),
     onMessageEnd: mock(() => {}),
     onAgentEnd: mock(() => {}),
+    sendNotice: mock(async () => {}),
   };
 }
 
@@ -1136,6 +1137,100 @@ describe("AgentRunner", () => {
       });
 
       expect(cb.onToolEnd).toHaveBeenCalledWith("bash", false);
+    });
+
+    it("posts a bounded sendNotice when a write tool modifies a reserved prompt file", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      sessionHolder.emit({
+        type: "tool_execution_start",
+        toolCallId: "tc-write",
+        toolName: "write",
+        args: { path: "SOUL.md", content: "new identity\nline two" },
+      });
+      sessionHolder.emit({
+        type: "tool_execution_end",
+        toolCallId: "tc-write",
+        toolName: "write",
+        result: { ok: true },
+        isError: false,
+      });
+
+      expect(cb.sendNotice).toHaveBeenCalledTimes(1);
+      const notice = (cb.sendNotice as unknown as { mock: { calls: [string[]] } }).mock.calls[0]![0];
+      expect(notice).toContain("SOUL.md");
+      expect(notice).toContain("wrote 2 lines (21 chars)");
+    });
+
+    it("posts a sendNotice for an edit tool on a reserved prompt file", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      sessionHolder.emit({
+        type: "tool_execution_start",
+        toolCallId: "tc-edit",
+        toolName: "edit",
+        args: { path: "AGENTS.md", edits: [{ oldString: "x", newString: "y" }] },
+      });
+      sessionHolder.emit({
+        type: "tool_execution_end",
+        toolCallId: "tc-edit",
+        toolName: "edit",
+        result: { ok: true },
+        isError: false,
+      });
+
+      expect(cb.sendNotice).toHaveBeenCalledTimes(1);
+      const notice = (cb.sendNotice as unknown as { mock: { calls: [string[]] } }).mock.calls[0]![0];
+      expect(notice).toContain("AGENTS.md");
+      expect(notice).toContain("1 edit");
+    });
+
+    it("does not post a notice for writes outside the reserved prompt files", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      sessionHolder.emit({
+        type: "tool_execution_start",
+        toolCallId: "tc-other",
+        toolName: "write",
+        args: { path: "README.md", content: "hello" },
+      });
+      sessionHolder.emit({
+        type: "tool_execution_end",
+        toolCallId: "tc-other",
+        toolName: "write",
+        result: { ok: true },
+        isError: false,
+      });
+
+      expect(cb.sendNotice).not.toHaveBeenCalled();
+    });
+
+    it("does not post a notice when a reserved prompt-file write errors", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      sessionHolder.emit({
+        type: "tool_execution_start",
+        toolCallId: "tc-err",
+        toolName: "write",
+        args: { path: "HEARTBEAT.md", content: "pulse" },
+      });
+      sessionHolder.emit({
+        type: "tool_execution_end",
+        toolCallId: "tc-err",
+        toolName: "write",
+        result: { error: "denied" },
+        isError: true,
+      });
+
+      expect(cb.sendNotice).not.toHaveBeenCalled();
     });
   });
 

@@ -9,7 +9,7 @@ import { log } from "../log.ts";
 import { MetricsStore, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import type { Surface } from "../surface.ts";
 import { deliveryOpts } from "./delivery.ts";
-import { stripRichMarkdown, isParseError, classifyTelegramError } from "./format.ts";
+import { sendSystemReply, type ReplyOpts, stripRichMarkdown, isParseError, classifyTelegramError } from "./format.ts";
 
 /**
  * MessageBuffer turns AgentSession events (via TurnCallbacks) into Telegram
@@ -454,6 +454,38 @@ export class MessageBuffer implements TurnCallbacks {
       this.responseDraftId = undefined;
       await Promise.resolve(this.onTurnEnd?.());
     })();
+  }
+
+  /**
+   * Send an out-of-band informational notice to the surface. Used for
+   * bounded, non-blocking notifications such as a prompt-file write summary.
+   * Wraps `sendSystemReply` so formatting and plain-text fallback are shared
+   * with other system messages; metrics are recorded in the `system` channel.
+   */
+  async sendNotice(text: string): Promise<void> {
+    const sender = {
+      reply: async (formatted: string, opts?: ReplyOpts) => {
+        const op: "sendMessage" = "sendMessage";
+        try {
+          const sendOpts = opts ? this.withThread(opts as Record<string, unknown>) : this.withThread();
+          await this.bot.api.sendMessage(this.chatId, formatted, sendOpts);
+          this.recordTelegramEvent({ type: "telegram", op, channel: "system", outcome: "success" });
+        } catch (err) {
+          const { outcome, errorCode, errorDescription, retryAfterSec } = classifyTelegramError(err);
+          this.recordTelegramEvent({
+            type: "telegram",
+            op,
+            channel: "system",
+            outcome,
+            errorCode,
+            errorDescription,
+            retryAfterSec,
+          });
+          throw err;
+        }
+      },
+    };
+    await sendSystemReply(sender, text, "info", { silent: true });
   }
 
   /**

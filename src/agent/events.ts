@@ -15,6 +15,12 @@ export interface TurnCallbacks {
   onMessageStart: (message?: AgentMessage) => void;
   onMessageEnd: (message?: AgentMessage) => void;
   onAgentEnd: () => void;
+  /**
+   * Optional out-of-band notice delivery. Used by the runner to surface
+   * bounded informational messages (e.g., a prompt-file write summary) to
+   * the turn's Telegram surface. Failure is handled by the caller.
+   */
+  sendNotice?: (text: string) => Promise<void>;
 }
 
 /**

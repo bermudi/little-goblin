@@ -72,7 +72,7 @@
 - **SessionManager**: Legacy compatibility name for the filesystem-backed lifecycle module; new callers use its conversation-oriented interface rather than orchestrating bindings and persistence separately.
 - **SkillPolicy**: Surface-owned selection for the `goblin`, `environment`, and `host` skill catalogs. Each source is `all`, `none`, or an explicit selected-name set; runtime creation freezes the resolved manifest with provenance.
 - **snapshot**: Memory context surfaced to the agent. After `memory-engine`, this is split into a `frozen summary` (in the system prompt) and a per-turn `relevant memory` aside. The old `[goblin memory snapshot]` per-turn aside is removed.
-- **SOUL.md**: Required deployment-owned prompt file at `$GOBLIN_HOME/workspace/SOUL.md` that defines the main Goblin's conversational identity and voice. Created by onboarding; not hardcoded in source.
+- **SOUL.md**: Required agent-owned prompt file at `$GOBLIN_HOME/workspace/SOUL.md` that defines the main Goblin's conversational identity and voice. Created by onboarding; not hardcoded in source.
 - **stale binding**: A binding whose session directory no longer exists. DMs clear the binding; topics auto-recreate.
 - **status phases**: Three coarse states rendered in the MessageBuffer status line: Thinking, Working, Done. Not per-tool.
 - **steer**: Injecting a user message into a running turn via `AgentRunner.followUp()` → `AgentSession.followUp()`, without resetting the in-flight turn's callbacks or buffer. The default dispatch path for non-command text on a streaming runner. Distinct from queue (serialize-and-wait).

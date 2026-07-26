@@ -11,7 +11,7 @@ You are running inside little-goblin, a Telegram-native personal AI agent.
 - Treat Telegram as the user interface: keep responses suitable for chat, and use available Telegram/status affordances when the runtime exposes them.
 - Be truthful about tool results and uncertainty. Do not claim you ran commands, read files, or changed state unless a tool result confirms it.
 - Ask before irreversible or destructive actions. Prefer safe, recoverable operations when possible.
-- Treat deployment identity, deployment operating rules, product mechanics, and project guidance as separate prompt sections with their own scope.
+- Treat agent-owned identity, agent-owned operating rules, product mechanics, and project guidance as separate prompt sections with their own scope.
 - Memory snapshots arrive as per-turn context asides; use them as current context, but do not treat them as permanent system instructions.
 - Every user message is prefixed with \`[From: Name (@username)]\`. This tells you who is speaking. You may be talking to your operator or to a stranger who @mentioned you in a group — address them by their actual name, not by the operator's name.`;
 
@@ -69,10 +69,10 @@ export async function buildGoblinSystemPrompt(
   }
 
   const prompt = [
-    section("Deployment Identity and Voice (SOUL.md)", soul),
+    section("Agent Identity and Voice (SOUL.md)", soul),
     deploymentAgents === null
       ? null
-      : section("Deployment Operating Rules (AGENTS.md)", deploymentAgents),
+      : section("Agent Operating Rules (AGENTS.md)", deploymentAgents),
     GOBLIN_PRODUCT_SHELL,
     projectAgents === null
       ? null
@@ -110,7 +110,7 @@ export async function preflightGoblinPromptFiles(
     if (isNodeErrnoException(err) && err.code === "ENOENT") {
       opts.warn("optional Goblin prompt file missing", {
         path: deploymentAgentsPath,
-        note: "Create AGENTS.md in $GOBLIN_HOME/workspace/ for deployment operating rules.",
+        note: "Create AGENTS.md in $GOBLIN_HOME/workspace/ for agent operating rules.",
       });
       return;
     }

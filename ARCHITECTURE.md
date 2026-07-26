@@ -231,7 +231,7 @@ Three constraints bound the authority:
 
 Recovery is git in `$GOBLIN_HOME/workspace`, documented for the operator. Goblin builds no snapshot or undo store.
 
-Three canon statements still contradict this and need a patch: `specs/glossary.md:75` and `specs/canon/agent/spec.md:415` call `SOUL.md` "deployment-owned". A small `agent-owned-prompt-files` change owns the canon amendment, the notice, and the subagent bootstrap filter; it belongs immediately after step 2 of the implementation train.
+The `agent-owned-prompt-files` change amends the canon statements that previously called `SOUL.md` "deployment-owned" (`specs/glossary.md:75`, `specs/canon/agent/spec.md`), implements the bounded Surface notice, filters deployment prompt files out of subagent bootstrap, and documents the `git-in-workspace/` recovery path.
 
 ## Skill architecture
 
@@ -491,7 +491,7 @@ If the answer to 1–4 is “the caller coordinates it,” the design is not rea
 
 These decisions or implementation plans block a stable baseline:
 
-1. ~~**Workspace write authority.**~~ Settled by decision 0039: prompt files are agent-owned, no write guard, bounded Telegram notice per write, inner-life excluded, subagents excluded, recovery via git in `workspace/`. Remaining work is the `agent-owned-prompt-files` change, not a decision.
+1. ~~**Workspace write authority.**~~ Settled by decision 0039 and implemented by `agent-owned-prompt-files`: prompt files are agent-owned, no write guard, bounded Telegram notice per write, inner-life excluded, subagents excluded, recovery via git in `workspace/`.
 2. **No-scratch migration:** final destinations and migration steps for subagent and external-agent records.
 3. **Delegated-work implementation:** cancellation races, durable storage, completion wakes, reachability input, and pending-delivery reconciliation under decision 0036.
 4. **Surface lifecycle:** Telegram topic deletion/reachability, schedule suspension, pending outputs, and project recovery.

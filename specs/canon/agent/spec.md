@@ -396,7 +396,7 @@ If `AgentSession` initialization fails (e.g. auth error), the error SHALL propag
 
 ### Requirement: Main AgentRunner constructs a Goblin system prompt
 
-The main `AgentRunner` SHALL construct an explicit system prompt in its lazy session-initialization path before creating pi's `AgentSession`. The prompt SHALL combine deployment-owned prompt files, a small product shell, and optional project guidance. The prompt MUST be passed through the `DefaultResourceLoader` used by the main runner.
+The main `AgentRunner` SHALL construct an explicit system prompt in its lazy session-initialization path before creating pi's `AgentSession`. The prompt SHALL combine agent-owned prompt files (`SOUL.md` and `AGENTS.md`), a small product shell, and optional project guidance. The prompt MUST be passed through the `DefaultResourceLoader` used by the main runner.
 
 #### Scenario: Main runner receives explicit prompt
 
@@ -410,9 +410,9 @@ The main `AgentRunner` SHALL construct an explicit system prompt in its lazy ses
 - **AND** the main `AgentRunner` attempts to construct the prompt
 - **THEN** initialization SHALL fail with a configuration error
 
-### Requirement: SOUL provides deployment identity and voice
+### Requirement: SOUL provides agent identity and voice
 
-The main Goblin system prompt SHALL include `$GOBLIN_HOME/workspace/SOUL.md` as the required deployment-owned identity and voice source. Runtime code MUST NOT inject a separate conversational agent name, user name, or private persona.
+The main Goblin system prompt SHALL include `$GOBLIN_HOME/workspace/SOUL.md` as the required agent-owned identity and voice source. Runtime code MUST NOT inject a separate conversational agent name, user name, or private persona.
 
 #### Scenario: SOUL included
 
@@ -420,14 +420,14 @@ The main Goblin system prompt SHALL include `$GOBLIN_HOME/workspace/SOUL.md` as 
 - **THEN** the constructed system prompt SHALL include that content
 - **AND** the runtime SHALL NOT add another agent name from config or source code
 
-### Requirement: Deployment AGENTS provides optional operating rules
+### Requirement: AGENTS provides optional operating rules
 
 The main Goblin system prompt SHALL include `$GOBLIN_HOME/workspace/AGENTS.md` when it exists. Missing `$GOBLIN_HOME/workspace/AGENTS.md` SHALL NOT block `AgentRunner` initialization.
 
 #### Scenario: AGENTS exists
 
 - **WHEN** `$GOBLIN_HOME/workspace/AGENTS.md` exists
-- **THEN** the constructed system prompt SHALL include it as deployment operating rules
+- **THEN** the constructed system prompt SHALL include it as agent-owned operating rules
 
 #### Scenario: AGENTS missing
 

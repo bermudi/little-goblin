@@ -59,9 +59,14 @@ export function surfaceFromCtx(ctx: Context): Surface | null {
     return null;
   }
 
+  const isForumSupergroup =
+    chat.type === "supergroup" &&
+    chat.is_direct_messages !== true &&
+    (chat as { is_forum?: boolean }).is_forum === true;
+
   const isTopic =
-    msg?.is_topic_message === true &&
-    typeof msg?.message_thread_id === "number";
+    typeof msg?.message_thread_id === "number" &&
+    (msg?.is_topic_message === true || isForumSupergroup);
 
   if (isTopic) {
     const topicId = msg!.message_thread_id!;

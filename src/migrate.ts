@@ -14,7 +14,7 @@
 
 import { cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { loadConfig, ensureGoblinHome } from "./config.ts";
+import { loadConfig } from "./config.ts";
 import { log, initLog } from "./log.ts";
 import { CURRENT_STATE_VERSION, readStateVersion, writeStateVersion } from "./state-version.ts";
 import { planSurfaceMigration, applySurfaceMigration, type SurfaceMigrationPlan } from "./sessions/surface-migration.ts";
@@ -140,7 +140,6 @@ export function runMigrations(home: string): void {
 function main(): void {
   const cfg = loadConfig();
   initLog(cfg.logLevel);
-  ensureGoblinHome(cfg);
   runMigrations(cfg.goblinHome);
 }
 

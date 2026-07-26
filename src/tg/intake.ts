@@ -18,7 +18,7 @@ import {
   runtimeSessionWithPreferences,
   type ConversationState,
 } from "../sessions/mod.ts";
-import { guestSurface, surfaceId, type Surface } from "../surface.ts";
+import { surfaceId, type Surface, type GuestSurface } from "../surface.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from "./attachments.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -66,12 +66,12 @@ export interface TelegramAudioInput {
 }
 
 /**
- * A guest summon: the foreign chat id and a one-shot reply callback that
+ * A guest summon: a validated guest Surface and a one-shot reply callback that
  * encapsulates `ctx.answerGuestQuery`. `guest_query_id` lives entirely inside
  * the closure — the intake MUST NOT name, log, or persist it. See design D5.
  */
 export interface GuestMessage {
-  chatId: number;
+  surface: GuestSurface;
   replyVia: (result: InlineQueryResult) => Promise<unknown>;
 }
 
@@ -189,12 +189,12 @@ async function downloadPhoto(
 }
 
 export function replyNoActiveSession(message: TelegramIntakeMessage, surface: Surface, kind: string): void {
-  if (surface.kind !== "topic") {
+  if (surface.kind === "dm") {
     sendSystemReply(message, "No active conversation. Use /new to start one.", "info").catch((err: unknown) => {
-      log.error("failed to send conversation prompt", { error: String(err), chatId: surface.chatId });
+      log.error("failed to send conversation prompt", { error: String(err), surfaceId: surfaceId(surface) });
     });
   }
-  log.debug(`dropping ${kind}: no conversation`, { chatId: surface.chatId, topicId: surface.kind === "topic" ? surface.topicId : undefined });
+  log.debug(`dropping ${kind}: no conversation`, { surfaceId: surfaceId(surface) });
 }
 
 export function createTelegramIntake(options: TelegramIntakeOptions) {
@@ -831,17 +831,17 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
    * summoner sees nothing, but the bot does not crash.
    */
   async function handleGuestMessage(message: GuestMessage, text: string): Promise<void> {
-    const surface = guestSurface(message.chatId);
+    const surface = message.surface;
     let conversation: ConversationState;
     try {
       // Guest text is ordinary authorized content; lazily start a conversation.
       conversation = await lifecycle.resolveOrStart(surface);
     } catch (err) {
-      log.error("guest resolve failed", { error: String(err), chatId: message.chatId });
+      log.error("guest resolve failed", { error: String(err), surfaceId: surfaceId(surface) });
       try {
         await message.replyVia(errorArticle());
       } catch (replyErr) {
-        log.warn("guest error reply failed", { error: String(replyErr), chatId: message.chatId });
+        log.warn("guest error reply failed", { error: String(replyErr), surfaceId: surfaceId(surface) });
       }
       return;
     }
@@ -851,11 +851,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     // Busy path: never queue. guest_query_id would expire before a queued turn
     // runs, so reply immediately with a busy fallback to consume the id.
     if (runner.isStreaming) {
-      log.debug("guest summon dropped: runner busy", { chatId: message.chatId, sessionId: session.id });
+      log.debug("guest summon dropped: runner busy", { surfaceId: surfaceId(surface), sessionId: session.id });
       try {
         await message.replyVia(busyArticle());
       } catch (err) {
-        log.warn("guest busy reply failed", { error: String(err), chatId: message.chatId });
+        log.warn("guest busy reply failed", { error: String(err), surfaceId: surfaceId(surface) });
       }
       return;
     }
@@ -864,11 +864,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     try {
       await runner.prompt(text, sink);
     } catch (err) {
-      log.warn("guest turn failed", { error: String(err), chatId: message.chatId, sessionId: session.id });
+      log.warn("guest turn failed", { error: String(err), surfaceId: surfaceId(surface), sessionId: session.id });
       try {
         await message.replyVia(errorArticle());
       } catch (replyErr) {
-        log.warn("guest error reply failed", { error: String(replyErr), chatId: message.chatId });
+        log.warn("guest error reply failed", { error: String(replyErr), surfaceId: surfaceId(surface) });
       }
       return;
     }
@@ -878,7 +878,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     } catch (err) {
       // Expired guest_query_id or other Telegram failure — swallow so the bot
       // does not crash. The summoner sees nothing; inherent to the one-shot API.
-      log.warn("guest reply failed", { error: String(err), chatId: message.chatId });
+      log.warn("guest reply failed", { error: String(err), surfaceId: surfaceId(surface) });
     }
   }
 

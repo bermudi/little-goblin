@@ -3,7 +3,7 @@ import type { Context } from "grammy";
 import { surfaceFromCtx } from "./context-surface.ts";
 
 interface MakeCtxOptions {
-  chat?: { id: number; type: "private" | "group" | "supergroup" | "channel"; is_direct_messages?: true };
+  chat?: { id: number; type: "private" | "group" | "supergroup" | "channel"; is_direct_messages?: true; is_forum?: boolean };
   msg?: {
     is_topic_message?: boolean;
     message_thread_id?: number;
@@ -109,6 +109,36 @@ describe("surfaceFromCtx", () => {
 
   it("normalizes a topicless supergroup", () => {
     expect(surfaceFromCtx(makeCtx({ chat: { id: -1003958530002, type: "supergroup" }, msg: {} }))).toEqual({
+      kind: "supergroup",
+      chatId: -1003958530002,
+    });
+  });
+
+  it("normalizes a forum General topic", () => {
+    expect(
+      surfaceFromCtx(
+        makeCtx({
+          chat: { id: -1003958530002, type: "supergroup", is_forum: true },
+          msg: { is_topic_message: false, message_thread_id: 1 },
+        }),
+      ),
+    ).toEqual({
+      kind: "topic",
+      container: "supergroup",
+      chatId: -1003958530002,
+      topicId: 1,
+    });
+  });
+
+  it("does not treat a non-forum supergroup message_thread_id as a topic", () => {
+    expect(
+      surfaceFromCtx(
+        makeCtx({
+          chat: { id: -1003958530002, type: "supergroup" },
+          msg: { is_topic_message: false, message_thread_id: 42 },
+        }),
+      ),
+    ).toEqual({
       kind: "supergroup",
       chatId: -1003958530002,
     });

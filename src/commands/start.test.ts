@@ -9,7 +9,7 @@ import { personalEnvironment } from "../sessions/environment.ts";
 type ReplyCall = { text: string; opts?: Record<string, unknown> };
 
 function makeCtx(overrides: {
-  chat: { id: number; type: string };
+  chat: { id: number; type: string; is_forum?: boolean };
   msg?: { message_thread_id?: number; is_topic_message?: boolean };
   reply?: (text: string, opts?: Record<string, unknown>) => Promise<unknown>;
   from?: { id: number };
@@ -93,7 +93,7 @@ describe("buildStartHandler", () => {
   it("explains how to start a conversation in the General topic", async () => {
     const replies: ReplyCall[] = [];
     const ctx = makeCtx({
-      chat: { id: -789, type: "supergroup" },
+      chat: { id: -789, type: "supergroup", is_forum: true },
       msg: { message_thread_id: 1, is_topic_message: false },
       reply: async (text, opts) => {
         replies.push({ text, opts });
@@ -197,7 +197,9 @@ describe("buildStartHandler", () => {
     await handler(ctx);
 
     expect(replies.length).toBe(1);
-    expect(replies[0]!.text).toBe("`[error]` Unable to determine chat context\\.");
+    expect(replies[0]!.text).toBe(
+      "`[info]` Use /start in a private chat or a forum topic\\."
+    );
     expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
     expect(inspectCalls.length).toBe(0);
   });

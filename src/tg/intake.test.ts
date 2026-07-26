@@ -85,7 +85,7 @@ function makeGuestMessage(chatId = 99): {
   const results: InlineQueryResult[] = [];
   let pendingReject: Error | undefined;
   const message: GuestMessage = {
-    chatId,
+    surface: guestSurface(chatId),
     replyVia: async (result) => {
       if (pendingReject) {
         const err = pendingReject;

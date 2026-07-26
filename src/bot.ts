@@ -9,7 +9,7 @@ import { MetricsStore, type TelegramMetricsEvent } from "./metrics/mod.ts";
 import { classifyTelegramError, type ReplyOpts } from "./tg/format.ts";
 import { registerCommands } from "./commands/mod.ts";
 import { SessionManager, type ConversationState } from "./sessions/mod.ts";
-import { surfaceId, type Surface } from "./surface.ts";
+import { guestSurface, surfaceId, type Surface } from "./surface.ts";
 import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
@@ -303,9 +303,10 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
       return;
     }
     const cleanedText = prepareUserContent(ctx, text);
+    const surface = guestSurface(guestMessage.chat.id);
     await intake.handleGuestMessage(
       {
-        chatId: guestMessage.chat.id,
+        surface,
         replyVia: (result) => ctx.answerGuestQuery(result),
       },
       cleanedText,

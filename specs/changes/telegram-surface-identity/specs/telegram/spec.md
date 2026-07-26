@@ -87,12 +87,30 @@ where `<container>` is `private`, `supergroup`, or `direct-messages`, and every 
 
 ### Requirement: Telegram adapter derives delivery parameters from Surface
 
-Telegram send/edit adapters SHALL accept a complete `Surface` and derive the API target and topic parameters internally. Private and forum-supergroup topics SHALL use `message_thread_id`; direct-messages topics SHALL use `direct_messages_topic_id`; topicless DM and supergroup surfaces SHALL use neither. Guest surfaces SHALL use their encapsulated `answerGuestQuery` callback rather than normal chat send methods. Domain modules SHALL NOT construct either topic parameter.
+Telegram send/edit/media/draft adapters SHALL derive normal delivery options from a complete `Surface` using `deliveryOpts(surface)`. Telegram chat-action adapters SHALL derive `sendChatAction` options from a complete `Surface` using `chatActionDeliveryOpts(surface)`. The two derivations differ only for a forum General topic (`container === "supergroup"` and `topicId === 1`): normal sends, edits, media, and drafts to that surface SHALL target the surface `chatId` and SHALL NOT set `message_thread_id`; chat actions to that surface SHALL set `message_thread_id = 1` so the typing indicator appears in the General topic. For all other private and forum-supergroup topics, both normal and chat-action adapters SHALL set `message_thread_id = topicId`. Direct-messages topics SHALL use `direct_messages_topic_id = topicId` for both adapters. Topicless DM and supergroup surfaces SHALL use neither topic parameter. Guest surfaces SHALL use their encapsulated `answerGuestQuery` callback rather than normal chat send methods. Domain modules SHALL NOT construct either topic parameter.
 
-#### Scenario: Forum or private topic delivery
+#### Scenario: Ordinary forum topic delivery
 
-- **WHEN** the Telegram adapter sends to a topic whose container is `private` or `supergroup`
+- **WHEN** the Telegram adapter sends, edits, or replies to a forum topic whose container is `supergroup` and whose `topicId` is not `1`
 - **THEN** it SHALL target the surface `chatId` with `message_thread_id = topicId`
+- **AND** it SHALL NOT set `direct_messages_topic_id`
+
+#### Scenario: Private topic delivery
+
+- **WHEN** the Telegram adapter sends, edits, or replies to a private-chat topic (`container === "private"`)
+- **THEN** it SHALL target the surface `chatId` with `message_thread_id = topicId`
+- **AND** it SHALL NOT set `direct_messages_topic_id`
+
+#### Scenario: Supergroup General topic normal send
+
+- **WHEN** `deliveryOpts(surface)` is used for a `supergroup` topic surface whose `topicId` is `1`
+- **THEN** it SHALL target the surface `chatId` and SHALL NOT set `message_thread_id`
+- **AND** it SHALL NOT set `direct_messages_topic_id`
+
+#### Scenario: Supergroup General topic chat action
+
+- **WHEN** `chatActionDeliveryOpts(surface)` is used for a `supergroup` topic surface whose `topicId` is `1`
+- **THEN** it SHALL target the surface `chatId` with `message_thread_id = 1`
 - **AND** it SHALL NOT set `direct_messages_topic_id`
 
 #### Scenario: Direct-messages topic delivery

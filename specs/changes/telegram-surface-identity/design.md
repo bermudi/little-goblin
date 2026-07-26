@@ -102,16 +102,20 @@ interface PersistedScheduledTurn {
 
 `ScheduleStore` validates and decodes every `surfaceId` on load, and encodes every `surface` on save. Commands and the agent scheduling tool pass their current complete surface. `SchedulerLoop` validates eligibility with `peekBinding(schedule.surface)` and dispatches the same surface through `TurnDispatcher`. Per-session prompt queues remain keyed by session ID: they serialize conversation runtime work, not Telegram surface work. Only surface-addressed queues such as text coalescing use SurfaceId. This preserves the routing-versus-conversation distinction instead of mechanically replacing every key with SurfaceId.
 
-### Telegram delivery owns Telegram options
+### Telegram delivery owns two option derivations
 
-`src/tg/delivery.ts` derives API addressing from `Surface`:
+`src/tg/delivery.ts` provides two helpers: `deliveryOpts(surface)` for normal sends, edits, media, drafts, and rich-message replies, and `chatActionDeliveryOpts(surface)` for `sendChatAction` and other typing-status calls. Both accept a complete `Surface` and produce API addressing from it:
 
 - DM/topicless supergroup: `chatId`, no topic parameter;
-- private or supergroup topic: `chatId` plus `message_thread_id`;
+- private topic: `chatId` plus `message_thread_id`;
+- supergroup topic with `topicId !== 1` (ordinary forum topic): `chatId` plus `message_thread_id`;
+- supergroup topic with `topicId === 1` (forum General topic):
+  - `deliveryOpts`: `chatId` only, so normal sends/edits/media/drafts route to the General topic;
+  - `chatActionDeliveryOpts`: `chatId` plus `message_thread_id = 1`, because omitting the thread ID from `sendChatAction` does not show typing in the General topic;
 - direct-messages topic: `chatId` plus `direct_messages_topic_id`;
-- guest: rejected by normal-send helpers because delivery is through the one-shot `replyVia` closure.
+- guest: rejected by both normal-send helpers because delivery is through the one-shot `replyVia` closure.
 
-`MessageBuffer`, send-photo/document/voice tools, `/voice`, chat actions, drafts, rich-message sends, edits, and file fallback all call this helper. Intake and orchestration no longer pass a `threadId`. Draft mode is derived from the complete surface (`dm` and private-topic lanes retain private-chat draft behavior), rather than any legacy locator flag.
+`MessageBuffer`, send-photo/document/voice tools, `/voice`, drafts, rich-message sends, edits, and file fallback call `deliveryOpts`. `MessageBuffer.sendChatActionSafe()` calls `chatActionDeliveryOpts`. Intake and orchestration no longer pass a `threadId`. Draft mode is derived from the complete surface (`dm` and private-topic lanes retain private-chat draft behavior), rather than any legacy locator flag.
 
 The guest adapter constructs `{ kind: "guest", chatId }` beside the reply closure. The guest query identifier remains inside `ctx.answerGuestQuery` exactly as today; SurfaceId never includes it.
 
@@ -207,12 +211,12 @@ If any topic or schedule has absent/conflicting evidence or zero/multiple candid
 
 - **`src/surface.ts`** — Define `Surface`, `TopicContainer`, branded `SurfaceId`, validated constructors, `surfaceId`, `parseSurfaceId`, and small narrowing helpers. Implements “Telegram surfaces are complete discriminated values” and “SurfaceId is canonical and reversible” without introducing a dependency on Telegram adapters.
 - **`src/tg/context-surface.ts`** — Normalize grammy message contexts and guest messages into validated surfaces. Replaces `locatorFromCtx` and owns support/rejection by Telegram chat/update shape.
-- **`src/tg/delivery.ts`** — Convert a non-guest Surface into Telegram API `chatId` and the correct `message_thread_id`/`direct_messages_topic_id` options; reject normal-send use for guests. Implements “Telegram adapter derives delivery parameters from Surface.”
+- **`src/tg/delivery.ts`** — Provide `deliveryOpts(surface)` for normal send/edit/media/draft/rich-message options and `chatActionDeliveryOpts(surface)` for `sendChatAction` options. Both accept a non-guest `Surface` and produce the correct `chatId` plus `message_thread_id`/`direct_messages_topic_id`; the two helpers diverge only for a forum General topic (`container === "supergroup"`, `topicId === 1`), where normal sends omit `message_thread_id` but chat actions include it. Reject guest surfaces for normal sends. Implements “Telegram adapter derives delivery parameters from Surface.”
 - **`src/migrate.ts`** — Offline plan/apply registry: validate every pending step against projected prior outputs, snapshot every named persisted root before source mutation, apply in version order, and exit nonzero without automatic convergence on failure.
 - **`src/state-version.ts`** — Strictly parse the monotonic `stateVersion` for `$GOBLIN_HOME/state/`; only absence means 0 and unsupported/future/corrupt values fail.
 - **`src/sessions/surface-migration.ts`** — Plan and apply bindings/settings/schedule conversion as offline step 1; fail during whole-run preflight on ambiguous evidence.
 - **`scripts/update.sh`** — stop the service before invoking the canonical migration/backup owner and restart only after success.
-- **`src/surface.test.ts`, `src/tg/context-surface.test.ts`, `src/tg/delivery.test.ts`, `src/sessions/surface-migration.test.ts`, `src/migrate.test.ts`, `src/state-version.test.ts`** — Colocated round-trip, normalization, delivery-option, collision, ambiguity, strict-version, projected-chain preflight, backup, and offline-ordering coverage.
+- **`src/surface.test.ts`, `src/tg/context-surface.test.ts`, `src/tg/delivery.test.ts`, `src/sessions/surface-migration.test.ts`, `src/migrate.test.ts`, `src/state-version.test.ts`** — Colocated round-trip, normalization, delivery-option (including General-topic normal-send omission and chat-action inclusion), collision, ambiguity, strict-version, projected-chain preflight, backup, and offline-ordering coverage.
 
 ### Deleted files
 
@@ -224,7 +228,7 @@ If any topic or schedule has absent/conflicting evidence or zero/multiple candid
 - **`src/bot.ts`** — Build `TelegramIntakeMessage.surface` once, remove `isSupergroup`/`threadId`, use SurfaceId for coalescing, normalize guest messages, and pass complete surfaces to intake. Its context-owned reply closures continue using grammy. Implements the intake, coalescer, and guest-handler requirements.
 - **`src/tg/intake.ts`** — Replace locator/flag fields and calls with `Surface`; derive DM no-session policy by discriminant; pass Surface through commands, session manager, dispatcher, sinks, settings, and guest resolution.
 - **`src/tg/coalesce.ts`** — Replace `{ chatId, topicId, fromUserId }` with `{ surfaceId, fromUserId }`; buffering/timing/cap behavior remains unchanged.
-- **`src/tg/buffer.ts`** — Accept `Surface`, derive all send/edit/draft/chat-action/document options through `delivery.ts`, and derive private draft behavior without `ChatLocator.isPrivate`.
+- **`src/tg/buffer.ts`** — Accept `Surface`, derive send/edit/draft/document options through `deliveryOpts()` and chat-action options through `chatActionDeliveryOpts()`, and derive private draft behavior without `ChatLocator.isPrivate`.
 - **`src/tg/tools.ts`** — Make send-voice/photo/document factories surface-addressed and remove caller-supplied chat/thread pairs.
 - **`src/tg/intake.test.ts`, `src/tg/coalesce.test.ts`, `src/tg/buffer.test.ts`, `src/tg/tools.test.ts`** — Replace locator fixtures with each Surface variant and assert container-correct routing without flags.
 

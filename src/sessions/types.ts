@@ -14,25 +14,37 @@ export interface ChatLocator {
   isPrivate?: boolean;
 }
 
-/** Per-session state persisted in sessions/<id>/state.json */
-export interface SessionState {
-  id: string;
+/** A goblin-generated conversation id: 10 lowercase hex characters. */
+export type ConversationId = string;
+
+/** Canonical durable Conversation state persisted in sessions/<id>/state.json.
+ * Routing, model, and thinking fields are intentionally omitted from the
+ * canonical write; they remain available as migration-only legacy reads. */
+export interface ConversationState {
+  id: ConversationId;
   createdAt: string; // ISO 8601
+  title?: string;
+  /** Immutable execution environment captured at Conversation creation. */
+  executionEnvironment: ExecutionEnvironment;
+}
+
+/** Per-session state persisted in sessions/<id>/state.json.
+ * @deprecated SessionState is the legacy shape; new code should use ConversationState.
+ */
+export interface SessionState extends ConversationState {
   chatId: number;
   topicId?: number;
-  title?: string;
-  archived?: boolean;
   /**
    * @deprecated Use binding-scoped projectDir via SessionManager.getProjectDir(surface) instead.
    * This field may exist in legacy state.json files but is no longer read or written.
    */
   projectDir?: string;
-  /** Immutable execution environment captured at Conversation creation. */
-  executionEnvironment: ExecutionEnvironment;
   /** Session-scoped model override. Falls back to config default when absent. */
   modelName?: string;
   /** Session-scoped thinking level override. Falls back to model default when absent. */
   thinkingLevel?: ThinkingLevel;
+  /** Legacy archived flag; canonical archive is a directory move to sessions/archive/. */
+  archived?: boolean;
 }
 
 /** Legacy pre-Surface bindings.json shape. Loaded only by migration. */

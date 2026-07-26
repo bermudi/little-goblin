@@ -4,17 +4,20 @@
 - **ACP external-agent session**: The agent-owned logical conversation identified by an ACP session id. Goblin may continue it through a fresh process only when the server both advertises resume and has code-owned resume eligibility.
 - **ACP server id**: The configured built-in or custom id selecting a trusted ACP server definition (for example `codex` or `opencode`). It is persisted in the legacy-named `ExternalAgentRunRecord.backend` field; there is no separate server-id field.
 - **ACP server process**: A local child process that transports ACP messages for one external-agent run. It is disposable connection infrastructure, distinct from the resumable ACP session.
-- **AgentRunner**: The orchestrator that wraps a pi-coding-agent session for a given Telegram session. Owns memory injection, tool registration, and prompt dispatch. Not the LLM itself.
+- **AgentRunner**: The orchestrator that wraps a pi-coding-agent `AgentSession` for one conversation runtime. Owns memory injection, tool registration, and prompt dispatch. Not the LLM itself.
 - **atomic write**: Write-to-temp-then-rename pattern used for all file mutations (state, bindings, memory). Guarantees no partial files on crash.
-- **archived session**: A session moved under `state/sessions/archive/<id>/`. Archive clears bindings and removes the session from normal resolution and resume lookup.
-- **binding**: Maps a `ChatLocator` to a session ID. Stored in `state/bindings.json`. DMs have at most one; topics have exactly one (auto-created).
-- **bound session**: The session currently mapped from a `ChatLocator` by a binding. This is the session that handles the next message on that Telegram surface.
+- **archived conversation**: A Conversation moved under `state/sessions/archive/<id>/`. Archive clears its binding and removes it from normal resolution and resume lookup.
+- **binding**: The persisted current association from a Surface to a Conversation. A Surface and a Conversation each participate in at most one active binding; unbound conversations remain resumable.
+- **bound conversation**: The Conversation currently associated with a Surface. It handles the next interaction on that Telegram lane.
 - **capability**: A tool, mode, or posture of the one assistant — not a sibling product. Project-directory mode is a capability: when a chat surface is bound to a `projectDir`, goblin remains the personal assistant with a project coat on; the "remote pi" utility is a side effect of starting in a custom `cwd` and letting pi auto-load skills + `AGENTS.md`. Surface affordances (reactions, file delivery) are likewise capabilities, not an "admin bot" product. Canon uses this term in spec titles (e.g. `Capability: AgentRunner Project Directory Support`). See decision 0004.
 - **canon**: The set of accepted, implemented specs in `specs/canon/`. Each subdirectory is one domain module.
-- **ChatLocator**: A discriminated key — `{ chatId }` for DMs, `{ chatId, topicId }` for forum topics — used to resolve which session handles a message.
+- **ChatLocator**: Legacy routing value (`{ chatId, topicId? }`) superseded by Surface because it cannot distinguish DM, topicless supergroup, guest chat, or a topic’s container without out-of-band flags.
+- **Conversation**: Resumable Goblin conversational history: ID, optional name, transcript, events, metrics, pi history, and immutable Execution Environment. Stored under the legacy `state/sessions/<id>/` path.
+- **conversation runtime**: The ephemeral `AgentRunner` plus serialized prompt queue for one active Conversation. It is recreated when the Conversation moves to another compatible Surface.
 - **defrag**: Agent-driven consolidation of memory files. Not a system operation; replaced by the global budget and auto-compaction in `memory-engine`.
 - **dreaming**: Scheduled memory consolidation with three phases: light sleep (extract and dedupe transcript snippets), REM sleep (detect recurring themes across sessions), and deep sleep (promote short-term entries and compact the global budget). Runs in an internal `__goblin_dreaming__` session.
 - **entry_kind**: Database column in `memory_entries` distinguishing the logical kind of an entry: `memory` (curated scope memory, including named-agent persona), `user` (global `user.md`), or `transcript` (chunked conversation snippet). Not to be confused with the `memory_write` tool `target` parameter.
+- **Execution Environment**: Immutable filesystem authority for a Conversation: either `personal` (`$GOBLIN_HOME/scratch/workdir`) or `project` (a validated canonical project root). It determines CWD, project guidance, skills, and project-bound tools; many Surfaces may share one environment.
 - **external agent**: A coding agent that runs outside Goblin's `pi-coding-agent` process, such as Codex, Claude Code, or Devin. Accessed through the `external_agent` tool and managed by `ExternalAgentRunner`.
 - **external-agent run**: One delegated task to an external agent. Has a UUID, configured ACP server id (stored in `backend`), owning session, bound project directory, and bounded event history. `stopping` means a terminal outcome is claimed but local child exit is unconfirmed; terminal statuses remain `completed`, `failed`, `cancelled`, `timed_out`, and `interrupted`. Persisted under `$GOBLIN_HOME/scratch/external-agents/<runId>/`.
 - **frozen summary**: Bounded memory summary injected into the system prompt at session creation (max 1200 chars total). Contains the active scope description, a `user.md` summary, an active scope `memory.md` summary, and a cross-scope index. Not refreshed mid-session.
@@ -22,7 +25,7 @@
 - **goblin** aka **main agent**: The AI bot. Single user, single process. Lives in Telegram.
 - **GOBLIN_HOME**: Root data directory (default `~/goblin`). Organized into three groups: `workspace/` (user-authored prompt files — `SOUL.md`, `AGENTS.md`, `skills/`, named-agent definitions), `state/` (machine-managed — `bindings.json`, `topic-settings.json`, `schedules.json`, `sessions/`, `memory/`, `pi/`), and `scratch/` (ephemeral — `workdir/`, `subagents/`, `external-agents/`). `scratch/external-agents/` persists run records for reconciliation and status inspection but remains scratch data, so backup and cleanup expectations treat it as ephemeral.
 - **HEARTBEAT.md**: Optional user-editable workspace prompt file at `$GOBLIN_HOME/workspace/HEARTBEAT.md` that sources the heartbeat prompt. Sibling to `SOUL.md` and `AGENTS.md`. If absent, empty, or whitespace-only, the system falls back to the built-in `HEARTBEAT_PROMPT` constant. Read at dispatch time (each heartbeat wake), not at schedule creation, so edits take effect on the next heartbeat without restart.
-- **locator**: Shorthand for `ChatLocator`.
+- **locator**: Legacy shorthand for `ChatLocator`; new domain interfaces use Surface.
 
 - **MCP**: Model Context Protocol. The external ecosystem of tools and resources that Goblin reaches through `mcporter`.
 
@@ -38,7 +41,7 @@
 
 - **memory.md / user.md**: Curated memory export files under `$GOBLIN_HOME/state/memory/`. The canonical store is `memory.sqlite`; markdown is regenerated by `memory export`. After the `memory-engine` change, `memory.md` exists once per scope (general / topic / named-agent persona); `user.md` remains a single global file.
 - **memory scope**: The database `scope` value memory is keyed by. One of: `user` (global `user.md`), `general` (singleton — DMs and supergroup-no-topic), `topics/<chatId>/<topicId>`, `agents/<name>`, `archive/...` (orphaned topic scopes), or `transcript/<sessionId>` (chunked conversation history).
-- **active scope**: The memory scope resolved from the calling session's locator (and, for named subagents, the agent's name). `memory_write` always targets the active scope; the agent cannot supply an arbitrary scope on writes.
+- **active scope**: The memory scope resolved from the calling Conversation's bound Surface (and, for named subagents, the agent's name). `memory_write` always targets the active scope; the agent cannot supply an arbitrary scope on writes.
 - **persona memory**: A named subagent's `state/memory/agents/<name>/memory.md` — the agent's self-knowledge across invocations, distinct from any single topic's domain memory. Loaded into every snapshot that named agent sees.
 - **scope description**: A one-line agent-curated summary stored in a YAML-style `--- description: ... ---` frontmatter at the top of a scope's `memory.md`. Used in `memory_read_index` and the snapshot's `## other scopes` section for progressive disclosure (≤200 chars).
 - **MessageBuffer**: Implements `TurnCallbacks` to render agent activity as Telegram messages. Manages status phases, streaming edits, and rollover.
@@ -47,18 +50,20 @@
 - **pi-coding-agent**: The underlying agent framework that goblin wraps. Provides `AgentSession`, `defineTool`, extension/skill loading. Ships a sample subagent extension (`examples/extensions/subagent/`) that spawns child `pi` processes, but goblin's subagent system is custom-built on the core SDK.
 - **queue**: The `/queue <text>` command enqueues text to run as a fresh turn after the current turn settles, via the per-session promise queue. The explicit opt-out from steer-by-default. Not to be confused with pi's internal `followUp` queue.
 - **product shell**: The small code-owned part of Goblin's system prompt. Contains runtime mechanics and section framing, not deployed identity, user identity, or conversational voice.
-- **project guidance**: The exact `AGENTS.md` from a session's bound `projectDir`, included in the main Goblin system prompt as repository/workspace instructions. Not deployment identity.
+- **project guidance**: The exact `AGENTS.md` from a Conversation’s project Execution Environment, included in the main Goblin system prompt as repository/workspace instructions. Not deployment identity.
 - **relevant memory**: Per-turn `## relevant memory` aside computed via hybrid search on the current prompt text and injected via `sendCustomMessage(..., { deliverAs: "nextTurn" })`. Bounded to 3 results by default and clamped to a maximum of 5. Replaces the previous full per-turn memory snapshot.
-- **resumable session**: A non-archived session directory under `state/sessions/<id>/`, whether currently bound or unbound. `/resume` searches these sessions.
-- **session**: A persisted conversation scoped to one `(chat, topic)` pair. Has its own `workdir/`, `events.jsonl`, `transcript.jsonl`, and `state.json`, all under `state/sessions/<id>/`.
-- **SessionManager**: Owns session lifecycle — creation, resolution, persistence, and binding management.
+- **resumable conversation**: A non-archived Conversation under `state/sessions/<id>/`, whether currently bound or unbound. `/resume` searches compatible conversations.
+- **session**: Legacy overloaded Goblin term. New domain language uses Conversation for persisted history, Surface for Telegram routing, and conversation runtime for the in-memory runner/queue. “Session” remains for pi’s `AgentSession`, compatibility symbols, and `state/sessions/` paths.
+- **SessionManager**: Legacy compatibility name for the filesystem-backed lifecycle module; new callers use its conversation-oriented interface rather than orchestrating bindings and persistence separately.
 - **snapshot**: Memory context surfaced to the agent. After `memory-engine`, this is split into a `frozen summary` (in the system prompt) and a per-turn `relevant memory` aside. The old `[goblin memory snapshot]` per-turn aside is removed.
 - **SOUL.md**: Required deployment-owned prompt file at `$GOBLIN_HOME/workspace/SOUL.md` that defines the main Goblin's conversational identity and voice. Created by onboarding; not hardcoded in source.
 - **stale binding**: A binding whose session directory no longer exists. DMs clear the binding; topics auto-recreate.
 - **status phases**: Three coarse states rendered in the MessageBuffer status line: Thinking, Working, Done. Not per-tool.
 - **steer**: Injecting a user message into a running turn via `AgentRunner.followUp()` → `AgentSession.followUp()`, without resetting the in-flight turn's callbacks or buffer. The default dispatch path for non-command text on a streaming runner. Distinct from queue (serialize-and-wait).
 - **subagent**: An agent spawned by goblin (or another subagent) for focused work. Recursive up to depth 3.
+- **Surface**: Complete Telegram interaction and delivery lane, represented as a discriminated DM, topic, topicless-supergroup, or guest value. Surface owns routing and surface-lived settings; it does not identify conversational history or CWD.
+- **SurfaceId**: Canonical reversible encoding of a Surface used for persistence keys, equality, queue keys, and logs.
 - **TurnCallbacks**: Interface (`onTextDelta`, `onToolStart`, `onToolEnd`, `onStatusUpdate`, `onAgentEnd`) that bridges the agent layer to the Telegram layer.
-- **unbound session**: A resumable session under `state/sessions/<id>/` that no current binding points to.
+- **unbound conversation**: A resumable Conversation under `state/sessions/<id>/` that no current binding points to.
 - **visibility**: Config for which tool names appear in status phases (`none | minimal | standard | verbose | debug`).
-- **workdir**: Per-session working directory at `state/sessions/<id>/workdir/`. The agent's cwd for tool execution.
+- **workdir**: Filesystem working directory used by an Execution Environment: personal conversations use `$GOBLIN_HOME/scratch/workdir`; project conversations use their canonical project root. Legacy per-conversation `state/sessions/<id>/workdir/` directories may remain during migration but are not the main agent CWD.

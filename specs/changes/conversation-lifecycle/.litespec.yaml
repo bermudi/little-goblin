@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-07-25T22:54:02Z
+dependsOn:
+  - telegram-surface-identity
+  - immutable-project-environments

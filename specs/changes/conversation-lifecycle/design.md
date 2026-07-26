@@ -1,0 +1,246 @@
+# conversation-lifecycle — Design
+
+## Architecture
+
+### Lifetimes become explicit
+
+The dependency changes provide complete `Surface` identity and immutable `ExecutionEnvironment`. This change stops using one `SessionState` as all three:
+
+```text
+Surface (Telegram lane)
+   │ 0..1
+   ▼
+Binding ─────────► Conversation (durable history + immutable environment)
+                         │ 0..1 while bound/active
+                         ▼
+                  ConversationRuntime
+                  (AgentRunner + prompt queue)
+```
+
+A Surface has at most one current Conversation. A Conversation has at most one active Surface. The runtime is disposable and contains Surface-derived tools, memory scope, output routing, model, and thinking preference; it is not persisted identity.
+
+Existing `state/sessions/<id>/` directories stay in place. New code uses `ConversationState` and `ConversationId`, with compatibility aliases at old module edges while callers migrate. Conversation records no longer treat creation-time `chatId`/`topicId` as routing authority.
+
+### A deep lifecycle module owns complete transitions
+
+`src/orchestration/conversation-lifecycle.ts` exposes the caller interface:
+
+```ts
+interface ConversationLifecycle {
+  inspect(surface: Surface): ConversationState | null;
+  resolveOrStart(surface: Surface): Promise<ConversationState>;
+  rotate(surface: Surface): Promise<ConversationState>;
+  resume(surface: Surface, target: ConversationId): Promise<ConversationState>;
+  archive(surface: Surface): Promise<void>;
+  listResumable(surface: Surface): ConversationState[];
+}
+```
+
+This seam belongs in orchestration because complete transitions span filesystem persistence and runtime quiescence. Internally it uses narrow adapters:
+
+- `ConversationStore`: create/load/list/archive/update-name under legacy session paths;
+- `BindingStore`: one atomic SurfaceId-to-ConversationId map from the Surface dependency;
+- `SurfaceSettings`: execution assignment plus model/thinking preferences;
+- `ConversationRuntimeHost`: invalidate/quiesce a runtime by ConversationId.
+
+`SessionManager` remains as a compatibility facade while call sites move; it delegates persistence behavior rather than remaining the public lifecycle interface. Commands and Telegram intake never edit bindings or coordinate runner side effects themselves.
+
+Transition ordering is deliberately runtime-first, binding-second:
+
+- **rotate:** create fresh compatible Conversation Q; invalidate/quiesce old P; atomically bind Surface to Q; P remains unbound.
+- **resume:** validate target/environment without effects; identify target's source Surface and destination's displaced Conversation; invalidate/quiesce both runtimes; atomically remove every target binding and bind target at destination; displaced history remains unbound.
+- **archive:** invalidate/quiesce current runtime; archive its directory; atomically clear binding. Surface settings/automation remain.
+
+If quiescence fails, the binding write does not occur. Runtime identity is invalidated synchronously before asynchronous cleanup, so stale queued work cannot regain authority. A fresh Conversation created before a failed rotate may remain unbound/resumable; no history is deleted to fake rollback.
+
+### User content creates; inspection does not
+
+Telegram intake gets two explicit paths:
+
+```text
+authorized ordinary text/media -> resolveOrStart(surface)
+commands/status/scheduler       -> inspect(surface)
+```
+
+All supported ordinary Surfaces, including DMs and topic variants, lazily create. `/new` and dependency-owned `/project` are explicit creation commands. `/start`, `/debug`, `/name`, `/archive`, `/resume` listing, `/schedule`, scheduler ticks, internal jobs, and future proactive delivery never create through lookup.
+
+This removes the current implicit policy inside `SessionManager.resolve()` where topics/supergroups/guests create but DMs return `null`. Guest text remains an authorized ordinary interaction and therefore creates through the same lifecycle operation.
+
+### Environment-compatible resume
+
+Every target already carries the immutable environment introduced by `immutable-project-environments`. `listResumable(surface)` filters before presenting names. `resume` rechecks equality immediately before any runtime disposal or binding write; stale Surface settings therefore cannot slip through a list-then-resume race.
+
+A named personal Conversation can move among personal Surfaces. A Project-A Conversation can move among Surfaces assigned to the same canonical Project-A root. A project/personal or Project-A/Project-B move fails without side effects.
+
+When a bound target moves, its prior Surface becomes unbound. The next authorized ordinary message there lazily starts fresh history. The destination's displaced Conversation remains unbound and can be resumed later.
+
+### State ownership is split by lifetime
+
+The canonical owners are:
+
+| State | Owner |
+|---|---|
+| Surface kind and Telegram address | Surface |
+| project assignment | Surface |
+| model and thinking preference | Surface |
+| schedules and heartbeat configuration | Surface |
+| surface heartbeat prompt file | Surface |
+| current Conversation pointer | Binding |
+| ID, name, creation time | Conversation |
+| transcript, events, metrics, pi history | Conversation |
+| immutable execution environment | Conversation |
+| AgentRunner and prompt queue | ConversationRuntime |
+
+`SurfaceSettings` extends the dependency's SurfaceId-keyed record with `modelName` and `thinkingLevel`. `/model` and `/think` persist there; a live runtime may apply a supported change immediately, while every replacement runtime reads the Surface preference. Old Conversation fields are migration-only and no longer consulted.
+
+### Surface-owned schedules resolve late
+
+`ScheduledTurn` replaces durable `sessionId` ownership with `surfaceId`. Existing schedule source/authority semantics remain, but store queries, agent caps, heartbeat uniqueness, and command management are per Surface.
+
+The scheduler does not claim an occurrence until `lifecycle.inspect(surface)` returns a bound compatible Conversation. If unbound, it leaves `nextRunAt` and state unchanged and emits one structured debug/metric signal per `(scheduleId, nextRunAt)` rather than logging every minute. The next tick after a binding appears can claim and dispatch the overdue occurrence once.
+
+After claiming, dispatch captures the current runtime. If `/new`, `/resume`, or `/archive` invalidates it before execution, the stale-runtime guard drops that captured work. Existing one-shot completion and recurrence advancement happen only at claim, as today.
+
+The main-agent `schedule_turn` tool is closed over the runtime's bound Surface, not ConversationId. It verifies the runtime is still current on that Surface before mutation. Human authority, agent/user provenance, redaction, and last-writer ownership stay unchanged.
+
+### Heartbeat configuration follows Surface
+
+The heartbeat schedule is Surface-owned. Its user-editable prompt moves from the Conversation directory to:
+
+```text
+$GOBLIN_HOME/state/surfaces/<canonical SurfaceId>/HEARTBEAT.md
+```
+
+`surfaceHeartbeatPath(home, surfaceId)` parses/canonicalizes before joining, preventing traversal. Colons and minus signs in canonical v1 SurfaceIds are filesystem-safe on the supported Linux deployment. Read semantics remain ENOENT/whitespace fallback and fail-loud otherwise.
+
+At dispatch, prompt order is:
+
+1. Surface-specific `HEARTBEAT.md`;
+2. global workspace `HEARTBEAT.md`;
+3. system constant.
+
+Rotation, movement, archive, and temporary unbinding do not mutate the heartbeat. An unbound due heartbeat remains pending like any other schedule.
+
+### Runtime context always comes from the current binding
+
+`TurnDispatcher` continues to key runners and queues by ConversationId. `getOrCreateRunner` accepts the current `(conversation, surface)` pair and verifies it against a narrow binding/settings read seam before returning an existing runtime. A runtime created on X is never returned after the Conversation moves to Y.
+
+Construction combines:
+
+- Conversation: pi history and immutable Execution Environment;
+- destination Surface: active memory scope, Telegram tools/sink, model/thinking preferences, schedule tool ownership, delivery parameters.
+
+`disposeRuntime` removes runner and queue map entries synchronously, then awaits `AgentRunner.dispose()` and existing `cancelBySession(conversationId)` compatibility cleanup. Work-run lifetime is intentionally unchanged here; a later patch will separate attached and detached work.
+
+### Migration is idempotent and preserves history
+
+`src/sessions/conversation-migration.ts` runs after both dependency migrations and before scheduler/polling:
+
+1. Convert `SessionState` to `ConversationState`, retaining IDs, names, timestamps, immutable environments, and paths; remove routing/model/thinking fields from canonical writes.
+2. For each Surface binding, copy the currently bound legacy Conversation's model/thinking fields into that Surface setting when the Surface has no canonical preference. Unbound Conversation preferences do not travel.
+3. Repair multi-bound Conversations. Retain the lexicographically smallest canonical SurfaceId, clear all other bindings in one atomic replacement, and log ConversationId plus retained/cleared SurfaceIds. Cleared Surfaces lazily create later.
+4. Convert schedules from `(sessionId, surface)` to Surface ownership, preserving every non-owner field. Duplicate legacy heartbeats on one Surface fail loudly rather than guessing.
+5. Move the active Surface heartbeat prompt from the legacy owner Conversation path to the Surface path. If both source and destination exist with different non-whitespace content, fail with both paths; identical content is idempotent.
+
+All outputs are computed/validated before writes. Single files use atomic replacement. Cross-file restart safety comes from canonical/mixed-generation readers and idempotent rules; no false cross-file transaction claim is made. Conversation directories are never deleted by migration.
+
+## Decisions
+
+### Decision: Lifecycle seam belongs in orchestration
+
+**Chosen:** A deep `ConversationLifecycle` coordinates stores and runtime host; commands/intake call it.
+
+**Why:** Putting runtime disposal into a filesystem store reverses dependencies, while exposing binding/store/runtime steps to every caller recreates the current bug. Orchestration is the honest seam for a complete transition.
+
+### Decision: Conversation moves; it is never shared
+
+**Chosen:** `/resume` atomically clears the old binding and moves one compatible Conversation.
+
+**Why:** One runner contains Surface-specific tools, memory, and delivery context. Simultaneous bindings either require separate runtimes with shared pi history (unsafe) or one stale runtime (current bug). Movement preserves pi-style `-r` value without inventing multi-surface collaboration.
+
+### Decision: Destination Surface settings win on resume
+
+**Chosen:** model/thinking/memory/tools/delivery come from destination; CWD/history remain Conversation-owned.
+
+**Why:** Model and presence are lane preferences, while changing filesystem authority would corrupt Conversation meaning. Layered Conversation overrides are deferred until a real use case exists.
+
+### Decision: Automation is Surface-owned
+
+**Chosen:** schedules and heartbeat survive Conversation changes and resolve current history at dispatch.
+
+**Why:** `/new` means fresh context, not “forget my reminders.” Capturing ConversationId conflates a delivery commitment with model history. Surface remains stable while histories rotate.
+
+### Decision: Unbound due work remains pending
+
+**Chosen:** do not auto-create, claim, advance, or disable.
+
+**Why:** Only authorized user interaction should create history. Disabling loses an explicit commitment; auto-creating gives timers hidden lifecycle authority. Pending preserves intent until the user returns. Topic reachability/deletion will later add suspension policy.
+
+### Decision: Deterministic legacy multi-binding repair
+
+**Chosen:** lexicographically smallest SurfaceId wins; every repair is logged.
+
+**Why:** Legacy state has no reliable last-active Surface timestamp. Cloning pi history or guessing recency is worse. Deterministic repair preserves the Conversation and makes displaced Surfaces safely lazy-create.
+
+### Decision: Keep filesystem paths and compatibility ownership names
+
+**Chosen:** no `state/sessions/` rename and no work-run schema migration here.
+
+**Why:** Path churn adds backup/migration risk without domain leverage. External/subagent work changes have their own active proposals and need explicit attached/detached semantics rather than incidental renaming.
+
+## File Changes
+
+### New files
+
+- **`src/sessions/conversation.ts`** — `ConversationId`, `ConversationState`, ID generation, and canonical state validation while reusing legacy paths.
+- **`src/sessions/conversation-store.ts`** — create/load/list/name/archive persistence without binding behavior.
+- **`src/orchestration/conversation-lifecycle.ts`** — deep inspect/resolve-or-start/rotate/resume/archive interface and runtime-first transition ordering.
+- **`src/orchestration/conversation-runtime-host.ts`** — narrow adapter implemented by `TurnDispatcher` for synchronous invalidation plus bounded cleanup.
+- **`src/sessions/conversation-migration.ts`** — split ownership, repair multi-bindings, migrate schedules/prompts, and support mixed-generation restart.
+- **`src/sessions/conversation.test.ts`, `src/sessions/conversation-store.test.ts`, `src/orchestration/conversation-lifecycle.test.ts`, `src/sessions/conversation-migration.test.ts`** — lifecycle invariants, environment filtering, transition failures, migration conflicts, and idempotence.
+
+### Modified session/surface files
+
+- **`src/sessions/types.ts`** — introduce canonical ConversationState and retain SessionState alias/legacy parser only where required.
+- **`src/sessions/state.ts`** — canonical Conversation state reads/writes and migration-only legacy decoding.
+- **`src/sessions/bindings.ts`** — add atomic move/rotate helpers that enforce at-most-one binding per Conversation.
+- **`src/sessions/manager.ts`** — shrink to compatibility facade over ConversationStore/bindings/settings; remove public partial rebinding choreography.
+- **`src/sessions/topic-settings.ts`** — add Surface-owned model/thinking fields and remove reads from Conversation state.
+- **`src/sessions/paths.ts`** — add validated `surfaceHeartbeatPath`; retain legacy `heartbeatMdPathForSession` for migration reads only.
+- **`src/sessions/mod.ts`** — export Conversation terminology and lifecycle read types; mark compatibility aliases.
+- **Session/settings/bindings/path tests** — canonical state, preference survival, path traversal, and one-binding assertions.
+
+### Modified orchestration and Telegram files
+
+- **`src/orchestration/dispatcher.ts`** — implement runtime-host interface; verify current binding/context on get/create; invalidate maps before cleanup; keep queues keyed by ConversationId.
+- **`src/tg/intake.ts`** — use `resolveOrStart` only for authorized ordinary content; commands/media/status use explicit lifecycle paths; stop orchestrating binding/runtime side effects.
+- **`src/bot.ts` / composition wiring (`src/index.ts` as applicable)** — construct ConversationStore/Lifecycle and inject narrow readers/runtime host.
+- **`src/tg/intake.test.ts`, dispatcher tests** — DM lazy creation, moved runtime context, stale queued effects, and unrelated-conversation concurrency.
+
+### Modified command files
+
+- **`src/commands/registry.ts`** — inject ConversationLifecycle; make `/new`, `/resume`, `/archive` call complete operations; persist `/model` and `/think` by Surface; update descriptions.
+- **`src/commands/new.ts`, `src/commands/resume.ts`, `src/commands/archive.ts`, `src/commands/name.ts`, `src/commands/debug.ts`, `src/commands/start.ts`, `src/commands/model.ts`, `src/commands/think.ts`** — conversation terminology, compatible listing/resume, non-creating inspection, and Surface preferences.
+- **`src/commands/schedule.ts`** — manage schedules by Surface even without a bound Conversation.
+- **Command tests and integration tests** — terminology, no accidental creation, state survival, move semantics, and compatibility errors.
+
+### Modified scheduler files
+
+- **`src/scheduler/types.ts`** — remove durable Conversation/session owner; retain SurfaceId and optional creation provenance only if useful for diagnostics.
+- **`src/scheduler/store.ts`** — query/cap/mutate by SurfaceId; migrate legacy ownership; preserve source authority.
+- **`src/scheduler/loop.ts`** — inspect current binding before claim; leave unbound occurrence pending; dispatch current Conversation; de-duplicate pending logs.
+- **`src/scheduler/tool.ts`** — bind tool authority to current Surface and verify runtime binding before mutation.
+- **Scheduler/store/tool tests** — rotation survival, unbound pending, overdue later dispatch, per-Surface caps, and stale runtime rejection.
+
+### Modified heartbeat files
+
+- **`src/scheduler/loop.ts`** — resolve Surface heartbeat file before global/default prompt.
+- **`src/workspace/paths.ts` and `src/sessions/paths.ts`** — keep global helper and add Surface-state helper in the sanctioned path module.
+- **Heartbeat command/loop tests** — prompt migration, new/resume/archive survival, fallback, and fail-loud reads.
+
+### Files intentionally unchanged
+
+- **Conversation directory layout and transcript/event/metrics formats** — naming changes do not justify data movement.
+- **Project assignment/environment mechanics** — owned by the dependency.
+- **External-agent/subagent ownership schemas** — `cancelBySession` compatibility remains until attached/detached work is designed.
+- **Memory scope persistence** — still derives from current Surface and does not merge merely because Conversations share an environment.

@@ -1,4 +1,4 @@
-import type { BindingsFile, LegacyBindingsFile } from "./types.ts";
+import type { BindingsFile, LegacyBindingsFile, SurfaceId } from "./types.ts";
 import { configPath } from "./paths.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 
@@ -56,6 +56,51 @@ export function loadBindings(home: string): BindingsFile {
  */
 export function saveBindings(home: string, bindings: BindingsFile): void {
   saveJsonFile(pathFor(home), bindings);
+}
+
+/**
+ * Validate that a bindings object respects the at-most-one-binding-per-
+ * Conversation rule. Throws with the conflicting SurfaceIds when violated.
+ */
+export function validateBindings(bindings: BindingsFile): void {
+  const seen = new Map<string, SurfaceId>();
+  for (const [surfaceId, conversationId] of Object.entries(bindings.surfaces)) {
+    const existing = seen.get(conversationId);
+    if (existing !== undefined) {
+      throw new Error(
+        `conversation ${conversationId} is already bound to ${existing}; cannot bind to ${surfaceId}`,
+      );
+    }
+    seen.set(conversationId, surfaceId as SurfaceId);
+  }
+}
+
+/**
+ * Persistent SurfaceId-to-ConversationId map.
+ *
+ * The file is the single source of truth for bindings. `save` validates the
+ * at-most-one-binding-per-Conversation rule before writing.
+ */
+export interface BindingStore {
+  load(): BindingsFile;
+  save(bindings: BindingsFile): void;
+}
+
+export class FileBindingStore implements BindingStore {
+  private readonly home: string;
+
+  constructor(home: string) {
+    this.home = home;
+  }
+
+  load(): BindingsFile {
+    return loadBindings(this.home);
+  }
+
+  save(bindings: BindingsFile): void {
+    validateBindings(bindings);
+    saveBindings(this.home, bindings);
+  }
 }
 
 /**

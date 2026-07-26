@@ -304,16 +304,19 @@ export class TurnDispatcher {
    * spawned by this session so orphaned work does not outlive the runner.
    */
   async disposeRunner(sessionId: string): Promise<void> {
-    // Dispose the runner and sever the prompt-queue chain first. This prevents
-    // any concurrent scheduled turn from entering a runner that is about to be
-    // disposed while the subagent cascade runs.
-    //
-    // Track disposal failure with a boolean separate from disposeErr so that
-    // falsy throws (e.g. `throw undefined` or `throw null`) are still
-    // rethrown — `if (disposeErr)` alone would swallow them.
+    // Remove the runner and sever the prompt-queue chain synchronously, before
+    // any asynchronous cleanup. This is the stale-runner guard: any queued
+    // work that captured `runner` will see `isCurrent()` become false and
+    // abort before producing side effects.
+    const prior = this.runners.get(sessionId);
+    this.runners.delete(sessionId);
+    this.promptQueues.delete(sessionId);
+    this.promptQueueMeta.delete(sessionId);
+
+    // Await runner disposal and subagent/external cleanup, but track failure so
+    // falsy throws (e.g. `throw undefined` or `throw null`) are still rethrown.
     let disposeErr: unknown;
     let disposeFailed = false;
-    const prior = this.runners.get(sessionId);
     if (prior) {
       try {
         await prior.dispose();
@@ -324,13 +327,8 @@ export class TurnDispatcher {
           sessionId,
           err: err instanceof Error ? err.message : String(err),
         });
-      } finally {
-        this.runners.delete(sessionId);
       }
-    } else {
-      this.runners.delete(sessionId);
     }
-    this.promptQueues.delete(sessionId);
 
     // Cancel external agents owned by this session, then cancel subagents
     // spawned by this session, but don't block runner disposal indefinitely if

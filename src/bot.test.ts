@@ -14,7 +14,7 @@ import { replyNoActiveSession, buildBot } from "./bot.ts";
 import { dmSurface, topicSurface } from "./surface.ts";
 import { MemoryStore } from "./memory/store.ts";
 import { metricsPath } from "./sessions/paths.ts";
-import { workdirPath, soulMdPath } from "./workspace/paths.ts";
+import { attachmentsPath, workdirPath, soulMdPath } from "./workspace/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
 import { TEXT_SPLIT_THRESHOLD, TEXT_SPLIT_WINDOW_MS } from "./tg/mod.ts";
 
@@ -583,19 +583,22 @@ describe("buildBot integration", () => {
     expect(existsSync(join(built.cfg.goblinHome, "notes.txt"))).toBe(true);
     expect(built.api.sent.at(-1)).toBe("`[ok]` Saved notes\\.txt\\.");
     const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
-    expect(prompt).toBe("[From: Daniel (@bermudi)]\nplease inspect\n\n[File `notes.txt` saved to project directory.]");
+    expect(prompt).toBe("[From: Daniel (@bermudi)]\nplease inspect\n\n[File `notes.txt` saved.]");
   });
 
-  it("document messages without projectDir forward captions", async () => {
+  it("document messages without projectDir save to the personal attachments directory", async () => {
     const built = await makeBot();
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } })) as unknown as typeof fetch;
     await built.bot.handleUpdate(textUpdate("/new"));
 
     await built.bot.handleUpdate(documentUpdate("notes.txt", "caption only") as never);
     await waitFor(() => runnerInstances.at(-1)!.prompt.mock.calls.length === 1);
 
-    expect(built.api.api.getFile).not.toHaveBeenCalled();
+    expect(built.api.api.getFile).toHaveBeenCalledWith("doc");
+    expect(existsSync(join(attachmentsPath(built.cfg.goblinHome), "notes.txt"))).toBe(true);
+    expect(built.api.sent.at(-1)).toBe("`[ok]` Saved attachments/notes\\.txt\\.");
     const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
-    expect(prompt).toBe("[From: Daniel (@bermudi)]\ncaption only");
+    expect(prompt).toBe("[From: Daniel (@bermudi)]\ncaption only\n\n[File `attachments/notes.txt` saved.]");
   });
 
   it("document messages reject unsafe filenames", async () => {
@@ -642,7 +645,7 @@ describe("buildBot integration", () => {
     expect(existsSync(join(built.cfg.goblinHome, safeName))).toBe(true);
     const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
     expect(prompt).toContain("[Voice message transcript]\nthe transcript text");
-    expect(prompt).toContain(`[Voice file \`${safeName}\` saved to project directory.]`);
+    expect(prompt).toContain(`[Voice file \`${safeName}\` saved.]`);
   });
 
   it("audio messages save files and prompt the runner", async () => {
@@ -658,7 +661,7 @@ describe("buildBot integration", () => {
     expect(existsSync(join(built.cfg.goblinHome, "song.mp3"))).toBe(true);
     expect(built.api.sent.at(-1)).toBe("`[ok]` Saved song\\.mp3\\.");
     const prompt = runnerInstances.at(-1)!.prompt.mock.calls[0]![0] as string;
-    expect(prompt).toBe("[From: Daniel (@bermudi)]\nlisten\n\n[Audio file `song.mp3` saved to project directory.]");
+    expect(prompt).toBe("[From: Daniel (@bermudi)]\nlisten\n\n[Audio file `song.mp3` saved.]");
   });
 
   it("/resume of the already-bound session disposes the old runner before replacing it", async () => {

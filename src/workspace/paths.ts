@@ -20,6 +20,11 @@ export function workdirPath(home: string): string {
   return join(home, "scratch", "workdir");
 }
 
+/** Path to the personal attachment upload directory. */
+export function attachmentsPath(home: string): string {
+  return join(home, "workspace", "attachments");
+}
+
 /** Path to the AGENTS.md file in the goblin workspace. */
 export function agentsMdPath(home: string): string {
   return join(home, "workspace", "AGENTS.md");

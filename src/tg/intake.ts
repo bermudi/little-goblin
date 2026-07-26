@@ -1,6 +1,4 @@
-import { writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { basename, join } from "node:path";
 import type { Bot } from "grammy";
 import type { InlineQueryResult } from "@grammyjs/types";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
@@ -17,7 +15,7 @@ import { MetricsStore } from "../metrics/mod.ts";
 import { SessionManager, type SessionState } from "../sessions/mod.ts";
 import { guestSurface, type Surface } from "../surface.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
-import { isProjectEnvironment } from "../sessions/environment.ts";
+import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from "./attachments.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { TurnDispatcher, type PromptContent, type TurnSink } from "../orchestration/dispatcher.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
@@ -555,61 +553,52 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     turn.schedule(
       async (runner, isCurrent) => {
-        if (isProjectEnvironment(turn.environment)) {
-          const raw = await downloadFileBytes(api, doc.fileId, cfg.botToken);
-          if (!isCurrent()) return;
-          if (!raw) {
-            const replyText = "Sorry, I couldn't download that file.";
-            await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, replyText);
-            return;
-          }
+        const raw = await downloadFileBytes(api, doc.fileId, cfg.botToken);
+        if (!isCurrent()) return;
+        if (!raw) {
+          const replyText = "Sorry, I couldn't download that file.";
+          await sendSystemReply(message, replyText, "error");
+          recordAssistantReply(turn.session.id, replyText);
+          return;
+        }
 
-          let safeName = basename(doc.fileName || "attachment").trim() || "attachment";
-          if (safeName === "." || safeName === "..") {
+        const desiredName = doc.fileName || "attachment";
+        let saved: SavedAttachment;
+        try {
+          if (!isCurrent()) return;
+          saved = saveAttachment(turn.environment, cfg.goblinHome, desiredName, raw);
+        } catch (err) {
+          if (err instanceof UnsafeAttachmentNameError) {
+            const replyText = "Rejected: unsafe filename.";
             if (isCurrent()) {
-              const replyText = "Rejected: unsafe filename.";
               await sendSystemReply(message, replyText, "warn");
               recordAssistantReply(turn.session.id, replyText);
             }
             return;
           }
-          const destPath = join(turn.environment.projectRoot, safeName);
-          if (!isCurrent()) return;
-          try {
-            await writeFile(destPath, raw);
-          } catch (err) {
-            log.error("failed to write attachment to project directory", { error: String(err), destPath });
-            if (isCurrent()) {
-              const replyText = `Failed to save ${safeName}.`;
-              await sendSystemReply(message, replyText, "error");
-              recordAssistantReply(turn.session.id, replyText);
-            }
-            return;
+          log.error("failed to save document attachment", {
+            error: err instanceof Error ? err.message : String(err),
+            fileName: desiredName,
+            sessionId: turn.session.id,
+          });
+          if (isCurrent()) {
+            const replyText = `Failed to save ${desiredName}.`;
+            await sendSystemReply(message, replyText, "error");
+            recordAssistantReply(turn.session.id, replyText);
           }
-
-          if (!isCurrent()) return;
-          await sendSystemReply(message, `Saved ${safeName}.`, "ok");
-
-          const escapedName = safeName.replace(/`/g, "'");
-          const promptText = doc.caption
-            ? `${doc.caption}\n\n[File \`${escapedName}\` saved to project directory.]`
-            : `User uploaded \`${escapedName}\` to the project directory.`;
-
-          if (!isCurrent()) return;
-          await runPrompt(message, turn.surface, runner, turn.session, promptText);
           return;
         }
 
         if (!isCurrent()) return;
-        log.debug("dropping document: no project environment", { mimeType: doc.mimeType, fileName: doc.fileName });
-        if (doc.caption) {
-          await runPrompt(message, turn.surface, runner, turn.session, doc.caption);
-        } else {
-          const replyText = "No project directory is set. Use /project <path> to enable file saving.";
-          await sendSystemReply(message, replyText, "warn");
-          recordAssistantReply(turn.session.id, replyText);
-        }
+        await sendSystemReply(message, `Saved ${saved.relativePath}.`, "ok");
+
+        const escapedPath = saved.relativePath.replace(/`/g, "'");
+        const promptText = doc.caption
+          ? `${doc.caption}\n\n[File \`${escapedPath}\` saved.]`
+          : `User uploaded \`${escapedPath}\`.`;
+
+        if (!isCurrent()) return;
+        await runPrompt(message, turn.surface, runner, turn.session, promptText);
       },
       "runner document prompt failed",
     );
@@ -678,41 +667,34 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           return;
         }
 
-        // Transcription succeeded with text. Build the transcript prompt.
-        let promptText = `[Voice message transcript]\n${asrResult.text}`;
+        // Transcription succeeded with text. Save the original voice file and
+        // append a saved-file note alongside the transcript.
+        const ext = mimeType === "audio/ogg" ? "oga" : "bin";
+        const desiredName = `voice-${Date.now()}.${ext}`;
 
-        // Preserve the original voice-file saving behavior for project-bound
-        // sessions and append a saved-file note alongside the transcript.
-        // Saved-name mime→ext mapping is deliberately the narrow subset the spec
-        // constrains (`audio/ogg → oga, else bin`); the ASR-side table in
-        // groq.ts is liberal because Groq only uses it as a multipart hint.
-        if (isProjectEnvironment(turn.environment)) {
-          const ext = mimeType === "audio/ogg" ? "oga" : "bin";
-          const safeName = `voice-${Date.now()}.${ext}`;
-          const destPath = join(turn.environment.projectRoot, safeName);
+        let saved: SavedAttachment;
+        try {
           if (!isCurrent()) return;
-          try {
-            await writeFile(destPath, raw);
-          } catch (err) {
-            // Save failure discards an otherwise-successful transcript: the user
-            // just got a "Failed to save" reply, and prompting without the saved
-            // file (which the transcript note promises) would be misleading.
-            // Spec-silent; this preserves pre-ASR voice behavior.
-            log.error("failed to write voice to project directory", { error: String(err), destPath });
-            if (isCurrent()) {
-              const replyText = `Failed to save ${safeName}.`;
-              await sendSystemReply(message, replyText, "error");
-              recordAssistantReply(turn.session.id, replyText);
-            }
-            return;
+          saved = saveAttachment(turn.environment, cfg.goblinHome, desiredName, raw);
+        } catch (err) {
+          log.error("failed to save voice attachment", {
+            error: err instanceof Error ? err.message : String(err),
+            fileName: desiredName,
+            sessionId: turn.session.id,
+          });
+          if (isCurrent()) {
+            const replyText = `Failed to save ${desiredName}.`;
+            await sendSystemReply(message, replyText, "error");
+            recordAssistantReply(turn.session.id, replyText);
           }
-
-          if (!isCurrent()) return;
-          await sendSystemReply(message, `Saved ${safeName}.`, "ok");
-
-          const escapedName = safeName.replace(/`/g, "'");
-          promptText = `[Voice message transcript]\n${asrResult.text}\n\n[Voice file \`${escapedName}\` saved to project directory.]`;
+          return;
         }
+
+        if (!isCurrent()) return;
+        await sendSystemReply(message, `Saved ${saved.relativePath}.`, "ok");
+
+        const escapedPath = saved.relativePath.replace(/`/g, "'");
+        const promptText = `[Voice message transcript]\n${asrResult.text}\n\n[Voice file \`${escapedPath}\` saved.]`;
 
         if (!isCurrent()) return;
         await runPrompt(message, turn.surface, runner, turn.session, promptText);
@@ -727,66 +709,57 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     turn.schedule(
       async (runner, isCurrent) => {
-        if (isProjectEnvironment(turn.environment)) {
-          const raw = await downloadFileBytes(api, audio.fileId, cfg.botToken);
-          if (!isCurrent()) return;
-          if (!raw) {
-            const replyText = "Sorry, I couldn't download that audio file.";
-            await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, replyText);
-            return;
-          }
+        const raw = await downloadFileBytes(api, audio.fileId, cfg.botToken);
+        if (!isCurrent()) return;
+        if (!raw) {
+          const replyText = "Sorry, I couldn't download that audio file.";
+          await sendSystemReply(message, replyText, "error");
+          recordAssistantReply(turn.session.id, replyText);
+          return;
+        }
 
-          let safeName = audio.fileName?.trim();
-          if (!safeName) {
-            const title = [audio.performer, audio.title].filter(Boolean).join(" - ");
-            safeName = title ? `${title}.mp3` : `audio-${Date.now()}.mp3`;
-          }
-          safeName = basename(safeName);
-          if (safeName === "." || safeName === "..") {
+        let desiredName = audio.fileName?.trim();
+        if (!desiredName) {
+          const title = [audio.performer, audio.title].filter(Boolean).join(" - ");
+          desiredName = title ? `${title}.mp3` : `audio-${Date.now()}.mp3`;
+        }
+
+        let saved: SavedAttachment;
+        try {
+          if (!isCurrent()) return;
+          saved = saveAttachment(turn.environment, cfg.goblinHome, desiredName, raw);
+        } catch (err) {
+          if (err instanceof UnsafeAttachmentNameError) {
+            const replyText = "Rejected: unsafe filename.";
             if (isCurrent()) {
-              const replyText = "Rejected: unsafe filename.";
               await sendSystemReply(message, replyText, "warn");
               recordAssistantReply(turn.session.id, replyText);
             }
             return;
           }
-          const destPath = join(turn.environment.projectRoot, safeName);
-          if (!isCurrent()) return;
-          try {
-            await writeFile(destPath, raw);
-          } catch (err) {
-            log.error("failed to write audio to project directory", { error: String(err), destPath });
-            if (isCurrent()) {
-              const replyText = `Failed to save ${safeName}.`;
-              await sendSystemReply(message, replyText, "error");
-              recordAssistantReply(turn.session.id, replyText);
-            }
-            return;
+          log.error("failed to save audio attachment", {
+            error: err instanceof Error ? err.message : String(err),
+            fileName: desiredName,
+            sessionId: turn.session.id,
+          });
+          if (isCurrent()) {
+            const replyText = `Failed to save ${desiredName}.`;
+            await sendSystemReply(message, replyText, "error");
+            recordAssistantReply(turn.session.id, replyText);
           }
-
-          if (!isCurrent()) return;
-          await sendSystemReply(message, `Saved ${safeName}.`, "ok");
-
-          const escapedName = safeName.replace(/`/g, "'");
-          const promptText = audio.caption
-            ? `${audio.caption}\n\n[Audio file \`${escapedName}\` saved to project directory.]`
-            : `User uploaded audio \`${escapedName}\` to the project directory.`;
-
-          if (!isCurrent()) return;
-          await runPrompt(message, turn.surface, runner, turn.session, promptText);
           return;
         }
 
         if (!isCurrent()) return;
-        log.debug("dropping audio: no project environment");
-        if (audio.caption) {
-          await runPrompt(message, turn.surface, runner, turn.session, audio.caption);
-        } else {
-          const replyText = "No project directory is set. Use /project <path> to enable file saving.";
-          await sendSystemReply(message, replyText, "warn");
-          recordAssistantReply(turn.session.id, replyText);
-        }
+        await sendSystemReply(message, `Saved ${saved.relativePath}.`, "ok");
+
+        const escapedPath = saved.relativePath.replace(/`/g, "'");
+        const promptText = audio.caption
+          ? `${audio.caption}\n\n[Audio file \`${escapedPath}\` saved.]`
+          : `User uploaded audio \`${escapedPath}\`.`;
+
+        if (!isCurrent()) return;
+        await runPrompt(message, turn.surface, runner, turn.session, promptText);
       },
       "runner audio prompt failed",
     );

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { attachmentsPath } from "../workspace/paths.ts";
 import type { Bot } from "grammy";
 import type { Config } from "../config.ts";
 import type { AgentRunner } from "../agent/mod.ts";
@@ -379,8 +380,9 @@ describe("Telegram intake", () => {
     expect(staleRunner.prompt).not.toHaveBeenCalled();
   });
 
-  it("handles document fallback without a project directory", async () => {
-    const { intake, manager, cfg } = makeHarness();
+  it("saves documents to the personal attachments directory", async () => {
+    const { intake, cfg } = makeHarness();
+    installVoiceFetch({ audio: new Uint8Array([1, 2, 3]) });
     const replies: string[] = [];
     const message = makeMessage(replies);
 
@@ -388,23 +390,20 @@ describe("Telegram intake", () => {
     await intake.handleDocument(message, fakeApi(), { fileId: "doc", fileName: "note.txt", caption: "read this" });
     await waitFor(() => runners[0]!.prompt.mock.calls.length === 1);
 
-    expect(runners[0]!.prompt.mock.calls[0]![0]).toBe("[prepared] read this");
+    const firstPrompt = runners[0]!.prompt.mock.calls[0]![0] as string;
+    expect(firstPrompt).toContain("read this");
+    expect(firstPrompt).toContain("[File `attachments/note.txt` saved.]");
+    expect(replies.some((r) => r.includes("Saved attachments/note") && !r.includes("2"))).toBe(true);
 
     await intake.handleDocument(message, fakeApi(), { fileId: "doc", fileName: "note.txt" });
-    await flushMicrotasks();
+    await waitFor(() => runners[0]!.prompt.mock.calls.length === 2);
 
-    const replyText = "No project directory is set. Use /project <path> to enable file saving.";
-    expect(replies.at(-1)).toBe("`[warn]` No project directory is set\\. Use /project <path\\> to enable file saving\\.");
-    expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
+    const secondPrompt = runners[0]!.prompt.mock.calls[1]![0] as string;
+    expect(secondPrompt).toContain("User uploaded `attachments/note-2.txt`.");
+    expect(replies.some((r) => r.includes("Saved attachments/note") && r.includes("2"))).toBe(true);
 
-    const sessionId = manager.list()[0]!.id;
-    const lines = readTranscriptLines(cfg.goblinHome, sessionId);
-    const lastEntry = lines.at(-1);
-    expect(lastEntry).toEqual({
-      ts: expect.any(String),
-      role: "assistant",
-      content: `[system] ${replyText}`,
-    });
+    expect(existsSync(join(attachmentsPath(cfg.goblinHome), "note.txt"))).toBe(true);
+    expect(existsSync(join(attachmentsPath(cfg.goblinHome), "note-2.txt"))).toBe(true);
   });
 
   it("records a photo download failure reply in the transcript", async () => {
@@ -899,10 +898,10 @@ describe("Telegram intake", () => {
     expect(agentRunners.has("sess-err")).toBe(false);
   });
 
-  it("transcribes a voice message into a transcript prompt without a projectDir", async () => {
+  it("saves the voice file and prompts with transcript + saved-file note for a personal environment", async () => {
     const cfg = makeConfig();
     cfg.groqApiKey = "groq-key";
-    const { intake } = makeHarness(cfg);
+    const { intake, cfg: harnessCfg } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);
     installVoiceFetch({ groqText: "take out the trash" });
@@ -911,13 +910,12 @@ describe("Telegram intake", () => {
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
     await waitFor(() => runners[0]!.prompt.mock.calls.length === 1);
 
-    expect(runners[0]!.prompt.mock.calls[0]![0]).toBe(
-      "[prepared] [Voice message transcript]\ntake out the trash",
-    );
-    // No setup/failure reply on a clean transcription without projectDir.
-    expect(replies.some((r) => r.includes("Groq ASR is not configured"))).toBe(false);
-    expect(replies.some((r) => r.includes("couldn't transcribe"))).toBe(false);
-    expect(replies.some((r) => r.startsWith("Saved voice-"))).toBe(false);
+    const promptArg = runners[0]!.prompt.mock.calls[0]![0] as string;
+    expect(promptArg).toContain("[Voice message transcript]\ntake out the trash");
+    expect(promptArg).toMatch(/\[Voice file `attachments\/voice-\d+\.oga` saved\.\]/);
+    expect(replies.some((r) => r.includes("Saved attachments/voice") && r.includes("oga"))).toBe(true);
+
+    expect(readdirSync(attachmentsPath(harnessCfg.goblinHome)).some((n) => /voice-\d+\.oga$/.test(n))).toBe(true);
   });
 
   it("saves the voice file and prompts with transcript + saved-file note when projectDir is bound", async () => {
@@ -940,8 +938,8 @@ describe("Telegram intake", () => {
     const promptArg = runner.prompt.mock.calls[0]![0] as string;
     expect(promptArg).toContain("[Voice message transcript]\nhello project");
     // Saved-file note names the voice file with its .oga extension.
-    expect(promptArg).toMatch(/\[Voice file `voice-\d+\.oga` saved to project directory\.\]/);
-    expect(replies.some((r) => /^`\[ok\]` Saved voice\\-\d+\\.oga\\.$/.test(r))).toBe(true);
+    expect(promptArg).toMatch(/\[Voice file `voice-\d+\.oga` saved\.\]/);
+    expect(replies.some((r) => r.includes("Saved voice") && r.includes("oga") && !r.includes("attachments/"))).toBe(true);
   });
 
   it("replies with a setup message when groqApiKey is absent and does not prompt", async () => {

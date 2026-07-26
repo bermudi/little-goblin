@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ChatLocator } from "./types.ts";
 import {
   loadTopicSettings,
   saveTopicSettings,
@@ -12,6 +11,18 @@ import {
   type TopicSettingsFile,
 } from "./topic-settings.ts";
 import { topicSettingsPath } from "./paths.ts";
+import { dmSurface, supergroupSurface, topicSurface, surfaceId } from "../surface.ts";
+
+const dm = dmSurface(889192981);
+const sg = supergroupSurface(-1003958530002);
+const topic = topicSurface("supergroup", -1003958530002, 180);
+const dmKey = surfaceId(dm);
+const sgKey = surfaceId(sg);
+const topicKey = surfaceId(topic);
+
+function emptyTopicSettings(): TopicSettingsFile {
+  return { version: 1, surfaces: {} };
+}
 
 describe("topic-settings", () => {
   let tmpDir: string;
@@ -27,22 +38,22 @@ describe("topic-settings", () => {
   describe("loadTopicSettings", () => {
     it("returns default when file is missing", () => {
       const settings = loadTopicSettings(tmpDir);
-      expect(settings).toEqual({ topics: {}, dm: {}, supergroups: {} });
+      expect(settings).toEqual({ version: 1, surfaces: {} });
     });
 
     it("returns parsed settings when file exists", () => {
+      const surfaceKey = surfaceId(topicSurface("supergroup", 123, 7));
       const data: TopicSettingsFile = {
-        topics: { "123": { "7": { projectDir: "/home/daniel/project" } } },
-        dm: {},
-        supergroups: {},
+        version: 1,
+        surfaces: {
+          [surfaceKey]: { projectDir: "/home/daniel/project" },
+        },
       };
-      // writeFileSync needs the parent dir; saveTopicSettings would also work
-      // but the point here is to place a file for loadTopicSettings to read.
       mkdirSync(dirname(topicSettingsPath(tmpDir)), { recursive: true });
       writeFileSync(topicSettingsPath(tmpDir), JSON.stringify(data), "utf-8");
 
       const settings = loadTopicSettings(tmpDir);
-      expect(settings.topics?.["123"]?.["7"]?.projectDir).toBe("/home/daniel/project");
+      expect(settings.surfaces[surfaceKey]?.projectDir).toBe("/home/daniel/project");
     });
 
     it("returns default when file contains invalid JSON", () => {
@@ -50,16 +61,18 @@ describe("topic-settings", () => {
       writeFileSync(topicSettingsPath(tmpDir), "not json {{{", "utf-8");
 
       const settings = loadTopicSettings(tmpDir);
-      expect(settings).toEqual({ topics: {}, dm: {}, supergroups: {} });
+      expect(settings).toEqual({ version: 1, surfaces: {} });
     });
   });
 
   describe("saveTopicSettings", () => {
     it("writes and reads back a roundtrip", () => {
       const data: TopicSettingsFile = {
-        topics: { "999": { "42": { projectDir: "/foo" } } },
-        dm: { "123": { projectDir: "/bar" } },
-        supergroups: {},
+        version: 1,
+        surfaces: {
+          [topicKey]: { projectDir: "/foo" },
+          [dmKey]: { projectDir: "/bar" },
+        },
       };
       saveTopicSettings(tmpDir, data);
 
@@ -68,10 +81,8 @@ describe("topic-settings", () => {
     });
 
     it("uses atomic write (no temp file left behind)", () => {
-      const data: TopicSettingsFile = { topics: {}, dm: {}, supergroups: {} };
-      saveTopicSettings(tmpDir, data);
+      saveTopicSettings(tmpDir, emptyTopicSettings());
 
-      // Only topic-settings.json should exist in its directory, no .tmp files
       const dir = dirname(topicSettingsPath(tmpDir));
       const files = readdirSync(dir);
       expect(files).toEqual(["topic-settings.json"]);
@@ -79,181 +90,141 @@ describe("topic-settings", () => {
   });
 
   describe("getProjectDir", () => {
-    it("returns projectDir for a topic", () => {
-      const data: TopicSettingsFile = {
-        topics: { "123": { "7": { projectDir: "/home/daniel/project" } } },
-        dm: {},
-        supergroups: {},
-      };
-      saveTopicSettings(tmpDir, data);
+    it("returns projectDir for a topic surface", () => {
+      saveTopicSettings(tmpDir, {
+        version: 1,
+        surfaces: { [topicKey]: { projectDir: "/home/daniel/project" } },
+      });
 
-      const loc: ChatLocator = { chatId: 123, topicId: 7 };
-      expect(getProjectDir(tmpDir, loc)).toBe("/home/daniel/project");
+      expect(getProjectDir(tmpDir, topic)).toBe("/home/daniel/project");
     });
 
     it("returns undefined when topic has no projectDir", () => {
-      const data: TopicSettingsFile = { topics: { "123": { "7": {} } }, dm: {}, supergroups: {} };
-      saveTopicSettings(tmpDir, data);
-
-      const loc: ChatLocator = { chatId: 123, topicId: 7 };
-      expect(getProjectDir(tmpDir, loc)).toBeUndefined();
+      saveTopicSettings(tmpDir, { version: 1, surfaces: { [topicKey]: {} } });
+      expect(getProjectDir(tmpDir, topic)).toBeUndefined();
     });
 
     it("returns undefined for unknown topic", () => {
-      saveTopicSettings(tmpDir, { topics: {}, dm: {}, supergroups: {} });
-      const loc: ChatLocator = { chatId: 123, topicId: 999 };
-      expect(getProjectDir(tmpDir, loc)).toBeUndefined();
+      saveTopicSettings(tmpDir, emptyTopicSettings());
+      expect(getProjectDir(tmpDir, topicSurface("supergroup", 123, 999))).toBeUndefined();
     });
 
-    it("returns projectDir for a DM", () => {
-      const data: TopicSettingsFile = {
-        topics: {},
-        dm: { "889192981": { projectDir: "/home/daniel/dm-project" } },
-        supergroups: {},
-      };
-      saveTopicSettings(tmpDir, data);
-
-      const loc: ChatLocator = { chatId: 889192981 };
-      expect(getProjectDir(tmpDir, loc)).toBe("/home/daniel/dm-project");
+    it("returns projectDir for a DM surface", () => {
+      saveTopicSettings(tmpDir, {
+        version: 1,
+        surfaces: { [dmKey]: { projectDir: "/home/daniel/dm-project" } },
+      });
+      expect(getProjectDir(tmpDir, dm)).toBe("/home/daniel/dm-project");
     });
 
     it("returns undefined for DM without projectDir", () => {
-      saveTopicSettings(tmpDir, { topics: {}, dm: {}, supergroups: {} });
-      const loc: ChatLocator = { chatId: 889192981 };
-      expect(getProjectDir(tmpDir, loc)).toBeUndefined();
+      saveTopicSettings(tmpDir, emptyTopicSettings());
+      expect(getProjectDir(tmpDir, dm)).toBeUndefined();
     });
 
-    it("returns projectDir for a supergroup", () => {
-      const data: TopicSettingsFile = {
-        topics: {},
-        dm: {},
-        supergroups: { "-1003958530002": { projectDir: "/home/daniel/sg-project" } },
-      };
-      saveTopicSettings(tmpDir, data);
-
-      const loc: ChatLocator = { chatId: -1003958530002 };
-      expect(getProjectDir(tmpDir, loc)).toBe("/home/daniel/sg-project");
+    it("returns projectDir for a supergroup surface", () => {
+      saveTopicSettings(tmpDir, {
+        version: 1,
+        surfaces: { [sgKey]: { projectDir: "/home/daniel/sg-project" } },
+      });
+      expect(getProjectDir(tmpDir, sg)).toBe("/home/daniel/sg-project");
     });
 
-    it("returns undefined for supergroup without projectDir", () => {
-      saveTopicSettings(tmpDir, { topics: {}, dm: {}, supergroups: {} });
-      const loc: ChatLocator = { chatId: -1003958530002 };
-      expect(getProjectDir(tmpDir, loc)).toBeUndefined();
+    it("keeps similar numeric surfaces separate", () => {
+      const dmWithSgNumber = dmSurface(-1003958530002);
+      const dmWithSgNumberKey = surfaceId(dmWithSgNumber);
+      saveTopicSettings(tmpDir, {
+        version: 1,
+        surfaces: {
+          [sgKey]: { projectDir: "/sg" },
+          [dmWithSgNumberKey]: { projectDir: "/dm" },
+        },
+      });
+      expect(getProjectDir(tmpDir, sg)).toBe("/sg");
+      expect(getProjectDir(tmpDir, dmWithSgNumber)).toBe("/dm");
     });
   });
 
   describe("bindProjectDir", () => {
-    it("sets projectDir for a topic", () => {
-      const loc: ChatLocator = { chatId: -1003958530002, topicId: 180 };
-      bindProjectDir(tmpDir, loc, "/home/daniel/project");
+    it("sets projectDir for a surface", () => {
+      bindProjectDir(tmpDir, topic, "/home/daniel/project");
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.topics?.["-1003958530002"]?.["180"]?.projectDir).toBe("/home/daniel/project");
+      expect(loaded.surfaces[topicKey]?.projectDir).toBe("/home/daniel/project");
     });
 
-    it("clears projectDir for a topic", () => {
-      const loc: ChatLocator = { chatId: -1003958530002, topicId: 180 };
-      bindProjectDir(tmpDir, loc, "/home/daniel/project");
-      bindProjectDir(tmpDir, loc, undefined);
+    it("clears projectDir for a surface", () => {
+      bindProjectDir(tmpDir, topic, "/home/daniel/project");
+      bindProjectDir(tmpDir, topic, undefined);
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.topics?.["-1003958530002"]?.["180"]).toBeUndefined();
-      // Prunes empty chat entry
-      expect(loaded.topics?.["-1003958530002"]).toBeUndefined();
+      expect(loaded.surfaces[topicKey]).toBeUndefined();
     });
 
     it("sets projectDir for a DM", () => {
-      const loc: ChatLocator = { chatId: 889192981 };
-      bindProjectDir(tmpDir, loc, "/home/daniel/dm-project");
+      bindProjectDir(tmpDir, dm, "/home/daniel/dm-project");
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.dm?.["889192981"]?.projectDir).toBe("/home/daniel/dm-project");
-    });
-
-    it("clears projectDir for a DM", () => {
-      const loc: ChatLocator = { chatId: 889192981 };
-      bindProjectDir(tmpDir, loc, "/home/daniel/dm-project");
-      bindProjectDir(tmpDir, loc, undefined);
-
-      const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.dm?.["889192981"]).toBeUndefined();
+      expect(loaded.surfaces[dmKey]?.projectDir).toBe("/home/daniel/dm-project");
     });
 
     it("sets projectDir for a supergroup", () => {
-      const loc: ChatLocator = { chatId: -1003958530002 };
-      bindProjectDir(tmpDir, loc, "/home/daniel/sg-project");
+      bindProjectDir(tmpDir, sg, "/home/daniel/sg-project");
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.supergroups?.["-1003958530002"]?.projectDir).toBe("/home/daniel/sg-project");
+      expect(loaded.surfaces[sgKey]?.projectDir).toBe("/home/daniel/sg-project");
     });
 
-    it("clears projectDir for a supergroup", () => {
-      const loc: ChatLocator = { chatId: -1003958530002 };
-      bindProjectDir(tmpDir, loc, "/home/daniel/sg-project");
-      bindProjectDir(tmpDir, loc, undefined);
+    it("does not interfere with existing settings for other surfaces", () => {
+      const dm2 = dmSurface(500);
+      const dm2Key = surfaceId(dm2);
+      bindProjectDir(tmpDir, topic, "/topic-path");
+      bindProjectDir(tmpDir, dm2, "/dm-path");
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.supergroups?.["-1003958530002"]).toBeUndefined();
-    });
-
-    it("does not interfere with existing bindings for other surfaces", () => {
-      const topicLoc: ChatLocator = { chatId: -100, topicId: 1 };
-      const dmLoc: ChatLocator = { chatId: 500 };
-
-      bindProjectDir(tmpDir, topicLoc, "/topic-path");
-      bindProjectDir(tmpDir, dmLoc, "/dm-path");
-
-      const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.topics?.["-100"]?.["1"]?.projectDir).toBe("/topic-path");
-      expect(loaded.dm?.["500"]?.projectDir).toBe("/dm-path");
+      expect(loaded.surfaces[topicKey]?.projectDir).toBe("/topic-path");
+      expect(loaded.surfaces[dm2Key]?.projectDir).toBe("/dm-path");
     });
   });
 
   describe("pendingProjectNotice", () => {
     it("sets a pending notice when binding a project dir", () => {
-      const loc: ChatLocator = { chatId: 123, topicId: 7 };
-      bindProjectDir(tmpDir, loc, "/home/daniel/project");
+      bindProjectDir(tmpDir, topic, "/home/daniel/project");
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.topics?.["123"]?.["7"]?.pendingProjectNotice).toBe(
+      expect(loaded.surfaces[topicKey]?.pendingProjectNotice).toBe(
         "Project directory changed to `/home/daniel/project`.",
       );
     });
 
     it("does not set a notice when clearing project dir", () => {
-      const loc: ChatLocator = { chatId: 123 };
-      bindProjectDir(tmpDir, loc, "/home/daniel/project");
-      bindProjectDir(tmpDir, loc, undefined);
+      bindProjectDir(tmpDir, dm, "/home/daniel/project");
+      bindProjectDir(tmpDir, dm, undefined);
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.dm?.["123"]).toBeUndefined();
+      expect(loaded.surfaces[dmKey]).toBeUndefined();
     });
 
     it("consumeProjectNotice returns and clears the notice", () => {
-      const loc: ChatLocator = { chatId: 123, topicId: 7 };
-      bindProjectDir(tmpDir, loc, "/home/daniel/project");
+      bindProjectDir(tmpDir, topic, "/home/daniel/project");
 
-      const notice = consumeProjectNotice(tmpDir, loc);
+      const notice = consumeProjectNotice(tmpDir, topic);
       expect(notice).toBe("Project directory changed to `/home/daniel/project`.");
 
-      // Notice is consumed
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.topics?.["123"]?.["7"]?.pendingProjectNotice).toBeUndefined();
-      // projectDir persists
-      expect(loaded.topics?.["123"]?.["7"]?.projectDir).toBe("/home/daniel/project");
+      expect(loaded.surfaces[topicKey]?.pendingProjectNotice).toBeUndefined();
+      expect(loaded.surfaces[topicKey]?.projectDir).toBe("/home/daniel/project");
     });
 
     it("consumeProjectNotice returns undefined when no notice is pending", () => {
-      const loc: ChatLocator = { chatId: 123 };
-      expect(consumeProjectNotice(tmpDir, loc)).toBeUndefined();
+      expect(consumeProjectNotice(tmpDir, dm)).toBeUndefined();
     });
 
     it("consumeProjectNotice is idempotent", () => {
-      const loc: ChatLocator = { chatId: 123 };
-      bindProjectDir(tmpDir, loc, "/home/daniel/project");
+      bindProjectDir(tmpDir, dm, "/home/daniel/project");
 
-      expect(consumeProjectNotice(tmpDir, loc)).toBeTruthy();
-      expect(consumeProjectNotice(tmpDir, loc)).toBeUndefined();
+      expect(consumeProjectNotice(tmpDir, dm)).toBeTruthy();
+      expect(consumeProjectNotice(tmpDir, dm)).toBeUndefined();
     });
   });
 });

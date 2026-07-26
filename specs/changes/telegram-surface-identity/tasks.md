@@ -10,12 +10,12 @@
 
 ## Phase 2: Canonicalize binding and settings persistence
 
-- [ ] Change binding and topic-settings DTOs to versioned SurfaceId-keyed `surfaces` maps while retaining migration-only legacy decoders.
-- [ ] Update `SessionManager` and topic-setting operations to accept complete Surface values and perform one-key lookups without sign inference or routing flags; preserve the existing DM/topic/supergroup/guest creation policies in this change.
-- [ ] Create `src/sessions/surface-migration.ts` to precompute and validate legacy binding/settings conversion before per-file atomic writes, require unique persisted container evidence for legacy topics, accept mixed-generation input, and remain idempotent after an interrupted migration.
-- [ ] Add migration and manager/settings tests for every Surface kind, explicit private/supergroup topic evidence, absent/conflicting topic evidence refusal before writes, numeric collisions, stale behavior, archive cleanup, mixed-generation restart, and invalid data.
-- [ ] Wire migration before manager/scheduler/polling startup while retaining compatibility at not-yet-migrated callers.
-- [ ] Run the touched session/migration tests and `bun run typecheck`.
+- [x] Change binding and topic-settings DTOs to versioned SurfaceId-keyed `surfaces` maps while retaining migration-only legacy decoders.
+- [x] Update `SessionManager` and topic-setting operations to accept complete Surface values and perform one-key lookups without sign inference or routing flags; preserve the existing DM/topic/supergroup/guest creation policies in this change.
+- [x] Create `src/sessions/surface-migration.ts` to precompute and validate legacy binding/settings conversion before per-file atomic writes, require unique persisted container evidence for legacy topics, accept mixed-generation input, and remain idempotent after an interrupted migration.
+- [x] Add migration and manager/settings tests for every Surface kind, explicit private/supergroup topic evidence, absent/conflicting topic evidence refusal before writes, numeric collisions, stale behavior, archive cleanup, mixed-generation restart, and invalid data.
+- [x] Wire migration before manager/scheduler/polling startup while retaining compatibility at not-yet-migrated callers.
+- [x] Run the touched session/migration tests and `bun run typecheck`.
 
 ## Phase 3: Persist schedules with Surface identity
 

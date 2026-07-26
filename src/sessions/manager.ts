@@ -3,11 +3,17 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import type { BindingsFile, ChatLocator, SessionState } from "./types.ts";
+import { surfaceId, type Surface } from "../surface.ts";
+import type { BindingsFile, ChatLocator, SessionState, SurfaceCompatOpts } from "./types.ts";
 import { loadBindings, saveBindings } from "./bindings.ts";
 import { loadState, saveState } from "./state.ts";
-import { getProjectDir as getProjectDirFromSettings, bindProjectDir as bindProjectDirInSettings, consumeProjectNotice as consumeProjectNoticeFromSettings } from "./topic-settings.ts";
+import {
+  getProjectDir as getProjectDirFromSettings,
+  bindProjectDir as bindProjectDirInSettings,
+  consumeProjectNotice as consumeProjectNoticeFromSettings,
+} from "./topic-settings.ts";
 import { sessionsDir, sessionDir, transcriptPath, metricsPath } from "./paths.ts";
+import { surfaceFromLocatorCompat } from "./surface-compat.ts";
 
 /**
  * Generate a short URL-safe session ID from a UUID.
@@ -16,52 +22,6 @@ import { sessionsDir, sessionDir, transcriptPath, metricsPath } from "./paths.ts
 function makeSessionId(): string {
   const hex = randomUUID().replace(/-/g, "");
   return hex.slice(0, 10);
-}
-
-/**
- * Remove every binding (DM, supergroup, topic) that references the given
- * session id. Returns true iff anything was removed.
- */
-function clearBindingsForSession(bindings: BindingsFile, sessionId: string): boolean {
-  let changed = false;
-  if (bindings.dm) {
-    for (const key of Object.keys(bindings.dm)) {
-      if (bindings.dm[key] === sessionId) {
-        delete bindings.dm[key];
-        changed = true;
-      }
-    }
-  }
-  if (bindings.supergroups) {
-    for (const key of Object.keys(bindings.supergroups)) {
-      if (bindings.supergroups[key] === sessionId) {
-        delete bindings.supergroups[key];
-        changed = true;
-      }
-    }
-  }
-  if (bindings.guest) {
-    for (const key of Object.keys(bindings.guest)) {
-      if (bindings.guest[key] === sessionId) {
-        delete bindings.guest[key];
-        changed = true;
-      }
-    }
-  }
-  if (bindings.topics) {
-    for (const chat of Object.keys(bindings.topics)) {
-      const inner = bindings.topics[chat];
-      if (!inner) continue;
-      for (const tid of Object.keys(inner)) {
-        if (inner[tid] === sessionId) {
-          delete inner[tid];
-          changed = true;
-        }
-      }
-      if (Object.keys(inner).length === 0) delete bindings.topics[chat];
-    }
-  }
-  return changed;
 }
 
 function ensureSessionFiles(home: string, id: string): void {
@@ -110,162 +70,96 @@ export class SessionManager {
    * its directory now lives under `sessions/archive/<id>/`. This is a single
    * `existsSync`, not a directory scan, so it is cheap to call per due
    * schedule.
-   *
-   * Used by the scheduler to distinguish the "archived" outcome (binding
-   * cleared by `archive()`) from a generic "binding-mismatch" (rebound or
-   * deleted-without-archive). A session whose dir was removed manually (not
-   * via archive) returns false here — the scheduler labels that
-   * "binding-mismatch" instead, matching the spec's "archived" scenario
-   * definition.
    */
   isArchived(sessionId: string): boolean {
     return existsSync(join(sessionsDir(this.home), "archive", sessionId));
   }
 
   /**
-   * Resolve a chat locator to an active session.
-   * - Topic messages: auto-create on first resolve (topic = session)
-   * - Supergroups: auto-create on first resolve (supergroup = session)
-   * - DMs: return null if no active session (user must /new)
-   *
-   * Stale bindings (binding exists but state.json missing) are treated as absent
-   * and auto-heal for topics/supergroups. For DMs, the stale binding is logged and cleared.
+   * Resolve a complete Surface to an active session.
+   * - `dm`: return null if no explicit binding (user must /new)
+   * - `topic`, `supergroup`, `guest`: auto-create on first resolve
+   * - Stale bindings are repaired according to the surface kind.
    */
-  resolve(loc: ChatLocator, opts?: { isSupergroup?: boolean; isGuest?: boolean }): SessionState | null {
+  resolve(surface: Surface): SessionState | null;
+  /** @deprecated Use surface-based resolve. */
+  resolve(loc: ChatLocator, opts?: SurfaceCompatOpts): SessionState | null;
+  resolve(input: Surface | ChatLocator, opts?: SurfaceCompatOpts): SessionState | null {
+    const surface = "kind" in input ? input : surfaceFromLocatorCompat(input, opts);
     const bindings = loadBindings(this.home);
-    const chatKey = String(loc.chatId);
+    const key = surfaceId(surface);
+    const existingId = bindings.surfaces[key];
 
-    if (loc.topicId !== undefined) {
-      // Topic: auto-create and bind if missing or stale
-      const topicKey = String(loc.topicId);
-      const existingId = bindings.topics?.[chatKey]?.[topicKey];
-      if (existingId) {
-        const state = loadState(this.home, existingId);
-        if (state) return state;
-        // Stale binding: state.json missing, fall through to recreate
-        log.warn("stale topic binding, recreating session", { chatId: loc.chatId, topicId: loc.topicId, sessionId: existingId });
-      }
-      // Auto-create
-      return this.createForChat(loc);
+    if (surface.kind === "dm") {
+      if (!existingId) return null;
+      const state = loadState(this.home, existingId);
+      if (state) return state;
+      log.warn("stale DM binding, clearing", { surfaceId: key, sessionId: existingId });
+      delete bindings.surfaces[key];
+      saveBindings(this.home, bindings);
+      return null;
     }
 
-    // Supergroup (no topic): auto-create like topics
-    if (opts?.isSupergroup) {
-      const existingId = bindings.supergroups?.[chatKey];
-      if (existingId) {
-        const state = loadState(this.home, existingId);
-        if (state) return state;
-        log.warn("stale supergroup binding, recreating session", { chatId: loc.chatId, sessionId: existingId });
-      }
-      return this.createForChat(loc, { isSupergroup: true });
+    // topic, supergroup, guest: auto-create / repair stale binding
+    if (existingId) {
+      const state = loadState(this.home, existingId);
+      if (state) return state;
+      log.warn("stale surface binding, recreating session", { surfaceId: key, sessionId: existingId, kind: surface.kind });
     }
 
-    // Guest (no topic): auto-create on first summon, like topics/supergroups.
-    // Distinct from dm so a foreign chat.id can never clobber a real DM binding
-    // (the bot may later be added to that chat as a normal member).
-    if (opts?.isGuest) {
-      const existingId = bindings.guest?.[chatKey];
-      if (existingId) {
-        const state = loadState(this.home, existingId);
-        if (state) return state;
-        log.warn("stale guest binding, recreating session", { chatId: loc.chatId, sessionId: existingId });
-      }
-      return this.createForChat(loc, { isGuest: true });
-    }
-
-    // DM: must have explicit binding
-    const dmId = bindings.dm?.[chatKey];
-    if (!dmId) return null;
-    const state = loadState(this.home, dmId);
-    if (state) return state;
-    // Stale binding: clear it and return null
-    log.warn("stale DM binding, clearing", { chatId: loc.chatId, sessionId: dmId });
-    delete bindings.dm![chatKey];
-    saveBindings(this.home, bindings);
-    return null;
+    return this.createForSurface(surface);
   }
 
   /**
-   * Create a new session for a chat locator, bind it, and persist.
-   * For DMs: rebinding is allowed (old session becomes orphan).
-   * For Topics: should not be called if already bound (resolve handles that).
-   * For Supergroups: treated like topics (auto-created, bound to chatId).
+   * Create a new session for a complete Surface and bind it.
    */
-  createForChat(loc: ChatLocator, opts?: { title?: string; isSupergroup?: boolean; isGuest?: boolean }): SessionState {
+  createForSurface(surface: Surface, opts?: { title?: string }): SessionState {
     const id = makeSessionId();
     const state: SessionState = {
       id,
       createdAt: new Date().toISOString(),
-      chatId: loc.chatId,
-      topicId: loc.topicId,
+      chatId: surface.chatId,
+      topicId: surface.kind === "topic" ? surface.topicId : undefined,
       title: opts?.title,
     };
 
-    // Ensure dirs and empty files
     ensureSessionFiles(this.home, id);
-
-    // Persist state
     saveState(this.home, state);
 
-    // Update bindings
     const bindings = loadBindings(this.home);
-    const chatKey = String(loc.chatId);
-
-    if (loc.topicId !== undefined) {
-      bindings.topics ??= {};
-      bindings.topics[chatKey] ??= {};
-      bindings.topics[chatKey][String(loc.topicId)] = id;
-    } else if (opts?.isSupergroup) {
-      bindings.supergroups ??= {};
-      bindings.supergroups[chatKey] = id;
-    } else if (opts?.isGuest) {
-      bindings.guest ??= {};
-      bindings.guest[chatKey] = id;
-    } else {
-      bindings.dm ??= {};
-      bindings.dm[chatKey] = id;
-    }
+    bindings.surfaces[surfaceId(surface)] = id;
     saveBindings(this.home, bindings);
 
-    log.info("created session", { id, chatId: loc.chatId, topicId: loc.topicId, isSupergroup: opts?.isSupergroup, isGuest: opts?.isGuest });
+    log.info("created session", { id, kind: surface.kind, surfaceId: surfaceId(surface) });
     return state;
   }
 
-  bindExistingToChat(sessionId: string, loc: ChatLocator, opts?: { isSupergroup?: boolean; isGuest?: boolean }): SessionState {
+  /** @deprecated Use surface-based createForSurface. */
+  createForChat(loc: ChatLocator, opts?: { title?: string } & SurfaceCompatOpts): SessionState {
+    return this.createForSurface(surfaceFromLocatorCompat(loc, opts), opts);
+  }
+
+  bindExistingToSurface(sessionId: string, surface: Surface): SessionState {
     const state = loadState(this.home, sessionId);
     if (!state) {
       throw new Error(`session not found: ${sessionId}`);
     }
 
     const bindings = loadBindings(this.home);
-    const chatKey = String(loc.chatId);
-    if (loc.topicId !== undefined) {
-      bindings.topics ??= {};
-      bindings.topics[chatKey] ??= {};
-      bindings.topics[chatKey][String(loc.topicId)] = sessionId;
-    } else if (opts?.isSupergroup) {
-      bindings.supergroups ??= {};
-      bindings.supergroups[chatKey] = sessionId;
-    } else if (opts?.isGuest) {
-      bindings.guest ??= {};
-      bindings.guest[chatKey] = sessionId;
-    } else {
-      bindings.dm ??= {};
-      bindings.dm[chatKey] = sessionId;
-    }
+    bindings.surfaces[surfaceId(surface)] = sessionId;
     saveBindings(this.home, bindings);
-    log.info("bound existing session", { sessionId, chatId: loc.chatId, topicId: loc.topicId, isSupergroup: opts?.isSupergroup, isGuest: opts?.isGuest });
+    log.info("bound existing session", { sessionId, surfaceId: surfaceId(surface) });
     return state;
+  }
+
+  /** @deprecated Use surface-based bindExistingToSurface. */
+  bindExistingToChat(sessionId: string, loc: ChatLocator, opts?: SurfaceCompatOpts): SessionState {
+    return this.bindExistingToSurface(sessionId, surfaceFromLocatorCompat(loc, opts));
   }
 
   /**
    * Archive a session: move `sessions/<id>/` to `sessions/archive/<id>/`
-   * and remove every binding that references it.
-   *
-   * Throws if the source directory does not exist (already archived or
-   * unknown id). The caller is expected to detect the already-archived
-   * case via `existsSync(sessionDir(...))` first and surface a friendly
-   * message; the throw here is a defensive backstop.
+   * and remove every surface binding that references it.
    */
   archive(sessionId: string): void {
     const src = sessionDir(this.home, sessionId);
@@ -282,37 +176,48 @@ export class SessionManager {
     renameSync(src, dst);
 
     const bindings = loadBindings(this.home);
-    const changed = clearBindingsForSession(bindings, sessionId);
+    const changed = clearSessionBindings(bindings, sessionId);
     if (changed) saveBindings(this.home, bindings);
 
     log.info("archived session", { id: sessionId });
   }
 
   /**
-   * Get the projectDir for a chat surface from topic-settings.json.
+   * Get the projectDir for a complete Surface from topic-settings.json.
    */
-  getProjectDir(loc: ChatLocator): string | undefined {
-    return getProjectDirFromSettings(this.home, loc);
+  getProjectDir(surface: Surface): string | undefined;
+  /** @deprecated Use surface-based getProjectDir. */
+  getProjectDir(loc: ChatLocator): string | undefined;
+  getProjectDir(input: Surface | ChatLocator): string | undefined {
+    const surface = typeof input === "object" && "kind" in input ? input : surfaceFromLocatorCompat(input);
+    return getProjectDirFromSettings(this.home, surface);
   }
 
   /**
-   * Bind (or clear) the projectDir for a chat surface.
-   * Updates topic-settings.json atomically.
+   * Bind (or clear) the projectDir for a complete Surface.
    */
-  bindProjectDir(loc: ChatLocator, projectDir: string | undefined): void {
-    bindProjectDirInSettings(this.home, loc, projectDir);
+  bindProjectDir(surface: Surface, projectDir: string | undefined): void;
+  /** @deprecated Use surface-based bindProjectDir. */
+  bindProjectDir(loc: ChatLocator, projectDir: string | undefined): void;
+  bindProjectDir(input: Surface | ChatLocator, projectDir: string | undefined): void {
+    const surface = typeof input === "object" && "kind" in input ? input : surfaceFromLocatorCompat(input);
+    bindProjectDirInSettings(this.home, surface, projectDir);
   }
 
   /**
-   * Read and clear the pending project notice for a chat surface.
+   * Read and clear the pending project notice for a complete Surface.
    */
-  consumeProjectNotice(loc: ChatLocator): string | undefined {
-    return consumeProjectNoticeFromSettings(this.home, loc);
+  consumeProjectNotice(surface: Surface): string | undefined;
+  /** @deprecated Use surface-based consumeProjectNotice. */
+  consumeProjectNotice(loc: ChatLocator): string | undefined;
+  consumeProjectNotice(input: Surface | ChatLocator): string | undefined {
+    const surface = typeof input === "object" && "kind" in input ? input : surfaceFromLocatorCompat(input);
+    return consumeProjectNoticeFromSettings(this.home, surface);
   }
 
   /**
    * Updates state.json atomically.
-   * @deprecated Use bindProjectDir(locator, dir) instead.
+   * @deprecated Use bindProjectDir(surface, dir) instead.
    */
   setProjectDir(sessionId: string, projectDir: string | undefined): void {
     const state = loadState(this.home, sessionId);
@@ -324,10 +229,6 @@ export class SessionManager {
     log.info("set projectDir", { sessionId, projectDir });
   }
 
-  /**
-   * Set or clear the session-scoped model override.
-   * Updates state.json atomically.
-   */
   setModelName(sessionId: string, modelName: string | undefined): void {
     const state = loadState(this.home, sessionId);
     if (!state) {
@@ -359,34 +260,18 @@ export class SessionManager {
   }
 
   /**
-   * Non-mutating read of the binding for a locator. Returns the currently
-   * bound session id and state without auto-creating, unlike `resolve()`.
+   * Non-mutating read of the binding for a complete Surface.
    *
    * Used by the scheduler to validate that a captured schedule still targets
-   * its captured session surface before dispatch. The scheduler MUST use this
-   * method, never `resolve()`, because `resolve()` auto-creates sessions for
-   * topic and supergroup locators when the binding is stale or absent.
-   *
-   * Returns null when the locator is unbound or the bound state is missing
-   * (e.g. the session was archived, which clears the binding and moves state).
+   * its captured session surface before dispatch.
    */
-  peekBinding(loc: ChatLocator, opts?: { isGuest?: boolean }): { sessionId: string; state: SessionState } | null {
+  peekBinding(surface: Surface): { sessionId: string; state: SessionState } | null;
+  /** @deprecated Use surface-based peekBinding. */
+  peekBinding(loc: ChatLocator, opts?: SurfaceCompatOpts): { sessionId: string; state: SessionState } | null;
+  peekBinding(input: Surface | ChatLocator, opts?: SurfaceCompatOpts): { sessionId: string; state: SessionState } | null {
+    const surface = typeof input === "object" && "kind" in input ? input : surfaceFromLocatorCompat(input as ChatLocator, opts);
     const bindings = loadBindings(this.home);
-    const chatKey = String(loc.chatId);
-
-    let boundId: string | undefined;
-    if (loc.topicId !== undefined) {
-      boundId = bindings.topics?.[chatKey]?.[String(loc.topicId)];
-    } else if (opts?.isGuest) {
-      // Guest surface is distinct from dm/supergroup so a foreign chat.id can
-      // never collide with a normal binding for the same numeric id.
-      boundId = bindings.guest?.[chatKey];
-    } else {
-      // Topicless locator: check DM then supergroup. A chat is either a DM or
-      // a supergroup in practice, so checking both is unambiguous.
-      boundId = bindings.dm?.[chatKey] ?? bindings.supergroups?.[chatKey];
-    }
-
+    const boundId = bindings.surfaces[surfaceId(surface)];
     if (!boundId) return null;
     const state = loadState(this.home, boundId);
     if (!state) return null;
@@ -396,7 +281,6 @@ export class SessionManager {
   /**
    * Ensure an internal non-chat session exists. Internal sessions are used for
    * background work (e.g. the dreaming subagent) and are never bound to a chat.
-   * They have `chatId: 0` and are skipped by `list()`.
    */
   ensureInternal(id: string): SessionState {
     ensureSessionFiles(this.home, id);
@@ -425,7 +309,7 @@ export class SessionManager {
       const entries = readdirSync(dir);
       const states: SessionState[] = [];
       for (const id of entries) {
-        if (id === "archive") continue; // archived sessions live in their own subtree
+        if (id === "archive") continue;
         const s = loadState(this.home, id);
         if (s && s.chatId !== 0) states.push(s);
       }
@@ -435,4 +319,15 @@ export class SessionManager {
       throw e;
     }
   }
+}
+
+function clearSessionBindings(bindings: BindingsFile, sessionId: string): boolean {
+  let changed = false;
+  for (const [key, value] of Object.entries(bindings.surfaces)) {
+    if (value === sessionId) {
+      delete (bindings.surfaces as Record<string, string>)[key];
+      changed = true;
+    }
+  }
+  return changed;
 }

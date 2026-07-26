@@ -1,148 +1,132 @@
-import type { ChatLocator } from "./types.ts";
+import type { ChatLocator, TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile, Surface } from "./types.ts";
 import { topicSettingsPath } from "./paths.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 import { log } from "../log.ts";
+import { surfaceFromLocatorCompat } from "./surface-compat.ts";
+import { surfaceId } from "../surface.ts";
 
-/**
- * Per-chat-surface settings persisted in $GOBLIN_HOME/state/topic-settings.json.
- * Keys are stringified chatId/topicId numbers.
- */
-export interface TopicSettingsFile {
-  /** Topic bindings: chatId -> topicId -> settings */
-  topics?: Record<string, Record<string, TopicSettings>>;
-  /** DM bindings: chatId -> settings */
-  dm?: Record<string, TopicSettings>;
-  /** Supergroup bindings: chatId -> settings */
-  supergroups?: Record<string, TopicSettings>;
-}
-
-export interface TopicSettings {
-  projectDir?: string;
-  /** Queued notice injected as context on the next user message (e.g. project dir change). Consumed on read. */
-  pendingProjectNotice?: string;
-}
+export type { TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile } from "./types.ts";
 
 const DEFAULT_SETTINGS: TopicSettingsFile = {
+  version: 1,
+  surfaces: {},
+};
+
+const DEFAULT_LEGACY_SETTINGS: LegacyTopicSettingsFile = {
   topics: {},
   dm: {},
   supergroups: {},
 };
 
+function pathFor(home: string): string {
+  return topicSettingsPath(home);
+}
+
+function isCanonicalSettings(value: unknown): value is TopicSettingsFile {
+  if (value === null || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.version === 1 && typeof v.surfaces === "object" && v.surfaces !== null;
+}
+
+function isLegacySettings(value: unknown): value is LegacyTopicSettingsFile {
+  if (value === null || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return !("version" in v) && (
+    typeof v.topics === "object" ||
+    typeof v.dm === "object" ||
+    typeof v.supergroups === "object"
+  );
+}
+
 /**
- * Load topic-settings.json. Returns default if missing or malformed.
- * Non-ENOENT/non-Syntax errors propagate per the fail-loud rule.
+ * Load the canonical topic-settings file (state/topic-settings.json). Returns
+ * the default empty canonical shape when the file is missing or malformed.
  */
 export function loadTopicSettings(home: string): TopicSettingsFile {
-  return loadJsonFile(topicSettingsPath(home), structuredClone(DEFAULT_SETTINGS));
+  const raw = loadJsonFile<TopicSettingsFile | LegacyTopicSettingsFile>(pathFor(home), structuredClone(DEFAULT_SETTINGS));
+  if (isCanonicalSettings(raw)) {
+    return raw;
+  }
+  return structuredClone(DEFAULT_SETTINGS);
 }
 
 /**
  * Save topic settings atomically (write to unique tmp, then rename).
  */
 export function saveTopicSettings(home: string, settings: TopicSettingsFile): void {
-  saveJsonFile(topicSettingsPath(home), settings);
+  saveJsonFile(pathFor(home), settings);
 }
 
 /**
- * True when a TopicSettings object has no meaningful values.
+ * Load the legacy pre-Surface topic-settings shape. Used only by migration.
  */
+export function loadLegacyTopicSettings(home: string): LegacyTopicSettingsFile {
+  const raw = loadJsonFile<TopicSettingsFile | LegacyTopicSettingsFile>(pathFor(home), structuredClone(DEFAULT_LEGACY_SETTINGS));
+  if (isLegacySettings(raw)) {
+    return {
+      topics: raw.topics ?? {},
+      dm: raw.dm ?? {},
+      supergroups: raw.supergroups ?? {},
+    };
+  }
+  return structuredClone(DEFAULT_LEGACY_SETTINGS);
+}
+
 function isEmptySettings(s: TopicSettings): boolean {
   return !s.projectDir && !s.pendingProjectNotice;
 }
 
-/**
- * Build the settings key for a chat surface.
- */
-function settingsForLocator(settings: TopicSettingsFile, loc: ChatLocator): TopicSettings | undefined {
-  const chatKey = String(loc.chatId);
-
-  if (loc.topicId !== undefined) {
-    return settings.topics?.[chatKey]?.[String(loc.topicId)];
-  }
-
-  // Branch on sign: DMs are positive, supergroups negative.
-  if (loc.chatId < 0) {
-    return settings.supergroups?.[chatKey];
-  }
-  return settings.dm?.[chatKey];
+function settingsForSurface(settings: TopicSettingsFile, surface: Surface): TopicSettings | undefined {
+  return settings.surfaces[surfaceId(surface)];
 }
 
-/**
- * Read the projectDir for a chat surface from topic-settings.json.
- * Returns undefined if none is set.
- */
-export function getProjectDir(home: string, loc: ChatLocator): string | undefined {
-  const settings = loadTopicSettings(home);
-  return settingsForLocator(settings, loc)?.projectDir;
-}
-
-/**
- * Update a single TopicSettings slot for a locator, persisting atomically.
- */
-/**
- * Mutate a single TopicSettings slot for a locator on a pre-loaded settings object.
- */
-function applyToSlot(settings: TopicSettingsFile, loc: ChatLocator, updater: (settings: TopicSettings) => TopicSettings): void {
-  const chatKey = String(loc.chatId);
-
-  if (loc.topicId !== undefined) {
-    settings.topics ??= {};
-    settings.topics[chatKey] ??= {};
-    const topicKey = String(loc.topicId);
-    settings.topics[chatKey]![topicKey] = updater(settings.topics[chatKey]![topicKey] ?? {});
-    if (isEmptySettings(settings.topics[chatKey]![topicKey]!)) {
-      delete settings.topics[chatKey]![topicKey];
-    }
-    if (Object.keys(settings.topics[chatKey]!).length === 0) delete settings.topics[chatKey];
-  } else if (loc.chatId < 0) {
-    settings.supergroups ??= {};
-    settings.supergroups[chatKey] = updater(settings.supergroups[chatKey] ?? {});
-    if (isEmptySettings(settings.supergroups[chatKey]!)) {
-      delete settings.supergroups[chatKey];
-    }
+function updateSurface(settings: TopicSettingsFile, surface: Surface, updater: (s: TopicSettings) => TopicSettings): void {
+  const key = surfaceId(surface);
+  const next = updater(settings.surfaces[key] ?? {});
+  if (isEmptySettings(next)) {
+    delete settings.surfaces[key];
   } else {
-    settings.dm ??= {};
-    settings.dm[chatKey] = updater(settings.dm[chatKey] ?? {});
-    if (isEmptySettings(settings.dm[chatKey]!)) {
-      delete settings.dm[chatKey];
-    }
+    settings.surfaces[key] = next;
   }
 }
 
-/**
- * Load, mutate a slot, and save atomically.
- */
-function updateSettings(home: string, loc: ChatLocator, updater: (settings: TopicSettings) => TopicSettings): void {
+/** Read the projectDir for a complete Surface. */
+export function getProjectDir(home: string, surface: Surface): string | undefined;
+/** @deprecated Use surface-based getProjectDir. */
+export function getProjectDir(home: string, loc: ChatLocator): string | undefined;
+export function getProjectDir(home: string, input: Surface | ChatLocator): string | undefined {
+  const surface = "kind" in input ? input : surfaceFromLocatorCompat(input);
   const settings = loadTopicSettings(home);
-  applyToSlot(settings, loc, updater);
-  saveTopicSettings(home, settings);
+  return settingsForSurface(settings, surface)?.projectDir;
 }
 
-/**
- * Bind (or clear) a projectDir for a chat surface.
- * Atomically updates topic-settings.json. Sets a pending notice
- * that will be injected as context on the next user message.
- */
-export function bindProjectDir(home: string, loc: ChatLocator, projectDir: string | undefined): void {
+/** Bind (or clear) the projectDir for a complete Surface. */
+export function bindProjectDir(home: string, surface: Surface, projectDir: string | undefined): void;
+/** @deprecated Use surface-based bindProjectDir. */
+export function bindProjectDir(home: string, loc: ChatLocator, projectDir: string | undefined): void;
+export function bindProjectDir(home: string, input: Surface | ChatLocator, projectDir: string | undefined): void {
+  const surface = "kind" in input ? input : surfaceFromLocatorCompat(input);
   const notice = projectDir !== undefined
     ? `Project directory changed to \`${projectDir}\`.`
     : undefined;
-  updateSettings(home, loc, (s) => ({ ...s, projectDir: projectDir, pendingProjectNotice: notice }));
-  log.info("bound projectDir", { chatId: loc.chatId, topicId: loc.topicId, projectDir });
+  const settings = loadTopicSettings(home);
+  updateSurface(settings, surface, (s) => ({ ...s, projectDir, pendingProjectNotice: notice }));
+  saveTopicSettings(home, settings);
+  log.info("bound projectDir", { surfaceId: surfaceId(surface), projectDir });
 }
 
-/**
- * Read and clear the pending project notice for a chat surface.
- * Single load → mutate → save to avoid TOCTOU.
- * Returns undefined if none is pending.
- */
-export function consumeProjectNotice(home: string, loc: ChatLocator): string | undefined {
+/** Read and clear the pending project notice for a complete Surface. */
+export function consumeProjectNotice(home: string, surface: Surface): string | undefined;
+/** @deprecated Use surface-based consumeProjectNotice. */
+export function consumeProjectNotice(home: string, loc: ChatLocator): string | undefined;
+export function consumeProjectNotice(home: string, input: Surface | ChatLocator): string | undefined {
+  const surface = "kind" in input ? input : surfaceFromLocatorCompat(input);
   const settings = loadTopicSettings(home);
-  const existing = settingsForLocator(settings, loc);
+  const existing = settingsForSurface(settings, surface);
   if (!existing?.pendingProjectNotice) return undefined;
 
   const notice = existing.pendingProjectNotice;
-  applyToSlot(settings, loc, (s) => {
+  updateSurface(settings, surface, (s) => {
     const { pendingProjectNotice: _, ...rest } = s;
     return rest;
   });

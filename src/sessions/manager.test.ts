@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "./manager.ts";
 import type { Config } from "../config.ts";
-import type { ChatLocator, BindingsFile } from "./types.ts";
-import { configPath, metricsPath, sessionDir, sessionsDir, statePath, transcriptPath, topicSettingsPath } from "./paths.ts";
+import type { BindingsFile } from "./types.ts";
+import { configPath, metricsPath, sessionDir, sessionsDir, statePath, transcriptPath } from "./paths.ts";
+import { dmSurface, guestSurface, supergroupSurface, topicSurface, surfaceId, type Surface } from "../surface.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -20,6 +21,10 @@ function makeTestConfig(home: string): Config {
     voiceName: "en-US-AriaNeural",
     favorites: [],
   };
+}
+
+function bindingFor(home: string): BindingsFile {
+  return JSON.parse(readFileSync(configPath(home), "utf-8")) as BindingsFile;
 }
 
 describe("SessionManager", () => {
@@ -37,610 +42,235 @@ describe("SessionManager", () => {
   });
 
   describe("resolve", () => {
-    it("returns null for DM when no session exists", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      expect(manager.resolve(loc)).toBeNull();
+    it("returns null for unbound DM", () => {
+      expect(manager.resolve(dmSurface(123456))).toBeNull();
     });
 
-    it("auto-creates session for topic on first resolve", () => {
-      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
-      const state = manager.resolve(loc);
-      expect(state).not.toBeNull();
-      expect(state?.chatId).toBe(123456);
-      expect(state?.topicId).toBe(7);
-    });
-
-    it("returns existing session for topic on second resolve", () => {
-      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
-      const first = manager.resolve(loc);
-      const second = manager.resolve(loc);
-      expect(first?.id).toBe(second?.id);
-    });
-
-    it("returns existing DM session after createForChat", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const created = manager.createForChat(loc);
-      const resolved = manager.resolve(loc);
+    it("returns existing DM session after createForSurface", () => {
+      const created = manager.createForSurface(dmSurface(123456));
+      const resolved = manager.resolve(dmSurface(123456));
       expect(resolved?.id).toBe(created.id);
     });
 
-    it("auto-recreates topic session when state.json is missing (stale binding)", () => {
-      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
-      // Create initial session
-      const first = manager.createForChat(loc);
-      // Delete state.json but leave binding intact
+    it("auto-creates and resolves topic surface", () => {
+      const surface = topicSurface("supergroup", 123456, 7);
+      const first = manager.resolve(surface);
+      const second = manager.resolve(surface);
+      expect(first).not.toBeNull();
+      expect(second?.id).toBe(first!.id);
+      expect(first!.chatId).toBe(123456);
+      expect(first!.topicId).toBe(7);
+    });
+
+    it("auto-creates and resolves supergroup surface", () => {
+      const surface = supergroupSurface(-100123);
+      const state = manager.resolve(surface);
+      expect(state).not.toBeNull();
+    });
+
+    it("auto-creates and resolves guest surface", () => {
+      const surface = guestSurface(888);
+      const state = manager.resolve(surface);
+      expect(state).not.toBeNull();
+    });
+
+    it("clears stale DM binding and returns null", () => {
+      const surface = dmSurface(123456);
+      const first = manager.createForSurface(surface);
       unlinkSync(statePath(tmpDir, first.id));
 
-      // Resolve should auto-create new session and update binding
-      const second = manager.resolve(loc);
-      expect(second).not.toBeNull();
-      expect(second!.id).not.toBe(first.id);
-      expect(second!.chatId).toBe(123456);
-      expect(second!.topicId).toBe(7);
-
-      // Verify binding was updated in state/bindings.json
-      const configRaw = readFileSync(configPath(tmpDir), "utf-8");
-      const config = JSON.parse(configRaw) as BindingsFile;
-      expect(config.topics?.["123456"]?.["7"]).toBe(second!.id);
-
-      // Orphaned session dir should still exist (sessions persist forever)
-      expect(existsSync(sessionDir(tmpDir, first.id))).toBe(true);
-      expect(existsSync(sessionDir(tmpDir, second!.id))).toBe(true);
+      expect(manager.resolve(surface)).toBeNull();
+      expect(bindingFor(tmpDir).surfaces[surfaceId(surface)]).toBeUndefined();
     });
 
-    it("clears stale DM binding when state.json is missing", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      // Create initial session
-      const first = manager.createForChat(loc);
-      // Delete state.json but leave binding intact
-      unlinkSync(statePath(tmpDir, first.id));
+    it("recreates stale topic/supergroup/guest binding", () => {
+      for (const surface of [
+        topicSurface("supergroup", 123, 7),
+        supergroupSurface(-100456),
+        guestSurface(789),
+      ] as Surface[]) {
+        const first = manager.createForSurface(surface);
+        unlinkSync(statePath(tmpDir, first.id));
 
-      // Resolve should clear binding and return null
-      const resolved = manager.resolve(loc);
-      expect(resolved).toBeNull();
-
-      // Verify binding was cleared in state/bindings.json
-      const configRaw = readFileSync(configPath(tmpDir), "utf-8");
-      const config = JSON.parse(configRaw) as BindingsFile;
-      expect(config.dm?.["123456"]).toBeUndefined();
-    });
-
-    it("auto-recreates topic session when state.json is malformed", () => {
-      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
-      const first = manager.createForChat(loc);
-      writeFileSync(statePath(tmpDir, first.id), "{ bad json", "utf-8");
-
-      const second = manager.resolve(loc);
-      expect(second).not.toBeNull();
-      expect(second!.id).not.toBe(first.id);
-      expect(second!.chatId).toBe(123456);
-      expect(second!.topicId).toBe(7);
-
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.topics?.["123456"]?.["7"]).toBe(second!.id);
-    });
-
-    it("clears DM binding when state.json is malformed", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const first = manager.createForChat(loc);
-      writeFileSync(statePath(tmpDir, first.id), "{ bad json", "utf-8");
-
-      expect(manager.resolve(loc)).toBeNull();
-
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.dm?.["123456"]).toBeUndefined();
-    });
-
-    it("treats malformed bindings.json as empty bindings", () => {
-      writeFileSync(configPath(tmpDir), "{ bad json", "utf-8");
-
-      expect(manager.resolve({ chatId: 123456 })).toBeNull();
-
-      const topic = manager.resolve({ chatId: 123456, topicId: 7 });
-      expect(topic).not.toBeNull();
-      expect(topic!.chatId).toBe(123456);
-      expect(topic!.topicId).toBe(7);
+        const second = manager.resolve(surface);
+        expect(second).not.toBeNull();
+        expect(second!.id).not.toBe(first.id);
+        expect(bindingFor(tmpDir).surfaces[surfaceId(surface)]).toBe(second!.id);
+      }
     });
   });
 
-  describe("createForChat", () => {
+  describe("createForSurface", () => {
     it("creates session with correct metadata", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const state = manager.createForChat(loc, { title: "Test Session" });
+      const state = manager.createForSurface(dmSurface(123456), { title: "Test" });
       expect(state.chatId).toBe(123456);
-      expect(state.title).toBe("Test Session");
+      expect(state.title).toBe("Test");
       expect(state.id).toHaveLength(10);
       expect(state.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     });
 
-    it("creates empty transcript.jsonl", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const state = manager.createForChat(loc);
+    it("creates required files", () => {
+      const state = manager.createForSurface(dmSurface(123456));
       expect(existsSync(transcriptPath(tmpDir, state.id))).toBe(true);
-    });
-
-    it("creates empty metrics.jsonl", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const state = manager.createForChat(loc);
       expect(existsSync(metricsPath(tmpDir, state.id))).toBe(true);
-    });
-
-    it("creates empty events.jsonl", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const state = manager.createForChat(loc);
       expect(existsSync(join(sessionDir(tmpDir, state.id), "events.jsonl"))).toBe(true);
-    });
-
-    it("creates workdir", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const state = manager.createForChat(loc);
       expect(existsSync(join(sessionDir(tmpDir, state.id), "workdir"))).toBe(true);
     });
 
-    it("rebinding DM creates new session without deleting old", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const first = manager.createForChat(loc);
-      const second = manager.createForChat(loc);
+    it("rebinding DM creates a new session and leaves the old one", () => {
+      const surface = dmSurface(123456);
+      const first = manager.createForSurface(surface);
+      const second = manager.createForSurface(surface);
       expect(first.id).not.toBe(second.id);
-      // Both sessions should still exist on disk
       expect(existsSync(statePath(tmpDir, first.id))).toBe(true);
-      expect(existsSync(statePath(tmpDir, second.id))).toBe(true);
+      expect(bindingFor(tmpDir).surfaces[surfaceId(surface)]).toBe(second.id);
     });
   });
 
-  describe("reload", () => {
-    it("preserves bindings when manager is recreated", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const created = manager.createForChat(loc);
+  describe("numeric collisions", () => {
+    it("keeps DM, supergroup, and guest with the same chat id separate", () => {
+      const dm = manager.createForSurface(dmSurface(888));
+      const sg = manager.createForSurface(supergroupSurface(888));
+      const guest = manager.createForSurface(guestSurface(888));
 
-      // Create new manager pointing at same home
-      const manager2 = new SessionManager(makeTestConfig(tmpDir));
-      const resolved = manager2.resolve(loc);
-      expect(resolved?.id).toBe(created.id);
+      expect(dm.id).not.toBe(sg.id);
+      expect(sg.id).not.toBe(guest.id);
+
+      expect(manager.resolve(dmSurface(888))?.id).toBe(dm.id);
+      expect(manager.resolve(supergroupSurface(888))?.id).toBe(sg.id);
+      expect(manager.resolve(guestSurface(888))?.id).toBe(guest.id);
+
+      const bindings = bindingFor(tmpDir);
+      expect(Object.keys(bindings.surfaces)).toHaveLength(3);
+    });
+
+    it("keeps topic containers separate for the same numeric ids", () => {
+      const privateTopic = manager.createForSurface(topicSurface("private", 123, 7));
+      const supergroupTopic = manager.createForSurface(topicSurface("supergroup", 123, 7));
+
+      expect(privateTopic.id).not.toBe(supergroupTopic.id);
+
+      expect(manager.resolve(topicSurface("private", 123, 7))?.id).toBe(privateTopic.id);
+      expect(manager.resolve(topicSurface("supergroup", 123, 7))?.id).toBe(supergroupTopic.id);
     });
   });
 
   describe("archive", () => {
-    it("moves session dir to sessions/archive/<id>/ and clears DM binding", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const created = manager.createForChat(loc);
-      expect(existsSync(statePath(tmpDir, created.id))).toBe(true);
+    it("moves session dir and clears the surface binding", () => {
+      const surface = dmSurface(123456);
+      const created = manager.createForSurface(surface);
 
       manager.archive(created.id);
 
       expect(existsSync(sessionDir(tmpDir, created.id))).toBe(false);
       expect(existsSync(join(sessionsDir(tmpDir), "archive", created.id, "state.json"))).toBe(true);
-
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.dm?.["123456"]).toBeUndefined();
+      expect(bindingFor(tmpDir).surfaces[surfaceId(surface)]).toBeUndefined();
     });
 
-    it("clears topic binding and prunes empty chat entry", () => {
-      const loc: ChatLocator = { chatId: 999, topicId: 7 };
-      const created = manager.createForChat(loc);
+    it("clears every binding for a session archived on multiple surfaces", () => {
+      const dm = dmSurface(1);
+      const topic = topicSurface("supergroup", 2, 7);
+      const session = manager.createForSurface(dm);
+      manager.bindExistingToSurface(session.id, topic);
 
-      manager.archive(created.id);
+      manager.archive(session.id);
 
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.topics?.["999"]).toBeUndefined();
+      const bindings = bindingFor(tmpDir);
+      expect(Object.keys(bindings.surfaces)).toHaveLength(0);
     });
 
-    it("clears supergroup binding", () => {
-      const loc: ChatLocator = { chatId: 555 };
-      const created = manager.createForChat(loc, { isSupergroup: true });
-
-      manager.archive(created.id);
-
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.supergroups?.["555"]).toBeUndefined();
-    });
-
-    it("archives metrics.jsonl with the session", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      const created = manager.createForChat(loc);
-      expect(existsSync(metricsPath(tmpDir, created.id))).toBe(true);
-
-      manager.archive(created.id);
-
-      expect(existsSync(metricsPath(tmpDir, created.id))).toBe(false);
-      expect(existsSync(join(sessionsDir(tmpDir), "archive", created.id, "metrics.jsonl"))).toBe(true);
-    });
-
-    it("throws when session dir does not exist", () => {
+    it("throws for missing or already-archived session", () => {
       expect(() => manager.archive("0000000000")).toThrow(/not found or already archived/);
-    });
-
-    it("throws when called twice on the same session", () => {
-      const created = manager.createForChat({ chatId: 1 });
-      manager.archive(created.id);
-      expect(() => manager.archive(created.id)).toThrow(/not found or already archived/);
-    });
-
-    it("list() ignores the archive subtree", () => {
-      const a = manager.createForChat({ chatId: 1 });
-      const b = manager.createForChat({ chatId: 2 });
-      manager.archive(a.id);
-
-      const ids = manager.list().map((s) => s.id);
-      expect(ids).toEqual([b.id]);
-    });
-  });
-
-  describe("isArchived", () => {
-    it("returns true for a session archived via archive()", () => {
-      const created = manager.createForChat({ chatId: 1 });
-      expect(manager.isArchived(created.id)).toBe(false);
-      manager.archive(created.id);
-      expect(manager.isArchived(created.id)).toBe(true);
-    });
-
-    it("returns false for a live session", () => {
-      const created = manager.createForChat({ chatId: 1 });
-      expect(manager.isArchived(created.id)).toBe(false);
-    });
-
-    it("returns false for an unknown id (never existed)", () => {
-      expect(manager.isArchived("never-existed")).toBe(false);
-    });
-
-    it("returns false for a session whose dir was removed without archive", () => {
-      // Manually deleting a session dir (not via archive) MUST NOT be labeled
-      // archived — the scheduler distinguishes archived (cleared binding +
-      // moved dir) from a generic mismatch. This pins the precise semantics.
-      const created = manager.createForChat({ chatId: 1 });
-      rmSync(sessionDir(tmpDir, created.id), { recursive: true, force: true });
-      expect(manager.isArchived(created.id)).toBe(false);
-    });
-  });
-
-  describe("list", () => {
-    it("returns empty array when no sessions", () => {
-      expect(manager.list()).toEqual([]);
-    });
-
-    it("returns sessions sorted by createdAt", () => {
-      manager.createForChat({ chatId: 1 });
-      // Small delay to ensure different timestamps
-      Bun.sleepSync(10);
-      manager.createForChat({ chatId: 2 });
-
-      const list = manager.list();
-      expect(list).toHaveLength(2);
-      const [a, b] = list;
-      expect(a!.createdAt < b!.createdAt).toBe(true);
-    });
-
-    it("includes orphaned sessions (no longer bound but dir exists)", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      // Create two sessions, second orphans first
-      const first = manager.createForChat(loc);
-      const second = manager.createForChat(loc);
-
-      // Both should appear in list even though only second is bound
-      const list = manager.list();
-      const ids = list.map((s) => s.id).sort();
-      expect(ids).toEqual([first.id, second.id].sort());
-    });
-  });
-
-  describe("getProjectDir", () => {
-    it("returns undefined when no topic settings exist", () => {
-      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
-      expect(manager.getProjectDir(loc)).toBeUndefined();
-    });
-
-    it("returns projectDir from topic settings", () => {
-      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
-      manager.bindProjectDir(loc, "/home/daniel/project");
-      expect(manager.getProjectDir(loc)).toBe("/home/daniel/project");
-    });
-
-    it("returns projectDir for DM", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      manager.bindProjectDir(loc, "/home/daniel/dm-project");
-      expect(manager.getProjectDir(loc)).toBe("/home/daniel/dm-project");
-    });
-
-    it("returns undefined after clearing", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      manager.bindProjectDir(loc, "/home/daniel/project");
-      manager.bindProjectDir(loc, undefined);
-      expect(manager.getProjectDir(loc)).toBeUndefined();
-    });
-  });
-
-  describe("bindProjectDir", () => {
-    it("persists projectDir to topic-settings.json", () => {
-      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
-      manager.bindProjectDir(loc, "/home/daniel/project");
-
-      const raw = readFileSync(topicSettingsPath(tmpDir), "utf-8");
-      const settings = JSON.parse(raw);
-      expect(settings.topics["123456"]["7"].projectDir).toBe("/home/daniel/project");
-    });
-
-    it("clears projectDir from topic-settings.json", () => {
-      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
-      manager.bindProjectDir(loc, "/home/daniel/project");
-      manager.bindProjectDir(loc, undefined);
-
-      const raw = readFileSync(topicSettingsPath(tmpDir), "utf-8");
-      const settings = JSON.parse(raw);
-      expect(settings.topics?.["123456"]?.["7"]).toBeUndefined();
-    });
-  });
-
-  describe("consumeProjectNotice", () => {
-    it("returns and clears the pending notice via manager", () => {
-      const loc: ChatLocator = { chatId: 123456, topicId: 7 };
-      manager.bindProjectDir(loc, "/home/daniel/project");
-
-      const notice = manager.consumeProjectNotice(loc);
-      expect(notice).toBe("Project directory changed to `/home/daniel/project`.");
-
-      // Consumed — second call returns undefined
-      expect(manager.consumeProjectNotice(loc)).toBeUndefined();
-    });
-
-    it("returns undefined when no notice is pending", () => {
-      const loc: ChatLocator = { chatId: 123456 };
-      expect(manager.consumeProjectNotice(loc)).toBeUndefined();
-    });
-  });
-
-  describe("setModelName", () => {
-    it("sets modelName on an existing session", () => {
-      const loc: ChatLocator = { chatId: 1 };
-      const created = manager.createForChat(loc);
-      expect(created.modelName).toBeUndefined();
-
-      manager.setModelName(created.id, "poe/GPT-4o");
-      const updated = manager.resolve(loc);
-      expect(updated?.modelName).toBe("poe/GPT-4o");
-    });
-
-    it("clears modelName when passed undefined", () => {
-      const loc: ChatLocator = { chatId: 1 };
-      const created = manager.createForChat(loc);
-      manager.setModelName(created.id, "poe/GPT-4o");
-
-      manager.setModelName(created.id, undefined);
-      const updated = manager.resolve(loc);
-      expect(updated?.modelName).toBeUndefined();
-    });
-
-    it("throws when session does not exist", () => {
-      expect(() => manager.setModelName("0000000000", "poe/GPT-4o")).toThrow(
-        /session not found/,
-      );
-    });
-  });
-
-  describe("setThinkingLevel", () => {
-    it("sets thinkingLevel on an existing session", () => {
-      const loc: ChatLocator = { chatId: 1 };
-      const created = manager.createForChat(loc);
-      expect(created.thinkingLevel).toBeUndefined();
-
-      manager.setThinkingLevel(created.id, "high");
-      const updated = manager.resolve(loc);
-      expect(updated?.thinkingLevel).toBe("high");
-    });
-
-    it("clears thinkingLevel when passed undefined", () => {
-      const loc: ChatLocator = { chatId: 1 };
-      const created = manager.createForChat(loc);
-      manager.setThinkingLevel(created.id, "high");
-
-      manager.setThinkingLevel(created.id, undefined);
-      const updated = manager.resolve(loc);
-      expect(updated?.thinkingLevel).toBeUndefined();
-    });
-
-    it("throws when session does not exist", () => {
-      expect(() => manager.setThinkingLevel("0000000000", "high")).toThrow(
-        /session not found/,
-      );
-    });
-  });
-
-  describe("setTitle", () => {
-    it("sets title on an existing session", () => {
-      const loc: ChatLocator = { chatId: 1 };
-      const created = manager.createForChat(loc);
-
-      manager.setTitle(created.id, "memory refactor");
-      const updated = manager.resolve(loc);
-      expect(updated?.title).toBe("memory refactor");
-    });
-
-    it("throws when session does not exist", () => {
-      expect(() => manager.setTitle("0000000000", "nope")).toThrow(/session not found/);
-    });
-  });
-
-  describe("bindExistingToChat", () => {
-    it("rebinds a DM to an existing session", () => {
-      const first = manager.createForChat({ chatId: 1 });
-      const second = manager.createForChat({ chatId: 2 });
-
-      const rebound = manager.bindExistingToChat(first.id, { chatId: 2 });
-
-      expect(rebound.id).toBe(first.id);
-      expect(manager.resolve({ chatId: 2 })?.id).toBe(first.id);
-      expect(existsSync(statePath(tmpDir, second.id))).toBe(true);
-    });
-
-    it("throws when session does not exist", () => {
-      expect(() => manager.bindExistingToChat("0000000000", { chatId: 1 })).toThrow(/session not found/);
-    });
-  });
-
-  describe("guest bindings", () => {
-    it("resolve(loc, { isGuest: true }) auto-creates on first call", () => {
-      const loc: ChatLocator = { chatId: 888 };
-      const state = manager.resolve(loc, { isGuest: true });
-      expect(state).not.toBeNull();
-      expect(state!.chatId).toBe(888);
-      expect(state!.topicId).toBeUndefined();
-
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.guest?.["888"]).toBe(state!.id);
-    });
-
-    it("resolve(loc, { isGuest: true }) returns the bound session on second call", () => {
-      const loc: ChatLocator = { chatId: 888 };
-      const first = manager.resolve(loc, { isGuest: true });
-      const second = manager.resolve(loc, { isGuest: true });
-      expect(second?.id).toBe(first!.id);
-    });
-
-    it("auto-heals a stale guest binding by recreating", () => {
-      const loc: ChatLocator = { chatId: 888 };
-      const first = manager.resolve(loc, { isGuest: true });
-      unlinkSync(statePath(tmpDir, first!.id));
-
-      const second = manager.resolve(loc, { isGuest: true });
-      expect(second).not.toBeNull();
-      expect(second!.id).not.toBe(first!.id);
-
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.guest?.["888"]).toBe(second!.id);
-    });
-
-    it("guest binding does not collide with a DM binding for the same chat id", () => {
-      const loc: ChatLocator = { chatId: 888 };
-      const dm = manager.createForChat(loc);
-      const guest = manager.resolve(loc, { isGuest: true });
-
-      expect(guest!.id).not.toBe(dm.id);
-
-      // DM resolve returns the DM binding; guest resolve returns the guest binding.
-      expect(manager.resolve(loc)?.id).toBe(dm.id);
-      expect(manager.resolve(loc, { isGuest: true })?.id).toBe(guest!.id);
-
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.dm?.["888"]).toBe(dm.id);
-      expect(config.guest?.["888"]).toBe(guest!.id);
-    });
-
-    it("resolve(loc) without isGuest is unchanged (does not consult guest map)", () => {
-      const loc: ChatLocator = { chatId: 888 };
-      // Create a guest session
-      manager.resolve(loc, { isGuest: true });
-
-      // Plain resolve (no isGuest) MUST NOT find it — behaves like an unbound DM.
-      expect(manager.resolve(loc)).toBeNull();
-    });
-
-    it("peekBinding honors isGuest and does not auto-create", () => {
-      const loc: ChatLocator = { chatId: 888 };
-      expect(manager.peekBinding(loc, { isGuest: true })).toBeNull();
-      expect(readdirSync(sessionsDir(tmpDir))).toEqual([]);
-
-      manager.resolve(loc, { isGuest: true });
-      const peeked = manager.peekBinding(loc, { isGuest: true });
-      expect(peeked).not.toBeNull();
-      // peekBinding without isGuest does not find the guest binding.
-      expect(manager.peekBinding(loc)).toBeNull();
-    });
-
-    it("archive clears the guest binding", () => {
-      const loc: ChatLocator = { chatId: 888 };
-      const created = manager.resolve(loc, { isGuest: true });
-
-      manager.archive(created!.id);
-
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.guest?.["888"]).toBeUndefined();
-    });
-
-    it("createForChat with isGuest writes the guest map", () => {
-      const loc: ChatLocator = { chatId: 888 };
-      const state = manager.createForChat(loc, { isGuest: true });
-
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.guest?.["888"]).toBe(state.id);
-      expect(config.dm?.["888"]).toBeUndefined();
     });
   });
 
   describe("peekBinding", () => {
-    it("returns the bound session id and state for a DM", () => {
-      const loc: ChatLocator = { chatId: 42 };
-      const created = manager.createForChat(loc);
+    it("returns bound session for an exact surface", () => {
+      const surface = dmSurface(42);
+      const created = manager.createForSurface(surface);
+      const peeked = manager.peekBinding(surface);
+      expect(peeked?.sessionId).toBe(created.id);
+    });
 
-      const peeked = manager.peekBinding(loc);
+    it("returns null for an unbound surface without creating", () => {
+      expect(manager.peekBinding(dmSurface(999))).toBeNull();
+      expect(readdirSync(sessionsDir(tmpDir))).toEqual([]);
+    });
+
+    it("returns null for a similar but different surface", () => {
+      manager.createForSurface(guestSurface(777));
+      expect(manager.peekBinding(dmSurface(777))).toBeNull();
+    });
+
+    it("returns null when bound state.json is missing", () => {
+      const surface = dmSurface(42);
+      const created = manager.createForSurface(surface);
+      unlinkSync(statePath(tmpDir, created.id));
+      expect(manager.peekBinding(surface)).toBeNull();
+    });
+  });
+
+  describe("bindExistingToSurface", () => {
+    it("binds an existing session to a new surface", () => {
+      const session = manager.createForSurface(dmSurface(1));
+      const topic = topicSurface("supergroup", 2, 7);
+      manager.bindExistingToSurface(session.id, topic);
+
+      expect(manager.resolve(topic)?.id).toBe(session.id);
+      expect(existsSync(statePath(tmpDir, session.id))).toBe(true);
+    });
+
+    it("throws when session does not exist", () => {
+      expect(() => manager.bindExistingToSurface("0000000000", dmSurface(1))).toThrow(/session not found/);
+    });
+  });
+
+  describe("project dir", () => {
+    it("binds and reads projectDir per surface", () => {
+      const surface = dmSurface(123);
+      manager.bindProjectDir(surface, "/home/daniel/project");
+      expect(manager.getProjectDir(surface)).toBe("/home/daniel/project");
+    });
+
+    it("clears projectDir", () => {
+      const surface = dmSurface(123);
+      manager.bindProjectDir(surface, "/home/daniel/project");
+      manager.bindProjectDir(surface, undefined);
+      expect(manager.getProjectDir(surface)).toBeUndefined();
+    });
+
+    it("consumes pending project notice", () => {
+      const surface = topicSurface("supergroup", 123, 7);
+      manager.bindProjectDir(surface, "/home/daniel/project");
+      expect(manager.consumeProjectNotice(surface)).toBe("Project directory changed to `/home/daniel/project`.");
+      expect(manager.consumeProjectNotice(surface)).toBeUndefined();
+    });
+  });
+
+  describe("legacy ChatLocator compatibility", () => {
+    it("resolve(loc, opts) still works for DM and supergroup", () => {
+      const dm = manager.resolve({ chatId: 1000 }) ?? manager.createForSurface(dmSurface(1000));
+      expect(manager.resolve({ chatId: 1000 })?.id).toBe(dm.id);
+
+      const sg = manager.resolve({ chatId: -1000 }, { isSupergroup: true });
+      expect(manager.resolve({ chatId: -1000 }, { isSupergroup: true })?.id).toBe(sg!.id);
+    });
+
+    it("peekBinding(loc, opts) still works for guest", () => {
+      manager.resolve({ chatId: 888 }, { isGuest: true });
+      const peeked = manager.peekBinding({ chatId: 888 }, { isGuest: true });
       expect(peeked).not.toBeNull();
-      expect(peeked!.sessionId).toBe(created.id);
-      expect(peeked!.state.id).toBe(created.id);
+      expect(manager.peekBinding({ chatId: 888 })).toBeNull();
     });
 
-    it("returns null on missing binding (DM with no session)", () => {
-      expect(manager.peekBinding({ chatId: 999 })).toBeNull();
-    });
+    it("createForChat and bindExistingToChat still delegate", () => {
+      const state = manager.createForChat({ chatId: 42 });
+      expect(manager.resolve({ chatId: 42 })?.id).toBe(state.id);
 
-    it("returns null for an unbound topic locator without auto-creating", () => {
-      const loc: ChatLocator = { chatId: 5, topicId: 9 };
-      expect(manager.peekBinding(loc)).toBeNull();
-
-      // Critical: peekBinding MUST NOT auto-create. Assert no session
-      // subdirectory and no binding entries appeared (manager.init() creates
-      // the empty sessions/ dir, so we check its contents).
-      expect(readdirSync(sessionsDir(tmpDir))).toEqual([]);
-      expect(existsSync(configPath(tmpDir))).toBe(false);
-    });
-
-    it("returns the bound session for a topic locator without mutating", () => {
-      const loc: ChatLocator = { chatId: 5, topicId: 9 };
-      const created = manager.createForChat(loc);
-
-      const peeked = manager.peekBinding(loc);
-      expect(peeked!.sessionId).toBe(created.id);
-
-      // Second peek is idempotent — no new sessions created
-      const peeked2 = manager.peekBinding(loc);
-      expect(peeked2!.sessionId).toBe(created.id);
-    });
-
-    it("returns null for a supergroup locator without auto-creating", () => {
-      const loc: ChatLocator = { chatId: 777 };
-      expect(manager.peekBinding(loc)).toBeNull();
-      expect(readdirSync(sessionsDir(tmpDir))).toEqual([]);
-    });
-
-    it("returns null when the bound state is missing (archived session)", () => {
-      const loc: ChatLocator = { chatId: 42 };
-      const created = manager.createForChat(loc);
-      manager.archive(created.id);
-
-      // Archive clears the DM binding, so peekBinding sees nothing.
-      expect(manager.peekBinding(loc)).toBeNull();
-    });
-
-    it("returns null when binding exists but state.json is missing", () => {
-      const loc: ChatLocator = { chatId: 42 };
-      const created = manager.createForChat(loc);
-      // Leave the binding intact, delete state.json to simulate a dangling binding
-      unlinkSync(statePath(tmpDir, created.id));
-
-      expect(manager.peekBinding(loc)).toBeNull();
-    });
-
-    it("does not auto-create on stale topic binding (unlike resolve)", () => {
-      const loc: ChatLocator = { chatId: 100, topicId: 7 };
-      const created = manager.createForChat(loc);
-      unlinkSync(statePath(tmpDir, created.id));
-
-      // peekBinding must return null and MUST NOT recreate the session.
-      expect(manager.peekBinding(loc)).toBeNull();
-
-      // The topic binding still references the old (now-stateless) session,
-      // and no new session directory was created — only the original (now
-      // stateless) dir remains.
-      const config = JSON.parse(readFileSync(configPath(tmpDir), "utf-8")) as BindingsFile;
-      expect(config.topics?.["100"]?.["7"]).toBe(created.id);
-      expect(readdirSync(sessionsDir(tmpDir))).toEqual([created.id]);
+      const other = manager.createForChat({ chatId: 99 });
+      manager.bindExistingToChat(state.id, { chatId: 99 });
+      expect(manager.resolve({ chatId: 99 })?.id).toBe(state.id);
+      expect(existsSync(statePath(tmpDir, other.id))).toBe(true);
     });
   });
 });

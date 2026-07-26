@@ -14,13 +14,28 @@ Goblin SHALL use **surface** for a stable Telegram delivery lane, **binding** fo
 
 ### Requirement: Conversation lifecycle is a deep module
 
-The system SHALL expose one conversation-lifecycle interface that owns complete inspect, resolve-or-start, rotate, resume, and archive operations. Callers SHALL NOT coordinate direct binding-file edits, conversation-record edits, and runtime disposal as separate lifecycle steps.
+The system SHALL expose one conversation-lifecycle interface that owns complete inspect, resolve-or-start, rotate, resume, and archive operations. Every binding-changing operation SHALL use the dependency-provided process-wide lifecycle-transition lock so unbound creation and cross-Surface moves cannot race. Callers SHALL NOT coordinate direct binding-file edits, conversation-record edits, and runtime disposal as separate lifecycle steps.
 
 #### Scenario: Caller rotates a surface
 
 - **WHEN** a caller requests rotation for a surface
 - **THEN** the lifecycle module SHALL quiesce the prior runtime, create a fresh conversation in the surface's effective execution environment, update the binding, and return the resulting conversation
 - **AND** the caller SHALL NOT perform any of those persistence steps itself
+
+#### Scenario: Rotate quiescence fails before creation
+
+- **GIVEN** a Surface is bound to Conversation P
+- **WHEN** rotate invalidates P's runtime but required cleanup fails
+- **THEN** no fresh Conversation SHALL be created
+- **AND** the Surface SHALL remain bound to P
+- **AND** the invalidated runtime object SHALL NOT be restored or reused
+- **AND** a later turn MAY construct a fresh runtime for still-bound P
+
+#### Scenario: Concurrent binding transitions serialize
+
+- **WHEN** two operations would create, rotate, assign, or move bindings concurrently
+- **THEN** each SHALL re-read authority while holding the shared transition lock
+- **AND** one complete operation SHALL commit or fail before the other mutates persistence
 
 #### Scenario: Caller inspects without mutation
 
@@ -86,11 +101,11 @@ The lifecycle module SHALL permit a conversation to bind to a destination surfac
 
 ### Requirement: Surface and conversation state have separate owners
 
-Model and thinking preferences, schedules, heartbeat enablement/interval, and the surface-specific heartbeat prompt SHALL be owned by `SurfaceId`. Conversation ID, name, creation time, transcript, events, metrics, pi history, and immutable execution environment SHALL be owned by the conversation. Rotating or resuming a conversation MUST NOT copy, clear, disable, or duplicate surface-owned state.
+Project assignment, model and thinking preferences, the prerequisite-defined skill policy, schedules, heartbeat enablement/interval, and the surface-specific heartbeat prompt SHALL be owned by `SurfaceId`. The current bound Surface SHALL be the sole routing input to the active memory-context projection; that projection is not a second persisted Surface setting and MUST NOT derive from Conversation creation metadata. Conversation ID, name, creation time, transcript, events, metrics, pi history, and immutable execution environment SHALL be owned by the Conversation. Rotating or resuming a Conversation MUST NOT copy, clear, disable, or duplicate Surface-owned state.
 
 #### Scenario: Rotate preserves surface state
 
-- **GIVEN** a surface has model and thinking preferences plus enabled schedules and heartbeat configuration
+- **GIVEN** a Surface has project assignment, model and thinking preferences, skill policy, enabled schedules, heartbeat configuration, and a memory context projected from its identity
 - **WHEN** the surface rotates to a fresh conversation
 - **THEN** all of those surface-owned values SHALL remain attached to the same `SurfaceId`
 - **AND** the fresh conversation SHALL retain only its own conversation state
@@ -172,15 +187,16 @@ The system SHALL persist optional model and thinking preferences in the surface-
 
 ### Requirement: Migrate legacy lifecycle state idempotently
 
-Startup SHALL idempotently migrate legacy conversation records, bindings, model/thinking preferences, schedules, heartbeat records, and surface heartbeat prompt files to the split ownership model without deleting conversation history. Migration SHALL repair conversations referenced by multiple surface bindings to the one-active-binding invariant, preserve every displaced conversation as resumable, and log each repair with the conversation ID and affected surface IDs. Expected missing files may be skipped; invalid data and non-`ENOENT` filesystem errors MUST fail loudly.
+Startup SHALL idempotently migrate legacy conversation records, bindings, model/thinking preferences, schedules, heartbeat records, and surface heartbeat prompt files to the split ownership model without deleting conversation history. Migration SHALL detect a conversation referenced by multiple surface bindings before its first lifecycle-migration write and fail with the conversation ID plus every candidate SurfaceId so the operator can choose the retained binding explicitly. Expected missing files may be skipped; invalid data and non-`ENOENT` filesystem errors MUST fail loudly.
 
 #### Scenario: Legacy conversation has several bindings
 
 - **GIVEN** one legacy conversation is referenced by several migrated surface bindings
-- **WHEN** migration runs
-- **THEN** it SHALL retain one deterministic active binding and clear the others in one binding-file replacement
-- **AND** SHALL log the retained and cleared surface IDs
-- **AND** SHALL leave the conversation directory intact
+- **WHEN** migration computes its output
+- **THEN** startup SHALL fail before writing lifecycle-migration outputs
+- **AND** the diagnostic SHALL identify the conversation and every candidate SurfaceId
+- **AND** no binding SHALL be selected by lexical order, map order, or guessed recency
+- **AND** the conversation directory and binding file SHALL remain unchanged
 
 #### Scenario: Migration restarts after partial completion
 

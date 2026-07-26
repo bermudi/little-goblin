@@ -4,15 +4,15 @@
 
 ### Requirement: AgentRunner derives project authority from the session environment
 
-`AgentRunner` SHALL be constructed from the session's persisted `ExecutionEnvironment`, not from an optional Surface `projectDir`. For a personal environment it SHALL use `$GOBLIN_HOME/scratch/workdir` as `cwd` and load no project guidance or project-bound tools. For a project environment it SHALL use the canonical `projectRoot` as `cwd`, as the root for exact project guidance and project skill discovery, and as the trusted directory supplied to project-bound tools and file handling.
+`AgentRunner` SHALL be constructed from the session's persisted `ExecutionEnvironment`, not from an optional Surface `projectDir`. For a personal environment it SHALL use the persistent `$GOBLIN_HOME/workspace` as `cwd` and load no project guidance or project-bound tools. For a project environment it SHALL use the canonical `projectRoot` as `cwd`, as the root for exact project guidance and project skill discovery, and as the trusted directory supplied to project-bound tools and file handling.
 
-The pi `agentDir` and model/auth configuration SHALL remain deployment-owned under `$GOBLIN_HOME/state/pi`; global Goblin skills SHALL remain explicitly loaded from `$GOBLIN_HOME/workspace/skills`. A project environment MUST supplement rather than replace those deployment resources.
+The pi `agentDir` and model/auth configuration SHALL remain deployment-owned under `$GOBLIN_HOME/state/pi`; Goblin-wide skills SHALL remain explicitly loaded from the prerequisite-defined `$GOBLIN_HOME/.agents/skills/` catalog until the dependent skill resolver applies Surface policy. A project environment MUST supplement rather than replace those deployment resources.
 
 #### Scenario: Personal session initializes
 
 - **WHEN** an AgentRunner is created for a session with `executionEnvironment: { kind: "personal" }`
 - **AND** it initializes
-- **THEN** its `cwd` SHALL be `$GOBLIN_HOME/scratch/workdir`
+- **THEN** its `cwd` SHALL be `$GOBLIN_HOME/workspace`
 - **AND** its pi `agentDir` SHALL remain `$GOBLIN_HOME/state/pi`
 - **AND** no project `AGENTS.md`, project skills, external-agent tool, or project file destination SHALL be enabled
 
@@ -54,7 +54,7 @@ Before creating or returning a runner for a Telegram turn, the dispatcher SHALL 
 
 - **GIVEN** an internal session persists the personal environment and has no Surface
 - **WHEN** its runner is created
-- **THEN** it SHALL initialize with `$GOBLIN_HOME/scratch/workdir` without Surface comparison
+- **THEN** it SHALL initialize with `$GOBLIN_HOME/workspace` without Surface comparison
 
 ### Requirement: Pi history reopens only under a compatible environment
 
@@ -72,7 +72,7 @@ When no pi history exists, the backend SHALL create a new pi session with the en
 
 #### Scenario: Compatible personal history reopens
 
-- **GIVEN** a personal session's pi history header records `$GOBLIN_HOME/scratch/workdir`
+- **GIVEN** a personal session's pi history header records `$GOBLIN_HOME/workspace`
 - **WHEN** the runner initializes
 - **THEN** the backend SHALL reopen that history under the personal environment
 

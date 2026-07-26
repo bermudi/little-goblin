@@ -20,7 +20,7 @@ A conversation runtime SHALL be keyed by conversation ID, but its Telegram tools
 
 ### Requirement: Runtime disposal precedes binding movement
 
-Before rotate, resume, or archive commits a binding change, orchestration SHALL remove and dispose every runtime made stale by the transition and sever its prompt queue. Moving a target from another surface SHALL dispose the target runtime; displacing the destination SHALL dispose the destination's prior runtime. At no time MAY one conversation have active runtimes for two surfaces.
+Before rotate, resume, or archive commits a binding change, orchestration SHALL remove and dispose every runtime made stale by the transition and sever its prompt queue. For rotation of a bound Surface, required quiescence SHALL complete before the fresh Conversation record is created. Moving a target from another surface SHALL dispose the target runtime; displacing the destination SHALL dispose the destination's prior runtime. At no time MAY one conversation have active runtimes for two surfaces.
 
 #### Scenario: Resume displaces two runtimes
 
@@ -35,7 +35,16 @@ Before rotate, resume, or archive commits a binding change, orchestration SHALL 
 - **WHEN** required runtime disposal fails before a lifecycle transition commits
 - **THEN** the binding transition SHALL fail
 - **AND** existing bindings SHALL remain unchanged
+- **AND** an invalidated runtime identity SHALL NOT be restored
 - **AND** the failure SHALL be logged
+
+#### Scenario: Rotate disposal fails before creation
+
+- **GIVEN** Surface X is bound to Conversation P
+- **WHEN** rotation cannot quiesce P's runtime
+- **THEN** no fresh Conversation Q SHALL be created
+- **AND** X SHALL remain bound to P
+- **AND** a later dispatch SHALL construct a fresh runtime rather than reuse the invalidated object
 
 ### Requirement: Stale-runtime guard covers every lifecycle transition
 

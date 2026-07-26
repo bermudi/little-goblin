@@ -22,7 +22,7 @@ This change affects two capabilities: `telegram` and `sessions`.
 
 - Key bindings and surface settings by canonical `SurfaceId` while preserving the distinction between routing identity and conversation identity.
 - Replace `resolve(loc, { isSupergroup, isGuest })`, `createForChat(...)`, `peekBinding(...)`, project-setting methods, and scheduler records with complete `Surface` inputs.
-- Migrate existing `bindings.json`, `topic-settings.json`, and schedule locator records atomically into the canonical surface representation without changing which conversation, setting, or schedule belongs to each Telegram lane.
+- Migrate existing `bindings.json`, `topic-settings.json`, and schedule locator records through per-file atomic replacement plus mixed-generation recovery without changing which conversation, setting, or schedule belongs to each Telegram lane. Legacy topic records lacking enough persisted evidence to recover their container kind fail for explicit repair rather than defaulting to supergroup.
 - Preserve existing creation, binding, scheduling, memory-scope, and delivery behavior. This change establishes identity and removes ambiguous flags; it does not redesign conversation lifecycle.
 
 ## Non-Goals

@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-07-26T05:49:50Z
+dependsOn:
+  - immutable-project-environments
+  - conversation-lifecycle
+  - acp-external-agents

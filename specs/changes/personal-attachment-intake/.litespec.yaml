@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-07-26T03:35:29Z
+mode: patch
+dependsOn:
+  - immutable-project-environments

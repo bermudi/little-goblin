@@ -4,6 +4,21 @@ Telegram-native personal AI agent. Single user (bermudi), single process, homela
 
 Goblin lives in Telegram. You message it, it thinks, it responds. It can spawn subagents for focused work, persist conversation history, and evolve its own skills. Deep use of Telegram as UI — reactions, voice, topics, files — not just a chat wrapper.
 
+## Architecture stabilization gate
+
+> **This project is being architecturally stabilized. Do not add new product features on top of known-bad seams.** Repair ownership, lifetime, authority, storage, and module interfaces first; otherwise each feature makes the eventual migration harder.
+
+Before proposing or implementing feature work:
+
+- Read the relevant canon, active litespec changes, and accepted decisions. Canon describes implemented behavior; active changes may deliberately replace it.
+- Name the owner and lifetime of every new piece of state: Surface, Conversation, conversation runtime, Execution Environment, delegated run, or deployment.
+- Name its authority source and persistence location. Do not infer authority from convenience fields or duplicate it across callers.
+- Put cross-cutting behavior behind a deep module with one interface; do not add orchestration choreography to commands, Telegram intake, or other callers.
+- Do not extend legacy `Session`/`ChatLocator`, mutable-project, `scratch/`, or ad-hoc skill-loading patterns. Migrate or replace the seam.
+- A bug fix may land during stabilization, but it must move toward the target architecture or explicitly document why it is a containment patch.
+
+New feature work resumes when its architectural dependencies are explicit and the relevant stabilization changes are accepted. “It fits the current code” is not sufficient.
+
 ## Run
 
 ```sh
@@ -14,15 +29,9 @@ bun run src/index.ts    # or: bun run dev
 
 ## Shape
 
-Single bun process. Three layers:
+Entry is `src/index.ts`; `src/bot.ts` is the Telegram composition root. The implemented system is currently migrating from an overloaded Telegram/session/agent shape to explicit Surface, Binding, Conversation, ConversationRuntime, and Execution Environment lifetimes.
 
-1. **Telegram layer** — grammy client, message normalization, β-tools (reactions, voice, files). Turns Telegram events into goblin's world.
-2. **Session layer** — maps `(chat, topic)` to persistent session. Owns events.jsonl, state, bindings. Topics auto-create; DMs require `/new`.
-3. **Agent layer** — wraps pi-coding-agent. Manages LLM context, tool registry, subagent spawning.
-
-Entry at `src/index.ts` → `src/bot.ts` wires layers, mounts middleware, starts polling.
-
-Architecture lives in `specs/` (litespec). This file is just guardrails.
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before structural work. It distinguishes implemented **CURRENT** behavior, accepted **TARGET** architecture, and unresolved **OPEN** questions. Litespec remains authoritative for detailed behavioral contracts; this file remains guardrails.
 
 ## Guardrails
 

@@ -12,15 +12,15 @@
 
 - [ ] Change binding and topic-settings DTOs to versioned SurfaceId-keyed `surfaces` maps while retaining migration-only legacy decoders.
 - [ ] Update `SessionManager` and topic-setting operations to accept complete Surface values and perform one-key lookups without sign inference or routing flags; preserve the existing DM/topic/supergroup/guest creation policies in this change.
-- [ ] Create `src/sessions/surface-migration.ts` to precompute and validate legacy binding/settings conversion before atomic writes, accept mixed-generation input, and remain idempotent after an interrupted migration.
-- [ ] Add migration and manager/settings tests for every Surface kind, numeric collisions, stale behavior, archive cleanup, mixed-generation restart, and invalid data.
+- [ ] Create `src/sessions/surface-migration.ts` to precompute and validate legacy binding/settings conversion before per-file atomic writes, require unique persisted container evidence for legacy topics, accept mixed-generation input, and remain idempotent after an interrupted migration.
+- [ ] Add migration and manager/settings tests for every Surface kind, explicit private/supergroup topic evidence, absent/conflicting topic evidence refusal before writes, numeric collisions, stale behavior, archive cleanup, mixed-generation restart, and invalid data.
 - [ ] Wire migration before manager/scheduler/polling startup while retaining compatibility at not-yet-migrated callers.
 - [ ] Run the touched session/migration tests and `bun run typecheck`.
 
 ## Phase 3: Persist schedules with Surface identity
 
 - [ ] Split in-memory `ScheduledTurn.surface` from persisted `surfaceId`, with strict decode at the schedule-store boundary and no legacy locator in canonical writes.
-- [ ] Migrate legacy schedule locators using explicit metadata or exact `(chatId, sessionId)` binding matches; fail before writes on zero/multiple candidates and preserve every non-routing field.
+- [ ] Migrate legacy schedule locators using explicit container metadata, uniquely proven topic identity, or exact `(chatId, sessionId)` topicless binding matches; fail before writes on absent/conflicting/zero/multiple candidates and preserve every non-routing field.
 - [ ] Update schedule command/tool/store APIs and scheduler eligibility to pass Surface and call non-mutating `peekBinding(surface)`.
 - [ ] Add store/loop/tool/command tests for round trips, invalid IDs, similar-kind mismatch, migration ambiguity, and unchanged claim/recurrence behavior.
 - [ ] Run scheduler/command tests and `bun run typecheck`.

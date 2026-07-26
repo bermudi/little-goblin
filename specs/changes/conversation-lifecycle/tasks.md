@@ -11,15 +11,15 @@
 ## Phase 2: Add the deep conversation lifecycle
 
 - [ ] Define the narrow `ConversationRuntimeHost` invalidation/quiescence interface and implement it in `TurnDispatcher` with synchronous runner/queue removal before cleanup.
-- [ ] Create `ConversationLifecycle` with non-creating inspect, authorized resolve-or-start, rotate, compatible resume/move, archive, and environment-filtered listing.
+- [ ] Create `ConversationLifecycle` with non-creating inspect, authorized resolve-or-start, rotate, compatible resume/move, archive, and environment-filtered listing, using the dependency-provided lifecycle-transition lock for every binding-changing operation.
 - [ ] Enforce one active Surface binding per Conversation through one atomic binding-map write; preserve displaced/rotated Conversations as resumable.
-- [ ] Verify environment compatibility before runtime disposal or binding mutation and keep transitions unchanged when validation/quiescence fails.
-- [ ] Add lifecycle tests for DM/topic lazy creation, rotate, same-target idempotence, two-runtime resume, incompatible resume, disposal failure, and stale capture invalidation.
+- [ ] Verify environment compatibility before runtime disposal or binding mutation; for rotate, quiesce before creating the fresh Conversation so failed quiescence leaves both binding and Conversation store unchanged.
+- [ ] Add lifecycle tests for DM/topic lazy creation, concurrent unbound creation, rotate, same-target idempotence, two-runtime resume, incompatible resume, quiescence failure before Q creation, post-Q binding-write failure leaving Q resumable, invalidated-runner non-reuse, and stale capture invalidation.
 - [ ] Run lifecycle/dispatcher tests and `bun run typecheck`.
 
 ## Phase 3: Route authorized intake through lifecycle
 
-- [ ] Wire ordinary authorized text and media intake through `resolveOrStart(surface)` for every supported Surface, including DMs and guest text.
+- [ ] Wire ordinary authorized text and media intake through `resolveOrStart(surface)` for every supported Surface, including DMs and guest text, while preserving the dependency-defined environment attachment destination and collision-safe save behavior.
 - [ ] Route commands, status reads, scheduler inspection, internal jobs, and proactive-delivery seams through non-creating `inspect(surface)`.
 - [ ] Replace direct SessionManager binding/create side effects in intake with ConversationLifecycle results and runtime-host behavior.
 - [ ] Add intake tests proving first DM/media creation, command non-creation, guest creation, unbound status behavior, and unrelated Conversation concurrency.
@@ -38,7 +38,7 @@
 
 - [ ] Extend Surface settings with model/thinking preferences and atomic read/write helpers.
 - [ ] Update `/model` and `/think` to persist by Surface, apply compatible changes to a current runtime, and work without creating a Conversation.
-- [ ] Make runtime creation read destination Surface preferences; remove canonical reads/writes of Conversation model/thinking fields.
+- [ ] Make runtime creation read destination Surface preferences and preserve the prerequisite-defined destination skill policy; remove canonical reads/writes of Conversation model/thinking fields.
 - [ ] Add tests for preference survival across `/new`/archive, destination preference after `/resume`, unbound updates, and migration precedence.
 - [ ] Run model/think/settings/runner tests and `bun run typecheck`.
 
@@ -62,9 +62,9 @@
 ## Phase 8: Migrate split ownership
 
 - [ ] Create `conversation-migration.ts` to canonicalize Conversation records, copy bound legacy model/thinking preferences to Surface, convert schedule ownership, and move heartbeat prompts.
-- [ ] Repair legacy multi-bound Conversations by retaining lexicographically smallest SurfaceId, clearing others atomically, and logging retained/cleared identities.
+- [ ] Detect legacy multi-bound Conversations during precomputation and fail before writes with the ConversationId and all candidate SurfaceIds; require explicit operator repair rather than selecting by lexical or map order.
 - [ ] Fail loudly on duplicate heartbeat conflicts or differing source/destination prompt files; preserve all Conversation directories and non-owner schedule fields.
 - [ ] Support idempotent canonical/mixed-generation reruns after any per-file write boundary and wire migration after both dependencies but before scheduler/polling.
-- [ ] Add migration fixtures for every ownership field, multi-binding repair, prompt conflicts, partial restart, malformed state, and non-ENOENT failures.
+- [ ] Add migration fixtures for every ownership field, ambiguous multi-binding refusal, prompt conflicts, partial restart, malformed state, and non-ENOENT failures.
 - [ ] Remove obsolete public partial-binding APIs and update compatibility aliases/JSDoc without renaming filesystem paths.
 - [ ] Run `bun test`, `bun run typecheck`, and `litespec validate conversation-lifecycle`.

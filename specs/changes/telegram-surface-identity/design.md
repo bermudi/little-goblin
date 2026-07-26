@@ -136,13 +136,14 @@ Conversion rules:
    - `dm[C]` → `tg:v1:dm:C`
    - `supergroups[C]` → `tg:v1:supergroup:C`
    - `guest[C]` → `tg:v1:guest:C`
-   - `topics[C][T]` → `tg:v1:topic:supergroup:C:T`
-2. `topic-settings.json` uses the same DM, supergroup, and topic conversion. The legacy schema has no guest settings map.
-3. Each legacy schedule keeps every non-routing field. A topic locator maps to a private topic when its persisted `isPrivate === true`; otherwise it maps to a legacy forum-supergroup topic. A topicless locator with explicit `isPrivate` maps directly. Otherwise, the migration matches `(chatId, sessionId)` against the converted bindings and requires exactly one DM, supergroup, or guest candidate.
+   - `topics[C][T]` has no intrinsic container kind and is converted only after the evidence pass below.
+2. `topic-settings.json` uses the same DM and supergroup conversions. A legacy topic setting inherits a uniquely proven container for its `(chatId, topicId)`; the legacy schema has no guest settings map.
+3. Before producing topic keys, migration gathers persisted container evidence from every legacy record addressing the same topic. Explicit private metadata proves `private`; explicit forum/supergroup metadata proves `supergroup`. Evidence must agree on exactly one container. Absence or conflict fails with the source paths and numeric topic identity. Legacy state has no supported evidence for `direct-messages`, so migration never invents that container.
+4. Each legacy schedule keeps every non-routing field. A topic locator uses its explicit container evidence or the uniquely proven container for its exact topic. A topicless locator with explicit private/supergroup metadata maps directly. Otherwise, migration matches `(chatId, sessionId)` against converted bindings and requires exactly one DM, supergroup, or guest candidate.
 
-Legacy topics default to the supergroup container because that is the only topic kind represented by the pre-change canonical spec. New private/direct-message topic support begins with the new schema and therefore has no ambiguous legacy encoding.
+This deliberately refuses ambiguous legacy topic bindings/settings even though most historical topics were probably forum supergroups. `ChatLocator` did not persist that fact, and defaulting would violate the promise to preserve the Telegram lane. The diagnostic tells the operator which canonical `SurfaceId` alternatives can replace the legacy entry explicitly.
 
-If any schedule has zero or multiple candidates, migration throws with its schedule ID before any write. If all outputs are valid, each file is replaced through the existing atomic JSON writer. A filesystem cannot atomically rename three files as one transaction, so crash consistency comes from idempotence: loaders accept legacy, canonical, or mixed-generation inputs, and the next startup recomputes the same canonical outputs. This is a real recovery mechanism, not a claim of impossible cross-file atomicity.
+If any topic or schedule has absent/conflicting evidence or zero/multiple candidates, migration throws with its source identity before any write. If all outputs are valid, each file is replaced through the existing atomic JSON writer. A filesystem cannot atomically rename three files as one transaction, so crash consistency comes from idempotence: loaders accept legacy, canonical, or mixed-generation inputs, and the next startup recomputes the same canonical outputs. This is a real recovery mechanism, not a claim of impossible cross-file atomicity.
 
 ## Decisions
 
@@ -182,13 +183,13 @@ If any schedule has zero or multiple candidates, migration throws with its sched
 
 **Why:** Those queues serialize one conversation runtime. Rekeying them by surface in this change would alter rebinding/runtime semantics owned by `conversation-lifecycle` and could allow two runners for one session. The proposal asks to distinguish surface identity from conversation identity, not collapse them.
 
-### Decision: Migration fails on ambiguity
+### Decision: Migration fails on topic or schedule ambiguity
 
-**Chosen:** Derive all schedule surfaces before writing and require exactly one candidate when legacy data lacks a kind.
+**Chosen:** Derive every legacy topic container and schedule Surface before writing. Require one explicit, consistent topic-container result and exactly one candidate for a locator lacking kind.
 
-**Why:** Guessing from chat-ID sign or preferring DM over supergroup would violate the new identity rule and could send proactive output to the wrong lane. Failing startup is safer and observable. The diagnostic names the schedule and candidate SurfaceIds so the state can be repaired deliberately.
+**Why:** Guessing from chat-ID sign, treating missing private metadata as supergroup, or preferring one binding map would violate the new identity rule and could route history, settings, or proactive output to the wrong lane. Failing startup is safer and observable. Diagnostics name the source record and candidate SurfaceIds so state can be repaired deliberately.
 
-**Constraint:** A pathological legacy file that bound the same session and numeric chat ID under multiple legacy maps requires manual repair before startup. Normal existing data migrates automatically.
+**Constraint:** Legacy topic records with no corroborating persisted container metadata require manual conversion to a canonical SurfaceId before startup. This is intentionally stricter than assuming all historical topics were forum supergroups.
 
 ### Decision: Do not create a cross-file transaction protocol
 

@@ -92,6 +92,14 @@ The queue-timing `/new` command SHALL rotate the invoking surface to a fresh con
 - **AND** the prior conversation SHALL remain resumable
 - **AND** the reply SHALL include the new conversation ID
 
+#### Scenario: New fails while quiescing prior runtime
+
+- **GIVEN** the Surface is bound to Conversation P
+- **WHEN** `/new` cannot quiesce P's runtime
+- **THEN** the command SHALL report failure
+- **AND** no fresh Conversation SHALL be created
+- **AND** P SHALL remain bound and resumable without reusing the invalidated runtime object
+
 #### Scenario: New on an unbound surface
 
 - **WHEN** `/new` is sent on an unbound supported surface

@@ -4,7 +4,7 @@
 
 ### Requirement: /project assigns a Surface once and starts fresh history
 
-The `/project <path>` command SHALL convert an unassigned Surface from its effective personal environment to one immutable project assignment. On first assignment it SHALL canonicalize and persist the project root, leave the currently bound personal session stored and resumable, create a fresh project session, bind that session to the same Surface, and dispose the displaced session's active runner. It MUST NOT reopen the personal session's pi history under the project CWD.
+The `/project <path>` command SHALL convert an unassigned Surface from its effective personal environment to one immutable project assignment whether or not a Conversation is currently bound. On first assignment it SHALL canonicalize and persist the project root, create a fresh project Conversation, and bind it to the same Surface. If a personal Conversation is currently bound, the operation SHALL leave it stored and resumable and dispose its active runner; if the Surface is unbound, it SHALL create the first project Conversation directly. It MUST NOT create a disposable personal Conversation or reopen personal pi history under the project CWD.
 
 If the Surface is already assigned, the command SHALL compare canonical roots. The same root SHALL be reported without creating another session or disposing a runner. A different root, `/project none`, and `/project clear` SHALL be rejected without changing state, with guidance to use another Telegram topic or Surface for a different environment. Separate Surfaces MAY assign the same canonical project root.
 
@@ -25,6 +25,13 @@ If the Surface is already assigned, the command SHALL compare canonical roots. T
 - **WHEN** the user sends `/project /srv/project-link`
 - **THEN** the command SHALL report that the Surface is already assigned to `/srv/project-a`
 - **AND** SHALL NOT create a session, change the binding, or dispose Q's runner
+
+#### Scenario: Same assignment on an assigned but unbound Surface
+
+- **GIVEN** the Surface is assigned `/srv/project-a` but has no current binding
+- **WHEN** `/project` receives a path canonicalizing to `/srv/project-a`
+- **THEN** it SHALL report the existing assignment
+- **AND** SHALL NOT create or bind another Conversation
 
 #### Scenario: Different project is rejected
 
@@ -48,11 +55,13 @@ If the Surface is already assigned, the command SHALL compare canonical roots. T
 - **THEN** Surface B SHALL receive its own fresh project session and binding
 - **AND** Surface A's binding and session SHALL remain unchanged
 
-#### Scenario: No active session
+#### Scenario: First project assignment on an unbound Surface
 
-- **WHEN** the user sends `/project <path>` on a Surface with no active session
-- **THEN** the command SHALL reply `No active session. Start a conversation first.`
-- **AND** SHALL NOT assign an environment or create a session
+- **GIVEN** the Surface has no project assignment and no bound Conversation
+- **WHEN** the user sends `/project /srv/project-a`
+- **THEN** the Surface SHALL be assigned canonical project root `/srv/project-a`
+- **AND** a fresh project Conversation SHALL be created and bound directly
+- **AND** no provisional personal Conversation SHALL be created
 
 #### Scenario: Missing argument
 
@@ -109,7 +118,7 @@ The command SHALL parse the argument using space-safe extraction of everything a
 
 ### Requirement: cascade-cancel safety
 
-`/project` SHALL use queue timing. If a turn is active, first assignment SHALL defer until it settles rather than invoking the interrupt cascade. The displaced personal runtime SHALL then be disposed before the assignment commits. Repeated or rejected assignments MUST NOT cancel the current turn or delegated work.
+`/project` SHALL use queue timing. If a turn is active, first assignment SHALL defer until it settles rather than invoking the interrupt cascade. A displaced personal runtime SHALL then be disposed before the assignment commits; an unbound Surface has no runtime-disposal prerequisite. Repeated or rejected assignments MUST NOT cancel the current turn or delegated work.
 
 #### Scenario: First assignment during a turn
 
@@ -125,7 +134,7 @@ The command SHALL parse the argument using space-safe extraction of everything a
 
 ### Requirement: runner disposal on change
 
-On a Surface's first project assignment, the existing personal session's `AgentRunner` SHALL be disposed and removed from the active runner map, and a runner for the fresh project session SHALL be registered lazily without reusing the personal session's model context. Repeated or rejected assignments SHALL NOT dispose the current project runner.
+On a Surface's first project assignment, an existing personal Conversation's `AgentRunner` SHALL be disposed and removed from the active runner map, and a runner for the fresh project Conversation SHALL be registered lazily without reusing personal model context. If the Surface is unbound, no runner SHALL be synthesized or disposed. Repeated or rejected assignments SHALL NOT dispose the current project runner.
 
 #### Scenario: Runner replacement during first assignment
 
@@ -133,6 +142,22 @@ On a Surface's first project assignment, the existing personal session's `AgentR
 - **THEN** the personal session's existing runner SHALL be disposed
 - **AND** it SHALL be removed from the runner map even if `dispose()` throws
 - **AND** the fresh project session SHALL use its own runner and pi history
+
+#### Scenario: Unbound assignment has no displaced runner
+
+- **GIVEN** an unassigned Surface has no bound Conversation
+- **WHEN** `/project <path>` creates and binds its first project Conversation
+- **THEN** the operation SHALL NOT create or dispose a personal runner
+- **AND** the project runner SHALL remain lazy until first dispatch
+
+#### Scenario: Disposal failure precedes durable assignment
+
+- **GIVEN** the Surface is bound to personal Conversation P
+- **WHEN** first assignment cannot quiesce P's runtime
+- **THEN** the assignment SHALL fail
+- **AND** no pending intent or project Conversation Q SHALL exist
+- **AND** assignment and binding SHALL remain unchanged
+- **AND** P's invalidated runtime object SHALL NOT be reused
 
 #### Scenario: Same assignment leaves runner intact
 

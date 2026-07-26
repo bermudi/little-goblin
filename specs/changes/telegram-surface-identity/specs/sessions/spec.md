@@ -145,13 +145,28 @@ The session manager SHALL provide `createForSurface(surface, options?)` and `bin
 
 ### Requirement: Legacy surface state migrates before polling
 
-Startup SHALL migrate legacy `bindings.json` maps, legacy `topic-settings.json` maps, and legacy schedule `locator` records to canonical SurfaceId storage before the scheduler starts or Telegram polling begins. The migration SHALL parse and derive all replacements before its first write, validate every produced surface, replace each JSON file through the existing atomic-write path, and be idempotent across canonical, legacy, or mixed-generation files. Legacy `topics` entries SHALL map to `topic:supergroup`, because forum-supergroup topics were the only canonical topic kind in the legacy schema. A legacy schedule SHALL use explicit legacy private metadata when present and otherwise SHALL be matched by both chat identity and captured session ID against the available bindings. If a schedule cannot be mapped to exactly one surface, startup SHALL fail loudly before writing rather than silently retarget it.
+Startup SHALL migrate legacy `bindings.json` maps, legacy `topic-settings.json` maps, and legacy schedule `locator` records to canonical SurfaceId storage before the scheduler starts or Telegram polling begins. The migration SHALL parse and derive all replacements before its first write, validate every produced surface, replace each JSON file through the existing per-file atomic-write path, and be idempotent across canonical, legacy, or mixed-generation files. A legacy `topics` entry has no default container: migration SHALL require persisted evidence that uniquely and consistently proves `private` or `supergroup` for the same numeric topic, and SHALL fail before writes when evidence is absent or conflicting. It SHALL NOT infer `direct-messages`. A legacy schedule SHALL use explicit legacy container metadata when present and otherwise SHALL be matched by both chat identity and captured session ID against the available bindings. If a topic or schedule cannot be mapped to exactly one surface, startup SHALL fail loudly before writing rather than silently retarget it.
 
 #### Scenario: Legacy bindings migrate without collisions
 
 - **WHEN** `bindings.json` contains legacy `dm`, `topics`, `supergroups`, and `guest` entries
 - **THEN** each entry SHALL be converted to the corresponding canonical SurfaceId key
 - **AND** every referenced session ID SHALL be preserved
+
+#### Scenario: Legacy topic with explicit container evidence migrates
+
+- **GIVEN** a legacy topic binding and its corroborating persisted record identify the same chat, topic, and session as a forum supergroup
+- **WHEN** migration runs
+- **THEN** the binding SHALL map to `topic:supergroup`
+- **AND** any matching topic setting or schedule SHALL use that same canonical SurfaceId
+
+#### Scenario: Ambiguous legacy topic fails before writes
+
+- **GIVEN** a legacy topic binding or setting has no persisted container evidence, or its evidence conflicts
+- **WHEN** migration runs
+- **THEN** startup SHALL fail with the source path, chat ID, topic ID, and candidate canonical SurfaceIds
+- **AND** no migration output SHALL be written
+- **AND** migration SHALL NOT default the topic to `supergroup`
 
 #### Scenario: Legacy settings migrate
 

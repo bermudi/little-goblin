@@ -1,7 +1,7 @@
 /**
  * /model command logic.
  *
- * Lists favorite models or switches the current session to one.
+ * Lists favorite models or switches the current Surface to one.
  * Surfaces thinking level clamping when switching models.
  */
 
@@ -12,8 +12,6 @@ import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { parseCommandArg } from "./parse.ts";
 
 export interface ModelCommandDeps {
-  /** True iff a session was resolvable for this chat. */
-  hasSession: boolean;
   /** The raw command text, e.g. "/model 2". */
   rawText: string;
   /** Configured favorites list. */
@@ -24,16 +22,15 @@ export interface ModelCommandDeps {
   currentModelName: string;
   /** Current thinking level override, or undefined if using model default. */
   currentThinkingLevel: ThinkingLevel | undefined;
-  /** Resolved model for the current session (needed for thinking level clamp check). */
+  /** Resolved model for the current conversation (needed for thinking level clamp check). */
   currentResolvedModel: ResolvedModel | undefined;
-  /** Sets (or clears) the session-scoped model override. */
+  /** Sets (or clears) the Surface-scoped model override. */
   setModelName: (name: string | undefined) => void;
   /** Called with the clamped thinking level when a model switch changes the effective level. */
   onThinkingLevelClamped?: (newLevel: ThinkingLevel) => void;
 }
 
 export type ModelCommandResult =
-  | { kind: "no-session"; reply: string }
   | { kind: "no-favorites"; reply: string }
   | { kind: "list"; reply: string }
   | { kind: "bad-index"; reply: string }
@@ -41,7 +38,6 @@ export type ModelCommandResult =
   | { kind: "set"; reply: string; modelName: string; thinkingClamped?: ThinkingLevel }
   | { kind: "cleared"; reply: string; thinkingClamped?: ThinkingLevel };
 
-export const NO_SESSION_REPLY = "No active session. Start a conversation first.";
 export const NO_FAVORITES_REPLY = "No favorites configured. Add them to `goblin.json5`.";
 
 /**
@@ -124,10 +120,6 @@ function switchToModel(
 }
 
 export function executeModel(deps: ModelCommandDeps): ModelCommandResult {
-  if (!deps.hasSession) {
-    return { kind: "no-session", reply: NO_SESSION_REPLY };
-  }
-
   const arg = parseCommandArg(deps.rawText);
 
   // No argument → list favorites

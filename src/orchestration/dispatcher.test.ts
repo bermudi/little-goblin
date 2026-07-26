@@ -3,12 +3,12 @@ import { TurnDispatcher } from "./dispatcher.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import type { MemoryStore } from "../memory/mod.ts";
-import type { SessionManager, SessionState } from "../sessions/mod.ts";
+import type { SessionState } from "../sessions/mod.ts";
 import type { Config } from "../config.ts";
 import { dmSurface, type Surface } from "../surface.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
-import type { TurnSink } from "./dispatcher.ts";
+import type { TurnSink, SurfaceSettings } from "./dispatcher.ts";
 
 class FakeAgentRunner {
   disposeCalled = false;
@@ -93,14 +93,14 @@ function buildDispatcher(opts: { runners?: Map<string, AgentRunner>; subagentRun
 } {
   const runners = opts.runners ?? new Map<string, AgentRunner>();
   const subagentRunner = (opts.subagentRunner ?? new FakeSubagentRunner()) as unknown as SubagentRunner;
-  const manager = {
+  const surfaceSettings: SurfaceSettings = {
     effectiveEnvironment: (_surface: Surface): ExecutionEnvironment => personalEnvironment(),
     consumeProjectNotice: (_surface: Surface): string | undefined => undefined,
-  } as unknown as SessionManager;
+  };
 
   const dispatcher = new TurnDispatcher({
     cfg: {} as Config,
-    manager,
+    surfaceSettings,
     subagentRunner,
     memoryStore: new FakeMemoryStore() as unknown as MemoryStore,
     agentRunners: runners,
@@ -130,7 +130,6 @@ describe("TurnDispatcher runtime host support", () => {
     const session = makeSession("abc123def0");
     const runner = new FakeAgentRunner();
     runner.disposeDelayMs = 50;
-    dispatcher.setRunner(session, dmSurface(1));
     runners.set(session.id, runner as unknown as AgentRunner);
 
     expect(dispatcher.hasRunner(session.id)).toBe(true);

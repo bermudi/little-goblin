@@ -1,9 +1,16 @@
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile, Surface } from "./types.ts";
 import { topicSettingsPath } from "./paths.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 import { log } from "../log.ts";
 import { surfaceId } from "../surface.ts";
 import { resolveProjectRoot } from "./environment.ts";
+
+const ALL_THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+function isValidThinkingLevel(level: string | undefined): level is ThinkingLevel {
+  return level !== undefined && (ALL_THINKING_LEVELS as readonly string[]).includes(level);
+}
 
 export type { TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile } from "./types.ts";
 
@@ -73,7 +80,7 @@ export function loadLegacyTopicSettings(home: string): LegacyTopicSettingsFile {
 }
 
 function isEmptySettings(s: TopicSettings): boolean {
-  return !s.projectRoot && !s.projectDir && !s.pendingProjectNotice;
+  return !s.projectRoot && !s.projectDir && !s.pendingProjectNotice && !s.modelName && !s.thinkingLevel;
 }
 
 function settingsForSurface(settings: TopicSettingsFile, surface: Surface): TopicSettings | undefined {
@@ -144,6 +151,39 @@ export function bindProjectDir(home: string, surface: Surface, projectDir: strin
   }));
   saveTopicSettings(home, settings);
   log.info("bound projectDir (deprecated)", { surfaceId: surfaceId(surface), projectDir: canonical });
+}
+
+/** Read the model override for a complete Surface, or undefined if using the config default. */
+export function getModelName(home: string, surface: Surface): string | undefined {
+  const settings = loadTopicSettings(home);
+  return settingsForSurface(settings, surface)?.modelName;
+}
+
+/** Read the thinking level override for a complete Surface, or undefined if using the model default. */
+export function getThinkingLevel(home: string, surface: Surface): string | undefined {
+  const settings = loadTopicSettings(home);
+  return settingsForSurface(settings, surface)?.thinkingLevel;
+}
+
+/** Read the validated thinking level override for a complete Surface, or undefined if invalid/unset. */
+export function getThinkingLevelValidated(home: string, surface: Surface): ThinkingLevel | undefined {
+  return isValidThinkingLevel(getThinkingLevel(home, surface));
+}
+
+/** Bind (or clear) the model override for a complete Surface. */
+export function setModelName(home: string, surface: Surface, modelName: string | undefined): void {
+  const settings = loadTopicSettings(home);
+  updateSurface(settings, surface, (s) => ({ ...s, modelName }));
+  saveTopicSettings(home, settings);
+  log.info("bound modelName", { surfaceId: surfaceId(surface), modelName });
+}
+
+/** Bind (or clear) the thinking level override for a complete Surface. */
+export function setThinkingLevel(home: string, surface: Surface, thinkingLevel: string | undefined): void {
+  const settings = loadTopicSettings(home);
+  updateSurface(settings, surface, (s) => ({ ...s, thinkingLevel }));
+  saveTopicSettings(home, settings);
+  log.info("bound thinkingLevel", { surfaceId: surfaceId(surface), thinkingLevel });
 }
 
 /** Read and clear the pending project notice for a complete Surface. */

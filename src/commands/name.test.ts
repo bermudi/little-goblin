@@ -15,7 +15,7 @@ describe("/name command", () => {
     expect(parseSessionName("/name@goblinbot long running thing")).toBe("long running thing");
   });
 
-  it("requires an active session", () => {
+  it("requires an active conversation", () => {
     const result = executeName({
       hasSession: false,
       rawText: "/name nope",
@@ -25,7 +25,7 @@ describe("/name command", () => {
     expect(result.kind).toBe("missing-session");
   });
 
-  it("sets the session title", () => {
+  it("sets the conversation title", () => {
     let title: string | undefined;
     const result = executeName({
       hasSession: true,

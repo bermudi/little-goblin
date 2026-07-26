@@ -4,13 +4,13 @@ import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { AgentRunner, type TurnCallbacks } from "../agent/mod.ts";
 import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
-import { SessionManager, type SessionState } from "../sessions/mod.ts";
-import { dmSurface, type Surface } from "../surface.ts";
+import type { SessionState } from "../sessions/types.ts";
+import { dmSurface, surfaceId, type Surface, type SurfaceId } from "../surface.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
-import { environmentsEqual } from "../sessions/environment.ts";
+import { environmentsEqual, type ExecutionEnvironment } from "../sessions/environment.ts";
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
@@ -41,9 +41,19 @@ function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number
   };
 }
 
+/**
+ * Surface-scoped settings the dispatcher needs to build a runner. This is a
+ * narrow subset of `ConversationLifecycle`'s settings seam; the dispatcher
+ * does not depend on `SessionManager`.
+ */
+export interface SurfaceSettings {
+  effectiveEnvironment(surface: Surface): ExecutionEnvironment;
+  consumeProjectNotice(surface: Surface): string | undefined;
+}
+
 export interface TurnDispatcherOptions {
   cfg: Config;
-  manager: SessionManager;
+  surfaceSettings: SurfaceSettings;
   subagentRunner: SubagentRunner;
   memoryStore: MemoryStore;
   agentRunners: Map<string, AgentRunner>;
@@ -103,9 +113,11 @@ export interface TurnDispatcherOptions {
  */
 export class TurnDispatcher {
   private readonly runners: Map<string, AgentRunner>;
+  /** Surface a runner was created for, keyed by session/conversation id. */
+  private readonly runnerSurfaceIds: Map<string, SurfaceId>;
   private readonly promptQueues: Map<string, Promise<void>>;
   private readonly cfg: Config;
-  private readonly manager: SessionManager;
+  private readonly surfaceSettings: SurfaceSettings;
   private readonly subagentRunner: SubagentRunner;
   private readonly memoryStore: MemoryStore;
   private readonly embeddingProvider?: EmbeddingProvider;
@@ -121,12 +133,13 @@ export class TurnDispatcher {
 
   constructor(options: TurnDispatcherOptions) {
     this.cfg = options.cfg;
-    this.manager = options.manager;
+    this.surfaceSettings = options.surfaceSettings;
     this.subagentRunner = options.subagentRunner;
     this.memoryStore = options.memoryStore;
     this.embeddingProvider = options.embeddingProvider;
     this.dreamingPipeline = options.dreamingPipeline;
     this.runners = options.agentRunners;
+    this.runnerSurfaceIds = new Map<string, SurfaceId>();
     this.promptQueues = options.promptQueues ?? new Map<string, Promise<void>>();
     this.promptQueueMeta = options.promptQueueMeta ?? new Map<string, PromptQueueEntry>();
     this.createAgentRunner = options.createAgentRunner;
@@ -159,7 +172,7 @@ export class TurnDispatcher {
    * are derived entirely from the provided `surface`.
    */
   createRunner(session: SessionState, surface: Surface): AgentRunner {
-    const surfaceEnv = this.manager.effectiveEnvironment(surface);
+    const surfaceEnv = this.surfaceSettings.effectiveEnvironment(surface);
     if (session.chatId !== 0 && !environmentsEqual(session.executionEnvironment, surfaceEnv)) {
       const sessionEnv = session.executionEnvironment;
       throw new Error(
@@ -178,7 +191,7 @@ export class TurnDispatcher {
       executionEnvironment: session.executionEnvironment,
       modelName: session.modelName,
       thinkingLevel: session.thinkingLevel,
-      pendingProjectNotice: session.chatId === 0 ? undefined : this.manager.consumeProjectNotice(surface),
+      pendingProjectNotice: session.chatId === 0 ? undefined : this.surfaceSettings.consumeProjectNotice(surface),
       scheduleStore: this.scheduleStore,
       externalAgentRunner: this.externalAgentRunner,
       mcpRunner: this.mcpRunner,
@@ -190,14 +203,33 @@ export class TurnDispatcher {
 
   /**
    * Return the existing runner for a session, creating one if none exists.
+   * A runner is only reused when it was created for the same surface; if the
+   * conversation has moved, the stale runner is disposed and a new one built
+   * for the destination surface.
    */
   getOrCreateRunner(session: SessionState, surface: Surface): AgentRunner {
+    const expectedSurfaceId = surfaceId(surface);
     const existing = this.runners.get(session.id);
-    if (existing) return existing;
+    const existingSurfaceId = this.runnerSurfaceIds.get(session.id);
+    if (existing && existingSurfaceId === expectedSurfaceId) {
+      return existing;
+    }
+
+    if (existing) {
+      // The conversation moved or the runner is from a stale binding: dispose
+      // synchronously (the cleanup promise is fire-and-forget) and recreate.
+      void this.disposeRunner(session.id).catch((err) => {
+        log.error("failed to dispose stale runner", {
+          error: err instanceof Error ? err.message : String(err),
+          sessionId: session.id,
+        });
+      });
+    }
 
     const runner = this.createRunner(session, surface);
     this.runners.set(session.id, runner);
-    log.debug("created runner for session", { sessionId: session.id });
+    this.runnerSurfaceIds.set(session.id, expectedSurfaceId);
+    log.debug("created runner for session", { sessionId: session.id, surfaceId: expectedSurfaceId });
     return runner;
   }
 
@@ -310,6 +342,7 @@ export class TurnDispatcher {
     // abort before producing side effects.
     const prior = this.runners.get(sessionId);
     this.runners.delete(sessionId);
+    this.runnerSurfaceIds.delete(sessionId);
     this.promptQueues.delete(sessionId);
     this.promptQueueMeta.delete(sessionId);
 
@@ -363,17 +396,6 @@ export class TurnDispatcher {
   }
 
   /**
-   * Set a session's runner directly. Used when a command creates a new runner
-   * (e.g. `/new`, `/resume`) outside the get-or-create path.
-   */
-  setRunner(session: SessionState, surface: Surface): AgentRunner {
-    const runner = this.createRunner(session, surface);
-    this.runners.set(session.id, runner);
-    log.debug("created runner", { sessionId: session.id });
-    return runner;
-  }
-
-  /**
    * Enqueue an internal turn for a non-chat session. Used for background
    * work such as the dreaming pipeline. The runner has no beta tools and writes
    * assistant text into an in-memory capture buffer. `onComplete(text)` is
@@ -403,6 +425,7 @@ export class TurnDispatcher {
       };
       runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
       this.runners.set(session.id, runner);
+      this.runnerSurfaceIds.set(session.id, surfaceId(dmSurface(1)));
     }
 
     const captured: string[] = [];

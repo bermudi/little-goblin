@@ -14,7 +14,7 @@ export type CompactCommandResult =
   | { kind: "compacted"; reply: string; tokensBefore: number }
   | { kind: "failed"; reply: string };
 
-export const NO_ACTIVE_SESSION_TO_COMPACT_REPLY = "No active session to compact.";
+export const NO_ACTIVE_SESSION_TO_COMPACT_REPLY = "No active conversation to compact.";
 export const NO_ACTIVE_RUNNER_TO_COMPACT_REPLY = "No active runner to compact.";
 
 export function parseCompactInstructions(rawText: string): string | undefined {

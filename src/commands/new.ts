@@ -1,9 +1,9 @@
 /**
  * /new command logic.
  *
- * `/new` is the universal "switch this chat to a fresh session"
+ * `/new` is the universal "switch this chat to a fresh conversation"
  * command. It works in DMs, forum topics, and supergroups: create a
- * fresh session bound to the same chat surface. The previous session is
+ * fresh conversation bound to the same chat surface. The previous conversation is
  * left resumable; `/archive` is the explicit "put this away" command.
  *
  * Side effects (creating the session, binding it, registering an
@@ -30,7 +30,7 @@ export type NewCommandResult = {
 };
 
 export function createdReply(sessionId: string): string {
-  return `Created new session \`${sessionId}\``;
+  return `Created new conversation \`${sessionId}\``;
 }
 
 export async function executeNew(deps: NewCommandDeps): Promise<NewCommandResult> {

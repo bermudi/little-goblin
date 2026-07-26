@@ -5,12 +5,16 @@ import { dirname, join } from "node:path";
 import { SchedulerLoop, HEARTBEAT_PROMPT, DEFAULT_TICK_INTERVAL_MS, resolveHeartbeatPrompt } from "./loop.ts";
 import { ScheduleStore } from "./store.ts";
 import { SessionManager } from "../sessions/manager.ts";
+import { ConversationStore } from "../sessions/conversation-store.ts";
+import { loadBindings, saveBindings } from "../sessions/bindings.ts";
+import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
+import { personalEnvironment } from "../sessions/environment.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
 import { heartbeatMdPathForSession } from "../sessions/paths.ts";
 import type { Config } from "../config.ts";
 import type { SessionState } from "../sessions/mod.ts";
 import type { SchedulerClock, SchedulerDispatcher, SchedulerSessionSource } from "./loop.ts";
-import { dmSurface, type Surface } from "../surface.ts";
+import { dmSurface, surfaceId, type Surface } from "../surface.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -79,6 +83,7 @@ const NOW_MS = Date.parse("2026-07-04T12:00:00Z");
 describe("SchedulerLoop", () => {
   let tmpDir: string;
   let manager: SessionManager;
+  let conversationStore: ConversationStore;
   let store: ScheduleStore;
   let dispatcher: ReturnType<typeof makeFakeDispatcher>;
   let clock: ReturnType<typeof makeFakeClock>;
@@ -87,10 +92,19 @@ describe("SchedulerLoop", () => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-loop-test-"));
     manager = new SessionManager(makeTestConfig(tmpDir));
     await manager.init();
+    conversationStore = new ConversationStore(tmpDir);
     store = new ScheduleStore(tmpDir);
     dispatcher = makeFakeDispatcher();
     clock = makeFakeClock(NOW_MS);
   });
+
+  async function createSession(loc: Surface): Promise<SessionState> {
+    const conv = conversationStore.create(personalEnvironment());
+    const bindings = loadBindings(tmpDir);
+    bindings.surfaces[surfaceId(loc)] = conv.id;
+    saveBindings(tmpDir, bindings);
+    return runtimeSessionWithPreferences(conv, loc, tmpDir);
+  }
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
@@ -118,7 +132,7 @@ describe("SchedulerLoop", () => {
   describe("due dispatch", () => {
     it("dispatches a due schedule whose session is still bound", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -143,7 +157,7 @@ describe("SchedulerLoop", () => {
       // route through it rather than any followUp path. Asserting the call
       // went through enqueueScheduledTurn (not a followUp field) is the proof.
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -168,7 +182,7 @@ describe("SchedulerLoop", () => {
       // dispatcher and does not await prompt completion itself. The fake
       // dispatcher records the call synchronously and returns immediately.
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -190,7 +204,7 @@ describe("SchedulerLoop", () => {
   describe("overlapping ticks", () => {
     it("does not double-dispatch the same due occurrence", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -210,7 +224,7 @@ describe("SchedulerLoop", () => {
 
     it("re-entrant tick is a no-op while one is in flight", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -230,7 +244,7 @@ describe("SchedulerLoop", () => {
   describe("one-shot completion", () => {
     it("marks a one-shot completed before dispatch and does not re-run it", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -250,7 +264,7 @@ describe("SchedulerLoop", () => {
   describe("recurring advancement", () => {
     it("advances nextRunAt by the interval before dispatch", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -270,7 +284,7 @@ describe("SchedulerLoop", () => {
 
     it("does not dispatch the same occurrence again on a later tick", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -289,7 +303,7 @@ describe("SchedulerLoop", () => {
 
     it("dispatches a one-shot missed during downtime exactly once after restart", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -315,7 +329,7 @@ describe("SchedulerLoop", () => {
 
     it("catches up a recurring schedule missed during downtime without replaying every missed interval", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -448,7 +462,7 @@ describe("SchedulerLoop", () => {
   describe("tick errors", () => {
     it("logs a tick error and continues on the next tick", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       store.create({
         sessionId: session.id,
         surface: loc,
@@ -491,7 +505,7 @@ describe("SchedulerLoop", () => {
       // dispatch; the throw records outcome "error" so the record reflects
       // reality.
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       const created = store.create({
         sessionId: session.id,
         surface: loc,
@@ -522,7 +536,7 @@ describe("SchedulerLoop", () => {
   describe("heartbeat prompt content", () => {
     it("dispatches the heartbeat prompt for a due heartbeat schedule", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       store.setHeartbeat({
         sessionId: session.id,
         surface: loc,
@@ -629,7 +643,7 @@ describe("SchedulerLoop", () => {
     }
 
     async function enableHeartbeat(loc: Surface): Promise<string> {
-      const session = await manager.createForSurface(loc);
+      const session = await createSession(loc);
       store.setHeartbeat({
         sessionId: session.id,
         surface: loc,
@@ -711,7 +725,7 @@ describe("SchedulerLoop", () => {
       // failure by pointing the loop's `home` at a path where workspace/ resolves
       // under a non-directory, then assert a co-due one-shot still dispatches.
       const heartbeatLoc: Surface = dmSurface(100);
-      const heartbeatSession = await manager.createForSurface(heartbeatLoc);
+      const heartbeatSession = await createSession(heartbeatLoc);
       store.setHeartbeat({
         sessionId: heartbeatSession.id,
         surface: heartbeatLoc,
@@ -721,7 +735,7 @@ describe("SchedulerLoop", () => {
 
       // A second, unrelated schedule also due in this tick.
       const otherLoc: Surface = dmSurface(200);
-      const otherSession = await manager.createForSurface(otherLoc);
+      const otherSession = await createSession(otherLoc);
       store.create({
         sessionId: otherSession.id,
         surface: otherLoc,
@@ -762,7 +776,7 @@ describe("SchedulerLoop", () => {
       // synchronous-dispatcher-throw path (processOne re-throws after recording
       // an "error" outcome). The throw must stop only its own schedule.
       const firstLoc: Surface = dmSurface(100);
-      const firstSession = await manager.createForSurface(firstLoc);
+      const firstSession = await createSession(firstLoc);
       store.create({
         sessionId: firstSession.id,
         surface: firstLoc,
@@ -771,7 +785,7 @@ describe("SchedulerLoop", () => {
         nextRunAt: new Date(NOW_MS - 2000).toISOString(),
       });
       const secondLoc: Surface = dmSurface(200);
-      const secondSession = await manager.createForSurface(secondLoc);
+      const secondSession = await createSession(secondLoc);
       store.create({
         sessionId: secondSession.id,
         surface: secondLoc,

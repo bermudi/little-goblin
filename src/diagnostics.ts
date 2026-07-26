@@ -3,7 +3,7 @@
  *
  * Two layers:
  *   1. `gatherDiagnostics(deps)` collects what we can from the live runner,
- *      session, subagent runner, and the transcript.jsonl on disk.
+ *      conversation, subagent runner, and the transcript.jsonl on disk.
  *   2. `formatDiagnostics(d)` turns the structured snapshot into the
  *      human-readable text we paste back into Telegram.
  *
@@ -16,6 +16,7 @@
  */
 
 import { statSync, readFileSync } from "node:fs";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { SessionState } from "./sessions/types.ts";
 import { transcriptPath } from "./sessions/paths.ts";
 import type { AgentRunner } from "./agent/mod.ts";
@@ -28,6 +29,7 @@ export interface Diagnostics {
   sessionName: string | null;
   createdAt: string;
   model: string;
+  thinkingLevel: ThinkingLevel | null;
   /**
    * Whether the live runner's underlying pi `AgentSession` has been
    * initialized (i.e. at least one `prompt()` has run). `false` when
@@ -67,6 +69,8 @@ export interface DiagnosticsDeps {
   goblinHome: string;
   /** Override for `Config.modelName` when no runner exists (e.g. session never primed). */
   modelName: string;
+  /** Override for the thinking level when no runner exists. */
+  thinkingLevel?: ThinkingLevel;
   /** Bound project directory, or `undefined` if not set. */
   projectDir?: string;
 }
@@ -110,6 +114,7 @@ export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
     sessionName: deps.session.title ?? null,
     createdAt: deps.session.createdAt,
     model: deps.runner?.modelName ?? deps.modelName,
+    thinkingLevel: deps.thinkingLevel ?? null,
     runnerInitialized: deps.runner?.isInitialized ?? false,
     tools: deps.runner?.getActiveToolNames() ?? null,
     skillsLoaded: deps.runner?.skillsLoaded ?? null,
@@ -169,7 +174,7 @@ function fmtMetrics(metrics: MetricsSummary | null): string {
     `  Turns: ${metrics.turns}`,
     `  Tokens: ${metrics.totalTokens}`,
     `  Cost: $ ${metrics.totalCost.toFixed(6)}`,
-    `  Cache: ${metrics.cacheRead} read / ${metrics.cacheWrite} write tokens in this session`,
+    `  Cache: ${metrics.cacheRead} read / ${metrics.cacheWrite} write tokens in this conversation`,
     `  Average duration: ${metrics.averageDurationMs.toFixed(0)} ms`,
     `  Memory writes: ${metrics.memoryWriteTotal} (overflow: ${metrics.memoryWriteOverflowTotal}, safety rejects: ${metrics.memoryWriteSafetyRejectTotal})`,
     `  Memory archives: ${metrics.memoryArchiveOrphanTotal}`,
@@ -188,10 +193,11 @@ function fmtMetrics(metrics: MetricsSummary | null): string {
 
 export function formatDiagnostics(d: Diagnostics): string {
   return [
-    `Session: ${d.sessionId}`,
-    `Session Name: ${d.sessionName ?? UNAVAILABLE}`,
+    `Conversation: ${d.sessionId}`,
+    `Conversation Name: ${d.sessionName ?? UNAVAILABLE}`,
     `Created: ${d.createdAt}`,
     `Model: ${d.model}`,
+    `Thinking level: ${d.thinkingLevel ?? "(model default)"}`,
     `Tools: ${fmtTools(d.tools, d.runnerInitialized)}`,
     `Skills loaded: ${fmtRunnerNum(d.skillsLoaded, d.runnerInitialized)}`,
     `Transcript: ${d.transcriptPath}`,

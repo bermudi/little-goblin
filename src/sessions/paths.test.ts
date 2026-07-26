@@ -69,16 +69,8 @@ describe("sessions paths", () => {
     expect(() => heartbeatMdPathForSession(home, "abc\\123")).toThrow();
   });
 
-  it("rejects non-hex session ids for HEARTBEAT.md", () => {
-    expect(() => heartbeatMdPathForSession(home, "abc")).toThrow();
-    expect(() => heartbeatMdPathForSession(home, "sess-001")).toThrow();
-    expect(() => heartbeatMdPathForSession(home, "ABCDEF1234")).toThrow();
-  });
-
-  it("rejects non-hex session ids for all session-id path helpers", () => {
-    expect(() => sessionDir(home, "abc")).toThrow();
-    expect(() => statePath(home, "abc")).toThrow();
-    expect(() => transcriptPath(home, "abc")).toThrow();
-    expect(() => metricsPath(home, "abc")).toThrow();
+  it("rejects unsafe session id characters", () => {
+    expect(() => heartbeatMdPathForSession(home, "abc\0def")).toThrow();
+    expect(() => sessionDir(home, "abc\0def")).toThrow();
   });
 });

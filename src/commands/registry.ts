@@ -1,15 +1,22 @@
-import { existsSync } from "node:fs";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Bot, Context } from "grammy";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { sessionDir } from "../sessions/paths.ts";
-import type { Surface, SessionManager, SessionState } from "../sessions/mod.ts";
+import type { Surface, SessionState, ConversationId, ConversationStore } from "../sessions/mod.ts";
+import { runtimeSessionWithPreferences } from "../sessions/mod.ts";
+import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
+import {
+  getModelName as getSurfaceModelName,
+  getThinkingLevelValidated as getSurfaceThinkingLevel,
+  setModelName as setSurfaceModelName,
+  setThinkingLevel as setSurfaceThinkingLevel,
+} from "../sessions/topic-settings.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { ResolvedModel } from "../agent/models.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import type { TurnDispatcher } from "../orchestration/dispatcher.ts";
+import { projectRootOf } from "../sessions/environment.ts";
 import { DEFAULT_CASCADE_TIMEOUT_MS, interruptAndCascade } from "../interrupt.ts";
 import { generateDiagnostics } from "../diagnostics.ts";
 import { cancelReply } from "./cancel.ts";
@@ -52,14 +59,13 @@ export type DispatchResult =
   | { kind: "fallthrough" };
 
 export interface DispatchDeps {
-  manager: SessionManager;
+  /** Deep conversation lifecycle; commands mutate bindings through this seam. */
+  lifecycle: ConversationLifecycle;
+  /** Canonical conversation store for title/name operations. */
+  conversationStore: ConversationStore;
   subagentRunner: SubagentRunner;
   cfg: Config;
-  tryResolveModel: (
-    cfg: Config,
-    session: SessionState | null,
-    runner?: AgentRunner,
-  ) => ResolvedModel | undefined;
+  tryResolveModel: (cfg: Config, modelName: string) => ResolvedModel | undefined;
   interruptAndCascade: typeof interruptAndCascade;
   /**
    * Schedule store for `/schedule`. Optional so callers that don't wire
@@ -93,7 +99,10 @@ export interface DispatchOpts {
 
 export type CommandHandler = (opts: DispatchOpts) => Promise<DispatchResult>;
 
-export type GrammyHandlerFactory = (deps: { manager: SessionManager }) => (ctx: Context) => Promise<void>;
+export type GrammyHandlerFactory = (deps: {
+  lifecycle: ConversationLifecycle;
+  conversationStore?: ConversationStore;
+}) => (ctx: Context) => Promise<void>;
 
 // ---------------------------------------------------------------------------
 // CommandDef
@@ -186,64 +195,60 @@ const cancelHandler: CommandHandler = async ({ deps, session, existingRunner }) 
 };
 
 const newHandler: CommandHandler = async ({ deps, surface, session }) => {
-  const { manager } = deps;
+  const { lifecycle, cfg } = deps;
   const sideEffects: SideEffect[] = [];
   const priorSession = session;
   try {
-    const result = await executeNew({
-      createSession: () => manager.createForSurface(surface),
-    });
+    const createSession = async (): Promise<SessionState> => {
+      const conversation = await lifecycle.rotate(surface);
+      return runtimeSessionWithPreferences(conversation, surface, cfg.goblinHome);
+    };
+    const result = await executeNew({ createSession });
     if (priorSession) sideEffects.push({ kind: "runner-disposed", sessionId: priorSession.id });
     sideEffects.push({ kind: "runner-created", session: result.session, surface });
     return replied(result.reply, sideEffects, "ok");
   } catch (err) {
-    log.error("new session creation failed", { error: String(err), sessionId: priorSession?.id });
-    return replied("Failed to reset session. Please try again.", [], "error");
+    log.error("new conversation creation failed", { error: String(err), sessionId: priorSession?.id });
+    return replied("Failed to reset conversation. Please try again.", [], "error");
   }
 };
 
-const archiveHandler: CommandHandler = async ({ deps, session }) => {
-  const { manager, cfg, dispatcher } = deps;
+const archiveHandler: CommandHandler = async ({ deps, surface, session }) => {
+  const { lifecycle, conversationStore } = deps;
   try {
-    // Dispose the runner (and await any background reflection) before moving
-    // the session directory, so late metrics writes do not recreate the live
-    // session path or leak a lock file into the archive.
-    if (session && dispatcher) {
-      await dispatcher.disposeRunner(session.id);
-    }
+    const conversation = session ? lifecycle.inspect(surface) : null;
+    const hasSession = conversation !== null;
+    const sessionExists = hasSession && conversationStore.load(conversation.id) !== null;
+
     const result = await executeArchive({
-      hasSession: session !== null,
-      sessionExists: session !== null && existsSync(sessionDir(cfg.goblinHome, session.id)),
+      hasSession,
+      sessionExists,
       archive: async () => {
-        await manager.archive(session!.id);
+        await lifecycle.archive(surface);
       },
     });
     const tag: SystemTag = result.kind === "archived" ? "ok" : "info";
     return replied(result.reply, [], tag);
   } catch (err) {
     log.error("archive failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to archive session. Please try again.", [], "error");
+    return replied("Failed to archive conversation. Please try again.", [], "error");
   }
 };
 
 const projectHandler: CommandHandler = async ({ deps, surface, rawText }) => {
-  const { manager, dispatcher } = deps;
+  const { cfg, lifecycle } = deps;
   try {
     const result = await executeProject({
       rawText,
-      assignProject: (canonicalRoot) =>
-        manager.assignProject(surface, canonicalRoot, {
-          disposeRuntime: async (sessionId) => {
-            if (dispatcher) await dispatcher.disposeRunner(sessionId);
-          },
-        }),
+      assignProject: (canonicalRoot) => lifecycle.assignProject(surface, canonicalRoot),
     });
     const sideEffects: SideEffect[] = [];
     if (result.kind === "assigned" && result.session) {
       if (result.previousSessionId) {
         sideEffects.push({ kind: "runner-disposed", sessionId: result.previousSessionId });
       }
-      sideEffects.push({ kind: "runner-created", session: result.session, surface });
+      const session = runtimeSessionWithPreferences(result.session, surface, cfg.goblinHome);
+      sideEffects.push({ kind: "runner-created", session, surface });
     }
     const tag: SystemTag =
       result.kind === "assigned" || result.kind === "already-assigned" ? "ok"
@@ -252,37 +257,48 @@ const projectHandler: CommandHandler = async ({ deps, surface, rawText }) => {
       : "error";
     return replied(result.reply, sideEffects, tag);
   } catch (err) {
-    const sessionId = (await deps.manager.peekBinding(surface))?.sessionId;
+    const sessionId = deps.lifecycle.inspect(surface)?.id;
     log.error("project failed", { error: String(err), sessionId });
     return replied("Failed to assign project. Please try again.", [], "error");
   }
 };
 
-const modelHandler: CommandHandler = async ({ deps, session, existingRunner, rawText }) => {
-  const { manager, cfg } = deps;
+const modelHandler: CommandHandler = async ({ deps, surface, session, existingRunner, rawText }) => {
+  const { cfg } = deps;
   const sideEffects: SideEffect[] = [];
   try {
-    const currentModelResolved = deps.tryResolveModel(cfg, session, existingRunner ?? undefined);
+    const currentModelName =
+      existingRunner?.modelName ??
+      session?.modelName ??
+      getSurfaceModelName(cfg.goblinHome, surface) ??
+      cfg.modelName;
+    const currentThinkingLevel =
+      session?.thinkingLevel ?? getSurfaceThinkingLevel(cfg.goblinHome, surface);
+    const currentResolvedModel = deps.tryResolveModel(cfg, currentModelName);
     const result = executeModel({
-      hasSession: session !== null,
       rawText,
       favorites: cfg.favorites,
       cfg,
-      currentModelName: existingRunner?.modelName ?? session?.modelName ?? cfg.modelName,
-      currentThinkingLevel: session?.thinkingLevel,
-      currentResolvedModel: currentModelResolved,
+      currentModelName,
+      currentThinkingLevel,
+      currentResolvedModel,
       setModelName: (name) => {
-        if (!session) return;
-        manager.setModelName(session.id, name);
+        setSurfaceModelName(cfg.goblinHome, surface, name);
       },
       onThinkingLevelClamped: (newLevel) => {
-        if (!session) return;
-        manager.setThinkingLevel(session.id, newLevel);
+        setSurfaceThinkingLevel(cfg.goblinHome, surface, newLevel);
       },
     });
     if ((result.kind === "set" || result.kind === "cleared") && existingRunner) {
       const targetName = result.kind === "set" ? result.modelName : cfg.modelName;
       await existingRunner.setModel(targetName);
+      if (result.thinkingClamped) {
+        try {
+          existingRunner.setThinkingLevel(result.thinkingClamped);
+        } catch {
+          // best-effort: runner may not support the level
+        }
+      }
     }
     const tag: SystemTag = result.kind === "set" || result.kind === "cleared" ? "ok"
       : result.kind === "no-favorites" || result.kind === "bad-index" || result.kind === "bad-model" ? "warn"
@@ -294,22 +310,33 @@ const modelHandler: CommandHandler = async ({ deps, session, existingRunner, raw
   }
 };
 
-const thinkHandler: CommandHandler = async ({ deps, session, existingRunner, rawText }) => {
-  const { manager, cfg } = deps;
+const thinkHandler: CommandHandler = async ({ deps, surface, session, existingRunner, rawText }) => {
+  const { cfg } = deps;
   try {
-    const currentModelResolved = deps.tryResolveModel(cfg, session, existingRunner ?? undefined);
-    const supportedLevels = currentModelResolved
-      ? (getSupportedThinkingLevels(currentModelResolved.model) as readonly ThinkingLevel[])
+    const currentModelName =
+      existingRunner?.modelName ??
+      session?.modelName ??
+      getSurfaceModelName(cfg.goblinHome, surface) ??
+      cfg.modelName;
+    const currentResolvedModel = deps.tryResolveModel(cfg, currentModelName);
+    const supportedLevels = currentResolvedModel
+      ? (getSupportedThinkingLevels(currentResolvedModel.model) as readonly ThinkingLevel[])
       : ALL_LEVELS;
     const result = executeThink({
-      hasSession: session !== null,
       rawText,
-      currentLevel: session?.thinkingLevel ?? currentModelResolved?.thinkingLevel ?? "medium",
+      currentLevel:
+        session?.thinkingLevel ??
+        getSurfaceThinkingLevel(cfg.goblinHome, surface) ??
+        currentResolvedModel?.thinkingLevel ??
+        "medium",
       supportedLevels,
       setThinkingLevel: (level) => {
-        if (!session) return;
-        manager.setThinkingLevel(session.id, level);
-        try { existingRunner?.setThinkingLevel(level); } catch { /* best-effort */ }
+        setSurfaceThinkingLevel(cfg.goblinHome, surface, level);
+        try {
+          existingRunner?.setThinkingLevel(level);
+        } catch {
+          // best-effort: runner may not support the level
+        }
       },
     });
     const thinkTag: SystemTag = result.kind === "set" || result.kind === "cleared" ? "ok"
@@ -322,16 +349,17 @@ const thinkHandler: CommandHandler = async ({ deps, session, existingRunner, raw
   }
 };
 
-const debugHandler: CommandHandler = async ({ deps, surface, session, existingRunner }) => {
-  const { manager, cfg, subagentRunner } = deps;
-  if (!session) return replied("No active session.", [], "info");
+const debugHandler: CommandHandler = async ({ deps, session, existingRunner }) => {
+  const { cfg, subagentRunner } = deps;
+  if (!session) return replied("No active conversation.", [], "info");
   const diag = generateDiagnostics({
     session,
     runner: existingRunner,
     subagentRunner,
     goblinHome: cfg.goblinHome,
-    modelName: cfg.modelName,
-    projectDir: manager.getProjectDir(surface),
+    modelName: session.modelName ?? cfg.modelName,
+    thinkingLevel: session.thinkingLevel,
+    projectDir: projectRootOf(session.executionEnvironment) ?? undefined,
   });
   return replied(diag, [], "info");
 };
@@ -345,12 +373,12 @@ const compactHandler: CommandHandler = async ({ session, existingRunner, rawText
     return replied(result.reply, [], tag);
   } catch (err) {
     log.error("compact failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to compact session. Please try again.", [], "error");
+    return replied("Failed to compact conversation. Please try again.", [], "error");
   }
 };
 
 const nameHandler: CommandHandler = async ({ deps, session, rawText }) => {
-  const { manager } = deps;
+  const { conversationStore } = deps;
   try {
     const result = executeName({
       hasSession: session !== null,
@@ -358,28 +386,33 @@ const nameHandler: CommandHandler = async ({ deps, session, rawText }) => {
       session,
       setTitle: (title) => {
         if (!session) return;
-        manager.setTitle(session.id, title);
+        conversationStore.setTitle(session.id, title);
       },
     });
     const tag: SystemTag = result.kind === "renamed" ? "ok" : "info";
     return replied(result.reply, [], tag);
   } catch (err) {
     log.error("name failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to name session. Please try again.", [], "error");
+    return replied("Failed to name conversation. Please try again.", [], "error");
   }
 };
 
 const resumeHandler: CommandHandler = async ({ deps, surface, session, rawText }) => {
-  const { manager } = deps;
+  const { lifecycle, cfg } = deps;
   const sideEffects: SideEffect[] = [];
   try {
-    const result = await executeResume({
-      rawText,
-      sessions: manager.list(),
-      bindSession: (sessionId) => manager.bindExistingToSurface(sessionId, surface),
-    });
-    if (result.kind === "resumed") {
+    const sessions = lifecycle.listResumable(surface).map((c) => runtimeSessionWithPreferences(c, surface, cfg.goblinHome));
+    const bindSession = async (sessionId: string): Promise<SessionState> => {
+      const conversation = await lifecycle.resume(surface, sessionId as ConversationId);
+      return runtimeSessionWithPreferences(conversation, surface, cfg.goblinHome);
+    };
+    const result = await executeResume({ rawText, sessions, bindSession });
+    if (result.kind === "resumed" && result.session.id !== session?.id) {
+      // Displace the destination's prior runtime (if any) and invalidate any
+      // stale runner keyed by the resumed conversation before creating a fresh
+      // runtime for the destination surface.
       if (session) sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
+      sideEffects.push({ kind: "runner-disposed", sessionId: result.session.id });
       sideEffects.push({ kind: "runner-created", session: result.session, surface });
     }
     const tag: SystemTag = result.kind === "resumed" ? "ok"
@@ -388,7 +421,7 @@ const resumeHandler: CommandHandler = async ({ deps, surface, session, rawText }
     return replied(result.reply, sideEffects, tag);
   } catch (err) {
     log.error("resume failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to resume session. Please try again.", [], "error");
+    return replied("Failed to resume conversation. Please try again.", [], "error");
   }
 };
 
@@ -425,7 +458,7 @@ const reviveHandler: CommandHandler = async ({ deps, rawText }) => {
 const helpHandler: CommandHandler = async () => replied(helpReply(), [], "info");
 
 const voiceHandler: CommandHandler = async ({ deps, session, surface, bot }) => {
-  if (!session) return replied("No active session. Use /new to start one.", [], "info");
+  if (!session) return replied("No active conversation. Use /new to start one.", [], "info");
   if (!bot) {
     log.error("voice dispatch bot missing");
     return replied("Voice generation failed: internal error", [], "error");
@@ -453,7 +486,7 @@ const voiceHandler: CommandHandler = async ({ deps, session, surface, bot }) => 
 };
 
 const queueHandler: CommandHandler = async ({ session, existingRunner, rawText }) => {
-  if (!session) return replied("No active session.", [], "info");
+  if (!session) return replied("No active conversation.", [], "info");
   const arg = parseCommandArg(rawText);
   if (arg.length === 0) return replied("Usage: /queue <text>", [], "info");
   const sideEffects: SideEffect[] = [{ kind: "queue-prompt", session, text: arg }];
@@ -468,7 +501,7 @@ const scheduleHandler: CommandHandler = async ({ deps, session, surface, rawText
   if (!deps.scheduleStore) {
     return replied("Scheduling is not available.", [], "warn");
   }
-  if (!session) return replied("No active session. Use /new to start one.", [], "info");
+  if (!session) return replied("No active conversation. Use /new to start one.", [], "info");
   const depsForSchedule = buildScheduleDeps(deps.scheduleStore, session, surface, Date.now());
   const result = executeSchedule(depsForSchedule, rawText);
   return replied(result.reply, [], result.tag);
@@ -479,7 +512,12 @@ const scheduleHandler: CommandHandler = async ({ deps, session, surface, rawText
 // ---------------------------------------------------------------------------
 
 const pingGrammyFactory: GrammyHandlerFactory = () => pingHandler;
-const startGrammyFactory: GrammyHandlerFactory = ({ manager }) => buildStartHandler(manager);
+const startGrammyFactory: GrammyHandlerFactory = ({ lifecycle }) => {
+  if (!lifecycle) {
+    throw new Error("startGrammyFactory requires a ConversationLifecycle");
+  }
+  return buildStartHandler(lifecycle);
+};
 
 /**
  * Timing predicate for argument-conditional commands: instant with no
@@ -503,13 +541,13 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
   },
   {
     name: "new",
-    description: "reset this chat: archive the current session and start a fresh one",
+    description: "reset this chat: rotate to a fresh conversation and leave the prior one resumable",
     timing: "queue",
     handler: newHandler,
   },
   {
     name: "archive",
-    description: "archive the active session",
+    description: "archive the active conversation",
     timing: "queue",
     handler: archiveHandler,
   },
@@ -530,13 +568,13 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
   {
     name: "compact",
     argsHint: "[instructions]",
-    description: "manually compact this session's context",
+    description: "manually compact this conversation's context",
     timing: "queue",
     handler: compactHandler,
   },
   {
     name: "debug",
-    description: "dump session diagnostics",
+    description: "dump conversation diagnostics",
     timing: "instant",
     handler: debugHandler,
   },
@@ -550,14 +588,14 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
   {
     name: "name",
     argsHint: "<name>",
-    description: "name the active session",
+    description: "name the active conversation",
     timing: "instant",
     handler: nameHandler,
   },
   {
     name: "resume",
     argsHint: "<id-or-name>",
-    description: "bind this chat to an existing session",
+    description: "bind this chat to an existing conversation",
     timing: "queue",
     handler: resumeHandler,
   },
@@ -604,7 +642,7 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
   {
     name: "schedule",
     argsHint: "<list|at|in|every|remove|pause|resume|heartbeat ...>",
-    description: "manage scheduled turns and heartbeat for this session",
+    description: "manage scheduled turns and heartbeat for this conversation",
     timing: "instant",
     handler: scheduleHandler,
   },
@@ -616,7 +654,7 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
   },
   {
     name: "start",
-    description: "start a new session (DMs only)",
+    description: "welcome and status (DMs and forum topics)",
     timing: "instant",
     grammyHandler: startGrammyFactory,
   },

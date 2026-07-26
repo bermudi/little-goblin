@@ -1,4 +1,6 @@
 import type { BindingsFile, LegacyBindingsFile, SurfaceId } from "./types.ts";
+import { parseSurfaceId } from "../surface.ts";
+import { isValidConversationId } from "./conversation.ts";
 import { configPath } from "./paths.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 
@@ -53,8 +55,10 @@ export function loadBindings(home: string): BindingsFile {
 
 /**
  * Save canonical bindings atomically via `atomicWrite` (tmp + fsync + rename).
+ * Validates the at-most-one-binding-per-Conversation rule before writing.
  */
 export function saveBindings(home: string, bindings: BindingsFile): void {
+  validateBindings(bindings);
   saveJsonFile(pathFor(home), bindings);
 }
 
@@ -65,6 +69,10 @@ export function saveBindings(home: string, bindings: BindingsFile): void {
 export function validateBindings(bindings: BindingsFile): void {
   const seen = new Map<string, SurfaceId>();
   for (const [surfaceId, conversationId] of Object.entries(bindings.surfaces)) {
+    parseSurfaceId(surfaceId);
+    if (!isValidConversationId(conversationId)) {
+      throw new Error(`invalid conversation id bound to ${surfaceId}: ${conversationId}`);
+    }
     const existing = seen.get(conversationId);
     if (existing !== undefined) {
       throw new Error(
@@ -98,7 +106,6 @@ export class FileBindingStore implements BindingStore {
   }
 
   save(bindings: BindingsFile): void {
-    validateBindings(bindings);
     saveBindings(this.home, bindings);
   }
 }

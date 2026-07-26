@@ -2,10 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dmSurface, surfaceId, topicSurface } from "../surface.ts";
+import { dmSurface, surfaceId } from "../surface.ts";
 import type { SurfaceId } from "../surface.ts";
 import {
-  buildProjectSessionState,
   clearPendingProjectAssignment,
   loadPendingProjectAssignment,
   savePendingProjectAssignment,
@@ -66,26 +65,6 @@ describe("project-assignment", () => {
     it("is a no-op when no intent exists", () => {
       clearPendingProjectAssignment(tmpDir);
       expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
-    });
-  });
-
-  describe("buildProjectSessionState", () => {
-    it("builds a DM project session state", () => {
-      const surface = dmSurface(42);
-      const state = buildProjectSessionState("abc123def0", surface, "/srv/project", "2024-01-01T00:00:00.000Z");
-      expect(state.id).toBe("abc123def0");
-      expect(state.chatId).toBe(42);
-      expect(state.topicId).toBeUndefined();
-      expect(state.executionEnvironment).toEqual({ kind: "project", projectRoot: "/srv/project" });
-      expect(state.createdAt).toBe("2024-01-01T00:00:00.000Z");
-    });
-
-    it("builds a topic project session state", () => {
-      const surface = topicSurface("supergroup", -100, 7);
-      const state = buildProjectSessionState("abc123def0", surface, "/srv/project");
-      expect(state.chatId).toBe(-100);
-      expect(state.topicId).toBe(7);
-      expect(state.executionEnvironment).toEqual({ kind: "project", projectRoot: "/srv/project" });
     });
   });
 });

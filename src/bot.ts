@@ -8,7 +8,7 @@ import { MemoryEngine } from "./memory/mod.ts";
 import { MetricsStore, type TelegramMetricsEvent } from "./metrics/mod.ts";
 import { classifyTelegramError, type ReplyOpts } from "./tg/format.ts";
 import { registerCommands } from "./commands/mod.ts";
-import { SessionManager } from "./sessions/mod.ts";
+import { SessionManager, type ConversationState } from "./sessions/mod.ts";
 import { surfaceId, type Surface } from "./surface.ts";
 import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
@@ -95,21 +95,25 @@ function wrapReply(
   };
 }
 
-function intakeMessageFromCtx(ctx: Context, manager: SessionManager, cfg: Config): TelegramIntakeMessage {
+function intakeMessageFromCtx(
+  ctx: Context,
+  lifecycle: { inspect(surface: Surface): ConversationState | null },
+  cfg: Config,
+): TelegramIntakeMessage {
   const surface = surfaceFromCtx(ctx);
-  // System-reply metrics are attributed to the session bound at reply
+  // System-reply metrics are attributed to the conversation bound at reply
   // completion time, not at message construction time. This differs from
   // MessageBuffer, which pins its MetricsStore at createMessageBuffer time.
   // Under concurrent updates that mutate bindings.json (e.g. a /resume or
   // /archive racing with an in-flight reply), the metric may be attributed
-  // to the wrong session or dropped. This is accepted for system replies
+  // to the wrong conversation or dropped. This is accepted for system replies
   // because they are fire-and-forget and single-user; pinning at construction
-  // would lose metrics for /new replies (the session does not exist yet at
+  // would lose metrics for /new replies (the conversation does not exist yet at
   // intakeMessageFromCtx time).
   const getMetrics = async (): Promise<MetricsStore | undefined> => {
     if (!surface) return undefined;
-    const session = await manager.resolve(surface);
-    return session ? new MetricsStore(cfg.goblinHome, session.id) : undefined;
+    const conversation = lifecycle.inspect(surface);
+    return conversation ? new MetricsStore(cfg.goblinHome, conversation.id) : undefined;
   };
   return {
     surface,
@@ -124,7 +128,7 @@ function intakeMessageFromCtx(ctx: Context, manager: SessionManager, cfg: Config
 }
 
 /**
- * Reply to the user that they need an active session, and log the drop.
+ * Reply to the user that they need an active conversation, and log the drop.
  * Only pings the user in DMs — in topics, we silently drop to avoid
  * spamming every topic in a forum with the same prompt. Always logs.
  */
@@ -166,7 +170,6 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   const intake = createTelegramIntake({
     cfg,
     bot,
-    manager,
     subagentRunner,
     memoryStore,
     agentRunners: runners,
@@ -182,27 +185,25 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   // One instance shared across all message:text handlers, keyed per
   // (chatId, topicId, fromUserId). See src/tg/coalesce.ts.
   //
-  // The dispatch callback is fire-and-forget (coalescer.submit is sync), so it
-  // routes handleText rejections to log.error explicitly — grammy's bot.catch
-  // only sees promises from awaited handlers, not from setTimeout-flushed
-  // dispatches, so without this catch a rejection would become an unhandled
-  // rejection.
+  // The dispatch callback returns a promise so `bot.handleUpdate` can await
+  // immediate (non-buffered) dispatches. Rejections are still caught and routed
+  // to log.error explicitly — grammy's bot.catch only sees promises from
+  // awaited handlers, not from setTimeout-flushed dispatches.
   const coalescer = new TextCoalescer({
-    dispatch: (msg, text) => {
+    dispatch: (msg, text) =>
       intake.handleText(msg, text).catch((err) => {
         log.error("handleText failed", {
           name: err instanceof Error ? err.name : typeof err,
           message: err instanceof Error ? err.message : String(err),
         });
-      });
-    },
+      }),
   });
 
   bot.use(buildAllowlistMiddleware(cfg));
-  registerCommands(bot, manager);
+  registerCommands(bot, intake.lifecycle);
 
   bot.on("message:text", async (ctx: Context) => {
-    const message = intakeMessageFromCtx(ctx, manager, cfg);
+    const message = intakeMessageFromCtx(ctx, intake.lifecycle, cfg);
     // No valid chat → drop, same as the handler did before coalescing.
     if (!message.surface) return;
     // Telegram always populates `from` on user-originated text messages and
@@ -212,7 +213,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     const fromId = ctx.from?.id;
     const messageId = ctx.msg?.message_id;
     if (fromId === undefined || messageId === undefined) return;
-    coalescer.submit({
+    await coalescer.submit({
       message,
       text: ctx.msg?.text ?? "",
       key: {
@@ -233,13 +234,13 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
 
   bot.on("message:photo", async (ctx: Context) => {
     const fileIds = ctx.msg?.photo?.map((photo) => photo.file_id) ?? [];
-    await intake.handlePhoto(intakeMessageFromCtx(ctx, manager, cfg), ctx.api, fileIds, ctx.msg?.caption);
+    await intake.handlePhoto(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, fileIds, ctx.msg?.caption);
   });
 
   bot.on("message:document", async (ctx: Context) => {
     const doc = ctx.msg?.document;
     if (!doc?.file_id) return;
-    await intake.handleDocument(intakeMessageFromCtx(ctx, manager, cfg), ctx.api, {
+    await intake.handleDocument(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
       fileId: doc.file_id,
       fileName: doc.file_name,
       mimeType: doc.mime_type,
@@ -250,7 +251,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   bot.on("message:voice", async (ctx: Context) => {
     const voice = ctx.msg?.voice;
     if (!voice?.file_id) return;
-    await intake.handleVoice(intakeMessageFromCtx(ctx, manager, cfg), ctx.api, {
+    await intake.handleVoice(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
       fileId: voice.file_id,
       mimeType: voice.mime_type,
     });
@@ -259,7 +260,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   bot.on("message:audio", async (ctx: Context) => {
     const audio = ctx.msg?.audio;
     if (!audio?.file_id) return;
-    await intake.handleAudio(intakeMessageFromCtx(ctx, manager, cfg), ctx.api, {
+    await intake.handleAudio(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
       fileId: audio.file_id,
       fileName: audio.file_name,
       performer: audio.performer,

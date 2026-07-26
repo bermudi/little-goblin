@@ -41,7 +41,7 @@ export interface CoalesceInput {
 
 /** Callback the coalescer invokes to deliver a merged (or pass-through) message
  * to intake. Same signature as `intake.handleText`. */
-export type CoalesceDispatch = (message: TelegramIntakeMessage, text: string) => void;
+export type CoalesceDispatch = (message: TelegramIntakeMessage, text: string) => Promise<void>;
 
 interface BufferEntry {
   /** The first fragment's message — retained at open time and passed to
@@ -88,14 +88,13 @@ export class TextCoalescer {
     this.dispatch = options.dispatch;
   }
 
-  submit(input: CoalesceInput): void {
+  submit(input: CoalesceInput): Promise<void> | undefined {
     // Commands never buffer. If a buffer is open for the key, flush it first
     // (buffered text reaches intake before the command), then dispatch the
     // command immediately.
     if (input.isCommand) {
       this.flush(input.key);
-      this.dispatch(input.message, input.text);
-      return;
+      return this.dispatch(input.message, input.text);
     }
 
     const entry = this.buffers.get(keyToString(input.key));
@@ -106,7 +105,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        this.dispatch(input.message, input.text);
+        return this.dispatch(input.message, input.text);
       }
       return;
     }
@@ -130,7 +129,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        this.dispatch(input.message, input.text);
+        return this.dispatch(input.message, input.text);
       }
       return;
     }
@@ -146,7 +145,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        this.dispatch(input.message, input.text);
+        return this.dispatch(input.message, input.text);
       }
       return;
     }
@@ -160,6 +159,7 @@ export class TextCoalescer {
     entry.totalChars += input.text.length;
     entry.lastReceivedAt = Date.now();
     entry.timer = setTimeout(() => this.flush(input.key), TEXT_SPLIT_WINDOW_MS);
+    return;
   }
 
   /** Open a new buffer for `input`'s key, capturing its message as the

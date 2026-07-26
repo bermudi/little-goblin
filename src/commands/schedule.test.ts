@@ -134,7 +134,7 @@ describe("parseScheduleArgs", () => {
   });
 });
 
-describe("executeSchedule — active session requirement", () => {
+describe("executeSchedule — active conversation requirement", () => {
   it("replies with no-active-session when there is no session", () => {
     const deps = makeFakeDeps(null);
     expect(executeSchedule(deps, "/schedule list").reply).toBe(NO_ACTIVE_SESSION_REPLY);
@@ -152,7 +152,7 @@ describe("executeSchedule — active session requirement", () => {
 describe("executeSchedule — list", () => {
   it("reports no schedules when empty", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule list").reply).toBe("No schedules for this session.");
+    expect(executeSchedule(deps, "/schedule list").reply).toBe("No schedules for this conversation.");
   });
 
   it("lists schedules with id, state, recurrence, next run, and preview", () => {

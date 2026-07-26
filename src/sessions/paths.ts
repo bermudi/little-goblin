@@ -5,23 +5,20 @@ import { join } from "node:path";
  */
 
 /**
- * A goblin-generated session id is 10 chars of lowercase hex (0-9a-f). This is
- * the shape produced by `makeSessionId` in `src/sessions/manager.ts`. It is used
- * as a defense-in-depth check for the new `heartbeatMdPathForSession` surface.
+ * Validate a session directory name. This is a filesystem-safety guard, not a
+ * format check: conversation ids must still be 10-char lowercase hex, which is
+ * enforced by `validateConversationId` at conversation boundaries. Internal
+ * session names (e.g. `__goblin_dreaming__`) are safe directory names but not
+ * hex, so this helper allows them.
  */
-const SESSION_ID_HEX_RE = /^[0-9a-f]{10}$/;
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 
-/**
- * Reject session ids that do not match the goblin-generated hex format. This
- * single validation is also a path-traversal guard: any value containing `..`,
- * path separators, or non-hex characters fails the same hex check.
- */
 function validateSessionId(id: string): void {
   if (typeof id !== "string" || id.length === 0) {
     throw new Error(`Invalid session id: must be a non-empty string`);
   }
-  if (!SESSION_ID_HEX_RE.test(id)) {
-    throw new Error(`Invalid session id: must be 10 lowercase hex characters`);
+  if (!SAFE_SESSION_ID_RE.test(id)) {
+    throw new Error(`Invalid session id: must contain only alphanumeric characters, underscores, or hyphens`);
   }
 }
 
@@ -69,8 +66,7 @@ export function schedulesPath(home: string): string {
 
 /**
  * Path to a session-scoped `HEARTBEAT.md` prompt file. The id is validated as
- * goblin-generated lowercase hex (defense-in-depth) by the shared
- * `validateSessionId` used by all session-id path helpers.
+ * a safe directory name by the shared `validateSessionId`.
  */
 export function heartbeatMdPathForSession(home: string, id: string): string {
   validateSessionId(id);

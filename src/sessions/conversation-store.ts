@@ -62,6 +62,19 @@ export class ConversationStore {
    */
   create(env: ExecutionEnvironment, title?: string): ConversationState {
     const id = this.allocateId();
+    return this.createWithId(env, id, title);
+  }
+
+  /**
+   * Create a conversation with an explicitly supplied id. The caller must own
+   * id allocation and uniqueness (e.g. project-assignment uses a planned id
+   * for crash recovery). Throws if the id is already in use.
+   */
+  createWithId(env: ExecutionEnvironment, id: ConversationId, title?: string): ConversationState {
+    validateConversationId(id);
+    if (existsSync(sessionDir(this.home, id)) || existsSync(join(sessionsDir(this.home), "archive", id))) {
+      throw new Error(`conversation ${id} already exists`);
+    }
     ensureConversationFiles(this.home, id);
 
     const state: ConversationState = {
@@ -158,7 +171,7 @@ export class ConversationStore {
     log.info("archived conversation", { id });
   }
 
-  private allocateId(): ConversationId {
+  allocateId(): ConversationId {
     for (let attempts = 0; attempts < 100; attempts += 1) {
       const id = makeConversationId();
       if (!existsSync(sessionDir(this.home, id)) && !existsSync(join(sessionsDir(this.home), "archive", id))) {

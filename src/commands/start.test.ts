@@ -1,9 +1,9 @@
 import { describe, it, expect } from "bun:test";
 import type { Context } from "grammy";
 import { buildStartHandler } from "./start.ts";
-import type { SessionManager } from "../sessions/mod.ts";
-import type { SessionState } from "../sessions/types.ts";
-import { dmSurface, type Surface } from "../surface.ts";
+import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
+import type { ConversationState } from "../sessions/types.ts";
+import { dmSurface, topicSurface, type Surface } from "../surface.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 
 type ReplyCall = { text: string; opts?: Record<string, unknown> };
@@ -22,27 +22,29 @@ function makeCtx(overrides: {
   } as unknown as Context;
 }
 
-function makeManager(
-  sessionId: string,
-  existing?: SessionState | null,
-): { manager: SessionManager; calls: Surface[]; resolveCalls: Surface[] } {
-  const calls: Surface[] = [];
-  const resolveCalls: Surface[] = [];
-  const manager = {
-    resolve: (surface: Surface) => {
-      resolveCalls.push(surface);
+function makeLifecycle(
+  existing?: ConversationState | null,
+): { lifecycle: ConversationLifecycle; inspectCalls: Surface[] } {
+  const inspectCalls: Surface[] = [];
+  const lifecycle = {
+    inspect: (surface: Surface) => {
+      inspectCalls.push(surface);
       return existing ?? null;
     },
-    createForSurface: (surface: Surface) => {
-      calls.push(surface);
-      return { id: sessionId, createdAt: new Date().toISOString(), chatId: surface.chatId, topicId: surface.kind === "topic" ? surface.topicId : undefined } as SessionState;
-    },
-  } as unknown as SessionManager;
-  return { manager, calls, resolveCalls };
+  } as unknown as ConversationLifecycle;
+  return { lifecycle, inspectCalls };
+}
+
+function conversation(id: string): ConversationState {
+  return {
+    id,
+    createdAt: new Date().toISOString(),
+    executionEnvironment: personalEnvironment(),
+  };
 }
 
 describe("buildStartHandler", () => {
-  it("creates session and welcomes user in DM", async () => {
+  it("welcomes user and reports active conversation in DM", async () => {
     const replies: ReplyCall[] = [];
     const ctx = makeCtx({
       chat: { id: 123, type: "private" },
@@ -52,47 +54,43 @@ describe("buildStartHandler", () => {
       },
     });
 
-    const { manager, calls } = makeManager("sess-abc-123");
-    const handler = buildStartHandler(manager);
-    await handler(ctx);
-
-    expect(replies.length).toBe(1);
-    expect(replies[0]!.text).toBe("`[info]` Session `sess-abc-123` ready\\. Just start typing\\!");
-    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
-    expect(calls.length).toBe(1);
-    expect(calls[0]!).toEqual(dmSurface(123));
-  });
-
-  it("welcomes back without creating when DM session already exists", async () => {
-    const replies: ReplyCall[] = [];
-    const ctx = makeCtx({
-      chat: { id: 123, type: "private" },
-      reply: async (text, opts) => {
-        replies.push({ text, opts });
-        return { message_id: 1 };
-      },
-    });
-
-    const existing: SessionState = {
-      id: "existing-99",
-      createdAt: new Date().toISOString(),
-      chatId: 123,
-      topicId: undefined,
-      executionEnvironment: personalEnvironment(),
-    };
-    const { manager, calls } = makeManager("unused", existing);
-    const handler = buildStartHandler(manager);
+    const { lifecycle, inspectCalls } = makeLifecycle(conversation("conv-abc-123"));
+    const handler = buildStartHandler(lifecycle);
     await handler(ctx);
 
     expect(replies.length).toBe(1);
     expect(replies[0]!.text).toBe(
-      "`[info]` Welcome back\\. Session `existing-99` is active\\. Use /new for a fresh one\\.",
+      "`[info]` Welcome back\\. Conversation `conv-abc-123` is active\\. Use /new for a fresh one\\.",
     );
     expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
-    expect(calls.length).toBe(0); // No new session created
+    expect(inspectCalls.length).toBe(1);
+    expect(inspectCalls[0]!).toEqual(dmSurface(123));
   });
 
-  it("informs that forum General topic is already a session", async () => {
+  it("explains how to start a conversation when DM is unbound", async () => {
+    const replies: ReplyCall[] = [];
+    const ctx = makeCtx({
+      chat: { id: 123, type: "private" },
+      reply: async (text, opts) => {
+        replies.push({ text, opts });
+        return { message_id: 1 };
+      },
+    });
+
+    const { lifecycle, inspectCalls } = makeLifecycle(null);
+    const handler = buildStartHandler(lifecycle);
+    await handler(ctx);
+
+    expect(replies.length).toBe(1);
+    expect(replies[0]!.text).toBe(
+      "`[info]` No active conversation\\. Send any message to start one, or use /new to create one explicitly\\.",
+    );
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
+    expect(inspectCalls.length).toBe(1);
+    expect(inspectCalls[0]!).toEqual(dmSurface(123));
+  });
+
+  it("explains how to start a conversation in the General topic", async () => {
     const replies: ReplyCall[] = [];
     const ctx = makeCtx({
       chat: { id: -789, type: "supergroup" },
@@ -103,14 +101,17 @@ describe("buildStartHandler", () => {
       },
     });
 
-    const { manager, calls } = makeManager("unused");
-    const handler = buildStartHandler(manager);
+    const { lifecycle, inspectCalls } = makeLifecycle(null);
+    const handler = buildStartHandler(lifecycle);
     await handler(ctx);
 
     expect(replies.length).toBe(1);
-    expect(replies[0]!.text).toBe("`[info]` This topic is already its own session\\. Just start typing\\!");
-    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
-    expect(calls.length).toBe(0); // No session created for forum topics
+    expect(replies[0]!.text).toBe(
+      "`[info]` No active conversation\\. Send any message to start one, or use /new to create one explicitly\\.",
+    );
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true, message_thread_id: 1 });
+    expect(inspectCalls.length).toBe(1);
+    expect(inspectCalls[0]!).toEqual(topicSurface("supergroup", -789, 1));
   });
 
   it("rejects in plain group chat", async () => {
@@ -123,16 +124,17 @@ describe("buildStartHandler", () => {
       },
     });
 
-    const { manager } = makeManager("unused");
-    const handler = buildStartHandler(manager);
+    const { lifecycle, inspectCalls } = makeLifecycle(null);
+    const handler = buildStartHandler(lifecycle);
     await handler(ctx);
 
     expect(replies.length).toBe(1);
     expect(replies[0]!.text).toBe("`[info]` Use /start in a private chat or a forum topic\\.");
     expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
+    expect(inspectCalls.length).toBe(0);
   });
 
-  it("informs that topic is already a session", async () => {
+  it("explains how to start a conversation in an unbound topic", async () => {
     const replies: ReplyCall[] = [];
     const ctx = makeCtx({
       chat: { id: -789, type: "supergroup" },
@@ -143,13 +145,41 @@ describe("buildStartHandler", () => {
       },
     });
 
-    const { manager } = makeManager("unused");
-    const handler = buildStartHandler(manager);
+    const { lifecycle, inspectCalls } = makeLifecycle(null);
+    const handler = buildStartHandler(lifecycle);
     await handler(ctx);
 
     expect(replies.length).toBe(1);
-    expect(replies[0]!.text).toBe("`[info]` This topic is already its own session\\. Just start typing\\!");
+    expect(replies[0]!.text).toBe(
+      "`[info]` No active conversation\\. Send any message to start one, or use /new to create one explicitly\\.",
+    );
     expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true, message_thread_id: 42 });
+    expect(inspectCalls.length).toBe(1);
+    expect(inspectCalls[0]!).toEqual(topicSurface("supergroup", -789, 42));
+  });
+
+  it("welcomes back in a bound topic", async () => {
+    const replies: ReplyCall[] = [];
+    const ctx = makeCtx({
+      chat: { id: -789, type: "supergroup" },
+      msg: { message_thread_id: 42, is_topic_message: true },
+      reply: async (text, opts) => {
+        replies.push({ text, opts });
+        return { message_id: 1 };
+      },
+    });
+
+    const { lifecycle, inspectCalls } = makeLifecycle(conversation("conv-abc-123"));
+    const handler = buildStartHandler(lifecycle);
+    await handler(ctx);
+
+    expect(replies.length).toBe(1);
+    expect(replies[0]!.text).toBe(
+      "`[info]` Welcome back\\. Conversation `conv-abc-123` is active\\. Use /new for a fresh one\\.",
+    );
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true, message_thread_id: 42 });
+    expect(inspectCalls.length).toBe(1);
+    expect(inspectCalls[0]!).toEqual(topicSurface("supergroup", -789, 42));
   });
 
   it("handles missing surface", async () => {
@@ -162,12 +192,13 @@ describe("buildStartHandler", () => {
       },
     });
 
-    const { manager } = makeManager("unused");
-    const handler = buildStartHandler(manager);
+    const { lifecycle, inspectCalls } = makeLifecycle(null);
+    const handler = buildStartHandler(lifecycle);
     await handler(ctx);
 
     expect(replies.length).toBe(1);
     expect(replies[0]!.text).toBe("`[error]` Unable to determine chat context\\.");
     expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
+    expect(inspectCalls.length).toBe(0);
   });
 });

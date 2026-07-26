@@ -1,18 +1,24 @@
 import type { Context } from "grammy";
-import type { SessionManager } from "../sessions/mod.ts";
+import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 import { surfaceFromCtx } from "../tg/context-surface.ts";
 import { deliveryOpts } from "../tg/delivery.ts";
 import { systemReply } from "../tg/format.ts";
+import { topicSurface, type TopicContainer } from "../surface.ts";
 
 const BASE_REPLY_OPTS: Record<string, unknown> = { parse_mode: "MarkdownV2", disable_notification: true };
 
 /**
  * /start command handler.
- * - In a private chat (DM): creates a new session and welcomes the user.
- * - In a topic: informs that topics are already their own session.
- * - In a non-forum group: rejected — groups have no session isolation, use topics.
+ * - In a private chat (DM): reports the active conversation if one is bound,
+ *   otherwise explains how to start one.
+ * - In a forum topic (including General): inspects the topic binding and reports
+ *   the active conversation or explains how to start one.
+ * - In a non-forum group: rejected — groups have no conversation isolation, use topics.
+ *
+ * /start never creates or rotates a conversation; it only inspects the current
+ * binding. This keeps it a pure welcome/status command on every surface.
  */
-export function buildStartHandler(manager: SessionManager) {
+export function buildStartHandler(lifecycle: ConversationLifecycle) {
   return async (ctx: Context): Promise<void> => {
     const chatType = ctx.chat?.type;
 
@@ -34,8 +40,6 @@ export function buildStartHandler(manager: SessionManager) {
       return;
     }
 
-    const replyOpts = deliveryOpts(surface, BASE_REPLY_OPTS);
-
     // Reject non-private, non-topic, non-supergroup chats.
     // Check for message_thread_id to handle forum General topics (is_topic_message=false but still a forum)
     const hasThreadId = ctx.msg && "message_thread_id" in ctx.msg && typeof ctx.msg.message_thread_id === "number";
@@ -43,43 +47,48 @@ export function buildStartHandler(manager: SessionManager) {
     if (chatType !== "private" && surface.kind !== "topic" && !hasThreadId && !isSupergroup) {
       await ctx.reply(
         systemReply("Use /start in a private chat or a forum topic.", "info"),
-        replyOpts,
+        BASE_REPLY_OPTS,
       );
       return;
     }
+
+    let inspectSurface = surface;
+    if (surface.kind !== "topic" && hasThreadId && typeof ctx.msg?.message_thread_id === "number") {
+      const container: TopicContainer = surface.kind === "supergroup" ? "supergroup" : "private";
+      inspectSurface = topicSurface(container, surface.chatId, ctx.msg.message_thread_id);
+    }
+
+    const replyOpts = deliveryOpts(inspectSurface, BASE_REPLY_OPTS);
 
     if (surface.kind === "topic" || hasThreadId) {
-      // In a forum topic (including General) - already has a session (auto-created on first message)
+      const conversation = lifecycle.inspect(inspectSurface);
+      if (conversation) {
+        await ctx.reply(
+          systemReply(`Welcome back\. Conversation \`${conversation.id}\` is active\. Use /new for a fresh one.`, "info"),
+          replyOpts,
+        );
+        return;
+      }
+
       await ctx.reply(
-        systemReply("This topic is already its own session. Just start typing!", "info"),
+        systemReply("No active conversation\. Send any message to start one, or use /new to create one explicitly.", "info"),
         replyOpts,
       );
       return;
     }
 
-    // Private chat (DM): reuse existing session if any, else create one.
-    // /start is idempotent — use /new to force a fresh session.
-    const existing = await manager.resolve(surface);
-    if (existing) {
+    // Private chat (DM): inspect the current binding without creating.
+    const conversation = lifecycle.inspect(surface);
+    if (conversation) {
       await ctx.reply(
-        systemReply(`Welcome back. Session \`${existing.id}\` is active. Use /new for a fresh one.`, "info"),
+        systemReply(`Welcome back\. Conversation \`${conversation.id}\` is active\. Use /new for a fresh one.`, "info"),
         replyOpts,
       );
       return;
     }
 
-    let state;
-    try {
-      state = await manager.createForSurface(surface);
-    } catch (e) {
-      await ctx.reply(
-        systemReply("Failed to create session. Please try again.", "error"),
-        replyOpts,
-      );
-      throw e;
-    }
     await ctx.reply(
-      systemReply(`Session \`${state.id}\` ready. Just start typing!`, "info"),
+      systemReply("No active conversation\. Send any message to start one, or use /new to create one explicitly.", "info"),
       replyOpts,
     );
   };

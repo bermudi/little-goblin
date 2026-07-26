@@ -12,26 +12,21 @@ import { parseCommandArg } from "./parse.ts";
 export const ALL_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 export interface ThinkCommandDeps {
-  /** True iff a session was resolvable for this chat. */
-  hasSession: boolean;
   /** The raw command text, e.g. "/think high". */
   rawText: string;
   /** Currently active thinking level (model default or override). */
   currentLevel: ThinkingLevel;
   /** Levels supported by the active model (may be fewer than ALL_LEVELS). */
   supportedLevels: readonly ThinkingLevel[];
-  /** Sets (or clears) the session-scoped thinking level override. */
+  /** Sets (or clears) the Surface-scoped thinking level override. */
   setThinkingLevel: (level: ThinkingLevel | undefined) => void;
 }
 
 export type ThinkCommandResult =
-  | { kind: "no-session"; reply: string }
   | { kind: "list"; reply: string }
   | { kind: "bad-level"; reply: string }
   | { kind: "set"; reply: string; level: ThinkingLevel }
   | { kind: "cleared"; reply: string };
-
-export const NO_SESSION_REPLY = "No active session. Start a conversation first.";
 
 /**
  * Format the /think reply, showing only levels supported by the active model
@@ -58,10 +53,6 @@ function isValidLevel(level: string, supportedLevels: readonly ThinkingLevel[]):
 }
 
 export function executeThink(deps: ThinkCommandDeps): ThinkCommandResult {
-  if (!deps.hasSession) {
-    return { kind: "no-session", reply: NO_SESSION_REPLY };
-  }
-
   const arg = parseCommandArg(deps.rawText);
 
   // No argument → list levels

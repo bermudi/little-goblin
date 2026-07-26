@@ -12,8 +12,8 @@ export type NameCommandResult =
   | { kind: "usage"; reply: string }
   | { kind: "renamed"; reply: string };
 
-export const NO_ACTIVE_SESSION_TO_NAME_REPLY = "No active session to name.";
-export const NAME_USAGE_REPLY = "Usage: /name <session name>";
+export const NO_ACTIVE_SESSION_TO_NAME_REPLY = "No active conversation to name.";
+export const NAME_USAGE_REPLY = "Usage: /name <conversation name>";
 
 export function parseSessionName(rawText: string): string | undefined {
   const value = rawText.replace(/^\/name(?:@\S+)?(?:\s+)?/u, "").trim();
@@ -27,5 +27,5 @@ export function executeName(deps: NameCommandDeps): NameCommandResult {
   const title = parseSessionName(deps.rawText);
   if (!title) return { kind: "usage", reply: NAME_USAGE_REPLY };
   deps.setTitle(title);
-  return { kind: "renamed", reply: `Named session \`${deps.session.id}\`: ${title}` };
+  return { kind: "renamed", reply: `Named conversation \`${deps.session.id}\`: ${title}` };
 }

@@ -9,7 +9,7 @@
 
 import { parseCommandArg } from "./parse.ts";
 import { resolveProjectRoot } from "../sessions/environment.ts";
-import type { ProjectAssignmentResult } from "../sessions/manager.ts";
+import type { ProjectAssignmentResult } from "../orchestration/conversation-lifecycle.ts";
 import type { SessionState } from "../sessions/types.ts";
 
 export interface ProjectCommandDeps {
@@ -63,8 +63,8 @@ export async function executeProject(deps: ProjectCommandDeps): Promise<ProjectC
           session: result.session,
           previousSessionId: result.previousSessionId,
           reply: result.previousSessionId
-            ? `Project assigned to \`${projectRoot}\`. New session \`${result.session.id}\`; previous session \`${result.previousSessionId}\` is stored and resumable.`
-            : `Project assigned to \`${projectRoot}\`. Session \`${result.session.id}\` is ready.`,
+            ? `Project assigned to \`${projectRoot}\`. New conversation \`${result.session.id}\`; previous conversation \`${result.previousSessionId}\` is stored and resumable.`
+            : `Project assigned to \`${projectRoot}\`. Conversation \`${result.session.id}\` is ready.`,
         };
       case "already-assigned":
         return {

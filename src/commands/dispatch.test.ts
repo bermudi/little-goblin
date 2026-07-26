@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
 import type { CascadeResult } from "../interrupt.ts";
-import { SessionManager, type SessionState } from "../sessions/mod.ts";
+import { type SessionState, runtimeSessionWithPreferences } from "../sessions/mod.ts";
+import { ConversationStore } from "../sessions/conversation-store.ts";
+import { personalEnvironment } from "../sessions/environment.ts";
+import { createConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 import { dmSurface, type Surface } from "../surface.ts";
 import { MetricsStore, type MetricsEvent, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import { sessionDir } from "../sessions/paths.ts";
@@ -81,27 +84,37 @@ function makeSubagentRunner(overrides: Partial<SubagentRunnerStub> = {}): Subage
 
 function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunner()): {
   cfg: Config;
-  manager: SessionManager;
   surface: Surface;
   deps: DispatchDeps;
   interrupt: ReturnType<typeof mock>;
+  lifecycle: ReturnType<typeof createConversationLifecycle>;
+  conversationStore: ConversationStore;
 } {
   const cfg = makeConfig();
-  const manager = new SessionManager(cfg);
   const interrupt = mock(async () => cascade);
+  const runtimeHost = { disposeRuntime: async () => {} };
+  const lifecycle = createConversationLifecycle(cfg.goblinHome, runtimeHost);
+  const conversationStore = new ConversationStore(cfg.goblinHome);
   return {
     cfg,
-    manager,
     surface: dmSurface(123),
     interrupt,
+    lifecycle,
+    conversationStore,
     deps: {
-      manager,
+      lifecycle,
+      conversationStore,
       cfg,
       subagentRunner,
       tryResolveModel: mock(() => undefined),
       interruptAndCascade: interrupt as unknown as DispatchDeps["interruptAndCascade"],
     },
   };
+}
+
+async function createSession(harness: ReturnType<typeof makeHarness>): Promise<SessionState> {
+  const conv = await harness.lifecycle.rotate(harness.surface);
+  return runtimeSessionWithPreferences(conv, harness.surface, harness.cfg.goblinHome);
 }
 
 async function dispatch(args: {
@@ -133,10 +146,10 @@ function expectReplied(result: DispatchResult): Extract<DispatchResult, { kind: 
 }
 
 describe("handleCommand", () => {
-  it("replies to /cancel with an active session and invokes the cascade itself", async () => {
+  it("replies to /cancel with an active conversation and invokes the cascade itself", async () => {
     const cascade = baseCascade({ attemptedMain: true });
     const harness = makeHarness(cascade);
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const runner = makeRunner(true); // streaming → cascade attempts the main runner
     const result = expectReplied(await dispatch({ command: "/cancel", session, runner, harness }));
 
@@ -158,7 +171,7 @@ describe("handleCommand", () => {
 
   it("/new with a prior session disposes prior and creates a new runner", async () => {
     const harness = makeHarness();
-    const prior = await harness.manager.createForSurface(harness.surface);
+    const prior = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/new", session: prior, harness }));
 
     expect(result.sideEffects.map((e) => e.kind)).toEqual(["runner-disposed", "runner-created"]);
@@ -172,27 +185,27 @@ describe("handleCommand", () => {
 
   it("/new executor failures become the canned reply", async () => {
     const harness = makeHarness();
-    harness.deps.manager = { createForSurface: () => { throw new Error("boom"); } } as unknown as SessionManager;
+    harness.lifecycle.rotate = async () => { throw new Error("boom"); };
     const result = expectReplied(await dispatch({ command: "/new", harness }));
-    expect(result.reply).toBe("Failed to reset session. Please try again.");
+    expect(result.reply).toBe("Failed to reset conversation. Please try again.");
   });
 
-  it("/archive with an active session archives and returns no further side effects", async () => {
+  it("/archive with an active conversation archives and returns no further side effects", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/archive", session, harness }));
     expect(result.sideEffects).toEqual([]);
   });
 
   it("/archive without a session has no side effects", async () => {
     const result = expectReplied(await dispatch({ command: "/archive" }));
-    expect(result.reply).toBe("No active session to archive.");
+    expect(result.reply).toBe("No active conversation to archive.");
     expect(result.sideEffects).toEqual([]);
   });
 
   it("/project changes project dir and disposes the runner", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/project", rawText: `/project ${harness.cfg.goblinHome}`, session, harness }));
     expect(result.sideEffects).toHaveLength(2);
     expect(result.sideEffects[0]).toEqual({ kind: "runner-disposed", sessionId: session.id });
@@ -201,7 +214,7 @@ describe("handleCommand", () => {
 
   it("/model switches the model in place without disposing the runner", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const runner = makeRunner();
     const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, runner, harness }));
     expect(result.reply).toContain("Switched to `poe/GPT-4o`");
@@ -213,7 +226,7 @@ describe("handleCommand", () => {
 
   it("/model without a runner only persists the override", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     // No runner passed — session exists but runner not yet created.
     const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, harness }));
     expect(result.reply).toContain("Switched to `poe/GPT-4o`");
@@ -222,23 +235,23 @@ describe("handleCommand", () => {
 
   it("/model lists favorites without an argument", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/model", session, harness }));
     expect(result.reply).toContain("Favorites:");
   });
 
   it("/think updates the existing runner without disposing it", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const runner = makeRunner();
     const result = expectReplied(await dispatch({ command: "/think", rawText: "/think high", session, runner, harness }));
     expect(result.sideEffects).toEqual([]);
     expect(runner.setThinkingLevel).toHaveBeenCalledWith("high");
   });
 
-  it("/debug reports diagnostics for active sessions", async () => {
+  it("/debug reports diagnostics for active conversations", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const metrics = new MetricsStore(harness.cfg.goblinHome, session.id);
     const events: TelegramMetricsEvent[] = [
       { type: "telegram", op: "sendMessage", channel: "system", outcome: "success" },
@@ -249,61 +262,63 @@ describe("handleCommand", () => {
     for (const event of events) metrics.record(event as MetricsEvent);
 
     const result = expectReplied(await dispatch({ command: "/debug", session, runner: makeRunner(), harness }));
-    expect(result.reply).toContain(`Session: ${session.id}`);
+    expect(result.reply).toContain(`Conversation: ${session.id}`);
     expect(result.reply).toContain("Telegram sends: 2 (1 failed), edits: 1 (0 failed), throttled: 1, rate-limited: 0, topic not found: 0");
   });
 
-  it("/debug without a session replies no active session", async () => {
+  it("/debug without a session replies no active conversation", async () => {
     const result = expectReplied(await dispatch({ command: "/debug" }));
-    expect(result.reply).toBe("No active session.");
+    expect(result.reply).toBe("No active conversation.");
   });
 
   it("/compact calls compact on the existing runner", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const runner = makeRunner();
     const result = expectReplied(await dispatch({ command: "/compact", session, runner, harness }));
     expect(result.reply).toBe("Compacted from ~42K tokens.");
     expect(runner.compact).toHaveBeenCalled();
   });
 
-  it("/compact without a session replies no active session", async () => {
+  it("/compact without a session replies no active conversation", async () => {
     const result = expectReplied(await dispatch({ command: "/compact" }));
-    expect(result.reply).toBe("No active session to compact.");
+    expect(result.reply).toBe("No active conversation to compact.");
   });
 
   it("/name sets title without runner side effects", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/name", rawText: "/name foo", session, harness }));
-    expect(result.reply).toBe(`Named session \`${session.id}\`: foo`);
+    expect(result.reply).toBe(`Named conversation \`${session.id}\`: foo`);
     expect(result.sideEffects).toEqual([]);
   });
 
-  it("/resume disposes prior and creates the resumed runner", async () => {
+  it("/resume disposes prior, invalidates the resumed runner, and creates the resumed runner", async () => {
     const harness = makeHarness();
-    const prior = await harness.manager.createForSurface(harness.surface);
-    const target = await harness.manager.createForSurface(dmSurface(456));
-    harness.manager.setTitle(target.id, "target");
+    const prior = await createSession(harness);
+    const target = harness.conversationStore.create(personalEnvironment());
+    harness.conversationStore.setTitle(target.id, "target");
     const result = expectReplied(await dispatch({ command: "/resume", rawText: `/resume ${target.id}`, session: prior, harness }));
-    expect(result.sideEffects.map((e) => e.kind)).toEqual(["runner-disposed", "runner-created"]);
+    expect(result.sideEffects.map((e) => e.kind)).toEqual(["runner-disposed", "runner-disposed", "runner-created"]);
     expect(result.sideEffects[0]).toEqual({ kind: "runner-disposed", sessionId: prior.id });
+    expect(result.sideEffects[1]).toEqual({ kind: "runner-disposed", sessionId: target.id });
+    expect(result.sideEffects[2]?.kind).toBe("runner-created");
+    expect((result.sideEffects[2] as unknown as { kind: "runner-created"; session: SessionState; surface: Surface }).session.id).toBe(target.id);
   });
 
-  it("/resume of the already-bound session still disposes before recreating", async () => {
+  it("/resume of the already-bound session is a no-op", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/resume", rawText: `/resume ${session.id}`, session, harness }));
-    expect(result.sideEffects.map((e) => e.kind)).toEqual(["runner-disposed", "runner-created"]);
-    expect(result.sideEffects[0]).toEqual({ kind: "runner-disposed", sessionId: session.id });
+    expect(result.sideEffects).toEqual([]);
   });
 
   it("/resume without an argument lists named sessions", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
-    harness.manager.setTitle(session.id, "foo");
+    const session = await createSession(harness);
+    harness.conversationStore.setTitle(session.id, "foo");
     const result = expectReplied(await dispatch({ command: "/resume", session, harness }));
-    expect(result.reply).toContain("Named sessions:");
+    expect(result.reply).toContain("Named conversations:");
   });
 
   it("handles /help", async () => {
@@ -393,7 +408,7 @@ describe("handleCommand", () => {
 
   it("/voice returns handled when voice is sent", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const sendVoice = mock(async () => ({ message_id: 1 }));
     const bot = { api: { sendVoice } } as unknown as import("grammy").Bot;
     const dir = sessionDir(harness.cfg.goblinHome, session.id);
@@ -418,7 +433,7 @@ describe("handleCommand", () => {
 
   it("/voice does not interrupt the running turn", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const sendVoice = mock(async () => ({ message_id: 1 }));
     const bot = { api: { sendVoice } } as unknown as import("grammy").Bot;
     const dir = sessionDir(harness.cfg.goblinHome, session.id);
@@ -447,7 +462,7 @@ describe("handleCommand", () => {
 
   it("/queue while streaming enqueues a queue-prompt side effect and acknowledges Queued", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do this after", session, runner: makeRunner(true), harness }));
     expect(result.reply).toBe("Queued. Will run after the current turn.");
     expect(result.sideEffects).toEqual([{ kind: "queue-prompt", session, text: "do this after" }]);
@@ -456,7 +471,7 @@ describe("handleCommand", () => {
 
   it("/queue while idle replies Running and emits a queue-prompt side effect", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do this", session, runner: makeRunner(false), harness }));
     expect(result.reply).toBe("Running.");
     expect(result.sideEffects).toEqual([{ kind: "queue-prompt", session, text: "do this" }]);
@@ -467,15 +482,15 @@ describe("handleCommand", () => {
 
   it("/queue without an argument replies usage and enqueues nothing", async () => {
     const harness = makeHarness();
-    const session = await harness.manager.createForSurface(harness.surface);
+    const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue", session, harness }));
     expect(result.reply).toBe("Usage: /queue <text>");
     expect(result.sideEffects).toEqual([]);
   });
 
-  it("/queue without a session replies No active session.", async () => {
+  it("/queue without a session replies No active conversation.", async () => {
     const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do something" }));
-    expect(result.reply).toBe("No active session.");
+    expect(result.reply).toBe("No active conversation.");
     expect(result.sideEffects).toEqual([]);
   });
 
@@ -531,7 +546,7 @@ describe("handleCommand", () => {
     it("/cancel 'Cancelled.' is tagged 'ok'", async () => {
       const cascade = baseCascade({ attemptedMain: true });
       const harness = makeHarness(cascade);
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const runner = makeRunner(true);
       const result = expectReplied(await dispatch({ command: "/cancel", session, runner, harness }));
       expect(result.tag).toBe("ok");
@@ -551,7 +566,7 @@ describe("handleCommand", () => {
 
     it("/queue while streaming is tagged 'queued'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const runner = makeRunner(true);
       const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do thing", session, runner, harness }));
       expect(result.tag).toBe("queued");
@@ -559,7 +574,7 @@ describe("handleCommand", () => {
 
     it("/queue while idle is tagged 'ok'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const runner = makeRunner(false);
       const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do thing", session, runner, harness }));
       expect(result.tag).toBe("ok");
@@ -567,29 +582,29 @@ describe("handleCommand", () => {
 
     it("/model list (no arg) is tagged 'info'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const result = expectReplied(await dispatch({ command: "/model", session, harness }));
       expect(result.tag).toBe("info");
     });
 
     it("/model switch is tagged 'ok'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const runner = makeRunner(false);
       const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, runner, harness }));
       expect(result.tag).toBe("ok");
     });
 
     it("/new failure is tagged 'error'", async () => {
-      // Force createForSurface to throw by archiving then making manager fail.
+      // Force lifecycle.rotate to throw.
       const harness = makeHarness();
-      const orig = harness.manager.createForSurface.bind(harness.manager);
-      harness.manager.createForSurface = () => { throw new Error("boom"); };
+      const orig = harness.lifecycle.rotate.bind(harness.lifecycle);
+      harness.lifecycle.rotate = async () => { throw new Error("boom"); };
       try {
         const result = expectReplied(await dispatch({ command: "/new", harness }));
         expect(result.tag).toBe("error");
       } finally {
-        harness.manager.createForSurface = orig;
+        harness.lifecycle.rotate = orig;
       }
     });
 
@@ -623,7 +638,7 @@ describe("handleCommand", () => {
 
     it("/archive success is tagged 'ok'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const result = expectReplied(await dispatch({ command: "/archive", session, harness }));
       expect(result.tag).toBe("ok");
     });
@@ -635,7 +650,7 @@ describe("handleCommand", () => {
 
     it("/project set is tagged 'ok'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const result = expectReplied(await dispatch({ command: "/project", rawText: `/project ${harness.cfg.goblinHome}`, session, harness }));
       expect(result.tag).toBe("ok");
     });
@@ -647,21 +662,21 @@ describe("handleCommand", () => {
 
     it("/project bad path is tagged 'warn'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const result = expectReplied(await dispatch({ command: "/project", rawText: "/project /nonexistent/path/xyz", session, harness }));
       expect(result.tag).toBe("warn");
     });
 
     it("/project missing arg is tagged 'info'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const result = expectReplied(await dispatch({ command: "/project", rawText: "/project", session, harness }));
       expect(result.tag).toBe("info");
     });
 
     it("/compact success is tagged 'ok'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const runner = makeRunner(false);
       const result = expectReplied(await dispatch({ command: "/compact", session, runner, harness }));
       expect(result.tag).toBe("ok");
@@ -674,14 +689,14 @@ describe("handleCommand", () => {
 
     it("/compact without a runner is tagged 'info'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const result = expectReplied(await dispatch({ command: "/compact", session, runner: null, harness }));
       expect(result.tag).toBe("info");
     });
 
     it("/name success is tagged 'ok'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const result = expectReplied(await dispatch({ command: "/name", rawText: "/name my-session", session, harness }));
       expect(result.tag).toBe("ok");
     });
@@ -693,15 +708,15 @@ describe("handleCommand", () => {
 
     it("/name missing arg is tagged 'info'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const result = expectReplied(await dispatch({ command: "/name", rawText: "/name", session, harness }));
       expect(result.tag).toBe("info");
     });
 
     it("/resume success is tagged 'ok'", async () => {
       const harness = makeHarness();
-      const target = await harness.manager.createForSurface(harness.surface);
-      harness.manager.setTitle(target.id, "my-target");
+      const target = await createSession(harness);
+      harness.conversationStore.setTitle(target.id, "my-target");
       const result = expectReplied(await dispatch({ command: "/resume", rawText: `/resume ${target.id}`, harness }));
       expect(result.tag).toBe("ok");
     });
@@ -720,7 +735,7 @@ describe("handleCommand", () => {
 
     it("/schedule list is tagged 'info'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const { ScheduleStore } = await import("../scheduler/store.ts");
       const scheduleStore = new ScheduleStore(harness.cfg.goblinHome);
       harness.deps.scheduleStore = scheduleStore;
@@ -730,7 +745,7 @@ describe("handleCommand", () => {
 
     it("/schedule at success is tagged 'ok'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const { ScheduleStore } = await import("../scheduler/store.ts");
       const scheduleStore = new ScheduleStore(harness.cfg.goblinHome);
       harness.deps.scheduleStore = scheduleStore;
@@ -741,7 +756,7 @@ describe("handleCommand", () => {
 
     it("/schedule past time is tagged 'warn'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const { ScheduleStore } = await import("../scheduler/store.ts");
       const scheduleStore = new ScheduleStore(harness.cfg.goblinHome);
       harness.deps.scheduleStore = scheduleStore;
@@ -751,7 +766,7 @@ describe("handleCommand", () => {
 
     it("/schedule usage (no sub) is tagged 'info'", async () => {
       const harness = makeHarness();
-      const session = await harness.manager.createForSurface(harness.surface);
+      const session = await createSession(harness);
       const { ScheduleStore } = await import("../scheduler/store.ts");
       const scheduleStore = new ScheduleStore(harness.cfg.goblinHome);
       harness.deps.scheduleStore = scheduleStore;

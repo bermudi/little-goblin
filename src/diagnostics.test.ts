@@ -42,6 +42,7 @@ const baseDiagnostics: Diagnostics = {
   sessionName: null,
   createdAt: "2026-04-29T00:00:00.000Z",
   model: "poe/Claude-Sonnet-4.6",
+  thinkingLevel: null,
   runnerInitialized: true,
   tools: ["bash", "memory"],
   skillsLoaded: null,
@@ -59,9 +60,10 @@ const baseDiagnostics: Diagnostics = {
 describe("formatDiagnostics", () => {
   it("includes all required fields from the design", () => {
     const out = formatDiagnostics(baseDiagnostics);
-    expect(out).toContain("Session: abc1234567");
-    expect(out).toContain("Session Name: unavailable");
+    expect(out).toContain("Conversation: abc1234567");
+    expect(out).toContain("Conversation Name: unavailable");
     expect(out).toContain("Model: poe/Claude-Sonnet-4.6");
+    expect(out).toContain("Thinking level: (model default)");
     expect(out).toContain("Tools: bash, memory");
     expect(out).toContain("Transcript: /tmp/transcript.jsonl");
     expect(out).toContain("1.0 KB");
@@ -71,8 +73,8 @@ describe("formatDiagnostics", () => {
 
   it("renders session name when present", () => {
     const out = formatDiagnostics({ ...baseDiagnostics, sessionName: "ttt-v2" });
-    expect(out).toContain("Session Name: ttt-v2");
-    expect(out).not.toContain("Session Name: unavailable");
+    expect(out).toContain("Conversation Name: ttt-v2");
+    expect(out).not.toContain("Conversation Name: unavailable");
   });
 
   it("renders null fields as 'unavailable' instead of omitting them", () => {
@@ -85,7 +87,7 @@ describe("formatDiagnostics", () => {
       transcriptLines: null,
       contextTokens: null,
     });
-    expect(out).toContain("Session Name: unavailable");
+    expect(out).toContain("Conversation Name: unavailable");
     expect(out).toContain("Tools: unavailable");
     expect(out).toContain("Skills loaded: unavailable");
     expect(out).toContain("Transcript file: unavailable, unavailable lines");
@@ -108,7 +110,7 @@ describe("formatDiagnostics", () => {
     expect(out).toContain("Context: (not initialized — send a message first)");
     expect(out).toContain("Context files: (not initialized — send a message first)");
     // Non-runner fields still render "unavailable", not the not-initialized marker.
-    expect(out).toContain("Session Name: unavailable");
+    expect(out).toContain("Conversation Name: unavailable");
   });
 
   it("renders runner-backed null fields as 'unavailable' when the runner is primed but the field is unobservable", () => {
@@ -249,7 +251,7 @@ describe("gatherDiagnostics", () => {
     expect(out).toContain("Turns: 1");
     expect(out).toContain("Tokens: 15");
     expect(out).toContain("Cost: $ 0.003000");
-    expect(out).toContain("Cache: 0 read / 0 write tokens in this session");
+    expect(out).toContain("Cache: 0 read / 0 write tokens in this conversation");
     expect(out).toContain("Memory searches: 0");
     expect(out).toContain("Last turn: gpt-test (openai/chat-completions) — 15 tokens, $ 0.003000, cache 0/0, stop: stop, 0 tools, 0 errors");
   });
@@ -402,7 +404,7 @@ describe("generateDiagnostics", () => {
         modelName: "model-x",
       });
       expect(typeof out).toBe("string");
-      expect(out).toContain("Session: abc1234568");
+      expect(out).toContain("Conversation: abc1234568");
       expect(out).toContain("Model: model-x");
       expect(out).toContain("Tools: memory");
     } finally {

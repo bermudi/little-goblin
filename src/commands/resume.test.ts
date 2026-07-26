@@ -18,7 +18,7 @@ describe("/resume command", () => {
     expect(parseResumeTarget("/resume@goblinbot abc123")).toBe("abc123");
   });
 
-  it("lists named sessions when no target is provided", async () => {
+  it("lists named conversations when no target is provided", async () => {
     const result = await executeResume({
       rawText: "/resume",
       sessions: [
@@ -34,14 +34,14 @@ describe("/resume command", () => {
     expect(result.reply).not.toContain("anon123456");
   });
 
-  it("reports when no named sessions exist", async () => {
+  it("reports when no named conversations exist", async () => {
     const result = await executeResume({
       rawText: "/resume",
       sessions: [session("anon123456")],
       bindSession: () => session("unused"),
     });
     expect(result.kind).toBe("list");
-    expect(result.reply).toContain("No named sessions yet");
+    expect(result.reply).toContain("No named conversations yet");
   });
 
   it("binds an exact session id", async () => {

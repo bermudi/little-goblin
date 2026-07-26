@@ -67,6 +67,19 @@ describe("ConversationStore", () => {
       expect(store.load("0000000000")).toBeNull();
     });
 
+    it("returns null for an internal session", () => {
+      const internal: SessionState = {
+        id: "abc123def0",
+        createdAt: new Date().toISOString(),
+        chatId: 0,
+        title: "dreaming",
+        executionEnvironment: personalEnvironment(),
+      };
+      mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
+      writeFileSync(statePath(tmpDir, "abc123def0"), JSON.stringify(internal));
+      expect(store.load("abc123def0")).toBeNull();
+    });
+
     it("throws for a conversation with an invalid executionEnvironment", () => {
       mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
       writeFileSync(

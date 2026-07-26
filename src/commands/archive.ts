@@ -4,13 +4,13 @@
  * Side effects (renaming the topic, dropping the runner from the bot's
  * runner map) live in `bot.ts`; this helper decides what should happen
  * and produces the reply text. The actual filesystem move + binding
- * cleanup is `SessionManager.archive`, injected as `archive`.
+ * cleanup is `ConversationLifecycle.archive`, injected as `archive`.
  *
  * Three branches:
- *   - no active session              → "No active session to archive."
- *   - session exists in bindings but
- *     `sessions/<id>/` is gone       → "Session already archived."
- *   - normal path                    → call archive(), reply success
+ *   - no active conversation              → "No active conversation to archive."
+ *   - conversation exists in bindings but
+ *     `sessions/<id>/` is gone            → "Conversation already archived."
+ *   - normal path                         → call archive(), reply success
  *
  * `/archive` is a queue-timing command: if a turn is in flight, it defers
  * behind it (so the runner is idle and the transcript writer is quiescent)
@@ -31,9 +31,9 @@ export type ArchiveCommandResult =
   | { kind: "already-archived"; reply: string }
   | { kind: "archived"; reply: string };
 
-export const NO_SESSION_REPLY = "No active session to archive.";
-export const ALREADY_ARCHIVED_REPLY = "Session already archived.";
-export const ARCHIVED_REPLY = "Session archived.";
+export const NO_SESSION_REPLY = "No active conversation to archive.";
+export const ALREADY_ARCHIVED_REPLY = "Conversation already archived.";
+export const ARCHIVED_REPLY = "Conversation archived.";
 
 export async function executeArchive(deps: ArchiveCommandDeps): Promise<ArchiveCommandResult> {
   if (!deps.hasSession) {

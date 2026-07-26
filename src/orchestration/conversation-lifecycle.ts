@@ -1,15 +1,25 @@
 import type { Surface, SurfaceId } from "../surface.ts";
 import { surfaceId } from "../surface.ts";
-import type { ConversationId, ConversationState } from "../sessions/types.ts";
+import type { ConversationId, ConversationState, SessionState } from "../sessions/types.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import type { BindingStore } from "../sessions/bindings.ts";
 import { FileBindingStore } from "../sessions/bindings.ts";
-import { getProjectRoot } from "../sessions/topic-settings.ts";
-import { environmentFromProjectRoot, environmentsEqual } from "../sessions/environment.ts";
+import { getProjectRoot, bindProjectRoot } from "../sessions/topic-settings.ts";
+import { environmentFromProjectRoot, environmentsEqual, projectEnvironment, projectRootOf } from "../sessions/environment.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import type { BindingsFile } from "../sessions/types.ts";
+import { isValidConversationId } from "../sessions/conversation.ts";
+import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
+import { log } from "../log.ts";
 import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
 import { withLifecycleTransitionLock } from "./lifecycle-transition-lock.ts";
+import type { ProjectAssignmentIntent } from "../sessions/project-assignment.ts";
+import {
+  createOrVerifyProjectSession,
+  reconcilePendingProjectAssignment,
+  savePendingProjectAssignment,
+  clearPendingProjectAssignment,
+} from "../sessions/project-assignment.ts";
 
 /**
  * Surface-scoped settings adapter used by the lifecycle to determine the
@@ -30,11 +40,17 @@ export interface ConversationLifecycle {
   rotate(surface: Surface): Promise<ConversationState>;
   resume(surface: Surface, target: ConversationId): Promise<ConversationState>;
   archive(surface: Surface): Promise<void>;
+  assignProject(surface: Surface, requestedRoot: string): Promise<ProjectAssignmentResult>;
   listResumable(surface: Surface): ConversationState[];
 }
 
+export type ProjectAssignmentResult =
+  | { kind: "assigned"; session: SessionState; projectRoot: string; previousSessionId?: string }
+  | { kind: "already-assigned"; session?: SessionState; projectRoot?: string }
+  | { kind: "conflict"; currentRoot: string };
+
 function cloneBindings(bindings: BindingsFile): BindingsFile {
-  return { version: 1, surfaces: { ...bindings.surfaces } };
+  return { version: 1, surfaces: { ...bindings.surfaces } } as BindingsFile;
 }
 
 /**
@@ -42,17 +58,20 @@ function cloneBindings(bindings: BindingsFile): BindingsFile {
  * archive and the runtime-first transition ordering for each.
  */
 export class ConversationLifecycleManager implements ConversationLifecycle {
+  private readonly home: string;
   private readonly store: ConversationStore;
   private readonly bindings: BindingStore;
   private readonly settings: SurfaceSettings;
   private readonly runtimeHost: ConversationRuntimeHost;
 
   constructor(
+    home: string,
     store: ConversationStore,
     bindings: BindingStore,
     settings: SurfaceSettings,
     runtimeHost: ConversationRuntimeHost,
   ) {
+    this.home = home;
     this.store = store;
     this.bindings = bindings;
     this.settings = settings;
@@ -63,9 +82,9 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     const key = surfaceId(surface);
     const bindings = this.bindings.load();
     const id = bindings.surfaces[key];
-    if (!id) return null;
+    if (!id || !isValidConversationId(id)) return null;
 
-    const conv = this.store.load(id as ConversationId);
+    const conv = this.store.load(id);
     if (!conv) return null;
 
     const env = this.settings.effectiveEnvironment(surface);
@@ -77,17 +96,25 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async resolveOrStart(surface: Surface): Promise<ConversationState> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
+      await this.reconcilePendingAssignment(key);
       const env = this.settings.effectiveEnvironment(surface);
       const bindings = this.bindings.load();
       const currentId = bindings.surfaces[key];
 
       if (currentId) {
-        const current = this.store.load(currentId as ConversationId);
+        let current: ConversationState | null = null;
+        if (isValidConversationId(currentId)) {
+          current = this.store.load(currentId as ConversationId);
+        }
         if (current && environmentsEqual(current.executionEnvironment, env)) {
           return current;
         }
         if (current) {
           await this.runtimeHost.disposeRuntime(current.id);
+        } else if (isValidConversationId(currentId)) {
+          // Binding points to a missing conversation; drop any in-memory runner
+          // keyed by the stale id before overwriting it.
+          await this.runtimeHost.disposeRuntime(currentId as ConversationId);
         }
       }
 
@@ -95,6 +122,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       const next = cloneBindings(bindings);
       next.surfaces[key] = created.id;
       this.bindings.save(next);
+      log.info("conversation started", { surface: key, conversation: created.id, environment: env });
       return created;
     });
   }
@@ -102,14 +130,22 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async rotate(surface: Surface): Promise<ConversationState> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
+      await this.reconcilePendingAssignment(key);
       const env = this.settings.effectiveEnvironment(surface);
       const bindings = this.bindings.load();
       const currentId = bindings.surfaces[key];
 
       if (currentId) {
-        const current = this.store.load(currentId as ConversationId);
+        let current: ConversationState | null = null;
+        if (isValidConversationId(currentId)) {
+          current = this.store.load(currentId as ConversationId);
+        }
         if (current) {
           await this.runtimeHost.disposeRuntime(current.id);
+        } else if (isValidConversationId(currentId)) {
+          // Stale binding: drop any runner keyed by the old id before creating
+          // the replacement, otherwise it can outlive its conversation.
+          await this.runtimeHost.disposeRuntime(currentId as ConversationId);
         }
       }
 
@@ -117,6 +153,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       const next = cloneBindings(bindings);
       next.surfaces[key] = created.id;
       this.bindings.save(next);
+      log.info("conversation rotated", { surface: key, conversation: created.id, environment: env });
       return created;
     });
   }
@@ -124,6 +161,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async resume(surface: Surface, target: ConversationId): Promise<ConversationState> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
+      await this.reconcilePendingAssignment(key);
       const env = this.settings.effectiveEnvironment(surface);
       const targetConv = this.store.load(target);
       if (!targetConv) {
@@ -140,27 +178,37 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       }
 
       const sourceKey = this.findBoundSurface(bindings, target);
+      // If the target is already bound to the destination surface, this is a no-op.
       if (sourceKey === key) {
         return targetConv;
       }
 
-      if (sourceKey) {
+      // Dispose any runtime at the destination (about to be displaced) and at
+      // the source (for a cross-surface move) before committing the binding
+      // change. Disposal is best-effort idempotent; if it fails we abort.
+      if (currentAtDst && isValidConversationId(currentAtDst)) {
+        await this.runtimeHost.disposeRuntime(currentAtDst);
+      }
+      if (sourceKey !== undefined) {
         await this.runtimeHost.disposeRuntime(target);
       }
 
-      if (currentAtDst) {
-        const displaced = this.store.load(currentAtDst as ConversationId);
-        if (displaced) {
-          await this.runtimeHost.disposeRuntime(displaced.id);
-        }
-      }
-
       const next = cloneBindings(bindings);
-      if (sourceKey) {
-        delete next.surfaces[sourceKey];
+      if (currentAtDst) {
+        delete (next.surfaces as Record<string, string>)[key];
+      }
+      if (sourceKey !== undefined) {
+        delete (next.surfaces as Record<string, string>)[sourceKey];
       }
       next.surfaces[key] = target;
       this.bindings.save(next);
+      log.info("conversation resumed", {
+        surface: key,
+        conversation: target,
+        environment: env,
+        sourceSurface: sourceKey,
+        displaced: currentAtDst,
+      });
       return targetConv;
     });
   }
@@ -168,25 +216,116 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async archive(surface: Surface): Promise<void> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
+      await this.reconcilePendingAssignment(key);
       const bindings = this.bindings.load();
       const currentId = bindings.surfaces[key];
       if (!currentId) {
         throw new Error("no active conversation on this surface");
       }
 
-      const current = this.store.load(currentId as ConversationId);
+      let current: ConversationState | null = null;
+      if (isValidConversationId(currentId)) {
+        current = this.store.load(currentId as ConversationId);
+      }
       if (!current) {
-        const next = cloneBindings(bindings);
-        delete next.surfaces[key];
-        this.bindings.save(next);
+        // A stale or malformed binding points to nothing durable. If the id is
+        // syntactically valid, drop any in-memory runner keyed by it, but do not
+        // mutate the binding map — the caller should see this as a failure.
+        if (isValidConversationId(currentId)) {
+          await this.runtimeHost.disposeRuntime(currentId as ConversationId);
+        }
         throw new Error("no active conversation on this surface");
       }
 
       await this.runtimeHost.disposeRuntime(current.id);
       this.store.archive(current.id);
       const next = cloneBindings(bindings);
-      delete next.surfaces[key];
+      delete (next.surfaces as Record<string, string>)[key];
       this.bindings.save(next);
+      log.info("conversation archived", { surface: key, conversation: current.id });
+    });
+  }
+
+  async assignProject(surface: Surface, requestedRoot: string): Promise<ProjectAssignmentResult> {
+    return withLifecycleTransitionLock(async () => {
+      const key = surfaceId(surface);
+      await this.reconcilePendingAssignment(key);
+
+      const settingsRoot = getProjectRoot(this.home, surface);
+      const existingEnv = environmentFromProjectRoot(settingsRoot);
+      const requestedEnv = projectEnvironment(requestedRoot);
+
+      // Already assigned to the same canonical root: idempotent report.
+      if (existingEnv.kind === "project" && environmentsEqual(existingEnv, requestedEnv)) {
+        const bindings = this.bindings.load();
+        const boundId = bindings.surfaces[key];
+        const boundConv = boundId && isValidConversationId(boundId) ? this.store.load(boundId as ConversationId) : null;
+        return {
+          kind: "already-assigned",
+          projectRoot: requestedRoot,
+          session: boundConv ? runtimeSessionWithPreferences(boundConv, surface, this.home) : undefined,
+        };
+      }
+
+      // Already assigned to a different root: immutable.
+      if (existingEnv.kind === "project") {
+        return { kind: "conflict", currentRoot: projectRootOf(existingEnv) ?? requestedRoot };
+      }
+
+      // Personal/unassigned: proceed with first assignment.
+      const bindings = this.bindings.load();
+      const rawPreviousSessionId = bindings.surfaces[key];
+      const previousSessionId = rawPreviousSessionId && isValidConversationId(rawPreviousSessionId) ? rawPreviousSessionId : undefined;
+
+      if (previousSessionId) {
+        // Synchronously invalidate and quiesce the prior runtime. Failure here
+        // leaves no intent and no change to settings/binding.
+        try {
+          await this.runtimeHost.disposeRuntime(previousSessionId as ConversationId);
+        } catch (err) {
+          log.error("prior runtime quiescence failed during project assignment", {
+            surfaceId: key,
+            previousSessionId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          throw new Error(`Failed to quiesce the current conversation: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      const plannedSessionId = this.store.allocateId();
+      const intent: ProjectAssignmentIntent = {
+        version: 1,
+        surfaceId: key,
+        previousSessionId,
+        plannedSessionId,
+        projectRoot: requestedRoot,
+      };
+      savePendingProjectAssignment(this.home, intent);
+
+      let conv: ConversationState;
+      try {
+        conv = createOrVerifyProjectSession(this.store, surface, plannedSessionId, requestedRoot);
+        bindProjectRoot(this.home, surface, requestedRoot);
+        const nextBindings = cloneBindings(bindings);
+        nextBindings.surfaces[key] = plannedSessionId;
+        this.bindings.save(nextBindings);
+        clearPendingProjectAssignment(this.home);
+      } catch (err) {
+        log.error("project assignment failed after intent persistence", {
+          surfaceId: key,
+          plannedSessionId,
+          projectRoot: requestedRoot,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+
+      return {
+        kind: "assigned",
+        session: runtimeSessionWithPreferences(conv, surface, this.home),
+        projectRoot: requestedRoot,
+        previousSessionId,
+      };
     });
   }
 
@@ -200,6 +339,23 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       if (cid === conversationId) return sid as SurfaceId;
     }
     return undefined;
+  }
+
+  /**
+   * Replay any pending project-assignment intent and dispose the runtime that
+   * was bound to this surface before the replay, if the replay changed the
+   * binding. This keeps ordinary message resolution from creating a fresh
+   * conversation that conflicts with a not-yet-cleared assignment intent.
+   */
+  private async reconcilePendingAssignment(surfaceKey: string): Promise<void> {
+    const before = this.bindings.load();
+    reconcilePendingProjectAssignment(this.home, this.store, this.bindings);
+    const after = this.bindings.load();
+    const oldId = before.surfaces[surfaceKey];
+    const newId = after.surfaces[surfaceKey];
+    if (oldId && oldId !== newId && isValidConversationId(oldId)) {
+      await this.runtimeHost.disposeRuntime(oldId);
+    }
   }
 }
 
@@ -224,6 +380,7 @@ export function createConversationLifecycle(
   runtimeHost: ConversationRuntimeHost,
 ): ConversationLifecycle {
   return new ConversationLifecycleManager(
+    home,
     new ConversationStore(home),
     new FileBindingStore(home),
     new FileSurfaceSettings(home),

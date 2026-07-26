@@ -10,6 +10,7 @@ import type { BindingStore } from "../sessions/bindings.ts";
 import { validateBindings } from "../sessions/bindings.ts";
 import type { BindingsFile } from "../sessions/types.ts";
 import type { ConversationId } from "../sessions/types.ts";
+import { savePendingProjectAssignment } from "../sessions/project-assignment.ts";
 import { personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
 
@@ -27,7 +28,7 @@ class InMemoryBindingStore implements BindingStore {
       throw new Error("binding save failed");
     }
     validateBindings(b);
-    this.bindings = { version: 1, surfaces: { ...b.surfaces } };
+    this.bindings = { version: 1, surfaces: { ...b.surfaces } } as BindingsFile;
   }
 }
 
@@ -60,7 +61,7 @@ function makeLifecycle(env: ExecutionEnvironment, home: string): Deps {
   const store = new ConversationStore(home);
   const bindings = new InMemoryBindingStore();
   const runtimeHost = new FakeRuntimeHost();
-  const lifecycle = new ConversationLifecycleManager(store, bindings, staticSettings(env), runtimeHost);
+  const lifecycle = new ConversationLifecycleManager(home, store, bindings, staticSettings(env), runtimeHost);
   return { home, store, bindings, runtimeHost, lifecycle };
 }
 
@@ -129,13 +130,14 @@ describe("ConversationLifecycle", () => {
       expect(Object.keys(bindings.bindings.surfaces)).toHaveLength(1);
     });
 
-    it("replaces a stale binding with a fresh conversation", async () => {
-      const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
-      bindings.bindings = { version: 1, surfaces: { [surfaceId(dmSurface(1))]: "0000000000" } };
+    it("replaces a stale binding with a fresh conversation and drops the stale runner", async () => {
+      const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
+      bindings.bindings = { version: 1, surfaces: { [surfaceId(dmSurface(1))]: "0000000000" } } as BindingsFile;
       const conv = await lifecycle.resolveOrStart(dmSurface(1));
       expect(conv.id).not.toBe("0000000000");
       expect(bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBe(conv.id);
       expect(store.load(conv.id)).not.toBeNull();
+      expect(runtimeHost.disposed).toEqual(["0000000000"]);
     });
 
     it("disposes a bound runtime and rotates when the environment mismatches", async () => {
@@ -143,7 +145,7 @@ describe("ConversationLifecycle", () => {
       mkdirSync(projectRoot, { recursive: true });
       const personal = makeLifecycle(personalEnvironment(), tmpDir);
       const projectConv = personal.store.create(projectEnvironment(projectRoot));
-      personal.bindings.bindings = { version: 1, surfaces: { [surfaceId(dmSurface(1))]: projectConv.id } };
+      personal.bindings.bindings = { version: 1, surfaces: { [surfaceId(dmSurface(1))]: projectConv.id } } as BindingsFile;
 
       const conv = await personal.lifecycle.resolveOrStart(dmSurface(1));
       expect(conv.executionEnvironment).toEqual(personalEnvironment());
@@ -207,6 +209,14 @@ describe("ConversationLifecycle", () => {
       const { lifecycle } = makeLifecycle(personalEnvironment(), tmpDir);
       await expect(lifecycle.archive(dmSurface(1))).rejects.toThrow(/no active conversation/);
     });
+
+    it("throws without clearing a stale binding", async () => {
+      const { lifecycle, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
+      bindings.bindings = { version: 1, surfaces: { [surfaceId(dmSurface(1))]: "0000000000" } } as BindingsFile;
+      await expect(lifecycle.archive(dmSurface(1))).rejects.toThrow(/no active conversation/);
+      expect(bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBe("0000000000");
+      expect(runtimeHost.disposed).toEqual(["0000000000"]);
+    });
   });
 
   describe("resume", () => {
@@ -221,7 +231,7 @@ describe("ConversationLifecycle", () => {
       expect(store.load(conv.id)).not.toBeNull();
     });
 
-    it("moves a bound target from a source surface to a destination surface", async () => {
+    it("moves a bound conversation across compatible surfaces and disposes both runtimes", async () => {
       const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       const source = dmSurface(1);
       const destination = dmSurface(2);
@@ -229,10 +239,11 @@ describe("ConversationLifecycle", () => {
       const displaced = await lifecycle.resolveOrStart(destination);
 
       const result = await lifecycle.resume(destination, target.id);
+
       expect(result.id).toBe(target.id);
-      expect(runtimeHost.disposed).toEqual([target.id, displaced.id]);
-      expect(bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBeUndefined();
-      expect(bindings.bindings.surfaces[surfaceId(dmSurface(2))]).toBe(target.id);
+      expect(runtimeHost.disposed).toEqual([displaced.id, target.id]);
+      expect(bindings.bindings.surfaces[surfaceId(source)]).toBeUndefined();
+      expect(bindings.bindings.surfaces[surfaceId(destination)]).toBe(target.id);
       expect(store.load(target.id)).not.toBeNull();
       expect(store.load(displaced.id)).not.toBeNull();
     });
@@ -258,6 +269,112 @@ describe("ConversationLifecycle", () => {
       expect(result.id).toBe(target.id);
       expect(runtimeHost.disposed).toEqual([displaced.id]);
       expect(bindings.bindings.surfaces[surfaceId(dmSurface(2))]).toBe(target.id);
+    });
+  });
+
+  describe("assignProject", () => {
+    it("assigns a project environment and binds a new session", async () => {
+      const { lifecycle, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const projectRoot = join(tmpDir, "project");
+      mkdirSync(projectRoot, { recursive: true });
+
+      const result = await lifecycle.assignProject(surface, projectRoot);
+
+      expect(result.kind).toBe("assigned");
+      if (result.kind === "assigned") {
+        expect(result.projectRoot).toBe(projectRoot);
+        expect(result.session.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+        expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(result.session.id);
+      }
+    });
+
+    it("returns already-assigned for the same canonical root", async () => {
+      const { lifecycle } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const projectRoot = join(tmpDir, "project");
+      mkdirSync(projectRoot, { recursive: true });
+
+      const first = await lifecycle.assignProject(surface, projectRoot);
+      expect(first.kind).toBe("assigned");
+
+      const second = await lifecycle.assignProject(surface, projectRoot);
+      expect(second.kind).toBe("already-assigned");
+      if (second.kind === "already-assigned" && first.kind === "assigned") {
+        expect(second.session?.id).toBe(first.session.id);
+      }
+    });
+
+    it("returns conflict for a different canonical root", async () => {
+      const { lifecycle } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const firstRoot = join(tmpDir, "first");
+      const secondRoot = join(tmpDir, "second");
+      mkdirSync(firstRoot, { recursive: true });
+      mkdirSync(secondRoot, { recursive: true });
+
+      await lifecycle.assignProject(surface, firstRoot);
+      const result = await lifecycle.assignProject(surface, secondRoot);
+
+      expect(result.kind).toBe("conflict");
+      if (result.kind === "conflict") {
+        expect(result.currentRoot).toBe(firstRoot);
+      }
+    });
+
+    it("disposes the previous runtime before assigning", async () => {
+      const { lifecycle, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const prior = await lifecycle.resolveOrStart(surface);
+      const projectRoot = join(tmpDir, "project");
+      mkdirSync(projectRoot, { recursive: true });
+
+      const result = await lifecycle.assignProject(surface, projectRoot);
+
+      expect(result.kind).toBe("assigned");
+      expect(runtimeHost.disposed).toContain(prior.id);
+    });
+
+    it("does not persist anything when prior runtime quiescence fails", async () => {
+      const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const prior = await lifecycle.resolveOrStart(surface);
+      const projectRoot = join(tmpDir, "project");
+      mkdirSync(projectRoot, { recursive: true });
+      runtimeHost.throwOnNext = prior.id;
+
+      await expect(lifecycle.assignProject(surface, projectRoot)).rejects.toThrow(/dispose failed/);
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(prior.id);
+      expect(store.list().filter((c) => c.executionEnvironment.kind === "project")).toHaveLength(0);
+    });
+
+    it("replays a pending assignment before committing", async () => {
+      const { store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const projectRoot = join(tmpDir, "project");
+      mkdirSync(projectRoot, { recursive: true });
+      const conv = store.create(projectEnvironment(projectRoot));
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: surfaceId(surface),
+        plannedSessionId: conv.id,
+        projectRoot,
+      });
+
+      const freshLifecycle = new ConversationLifecycleManager(
+        tmpDir,
+        store,
+        bindings,
+        staticSettings(personalEnvironment()),
+        { disposeRuntime: async () => {} },
+      );
+      const result = await freshLifecycle.assignProject(surface, projectRoot);
+
+      expect(result.kind).toBe("already-assigned");
+      if (result.kind === "already-assigned") {
+        expect(result.session?.id).toBe(conv.id);
+      }
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(conv.id);
     });
   });
 

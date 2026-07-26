@@ -5,11 +5,11 @@
  * not touch the in-flight runner, so it never defers behind a streaming turn.
  *
  * Subcommands:
- *   list                              — list schedules for the active session
+ *   list                              — list schedules for the active conversation
  *   at <ISO-8601 datetime> <prompt>   — one-shot at an absolute time
  *   in <duration> <prompt>            — one-shot relative to now
  *   every <duration> <prompt>         — recurring
- *   remove <id>                       — remove a schedule (active session only)
+ *   remove <id>                       — remove a schedule (active conversation only)
  *   pause <id>                        — disable a schedule
  *   resume <id>                       — re-enable a schedule
  *   heartbeat on [duration]           — enable heartbeat (30m default)
@@ -34,7 +34,7 @@ export interface ScheduleCommandResult {
   tag: SystemTag;
 }
 
-export const NO_ACTIVE_SESSION_REPLY = "No active session. Use /new to start one.";
+export const NO_ACTIVE_SESSION_REPLY = "No active conversation. Use /new to start one.";
 export const SCHEDULE_USAGE_REPLY = [
   "Usage:",
   "  /schedule list",
@@ -122,7 +122,7 @@ function nextRunLabel(s: ScheduledTurn): string {
 }
 
 function formatScheduleList(schedules: ScheduledTurn[]): string {
-  if (schedules.length === 0) return "No schedules for this session.";
+  if (schedules.length === 0) return "No schedules for this conversation.";
   const lines = ["Schedules:"];
   for (const s of schedules) {
     const sourceTag = s.source === "agent" ? " [agent]" : "";

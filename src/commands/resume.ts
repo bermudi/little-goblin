@@ -12,7 +12,7 @@ export type ResumeCommandResult =
   | { kind: "ambiguous"; reply: string }
   | { kind: "resumed"; session: SessionState; reply: string };
 
-export const NO_NAMED_SESSIONS_REPLY = "No named sessions yet. Use /name <session name> in an active session to name it.";
+export const NO_NAMED_SESSIONS_REPLY = "No named conversations yet. Use /name <conversation name> in an active conversation to name it.";
 
 export function parseResumeTarget(rawText: string): string | undefined {
   const value = rawText.replace(/^\/resume(?:@\S+)?(?:\s+)?/u, "").trim();
@@ -30,7 +30,7 @@ function formatSessionLine(session: SessionState): string {
 export function formatNamedSessionsList(sessions: SessionState[]): string {
   const named = sessions.filter((session) => session.title !== undefined && session.title.trim() !== "");
   if (named.length === 0) return NO_NAMED_SESSIONS_REPLY;
-  return `Named sessions:\n${named.map(formatSessionLine).join("\n")}`;
+  return `Named conversations:\n${named.map(formatSessionLine).join("\n")}`;
 }
 
 export async function executeResume(deps: ResumeCommandDeps): Promise<ResumeCommandResult> {
@@ -39,11 +39,11 @@ export async function executeResume(deps: ResumeCommandDeps): Promise<ResumeComm
 
   const matches = deps.sessions.filter((session) => matchesTarget(session, target));
   if (matches.length === 0) {
-    return { kind: "not-found", reply: `No session found for \`${target}\`.` };
+    return { kind: "not-found", reply: `No conversation found for \`${target}\`.` };
   }
   if (matches.length > 1) {
     const list = matches.map(formatSessionLine).join("\n");
-    return { kind: "ambiguous", reply: `Multiple sessions match \`${target}\`:\n${list}` };
+    return { kind: "ambiguous", reply: `Multiple conversations match \`${target}\`:\n${list}` };
   }
 
   const [match] = matches;
@@ -51,6 +51,6 @@ export async function executeResume(deps: ResumeCommandDeps): Promise<ResumeComm
   return {
     kind: "resumed",
     session,
-    reply: `Resumed session \`${session.id}\`${session.title ? ` — ${session.title}` : ""}`,
+    reply: `Resumed conversation \`${session.id}\`${session.title ? ` — ${session.title}` : ""}`,
   };
 }

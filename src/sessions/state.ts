@@ -24,7 +24,7 @@ function validateState(state: SessionState | null): SessionState | null {
  * Load canonical conversation state from disk, dropping migration-only legacy
  * fields (chatId, topicId, modelName, thinkingLevel, projectDir) from the
  * returned object.
- * Returns null if the conversation doesn't exist.
+ * Returns null if the conversation doesn't exist or is an internal session.
  * Throws if state exists but lacks a valid executionEnvironment.
  */
 export function loadConversationState(home: string, id: string): ConversationState | null {
@@ -37,6 +37,8 @@ export function loadConversationState(home: string, id: string): ConversationSta
   if (raw.id !== undefined && raw.id !== id) {
     throw new Error(`conversation ${id} state file id mismatch: ${String(raw.id)}`);
   }
+  // Internal sessions (e.g. dreaming) are never bound to a Surface.
+  if (raw.chatId === 0) return null;
   // The directory name is the source of truth for the conversation identity.
   // The JSON id field is only validated, never used as a path component.
   return {

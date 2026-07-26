@@ -51,7 +51,7 @@ function textOf(n: number, label = "x"): string {
 }
 
 function makeCoalescer(): { coalescer: TextCoalescer; dispatch: ReturnType<typeof mock> } {
-  const dispatch = mock<CoalesceDispatch>(() => {});
+  const dispatch = mock<CoalesceDispatch>(() => Promise.resolve());
   const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
   return { coalescer, dispatch };
 }

@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { executeThink, NO_SESSION_REPLY, ALL_LEVELS } from "./think.ts";
+import { executeThink, ALL_LEVELS } from "./think.ts";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
 /** All levels — simulates a model that supports every level (e.g. Claude). */
@@ -19,7 +19,6 @@ function makeDeps(
   overrides: Partial<Parameters<typeof executeThink>[0]> = {},
 ): Parameters<typeof executeThink>[0] {
   return {
-    hasSession: true,
     rawText: "/think",
     currentLevel: "medium",
     supportedLevels: FULL_LEVELS,
@@ -29,10 +28,10 @@ function makeDeps(
 }
 
 describe("executeThink", () => {
-  it("returns no-session when there is no session", () => {
-    const result = executeThink(makeDeps({ hasSession: false }));
-    expect(result.kind).toBe("no-session");
-    expect(result.reply).toBe(NO_SESSION_REPLY);
+  it("lists levels even without an active conversation", () => {
+    const result = executeThink(makeDeps({ currentLevel: "high" }));
+    expect(result.kind).toBe("list");
+    expect(result.reply).toContain("Current: `high`");
   });
 
   it("lists levels when no argument", () => {

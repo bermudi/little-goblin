@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, mock } from "bun:test";
-import { executeModel, NO_SESSION_REPLY, NO_FAVORITES_REPLY } from "./model.ts";
+import { executeModel, NO_FAVORITES_REPLY } from "./model.ts";
 import type { Config } from "../config.ts";
 import { resolveModel } from "../agent/models.ts";
 
@@ -28,7 +28,6 @@ function makeConfig(favorites: string[]): Config {
 /** Minimal deps with no thinking-level context (no clamping possible). */
 function makeDeps(overrides: Partial<Parameters<typeof executeModel>[0]> = {}): Parameters<typeof executeModel>[0] {
   return {
-    hasSession: true,
     rawText: "/model",
     favorites: [],
     cfg: makeConfig([]),
@@ -41,16 +40,17 @@ function makeDeps(overrides: Partial<Parameters<typeof executeModel>[0]> = {}): 
 }
 
 describe("executeModel", () => {
-  it("returns no-session when there is no session", () => {
+  it("switches by index even without an active conversation", () => {
+    const setModelName = mock();
     const result = executeModel(makeDeps({
-      hasSession: false,
       rawText: "/model 1",
       favorites: ["poe/Claude-Sonnet-4.6"],
       cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
       currentModelName: "poe/Claude-Sonnet-4.6",
+      setModelName,
     }));
-    expect(result.kind).toBe("no-session");
-    expect(result.reply).toBe(NO_SESSION_REPLY);
+    expect(result.kind).toBe("set");
+    expect(setModelName).toHaveBeenCalledWith("poe/Claude-Sonnet-4.6");
   });
 
   it("returns no-favorites when list is empty", () => {

@@ -191,7 +191,6 @@ function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new Su
   const intake = createTelegramIntake({
     cfg,
     bot,
-    manager,
     subagentRunner,
     memoryStore: new MemoryStore(cfg.goblinHome),
     agentRunners,
@@ -280,7 +279,7 @@ describe("Telegram intake", () => {
     await intake.handleText(message, "/new");
 
     expect(manager.list()).toHaveLength(1);
-    expect(replies[0]).toContain("Created new session");
+    expect(replies[0]).toContain("Created new conversation");
     expect(runners).toHaveLength(1);
 
     await intake.handleText(message, "hello");
@@ -308,7 +307,7 @@ describe("Telegram intake", () => {
 
     expect(firstRunner.dispose).toHaveBeenCalledTimes(1);
     expect(agentRunners.has(firstSession.id)).toBe(false);
-    expect(replies.at(-1)).toContain("Session archived");
+    expect(replies.at(-1)).toContain("Conversation archived");
 
     await intake.handleText(message, "/new");
     const secondSession = manager.list().at(-1)!;
@@ -353,8 +352,21 @@ describe("Telegram intake", () => {
     replyNoActiveSession(makeMessage(dmReplies), dmSurface(1), "message");
     replyNoActiveSession(makeMessage(topicReplies), topicSurface("supergroup", 1, 42), "message");
 
-    expect(dmReplies).toEqual(["`[info]` No active session\\. Use /new to start one\\."]);
+    expect(dmReplies).toEqual(["`[info]` No active conversation\\. Use /new to start one\\."]);
     expect(topicReplies).toEqual([]);
+  });
+
+  it("lazily creates a conversation for plain text when none is bound", async () => {
+    const { intake, manager } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+
+    await intake.handleText(message, "hello");
+    await waitFor(() => runners[0]?.prompt?.mock?.calls?.length === 1);
+
+    expect(manager.list()).toHaveLength(1);
+    expect(runners[0]!.prompt).toHaveBeenCalledWith("[prepared] hello", expect.anything());
+    expect(replies).toEqual([]);
   });
 
   it("does not prompt stale photo work after a runner-disposing command", async () => {
@@ -631,7 +643,7 @@ describe("Telegram intake", () => {
     await flushMicrotasks();
 
     slow.resolve();
-    await waitFor(() => replies.at(-1)!.includes("Created new session"));
+    await waitFor(() => replies.at(-1)!.includes("Created new conversation"));
 
     // /new swapped the runner; the stale deferred /model never executed.
     expect(runners[0]!.setModel).not.toHaveBeenCalled();
@@ -664,7 +676,7 @@ describe("Telegram intake", () => {
     slow.resolve();
     // /model succeeds first, then /new creates the second session.
     await waitFor(() => replies.filter((r) => r.includes("Switched to")).length === 1);
-    await waitFor(() => replies.filter((r) => r.includes("Created new session")).length === 2);
+    await waitFor(() => replies.filter((r) => r.includes("Created new conversation")).length === 2);
 
     expect(runners[0]!.setModel).toHaveBeenCalledTimes(1);
     expect(replies.some((r) => r.includes("Switched to `poe/GPT-4o`"))).toBe(true);
@@ -1253,12 +1265,10 @@ describe("createMessageBuffer factory", () => {
     const cfg = makeConfig();
     const manager = new SessionManager(cfg);
     const agentRunners = new Map<string, AgentRunner>();
-    const session = await manager.createForSurface(dmSurface(1));
     const bot = fakeBot();
     const intake = createTelegramIntake({
       cfg,
       bot,
-      manager,
       subagentRunner: new SubagentRunner(cfg),
       memoryStore: new MemoryStore(cfg.goblinHome),
       agentRunners,
@@ -1271,6 +1281,12 @@ describe("createMessageBuffer factory", () => {
 
     const replies: string[] = [];
     const message = makeMessage(replies);
+    await intake.handleText(message, "/new");
+
+    const sessions = manager.list();
+    expect(sessions.length).toBe(1);
+    const session = sessions[0]!;
+
     MockAgentRunner.nextPrompt = async (_content, buffer) => {
       (buffer as { onStatusUpdate: (text: string) => void }).onStatusUpdate("thinking");
       (buffer as { onTextDelta: (text: string) => void }).onTextDelta("hello");
@@ -1293,12 +1309,10 @@ describe("createMessageBuffer factory", () => {
 
   it("operates without a MetricsStore when no session exists", async () => {
     const cfg = makeConfig();
-    const manager = new SessionManager(cfg);
     const bot = fakeBot();
     const intake = createTelegramIntake({
       cfg,
       bot,
-      manager,
       subagentRunner: new SubagentRunner(cfg),
       memoryStore: new MemoryStore(cfg.goblinHome),
       agentRunners: new Map<string, AgentRunner>(),
@@ -1306,19 +1320,17 @@ describe("createMessageBuffer factory", () => {
 
     const replies: string[] = [];
     const message = makeMessage(replies);
-    await intake.handleText(message, "hi");
-    // No active session means the buffer has no metrics; nothing should throw.
+    await intake.handleText(message, "/unknown");
+    // Unknown command with no active conversation returns a prompt without creating a session/metrics.
     expect(replies.length).toBe(1);
   });
 
   it("createMessageBuffer with no session yields a buffer with no metrics", () => {
     const cfg = makeConfig();
-    const manager = new SessionManager(cfg);
     const bot = fakeBot();
     const intake = createTelegramIntake({
       cfg,
       bot,
-      manager,
       subagentRunner: new SubagentRunner(cfg),
       memoryStore: new MemoryStore(cfg.goblinHome),
       agentRunners: new Map<string, AgentRunner>(),

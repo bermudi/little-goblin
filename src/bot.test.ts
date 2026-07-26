@@ -378,7 +378,7 @@ describe("replyNoActiveSession", () => {
     const ctx = { reply } as unknown as Context;
     replyNoActiveSession(ctx, dmSurface(1), "text");
     expect(reply).toHaveBeenCalledWith(
-      "`[info]` No active session\\. Use /new to start one\\.",
+      "`[info]` No active conversation\\. Use /new to start one\\.",
       { disable_notification: true, parse_mode: "MarkdownV2" },
     );
   });
@@ -397,7 +397,7 @@ describe("buildBot integration", () => {
     await built.bot.handleUpdate(textUpdate("/new"));
 
     expect(built.manager.list()).toHaveLength(1);
-    expect(built.api.sent[0]).toContain("Created new session");
+    expect(built.api.sent[0]).toContain("Created new conversation");
   });
 
   it("/archive disposes/removes the current runner and replies", async () => {
@@ -410,7 +410,7 @@ describe("buildBot integration", () => {
 
     expect(prior.dispose).toHaveBeenCalled();
     expect(built.agentRunners.has(session.id)).toBe(false);
-    expect(built.api.sent.at(-1)).toContain("Session archived");
+    expect(built.api.sent.at(-1)).toContain("Conversation archived");
   });
 
   it("/project changes project directory and forces runner disposal", async () => {
@@ -426,10 +426,10 @@ describe("buildBot integration", () => {
     expect(built.agentRunners.has(session.id)).toBe(false);
   });
 
-  it("unknown DM command without active session prompts for /new", async () => {
+  it("unknown DM command without active conversation prompts for /new", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/foo"));
-    expect(built.api.sent).toEqual(["`[info]` No active session\\. Use /new to start one\\."]);
+    expect(built.api.sent).toEqual(["`[info]` No active conversation\\. Use /new to start one\\."]);
   });
 
   it("text messages release the update handler while the runner is busy", async () => {
@@ -545,12 +545,12 @@ describe("buildBot integration", () => {
     expect(runnerInstances.at(-1)!.prompt).not.toHaveBeenCalled();
   });
 
-  it("/queue with no active session replies No active session.", async () => {
+  it("/queue with no active conversation replies No active conversation.", async () => {
     const built = await makeBot();
 
     await built.bot.handleUpdate(textUpdate("/queue do something"));
 
-    expect(built.api.sent.at(-1)).toBe("`[info]` No active session\\.");
+    expect(built.api.sent.at(-1)).toBe("`[info]` No active conversation\\.");
     expect(runnerInstances).toHaveLength(0);
   });
 

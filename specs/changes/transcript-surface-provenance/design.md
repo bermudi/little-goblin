@@ -21,9 +21,9 @@ There is no optional writer context. Surface-backed writing requires a canonical
 
 The transcript module remains the only JSONL parser and producer. It validates `sourceSurfaceId` without discarding otherwise readable legacy entries. Valid provenance stays attached through display extraction, logical range reads, cursor alignment, and per-entry chunking. Earlier entries are never rewritten merely because later entries come from another Surface.
 
-### Migrate legacy files conservatively
+### Migrate legacy files conservatively offline
 
-`TranscriptProvenanceMigrator` runs after canonical Surface migration and before provenance-aware index use or Conversation lifecycle migration. It scans every non-internal transcript and computes all candidate outputs before the first write. Changed files are replaced atomically with line order and all fields preserved.
+`TranscriptProvenanceMigrator` implements filesystem migration step 3 in the canonical append-only list owned by `src/migrate.ts`, advancing `CURRENT_STATE_VERSION` from 2 to 3 only after success. It runs only through explicit `bun run migrate` while the service is stopped, after canonical Surface and execution-environment migration and before the Conversation lifecycle migration step. It scans every non-internal transcript and computes and validates all candidate outputs before the first write. Changed files are replaced atomically with line order and all fields preserved.
 
 A backfill is allowed only when persisted historical evidence proves a unique event/file source. Existing valid per-entry provenance is proof. Explicit historical migration records may also be proof. These are not proof by themselves:
 
@@ -35,13 +35,13 @@ A backfill is allowed only when persisted historical evidence proves a unique ev
 
 Legacy `/resume` could move history without event boundaries, so stamping current state would be false precision. Unknown or invalid provenance remains absent and is reported as bounded counts without transcript content.
 
-A file-version marker is written only after all files are processed. Atomic per-file writes make mixed generations restart-safe; rerunning preserves canonical fields and does not duplicate or reorder them.
+The canonical migration command owns the pre-mutation backup and advances `stateVersion` only after the complete step succeeds. The step has no independent completion marker and is not required to accept mixed-generation files, restart after partial writes, or converge idempotently. Failure recovery restores the command's backup under decision 0038.
 
 ### Purge guessed index rows before serving search
 
 The memory schema adds nullable `memory_entries.source_surface_id`. It is populated only for validated transcript chunks. Curated memory, user memory, internal transcript material, and unresolved legacy chunks store null.
 
-The rollout has a separate index-version marker. One SQLite transaction deletes every old transcript entry plus dependent FTS, embeddings, tags, and `memory_sources` rows, then records the new version. Startup does not enable scheduler or polling until file migration and index invalidation are current. A crash before commit leaves the old version and repeats the transaction; a crash after commit cannot expose old guessed rows.
+The rollout has a separate SQLite index-version marker. After startup's filesystem `stateVersion` gate proves the offline transcript step completed, one memory-schema transaction deletes every old transcript entry plus dependent FTS, embeddings, tags, and `memory_sources` rows, then records the new index version. Startup does not enable scheduler or polling until that transaction and bounded initial sync complete. A crash before commit leaves the old database version and repeats the transaction; a crash after commit cannot expose old guessed rows. This transactional database migration remains governed by the decision-0038 SQLite exception, not by filesystem migration rules.
 
 Normal bounded sync rebuilds the index. For each transcript entry:
 
@@ -99,8 +99,8 @@ The model invocation remains only an extraction vehicle. It uses the dependency'
 
 ### New files
 
-- **`src/sessions/transcript-provenance-migration.ts`** — Conservative precomputed backfill, atomic rewrites, version marker, and bounded diagnostics.
-- **`src/sessions/transcript-provenance-migration.test.ts`** — Proven evidence, invalid/unknown history, no-current-binding guess, field/order preservation, and interruption fixtures.
+- **`src/sessions/transcript-provenance-migration.ts`** — Conservative precomputed offline backfill step, atomic rewrites, and bounded diagnostics, registered by the canonical migration runner.
+- **`src/sessions/transcript-provenance-migration.test.ts`** — Proven evidence, invalid/unknown history, no-current-binding guess, complete output, conflicts, and field/order preservation.
 
 ### Transcript and agent writing
 
@@ -111,17 +111,17 @@ The model invocation remains only an extraction vehicle. It uses the dependency'
 
 ### Memory index and search
 
-- **`src/memory/schema.ts` / `migration.ts`** — Add nullable Surface provenance and file/index rollout markers.
+- **`src/memory/schema.ts` / `migration.ts`** — Add nullable Surface provenance and one transactional SQLite provenance-index version marker; filesystem completion is represented only by canonical `stateVersion`.
 - **`src/memory/store.ts`** — Replace transcript scopes with per-chunk Surface/chat values transactionally.
 - **`src/memory/transcript-index.ts`** — Remove session-state chat resolution and consume transcript chunks only.
 - **`src/memory/search.ts`** — Apply captured chat boundaries to provenance-derived rows while preserving explicit cross-chat/internal behavior.
 - **Existing memory tests** — Cover mixed chats, null legacy rows, index purge, bounded rebuild, and deleted transcripts.
 
-### Dreaming and startup
+### Dreaming, migration, and startup
 
 - **`src/memory/dreaming.ts`** — Select light/REM/deep targets from transcript/index provenance and quarantine mixed proven ranges.
 - **`src/scheduler/loop.ts`** — Request light sleep by Conversation/session compatibility ID only.
-- **`src/index.ts`** — Order Surface migration, transcript-file migration, index invalidation, initial sync, scheduler, and polling.
+- **`src/migrate.ts` / `src/state-version.ts`** — Register transcript-file step 3 after execution-environment migration, set `CURRENT_STATE_VERSION = 3`, and test migration from version 2; `src/index.ts` retains the state-version gate and orders SQLite index invalidation, initial sync, scheduler, and polling.
 - **Dreaming/scheduler tests** — Cover moved topic promotion, legacy fallback, mixed-range quarantine, deterministic REM winners, deep preservation, and Surface-free extraction.
 
 ### Intentionally unchanged

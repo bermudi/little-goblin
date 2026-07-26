@@ -15,13 +15,13 @@ This change depends on both `telegram-surface-identity` and `surface-derived-mem
 - Extend the exclusive transcript seam with optional `sourceSurfaceId` plus an explicit Surface/internal writer context.
 - Require every new user-visible main-runtime and synthetic user-visible entry to carry the runtime capture's canonical SurfaceId. Internal and legacy entries omit it explicitly.
 - Preserve validated provenance through parsing, display extraction, range reads, logical cursors, and chunking. Moving a Conversation never rewrites prior entries.
-- Add a conservative, idempotent startup migration that backfills only from persisted historical evidence proving an event source. Current bindings and creation metadata alone are never historical guesses.
+- Add a conservative offline step to the canonical versioned migration runner. It precomputes every transcript rewrite and backfills only from persisted historical evidence proving an event source. Current bindings and creation metadata alone are never historical proof.
 
 ### Memory
 
 - Persist nullable `source_surface_id` on transcript index rows and derive each chunk's existing `chat_id` from the canonical Surface codec.
 - Support mixed-chat rows inside one `transcript/<conversationId>` scope; unresolved, invalid, or internal provenance indexes with null Surface/chat values.
-- Invalidate every transcript row built from session-level chat metadata before enabling provenance-aware search, then rebuild through normal bounded sync.
+- After the filesystem state-version gate proves the offline transcript step completed, transactionally invalidate every transcript row built from session-level chat metadata before enabling provenance-aware search, then rebuild through normal bounded sync.
 - Preserve default same-chat search and explicit `all_chats = true`, including deliberate access to provenance-null legacy rows only through cross-chat/internal behavior.
 - Derive light-, REM-, and deep-sleep promotion behavior from source provenance. Conflicting proven line ranges are quarantined; unknown provenance retains decision 0025's `general` fallback.
 

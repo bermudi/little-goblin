@@ -12,10 +12,11 @@
 
 - [x] Change binding and topic-settings DTOs to versioned SurfaceId-keyed `surfaces` maps while retaining migration-only legacy decoders.
 - [x] Update `SessionManager` and topic-setting operations to accept complete Surface values and perform one-key lookups without sign inference or routing flags; preserve the existing DM/topic/supergroup/guest creation policies in this change.
-- [x] Create `src/sessions/surface-migration.ts` to precompute and validate legacy binding/settings conversion before per-file atomic writes, require unique persisted container evidence for legacy topics, accept mixed-generation input, and remain idempotent after an interrupted migration.
-- [x] Add migration and manager/settings tests for every Surface kind, explicit private/supergroup topic evidence, absent/conflicting topic evidence refusal before writes, numeric collisions, stale behavior, archive cleanup, mixed-generation restart, and invalid data.
-- [x] Convert migration to an offline `bun run migrate` step: read and write `stateVersion`, take a state backup before the first mutation, remove migration from `src/index.ts`, and make startup refuse to poll until the version matches.
-- [x] Run the touched session/migration tests and `bun run typecheck`.
+- [ ] Refactor `src/sessions/surface-migration.ts` into a read-only planner plus applier for canonical step 1 (`stateVersion` 0 → 1), preserving unique topic/schedule evidence rules and atomic per-file writes while removing mixed-generation/restart convergence obligations.
+- [ ] Replace mixed-generation restart fixtures with planner/applier tests for every Surface kind, explicit private/supergroup evidence, absent/conflicting evidence refusal during whole-run preflight, numeric collisions, stale behavior, archive cleanup, and invalid data.
+- [ ] Refactor the canonical runner to strictly parse supported state versions, preflight every pending step against projected prior output before any source mutation, snapshot every plan-declared root and prior absence before setup, apply in order, and advance each version only after success; startup remains an exact version gate.
+- [ ] Make the migration command the sole recovery-backup owner; update and test `scripts/update.sh` ordering as stop service → invoke canonical backup/migration → restart only on success, leaving the service stopped on failure; cover malformed/future versions, 0→2 later-plan failure with no step-1 mutation, CLI absent-root restoration, unexpected apply failure, and whole-backup recovery.
+- [ ] Run the touched session/migration/update tests, `bun run typecheck`, and `litespec validate telegram-surface-identity`.
 
 ## Phase 3: Persist schedules with Surface identity
 

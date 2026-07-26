@@ -71,32 +71,7 @@ User-visible list, inspect, revive, and explicit cancel operations SHALL authori
 - **THEN** owner authorization SHALL succeed
 - **AND** the new invocation SHALL capture the current runtime epoch and Y as its origin without mutating the completed prior invocation's audit state
 
-## MODIFIED Requirements
-
-### Requirement: Subagent sessions persist to disk
-
-Every subagent spawn SHALL create a persisted pi session in the existing location: generic subagents under `$GOBLIN_HOME/scratch/subagents/<id>/` and named subagents under `$GOBLIN_HOME/workspace/agents/<name>/instances/<id>/`. Atomic `meta.json` SHALL retain existing id, role, name, `spawnedBy`, depth, timestamps, status, and memory fields and SHALL additionally record the current invocation's `ownerConversationId`, exact runtime identity, code-owned `lifetime: "attached"`, immutable Execution Environment, `originSurfaceId`, and ownership-epoch id.
-
-The active memory context persisted for revival SHALL be the value captured from the creating runtime; it MUST NOT be recomputed from the Conversation's later binding. Ownership metadata is authority and SHALL be validated at the persistence boundary rather than cast from disk.
-
-#### Scenario: Generic metadata records ownership
-
-- **WHEN** a generic subagent is spawned
-- **THEN** its existing `session.jsonl` and atomic `meta.json` artifacts SHALL be created
-- **AND** `meta.json` SHALL contain the complete attached ownership epoch
-
-#### Scenario: Named metadata records ownership
-
-- **WHEN** a named subagent is spawned
-- **THEN** its instance directory and pi history SHALL remain under the named-agent tree
-- **AND** its metadata SHALL contain the same ownership fields without weakening named skill or persona isolation
-
-#### Scenario: Malformed ownership metadata is rejected
-
-- **WHEN** persisted non-legacy metadata has an invalid owner Conversation, runtime identity, lifetime, SurfaceId, or Execution Environment
-- **THEN** load or revival SHALL fail before starting pi or rewriting metadata
-
-### Requirement: Subagent revival loads persisted session
+### Requirement: Subagent revival creates a new attached ownership epoch
 
 `revive(id, prompt, runtimeContext)` SHALL load the persisted pi history and continue it only after authorizing the caller's current `ConversationId` against the stored owner. Revival SHALL create a fresh ownership-epoch id and a new attached invocation under the reviving Conversation runtime, capturing that runtime's identity, origin Surface, immutable environment, and active memory context. It MUST NOT reactivate the prior runtime identity, retain its callbacks, or treat persisted history as a still-running invocation.
 
@@ -123,6 +98,31 @@ A terminal legacy metadata record without ownership fields MAY be revived once b
 - **WHEN** C2 attempts revival
 - **THEN** revival SHALL return not found
 - **AND** SHALL NOT rewrite metadata or open the pi session
+
+## MODIFIED Requirements
+
+### Requirement: Subagent sessions persist to disk
+
+Every subagent spawn SHALL create a persisted pi session in the existing location: generic subagents under `$GOBLIN_HOME/scratch/subagents/<id>/` and named subagents under `$GOBLIN_HOME/workspace/agents/<name>/instances/<id>/`. Atomic `meta.json` SHALL retain existing id, role, name, `spawnedBy`, depth, timestamps, status, and memory fields and SHALL additionally record the current invocation's `ownerConversationId`, exact runtime identity, code-owned `lifetime: "attached"`, immutable Execution Environment, `originSurfaceId`, and ownership-epoch id.
+
+The active memory context persisted for revival SHALL be the value captured from the creating runtime; it MUST NOT be recomputed from the Conversation's later binding. Ownership metadata is authority and SHALL be validated at the persistence boundary rather than cast from disk.
+
+#### Scenario: Generic metadata records ownership
+
+- **WHEN** a generic subagent is spawned
+- **THEN** its existing `session.jsonl` and atomic `meta.json` artifacts SHALL be created
+- **AND** `meta.json` SHALL contain the complete attached ownership epoch
+
+#### Scenario: Named metadata records ownership
+
+- **WHEN** a named subagent is spawned
+- **THEN** its instance directory and pi history SHALL remain under the named-agent tree
+- **AND** its metadata SHALL contain the same ownership fields without weakening named skill or persona isolation
+
+#### Scenario: Malformed ownership metadata is rejected
+
+- **WHEN** persisted non-legacy metadata has an invalid owner Conversation, runtime identity, lifetime, SurfaceId, or Execution Environment
+- **THEN** load or revival SHALL fail before starting pi or rewriting metadata
 
 ### Requirement: Subagent results returned to caller
 

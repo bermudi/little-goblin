@@ -11,16 +11,16 @@
 
 ## Phase 2: Migrate legacy transcript files conservatively
 
-- [ ] Implement `TranscriptProvenanceMigrator` after canonical Surface migration with all-file precomputation and atomic per-file replacement.
+- [ ] Implement `TranscriptProvenanceMigrator` as canonical offline filesystem step 3 after execution-environment migration and before Conversation lifecycle migration, set `CURRENT_STATE_VERSION = 3`, and use all-file precomputation plus atomic per-file replacement.
 - [ ] Preserve valid existing provenance, every other field, and line order; backfill only when persisted historical evidence proves one canonical event source.
 - [ ] Leave provenance absent when only current binding, creation metadata, shared scope/CWD, or Execution Environment is available; report bounded counts without transcript content.
-- [ ] Add an idempotent file-version marker committed only after every file succeeds, with fail-loud handling for non-`ENOENT` I/O and invalid rewrites.
-- [ ] Cover explicit evidence, invalid IDs, no-current-binding guess, mixed migrated/unmigrated files, interrupted replacement, marker interruption, and unchanged order/fields.
+- [ ] Fail loudly on non-`ENOENT` I/O and invalid rewrites before filesystem `stateVersion` advances; do not add an independent marker, startup execution, mixed-generation support, or partial-restart recovery.
+- [ ] Cover migration from filesystem version 2 to 3, exact once-only step execution, explicit evidence, invalid IDs, no-current-binding guess, successful complete output, malformed input, non-`ENOENT` failures, and unchanged order/fields.
 - [ ] Run focused transcript migration tests and `bun run typecheck`.
 
 ## Phase 3: Rebuild mixed-chat transcript indexing
 
-- [ ] Add nullable `memory_entries.source_surface_id` and provenance file/index metadata through the idempotent memory schema migration; keep curated/user rows null.
+- [ ] Add nullable `memory_entries.source_surface_id` and one transactional SQLite provenance-index version marker through the idempotent memory schema migration; keep curated/user rows null and add no filesystem completion marker.
 - [ ] Change transcript-scope replacement to accept per-chunk SurfaceId/chat-ID values while maintaining entries, FTS, embeddings, tags, and source tracking in one transaction.
 - [ ] Remove session-state/file-level chat resolution from `src/memory/transcript-index.ts`; derive each chunk's `chat_id` only through `parseSurfaceId`.
 - [ ] Support one `transcript/<conversationId>` scope containing multiple chat IDs and null unresolved rows without changing bounded sync or deletion cleanup.
@@ -39,7 +39,7 @@
 
 ## Phase 5: Gate startup and reject provenance guesses
 
-- [ ] Order startup as Surface migration → transcript file migration → index invalidation → bounded initial sync → scheduler/polling, with idempotent recovery at every boundary.
+- [ ] Keep transcript-file migration in the canonical offline runner; at startup, require the current filesystem `stateVersion`, then order transactional SQLite index invalidation → bounded initial sync → scheduler/polling.
 - [ ] Add static boundary tests proving transcript indexing and dreaming do not import session state/current bindings and only the transcript module parses provenance.
 - [ ] Add an end-to-end fixture where one Conversation writes on two Surfaces, indexes each chat correctly, excludes unresolved history by default, and promotes each source to the correct scope.
 - [ ] Verify migration/index/dreaming error paths emit bounded SurfaceId/Conversation/count signals without transcript content; run `bun test`, `bun run typecheck`, and `litespec validate transcript-surface-provenance --strict`.

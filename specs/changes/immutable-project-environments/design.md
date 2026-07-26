@@ -74,7 +74,7 @@ The first transition starts fresh model history. If the Surface had an old perso
 - `personal`: CWD `$GOBLIN_HOME/workspace`; deployment `SOUL.md`, `AGENTS.md`, and global skills remain explicitly loaded once, while pi context-file auto-discovery stays disabled and no project-only guidance or tools are enabled;
 - `project`: CWD and project authority are `projectRoot`; exact `<projectRoot>/AGENTS.md` is loaded as supplemental guidance, resource discovery uses that CWD, and project-bound tools receive the same canonical root.
 
-Pi's `agentDir` remains deployment-owned at `$GOBLIN_HOME/state/pi`, matching current `src/agent/backend.ts`; Goblin-wide skills remain explicitly added from the prerequisite-defined `$GOBLIN_HOME/.agents/skills/` catalog until `skill-catalog-resolution` takes ownership of source policy. Personal CWD being the workspace root does not authorize duplicate implicit prompt loading: `noContextFiles` remains enabled, and prompt provenance continues through Goblin's explicit system-prompt builder.
+Pi's `agentDir` remains deployment-owned at `$GOBLIN_HOME/state/pi`, matching current `src/agent/backend.ts`. This change preserves the implemented Goblin-wide skill path and loading behavior; `pi-native-skill-layout`, `skill-catalog-resolution`, and `surface-skill-policy` own later path and source-policy changes. Personal CWD being the workspace root does not authorize duplicate implicit prompt loading: `noContextFiles` remains enabled, and prompt provenance continues through Goblin's explicit system-prompt builder.
 
 ### Pi history compatibility is checked, not overridden
 
@@ -82,20 +82,26 @@ Current `findMostRecentPiSession()` deliberately ignores header CWD and `PiAgent
 
 A new pi-history helper reads and validates the first session header from the JSONL file selected for reopening. Runner initialization derives expected CWD from `executionEnvironment`, canonicalizes project paths, and compares before opening. Pi may still require an explicit CWD argument to `open`; if so, it MUST equal the validated header/environment CWD. Missing, malformed, or incompatible history fails visibly rather than silently starting empty history. Migration is stricter than ordinary selection: it validates the header of every pi-history JSONL retained by the Conversation so an older incompatible branch is not silently blessed.
 
-### Legacy migration seals existing history once
+### Offline migration seals existing history once
 
-`src/sessions/environment-migration.ts` runs after Surface migration and before manager/scheduler/polling startup. Before rewriting history it promotes regular personal-workspace contents from legacy `$GOBLIN_HOME/scratch/workdir/` into `$GOBLIN_HOME/workspace/`. Because the destination already contains prompt files, it first writes a migration manifest listing every source/destination pair, refuses any pre-existing collision, and then renames entries individually. On restart, a manifest entry with missing source and present destination is complete; both present is a collision; both missing is corruption. It removes the empty legacy `workdir/` only after every entry is complete.
+`src/sessions/environment-migration.ts` is canonical filesystem migration step 2 (`stateVersion` 1 → 2) in the append-only registry owned by `src/migrate.ts`. It runs only through explicit `bun run migrate` while Goblin is stopped, after Surface migration step 1. During a multi-step run its planner consumes step 1's projected canonical output, and all later pending planners must also succeed before any step is applied. Startup performs the state-version gate and never invokes this transformation.
 
-It then loads and validates all target records before state/history writes:
+The migration command is the sole recovery-backup owner. Before mutating persisted inputs, it covers every root any pending step can change. For this step that boundary includes `$GOBLIN_HOME/state/`, `$GOBLIN_HOME/workspace/`, and legacy `$GOBLIN_HOME/scratch/workdir/`, recording whether optional roots existed so restoration can remove destinations created by the failed attempt; no setup helper may create them first. `scripts/update.sh` stops Goblin before invoking that boundary, performs no narrower duplicate backup, restarts only after success, and leaves the service stopped on failure.
 
-- bindings are grouped by session before authority selection; one or several bound Surfaces may supply the environment only when every candidate resolves to the same canonical environment, and differing candidates fail before writes without selecting by map order;
-- unbound/archived legacy sessions use the uniquely reconstructable recorded legacy Surface (legacy sign inference is confined to this migration);
-- internal sessions use `personal`;
-- canonical records are verified and left unchanged.
+The step computes one complete immutable plan before its first write or rename:
 
-Migration validates the header of every pi-history JSONL retained by each Conversation, not only the newest candidate. Legacy personal headers pointing at `$GOBLIN_HOME/scratch/workdir` may be normalized to `$GOBLIN_HOME/workspace` because that is an explicit relocation of the same personal Execution Environment. Canonically equivalent project spellings may likewise be normalized after realpath comparison. Every non-header JSONL line remains byte-for-byte unchanged and each safe normalization is logged.
+1. Enumerate every regular file or directory to promote from legacy `scratch/workdir` into `workspace`; reject unsupported entries and every destination collision without moving anything.
+2. Parse and canonicalize every environment-bearing field. When one Surface setting contains both canonical `projectRoot` and legacy `projectDir`, both paths must resolve to the same root; disagreement, inaccessibility, or invalidity fails rather than preferring one field, deleting the setting, or downgrading to personal.
+3. Group bindings by Conversation and select authority with an explicit matrix:
+   - an internal legacy record (`chatId === 0`) selects `personal`, must not be Surface-bound, and rejects project evidence;
+   - a bound Conversation gathers the effective environment of every bound Surface; all candidates and any legacy Conversation `projectDir` must agree;
+   - an unbound or archived Conversation gathers its legacy state `projectDir` plus every Surface setting matching its recorded legacy chat/topic address; conflicting matches fail, no project evidence means personal, and malformed/missing routing identity fails;
+   - a record already carrying canonical `executionEnvironment` retains it only when every applicable legacy/binding candidate agrees; migration never overwrites a canonical disagreement.
+4. Validate the header of every retained pi-history JSONL against the selected environment, not only the newest candidate. A legacy personal header naming `scratch/workdir` may normalize to `workspace`; a canonically equivalent project spelling may normalize to the canonical root. Every non-header line remains byte-for-byte unchanged.
 
-Any header that resolves to a different Execution Environment than the uniquely selected Surface authority is not rewritten. It is evidence that mutable historical `/project` crossed authority boundaries; changing only declarations cannot make that history safe. Migration fails before state/history writes with the Conversation, selected environment, history path, and recorded CWD so the operator can explicitly archive or otherwise repair it. Unknown, missing, or malformed headers and non-unique Surface associations fail the same way. Migration is idempotent; temp-file-plus-rename is used only for state and safe equivalent header normalization.
+Only after all four parts validate may the step apply the planned workdir moves and atomic state/header replacements. A header resolving to a different Execution Environment is evidence of historical mixed authority and fails with the Conversation, selected environment, history path, and recorded CWD; migration does not rewrite declarations to manufacture safety.
+
+`src/migrate.ts` writes state version 2 only after the step returns successfully. Failure leaves version 1 and requires restoration from the command's backup before retry. The step has no independent manifest or marker and is not required to be idempotent, restart-safe, mixed-generation tolerant, or rerunnable after a partial write. By contrast, pending project-assignment replay remains startup reconciliation over current-version data because interrupted assignment is ordinary operational state, not legacy-format conversion.
 
 ## Decisions
 
@@ -131,6 +137,12 @@ Any header that resolves to a different Execution Environment than the uniquely 
 
 **Why:** Session creation, runtime disposal, settings, and binding cannot be one filesystem rename. A tiny idempotent operation record provides a real recovery mechanism. Exposing prepare/commit steps to command callers would make a shallow interface and duplicate failure handling.
 
+### Decision: Environment conversion is canonical offline step 2
+
+**Chosen:** Register the complete transformation as state version 1 → 2 and use the migration command's full backup for recovery.
+
+**Why:** Workdir promotion, Surface settings, Conversation state, and pi headers cross several files and roots. An independent restart manifest cannot make those writes transactional, and a state-only backup cannot undo a move into `workspace`. The deployment can stop, validate first, and restore one complete backup on failure under decision 0038.
+
 ### Decision: Migration never relabels mixed-authority history
 
 **Chosen:** Normalize only explicit personal-workspace relocation or canonically equivalent path spellings. If the recorded pi-history CWD identifies another environment, fail for explicit repair without rewriting the header.
@@ -144,8 +156,13 @@ Any header that resolves to a different Execution Environment than the uniquely 
 - **`src/sessions/environment.ts`** — `ExecutionEnvironment`, canonical project resolution, persistent workspace CWD resolution, and equality. Implements “Execution environments have canonical persisted identities.”
 - **`src/sessions/project-assignment.ts`** — pending-assignment DTO/store and replay helpers used internally by `SessionManager`, including deterministic creation from the recorded future Conversation ID. Implements recoverable “Session manager owns one-time Surface project assignment.”
 - **`src/orchestration/lifecycle-transition-lock.ts`** — one process-wide async transition lock shared by project assignment and later Conversation binding operations, including unbound-Surface creation.
-- **`src/sessions/environment-migration.ts`** — transactionally promote legacy personal workdir contents, then migrate legacy state/settings/pi headers before dispatch. Implements “Legacy execution environments migrate before dispatch.”
-- **`src/sessions/environment.test.ts`, `src/sessions/project-assignment.test.ts`, `src/sessions/environment-migration.test.ts`** — canonicalization, idempotence, conflict, crash-point, invalid-path, and header-preservation tests.
+- **`src/sessions/environment-migration.ts`** — compute and validate the complete step-2 plan, then promote legacy personal work and replace settings/state/pi headers without an independent manifest. Implements “Legacy execution environments migrate before dispatch.”
+- **`src/sessions/environment.test.ts`, `src/sessions/project-assignment.test.ts`, `src/sessions/environment-migration.test.ts`** — canonicalization, authority conflicts, collision refusal, complete prevalidation, and header-preservation tests.
+
+### Modified migration-runner files
+
+- **`src/migrate.ts`, `src/state-version.ts`, and `scripts/update.sh`** — extend the dependency-owned canonical runner with version 1 → 2, broaden its restorable backup to every mutated root, advance only after success, and keep migration out of startup.
+- **`src/migrate.test.ts`, `src/state-version.test.ts`** — add strict-version, full-chain preflight, backup-boundary, version advancement/failure, and CLI-ordering coverage.
 
 ### Modified session files
 
@@ -156,7 +173,7 @@ Any header that resolves to a different Execution Environment than the uniquely 
 - **`src/sessions/paths.ts`** — provide the validated pending-assignment path; assignment code does not join `$GOBLIN_HOME` paths directly.
 - **`src/sessions/mod.ts`** — export environment types and lifecycle result types.
 - **`src/sessions/manager.test.ts`, `src/sessions/topic-settings.test.ts`, `src/sessions/state.test.ts`** — environment capture, shared-root isolation, immutable state, and assignment cases.
-- **`src/index.ts`** — run environment/pending-assignment migration after upstream Surface migration and before scheduler/polling.
+- **`src/index.ts`** — enforce the required state version before module construction and run only pending-project-assignment reconciliation before scheduler/polling; it never invokes filesystem migration.
 
 ### Modified project command files
 

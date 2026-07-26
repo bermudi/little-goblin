@@ -10,7 +10,7 @@ With stable Telegram surfaces and immutable execution environments supplied by p
 
 ## Scope
 
-This change depends on `telegram-surface-identity`, `surface-derived-memory-context`, `transcript-surface-provenance`, `immutable-project-environments`, `personal-attachment-intake`, and `surface-skill-policy`. It affects three capabilities: `sessions`, `commands`, and `orchestration`.
+This change has four hard prerequisites: `telegram-surface-identity`, `immutable-project-environments`, `surface-derived-memory-context`, and `transcript-surface-provenance`. Its runtime assembly consumes the dependency-provided captured memory context, and its transcript writes consume the dependency's writer context with event-time Surface provenance; those contracts must exist before cross-Surface resume can be correct. `personal-attachment-intake` remains a soft sequencing concern. The change affects three capabilities: `sessions`, `commands`, and `orchestration`.
 
 ### Sessions
 
@@ -19,9 +19,9 @@ This change depends on `telegram-surface-identity`, `surface-derived-memory-cont
 - Lazily create a conversation for an authorized user message on any ordinary unbound surface, including DMs. Internal jobs, scheduler ticks, and proactive delivery do not auto-create conversations.
 - Enforce at most one active surface binding per conversation. Resuming a bound conversation atomically moves it: clear its previous binding, leave the destination’s displaced conversation stored and resumable, then bind the target.
 - Permit resume only when the target conversation’s immutable execution environment matches the destination surface’s effective environment.
-- Keep project assignment, model and thinking preferences, and the prerequisite-defined skill policy Surface-owned so they survive conversation rotation. Derive active memory context from the current Surface rather than persisting it as Conversation metadata or a second Surface setting. Keep conversation ID, name, creation time, transcript, events, metrics, pi history, and execution environment conversation-owned.
+- Keep project assignment and model/thinking preferences Surface-owned so they survive conversation rotation. Derive active memory context from the current Surface rather than persisting it as Conversation metadata or a second Surface setting. Keep conversation ID, name, creation time, transcript, events, metrics, pi history, and execution environment conversation-owned. Skill policy remains owned by the later `surface-skill-policy` change.
 - Make schedules and heartbeat configuration surface-owned. `/new` and `/resume` do not transfer, disable, or duplicate them. Due automation resolves the surface’s current conversation at dispatch time; if none is bound, the occurrence remains pending and does not create one.
-- Migrate legacy bindings, model/thinking settings, schedules, and heartbeat configuration without deleting conversation history. If a legacy conversation is bound to several surfaces, fail before migration writes with the conversation and candidate SurfaceIds so the operator can choose the retained binding explicitly; do not invent a winner.
+- Add the ownership split as one offline, versioned step in the canonical migration runner. Migrate legacy bindings, model/thinking settings, schedules, and heartbeat configuration without deleting conversation history. Precompute and validate the complete lifecycle transformation before its first write. If a legacy conversation is bound to several surfaces, fail with the conversation and candidate SurfaceIds so the operator can choose the retained binding explicitly; do not invent a winner.
 
 ### Commands
 
@@ -32,7 +32,7 @@ This change depends on `telegram-surface-identity`, `surface-derived-memory-cont
 
 ### Orchestration
 
-- Key each conversation runtime and prompt queue by conversation ID while deriving surface-specific tools, memory scope, model/thinking preferences, skill policy, and output sink from the conversation’s current binding.
+- Key each conversation runtime and prompt queue by conversation ID while deriving surface-specific tools, the dependency-provided captured memory context, model/thinking preferences, and output sink from the conversation’s current binding. User-visible transcript writes use the dependency-provided writer context derived from the runtime capture's immutable event-time `sourceSurfaceId`.
 - Dispose and remove a runtime before moving its conversation to another surface, then create a new runtime for the destination. A conversation MUST NOT have simultaneous runners on two surfaces.
 - Preserve the stale-runner guard across `/new` and `/resume` so queued work captured by a displaced runtime cannot produce effects.
 - Dispatch surface-owned schedules through the current conversation runtime for that surface rather than a conversation captured when the schedule was created.

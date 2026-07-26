@@ -41,7 +41,7 @@ Dreaming and provenance diagnostics SHALL read the stored SurfaceId through the 
 
 ### Requirement: Provenance rollout invalidates guessed transcript rows
 
-Before provenance-aware transcript search is enabled, startup SHALL complete the transcript provenance migration and atomically invalidate every previously indexed transcript row whose `chat_id` came from session-level metadata. The invalidation transaction SHALL remove transcript rows and their FTS, embedding, tag, and source-tracking rows and SHALL record a provenance-index version only after the transaction commits. Normal bounded transcript sync SHALL then rebuild rows from per-entry provenance. Search MUST NOT expose old guessed `chat_id` rows during a partial migration or rebuild.
+Before provenance-aware transcript search is enabled, startup SHALL first pass the filesystem `stateVersion` gate proving the offline transcript migration completed, then atomically invalidate every previously indexed transcript row whose `chat_id` came from session-level metadata. The SQLite invalidation transaction SHALL remove transcript rows and their FTS, embedding, tag, and source-tracking rows and SHALL update the provenance-index version as its final statement, becoming visible atomically when the transaction commits. Normal bounded transcript sync SHALL then rebuild rows from per-entry provenance. Search MUST NOT expose old guessed `chat_id` rows during the transactional database upgrade or rebuild.
 
 #### Scenario: Existing index is upgraded
 
@@ -50,11 +50,11 @@ Before provenance-aware transcript search is enabled, startup SHALL complete the
 - **THEN** one SQLite transaction SHALL remove those transcript rows and dependent index data and mark the new index version
 - **AND** subsequent sync SHALL rebuild them from entry provenance
 
-#### Scenario: Process stops during file migration
+#### Scenario: Process stops during index invalidation
 
-- **WHEN** the process stops after some transcript files were atomically rewritten but before migration completion is recorded
-- **THEN** the next startup SHALL resume idempotently
-- **AND** old transcript index rows SHALL not be treated as provenance-aware rows
+- **WHEN** the process stops before the SQLite invalidation transaction commits
+- **THEN** the transaction SHALL roll back without recording the provenance-index version
+- **AND** the next startup SHALL repeat the database upgrade before search, scheduler, or polling begins
 
 ## MODIFIED Requirements
 
@@ -94,7 +94,7 @@ For each parsed entry, chunking SHALL preserve its optional source Surface prove
 
 The scheduled light, REM, and deep phases SHALL preserve the accepted extraction, confidence, quarantine, deduplication, consolidation, diary, budget, and serialization behavior. Promotion scope SHALL be selected from transcript-entry source Surface provenance rather than a session-level scope.
 
-Light sleep SHALL partition candidate source line ranges by their projected source MemoryScope and SHALL reject a candidate that spans conflicting proven scopes unless the accepted aggregation rule can select a target. REM and deep aggregation SHALL count provenance-derived origin scopes. Missing, invalid, or ambiguous legacy provenance SHALL contribute no invented topic scope and SHALL use decision 0025's deterministic `general` fallback when no clear curated target exists. The internal extractor context SHALL remain Surface-free and SHALL not itself become a promotion target.
+Light sleep SHALL partition candidate source line ranges by their projected source MemoryScope and SHALL quarantine every candidate that spans conflicting proven scopes as `ambiguous_source_scope`; no aggregation winner is selected during light sleep. REM SHALL count provenance-derived origin scopes and apply the accepted highest-origin-count, most-recent-update, then scope-name ordering. Deep sleep SHALL preserve the scope already selected for each short-term row. Missing or invalid legacy provenance SHALL contribute no invented topic scope and SHALL use decision 0025's deterministic `general` fallback when no proven scope exists. The internal extractor context SHALL remain Surface-free and SHALL not itself become a promotion target.
 
 #### Scenario: Light sleep promotes moved history correctly
 

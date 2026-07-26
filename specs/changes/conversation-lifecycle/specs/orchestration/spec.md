@@ -4,14 +4,15 @@
 
 ### Requirement: Conversation runtime context comes from the current binding
 
-A conversation runtime SHALL be keyed by conversation ID, but its Telegram tools, output sink, memory scope, model and thinking preferences, and other surface context MUST be constructed from the conversation's current binding. Its CWD and pi history SHALL come from the conversation's immutable execution environment. A runtime MUST NOT be reused after its conversation moves to another surface.
+A conversation runtime SHALL be keyed by conversation ID, but its Telegram tools, output sink, model and thinking preferences, and other surface context MUST be constructed from the conversation's current binding. Before runtime registration, orchestration SHALL obtain the dependency-provided immutable `CapturedMemoryContext` for that Surface and derive the dependency-provided Surface-backed `TranscriptWriterContext` from `CapturedMemoryContext.authority.sourceSurfaceId`. Every user-visible transcript write from the runtime SHALL use that closed-over writer context. Its CWD and pi history SHALL come from the conversation's immutable execution environment. A runtime MUST NOT be reused after its conversation moves to another surface.
 
 #### Scenario: Resumed conversation gets destination context
 
 - **GIVEN** a conversation previously ran on surface X
 - **WHEN** it is resumed on compatible surface Y and next receives work
-- **THEN** the new runtime SHALL use Y's tools, sink, memory scope, model, and thinking preferences
-- **AND** SHALL use the conversation's existing pi history and immutable execution environment
+- **THEN** the new runtime SHALL use Y's tools, sink, captured memory context, model, and thinking preferences
+- **AND** new user-visible transcript entries SHALL use Y's captured `TranscriptWriterContext`
+- **AND** the runtime SHALL use the conversation's existing pi history and immutable execution environment
 
 #### Scenario: Conversation is unbound
 
@@ -74,26 +75,9 @@ The scheduler SHALL resolve a due schedule's surface binding at dispatch time an
 - **THEN** orchestration SHALL create no runtime and no conversation
 - **AND** the occurrence SHALL remain pending
 
-## MODIFIED Requirements
+### Requirement: Scheduler dispatches due turns through the current Conversation queue
 
-### Requirement: Agent turns do not block unrelated updates
-
-The system SHALL dispatch agent turns through the shared turn dispatcher without blocking unrelated Telegram updates. Serialization, runtime lifecycle, and stale-runtime guards SHALL be per conversation; rendering remains supplied by the surface adapter.
-
-#### Scenario: Long turn does not block another conversation
-
-- **WHEN** conversation A runs a long turn
-- **AND** conversation B receives an update
-- **THEN** B SHALL be processed without waiting for A
-
-#### Scenario: Same conversation serializes
-
-- **WHEN** two fresh turns target the same current conversation runtime
-- **THEN** they SHALL serialize through that conversation's queue
-
-### Requirement: Scheduler dispatches due turns through the per-session queue
-
-The single-process scheduler SHALL poll surface-owned schedules, inspect each due record's current surface binding without creating a conversation, and claim the occurrence only when a bound conversation is eligible for dispatch. It SHALL enqueue through the same per-conversation queue used by Telegram and `/queue`. An unbound occurrence SHALL stay due and enabled. Existing one-at-a-time claiming, recurrence advancement, failure logging, and scheduler lifecycle behavior SHALL remain.
+The single-process scheduler SHALL poll surface-owned schedules at the existing 60-second default interval, inspect each due record's current surface binding without creating a conversation, and claim the occurrence only when a bound conversation is eligible for dispatch. It SHALL enqueue through the same per-conversation queue used by Telegram and `/queue`. An unbound occurrence SHALL stay due and enabled. Existing one-at-a-time claiming, recurrence advancement, failure logging, and scheduler lifecycle behavior SHALL remain.
 
 #### Scenario: Due surface dispatches to current conversation
 
@@ -113,6 +97,61 @@ The single-process scheduler SHALL poll surface-owned schedules, inspect each du
 - **GIVEN** a due occurrence was enqueued through conversation B
 - **WHEN** B's runtime is displaced before the turn starts
 - **THEN** the stale-runtime guard SHALL drop the captured work before effects
+
+### Requirement: Agent-originated schedules are bounded by a per-Surface cap
+
+The enabled agent-schedule cap SHALL be enforced per surface at the store mutation seam for create, resume, and heartbeat-enable transitions. `MAX_AGENT_SCHEDULES` SHALL retain its default of 8. User schedules and disabled/completed agent schedules SHALL remain excluded from the count, and human `/schedule` operations SHALL remain uncapped. A mutation that would exceed the cap SHALL fail atomically, leave the store unchanged, and return a cap-exceeded error identifying the limit.
+
+#### Scenario: Create at cap fails atomically
+
+- **GIVEN** a Surface has `MAX_AGENT_SCHEDULES` enabled agent-owned schedules
+- **WHEN** its runtime attempts to create or re-enable another agent-owned schedule
+- **THEN** the mutation SHALL fail with a cap-exceeded error identifying the limit
+- **AND** the schedule store SHALL remain unchanged
+
+#### Scenario: Human schedule remains uncapped
+
+- **GIVEN** a Surface is at the agent schedule cap
+- **WHEN** the user creates or resumes a schedule through `/schedule`
+- **THEN** the human-authorized mutation SHALL not be rejected by `MAX_AGENT_SCHEDULES`
+
+#### Scenario: Conversation rotation does not reset cap
+
+- **GIVEN** a surface is at `MAX_AGENT_SCHEDULES`
+- **WHEN** its conversation rotates
+- **THEN** the next runtime on that surface SHALL still be at the cap
+
+### Requirement: Disposing a Conversation runtime cancels compatibility-owned delegated work
+
+Disposing a conversation runtime SHALL dispose the `AgentRunner`, immediately remove runtime and queue identity, and invoke existing delegated-work cleanup using the conversation ID through compatibility ownership methods. This change SHALL NOT redefine attached/detached work ownership. `cancelPending` SHALL continue not to cascade.
+
+#### Scenario: Runtime disposal uses compatibility ownership
+
+- **WHEN** conversation `abc123def0` is disposed
+- **THEN** orchestration SHALL call existing `cancelBySession("abc123def0")` compatibility methods after invalidating the runtime
+- **AND** SHALL NOT reinterpret or migrate delegated-work ownership
+
+#### Scenario: Pending cancellation remains non-cascading
+
+- **WHEN** only a queued prompt is cancelled while the conversation remains active
+- **THEN** delegated work SHALL continue
+
+## MODIFIED Requirements
+
+### Requirement: Agent turns do not block unrelated updates
+
+The system SHALL dispatch agent turns through the shared turn dispatcher without blocking unrelated Telegram updates. Serialization, runtime lifecycle, and stale-runtime guards SHALL be per conversation; rendering remains supplied by the surface adapter.
+
+#### Scenario: Long turn does not block another conversation
+
+- **WHEN** conversation A runs a long turn
+- **AND** conversation B receives an update
+- **THEN** B SHALL be processed without waiting for A
+
+#### Scenario: Same conversation serializes
+
+- **WHEN** two fresh turns target the same current conversation runtime
+- **THEN** they SHALL serialize through that conversation's queue
 
 ### Requirement: Turn serialization lives in the orchestration layer
 
@@ -166,16 +205,6 @@ Agent schedule mutations SHALL remain limited to agent-owned records on the runt
 - **THEN** the store SHALL report no authorized match
 - **AND** SHALL remain unchanged
 
-### Requirement: Agent-originated schedules are bounded by a per-session cap
-
-The enabled agent-schedule cap SHALL be enforced per surface at the store mutation seam for create, resume, and heartbeat-enable transitions. User schedules and disabled/completed agent schedules SHALL remain excluded from the count.
-
-#### Scenario: Conversation rotation does not reset cap
-
-- **GIVEN** a surface is at `MAX_AGENT_SCHEDULES`
-- **WHEN** its conversation rotates
-- **THEN** the next runtime on that surface SHALL still be at the cap
-
 ### Requirement: Schedule records carry provenance
 
 Each surface-owned schedule SHALL retain optional `source: "user" | "agent"` provenance, with absent values treated as user-owned. Existing last-writer authority, user display annotation, and prompt-redaction behavior SHALL remain, independent of which conversation is currently bound.
@@ -187,17 +216,10 @@ Each surface-owned schedule SHALL retain optional `source: "user" | "agent"` pro
 - **THEN** its source SHALL become `user`
 - **AND** the current agent runtime SHALL not regain mutation authority
 
+## REMOVED Requirements
+
+### Requirement: Scheduler dispatches due turns through the per-session queue
+
+### Requirement: Agent-originated schedules are bounded by a per-session cap
+
 ### Requirement: Disposing a session runner cancels its subagents
-
-Disposing a conversation runtime SHALL dispose the `AgentRunner`, immediately remove runtime and queue identity, and invoke existing delegated-work cleanup using the conversation ID through compatibility ownership methods. This change SHALL NOT redefine attached/detached work ownership. `cancelPending` SHALL continue not to cascade.
-
-#### Scenario: Runtime disposal uses compatibility ownership
-
-- **WHEN** conversation `abc123def0` is disposed
-- **THEN** orchestration SHALL call existing `cancelBySession("abc123def0")` compatibility methods after invalidating the runtime
-- **AND** SHALL NOT reinterpret or migrate delegated-work ownership
-
-#### Scenario: Pending cancellation remains non-cascading
-
-- **WHEN** only a queued prompt is cancelled while the conversation remains active
-- **THEN** delegated work SHALL continue

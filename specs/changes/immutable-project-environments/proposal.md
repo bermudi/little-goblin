@@ -8,7 +8,7 @@ That is not merely surprising configuration; it makes the meaning and authority 
 
 ## Scope
 
-This change depends on `telegram-surface-identity` and `pi-native-skill-layout` and affects three capabilities: `sessions`, `project-command`, and `agent-runner-project-dir`.
+This change has one hard dependency, `telegram-surface-identity`, and affects three capabilities: `sessions`, `project-command`, and `agent-runner-project-dir`. Skill-layout changes are soft sequencing concerns; no implementation task here consumes their interfaces.
 
 ### Sessions
 
@@ -16,7 +16,8 @@ This change depends on `telegram-surface-identity` and `pi-native-skill-layout` 
 - Treat a surface with no project assignment as using the personal environment. A surface may receive one project assignment later, but an assigned project surface cannot return to personal or change to another project through ordinary commands.
 - Persist an immutable execution-environment reference in every session/conversation state record. A conversation created on a surface captures that surface’s effective environment and never changes it.
 - Allow many surfaces to share the same execution environment. Shared CWD does not merge bindings, transcripts, memory scopes, schedules, or Telegram delivery.
-- Migrate legacy records by canonicalizing existing surface `projectDir` values and assigning each existing conversation the uniquely reconstructable environment of its recorded Surface or the common environment of all bound Surfaces. Conflicting bound environments fail without selecting a winner. Safe personal-workspace relocation and canonically equivalent header spellings may be normalized, but a pi-history CWD that identifies a different environment fails for explicit repair; migration does not make mixed-authority history safe by rewriting its declaration.
+- Register execution-environment conversion as canonical offline filesystem migration step 2, advancing `stateVersion` from 1 to 2 only after success. The step canonicalizes legacy Surface `projectDir` values, assigns each existing conversation the uniquely reconstructable environment of its recorded Surface or the common environment of all bound Surfaces, promotes legacy personal work from `scratch/workdir` to `workspace`, and validates every retained pi-history header. It computes and validates the complete transformation before its first mutation; conflicting authority or destination collisions fail without selecting a winner. Safe personal-workspace relocation and canonically equivalent header spellings may be normalized, but a pi-history CWD that identifies a different environment fails for explicit repair rather than being relabeled.
+- Require the canonical migration command's pre-mutation backup to cover every root this step can mutate: `state/`, `workspace/`, and legacy `scratch/workdir/`, including enough existence information to restore paths that were absent. Startup only enforces the state-version gate; replayable project-assignment intent remains separate current-version reconciliation.
 
 ### Project command
 

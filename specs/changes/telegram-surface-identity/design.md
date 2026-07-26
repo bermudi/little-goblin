@@ -126,13 +126,15 @@ No memory paths or SQLite scope tags change. Topic container is routing identity
 
 Internal dreaming turns are not Telegram surfaces. The current `chatId: 0` compatibility sentinel remains on the internal dispatch path, represented explicitly as no Telegram surface (or an internal runner option), rather than adding an `internal` member to `Surface`. This follows the proposal's “Internal model-run identity” non-goal.
 
-### Offline migration is precomputed and atomic per file
+### Offline migration owns one strict, preflighted registry
 
-The filesystem layout is versioned separately from the memory SQLite schema. A new `state/state-version.json` is read at startup; if it does not match `CURRENT_STATE_VERSION`, the process refuses to poll and tells the operator to run `bun run migrate` with the service stopped.
+The filesystem layout is versioned separately from the memory SQLite schema. `state/state-version.json` contains one non-negative supported integer. Only `ENOENT` means legacy version 0; malformed JSON/schema, unreadable files, negative/non-integer values, and versions newer than the running code fail before backup or mutation. Startup requires exact equality with `CURRENT_STATE_VERSION`, refuses to poll on mismatch, and names `bun run migrate` with the service stopped.
 
-`bun run migrate` is an offline command. It takes a backup of `state/` before its first mutation, loads all legacy and canonical inputs, computes every canonical output in memory, validates every `SurfaceId`, and only then writes. It is not restart-safe or mixed-generation-tolerant; recovery from a failed migration is restoration from the backup.
+`bun run migrate` owns the ordered append-only registry. Surface conversion is step 1 (`stateVersion` 0 → 1). Every step exposes a read-only planner and an applier. Before altering any persisted input, the runner plans every pending step in order; a later planner consumes the projected output of earlier plans rather than requiring earlier writes. Any validation failure aborts the run before source mutation. The runner then snapshots every persisted root named by the pending plans, preserving prior contents and path absence, and only then applies the plans in order with atomic per-file replacement. No setup helper may create a snapshotted optional root before that snapshot.
 
-Conversion rules:
+The migration command is the sole owner of this recovery backup. `scripts/update.sh` stops Goblin before invoking it, performs no narrower duplicate backup, restarts only after success, and leaves the service stopped on failure. An unexpected apply failure may leave intermediate files or a version from an earlier applied step; recovery is restoration of the command's whole-run backup before retry, not startup convergence.
+
+Conversion rules for step 1:
 
 1. `bindings.json`
    - `dm[C]` → `tg:v1:dm:C`
@@ -145,7 +147,7 @@ Conversion rules:
 
 This deliberately refuses ambiguous legacy topic bindings/settings even though most historical topics were probably forum supergroups. `ChatLocator` did not persist that fact, and defaulting would violate the promise to preserve the Telegram lane. The diagnostic tells the operator which canonical `SurfaceId` alternatives can replace the legacy entry explicitly.
 
-If any topic or schedule has absent/conflicting evidence or zero/multiple candidates, migration throws with its source identity before any write. If all outputs are valid, each file is replaced through the existing atomic JSON writer.
+If any topic or schedule has absent/conflicting evidence or zero/multiple candidates, step-1 planning throws with its source identity before the migration run mutates persisted inputs. If all pending plans are valid, each step-1 file is replaced through the existing atomic JSON writer and version 1 is written only after every step-1 replacement succeeds.
 
 ## Decisions
 
@@ -193,11 +195,11 @@ If any topic or schedule has absent/conflicting evidence or zero/multiple candid
 
 **Constraint:** Legacy topic records with no corroborating persisted container metadata require manual conversion to a canonical SurfaceId before startup. This is intentionally stricter than assuming all historical topics were forum supergroups.
 
-### Decision: Do not create a cross-file transaction protocol
+### Decision: Use an offline plan/apply registry, not startup convergence
 
-**Chosen:** Precompute all outputs, atomically replace each file, and make migration idempotent across mixed generations.
+**Chosen:** Plan every pending version step against projected outputs before mutating source state, take one complete backup, then apply atomic file replacements in version order.
 
-**Why:** The project has atomic single-file writes but no journal/transaction manager. Adding one solely for three small startup files is disproportionate. Precomputation prevents validation failures from producing partial writes; idempotent mixed-version loading handles process death between successful renames.
+**Why:** The project has atomic single-file writes but no cross-file transaction. Startup mixed-generation recovery would duplicate a journal protocol in every change. Offline execution lets validation fail before mutation and gives unexpected apply failure one honest recovery path: restore the whole-run backup. This follows decision 0038.
 
 ## File Changes
 
@@ -206,10 +208,11 @@ If any topic or schedule has absent/conflicting evidence or zero/multiple candid
 - **`src/surface.ts`** — Define `Surface`, `TopicContainer`, branded `SurfaceId`, validated constructors, `surfaceId`, `parseSurfaceId`, and small narrowing helpers. Implements “Telegram surfaces are complete discriminated values” and “SurfaceId is canonical and reversible” without introducing a dependency on Telegram adapters.
 - **`src/tg/context-surface.ts`** — Normalize grammy message contexts and guest messages into validated surfaces. Replaces `locatorFromCtx` and owns support/rejection by Telegram chat/update shape.
 - **`src/tg/delivery.ts`** — Convert a non-guest Surface into Telegram API `chatId` and the correct `message_thread_id`/`direct_messages_topic_id` options; reject normal-send use for guests. Implements “Telegram adapter derives delivery parameters from Surface.”
-- **`src/migrate.ts`** — Offline migration command: backups `state/`, runs each pending step, writes `state-version.json`, and exits nonzero on any step failure.
-- **`src/state-version.ts`** — Persist and read the monotonic `stateVersion` for `$GOBLIN_HOME/state/`.
-- **`src/sessions/surface-migration.ts`** — Precompute and apply the bindings/settings/schedule migration as an offline step called from `bun run migrate`; fail before writes on ambiguous evidence.
-- **`src/surface.test.ts`, `src/tg/context-surface.test.ts`, `src/tg/delivery.test.ts`, `src/sessions/surface-migration.test.ts`, `src/migrate.test.ts`, `src/state-version.test.ts`** — Colocated round-trip, normalization, delivery-option, collision, migration, ambiguity, state-version, and offline-migration coverage.
+- **`src/migrate.ts`** — Offline plan/apply registry: validate every pending step against projected prior outputs, snapshot every named persisted root before source mutation, apply in version order, and exit nonzero without automatic convergence on failure.
+- **`src/state-version.ts`** — Strictly parse the monotonic `stateVersion` for `$GOBLIN_HOME/state/`; only absence means 0 and unsupported/future/corrupt values fail.
+- **`src/sessions/surface-migration.ts`** — Plan and apply bindings/settings/schedule conversion as offline step 1; fail during whole-run preflight on ambiguous evidence.
+- **`scripts/update.sh`** — stop the service before invoking the canonical migration/backup owner and restart only after success.
+- **`src/surface.test.ts`, `src/tg/context-surface.test.ts`, `src/tg/delivery.test.ts`, `src/sessions/surface-migration.test.ts`, `src/migrate.test.ts`, `src/state-version.test.ts`** — Colocated round-trip, normalization, delivery-option, collision, ambiguity, strict-version, projected-chain preflight, backup, and offline-ordering coverage.
 
 ### Deleted files
 

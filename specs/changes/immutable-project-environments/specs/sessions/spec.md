@@ -163,7 +163,21 @@ For a bound Surface, first assignment SHALL synchronously invalidate and quiesce
 
 ### Requirement: Legacy execution environments migrate before dispatch
 
-Startup SHALL idempotently migrate every live, unbound, archived, and internal legacy session before polling or scheduled dispatch. Migration SHALL group bindings by session: a bound session may receive the common effective environment of one or several bound Surfaces only when every candidate is equal; differing candidates MUST fail before writes without choosing by map or lexical order. Unbound sessions SHALL use their recorded legacy Surface when it can be resolved uniquely; internal sessions SHALL receive `personal`. Migration SHALL validate every retained pi-history JSONL header for the session, not only the newest file. It MAY atomically normalize a header only for the explicit personal-workspace relocation or a canonically equivalent path spelling, while preserving every non-header history entry. A header identifying a different Execution Environment, or any other invalid or ambiguous authority, MUST fail before state/history writes for explicit operator repair rather than being relabeled, silently assigned personal, or dropped.
+The canonical offline migration runner SHALL register execution-environment conversion as filesystem step 2, mapping `stateVersion` 1 to 2 after Surface migration step 1. It SHALL run only through explicit `bun run migrate` while Goblin is stopped. In a multi-step run, step 2 SHALL plan against step 1's projected canonical outputs, and every later pending plan SHALL validate before any step is applied. Startup SHALL only reject a version mismatch and name the migration remedy. Pending project-assignment replay SHALL remain separate startup reconciliation over current-version state.
+
+The migration command SHALL be the sole recovery-backup owner. Before source mutation or setup creation, its restorable backup SHALL cover `state/`, `workspace/`, and legacy `scratch/workdir/`, including prior path existence. `scripts/update.sh` SHALL stop Goblin before invoking this boundary, perform no narrower duplicate backup, restart only after success, and leave Goblin stopped on failure. The step SHALL compute and validate its complete settings, workdir-promotion, Conversation-state, and pi-header plan before its first write or rename. It SHALL reject every workdir collision, invalid assigned project root, conflicting or ambiguous Surface authority, malformed history, and incompatible history before mutation rather than deleting settings, selecting a winner, relabeling history, silently assigning personal, or dropping data.
+
+The plan SHALL include every live, unbound, archived, and internal legacy Conversation and SHALL use this authority matrix:
+
+- A Surface setting containing both `projectRoot` and legacy `projectDir` is valid only when both canonicalize to the same project root.
+- An internal legacy Conversation (`chatId === 0`) SHALL select `personal`, MUST NOT be Surface-bound, and MUST NOT carry project evidence.
+- A bound Conversation SHALL gather every bound Surface's effective environment; all candidates and any legacy Conversation `projectDir` MUST agree.
+- An unbound or archived Conversation SHALL gather its legacy state `projectDir` and every Surface setting matching its recorded legacy chat/topic address. Conflicting candidates SHALL fail; no project evidence SHALL select `personal`; malformed or missing routing identity SHALL fail rather than default.
+- A Conversation already carrying canonical `executionEnvironment` SHALL retain it only when every applicable legacy and binding candidate agrees; migration MUST NOT overwrite a canonical disagreement.
+
+Every retained pi-history JSONL header SHALL be validated against the selected environment, not only the newest file. The step MAY normalize a header only for the explicit personal-workspace relocation or a canonically equivalent project path, preserving every non-header entry byte-for-byte.
+
+The migration runner SHALL write version 2 only after the complete step succeeds. On failure it SHALL leave version 1 and require restoration from its backup before retry. The step SHALL use no independent migration marker and SHALL NOT be required to be idempotent, restart-safe, mixed-generation tolerant, or rerunnable after partial writes.
 
 #### Scenario: Bound project history migrates
 
@@ -172,6 +186,28 @@ Startup SHALL idempotently migrate every live, unbound, archived, and internal l
 - **WHEN** migration runs
 - **THEN** the setting and session SHALL store canonical project root `/srv/project-a`
 - **AND** bindings, transcript, memory scope, schedules, and non-header pi history SHALL remain unchanged
+
+#### Scenario: Canonical and legacy setting fields disagree
+
+- **GIVEN** one Surface setting contains canonical `projectRoot` `/srv/project-a` and legacy `projectDir` resolving to `/srv/project-b`
+- **WHEN** step 2 is planned
+- **THEN** migration SHALL fail before mutation with the Surface and both roots
+- **AND** SHALL NOT prefer the canonical field merely because it is newer
+
+#### Scenario: Existing canonical Conversation disagrees with its binding
+
+- **GIVEN** a Conversation already records project environment `/srv/project-a`
+- **AND** its bound Surface resolves to project environment `/srv/project-b`
+- **WHEN** step 2 is planned
+- **THEN** migration SHALL fail before mutation
+- **AND** SHALL NOT overwrite either authority source
+
+#### Scenario: Recorded and bound legacy authority disagree
+
+- **GIVEN** a bound legacy Conversation carries `projectDir` `/srv/project-a`
+- **AND** its bound Surface resolves to project environment `/srv/project-b`
+- **WHEN** step 2 is planned
+- **THEN** migration SHALL fail before mutation and identify both candidates
 
 #### Scenario: Multi-bound legacy history has one common environment
 
@@ -184,7 +220,7 @@ Startup SHALL idempotently migrate every live, unbound, archived, and internal l
 
 - **GIVEN** a legacy session is bound to Surfaces with different effective environments
 - **WHEN** environment migration runs
-- **THEN** startup SHALL fail before state or history writes
+- **THEN** the offline migration command SHALL fail before any step-2 mutation
 - **AND** the diagnostic SHALL identify the session and every candidate Surface/environment
 
 #### Scenario: Unbound legacy history migrates
@@ -199,7 +235,7 @@ Startup SHALL idempotently migrate every live, unbound, archived, and internal l
 - **GIVEN** a migrated session's selected environment is project `/srv/project-a`
 - **AND** its legacy pi header resolves to another Execution Environment because mutable `/project` crossed authority boundaries
 - **WHEN** migration runs
-- **THEN** startup SHALL fail before changing the session state or pi history
+- **THEN** the offline migration command SHALL fail before any step-2 mutation
 - **AND** the diagnostic SHALL identify the session, selected environment, history path, and recorded CWD
 - **AND** the header and every non-header entry SHALL remain unchanged
 
@@ -219,17 +255,34 @@ Startup SHALL idempotently migrate every live, unbound, archived, and internal l
 - **AND** existing regular files from the legacy personal workdir SHALL be moved into the workspace without replacing an existing workspace path
 - **AND** a path collision SHALL fail loudly with both paths rather than discard either file
 
-#### Scenario: Invalid migration blocks startup
+#### Scenario: Invalid migration leaves the old version
 
-- **WHEN** a legacy project path or Surface association is invalid or ambiguous
-- **THEN** startup SHALL fail with the affected record and reason
-- **AND** polling and scheduled dispatch SHALL NOT start
+- **GIVEN** persisted state is at version 1
+- **WHEN** a legacy project path, workdir destination, Surface association, or retained history is invalid or ambiguous
+- **THEN** the offline migration command SHALL fail with the affected record and reason before any step-2 mutation
+- **AND** `stateVersion` SHALL remain 1
+- **AND** a later startup SHALL refuse to poll and name `bun run migrate`
 
-#### Scenario: Migration rerun is idempotent
+#### Scenario: Migration backup covers workdir promotion
 
-- **WHEN** migration reruns after a complete or interrupted attempt
-- **THEN** matching canonical records SHALL remain unchanged
-- **AND** no session, binding, or history branch SHALL be duplicated
+- **GIVEN** step 2 will move an entry from `scratch/workdir` into `workspace`
+- **WHEN** the migration command takes its pre-mutation backup
+- **THEN** that backup SHALL preserve the prior contents and existence of `state/`, `workspace/`, and `scratch/workdir/`
+- **AND** restoring it SHALL remove any destination that did not exist before the attempt
+
+#### Scenario: Successful step advances exactly once
+
+- **GIVEN** persisted state is at version 1 and the complete plan is valid
+- **WHEN** step 2 succeeds
+- **THEN** the runner SHALL write `stateVersion` 2 only after every planned mutation completes
+- **AND** a later migration invocation at version 2 SHALL not invoke step 2 again
+
+#### Scenario: Startup does not migrate legacy environments
+
+- **GIVEN** persisted state remains at version 1
+- **WHEN** Goblin starts normally
+- **THEN** it SHALL refuse to begin polling with the required version and migration remedy
+- **AND** SHALL NOT move workdir entries, rewrite settings, Conversation state, or pi history
 
 ## MODIFIED Requirements
 

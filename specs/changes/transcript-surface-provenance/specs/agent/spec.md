@@ -18,7 +18,7 @@ Every user-visible main-agent transcript write SHALL use the source SurfaceId in
 
 Dreaming SHALL derive promotion scope from event-time transcript source-Surface provenance. Light sleep MUST NOT accept a session-level ActiveScope from the scheduler or runner. It SHALL read provenance-bearing transcript lines through the transcript module, project each validated source Surface through the shared memory scope module, and associate every extraction candidate with its source line range.
 
-REM and deep sleep SHALL aggregate provenance-derived scopes rather than loading Conversation/session state. The accepted highest-origin-count, latest-update, then scope-name ordering SHALL remain. If all relevant source lines are legacy, invalid, internal, or conflicting without a deterministic accepted winner, promotion SHALL fall back to `general` under decision 0025. The internal dreaming model context SHALL remain Surface-free and is never a promotion target.
+REM and deep sleep SHALL aggregate provenance-derived scopes rather than loading Conversation/session state. The accepted highest-origin-count, latest-update, then scope-name ordering SHALL remain. If all relevant source lines are legacy, invalid, or internal, promotion SHALL fall back to `general` under decision 0025. Conflicting proven scopes without an accepted deterministic winner SHALL be quarantined as `ambiguous_source_scope`; they MUST NOT fall back to `general` or a current binding. The internal dreaming model context SHALL remain Surface-free and is never a promotion target.
 
 #### Scenario: Current binding differs from source
 
@@ -31,7 +31,7 @@ REM and deep sleep SHALL aggregate provenance-derived scopes rather than loading
 
 - **WHEN** one extracted candidate's line range contains entries from different proven MemoryScopes and no accepted aggregation winner exists
 - **THEN** the candidate SHALL not be silently assigned to either current Surface
-- **AND** SHALL be quarantined or deterministically handled under the documented aggregation policy
+- **AND** SHALL be quarantined as `ambiguous_source_scope`
 
 #### Scenario: Legacy candidate falls back to general
 

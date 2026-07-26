@@ -145,52 +145,91 @@ The session manager SHALL provide `createForSurface(surface, options?)` and `bin
 
 ### Requirement: Legacy surface state migrates before polling
 
-Startup SHALL migrate legacy `bindings.json` maps, legacy `topic-settings.json` maps, and legacy schedule `locator` records to canonical SurfaceId storage before the scheduler starts or Telegram polling begins. The migration SHALL parse and derive all replacements before its first write, validate every produced surface, replace each JSON file through the existing per-file atomic-write path, and be idempotent across canonical, legacy, or mixed-generation files. A legacy `topics` entry has no default container: migration SHALL require persisted evidence that uniquely and consistently proves `private` or `supergroup` for the same numeric topic, and SHALL fail before writes when evidence is absent or conflicting. It SHALL NOT infer `direct-messages`. A legacy schedule SHALL use explicit legacy container metadata when present and otherwise SHALL be matched by both chat identity and captured session ID against the available bindings. If a topic or schedule cannot be mapped to exactly one surface, startup SHALL fail loudly before writing rather than silently retarget it.
+The filesystem migration module SHALL own one strict monotonic `stateVersion` and an ordered offline plan/apply registry. Only an absent version file SHALL mean version 0. Malformed JSON or schema, unreadable files, negative or non-integer values, and versions newer than the running code MUST fail before backup or persisted-input mutation. Startup SHALL require exact equality with `CURRENT_STATE_VERSION`, refuse to poll on mismatch, and name `bun run migrate` with the service stopped; it SHALL NOT execute filesystem conversion.
+
+Surface conversion SHALL be canonical step 1, mapping version 0 to 1. Before altering any persisted input, the runner SHALL plan every pending step in order, with later planners consuming projected outputs from earlier plans. Any planning failure SHALL leave every step unapplied. The migration command SHALL then snapshot every persisted root named by those plans, preserving prior contents and path absence, before setup creates an optional snapshotted root. It SHALL apply plans in order and write each successor version only after that step succeeds. The command SHALL be the sole owner of the migration recovery backup; an unexpected apply failure requires whole-run backup restoration before retry and SHALL NOT rely on startup, mixed-generation loading, or an independent marker.
+
+Step 1 SHALL parse and derive canonical replacements for legacy `bindings.json`, `topic-settings.json`, and schedule `locator` records before its applier writes. It SHALL validate every produced Surface and replace each JSON file through the existing atomic-write path. A legacy `topics` entry has no default container: planning SHALL require persisted evidence that uniquely and consistently proves `private` or `supergroup` for the same numeric topic, and SHALL fail when evidence is absent or conflicting. It SHALL NOT infer `direct-messages`. A legacy schedule SHALL use explicit legacy container metadata when present and otherwise SHALL be matched by both chat identity and captured Conversation/session ID against available bindings. A topic or schedule that cannot map to exactly one Surface SHALL fail without silently retargeting it.
+
+`scripts/update.sh` SHALL stop Goblin before invoking the canonical migration command, perform no narrower duplicate migration backup, restart only after successful migration, and leave the service stopped when migration fails.
 
 #### Scenario: Legacy bindings migrate without collisions
 
-- **WHEN** `bindings.json` contains legacy `dm`, `topics`, `supergroups`, and `guest` entries
+- **GIVEN** persisted state is at version 0
+- **AND** `bindings.json` contains legacy `dm`, `topics`, `supergroups`, and `guest` entries
+- **WHEN** the offline migration command applies step 1
 - **THEN** each entry SHALL be converted to the corresponding canonical SurfaceId key
 - **AND** every referenced session ID SHALL be preserved
+- **AND** version 1 SHALL be written only after every step-1 output succeeds
 
 #### Scenario: Legacy topic with explicit container evidence migrates
 
 - **GIVEN** a legacy topic binding and its corroborating persisted record identify the same chat, topic, and session as a forum supergroup
-- **WHEN** migration runs
+- **WHEN** step 1 is planned
 - **THEN** the binding SHALL map to `topic:supergroup`
 - **AND** any matching topic setting or schedule SHALL use that same canonical SurfaceId
 
-#### Scenario: Ambiguous legacy topic fails before writes
+#### Scenario: Ambiguous legacy topic fails during preflight
 
 - **GIVEN** a legacy topic binding or setting has no persisted container evidence, or its evidence conflicts
-- **WHEN** migration runs
-- **THEN** startup SHALL fail with the source path, chat ID, topic ID, and candidate canonical SurfaceIds
-- **AND** no migration output SHALL be written
+- **WHEN** the pending migration chain is planned
+- **THEN** planning SHALL fail with the source path, chat ID, topic ID, and candidate canonical SurfaceIds
+- **AND** no pending migration step SHALL be applied
 - **AND** migration SHALL NOT default the topic to `supergroup`
 
 #### Scenario: Legacy settings migrate
 
 - **WHEN** `topic-settings.json` contains legacy DM, topic, and supergroup settings
-- **THEN** each non-empty settings object SHALL be moved under the corresponding SurfaceId
-- **AND** its `projectDir` and pending notice SHALL be unchanged
+- **THEN** each non-empty settings object SHALL be planned under the corresponding SurfaceId
+- **AND** its `projectDir` and pending notice SHALL be unchanged by step 1
 
 #### Scenario: Legacy schedule is inferred from its binding
 
 - **WHEN** a legacy topicless schedule lacks an explicit kind
 - **AND** its chat ID and session ID match exactly one DM, supergroup, or guest binding
-- **THEN** the schedule SHALL be migrated to that binding's SurfaceId without changing its owner, timing, prompt, state, or last-run metadata
+- **THEN** step 1 SHALL plan that binding's SurfaceId without changing the schedule's owner, timing, prompt, state, or last-run metadata
 
-#### Scenario: Ambiguous legacy schedule fails before writes
+#### Scenario: Ambiguous legacy schedule fails during preflight
 
-- **WHEN** a legacy schedule matches zero or multiple candidate surfaces
-- **THEN** startup SHALL fail with a diagnostic identifying the schedule
-- **AND** none of the three migration outputs SHALL be written during that attempt
+- **WHEN** a legacy schedule matches zero or multiple candidate Surfaces
+- **THEN** planning SHALL fail with a diagnostic identifying the schedule and candidates
+- **AND** no pending migration step SHALL be applied
 
-#### Scenario: Interrupted migration is recoverable
+#### Scenario: Later-step failure prevents earlier-step mutation
 
-- **WHEN** the process stops after one canonical file has been atomically replaced but before all files are replaced
-- **THEN** the next startup SHALL accept the mixed-generation inputs and complete the same migration idempotently
-- **AND** no binding, setting, or schedule SHALL be duplicated or retargeted
+- **GIVEN** persisted state is at version 0
+- **AND** Surface step 1 has a valid plan
+- **AND** environment step 2 detects an invalid project authority while consuming step 1's projected output
+- **WHEN** the migration command preflights the pending 0-to-2 chain
+- **THEN** step 1 SHALL NOT be applied
+- **AND** `stateVersion` SHALL remain 0
+- **AND** bindings, settings, schedules, workspace, and legacy workdir SHALL remain unchanged
+
+#### Scenario: Invalid state version fails closed
+
+- **WHEN** `state-version.json` is malformed, unreadable, has the wrong schema, contains a negative or non-integer value, or names a version newer than the running code
+- **THEN** startup and the migration command SHALL fail with the invalid path and value/reason
+- **AND** migration SHALL take no backup and mutate no persisted input
+
+#### Scenario: Missing version alone means legacy version zero
+
+- **WHEN** `state-version.json` is absent
+- **THEN** the migration command SHALL treat persisted state as version 0
+- **AND** no other read or parse failure SHALL receive that fallback
+
+#### Scenario: Backup precedes setup mutation
+
+- **GIVEN** a pending plan names an optional persisted root that does not yet exist
+- **WHEN** the real migration CLI crosses its first mutation boundary
+- **THEN** the recovery snapshot SHALL record that absence before any directory-creation helper runs
+- **AND** restoring the backup SHALL remove paths created by the failed attempt
+
+#### Scenario: Update leaves failed migration offline
+
+- **WHEN** production update reaches filesystem migration
+- **THEN** it SHALL stop Goblin before invoking the canonical backup/migration boundary
+- **AND** a migration failure SHALL leave Goblin stopped
+- **AND** only successful migration SHALL permit restart
 
 ## MODIFIED Requirements
 

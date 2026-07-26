@@ -2,31 +2,39 @@
 
 ## ADDED Requirements
 
-### Requirement: Transcript provenance migration is conservative and restart-safe
+### Requirement: Transcript provenance migration is conservative and offline
 
-Startup SHALL migrate legacy Conversation transcript provenance after canonical Surface identity exists and before provenance-aware indexing or Conversation lifecycle migration runs. It SHALL precompute every candidate rewrite before its first transcript write, validate all existing fields through the transcript module, preserve line order and every existing field, and replace each changed transcript file atomically. Mixed migrated/unmigrated files SHALL be accepted on restart and the migration SHALL converge idempotently.
+The canonical offline migration runner SHALL migrate legacy Conversation transcript provenance as filesystem step 3, after canonical Surface and execution-environment migration and before Conversation lifecycle migration. The transcript step SHALL precompute and validate every candidate rewrite before its first write, validate all existing fields through the transcript module, preserve line order and every existing field, and replace each changed transcript file atomically. `CURRENT_STATE_VERSION` SHALL advance from 2 to 3 only after the step succeeds.
 
-Migration MAY add `sourceSurfaceId` only where persisted historical evidence proves one canonical event source. Conversation creation metadata alone, the current binding alone, shared chat numbers, shared memory scope, and shared Execution Environment SHALL NOT prove event-time provenance. If a whole legacy entry or file cannot be attributed without guessing, provenance SHALL remain absent. Existing valid per-entry provenance SHALL be preserved; invalid provenance SHALL remain non-authoritative and be reported through a bounded migration warning/count rather than rewritten to a guessed Surface.
+The step MAY add `sourceSurfaceId` only where persisted historical evidence proves one canonical event source. Conversation creation metadata alone, the current binding alone, shared chat numbers, shared memory scope, and shared Execution Environment SHALL NOT prove event-time provenance. If a whole legacy entry or file cannot be attributed without guessing, provenance SHALL remain absent. Existing valid per-entry provenance SHALL be preserved; invalid provenance SHALL remain non-authoritative and be reported through a bounded warning/count rather than rewritten to a guessed Surface. Non-`ENOENT` read/write errors and invalid transcript rewrites MUST fail the migration command before `stateVersion` advances.
 
-A migration completion marker SHALL be committed only after all transcript files have been processed successfully. Non-`ENOENT` read/write errors and invalid transcript rewrites MUST fail startup; already completed atomic file replacements SHALL remain safe for the next idempotent attempt.
+The step SHALL run only through `bun run migrate` with the service stopped. It SHALL have no independent completion marker and SHALL NOT be required to accept mixed-generation files, resume after partial writes, or converge idempotently; recovery from failure restores the canonical migration command's backup.
 
 #### Scenario: Explicit historical evidence permits backfill
 
 - **WHEN** persisted historical evidence uniquely identifies the canonical source Surface for a legacy transcript entry
-- **THEN** migration SHALL atomically add that SurfaceId without changing any other field or line position
+- **THEN** the offline step SHALL atomically add that SurfaceId without changing any other field or line position
 
 #### Scenario: Current binding is not history
 
 - **GIVEN** a legacy Conversation is currently bound to Surface Y
 - **AND** its transcript entries have no event-time Surface evidence
-- **WHEN** migration runs
+- **WHEN** the offline step runs
 - **THEN** it SHALL leave `sourceSurfaceId` absent
 - **AND** SHALL not stamp Y across the transcript
 
-#### Scenario: Interrupted migration resumes
+#### Scenario: Version 2 deployment migrates
 
-- **WHEN** startup stops after atomically replacing some transcripts but before recording completion
-- **THEN** the next startup SHALL accept those entries, process the remaining files, and converge without duplicate fields or reordered lines
+- **GIVEN** filesystem `stateVersion` is 2
+- **WHEN** the operator runs `bun run migrate` with the service stopped
+- **THEN** transcript provenance step 3 SHALL run exactly once
+- **AND** `stateVersion` SHALL become 3 only after the step succeeds
+
+#### Scenario: Startup sees pre-provenance state
+
+- **WHEN** Goblin starts before the offline transcript step has advanced filesystem `stateVersion` to 3
+- **THEN** startup SHALL refuse to poll
+- **AND** SHALL direct the operator to run `bun run migrate` with the service stopped
 
 ## MODIFIED Requirements
 

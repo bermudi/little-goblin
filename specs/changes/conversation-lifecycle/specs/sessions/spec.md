@@ -12,6 +12,22 @@ Goblin SHALL use **surface** for a stable Telegram delivery lane, **binding** fo
 - **THEN** it SHALL call that object a conversation
 - **AND** SHALL NOT call the Telegram surface or runtime a session
 
+### Requirement: Export canonical Conversation persistence types
+
+`src/sessions/mod.ts` SHALL export `ConversationId`, `ConversationState`, and the Conversation persistence interfaces used by orchestration. `Surface` and `SurfaceId` SHALL remain exported by the pure shared Surface module. `SessionManager` and `SessionState` MAY remain only as deprecated compatibility exports while callers migrate; obsolete public partial-binding methods MUST NOT remain.
+
+#### Scenario: New caller imports Conversation persistence
+
+- **WHEN** a new domain caller needs Conversation identity or persistence
+- **THEN** it SHALL import canonical Conversation types/interfaces rather than `SessionState` or `ChatLocator`
+- **AND** routing identity SHALL come from the shared Surface module
+
+#### Scenario: Compatibility facade remains bounded
+
+- **WHEN** a legacy caller temporarily imports `SessionManager` or `SessionState`
+- **THEN** the export SHALL be marked as compatibility-only
+- **AND** SHALL expose no operation that can add a second active binding for a Conversation
+
 ### Requirement: Conversation lifecycle is a deep module
 
 The system SHALL expose one conversation-lifecycle interface that owns complete inspect, resolve-or-start, rotate, resume, and archive operations. Every binding-changing operation SHALL use the dependency-provided process-wide lifecycle-transition lock so unbound creation and cross-Surface moves cannot race. Callers SHALL NOT coordinate direct binding-file edits, conversation-record edits, and runtime disposal as separate lifecycle steps.
@@ -42,6 +58,14 @@ The system SHALL expose one conversation-lifecycle interface that owns complete 
 - **WHEN** a caller inspects an unbound surface
 - **THEN** the lifecycle module SHALL report that no conversation is bound
 - **AND** SHALL NOT create a conversation or mutate persistence
+
+#### Scenario: Archive storage move fails after unbinding
+
+- **GIVEN** a Surface is bound to a Conversation whose runtime has quiesced
+- **WHEN** archive atomically clears the binding but moving the Conversation directory fails
+- **THEN** the lifecycle operation SHALL fail loudly
+- **AND** the Conversation SHALL remain unbound, unarchived, and resumable
+- **AND** the invalidated runtime SHALL NOT be restored
 
 ### Requirement: Authorized ordinary messages resolve or start conversations
 
@@ -101,11 +125,11 @@ The lifecycle module SHALL permit a conversation to bind to a destination surfac
 
 ### Requirement: Surface and conversation state have separate owners
 
-Project assignment, model and thinking preferences, the prerequisite-defined skill policy, schedules, heartbeat enablement/interval, and the surface-specific heartbeat prompt SHALL be owned by `SurfaceId`. The current bound Surface SHALL be the sole routing input to the active memory-context projection; that projection is not a second persisted Surface setting and MUST NOT derive from Conversation creation metadata. Conversation ID, name, creation time, transcript, events, metrics, pi history, and immutable execution environment SHALL be owned by the Conversation. Rotating or resuming a Conversation MUST NOT copy, clear, disable, or duplicate Surface-owned state.
+Project assignment, model and thinking preferences, schedules, heartbeat enablement/interval, and the surface-specific heartbeat prompt SHALL be owned by `SurfaceId`. The current bound Surface SHALL be the sole routing input to the active memory-context projection; that projection is not a second persisted Surface setting and MUST NOT derive from Conversation creation metadata. Conversation ID, name, creation time, transcript, events, metrics, pi history, and immutable execution environment SHALL be owned by the Conversation. Rotating or resuming a Conversation MUST NOT copy, clear, disable, or duplicate Surface-owned state. Skill policy ownership is outside this change and remains defined by `surface-skill-policy`.
 
 #### Scenario: Rotate preserves surface state
 
-- **GIVEN** a Surface has project assignment, model and thinking preferences, skill policy, enabled schedules, heartbeat configuration, and a memory context projected from its identity
+- **GIVEN** a Surface has project assignment, model and thinking preferences, enabled schedules, heartbeat configuration, and a memory context projected from its identity
 - **WHEN** the surface rotates to a fresh conversation
 - **THEN** all of those surface-owned values SHALL remain attached to the same `SurfaceId`
 - **AND** the fresh conversation SHALL retain only its own conversation state
@@ -143,13 +167,19 @@ A surface-specific heartbeat prompt SHALL live at `$GOBLIN_HOME/state/surfaces/<
 
 ### Requirement: Persist conversation records atomically in the legacy layout
 
-Conversation state SHALL continue to live under `state/sessions/<conversationId>/` and SHALL be written atomically through the JSON state-file module. The stored conversation record MUST NOT use creation-time Telegram chat or topic fields as current routing state.
+Conversation state SHALL continue to live under `state/sessions/<conversationId>/` and SHALL be loaded and written through the JSON state-file module. Writes SHALL use atomic sibling-temp replacement; a missing `state.json` SHALL load as `null` so the Conversation is treated as missing. The stored conversation record MUST NOT use creation-time Telegram chat or topic fields as current routing state.
 
 #### Scenario: Conversation record is saved
 
 - **WHEN** conversation metadata is updated
-- **THEN** `state/sessions/<conversationId>/state.json` SHALL be replaced atomically
+- **THEN** `state/sessions/<conversationId>/state.json` SHALL be replaced atomically through the state-file module
 - **AND** current routing SHALL be discoverable from bindings rather than `chatId` or `topicId` in that record
+
+#### Scenario: Conversation record is missing
+
+- **WHEN** the state-file module loads a Conversation whose `state.json` does not exist
+- **THEN** it SHALL return `null`
+- **AND** SHALL NOT manufacture default Conversation state
 
 ### Requirement: Create conversation filesystem layout
 
@@ -162,7 +192,7 @@ Creating a conversation SHALL create `state/sessions/<conversationId>/`, its pi-
 
 ### Requirement: List resumable conversations by environment
 
-The lifecycle module SHALL list non-archived conversations, including unbound conversations, sorted by creation time. A destination-aware listing SHALL include only conversations compatible with that surface's effective execution environment; internal conversations and `state/sessions/archive/` SHALL be excluded.
+The lifecycle module SHALL list non-archived conversations, including unbound conversations, sorted by creation time ascending (oldest first). A destination-aware listing SHALL include only conversations compatible with that surface's effective execution environment; internal conversations and `state/sessions/archive/` SHALL be excluded.
 
 #### Scenario: Destination-aware list
 
@@ -175,6 +205,27 @@ The lifecycle module SHALL list non-archived conversations, including unbound co
 - **WHEN** the legacy `state/sessions/` directory is absent
 - **THEN** listing SHALL return an empty array without throwing
 
+### Requirement: Persist Conversation names
+
+The Conversation store SHALL set or clear an existing Conversation's optional name and persist the updated canonical record atomically. The legacy `title` field MAY remain as a compatibility storage name, but callers and user-visible behavior SHALL call it a Conversation name. Updating a missing Conversation MUST fail loudly.
+
+#### Scenario: Conversation name is set
+
+- **WHEN** the store sets Conversation `abc123def0`'s name to `memory refactor`
+- **THEN** its canonical `state.json` SHALL persist that name atomically
+- **AND** loading the Conversation SHALL return `memory refactor`
+
+#### Scenario: Conversation name is cleared
+
+- **WHEN** the store clears an existing Conversation's name
+- **THEN** loading it SHALL return no name
+- **AND** all other canonical Conversation fields SHALL remain unchanged
+
+#### Scenario: Missing Conversation name update
+
+- **WHEN** a caller tries to set or clear the name of a missing Conversation
+- **THEN** the store SHALL throw `conversation not found`
+
 ### Requirement: Persist surface conversation preferences
 
 The system SHALL persist optional model and thinking preferences in the surface-settings record keyed by canonical `SurfaceId`, using the dependency-provided atomic surface-settings storage. Updating either preference SHALL affect the current and future conversations on that surface without rewriting conversation state.
@@ -185,77 +236,41 @@ The system SHALL persist optional model and thinking preferences in the surface-
 - **THEN** the surface-settings record SHALL retain the preference
 - **AND** the next runtime on that surface SHALL use it
 
-### Requirement: Migrate legacy lifecycle state idempotently
+### Requirement: Migrate legacy lifecycle state offline
 
-Startup SHALL idempotently migrate legacy conversation records, bindings, model/thinking preferences, schedules, heartbeat records, and surface heartbeat prompt files to the split ownership model without deleting conversation history. Migration SHALL detect a conversation referenced by multiple surface bindings before its first lifecycle-migration write and fail with the conversation ID plus every candidate SurfaceId so the operator can choose the retained binding explicitly. Expected missing files may be skipped; invalid data and non-`ENOENT` filesystem errors MUST fail loudly.
+The canonical offline migration runner SHALL include lifecycle filesystem step 4, after transcript-provenance step 3, to convert legacy conversation records, bindings, model/thinking preferences, schedules, heartbeat records, and surface heartbeat prompt files to the split ownership model without deleting conversation history. The step SHALL compute and validate its complete transformation before its first write, then atomically replace each target file. It SHALL detect a conversation referenced by multiple surface bindings and fail with the conversation ID plus every candidate SurfaceId so the operator can choose the retained binding explicitly. Expected missing files may be skipped; invalid data and non-`ENOENT` filesystem errors MUST fail loudly. `CURRENT_STATE_VERSION` SHALL advance from 3 to 4 only after success. Startup MUST NOT invoke the step and SHALL rely on the canonical state-version gate.
 
 #### Scenario: Legacy conversation has several bindings
 
 - **GIVEN** one legacy conversation is referenced by several migrated surface bindings
-- **WHEN** migration computes its output
-- **THEN** startup SHALL fail before writing lifecycle-migration outputs
+- **WHEN** the offline lifecycle migration step computes its output
+- **THEN** it SHALL fail before writing any lifecycle-step output
 - **AND** the diagnostic SHALL identify the conversation and every candidate SurfaceId
 - **AND** no binding SHALL be selected by lexical order, map order, or guessed recency
 - **AND** the conversation directory and binding file SHALL remain unchanged
 
-#### Scenario: Migration restarts after partial completion
+#### Scenario: Offline lifecycle migration succeeds
 
-- **WHEN** startup reruns migration after some target files were already written
-- **THEN** migration SHALL converge on the same state without duplicating schedules, losing settings, or deleting history
+- **GIVEN** the service is stopped and the canonical migration command has backed up state
+- **WHEN** the lifecycle step validates unambiguous legacy state and writes every computed output
+- **THEN** conversation history SHALL remain present
+- **AND** bindings, preferences, schedules, heartbeat records, and heartbeat prompt files SHALL have their canonical owners
+- **AND** the canonical runner SHALL advance `stateVersion` only after the step succeeds
 
-## MODIFIED Requirements
+#### Scenario: Version 3 deployment migrates
 
-### Requirement: Resolve sessions from complete Surface values
+- **GIVEN** filesystem `stateVersion` is 3
+- **WHEN** the operator runs `bun run migrate` with the service stopped
+- **THEN** lifecycle step 4 SHALL run exactly once
+- **AND** `stateVersion` SHALL become 4 only after the step succeeds
 
-The compatibility session manager and the conversation lifecycle SHALL accept complete Surface values. Non-creating inspection SHALL return the current bound conversation or `null`. The authorized ordinary-message path SHALL use `resolveOrStart(surface)` and lazily create a conversation for every supported unbound ordinary Surface, including DMs. Commands, scheduler ticks, internal jobs, and proactive delivery MUST use inspection and MUST NOT trigger creation.
+#### Scenario: Startup sees the old state version
 
-#### Scenario: Authorized DM content starts history
+- **WHEN** Goblin starts before the lifecycle migration step has advanced `stateVersion` to 4
+- **THEN** startup SHALL refuse to poll
+- **AND** SHALL direct the operator to run `bun run migrate` with the service stopped
 
-- **WHEN** authorized ordinary content arrives on an unbound DM Surface
-- **THEN** `resolveOrStart()` SHALL create and bind a compatible conversation
-
-#### Scenario: Inspection is non-creating
-
-- **WHEN** a command or scheduler inspects an unbound auto-creating Surface
-- **THEN** it SHALL receive `null`
-- **AND** no files or bindings SHALL be written
-
-### Requirement: Surface-based creation and rebinding preserve conversation identity
-
-Conversation creation SHALL capture the Surface's effective execution environment. Resuming an existing conversation SHALL go through the lifecycle module, require environment compatibility, clear every previous binding for the target, displace but preserve the destination's prior conversation, and commit the move with one atomic binding write. The old public operation that can add another binding without clearing the first MUST NOT remain available to callers.
-
-#### Scenario: Compatible resume moves instead of shares
-
-- **GIVEN** conversation A is bound to Surface X
-- **WHEN** A is resumed on compatible Surface Y
-- **THEN** the resulting binding map SHALL bind A only to Y
-- **AND** X SHALL be unbound
-
-#### Scenario: Incompatible resume is unchanged
-
-- **WHEN** a conversation and destination Surface have different environments
-- **THEN** no binding SHALL change
-
-### Requirement: Persist bindings atomically
-
-The system SHALL persist one canonical `SurfaceId -> conversationId` binding map using atomic replacement. Binding mutation helpers SHALL preserve the one-active-binding-per-conversation invariant and SHALL never infer surface kind from numeric identifiers.
-
-#### Scenario: Binding move is saved
-
-- **WHEN** a conversation moves between surfaces
-- **THEN** removal of the old binding, displacement at the destination, and creation of the new binding SHALL be represented by one atomic write
-
-### Requirement: Persist scheduled turn definitions
-
-The system SHALL persist scheduled turn definitions outside conversation directories using atomic writes. Each record SHALL be owned by a canonical surface and contain its id, surface identity, kind, state, next run timestamp, recurrence and provenance metadata, plus prompt text where applicable; it MUST NOT capture a conversation ID as its durable owner. Heartbeat records SHALL store no prompt body because the surface-specific/global fallback is resolved at dispatch time.
-
-#### Scenario: Schedule is created
-
-- **WHEN** a user or agent creates a schedule from a bound surface
-- **THEN** the record SHALL contain that `SurfaceId`
-- **AND** SHALL NOT contain the current conversation ID as its owner
-
-### Requirement: Scheduled turns stay bound to their captured session surface
+### Requirement: Scheduled turns stay bound to their captured Surface
 
 A scheduled occurrence SHALL address its captured surface and resolve that surface's current binding non-mutatively at dispatch time. If the surface is unbound, the occurrence SHALL remain pending and enabled, SHALL NOT create a conversation, and SHALL be eligible on a later tick. If a conversation is bound, the scheduler SHALL dispatch through that conversation's current runtime without comparing against a creation-time conversation ID.
 
@@ -270,7 +285,7 @@ A scheduled occurrence SHALL address its captured surface and resolve that surfa
 - **THEN** the scheduler SHALL leave the occurrence due and enabled
 - **AND** SHALL NOT create a conversation or disable the schedule
 
-### Requirement: Heartbeat schedule is explicit and session-scoped
+### Requirement: Heartbeat schedule is explicit and Surface-owned
 
 Heartbeat SHALL be an explicit, disabled-by-default, surface-owned schedule with a 30-minute default interval. Its prompt SHALL be resolved at dispatch time from the surface-specific heartbeat prompt, then `$GOBLIN_HOME/workspace/HEARTBEAT.md`, then the system constant; first non-whitespace content wins, trailing whitespace is stripped, leading whitespace is preserved, and the dispatched prompt begins with exactly one `[heartbeat]` marker. Non-`ENOENT` read errors MUST propagate and prevent that occurrence from dispatching. Rotating, resuming, archiving, or temporarily unbinding a conversation SHALL NOT disable or transfer the heartbeat.
 
@@ -292,6 +307,27 @@ Heartbeat SHALL be an explicit, disabled-by-default, surface-owned schedule with
 - **THEN** that text SHALL be used without consulting the global file
 - **AND** the prompt SHALL begin with exactly one `[heartbeat]` marker
 
+## MODIFIED Requirements
+
+### Requirement: Persist bindings atomically
+
+The system SHALL persist one canonical `SurfaceId -> conversationId` binding map using atomic replacement. Binding mutation helpers SHALL preserve the one-active-binding-per-conversation invariant and SHALL never infer surface kind from numeric identifiers.
+
+#### Scenario: Binding move is saved
+
+- **WHEN** a conversation moves between surfaces
+- **THEN** removal of the old binding, displacement at the destination, and creation of the new binding SHALL be represented by one atomic write
+
+### Requirement: Persist scheduled turn definitions
+
+The system SHALL persist scheduled turn definitions outside conversation directories using atomic writes. Each record SHALL be owned by a canonical surface and contain its id, surface identity, kind, state, next run timestamp, recurrence and provenance metadata, plus prompt text where applicable; it MUST NOT capture a conversation ID as its durable owner. Heartbeat records SHALL store no prompt body because the surface-specific/global fallback is resolved at dispatch time.
+
+#### Scenario: Schedule is created
+
+- **WHEN** a user or agent creates a schedule from a bound surface
+- **THEN** the record SHALL contain that `SurfaceId`
+- **AND** SHALL NOT contain the current conversation ID as its owner
+
 ### Requirement: Topic settings file
 
 The dependency-provided surface-settings store SHALL remain the atomic persistence module for per-surface execution assignment and pending notices, and SHALL additionally hold model and thinking preferences keyed by canonical `SurfaceId`. Missing or malformed JSON SHALL use the established default-and-warning policy; non-`ENOENT`, non-syntax errors MUST propagate.
@@ -302,6 +338,20 @@ The dependency-provided surface-settings store SHALL remain the atomic persisten
 - **THEN** project assignment, model preference, thinking preference, and pending notices SHALL resolve from the same canonical `SurfaceId` slot
 
 ## REMOVED Requirements
+
+### Requirement: Resolve sessions from complete Surface values
+
+### Requirement: Surface-based creation and rebinding preserve conversation identity
+
+### Requirement: Peek binding is complete and non-mutating
+
+### Requirement: Export session types and manager
+
+### Requirement: Persist session state atomically
+
+### Requirement: Scheduled turns stay bound to their captured session surface
+
+### Requirement: Heartbeat schedule is explicit and session-scoped
 
 ### Requirement: Generate short session IDs
 

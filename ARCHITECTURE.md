@@ -189,7 +189,7 @@ Conversation
 
 Destination Surface
   ├── model + thinking preference
-  ├── skill profile (OPEN)
+  ├── Surface SkillPolicy (TARGET — later skill-policy train)
   ├── Surface-derived memory context captured for this runtime
   ├── schedule authority
   └── Telegram delivery/tool closures
@@ -373,9 +373,11 @@ Target startup is fail-before-polling:
 8. construct modules and start scheduler;
 9. synchronize Telegram commands and begin polling.
 
-Migrations compute and validate every transformation before the first write, use atomic replacement per file, and fail loudly on ambiguity without selecting a winner. They are *not* required to be idempotent, restart-safe, or mixed-generation tolerant; recovery from a failed migration is restoration from backup.
+Migrations compute and validate every transformation before the first write, use atomic replacement per file, and fail loudly on ambiguity without selecting a winner. They are *not* required to be idempotent, restart-safe, or mixed-generation tolerant; recovery from a failed migration is restoration from backup. The command's backup boundary covers every persisted root a pending step may mutate, not merely `state/` when a step also moves `workspace/` or legacy `scratch/` data.
 
-Five remaining changes currently specify their own restart-safe startup migration and need a patch stripping that language before they are built: `immutable-project-environments`, `pi-native-skill-layout`, `conversation-lifecycle`, `transcript-surface-provenance`, and `delegated-work-ownership`.
+The accepted filesystem sequence is Surface identity (step 1), immutable Execution Environments (step 2), transcript Surface provenance (step 3), then Conversation lifecycle ownership (step 4). Environment step 2 includes personal-workdir promotion and advances the version only after the complete transformation succeeds.
+
+Two remaining changes still specify their own restart-safe startup migration and need a patch stripping that language before they are built: `pi-native-skill-layout` and `delegated-work-ownership`. `immutable-project-environments`, `transcript-surface-provenance`, and `conversation-lifecycle` now specify offline steps in the canonical migration runner.
 
 ## Current-to-target repair map
 
@@ -409,10 +411,10 @@ The litespec planning guardrail (*"if your proposal touches more than 3 capabili
 ### Hard edges only
 
 ```text
-telegram-surface-identity ─┬─► immutable-project-environments ─┬─► conversation-lifecycle
-                           │                                   ├─► personal-attachment-intake
-                           │                                   └─► skill-catalog-resolution
-                           ├─► surface-derived-memory-context ─► transcript-surface-provenance
+telegram-surface-identity ─┬─► immutable-project-environments ─────────────┬─► conversation-lifecycle
+                           │                                               ├─► personal-attachment-intake
+                           │                                               └─► skill-catalog-resolution
+                           ├─► surface-derived-memory-context ─► transcript-surface-provenance ─► conversation-lifecycle
                            └─► surface-skill-policy
 
 pi-native-skill-layout ─► skill-catalog-resolution ─► surface-skill-policy ─► subagent-skill-inheritance
@@ -421,7 +423,7 @@ conversation-lifecycle ─┬─► inner-life ─► visible-dreaming rewrite
                         └─► delegated-work-ownership ◄─ immutable-project-environments, ACP boundary
 ```
 
-`conversation-lifecycle` has exactly two hard prerequisites, not six. None of its 45 tasks reference memory context, transcript provenance, or attachment destination, and it references skill policy only passively.
+`conversation-lifecycle` has four hard prerequisites. Runtime assembly consumes the captured-memory interface from `surface-derived-memory-context`, and user-visible transcript writes consume the writer-context interface from `transcript-surface-provenance`; implementing movement before those interfaces means writing unsafe or throwaway adapters. Attachment intake remains a soft edge. Skill policy is handled by its later train and is not a lifecycle contract.
 
 ### Soft edges (sequencing, not blocking)
 
@@ -429,11 +431,8 @@ conversation-lifecycle ─┬─► inner-life ─► visible-dreaming rewrite
 |---|---|---|
 | `immutable-project-environments` → `pi-native-skill-layout` | Referenced as a path string only; no task consumes its helpers | None; `skill-catalog-resolution` owns the real coupling |
 | `conversation-lifecycle` → `personal-attachment-intake` | Non-Goals deferral; lifecycle only preserves the stale-runtime guard | None |
-| `conversation-lifecycle` → `surface-skill-policy` | One passive task clause: "preserve the prerequisite-defined destination skill policy" | Runtime assembly carries no skill policy field until the skill train lands |
-| `conversation-lifecycle` → `surface-derived-memory-context` | **Correctness sequencing.** No task consumes it | Cross-Surface `/resume` moves a Conversation whose memory scope still derives from legacy session metadata |
-| `conversation-lifecycle` → `transcript-surface-provenance` | **Correctness sequencing.** No task consumes it | A moved Conversation's prior transcript entries keep file-level chat attribution and can be indexed or dream-promoted into the wrong topic |
 
-The last two are the only ones with teeth. `conversation-lifecycle` may therefore land before them **provided cross-Surface `/resume` is restricted to same-Surface reactivation until both have landed.** Same-Surface `/resume` is the `pi -r` behavior the operator actually asked for; cross-Surface movement is the part that needs provenance. Enforce this restriction in the change, do not leave it to discipline.
+A temporary "same-Surface resume" mode was rejected because canonical unbound Conversations intentionally persist no previous-Surface authority. Enforcing it would require a second historical-binding store that the target model does not otherwise need. Memory capture and transcript provenance are therefore prerequisites, not runtime feature flags.
 
 ## Implementation train
 
@@ -441,13 +440,13 @@ One ordered sequence, walked end to end. The unit of specification is a litespec
 
 | # | Change | Tasks | Value delivered |
 |--:|---|--:|---|
-| 1 | `telegram-surface-identity` | 32 | None user-visible. Unblocks everything; removes chat-ID-sign inference |
+| 1 | `telegram-surface-identity` | 33 | None user-visible. Unblocks everything; removes chat-ID-sign inference |
 | 2 | `immutable-project-environments` | 24 | `/project` becomes set-once; personal CWD moves to `workspace/`; `scratch/workdir` dies |
 | 3 | `personal-attachment-intake` | patch | **First user-visible fix**: captioned uploads stop being silently discarded |
 | 3b | `agent-owned-prompt-files` | — | Decision 0039: canon amendment, prompt-file write notice, subagent bootstrap filter. Not yet specced |
-| 4 | `conversation-lifecycle` | 45 | Surface/Binding/Conversation split; stale-runner and multi-binding bugs fixed. Same-Surface `/resume` only |
-| 5 | `surface-derived-memory-context` | 27 | Memory scope derives from Surface, not session metadata |
-| 6 | `transcript-surface-provenance` | 29 | Event-time provenance; **unlocks cross-Surface `/resume`** |
+| 4 | `surface-derived-memory-context` | 27 | Memory scope derives from Surface, not session metadata |
+| 5 | `transcript-surface-provenance` | 29 | Event-time provenance for history that may move |
+| 6 | `conversation-lifecycle` | 48 | Surface/Binding/Conversation split; stale-runner and multi-binding bugs fixed; compatible cross-Surface `/resume` |
 | 7 | `pi-native-skill-layout` | 9 | `workspace/skills/` → `.agents/skills/` |
 | 8 | `skill-catalog-resolution` | 16 | Explicit catalog roots; `skillSources` switch dies |
 | 9 | `surface-skill-policy` | 16 | Per-Surface `/skills` selection |
@@ -456,7 +455,7 @@ One ordered sequence, walked end to end. The unit of specification is a litespec
 | 12 | `delegated-work-ownership` | 36 | Attached vs durable work; origin-Surface delivery |
 | 13 | `visible-dreaming` | — | Rewrite against `inner-life`; must not be built from its placeholder |
 
-Steps 1–2 are behavior-preserving refactors with no user-visible payoff; step 3 is deliberately placed immediately after them so the train produces something the operator can feel before step 4's 45 tasks. Steps 7–9 may be walked in parallel with 5–6 by a second worker; nothing else may.
+Step 1 is a routing-identity refactor. Step 2 is an authority repair with deliberate user-visible changes: `/project` becomes set-once, project assignment starts fresh compatible history, and personal CWD moves to persistent `workspace/`. Step 3 follows immediately as the first direct UX bug fix, stopping captioned uploads from disappearing. Steps 7–9 may be walked in parallel with 4–6 by a second worker; nothing else may.
 
 **WIP limit: one change in progress, one fully specced next.** Everything beyond position 2 in the train stays a paragraph in `specs/backlog.md` until its predecessor lands. Discovery has outpaced closure since 2026-07-22; the only thing that closes the gap is building.
 
@@ -464,12 +463,11 @@ Storage-layout cleanup and workspace write authority cross this chain and must d
 
 ### Overlapping requirement targets
 
-`litespec validate --changes` currently reports two changes editing the same canonical requirement:
+`litespec validate --changes` currently reports one pair of changes editing the same canonical requirement:
 
 - `immutable-project-environments` and `surface-skill-policy` both target *"Surface settings are keyed by SurfaceId"* (`sessions`)
-- `delegated-work-ownership` and `surface-derived-memory-context` both target *"Subagent revival loads persisted session"* (`subagents`)
 
-These are merge conflicts waiting to happen. Whichever lands first wins; the second must be re-based against the new canon before it is built, not after.
+This is a merge conflict waiting to happen. Whichever lands first wins; the second must be re-based against the new canon before it is built, not after.
 
 ## Feature readiness gate
 

@@ -97,6 +97,51 @@ A claimed completion SHALL become delivered only after current-runtime dispatch 
 - **THEN** at most one interaction SHALL receive that completion claim
 - **AND** the other SHALL proceed without a duplicate injection
 
+### Requirement: External-agent runs follow Goblin Conversation lifecycle
+
+The composition root SHALL construct one shared external-agent runner and register its adapter with `DelegatedWorkHost`. Newly started ACP runs SHALL be durable under code-owned policy. Conversation runtime disposal caused by `/new`, `/resume`, `/archive`, `/project`, or rebinding SHALL detach those runs from stale runtime callbacks without cancelling them. Existing migrated non-terminal external runs SHALL remain attached and SHALL be destructively quiesced when their recorded compatibility runtime is invalidated.
+
+Explicit user interrupt/cancel for the owning Conversation SHALL call `cancelByConversation(ownerConversationId)` and remain destructive for both lifetimes. Startup SHALL initialize and reconcile the shared external runner after preflight and before polling or any new external start; a non-terminal ACP record lacking valid clean-detach proof SHALL block that boundary under the accepted ACP boot-id and cleanup rules.
+
+Graceful process shutdown SHALL stop the scheduler first, invoke and await the external runner's detach-aware `shutdown()`, then attempt pi-subagent disposal, main-runner disposal, and Telegram shutdown. Resumable ACP work survives only after clean local teardown proof, while non-resume-eligible work becomes interrupted after cleanup. External startup/shutdown failures SHALL be logged with bounded run identifiers and without ACP session IDs, tasks, output, or environment values; an external shutdown failure MUST NOT skip the remaining independent shutdown steps. Conversation-lifecycle durability MUST NOT bypass ACP deadline, stopping, cleanup, boot-id, fingerprint, or resume-eligibility rules.
+
+#### Scenario: Startup reconciles before polling
+
+- **WHEN** Goblin starts with persisted non-terminal external-agent records
+- **THEN** the shared runner SHALL reconcile them after preflight and before Telegram polling or new external starts
+- **AND** unresolved same-boot hard-crash uncertainty SHALL block that boundary with a bounded diagnostic
+
+#### Scenario: Graceful shutdown preserves accepted ordering
+
+- **WHEN** Goblin receives SIGINT or SIGTERM
+- **THEN** it SHALL stop the scheduler before awaiting detach-aware external shutdown
+- **AND** SHALL then attempt pi-subagent disposal, main-runner disposal, and Telegram shutdown
+
+#### Scenario: External shutdown failure does not skip cleanup
+
+- **WHEN** external-runner shutdown fails
+- **THEN** Goblin SHALL log the failure without task, output, ACP session ID, or environment values
+- **AND** SHALL still attempt every remaining independent shutdown step
+
+#### Scenario: New ACP run survives Conversation rotation
+
+- **WHEN** a newly started durable ACP run is active and its owner Conversation rotates, moves, archives, or changes through `/project`
+- **THEN** runtime invalidation SHALL NOT call destructive ACP cancellation for that run
+- **AND** the run SHALL keep its original owner, origin Surface, and Execution Environment
+
+#### Scenario: Explicit Conversation cancellation is destructive
+
+- **WHEN** the user explicitly cancels delegated work for the owning Conversation
+- **THEN** durable ACP prompts, ACP sessions when appropriate, terminals, and server processes SHALL receive the existing destructive cleanup
+- **AND** a cancelled resumable run SHALL NOT be resumed on startup
+
+#### Scenario: Conversation durability does not imply process resumability
+
+- **GIVEN** a durable ACP run uses a server definition that is not resume-eligible
+- **WHEN** Goblin shuts down
+- **THEN** the run SHALL follow ACP's non-resumable interruption and cleanup contract
+- **AND** its durable Conversation lifetime SHALL NOT cause task replay or invented resume support
+
 ## MODIFIED Requirements
 
 ### Requirement: Runtime disposal precedes binding movement
@@ -133,7 +178,7 @@ Runtime invalidation SHALL detach durable work from stale status callbacks, turn
 - **THEN** it SHALL invalidate both runtimes and quiesce each attached tree before the atomic binding write
 - **AND** durable runs from either runtime SHALL remain owned by their original Conversations and origin Surfaces
 
-### Requirement: Disposing a session runner cancels its subagents
+### Requirement: Disposing a Conversation runtime cancels compatibility-owned delegated work
 
 Disposing a Conversation runtime SHALL synchronously invalidate its runner and queue identity, dispose the main `AgentRunner`, and delegate all work cleanup to `DelegatedWorkHost.invalidateRuntime(runtimeId)`. Current generic and named subagent invocations SHALL be classified as attached and therefore cancelled recursively. New durable ACP runs SHALL be detached rather than cancelled. `cancelPending` SHALL continue to cancel only queued prompt work and MUST NOT invalidate delegated work while the runtime remains current.
 
@@ -157,27 +202,6 @@ The legacy `cancelBySession()` cascade methods MUST NOT remain the Conversation-
 - **WHEN** `cancelPending` removes a queued prompt while its Conversation runtime remains valid
 - **THEN** attached and durable delegated work SHALL continue unchanged
 
+## REMOVED Requirements
+
 ### Requirement: External-agent runs follow Goblin session lifecycle
-
-The composition root SHALL construct one shared external-agent runner and register its adapter with `DelegatedWorkHost`. Newly started ACP runs SHALL be durable under code-owned policy. Conversation runtime disposal caused by `/new`, `/resume`, `/archive`, `/project`, or rebinding SHALL detach those runs from stale runtime callbacks without cancelling them. Existing migrated non-terminal external runs SHALL remain attached and SHALL be destructively quiesced when their recorded compatibility runtime is invalidated.
-
-Explicit user interrupt/cancel for the owning Conversation SHALL call `cancelByConversation(ownerConversationId)` and remain destructive for both lifetimes. Graceful process shutdown SHALL continue to use ACP's detach-aware shutdown contract: resumable ACP work survives only after clean local teardown proof, while non-resume-eligible work becomes interrupted after cleanup. Conversation-lifecycle durability MUST NOT bypass ACP deadline, stopping, cleanup, boot-id, fingerprint, or resume-eligibility rules.
-
-#### Scenario: New ACP run survives Conversation rotation
-
-- **WHEN** a newly started durable ACP run is active and its owner Conversation rotates, moves, archives, or changes through `/project`
-- **THEN** runtime invalidation SHALL NOT call destructive ACP cancellation for that run
-- **AND** the run SHALL keep its original owner, origin Surface, and Execution Environment
-
-#### Scenario: Explicit Conversation cancellation is destructive
-
-- **WHEN** the user explicitly cancels delegated work for the owning Conversation
-- **THEN** durable ACP prompts, ACP sessions when appropriate, terminals, and server processes SHALL receive the existing destructive cleanup
-- **AND** a cancelled resumable run SHALL NOT be resumed on startup
-
-#### Scenario: Conversation durability does not imply process resumability
-
-- **GIVEN** a durable ACP run uses a server definition that is not resume-eligible
-- **WHEN** Goblin shuts down
-- **THEN** the run SHALL follow ACP's non-resumable interruption and cleanup contract
-- **AND** its durable Conversation lifetime SHALL NOT cause task replay or invented resume support

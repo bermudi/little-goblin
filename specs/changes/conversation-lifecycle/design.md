@@ -4,7 +4,7 @@
 
 ### Lifetimes become explicit
 
-The dependency changes provide complete `Surface` identity, Surface-derived captured memory context, event-time transcript Surface provenance, immutable `ExecutionEnvironment`, and environment-derived attachment storage for personal as well as project Conversations. This change stops using one `SessionState` as all three:
+The hard dependency changes provide complete `Surface` identity, Surface-derived captured memory context, event-time transcript Surface provenance, and immutable `ExecutionEnvironment`. This change stops using one `SessionState` as all three:
 
 ```text
 Surface (Telegram lane)
@@ -40,7 +40,7 @@ This seam belongs in orchestration because complete transitions span filesystem 
 
 - `ConversationStore`: create/load/list/archive/update-name under legacy session paths;
 - `BindingStore`: one atomic SurfaceId-to-ConversationId map from the Surface dependency;
-- `SurfaceSettings`: execution assignment plus model/thinking and prerequisite-defined skill policy;
+- `SurfaceSettings`: execution assignment plus model/thinking preferences;
 - `ConversationRuntimeHost`: invalidate/quiesce a runtime by ConversationId.
 
 `SessionManager` remains as a compatibility facade while call sites move; it delegates persistence behavior rather than remaining the public lifecycle interface. Commands and Telegram intake never edit bindings or coordinate runner side effects themselves.
@@ -49,9 +49,9 @@ Transition ordering is deliberately runtime-first, binding-second:
 
 - **rotate:** invalidate/quiesce old P; only after quiescence succeeds create fresh compatible Conversation Q; atomically bind Surface to Q; P remains unbound.
 - **resume:** validate target/environment without effects; identify target's source Surface and destination's displaced Conversation; invalidate/quiesce both runtimes; atomically remove every target binding and bind target at destination; displaced history remains unbound.
-- **archive:** invalidate/quiesce current runtime; archive its directory; atomically clear binding. Surface settings/automation remain.
+- **archive:** invalidate/quiesce current runtime; atomically clear its binding; then archive its directory. Surface settings/automation remain.
 
-If rotate quiescence fails, no fresh Conversation is created and the binding remains unchanged. Runtime identity is invalidated synchronously before asynchronous cleanup, so stale queued work cannot regain authority; a later retry may construct a fresh runtime for the still-bound Conversation. If Q is created after successful quiescence but the atomic binding replacement fails, P remains bound and Q may remain as an unbound resumable Conversation; the operation logs that boundary and never deletes history to fake rollback.
+If rotate quiescence fails, no fresh Conversation is created and the binding remains unchanged. Runtime identity is invalidated synchronously before asynchronous cleanup, so stale queued work cannot regain authority; a later retry may construct a fresh runtime for the still-bound Conversation. If Q is created after successful quiescence but the atomic binding replacement fails, P remains bound and Q may remain as an unbound resumable Conversation; the operation logs that boundary and never deletes history to fake rollback. If the archive directory move fails after the binding is cleared, the Conversation remains unbound, unarchived, and resumable; the operation fails loudly and never restores the invalidated runtime.
 
 ### User content creates; inspection does not
 
@@ -83,7 +83,6 @@ The canonical owners are:
 | Surface kind and Telegram address | Surface |
 | project assignment | Surface |
 | model and thinking preference | Surface |
-| skill source selection policy | Surface |
 | active memory-context projection | derived from current Surface |
 | schedules and heartbeat configuration | Surface |
 | surface heartbeat prompt file | Surface |
@@ -130,21 +129,27 @@ Rotation, movement, archive, and temporary unbinding do not mutate the heartbeat
 Construction combines:
 
 - Conversation: pi history and immutable Execution Environment;
-- destination Surface: active memory scope, Telegram tools/sink, model/thinking preferences, resolved skill policy, schedule tool ownership, delivery parameters.
+- destination Surface: Telegram tools/sink, model/thinking preferences, schedule tool ownership, and delivery parameters;
+- `surface-derived-memory-context`: one immutable `CapturedMemoryContext` completed before runtime registration;
+- `transcript-surface-provenance`: one `TranscriptWriterContext` derived from `CapturedMemoryContext.authority.sourceSurfaceId` and closed over every user-visible transcript write performed by that runtime.
+
+These last two inputs are hard prerequisites rather than sequencing advice. Without them, moving a Conversation would either retain memory authority derived from legacy creation metadata or write new history without event-time destination provenance.
 
 `disposeRuntime` removes runner and queue map entries synchronously, then awaits `AgentRunner.dispose()` and existing `cancelBySession(conversationId)` compatibility cleanup. Work-run lifetime is intentionally unchanged here; a later patch will separate attached and detached work.
 
-### Migration is idempotent and preserves history
+### Offline versioned migration preserves history
 
-`src/sessions/conversation-migration.ts` runs after both dependency migrations and before scheduler/polling:
+`src/sessions/conversation-migration.ts` implements filesystem migration step 4 in the canonical append-only list owned by `src/migrate.ts`, advancing `CURRENT_STATE_VERSION` from 3 to 4 only after success. It runs only through explicit `bun run migrate` while the service is stopped, after the prerequisite Surface, execution-environment, and transcript-provenance steps. Startup performs only the state-version gate; it never invokes this step.
+
+Before its first write, the step computes and validates the complete lifecycle transformation:
 
 1. Convert `SessionState` to `ConversationState`, retaining IDs, names, timestamps, immutable environments, and paths; remove routing/model/thinking fields from canonical writes.
 2. For each Surface binding, copy the currently bound legacy Conversation's model/thinking fields into that Surface setting when the Surface has no canonical preference. Unbound Conversation preferences do not travel.
-3. Detect multi-bound Conversations while computing migration output. If one Conversation has several candidate SurfaceIds, fail before any lifecycle-migration write and report the ConversationId plus every candidate SurfaceId. The operator must choose and repair the retained binding explicitly; migration does not infer recency or invent a winner.
+3. Detect multi-bound Conversations while computing migration output. If one Conversation has several candidate SurfaceIds, fail before any lifecycle-step write and report the ConversationId plus every candidate SurfaceId. The operator must choose and repair the retained binding explicitly; migration does not infer recency or invent a winner.
 4. Convert schedules from `(sessionId, surface)` to Surface ownership, preserving every non-owner field. Duplicate legacy heartbeats on one Surface fail loudly rather than guessing.
-5. Move the active Surface heartbeat prompt from the legacy owner Conversation path to the Surface path. If both source and destination exist with different non-whitespace content, fail with both paths; identical content is idempotent.
+5. Move the active Surface heartbeat prompt from the legacy owner Conversation path to the Surface path. If both source and destination exist with different non-whitespace content, fail with both paths; identical content may be accepted as a non-conflicting destination.
 
-All outputs are computed/validated before writes. Single files use atomic replacement. Cross-file restart safety comes from canonical/mixed-generation readers and idempotent rules; no false cross-file transaction claim is made. Conversation directories are never deleted by migration.
+After successful precomputation, each target file is replaced atomically and Conversation directories are never deleted. The canonical migration command owns the pre-mutation backup and advances `stateVersion` only after the step returns successfully. The step is deliberately not required to accept mixed-generation state, restart after partial writes, or be idempotent; failure recovery restores the command's backup as required by decision 0038.
 
 ## Decisions
 
@@ -162,9 +167,9 @@ All outputs are computed/validated before writes. Single files use atomic replac
 
 ### Decision: Destination Surface settings win on resume
 
-**Chosen:** model/thinking/skill policy/memory/tools/delivery come from destination; CWD/history remain Conversation-owned.
+**Chosen:** model/thinking preferences, captured memory context, tools, and delivery come from the destination; CWD/history remain Conversation-owned.
 
-**Why:** Model and presence are lane preferences, while changing filesystem authority would corrupt Conversation meaning. Layered Conversation overrides are deferred until a real use case exists.
+**Why:** Model and presence are lane preferences, while changing filesystem authority would corrupt Conversation meaning. Skill policy is deliberately deferred to `surface-skill-policy`; layered Conversation overrides are deferred until a real use case exists.
 
 ### Decision: Automation is Surface-owned
 
@@ -198,8 +203,8 @@ All outputs are computed/validated before writes. Single files use atomic replac
 - **`src/sessions/conversation-store.ts`** — create/load/list/name/archive persistence without binding behavior.
 - **`src/orchestration/conversation-lifecycle.ts`** — deep inspect/resolve-or-start/rotate/resume/archive interface and runtime-first transition ordering.
 - **`src/orchestration/conversation-runtime-host.ts`** — narrow adapter implemented by `TurnDispatcher` for synchronous invalidation plus bounded cleanup.
-- **`src/sessions/conversation-migration.ts`** — split ownership, reject ambiguous multi-bindings, migrate schedules/prompts, and support mixed-generation restart.
-- **`src/sessions/conversation.test.ts`, `src/sessions/conversation-store.test.ts`, `src/orchestration/conversation-lifecycle.test.ts`, `src/sessions/conversation-migration.test.ts`** — lifecycle invariants, environment filtering, transition failures, migration conflicts, and idempotence.
+- **`src/sessions/conversation-migration.ts`** — precomputing offline filesystem step 4, which splits ownership, rejects ambiguous multi-bindings, and migrates schedules/prompts under the canonical migration runner; `src/migrate.ts` and `src/state-version.ts` register the step and set required version 4.
+- **`src/sessions/conversation.test.ts`, `src/sessions/conversation-store.test.ts`, `src/orchestration/conversation-lifecycle.test.ts`, `src/sessions/conversation-migration.test.ts`** — lifecycle invariants, environment filtering, transition failures, complete migration outputs, and migration conflicts.
 
 ### Modified session/surface files
 
@@ -215,9 +220,9 @@ All outputs are computed/validated before writes. Single files use atomic replac
 ### Modified orchestration and Telegram files
 
 - **`src/orchestration/dispatcher.ts`** — implement runtime-host interface; verify current binding/context on get/create; invalidate maps before cleanup; keep queues keyed by ConversationId.
-- **`src/tg/intake.ts`** — use `resolveOrStart` only for authorized ordinary content; commands/media/status use explicit lifecycle paths; stop orchestrating binding/runtime side effects.
-- **`src/bot.ts` / composition wiring (`src/index.ts` as applicable)** — construct ConversationStore/Lifecycle and inject narrow readers/runtime host.
-- **`src/tg/intake.test.ts`, dispatcher tests** — DM lazy creation, moved runtime context, stale queued effects, and unrelated-conversation concurrency.
+- **`src/tg/intake.ts`** — use `resolveOrStart` only for authorized ordinary content; commands/media/status use explicit lifecycle paths; write user-visible transcript entries with the runtime's captured `TranscriptWriterContext`; stop orchestrating binding/runtime side effects.
+- **`src/bot.ts` / composition wiring (`src/index.ts` as applicable)** — construct ConversationStore/Lifecycle and inject narrow readers/runtime host plus the dependency-provided memory-capture and transcript-writer seams.
+- **`src/tg/intake.test.ts`, dispatcher tests** — DM lazy creation, moved runtime context, destination provenance, stale queued effects, and unrelated-conversation concurrency.
 
 ### Modified command files
 

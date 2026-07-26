@@ -6,7 +6,7 @@
 
 `AgentRunner` SHALL be constructed from the session's persisted `ExecutionEnvironment`, not from an optional Surface `projectDir`. For a personal environment it SHALL use the persistent `$GOBLIN_HOME/workspace` as `cwd` and load no project guidance or project-bound tools. For a project environment it SHALL use the canonical `projectRoot` as `cwd`, as the root for exact project guidance and project skill discovery, and as the trusted directory supplied to project-bound tools and file handling.
 
-The pi `agentDir` and model/auth configuration SHALL remain deployment-owned under `$GOBLIN_HOME/state/pi`; Goblin-wide skills SHALL remain explicitly loaded from the prerequisite-defined `$GOBLIN_HOME/.agents/skills/` catalog until the dependent skill resolver applies Surface policy. A project environment MUST supplement rather than replace those deployment resources.
+The pi `agentDir` and model/auth configuration SHALL remain deployment-owned under `$GOBLIN_HOME/state/pi`. This change SHALL preserve the currently implemented Goblin-wide skill catalog path and loading behavior; native skill layout and Surface policy belong to later changes. A project environment MUST supplement rather than replace those deployment resources.
 
 #### Scenario: Personal session initializes
 
@@ -60,7 +60,7 @@ Before creating or returning a runner for a Telegram turn, the dispatcher SHALL 
 
 Before opening persisted pi history, the pi backend SHALL read the most recent pi session header and compare its recorded CWD with the CWD derived from the session's execution environment. Compatibility SHALL use normalized absolute paths and filesystem canonical identity for project roots. The backend MUST NOT pass a different CWD override to `SessionManager.open()`.
 
-When no pi history exists, the backend SHALL create a new pi session with the environment CWD. When history exists but its header is missing, malformed, unreadable, or incompatible, initialization SHALL fail loudly rather than opening it with an override or silently starting empty history. Legacy incompatibilities SHALL be handled only by the startup migration.
+When no pi history exists, the backend SHALL create a new pi session with the environment CWD. When history exists but its header is missing, malformed, unreadable, or incompatible, initialization SHALL fail loudly rather than opening it with an override or silently starting empty history. Legacy incompatibilities SHALL be handled only by canonical offline filesystem migration step 2 while the service is stopped.
 
 #### Scenario: Compatible project history reopens
 

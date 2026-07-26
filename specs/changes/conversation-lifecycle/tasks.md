@@ -2,11 +2,11 @@
 
 ## Phase 1: Introduce canonical Conversation persistence
 
-- [ ] Create `ConversationId`/`ConversationState`, 10-hex ID generation, canonical state validation, and compatibility parsing for legacy SessionState under unchanged `state/sessions/` paths.
-- [ ] Create `ConversationStore` with create/load/list/name/archive operations that never edit bindings.
-- [ ] Remove routing/model/thinking fields from canonical Conversation writes while retaining migration-only reads.
-- [ ] Add store/state tests for atomic writes, filesystem layout, archive/list filtering, names, missing directories, and immutable environment preservation.
-- [ ] Run touched session tests and `bun run typecheck`.
+- [x] Create `ConversationId`/`ConversationState`, 10-hex ID generation, canonical state validation, and compatibility parsing for legacy SessionState under unchanged `state/sessions/` paths.
+- [x] Create `ConversationStore` with create/load/list/name/archive operations that never edit bindings.
+- [x] Remove routing/model/thinking fields from canonical Conversation writes while retaining migration-only reads.
+- [x] Add store/state tests for atomic writes, filesystem layout, archive/list filtering, names, missing directories, and immutable environment preservation.
+- [x] Run touched session tests and `bun run typecheck`.
 
 ## Phase 2: Add the deep conversation lifecycle
 

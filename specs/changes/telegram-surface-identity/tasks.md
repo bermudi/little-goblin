@@ -16,7 +16,7 @@
 - [ ] Replace mixed-generation restart fixtures with planner/applier tests for every Surface kind, explicit private/supergroup evidence, absent/conflicting evidence refusal during whole-run preflight, numeric collisions, stale behavior, archive cleanup, and invalid data.
 - [ ] Refactor the canonical runner to strictly parse supported state versions, preflight every pending step against projected prior output before any source mutation, snapshot every plan-declared root and prior absence before setup, apply in order, and advance each version only after success; startup remains an exact version gate.
 - [ ] Make the migration command the sole recovery-backup owner; update and test `scripts/update.sh` ordering as stop service → invoke canonical backup/migration → restart only on success, leaving the service stopped on failure; cover malformed/future versions, 0→2 later-plan failure with no step-1 mutation, CLI absent-root restoration, unexpected apply failure, and whole-backup recovery.
-- [ ] Run the touched session/migration/update tests, `bun run typecheck`, and `litespec validate telegram-surface-identity`.
+- [x] Run the touched session/migration/update tests, `bun run typecheck`, and `litespec validate telegram-surface-identity`.
 
 ## Phase 3: Persist schedules with Surface identity
 

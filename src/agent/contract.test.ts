@@ -13,6 +13,7 @@ import type { TurnCallbacks } from "./mod.ts";
 import type { Config } from "../config.ts";
 import { soulMdPath, workdirPath } from "../workspace/paths.ts";
 import { piAgentDir } from "../pi-host.ts";
+import { personalEnvironment } from "../sessions/environment.ts";
 
 function makeConfig(home: string): Config {
   return {
@@ -57,6 +58,7 @@ describe("AgentRunner pi-ai contract", () => {
       sessionId: "abcdef1234",
       surface: dmSurface(1),
       customTools: [],
+      executionEnvironment: personalEnvironment(),
       resolvedModel: { model, apiKey: "fake-key", thinkingLevel: "medium" },
       backendFactory: (opts) =>
         new PiAgentBackend({

@@ -146,15 +146,22 @@ describe("topic-settings", () => {
   });
 
   describe("bindProjectDir", () => {
+    function makeProjectDir(name: string): string {
+      const dir = join(tmpDir, name);
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+
     it("sets projectDir for a surface", () => {
-      bindProjectDir(tmpDir, topic, "/home/daniel/project");
+      const projectDir = makeProjectDir("project");
+      bindProjectDir(tmpDir, topic, projectDir);
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.surfaces[topicKey]?.projectDir).toBe("/home/daniel/project");
+      expect(loaded.surfaces[topicKey]?.projectDir).toBe(projectDir);
     });
 
     it("clears projectDir for a surface", () => {
-      bindProjectDir(tmpDir, topic, "/home/daniel/project");
+      bindProjectDir(tmpDir, topic, makeProjectDir("project"));
       bindProjectDir(tmpDir, topic, undefined);
 
       const loaded = loadTopicSettings(tmpDir);
@@ -162,43 +169,54 @@ describe("topic-settings", () => {
     });
 
     it("sets projectDir for a DM", () => {
-      bindProjectDir(tmpDir, dm, "/home/daniel/dm-project");
+      const projectDir = makeProjectDir("dm-project");
+      bindProjectDir(tmpDir, dm, projectDir);
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.surfaces[dmKey]?.projectDir).toBe("/home/daniel/dm-project");
+      expect(loaded.surfaces[dmKey]?.projectDir).toBe(projectDir);
     });
 
     it("sets projectDir for a supergroup", () => {
-      bindProjectDir(tmpDir, sg, "/home/daniel/sg-project");
+      const projectDir = makeProjectDir("sg-project");
+      bindProjectDir(tmpDir, sg, projectDir);
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.surfaces[sgKey]?.projectDir).toBe("/home/daniel/sg-project");
+      expect(loaded.surfaces[sgKey]?.projectDir).toBe(projectDir);
     });
 
     it("does not interfere with existing settings for other surfaces", () => {
       const dm2 = dmSurface(500);
       const dm2Key = surfaceId(dm2);
-      bindProjectDir(tmpDir, topic, "/topic-path");
-      bindProjectDir(tmpDir, dm2, "/dm-path");
+      const topicProject = makeProjectDir("topic-path");
+      const dmProject = makeProjectDir("dm-path");
+      bindProjectDir(tmpDir, topic, topicProject);
+      bindProjectDir(tmpDir, dm2, dmProject);
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.surfaces[topicKey]?.projectDir).toBe("/topic-path");
-      expect(loaded.surfaces[dm2Key]?.projectDir).toBe("/dm-path");
+      expect(loaded.surfaces[topicKey]?.projectDir).toBe(topicProject);
+      expect(loaded.surfaces[dm2Key]?.projectDir).toBe(dmProject);
     });
   });
 
   describe("pendingProjectNotice", () => {
+    function makeProjectDir(name: string): string {
+      const dir = join(tmpDir, name);
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+
     it("sets a pending notice when binding a project dir", () => {
-      bindProjectDir(tmpDir, topic, "/home/daniel/project");
+      const projectDir = makeProjectDir("project");
+      bindProjectDir(tmpDir, topic, projectDir);
 
       const loaded = loadTopicSettings(tmpDir);
       expect(loaded.surfaces[topicKey]?.pendingProjectNotice).toBe(
-        "Project directory changed to `/home/daniel/project`.",
+        `Project directory changed to \`${projectDir}\`.`,
       );
     });
 
     it("does not set a notice when clearing project dir", () => {
-      bindProjectDir(tmpDir, dm, "/home/daniel/project");
+      bindProjectDir(tmpDir, dm, makeProjectDir("project"));
       bindProjectDir(tmpDir, dm, undefined);
 
       const loaded = loadTopicSettings(tmpDir);
@@ -206,14 +224,15 @@ describe("topic-settings", () => {
     });
 
     it("consumeProjectNotice returns and clears the notice", () => {
-      bindProjectDir(tmpDir, topic, "/home/daniel/project");
+      const projectDir = makeProjectDir("project");
+      bindProjectDir(tmpDir, topic, projectDir);
 
       const notice = consumeProjectNotice(tmpDir, topic);
-      expect(notice).toBe("Project directory changed to `/home/daniel/project`.");
+      expect(notice).toBe(`Project directory changed to \`${projectDir}\`.`);
 
       const loaded = loadTopicSettings(tmpDir);
       expect(loaded.surfaces[topicKey]?.pendingProjectNotice).toBeUndefined();
-      expect(loaded.surfaces[topicKey]?.projectDir).toBe("/home/daniel/project");
+      expect(loaded.surfaces[topicKey]?.projectDir).toBe(projectDir);
     });
 
     it("consumeProjectNotice returns undefined when no notice is pending", () => {
@@ -221,7 +240,7 @@ describe("topic-settings", () => {
     });
 
     it("consumeProjectNotice is idempotent", () => {
-      bindProjectDir(tmpDir, dm, "/home/daniel/project");
+      bindProjectDir(tmpDir, dm, makeProjectDir("project"));
 
       expect(consumeProjectNotice(tmpDir, dm)).toBeTruthy();
       expect(consumeProjectNotice(tmpDir, dm)).toBeUndefined();

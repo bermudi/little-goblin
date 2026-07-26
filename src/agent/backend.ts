@@ -13,8 +13,8 @@ import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-a
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { createPiServices, findMostRecentPiSession, piAgentDir, type PiServices } from "../pi-host.ts";
-import { skillsPath, workdirPath } from "../workspace/paths.ts";
+import { createPiServices, findMostRecentCompatiblePiSession, piAgentDir, type PiServices } from "../pi-host.ts";
+import { skillsPath } from "../workspace/paths.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { ResolvedModel } from "./models.ts";
 
@@ -64,10 +64,9 @@ interface PiAgentBackendDeps {
   createAgentSession: typeof createAgentSession;
   DefaultResourceLoader: typeof DefaultResourceLoader;
   SessionManager: typeof SessionManager;
-  findMostRecentPiSession: typeof findMostRecentPiSession;
+  findMostRecentCompatiblePiSession: typeof findMostRecentCompatiblePiSession;
   piAgentDir: typeof piAgentDir;
   sessionDir: typeof sessionDir;
-  workdirPath: typeof workdirPath;
   skillsPath: typeof skillsPath;
 }
 
@@ -103,10 +102,9 @@ export class PiAgentBackend implements AgentBackend {
       createAgentSession,
       DefaultResourceLoader,
       SessionManager,
-      findMostRecentPiSession,
+      findMostRecentCompatiblePiSession,
       piAgentDir,
       sessionDir,
-      workdirPath,
       skillsPath,
       ...opts.deps,
     };
@@ -126,7 +124,7 @@ export class PiAgentBackend implements AgentBackend {
     const agentDir = this.deps.piAgentDir(home);
 
     const piSessionDir = join(this.deps.sessionDir(home, this.sessionId), "pi");
-    const recent = this.deps.findMostRecentPiSession(piSessionDir);
+    const recent = this.deps.findMostRecentCompatiblePiSession(piSessionDir, cwd);
     const sessionManager = recent
       ? this.deps.SessionManager.open(recent, piSessionDir, cwd)
       : this.deps.SessionManager.create(cwd, piSessionDir);

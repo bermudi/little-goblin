@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { sessionDir, transcriptPath } from "../sessions/paths.ts";
 import { piAgentDir } from "../pi-host.ts";
-import { agentsMdPath, skillsPath, soulMdPath, workdirPath } from "../workspace/paths.ts";
+import { agentsMdPath, skillsPath, soulMdPath, workdirPath, workspacePath } from "../workspace/paths.ts";
+import { personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import { ExternalAgentRunner } from "../external-agents/mod.ts";
 import { readMetricsSummary } from "../metrics/mod.ts";
@@ -316,7 +317,7 @@ function makeRunner(
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>,
   modelName?: string,
   configOverrides: Partial<Config> = {},
-  projectDir?: string,
+  executionEnvironment?: ExecutionEnvironment,
   pendingProjectNotice?: string,
   thinkingLevel?: string,
   dreamingPipeline?: DreamingPipeline,
@@ -327,7 +328,7 @@ function makeRunner(
     surface,
     customTools: customTools as never,
     getTopicName,
-    projectDir,
+    executionEnvironment: executionEnvironment ?? personalEnvironment(),
     pendingProjectNotice,
     thinkingLevel: thinkingLevel as never,
     dreamingPipeline,
@@ -373,7 +374,7 @@ describe("AgentRunner", () => {
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
       expect(opts.sessionManager).toEqual({
-        cwd: workdirPath(tmpDir),
+        cwd: workspacePath(tmpDir),
         sessionDir: join(sessionDir(tmpDir, "abcdef1234"), "pi"),
       });
     });
@@ -388,24 +389,17 @@ describe("AgentRunner", () => {
       expect(methods).not.toContain("continueRecent");
     });
 
-    // Regression: a /project bind or /model switch recreates the runner under
-    // a cwd that differs from an existing pi session file's header.cwd. The old
-    // code used SessionManager.continueRecent(), which cwd-gates the resume
-    // lookup and silently missed — producing a blank session that lost all
-    // conversation history. Resume must open the existing file directly with a
-    // cwd override instead.
-    it("resumes prior pi session even when its header cwd differs from projectDir", async () => {
+    it("resumes a compatible prior pi session when header cwd matches the project root", async () => {
       const piDir = join(sessionDir(tmpDir, "abcdef1234"), "pi");
       mkdirSync(piDir, { recursive: true });
-      // Prior session file whose header cwd does NOT match the runner's cwd.
-      const staleCwd = "/some/other/project";
+      const projectRoot = "/home/daniel/build/scribus-card";
       writeFileSync(
         join(piDir, "2026-01-01T00-00-00-000Z_old.jsonl"),
-        JSON.stringify({ type: "session", version: 3, id: "old-session", timestamp: "2026-01-01T00:00:00.000Z", cwd: staleCwd }) + "\n",
+        JSON.stringify({ type: "session", version: 3, id: "old-session", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot }) + "\n",
         "utf-8",
       );
 
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, {}, "/home/daniel/build/scribus-card");
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, {}, projectEnvironment(projectRoot));
       await runner.prompt("hello", nopCallbacks());
 
       const methods = sessionManagerCalls.map((c) => c.method);
@@ -413,10 +407,8 @@ describe("AgentRunner", () => {
       expect(methods).not.toContain("create");
       expect(methods).not.toContain("continueRecent");
 
-      // The open() call must carry the runner's current cwd as the override,
-      // not the stale header cwd.
       const openCall = sessionManagerCalls.find((c) => c.method === "open")!;
-      expect(openCall.args[2]).toBe("/home/daniel/build/scribus-card");
+      expect(openCall.args[2]).toBe(projectRoot);
     });
   });
 
@@ -828,12 +820,12 @@ describe("AgentRunner", () => {
   });
 
   describe("cwd and piAgentDir paths passed to pi", () => {
-    it("passes workdirPath as cwd", async () => {
+    it("passes workspacePath as cwd for a personal environment", async () => {
       const runner = makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
-      expect(opts.cwd).toBe(workdirPath(tmpDir));
+      expect(opts.cwd).toBe(workspacePath(tmpDir));
     });
 
     it("passes piAgentDir as agentDir", async () => {
@@ -887,14 +879,14 @@ describe("AgentRunner", () => {
       mkdirSync(projectDir);
       writeFileSync(join(projectDir, "AGENTS.md"), "exact project guidance\n", "utf-8");
 
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, {}, projectDir);
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, {}, projectEnvironment(projectDir));
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
       expect(opts.cwd).toBe(projectDir);
       expect(loaderOpts.systemPrompt).toContain("test goblin identity");
-      expect(loaderOpts.systemPrompt).toContain("## Project Guidance (projectDir/AGENTS.md)");
+      expect(loaderOpts.systemPrompt).toContain("## Project Guidance (projectRoot/AGENTS.md)");
       expect(loaderOpts.systemPrompt).toContain("exact project guidance");
     });
 
@@ -1485,6 +1477,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         customTools: [],
+        executionEnvironment: personalEnvironment(),
         subagentRunner: subRunner,
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
@@ -1517,6 +1510,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         customTools: [],
+        executionEnvironment: personalEnvironment(),
         subagentRunner: subRunner,
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
@@ -1547,6 +1541,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         customTools: [],
+        executionEnvironment: personalEnvironment(),
         scheduleStore,
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
@@ -1677,7 +1672,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         customTools: [],
-        projectDir: tmpDir,
+        executionEnvironment: projectEnvironment(tmpDir),
         externalAgentRunner,
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
@@ -1706,6 +1701,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         customTools: [],
+        executionEnvironment: personalEnvironment(),
         externalAgentRunner,
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
@@ -1733,7 +1729,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         customTools: [],
-        projectDir: tmpDir,
+        executionEnvironment: projectEnvironment(tmpDir),
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
       await runner.prompt("hi", nopCallbacks());
@@ -1771,6 +1767,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         customTools: [],
+        executionEnvironment: personalEnvironment(),
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
@@ -1798,6 +1795,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         customTools: [],
+        executionEnvironment: personalEnvironment(),
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):"),
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
@@ -1828,6 +1826,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         customTools: [],
+        executionEnvironment: personalEnvironment(),
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
       await runner.prompt("hi", nopCallbacks());
@@ -1845,6 +1844,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         customTools: [],
+        executionEnvironment: personalEnvironment(),
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });

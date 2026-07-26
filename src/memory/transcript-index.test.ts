@@ -30,7 +30,15 @@ describe("TranscriptIndexer", () => {
   it("indexes a session transcript and stores snippets", async () => {
     const dir = join(tmp, "state", "sessions", sessionId);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "state.json"), JSON.stringify({ chatId: 123 }));
+    writeFileSync(
+      join(dir, "state.json"),
+      JSON.stringify({
+        id: sessionId,
+        createdAt: "2026-07-04T12:00:00.000Z",
+        chatId: 123,
+        executionEnvironment: { kind: "personal" },
+      }),
+    );
 
     const entries: TranscriptEntry[] = [
       {

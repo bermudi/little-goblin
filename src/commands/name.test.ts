@@ -1,11 +1,13 @@
 import { describe, it, expect } from "bun:test";
 import { executeName, parseSessionName } from "./name.ts";
 import type { SessionState } from "../sessions/types.ts";
+import { personalEnvironment } from "../sessions/environment.ts";
 
 const session: SessionState = {
   id: "abc123def0",
   createdAt: "2026-05-10T00:00:00.000Z",
   chatId: 1,
+  executionEnvironment: personalEnvironment(),
 };
 
 describe("/name command", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "./manager.ts";
@@ -226,23 +226,31 @@ describe("SessionManager", () => {
   });
 
   describe("project dir", () => {
+    function makeProjectDir(name: string): string {
+      const dir = join(tmpDir, name);
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+
     it("binds and reads projectDir per surface", () => {
       const surface = dmSurface(123);
-      manager.bindProjectDir(surface, "/home/daniel/project");
-      expect(manager.getProjectDir(surface)).toBe("/home/daniel/project");
+      const projectDir = makeProjectDir("project");
+      manager.bindProjectDir(surface, projectDir);
+      expect(manager.getProjectDir(surface)).toBe(projectDir);
     });
 
     it("clears projectDir", () => {
       const surface = dmSurface(123);
-      manager.bindProjectDir(surface, "/home/daniel/project");
+      manager.bindProjectDir(surface, makeProjectDir("project"));
       manager.bindProjectDir(surface, undefined);
       expect(manager.getProjectDir(surface)).toBeUndefined();
     });
 
     it("consumes pending project notice", () => {
       const surface = topicSurface("supergroup", 123, 7);
-      manager.bindProjectDir(surface, "/home/daniel/project");
-      expect(manager.consumeProjectNotice(surface)).toBe("Project directory changed to `/home/daniel/project`.");
+      const projectDir = makeProjectDir("project");
+      manager.bindProjectDir(surface, projectDir);
+      expect(manager.consumeProjectNotice(surface)).toBe(`Project directory changed to \`${projectDir}\`.`);
       expect(manager.consumeProjectNotice(surface)).toBeUndefined();
     });
   });

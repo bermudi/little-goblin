@@ -10,6 +10,7 @@ import { SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
+import { environmentsEqual } from "../sessions/environment.ts";
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
@@ -158,18 +159,26 @@ export class TurnDispatcher {
    * are derived entirely from the provided `surface`.
    */
   createRunner(session: SessionState, surface: Surface): AgentRunner {
-    const betaTools = this.createBetaToolsFn(surface);
+    const surfaceEnv = this.manager.effectiveEnvironment(surface);
+    if (session.chatId !== 0 && !environmentsEqual(session.executionEnvironment, surfaceEnv)) {
+      const sessionEnv = session.executionEnvironment;
+      throw new Error(
+        `environment mismatch: session ${session.id} is ${sessionEnv.kind === "project" ? sessionEnv.projectRoot : sessionEnv.kind}, surface ${surface.kind}:${surface.chatId} is ${surfaceEnv.kind === "project" ? surfaceEnv.projectRoot : surfaceEnv.kind}`,
+      );
+    }
+
+    const betaTools = session.chatId === 0 ? [] : this.createBetaToolsFn(surface);
     const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
       cfg: this.cfg,
       sessionId: session.id,
       surface,
       customTools: betaTools,
-      subagentRunner: this.subagentRunner,
+      subagentRunner: session.chatId === 0 ? undefined : this.subagentRunner,
       getTopicName: this.getTopicName,
-      projectDir: this.manager.getProjectDir(surface),
+      executionEnvironment: session.executionEnvironment,
       modelName: session.modelName,
       thinkingLevel: session.thinkingLevel,
-      pendingProjectNotice: this.manager.consumeProjectNotice(surface),
+      pendingProjectNotice: session.chatId === 0 ? undefined : this.manager.consumeProjectNotice(surface),
       scheduleStore: this.scheduleStore,
       externalAgentRunner: this.externalAgentRunner,
       mcpRunner: this.mcpRunner,
@@ -392,6 +401,7 @@ export class TurnDispatcher {
         embeddingProvider: this.embeddingProvider,
         dreamingPipeline: this.dreamingPipeline,
         getTopicName: this.getTopicName,
+        executionEnvironment: session.executionEnvironment,
       };
       runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
       this.runners.set(session.id, runner);

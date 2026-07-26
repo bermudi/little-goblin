@@ -1,9 +1,10 @@
 import { describe, it, expect } from "bun:test";
 import { executeNew, createdReply } from "./new.ts";
 import type { SessionState } from "../sessions/types.ts";
+import { personalEnvironment } from "../sessions/environment.ts";
 
 function makeSession(id: string): SessionState {
-  return { id, createdAt: new Date().toISOString(), chatId: 1 };
+  return { id, createdAt: new Date().toISOString(), chatId: 1, executionEnvironment: personalEnvironment() };
 }
 
 describe("executeNew", () => {

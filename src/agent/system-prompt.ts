@@ -1,6 +1,8 @@
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { agentsMdPath, soulMdPath } from "../workspace/paths.ts";
+import type { ExecutionEnvironment } from "../sessions/environment.ts";
+import { isProjectEnvironment } from "../sessions/environment.ts";
 
 export const GOBLIN_PRODUCT_SHELL = `## Runtime Mechanics
 
@@ -28,7 +30,7 @@ export class MissingSoulError extends Error {
 
 export interface BuildGoblinSystemPromptOptions {
   home: string;
-  projectDir?: string;
+  executionEnvironment: ExecutionEnvironment;
 }
 
 /** System prompt value: assembled text plus the provenance of loaded prompt files. */
@@ -50,7 +52,9 @@ export async function buildGoblinSystemPrompt(
   const soulPath = soulMdPath(opts.home);
   const deploymentAgentsPath = agentsMdPath(opts.home);
   const projectAgentsPath =
-    opts.projectDir === undefined ? undefined : join(opts.projectDir, "AGENTS.md");
+    isProjectEnvironment(opts.executionEnvironment)
+      ? join(opts.executionEnvironment.projectRoot, "AGENTS.md")
+      : undefined;
 
   const soul = await readRequiredSoul(soulPath);
   const sources: string[] = [soulPath];
@@ -72,7 +76,7 @@ export async function buildGoblinSystemPrompt(
     GOBLIN_PRODUCT_SHELL,
     projectAgents === null
       ? null
-      : section("Project Guidance (projectDir/AGENTS.md)", projectAgents),
+      : section("Project Guidance (projectRoot/AGENTS.md)", projectAgents),
   ]
     .filter((part): part is string => part !== null)
     .join("\n\n");

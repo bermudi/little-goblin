@@ -16,9 +16,11 @@ import { loadConfig, ensureGoblinHome } from "./config.ts";
 import { log, initLog } from "./log.ts";
 import { CURRENT_STATE_VERSION, readStateVersion, writeStateVersion } from "./state-version.ts";
 import { migrateSurfaceState } from "./sessions/surface-migration.ts";
+import { migrateExecutionEnvironments } from "./sessions/environment-migration.ts";
 
 const STEPS: Array<(home: string) => void> = [
   (home) => migrateSurfaceState(home),
+  (home) => migrateExecutionEnvironments(home),
 ];
 
 function backupState(home: string): string {

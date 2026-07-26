@@ -9,6 +9,7 @@ import {
   preflightGoblinPromptFiles,
 } from "./system-prompt.ts";
 import { agentsMdPath, soulMdPath } from "../workspace/paths.ts";
+import { personalEnvironment, projectEnvironment } from "../sessions/environment.ts";
 
 describe("GOBLIN_PRODUCT_SHELL", () => {
   it("contains approved runtime mechanics without deployed identity fallback", () => {
@@ -88,12 +89,12 @@ describe("buildGoblinSystemPrompt", () => {
     writeFileSync(agentsMdPath(tmpDir), "deployment rules\n", "utf-8");
     writeFileSync(join(projectDir, "AGENTS.md"), "project rules\n", "utf-8");
 
-    const { prompt, sources } = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
+    const { prompt, sources } = await buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: projectEnvironment(projectDir) });
 
     expect(prompt).toContain("## Deployment Identity and Voice (SOUL.md)\n\nsoul identity");
     expect(prompt).toContain("## Deployment Operating Rules (AGENTS.md)\n\ndeployment rules");
     expect(prompt).toContain(GOBLIN_PRODUCT_SHELL);
-    expect(prompt).toContain("## Project Guidance (projectDir/AGENTS.md)\n\nproject rules");
+    expect(prompt).toContain("## Project Guidance (projectRoot/AGENTS.md)\n\nproject rules");
     expect(prompt.indexOf("soul identity")).toBeLessThan(prompt.indexOf("deployment rules"));
     expect(prompt.indexOf("deployment rules")).toBeLessThan(prompt.indexOf("## Runtime Mechanics"));
     expect(prompt.indexOf("## Runtime Mechanics")).toBeLessThan(prompt.indexOf("project rules"));
@@ -101,7 +102,7 @@ describe("buildGoblinSystemPrompt", () => {
   });
 
   it("throws the shared missing-SOUL configuration error when SOUL.md is missing", async () => {
-    await expect(buildGoblinSystemPrompt({ home: tmpDir })).rejects.toBeInstanceOf(MissingSoulError);
+    await expect(buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: personalEnvironment() })).rejects.toBeInstanceOf(MissingSoulError);
   });
 
   it("continues when optional deployment and project AGENTS files are missing", async () => {
@@ -109,7 +110,7 @@ describe("buildGoblinSystemPrompt", () => {
     mkdirSync(projectDir);
     writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
 
-    const { prompt, sources } = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
+    const { prompt, sources } = await buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: projectEnvironment(projectDir) });
 
     expect(prompt).toContain("soul identity");
     expect(prompt).toContain(GOBLIN_PRODUCT_SHELL);
@@ -131,7 +132,7 @@ describe("buildGoblinSystemPrompt", () => {
     writeFileSync(join(projectDir, ".cursorrules"), "cursor rules\n", "utf-8");
     writeFileSync(join(projectDir, "AGENTS.md"), "exact project rules\n", "utf-8");
 
-    const { prompt, sources } = await buildGoblinSystemPrompt({ home: tmpDir, projectDir });
+    const { prompt, sources } = await buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: projectEnvironment(projectDir) });
 
     expect(prompt).toContain("exact project rules");
     expect(prompt).not.toContain("global rules");
@@ -147,7 +148,7 @@ describe("buildGoblinSystemPrompt", () => {
 
     // Must reject with the underlying error, not MissingSoulError.
     try {
-      await buildGoblinSystemPrompt({ home: tmpDir });
+      await buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: personalEnvironment() });
       expect.unreachable("expected buildGoblinSystemPrompt to reject");
     } catch (err) {
       expect(err).toBeDefined();
@@ -160,7 +161,7 @@ describe("buildGoblinSystemPrompt", () => {
     writeFileSync(agentsMdPath(tmpDir), "deployment rules\n", "utf-8");
     chmodSync(agentsMdPath(tmpDir), 0o000);
 
-    await expect(buildGoblinSystemPrompt({ home: tmpDir })).rejects.toThrow();
+    await expect(buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: personalEnvironment() })).rejects.toThrow();
   });
 
   it("propagates non-ENOENT read failures for optional project AGENTS.md", async () => {
@@ -170,6 +171,6 @@ describe("buildGoblinSystemPrompt", () => {
     writeFileSync(join(projectDir, "AGENTS.md"), "project rules\n", "utf-8");
     chmodSync(join(projectDir, "AGENTS.md"), 0o000);
 
-    await expect(buildGoblinSystemPrompt({ home: tmpDir, projectDir })).rejects.toThrow();
+    await expect(buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: projectEnvironment(projectDir) })).rejects.toThrow();
   });
 });

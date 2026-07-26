@@ -3,16 +3,50 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { surfaceId, type Surface } from "../surface.ts";
+import { surfaceId, parseSurfaceId, type Surface } from "../surface.ts";
 import type { BindingsFile, SessionState } from "./types.ts";
 import { loadBindings, saveBindings } from "./bindings.ts";
 import { loadState, saveState } from "./state.ts";
 import {
-  getProjectDir as getProjectDirFromSettings,
+  getProjectRoot,
+  bindProjectRoot,
   bindProjectDir as bindProjectDirInSettings,
   consumeProjectNotice as consumeProjectNoticeFromSettings,
 } from "./topic-settings.ts";
-import { sessionsDir, sessionDir, transcriptPath, metricsPath } from "./paths.ts";
+import { sessionsDir, sessionDir, transcriptPath, metricsPath, piSessionDir } from "./paths.ts";
+import {
+  type ExecutionEnvironment,
+  personalEnvironment,
+  projectEnvironment,
+  environmentFromProjectRoot,
+  environmentsEqual,
+  projectRootOf,
+} from "./environment.ts";
+import {
+  loadPendingProjectAssignment,
+  savePendingProjectAssignment,
+  clearPendingProjectAssignment,
+  buildProjectSessionState,
+  type ProjectAssignmentIntent,
+} from "./project-assignment.ts";
+import { withLifecycleTransitionLock } from "../orchestration/lifecycle-transition-lock.ts";
+
+/**
+ * Runtime lifecycle host supplied by the caller for assignment. It is used to
+ * synchronously invalidate and quiesce a bound personal runtime before the
+ * durable assignment intent is persisted.
+ */
+export interface RuntimeLifecycle {
+  /** Dispose the active runtime for `sessionId`, if any. Should be idempotent. */
+  disposeRuntime(sessionId: string): Promise<void> | void;
+  /** True when the session currently has an active runtime. */
+  hasRuntime?(sessionId: string): boolean;
+}
+
+export type ProjectAssignmentResult =
+  | { kind: "assigned"; session: SessionState; projectRoot: string; previousSessionId?: string }
+  | { kind: "already-assigned"; projectRoot: string; session?: SessionState }
+  | { kind: "conflict"; currentRoot: string };
 
 /**
  * Generate a short URL-safe session ID from a UUID.
@@ -57,11 +91,22 @@ export class SessionManager {
   }
 
   /**
-   * Ensure base directories exist.
+   * Ensure base directories exist and replay any pending project assignment.
    */
   init(): void {
     mkdirSync(sessionsDir(this.home), { recursive: true });
+    this.reconcilePendingAssignments();
     log.debug("session manager initialized", { home: this.home });
+  }
+
+  /**
+   * Resolve a complete Surface to an effective execution environment.
+   * An unassigned Surface is personal; an assigned Surface is the canonical
+   * project environment stored in topic-settings.json.
+   */
+  effectiveEnvironment(surface: Surface): ExecutionEnvironment {
+    const root = getProjectRoot(this.home, surface);
+    return environmentFromProjectRoot(root);
   }
 
   /**
@@ -116,6 +161,7 @@ export class SessionManager {
       chatId: surface.chatId,
       topicId: surface.kind === "topic" ? surface.topicId : undefined,
       title: opts?.title,
+      executionEnvironment: this.effectiveEnvironment(surface),
     };
 
     ensureSessionFiles(this.home, id);
@@ -129,10 +175,21 @@ export class SessionManager {
     return state;
   }
 
+  /**
+   * Bind an existing session to a Surface. Rejects environment mismatches
+   * before changing the binding.
+   */
   bindExistingToSurface(sessionId: string, surface: Surface): SessionState {
     const state = loadState(this.home, sessionId);
     if (!state) {
       throw new Error(`session not found: ${sessionId}`);
+    }
+
+    const surfaceEnv = this.effectiveEnvironment(surface);
+    if (!environmentsEqual(state.executionEnvironment, surfaceEnv)) {
+      throw new Error(
+        `environment mismatch: session ${sessionId} is ${state.executionEnvironment.kind}, surface ${surfaceId(surface)} is ${surfaceEnv.kind}`,
+      );
     }
 
     const bindings = loadBindings(this.home);
@@ -168,14 +225,16 @@ export class SessionManager {
   }
 
   /**
-   * Get the projectDir for a complete Surface from topic-settings.json.
+   * Get the project root for a complete Surface from topic-settings.json.
+   * @deprecated Use `effectiveEnvironment(surface)`.
    */
   getProjectDir(surface: Surface): string | undefined {
-    return getProjectDirFromSettings(this.home, surface);
+    return projectRootOf(this.effectiveEnvironment(surface));
   }
 
   /**
-   * Bind (or clear) the projectDir for a complete Surface.
+   * Bind (or clear) the project directory for a complete Surface.
+   * @deprecated Use `assignProject` for first assignment.
    */
   bindProjectDir(surface: Surface, projectDir: string | undefined): void {
     bindProjectDirInSettings(this.home, surface, projectDir);
@@ -189,17 +248,153 @@ export class SessionManager {
   }
 
   /**
-   * Updates state.json atomically.
-   * @deprecated Use bindProjectDir(surface, dir) instead.
+   * Assign a canonical project environment to an unassigned Surface, creating
+   * and binding a fresh project Conversation. This is the single deep operation
+   * for first assignment; callers must not coordinate settings, state,
+   * bindings, and runner replacement independently.
    */
-  setProjectDir(sessionId: string, projectDir: string | undefined): void {
-    const state = loadState(this.home, sessionId);
-    if (!state) {
-      throw new Error(`session not found: ${sessionId}`);
+  async assignProject(
+    surface: Surface,
+    requestedRoot: string,
+    runtimeLifecycle: RuntimeLifecycle,
+  ): Promise<ProjectAssignmentResult> {
+    return withLifecycleTransitionLock(async () => {
+      this.reconcilePendingAssignments();
+
+      const key = surfaceId(surface);
+      const settingsRoot = getProjectRoot(this.home, surface);
+      const existingEnv = environmentFromProjectRoot(settingsRoot);
+      const requestedEnv = projectEnvironment(requestedRoot);
+
+      // Already assigned to the same canonical root: idempotent report.
+      if (existingEnv.kind === "project" && environmentsEqual(existingEnv, requestedEnv)) {
+        const bindings = loadBindings(this.home);
+        const boundId = bindings.surfaces[key];
+        const boundState = boundId ? loadState(this.home, boundId) : null;
+        return { kind: "already-assigned", projectRoot: requestedRoot, session: boundState ?? undefined };
+      }
+
+      // Already assigned to a different root: immutable.
+      if (existingEnv.kind === "project") {
+        return { kind: "conflict", currentRoot: projectRootOf(existingEnv) ?? requestedRoot };
+      }
+
+      // Personal/unassigned: proceed with first assignment.
+      const bindings = loadBindings(this.home);
+      const previousSessionId = bindings.surfaces[key];
+
+      if (previousSessionId) {
+        // Synchronously invalidate and quiesce the prior runtime. Failure here
+        // leaves no intent and no change to settings/binding.
+        try {
+          await runtimeLifecycle.disposeRuntime(previousSessionId);
+        } catch (err) {
+          log.error("prior runtime quiescence failed during project assignment", {
+            surfaceId: key,
+            previousSessionId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          throw new Error(`Failed to quiesce the current conversation: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      const plannedSessionId = this.allocateSessionId();
+      const intent: ProjectAssignmentIntent = {
+        version: 1,
+        surfaceId: key,
+        previousSessionId,
+        plannedSessionId,
+        projectRoot: requestedRoot,
+      };
+      savePendingProjectAssignment(this.home, intent);
+
+      let state: SessionState;
+      try {
+        state = this.createOrVerifyProjectSession(surface, plannedSessionId, requestedRoot);
+        bindProjectRoot(this.home, surface, requestedRoot);
+        const nextBindings = loadBindings(this.home);
+        nextBindings.surfaces[key] = plannedSessionId;
+        saveBindings(this.home, nextBindings);
+        clearPendingProjectAssignment(this.home);
+      } catch (err) {
+        log.error("project assignment failed after intent persistence", {
+          surfaceId: key,
+          plannedSessionId,
+          projectRoot: requestedRoot,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+
+      return { kind: "assigned", session: state, projectRoot: requestedRoot, previousSessionId };
+    });
+  }
+
+  private allocateSessionId(): string {
+    for (let attempts = 0; attempts < 100; attempts += 1) {
+      const id = makeSessionId();
+      if (!existsSync(sessionDir(this.home, id)) && !existsSync(piSessionDir(this.home, id))) {
+        return id;
+      }
     }
-    const updated: SessionState = { ...state, projectDir };
-    saveState(this.home, updated);
-    log.info("set projectDir", { sessionId, projectDir });
+    throw new Error("unable to allocate a unique session id");
+  }
+
+  private createOrVerifyProjectSession(surface: Surface, id: string, projectRoot: string): SessionState {
+    const path = sessionDir(this.home, id);
+    if (existsSync(path)) {
+      const existing = loadState(this.home, id);
+      if (!existing) {
+        throw new Error(`pending assignment session ${id} exists but has no state`);
+      }
+      if (!environmentsEqual(existing.executionEnvironment, projectEnvironment(projectRoot))) {
+        throw new Error(
+          `pending assignment session ${id} exists with a different execution environment`,
+        );
+      }
+      return existing;
+    }
+
+    const state: SessionState = buildProjectSessionState(id, surface, projectRoot);
+    ensureSessionFiles(this.home, id);
+    saveState(this.home, state);
+    return state;
+  }
+
+  private reconcilePendingAssignments(): void {
+    const intent = loadPendingProjectAssignment(this.home);
+    if (intent === null) return;
+
+    let surface: Surface;
+    try {
+      surface = parseSurfaceId(intent.surfaceId);
+    } catch (err) {
+      log.error("pending assignment has invalid surface id", { surfaceId: intent.surfaceId });
+      throw new Error(`pending assignment has invalid surface id: ${intent.surfaceId}`);
+    }
+
+    const state = this.createOrVerifyProjectSession(surface, intent.plannedSessionId, intent.projectRoot);
+    const settingsRoot = getProjectRoot(this.home, surface);
+    if (settingsRoot !== intent.projectRoot) {
+      bindProjectRoot(this.home, surface, intent.projectRoot);
+    }
+
+    const key = surfaceId(surface);
+    const bindings = loadBindings(this.home);
+    const boundId = bindings.surfaces[key];
+    if (boundId !== state.id) {
+      // Acceptable states: unbound, still pointing to the previous session, or absent.
+      if (boundId !== undefined && boundId !== intent.previousSessionId) {
+        throw new Error(
+          `pending assignment replay conflict: surface ${intent.surfaceId} is bound to ${boundId}, expected ${intent.previousSessionId ?? "(none)"} or ${state.id}`,
+        );
+      }
+      bindings.surfaces[key] = state.id;
+      saveBindings(this.home, bindings);
+    }
+
+    clearPendingProjectAssignment(this.home);
+    log.info("replayed pending project assignment", { surfaceId: intent.surfaceId, sessionId: state.id });
   }
 
   setModelName(sessionId: string, modelName: string | undefined): void {
@@ -263,6 +458,7 @@ export class SessionManager {
       createdAt: new Date().toISOString(),
       chatId: 0,
       title: undefined,
+      executionEnvironment: personalEnvironment(),
     };
     saveState(this.home, state);
     log.debug("ensured internal session", { id });

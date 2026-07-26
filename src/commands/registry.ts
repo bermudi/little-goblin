@@ -226,26 +226,35 @@ const archiveHandler: CommandHandler = async ({ deps, session }) => {
   }
 };
 
-const projectHandler: CommandHandler = async ({ deps, surface, session, rawText }) => {
-  const { manager } = deps;
-  const sideEffects: SideEffect[] = [];
+const projectHandler: CommandHandler = async ({ deps, surface, rawText }) => {
+  const { manager, dispatcher } = deps;
   try {
-    const result = executeProject({
-      hasSession: session !== null,
+    const result = await executeProject({
       rawText,
-      setProjectDir: (dir) => {
-        if (!session) return;
-        manager.bindProjectDir(surface, dir);
-        sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
-      },
+      assignProject: (canonicalRoot) =>
+        manager.assignProject(surface, canonicalRoot, {
+          disposeRuntime: async (sessionId) => {
+            if (dispatcher) await dispatcher.disposeRunner(sessionId);
+          },
+        }),
     });
-    const tag: SystemTag = result.kind === "set" || result.kind === "cleared" ? "ok"
-      : result.kind === "bad-path" ? "warn"
-      : "info";
+    const sideEffects: SideEffect[] = [];
+    if (result.kind === "assigned" && result.session) {
+      if (result.previousSessionId) {
+        sideEffects.push({ kind: "runner-disposed", sessionId: result.previousSessionId });
+      }
+      sideEffects.push({ kind: "runner-created", session: result.session, surface });
+    }
+    const tag: SystemTag =
+      result.kind === "assigned" || result.kind === "already-assigned" ? "ok"
+      : result.kind === "missing-arg" ? "info"
+      : result.kind === "bad-path" || result.kind === "conflict" || result.kind === "rejected" ? "warn"
+      : "error";
     return replied(result.reply, sideEffects, tag);
   } catch (err) {
-    log.error("project failed", { error: String(err), sessionId: session?.id });
-    return replied("Failed to set project directory. Please try again.", [], "error");
+    const sessionId = deps.manager.peekBinding(surface)?.sessionId;
+    log.error("project failed", { error: String(err), sessionId });
+    return replied("Failed to assign project. Please try again.", [], "error");
   }
 };
 

@@ -194,7 +194,9 @@ describe("handleCommand", () => {
     const harness = makeHarness();
     const session = harness.manager.createForSurface(harness.surface);
     const result = expectReplied(await dispatch({ command: "/project", rawText: `/project ${harness.cfg.goblinHome}`, session, harness }));
-    expect(result.sideEffects).toEqual([{ kind: "runner-disposed", sessionId: session.id }]);
+    expect(result.sideEffects).toHaveLength(2);
+    expect(result.sideEffects[0]).toEqual({ kind: "runner-disposed", sessionId: session.id });
+    expect(result.sideEffects[1]?.kind).toBe("runner-created");
   });
 
   it("/model switches the model in place without disposing the runner", async () => {
@@ -638,9 +640,9 @@ describe("handleCommand", () => {
       expect(result.tag).toBe("ok");
     });
 
-    it("/project without a session is tagged 'info'", async () => {
+    it("/project without a session is tagged 'ok'", async () => {
       const result = expectReplied(await dispatch({ command: "/project", rawText: "/project /tmp" }));
-      expect(result.tag).toBe("info");
+      expect(result.tag).toBe("ok");
     });
 
     it("/project bad path is tagged 'warn'", async () => {

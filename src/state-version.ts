@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { atomicWrite } from "./fs.ts";
 import { log } from "./log.ts";
 
-export const CURRENT_STATE_VERSION = 1;
+export const CURRENT_STATE_VERSION = 2;
 
 export interface StateVersionFile {
   version: number;

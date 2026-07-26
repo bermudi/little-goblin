@@ -3,6 +3,7 @@ import { topicSettingsPath } from "./paths.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 import { log } from "../log.ts";
 import { surfaceId } from "../surface.ts";
+import { resolveProjectRoot } from "./environment.ts";
 
 export type { TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile } from "./types.ts";
 
@@ -72,7 +73,7 @@ export function loadLegacyTopicSettings(home: string): LegacyTopicSettingsFile {
 }
 
 function isEmptySettings(s: TopicSettings): boolean {
-  return !s.projectDir && !s.pendingProjectNotice;
+  return !s.projectRoot && !s.projectDir && !s.pendingProjectNotice;
 }
 
 function settingsForSurface(settings: TopicSettingsFile, surface: Surface): TopicSettings | undefined {
@@ -89,21 +90,60 @@ function updateSurface(settings: TopicSettingsFile, surface: Surface, updater: (
   }
 }
 
-/** Read the projectDir for a complete Surface. */
-export function getProjectDir(home: string, surface: Surface): string | undefined {
+/** Read the canonical project root for a complete Surface. */
+export function getProjectRoot(home: string, surface: Surface): string | undefined {
   const settings = loadTopicSettings(home);
-  return settingsForSurface(settings, surface)?.projectDir;
+  const s = settingsForSurface(settings, surface);
+  return s?.projectRoot ?? s?.projectDir;
 }
 
-/** Bind (or clear) the projectDir for a complete Surface. */
-export function bindProjectDir(home: string, surface: Surface, projectDir: string | undefined): void {
-  const notice = projectDir !== undefined
-    ? `Project directory changed to \`${projectDir}\`.`
-    : undefined;
+/**
+ * Read the project root for a complete Surface using the legacy field name.
+ * @deprecated Use `getProjectRoot`.
+ */
+export function getProjectDir(home: string, surface: Surface): string | undefined {
+  return getProjectRoot(home, surface);
+}
+
+/**
+ * Bind (or clear) the canonical project root for a complete Surface.
+ * This is the assignment primitive: it persists the canonical root and clears
+ * any legacy projectDir/pendingProjectNotice for the Surface.
+ */
+export function bindProjectRoot(home: string, surface: Surface, projectRoot: string | undefined): void {
   const settings = loadTopicSettings(home);
-  updateSurface(settings, surface, (s) => ({ ...s, projectDir, pendingProjectNotice: notice }));
+  updateSurface(settings, surface, (s) => ({
+    ...s,
+    projectRoot,
+    projectDir: undefined,
+    pendingProjectNotice: undefined,
+  }));
   saveTopicSettings(home, settings);
-  log.info("bound projectDir", { surfaceId: surfaceId(surface), projectDir });
+  log.info("bound projectRoot", { surfaceId: surfaceId(surface), projectRoot });
+}
+
+/**
+ * Bind (or clear) the project directory for a complete Surface. Input is
+ * canonicalized before storage. This legacy helper also sets `projectDir` and
+ * a pending notice for backwards compatibility with mutable-project callers.
+ * @deprecated Use `bindProjectRoot` for canonical assignment or
+ * `SessionManager.assignProject` for immutable first assignment.
+ */
+export function bindProjectDir(home: string, surface: Surface, projectDir: string | undefined): void {
+  if (projectDir === undefined) {
+    bindProjectRoot(home, surface, undefined);
+    return;
+  }
+  const canonical = resolveProjectRoot(projectDir);
+  const settings = loadTopicSettings(home);
+  updateSurface(settings, surface, (s) => ({
+    ...s,
+    projectRoot: canonical,
+    projectDir: canonical,
+    pendingProjectNotice: `Project directory changed to \`${canonical}\`.`,
+  }));
+  saveTopicSettings(home, settings);
+  log.info("bound projectDir (deprecated)", { surfaceId: surfaceId(surface), projectDir: canonical });
 }
 
 /** Read and clear the pending project notice for a complete Surface. */

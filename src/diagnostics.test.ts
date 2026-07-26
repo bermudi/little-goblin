@@ -14,6 +14,7 @@ import { sessionDir, transcriptPath } from "./sessions/paths.ts";
 import type { SubagentRunner } from "./subagents/mod.ts";
 import type { AgentRunner } from "./agent/mod.ts";
 import type { SubagentInfo } from "./subagents/types.ts";
+import { personalEnvironment } from "./sessions/environment.ts";
 
 // ---------------------------------------------------------------------------
 // Lightweight stubs (we only need shape, not behavior, for these tests).
@@ -33,7 +34,7 @@ function stubRunner(opts: { tools: string[] | null; modelName: string; initializ
 }
 
 function makeSession(id: string): SessionState {
-  return { id, createdAt: "2026-04-29T00:00:00.000Z", chatId: 1 };
+  return { id, createdAt: "2026-04-29T00:00:00.000Z", chatId: 1, executionEnvironment: personalEnvironment() };
 }
 
 const baseDiagnostics: Diagnostics = {

@@ -4,6 +4,7 @@ import { buildStartHandler } from "./start.ts";
 import type { SessionManager } from "../sessions/mod.ts";
 import type { SessionState } from "../sessions/types.ts";
 import { dmSurface, type Surface } from "../surface.ts";
+import { personalEnvironment } from "../sessions/environment.ts";
 
 type ReplyCall = { text: string; opts?: Record<string, unknown> };
 
@@ -77,6 +78,7 @@ describe("buildStartHandler", () => {
       createdAt: new Date().toISOString(),
       chatId: 123,
       topicId: undefined,
+      executionEnvironment: personalEnvironment(),
     };
     const { manager, calls } = makeManager("unused", existing);
     const handler = buildStartHandler(manager);

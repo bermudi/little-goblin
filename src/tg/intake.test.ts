@@ -317,7 +317,7 @@ describe("Telegram intake", () => {
 
     expect(secondRunner.dispose).toHaveBeenCalledTimes(1);
     expect(agentRunners.has(secondSession.id)).toBe(false);
-    expect(replies.at(-1)).toContain("Project bound");
+    expect(replies.at(-1)).toContain("Project assigned");
   });
 
   it("queues /queue prompts behind active work at the intake seam", async () => {

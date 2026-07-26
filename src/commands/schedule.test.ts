@@ -15,6 +15,7 @@ import { ScheduleStore } from "../scheduler/store.ts";
 import type { SessionState } from "../sessions/types.ts";
 import { dmSurface, topicSurface, type Surface } from "../surface.ts";
 import type { ScheduledTurn } from "../scheduler/types.ts";
+import { personalEnvironment } from "../sessions/environment.ts";
 
 const NOW = Date.parse("2026-07-04T12:00:00Z");
 const LOC: Surface = topicSurface("supergroup", 100, 5);
@@ -26,6 +27,7 @@ function makeSession(id = "sess-a"): SessionState {
     createdAt: "2026-07-01T00:00:00Z",
     chatId: 100,
     topicId: 5,
+    executionEnvironment: personalEnvironment(),
   };
 }
 

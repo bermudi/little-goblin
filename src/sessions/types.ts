@@ -4,6 +4,7 @@
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Surface, SurfaceId } from "../surface.ts";
+import type { ExecutionEnvironment } from "./environment.ts";
 
 /** Migration-only legacy locator shape (chat + optional topic). Not exported from the session module API. */
 export interface ChatLocator {
@@ -26,6 +27,8 @@ export interface SessionState {
    * This field may exist in legacy state.json files but is no longer read or written.
    */
   projectDir?: string;
+  /** Immutable execution environment captured at Conversation creation. */
+  executionEnvironment: ExecutionEnvironment;
   /** Session-scoped model override. Falls back to config default when absent. */
   modelName?: string;
   /** Session-scoped thinking level override. Falls back to model default when absent. */
@@ -52,6 +55,9 @@ export interface BindingsFile {
 }
 
 export interface TopicSettings {
+  /** Canonical project root. May be a legacy `projectDir` before environment migration runs. */
+  projectRoot?: string;
+  /** @deprecated Legacy field, present only until environment migration rewrites it to `projectRoot`. */
   projectDir?: string;
   /** Queued notice injected as context on the next user message (e.g. project dir change). Consumed on read. */
   pendingProjectNotice?: string;

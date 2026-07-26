@@ -35,11 +35,12 @@ import type { Surface } from "../surface.ts";
 import type { ActiveScope } from "../memory/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
-import { workdirPath } from "../workspace/paths.ts";
 import { AgentBackend, AgentBackendOptions, PiAgentBackend } from "./backend.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import { createExternalAgentTool } from "../external-agents/tool.ts";
 import { McpRunner, createMcpTools } from "../mcp/mod.ts";
+import type { ExecutionEnvironment } from "../sessions/environment.ts";
+import { environmentCwd, projectRootOf } from "../sessions/environment.ts";
 
 /** Options for constructing an AgentRunner. */
 export interface AgentRunnerOptions {
@@ -49,8 +50,8 @@ export interface AgentRunnerOptions {
   customTools: ToolDefinition[];
   subagentRunner?: SubagentRunner;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
-  /** Directory to use as cwd and agentDir. Falls back to goblin defaults when absent. */
-  projectDir?: string;
+  /** Immutable execution environment captured at Conversation creation. */
+  executionEnvironment: ExecutionEnvironment;
   /** Session-scoped model override. Falls back to config default when absent. */
   modelName?: string;
   /** Session-scoped thinking level override. Falls back to model default when absent. */
@@ -216,7 +217,7 @@ export class AgentRunner {
   private activeScope: ActiveScope;
   private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
   private topicNameCache = new Map<string, string | null>();
-  private projectDir: string | undefined;
+  private executionEnvironment: ExecutionEnvironment;
   private _modelName: string | undefined;
   private _thinkingLevel: ThinkingLevel | undefined;
   private pendingProjectNotice: string | undefined;
@@ -286,7 +287,7 @@ export class AgentRunner {
     this.externalAgentRunner = opts.externalAgentRunner ?? null;
     this.mcpRunner = opts.mcpRunner ?? null;
     this.getTopicName = opts.getTopicName;
-    this.projectDir = opts.projectDir;
+    this.executionEnvironment = opts.executionEnvironment;
     this._modelName = opts.modelName ?? (opts.resolvedModel ? `${opts.resolvedModel.model.provider}/${opts.resolvedModel.model.id}` : undefined);
     this._thinkingLevel = opts.thinkingLevel;
     this.pendingProjectNotice = opts.pendingProjectNotice;
@@ -321,13 +322,13 @@ export class AgentRunner {
       this.throwIfAbortedBeforeInit();
 
       const home = this.cfg.goblinHome;
-      const cwd = this.projectDir ?? workdirPath(home);
+      const cwd = environmentCwd(this.executionEnvironment, home);
       const resolvedModel = this.resolvedModel ?? resolveModel({ ...this.cfg, modelName: this._modelName ?? this.cfg.modelName });
       this.resolvedModel = resolvedModel;
 
       const goblinSystemPrompt = await buildGoblinSystemPrompt({
         home,
-        projectDir: this.projectDir,
+        executionEnvironment: this.executionEnvironment,
       });
       this.goblinSystemPrompt = goblinSystemPrompt;
 
@@ -425,12 +426,13 @@ export class AgentRunner {
       );
     }
 
-    if (this.externalAgentRunner && this.cfg.externalAgents?.backends.length && this.projectDir) {
+    const projectDir = projectRootOf(this.executionEnvironment);
+    if (this.externalAgentRunner && this.cfg.externalAgents?.backends.length && projectDir) {
       tools.push(
         createExternalAgentTool({
           runner: this.externalAgentRunner,
           sessionId: this.sessionId,
-          projectDir: this.projectDir,
+          projectDir,
           enabledBackends: this.cfg.externalAgents.backends,
           onStatusUpdate: (msg) => this.callbacks?.onStatusUpdate(msg),
         }),

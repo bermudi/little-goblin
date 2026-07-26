@@ -12,6 +12,7 @@ import { appendQuarantine } from "../memory/quarantine.ts";
 import type { TranscriptLine } from "../sessions/transcript.ts";
 import type { ScheduledTurn } from "./types.ts";
 import type { ScheduleStore } from "./store.ts";
+import { personalEnvironment } from "../sessions/environment.ts";
 
 /**
  * Default scheduler tick interval: 60 seconds. Bounds worst-case delivery
@@ -348,6 +349,7 @@ export class SchedulerLoop {
       id,
       createdAt: new Date().toISOString(),
       chatId: 0,
+      executionEnvironment: personalEnvironment(),
     };
     return new Promise((resolve, reject) => {
       this.dispatcher.enqueueInternalTurn!(session, prompt, resolve, reject);

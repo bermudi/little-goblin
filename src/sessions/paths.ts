@@ -46,12 +46,21 @@ export function metricsPath(home: string, id: string): string {
   return join(sessionDir(home, id), "metrics.jsonl");
 }
 
+export function piSessionDir(home: string, id: string): string {
+  validateSessionId(id);
+  return join(sessionDir(home, id), "pi");
+}
+
 export function configPath(home: string): string {
   return join(home, "state", "bindings.json");
 }
 
 export function topicSettingsPath(home: string): string {
   return join(home, "state", "topic-settings.json");
+}
+
+export function pendingProjectAssignmentPath(home: string): string {
+  return join(home, "state", "pending-project-assignment.json");
 }
 
 export function schedulesPath(home: string): string {

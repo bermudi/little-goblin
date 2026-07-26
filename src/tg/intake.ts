@@ -16,6 +16,8 @@ import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.
 import { MetricsStore } from "../metrics/mod.ts";
 import { SessionManager, type SessionState } from "../sessions/mod.ts";
 import { guestSurface, type Surface } from "../surface.ts";
+import type { ExecutionEnvironment } from "../sessions/environment.ts";
+import { isProjectEnvironment } from "../sessions/environment.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { TurnDispatcher, type PromptContent, type TurnSink } from "../orchestration/dispatcher.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
@@ -97,7 +99,7 @@ export interface TelegramIntakeOptions {
 type ActiveTurn = {
   surface: Surface;
   session: SessionState;
-  projectDir: string | undefined;
+  environment: ExecutionEnvironment;
   schedule: (
     run: (runner: AgentRunner, isCurrent: () => boolean) => Promise<void>,
     failureLog: string,
@@ -393,7 +395,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     return {
       surface,
       session,
-      projectDir: manager.getProjectDir(surface),
+      environment: session.executionEnvironment,
       schedule: (run, failureLog, opts) => {
         const runner = dispatcher.getOrCreateRunner(session, surface);
         if (runner.isAbortTimedOut) {
@@ -553,7 +555,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     turn.schedule(
       async (runner, isCurrent) => {
-        if (turn.projectDir) {
+        if (isProjectEnvironment(turn.environment)) {
           const raw = await downloadFileBytes(api, doc.fileId, cfg.botToken);
           if (!isCurrent()) return;
           if (!raw) {
@@ -572,7 +574,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             }
             return;
           }
-          const destPath = join(turn.projectDir, safeName);
+          const destPath = join(turn.environment.projectRoot, safeName);
           if (!isCurrent()) return;
           try {
             await writeFile(destPath, raw);
@@ -600,7 +602,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         }
 
         if (!isCurrent()) return;
-        log.debug("dropping document: no projectDir", { mimeType: doc.mimeType, fileName: doc.fileName });
+        log.debug("dropping document: no project environment", { mimeType: doc.mimeType, fileName: doc.fileName });
         if (doc.caption) {
           await runPrompt(message, turn.surface, runner, turn.session, doc.caption);
         } else {
@@ -684,10 +686,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // Saved-name mime→ext mapping is deliberately the narrow subset the spec
         // constrains (`audio/ogg → oga, else bin`); the ASR-side table in
         // groq.ts is liberal because Groq only uses it as a multipart hint.
-        if (turn.projectDir) {
+        if (isProjectEnvironment(turn.environment)) {
           const ext = mimeType === "audio/ogg" ? "oga" : "bin";
           const safeName = `voice-${Date.now()}.${ext}`;
-          const destPath = join(turn.projectDir, safeName);
+          const destPath = join(turn.environment.projectRoot, safeName);
           if (!isCurrent()) return;
           try {
             await writeFile(destPath, raw);
@@ -725,7 +727,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     turn.schedule(
       async (runner, isCurrent) => {
-        if (turn.projectDir) {
+        if (isProjectEnvironment(turn.environment)) {
           const raw = await downloadFileBytes(api, audio.fileId, cfg.botToken);
           if (!isCurrent()) return;
           if (!raw) {
@@ -749,7 +751,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             }
             return;
           }
-          const destPath = join(turn.projectDir, safeName);
+          const destPath = join(turn.environment.projectRoot, safeName);
           if (!isCurrent()) return;
           try {
             await writeFile(destPath, raw);
@@ -777,7 +779,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         }
 
         if (!isCurrent()) return;
-        log.debug("dropping audio: no projectDir");
+        log.debug("dropping audio: no project environment");
         if (audio.caption) {
           await runPrompt(message, turn.surface, runner, turn.session, audio.caption);
         } else {

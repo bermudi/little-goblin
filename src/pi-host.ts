@@ -5,8 +5,8 @@
  * cross-module import from `subagents/` into `agent/paths.ts`.
  */
 
-import { readdirSync, statSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, statSync, existsSync, openSync, readSync, closeSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -58,34 +58,147 @@ export function piAgentDir(home: string): string {
   return join(home, "state", "pi");
 }
 
+export class IncompatiblePiHistoryError extends Error {
+  readonly code = "INCOMPATIBLE_PI_HISTORY";
+  constructor(
+    public readonly filePath: string,
+    public readonly headerCwd: string,
+    public readonly expectedCwd: string,
+  ) {
+    super(
+      `Incompatible pi history: ${filePath} recorded cwd ${headerCwd} does not match environment cwd ${expectedCwd}`,
+    );
+    this.name = "IncompatiblePiHistoryError";
+  }
+}
+
+export class MalformedPiHistoryError extends Error {
+  readonly code = "MALFORMED_PI_HISTORY";
+  constructor(public readonly filePath: string) {
+    super(`Malformed pi history header: ${filePath}`);
+    this.name = "MalformedPiHistoryError";
+  }
+}
+
 /**
- * Find the most recently modified `.jsonl` session file in `piSessionDir`.
- *
- * This mirrors pi's internal `findMostRecentSession` but is cwd-agnostic: it
- * does NOT filter by the on-disk `header.cwd`, because goblin pins the session
- * directory to sessions/<id>/pi (the directory is the scope) and the runner's
- * resolved cwd can legitimately differ from a prior file's header — e.g. after
- * a /project bind or a /model switch. Cwd-gated filtering (which
- * SessionManager.continueRecent performs) silently misses in that case and
- * creates a fresh empty session, losing history.
- *
- * Used together with SessionManager.open(file, dir, cwd) to resume history
- * across project and model switches. Returns null on ENOENT or empty dir.
+ * Return the filesystem canonical form of a cwd for comparison.
+ * Falls back to an absolute path if realpath fails.
  */
-export function findMostRecentPiSession(piSessionDir: string): string | null {
-  if (!existsSync(piSessionDir)) return null;
+function canonicalCwd(cwd: string): string {
+  try {
+    return realpathSync(cwd);
+  } catch {
+    return resolve(cwd);
+  }
+}
+
+/** Read the first line of a file into a string. */
+function readFirstLineSync(filePath: string): string {
+  const fd = openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(4096);
+    const bytesRead = readSync(fd, buffer, 0, 4096, 0);
+    const chunk = buffer.toString("utf-8", 0, bytesRead);
+    const nl = chunk.indexOf("\n");
+    if (nl >= 0) return chunk.slice(0, nl);
+    // First line exceeds 4KB or file has no newline: read the whole file.
+    const full = new Uint8Array(statSync(filePath).size);
+    readSync(fd, full, 0, full.length, 0);
+    const fullText = new TextDecoder().decode(full);
+    return fullText.split("\n")[0] ?? fullText;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Read the session header from a pi JSONL history file and return its cwd.
+ * Throws `MalformedPiHistoryError` if the first line cannot be parsed or has
+ * no valid `cwd`.
+ */
+export function readPiSessionHeader(filePath: string): { cwd: string } {
+  let firstLine: string;
+  try {
+    firstLine = readFirstLineSync(filePath);
+  } catch (err) {
+    throw new MalformedPiHistoryError(filePath);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(firstLine);
+  } catch {
+    throw new MalformedPiHistoryError(filePath);
+  }
+  if (parsed === null || typeof parsed !== "object" || typeof (parsed as Record<string, unknown>).cwd !== "string") {
+    throw new MalformedPiHistoryError(filePath);
+  }
+  return { cwd: (parsed as Record<string, unknown>).cwd as string };
+}
+
+interface PiSessionFile {
+  path: string;
+  mtime: number;
+}
+
+function listPiSessionFiles(piSessionDir: string): PiSessionFile[] {
+  if (!existsSync(piSessionDir)) return [];
   let files: string[];
   try {
     files = readdirSync(piSessionDir).filter((f) => f.endsWith(".jsonl"));
   } catch {
-    return null;
+    return [];
   }
-  if (files.length === 0) return null;
-  let best: { path: string; mtime: number } | null = null;
+  const entries: PiSessionFile[] = [];
   for (const f of files) {
     const path = join(piSessionDir, f);
-    const mtime = statSync(path).mtime.getTime();
-    if (!best || mtime > best.mtime) best = { path, mtime };
+    try {
+      const mtime = statSync(path).mtime.getTime();
+      entries.push({ path, mtime });
+    } catch {
+      // skip files we cannot stat
+    }
   }
-  return best ? best.path : null;
+  return entries.sort((a, b) => b.mtime - a.mtime);
+}
+
+/**
+ * Find the most recently modified `.jsonl` session file in `piSessionDir` that
+ * is compatible with the runner's expected CWD.
+ *
+ * A history file is compatible when its header `cwd`, after filesystem
+ * canonicalization, equals the runner's expected CWD. The most recent file
+ * wins; if it is missing, malformed, or incompatible, initialization fails
+ * loudly rather than silently starting empty history. When no history exists,
+ * returns null so a new session can be created.
+ */
+export function findMostRecentCompatiblePiSession(piSessionDir: string, cwd: string): string | null {
+  const files = listPiSessionFiles(piSessionDir);
+  if (files.length === 0) return null;
+
+  const expected = canonicalCwd(cwd);
+  const mostRecent = files[0]!;
+  const header = readPiSessionHeader(mostRecent.path);
+  const actual = canonicalCwd(header.cwd);
+  if (actual !== expected) {
+    throw new IncompatiblePiHistoryError(mostRecent.path, header.cwd, cwd);
+  }
+  return mostRecent.path;
+}
+
+/**
+ * Validate all `.jsonl` session files in a directory against an expected CWD.
+ * Returns an array of incompatible paths. Throws on malformed headers.
+ */
+export function validatePiSessionHeaders(piSessionDir: string, expectedCwd: string): { path: string; headerCwd: string }[] {
+  const files = listPiSessionFiles(piSessionDir);
+  const expected = canonicalCwd(expectedCwd);
+  const incompatible: { path: string; headerCwd: string }[] = [];
+  for (const file of files) {
+    const header = readPiSessionHeader(file.path);
+    const actual = canonicalCwd(header.cwd);
+    if (actual !== expected) {
+      incompatible.push({ path: file.path, headerCwd: header.cwd });
+    }
+  }
+  return incompatible;
 }

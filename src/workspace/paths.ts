@@ -7,6 +7,14 @@
 
 import { join } from "node:path";
 
+/**
+ * Path to the persistent workspace root. User-authored prompt files and curated
+ * skills live here; personal Execution Environments use this directory as CWD.
+ */
+export function workspacePath(home: string): string {
+  return join(home, "workspace");
+}
+
 /** Path to the workdir directory for sandboxed execution. */
 export function workdirPath(home: string): string {
   return join(home, "scratch", "workdir");

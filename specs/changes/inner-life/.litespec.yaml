@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-07-26T03:06:20Z
+dependsOn:
+  - conversation-lifecycle

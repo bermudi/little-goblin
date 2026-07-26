@@ -25,6 +25,12 @@ import { surfaceFromLocatorCompat } from "./surface-compat.ts";
 
 import type { BindingsFile, LegacyBindingsFile, LegacyTopicSettingsFile, TopicSettingsFile, ChatLocator, TopicSettings } from "./types.ts";
 
+export interface SurfaceMigrationPlan {
+  readonly bindings: BindingsFile;
+  readonly settings: TopicSettingsFile;
+  readonly schedules: ScheduleStoreFile | null;
+}
+
 interface TopicEvidence {
   containers: Set<"private" | "supergroup">;
   sources: string[];
@@ -348,7 +354,7 @@ function scheduleSurface(
 }
 
 /**
- * Migrate legacy `schedules.json` entries from `locator` to `surfaceId`.
+ * Plan the migration of legacy `schedules.json` entries from `locator` to `surfaceId`.
  *
  * The file is read directly so partially-migrated files (some legacy, some
  * canonical) are handled: canonical records with `surfaceId` are preserved;
@@ -356,10 +362,10 @@ function scheduleSurface(
  * canonical file is validated in memory; the caller writes it atomically after
  * all other outputs have been computed.
  */
-function migrateSchedules(
+function planScheduleMigration(
   home: string,
+  bindings: BindingsFile,
   evidence: Map<string, TopicEvidence>,
-  sessionSurfaces: Map<string, Surface[]>,
 ): ScheduleStoreFile | null {
   let raw: string;
   try {
@@ -384,6 +390,7 @@ function migrateSchedules(
 
   const file = parsed as ScheduleStoreFile;
   let changed = false;
+  const sessionSurfaces = buildSessionSurfaces(bindings);
 
   const migrated: PersistedScheduledTurn[] = file.schedules.map((entry) => {
     const rawEntry = entry as unknown as LegacyScheduleRecord;
@@ -420,35 +427,16 @@ function migrateSchedules(
 }
 
 /**
- * Migrate legacy bindings, topic-settings, and schedules to canonical
- * SurfaceId-keyed files.
- *
- * The migration is fully precomputed: it computes the canonical replacement for
- * every file in memory, validates every SurfaceId, and only then writes the
- * files atomically per file. It is idempotent across legacy, canonical, and
- * mixed-generation inputs.
+ * Read legacy and canonical surface state, compute the canonical replacement
+ * for every file in memory, and validate every produced SurfaceId. The result
+ * is a read-only plan: no persisted input is mutated.
  */
-export function migrateSurfaceState(home: string): void {
+export function planSurfaceMigration(home: string): SurfaceMigrationPlan {
   const canonicalBindings = loadBindings(home);
   const legacyBindings = loadLegacyBindings(home);
   const canonicalSettings = loadTopicSettings(home);
   const legacySettings = loadLegacyTopicSettings(home);
   const schedules = loadSchedulesForEvidence(home);
-
-  // Short-circuit: nothing legacy to process.
-  const hasLegacy =
-    Object.keys(legacyBindings.dm ?? {}).length > 0 ||
-    Object.keys(legacyBindings.topics ?? {}).length > 0 ||
-    Object.keys(legacyBindings.supergroups ?? {}).length > 0 ||
-    Object.keys(legacyBindings.guest ?? {}).length > 0 ||
-    Object.keys(legacySettings.dm ?? {}).length > 0 ||
-    Object.keys(legacySettings.topics ?? {}).length > 0 ||
-    Object.keys(legacySettings.supergroups ?? {}).length > 0 ||
-    schedules.length > 0;
-
-  if (!hasLegacy) {
-    return;
-  }
 
   const evidence = collectTopicEvidence(
     canonicalBindings,
@@ -460,13 +448,29 @@ export function migrateSurfaceState(home: string): void {
 
   const newBindings = migrateBindings(canonicalBindings, legacyBindings, evidence);
   const newSettings = migrateSettings(canonicalSettings, legacySettings, evidence);
-  const sessionSurfaces = buildSessionSurfaces(newBindings);
-  const newSchedules = migrateSchedules(home, evidence, sessionSurfaces);
+  const newSchedules = planScheduleMigration(home, newBindings, evidence);
 
-  // All outputs are computed and validated in memory before the first write.
-  saveBindings(home, newBindings);
-  saveTopicSettings(home, newSettings);
-  if (newSchedules !== null) {
-    saveStore(home, newSchedules);
+  return { bindings: newBindings, settings: newSettings, schedules: newSchedules };
+}
+
+/**
+ * Apply a validated surface migration plan. This performs the per-file atomic
+ * writes and is the only surface-migration path that mutates persisted input.
+ */
+export function applySurfaceMigration(home: string, plan: SurfaceMigrationPlan): void {
+  saveBindings(home, plan.bindings);
+  saveTopicSettings(home, plan.settings);
+  if (plan.schedules !== null) {
+    saveStore(home, plan.schedules);
   }
+}
+
+/**
+ * Convenience entry point: plan and apply surface migration in one call.
+ * New orchestration code should prefer the separate plan/apply functions so
+ * the whole-run migration can preflight every step before the first write.
+ */
+export function migrateSurfaceState(home: string): void {
+  const plan = planSurfaceMigration(home);
+  applySurfaceMigration(home, plan);
 }

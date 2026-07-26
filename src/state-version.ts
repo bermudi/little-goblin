@@ -8,7 +8,6 @@
 
 import { readFileSync } from "node:fs";
 import { atomicWrite } from "./fs.ts";
-import { log } from "./log.ts";
 
 export const CURRENT_STATE_VERSION = 2;
 
@@ -21,22 +20,44 @@ export function stateVersionPath(home: string): string {
 }
 
 /**
- * Read the persisted state version. Missing or malformed files return 0,
- * indicating "before versioning".
+ * Read the persisted state version. Only an absent file returns 0, indicating
+ * "before versioning". Malformed JSON, an invalid schema, a negative or
+ * non-integer value, or a version newer than the running code fail loudly.
  */
 export function readStateVersion(home: string): number {
+  const path = stateVersionPath(home);
+  let raw: string;
   try {
-    const raw = readFileSync(stateVersionPath(home), "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed !== null && typeof parsed === "object" && "version" in parsed) {
-      const version = Number((parsed as Record<string, unknown>).version);
-      if (Number.isSafeInteger(version) && version >= 0) return version;
-    }
+    raw = readFileSync(path, "utf-8");
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return 0;
-    log.warn("malformed state version file, treating as 0", { home, error: String(e) });
+    throw new Error(`cannot read state version file ${path}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  return 0;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`malformed state version file ${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  if (parsed === null || typeof parsed !== "object" || !("version" in parsed)) {
+    throw new Error(`invalid state version schema in ${path}: missing "version" field`);
+  }
+
+  const versionValue = (parsed as Record<string, unknown>).version;
+  const version = Number(versionValue);
+  if (!Number.isSafeInteger(version)) {
+    throw new Error(`invalid state version in ${path}: ${versionValue} is not a safe integer`);
+  }
+  if (version < 0) {
+    throw new Error(`invalid state version in ${path}: ${version} is negative`);
+  }
+  if (version > CURRENT_STATE_VERSION) {
+    throw new Error(`state version ${version} in ${path} is newer than supported ${CURRENT_STATE_VERSION}`);
+  }
+
+  return version;
 }
 
 /**

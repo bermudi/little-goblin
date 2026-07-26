@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { migrateSurfaceState } from "./surface-migration.ts";
+import { migrateSurfaceState, planSurfaceMigration, applySurfaceMigration } from "./surface-migration.ts";
 import { configPath, schedulesPath, topicSettingsPath } from "./paths.ts";
 import { loadBindings } from "./bindings.ts";
 import { loadTopicSettings } from "./topic-settings.ts";
@@ -240,5 +240,70 @@ describe("migrateSurfaceState", () => {
     });
 
     expect(() => migrateSurfaceState(tmpDir)).toThrow(/no binding candidate/);
+  });
+
+  describe("plan/apply separation", () => {
+    it("planSurfaceMigration does not mutate persisted state", () => {
+      writeLegacyBindings({
+        dm: { [CHAT_ID]: DM_SESSION },
+        supergroups: {},
+        topics: {},
+        guest: {},
+      });
+      writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
+
+      const beforeBindings = readFileSync(configPath(tmpDir), "utf-8");
+      planSurfaceMigration(tmpDir);
+      const afterBindings = readFileSync(configPath(tmpDir), "utf-8");
+
+      expect(afterBindings).toBe(beforeBindings);
+    });
+
+    it("planSurfaceMigration returns the canonical plan for every surface kind", () => {
+      writeLegacyBindings({
+        dm: { [CHAT_ID]: DM_SESSION },
+        supergroups: { [SG_ID]: SG_SESSION },
+        guest: { [789]: GUEST_SESSION },
+        topics: {},
+      });
+      writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
+
+      const plan = planSurfaceMigration(tmpDir);
+
+      expect(plan.bindings.surfaces[surfaceId(dmSurface(CHAT_ID))]).toBe(DM_SESSION);
+      expect(plan.bindings.surfaces[surfaceId(supergroupSurface(SG_ID))]).toBe(SG_SESSION);
+      expect(plan.bindings.surfaces[surfaceId(guestSurface(789))]).toBe(GUEST_SESSION);
+      expect(plan.settings.version).toBe(1);
+    });
+
+    it("applySurfaceMigration writes the plan without re-planning", () => {
+      writeLegacyBindings({
+        dm: { [CHAT_ID]: DM_SESSION },
+        supergroups: {},
+        topics: {},
+        guest: {},
+      });
+      writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
+
+      const plan = planSurfaceMigration(tmpDir);
+      // Mutate the source to prove apply does not re-read it.
+      writeFileSync(configPath(tmpDir), JSON.stringify({ dm: { "999": "evil" }, topics: {}, supergroups: {}, guest: {} }));
+
+      applySurfaceMigration(tmpDir, plan);
+
+      const bindings = loadBindings(tmpDir);
+      expect(bindings.surfaces[surfaceId(dmSurface(CHAT_ID))]).toBe(DM_SESSION);
+      expect(bindings.surfaces[surfaceId(dmSurface(999))]).toBeUndefined();
+    });
+
+    it("fails whole-run preflight before apply writes when topic evidence is missing", () => {
+      writeLegacyBindings({ topics: { [CHAT_ID]: { [TOPIC_ID]: SESSION_ID } } });
+      const before = readFileSync(configPath(tmpDir), "utf-8");
+      writeLegacyTopicSettings({ topics: {}, dm: {}, supergroups: {} });
+      writeSchedules({ schedules: [] });
+
+      expect(() => planSurfaceMigration(tmpDir)).toThrow(/missing container evidence/);
+      expect(readFileSync(configPath(tmpDir), "utf-8")).toBe(before);
+    });
   });
 });

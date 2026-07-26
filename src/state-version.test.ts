@@ -21,19 +21,34 @@ describe("state-version", () => {
   });
 
   it("returns the persisted version", () => {
-    writeStateVersion(home, 3);
-    expect(readStateVersion(home)).toBe(3);
+    writeStateVersion(home, 1);
+    expect(readStateVersion(home)).toBe(1);
     expect(stateVersionPath(home)).toBe(join(home, "state", "state-version.json"));
   });
 
-  it("recovers from a malformed file", () => {
+  it("rejects a malformed JSON file", () => {
     writeFileSync(stateVersionPath(home), "not json");
-    expect(readStateVersion(home)).toBe(0);
+    expect(() => readStateVersion(home)).toThrow(/malformed state version file/);
   });
 
-  it("recovers from a negative or non-integer value", () => {
+  it("rejects an invalid schema", () => {
+    writeFileSync(stateVersionPath(home), JSON.stringify({ foo: 1 }));
+    expect(() => readStateVersion(home)).toThrow(/invalid state version schema/);
+  });
+
+  it("rejects a negative version", () => {
     writeFileSync(stateVersionPath(home), JSON.stringify({ version: -1 }));
-    expect(readStateVersion(home)).toBe(0);
+    expect(() => readStateVersion(home)).toThrow(/negative/);
+  });
+
+  it("rejects a non-integer version", () => {
+    writeFileSync(stateVersionPath(home), JSON.stringify({ version: 1.5 }));
+    expect(() => readStateVersion(home)).toThrow(/safe integer/);
+  });
+
+  it("rejects a version newer than the running code", () => {
+    writeFileSync(stateVersionPath(home), JSON.stringify({ version: CURRENT_STATE_VERSION + 10 }));
+    expect(() => readStateVersion(home)).toThrow(/newer than supported/);
   });
 
   it("exposes the current target version", () => {

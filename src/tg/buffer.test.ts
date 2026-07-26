@@ -225,6 +225,60 @@ describe("MessageBuffer", () => {
     await tick();
   });
 
+  describe("sendNotice", () => {
+    it("sends a silent info-tagged system message and records a system metric", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        const buffer = new MessageBuffer(m.bot, dmSurface(7), { metrics: metrics.store });
+        await buffer.sendNotice("prompt file summary");
+        await tick();
+
+        expect(m.send).toHaveLength(1);
+        expect(m.send[0]!.chatId).toBe(7);
+        expect(m.send[0]!.text).toContain("prompt file summary");
+        expect(m.send[0]!.text).toContain("`[info]`");
+        expect(m.send[0]!.opts).toMatchObject({
+          parse_mode: "MarkdownV2",
+          disable_notification: true,
+        });
+
+        const events = readTelegramEvents(metrics.home);
+        expect(events.length).toBe(1);
+        expect(events[0]).toMatchObject({
+          type: "telegram",
+          op: "sendMessage",
+          channel: "system",
+          outcome: "success",
+        });
+      } finally {
+        metrics.cleanup();
+      }
+    });
+
+    it("records an error metric and does not throw when the system message fails", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        m.failNext.send = new Error("network");
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), { metrics: metrics.store });
+        await expect(buffer.sendNotice("prompt file summary")).resolves.toBeUndefined();
+        await tick();
+
+        const events = readTelegramEvents(metrics.home);
+        expect(events.length).toBe(1);
+        expect(events[0]).toMatchObject({
+          type: "telegram",
+          op: "sendMessage",
+          channel: "system",
+          outcome: "error",
+        });
+      } finally {
+        metrics.cleanup();
+      }
+    });
+  });
+
   describe("status phase state machine", () => {
     /**
      * Pure state-and-render tests. Auto-flush is suppressed so we don't

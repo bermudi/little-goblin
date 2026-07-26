@@ -199,10 +199,10 @@ All string values support three forms:
 
 ## Identity and prompt files
 
-Onboarding creates two deployment-owned prompt files in `$GOBLIN_HOME/workspace/`:
+Onboarding creates two agent-owned prompt files in `$GOBLIN_HOME/workspace/`:
 
 - `SOUL.md` — the conversational identity and voice (required). Missing at startup is fatal.
-- `AGENTS.md` — deployment operating rules (optional). Missing at startup produces a warning.
+- `AGENTS.md` — agent operating rules (optional). Missing at startup produces a warning.
 
 You can also put `AGENTS.md` in a project directory for project-specific rules.
 

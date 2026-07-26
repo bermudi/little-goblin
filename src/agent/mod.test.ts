@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { sessionDir, transcriptPath } from "../sessions/paths.ts";
+import { heartbeatMdPathForSession, sessionDir, transcriptPath } from "../sessions/paths.ts";
 import { piAgentDir } from "../pi-host.ts";
 import { agentsMdPath, skillsPath, soulMdPath, workdirPath, workspacePath } from "../workspace/paths.ts";
 import { personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
@@ -1231,6 +1231,32 @@ describe("AgentRunner", () => {
       });
 
       expect(cb.sendNotice).not.toHaveBeenCalled();
+    });
+
+    it("posts a sendNotice for a session-scoped HEARTBEAT.md write", async () => {
+      const cb = nopCallbacks();
+      const runner = makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      const sessionHeartbeat = heartbeatMdPathForSession(tmpDir, "abcdef1234");
+      sessionHolder.emit({
+        type: "tool_execution_start",
+        toolCallId: "tc-session-hb",
+        toolName: "write",
+        args: { path: sessionHeartbeat, content: "session pulse" },
+      });
+      sessionHolder.emit({
+        type: "tool_execution_end",
+        toolCallId: "tc-session-hb",
+        toolName: "write",
+        result: { ok: true },
+        isError: false,
+      });
+
+      expect(cb.sendNotice).toHaveBeenCalledTimes(1);
+      const notice = (cb.sendNotice as unknown as { mock: { calls: [string[]] } }).mock.calls[0]![0];
+      expect(notice).toContain("HEARTBEAT.md");
+      expect(notice).toContain("wrote 1 line (13 chars)");
     });
   });
 

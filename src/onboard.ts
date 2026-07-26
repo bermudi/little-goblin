@@ -130,7 +130,7 @@ async function collectAnswers(): Promise<Answers> {
 export function buildSoulTemplate(agentName: string): string {
   return `# ${agentName}
 
-${agentName} is the deployment-owned conversational identity for this Little Goblin.
+${agentName} is the agent-owned conversational identity for this Little Goblin.
 
 ## Voice
 

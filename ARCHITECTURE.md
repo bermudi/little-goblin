@@ -197,7 +197,7 @@ Destination Surface
 Deployment
   ├── product shell
   ├── SOUL.md
-  ├── deployment AGENTS.md
+  ├── agent-owned AGENTS.md
   ├── Goblin skill catalog + Surface SkillPolicy
   └── model credentials/catalog
 ```
@@ -209,8 +209,8 @@ The dispatcher verifies the current Binding and environment agreement before con
 **Accepted by decision 0003.** Main Goblin prompt ownership is explicit:
 
 1. code-owned product shell for runtime mechanics;
-2. required deployment `workspace/SOUL.md` for identity and voice;
-3. optional deployment `workspace/AGENTS.md` for operating rules;
+2. required agent-owned `workspace/SOUL.md` for identity and voice;
+3. optional agent-owned `workspace/AGENTS.md` for operating rules;
 4. exact `<projectRoot>/AGENTS.md` for project Conversations only;
 5. bounded frozen memory summary at runtime creation;
 6. relevant-memory aside per turn.
@@ -227,11 +227,11 @@ Three constraints bound the authority:
 
 - every prompt-file write posts a bounded notice to the Surface whose runtime performed it;
 - inner-life wakes cannot write prompt files — expressed as an absence in the decision 0035 capability profile, not as a file guard; autonomous reflection may propose an identity change, never apply one;
-- subagents do not receive deployment prompt files; named agents keep their own `workspace/agents/<name>/AGENTS.md`.
+- subagents do not receive Goblin's agent-owned prompt files; named agents keep their own `workspace/agents/<name>/AGENTS.md`.
 
 Recovery is git in `$GOBLIN_HOME/workspace`, documented for the operator. Goblin builds no snapshot or undo store.
 
-The `agent-owned-prompt-files` change amends the canon statements that previously called `SOUL.md` "deployment-owned" (`specs/glossary.md:75`, `specs/canon/agent/spec.md`), implements the bounded Surface notice, filters deployment prompt files out of subagent bootstrap, and documents the `git-in-workspace/` recovery path.
+The `agent-owned-prompt-files` change amends the canon statements that previously called `SOUL.md` "deployment-owned" (`specs/glossary.md:75`, `specs/canon/agent/spec.md`), implements the bounded Surface notice, filters Goblin's agent-owned prompt files out of subagent bootstrap, and documents the `git-in-workspace/` recovery path.
 
 ## Skill architecture
 

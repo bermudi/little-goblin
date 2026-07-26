@@ -42,7 +42,7 @@ describe("preflightGoblinPromptFiles", () => {
     await expect(preflightGoblinPromptFiles({ home: tmpDir, warn: () => undefined })).rejects.toBeInstanceOf(MissingSoulError);
   });
 
-  it("warns when deployment AGENTS is missing but SOUL exists", async () => {
+  it("warns when agent AGENTS is missing but SOUL exists", async () => {
     const warnings: string[] = [];
     writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
 
@@ -54,10 +54,10 @@ describe("preflightGoblinPromptFiles", () => {
     expect(warnings).toEqual(["optional Goblin prompt file missing"]);
   });
 
-  it("continues quietly when SOUL and deployment AGENTS exist", async () => {
+  it("continues quietly when SOUL and agent AGENTS exist", async () => {
     const warnings: string[] = [];
     writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
-    writeFileSync(agentsMdPath(tmpDir), "deployment rules\n", "utf-8");
+    writeFileSync(agentsMdPath(tmpDir), "agent rules\n", "utf-8");
 
     await preflightGoblinPromptFiles({
       home: tmpDir,

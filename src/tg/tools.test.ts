@@ -10,11 +10,12 @@ import {
   createSendPhotoTool,
   createSendDocumentTool,
 } from "./tools.ts";
+import { dmSurface, topicSurface } from "../surface.ts";
 
 interface SendCall {
   chatId: number | string;
   file: InputFile;
-  other: { caption?: string } | undefined;
+  other: Record<string, unknown> | undefined;
 }
 
 interface MockBot {
@@ -46,7 +47,7 @@ function makeBot(): MockBot {
     bucket: SendCall[],
     failKey: keyof MockBot["failNext"],
   ) =>
-    async (chatId: number | string, file: InputFile, other?: { caption?: string }) => {
+    async (chatId: number | string, file: InputFile, other?: Record<string, unknown>) => {
       if (state.failNext[failKey] !== undefined) {
         const err = state.failNext[failKey];
         state.failNext[failKey] = undefined;
@@ -174,7 +175,7 @@ describe("createTextToSpeechTool", () => {
 describe("createSendVoiceTool", () => {
   it("schema does not expose chatId", () => {
     const { bot } = makeBot();
-    const tool = createSendVoiceTool(bot, 123);
+    const tool = createSendVoiceTool(bot, dmSurface(123));
     const schema = tool.parameters as { properties?: Record<string, unknown> };
     expect(schema.properties).toBeDefined();
     expect(schema.properties).not.toHaveProperty("chatId");
@@ -184,7 +185,7 @@ describe("createSendVoiceTool", () => {
 
   it("calls bot.api.sendVoice with bound chatId and InputFile, returns ok+messageId", async () => {
     const mock = makeBot();
-    const tool = createSendVoiceTool(mock.bot, 123);
+    const tool = createSendVoiceTool(mock.bot, dmSurface(123));
     await withTempFile("voice.ogg", "fake-ogg-bytes", async (path) => {
       const result = await tool.execute(
         "call-1",
@@ -204,7 +205,7 @@ describe("createSendVoiceTool", () => {
 
   it("omits caption from API call when not provided", async () => {
     const mock = makeBot();
-    const tool = createSendVoiceTool(mock.bot, 999);
+    const tool = createSendVoiceTool(mock.bot, dmSurface(999));
     await withTempFile("voice.ogg", "fake", async (path) => {
       await tool.execute("call-1", { voiceFile: path }, undefined, undefined, {} as never);
       expect(mock.voice[0]!.other).toEqual({});
@@ -213,7 +214,7 @@ describe("createSendVoiceTool", () => {
 
   it("returns structured error when file does not exist", async () => {
     const mock = makeBot();
-    const tool = createSendVoiceTool(mock.bot, 123);
+    const tool = createSendVoiceTool(mock.bot, dmSurface(123));
     const result = await tool.execute(
       "call-1",
       { voiceFile: "/nonexistent/path/voice.ogg" },
@@ -230,7 +231,7 @@ describe("createSendVoiceTool", () => {
   it("returns structured error when bot.api.sendVoice throws", async () => {
     const mock = makeBot();
     mock.failNext.voice = new Error("network down");
-    const tool = createSendVoiceTool(mock.bot, 123);
+    const tool = createSendVoiceTool(mock.bot, dmSurface(123));
     await withTempFile("voice.ogg", "fake", async (path) => {
       const result = await tool.execute(
         "call-1",
@@ -250,7 +251,7 @@ describe("createSendVoiceTool", () => {
 describe("createSendPhotoTool", () => {
   it("schema does not expose chatId", () => {
     const { bot } = makeBot();
-    const tool = createSendPhotoTool(bot, 123);
+    const tool = createSendPhotoTool(bot, dmSurface(123));
     const schema = tool.parameters as { properties?: Record<string, unknown> };
     expect(schema.properties).toBeDefined();
     expect(schema.properties).not.toHaveProperty("chatId");
@@ -260,7 +261,7 @@ describe("createSendPhotoTool", () => {
 
   it("calls bot.api.sendPhoto with bound chatId and InputFile + caption", async () => {
     const mock = makeBot();
-    const tool = createSendPhotoTool(mock.bot, 555);
+    const tool = createSendPhotoTool(mock.bot, dmSurface(555));
     await withTempFile("img.jpg", "fake-jpg", async (path) => {
       const result = await tool.execute(
         "call-1",
@@ -280,7 +281,7 @@ describe("createSendPhotoTool", () => {
 
   it("returns structured error when file does not exist", async () => {
     const mock = makeBot();
-    const tool = createSendPhotoTool(mock.bot, 1);
+    const tool = createSendPhotoTool(mock.bot, dmSurface(1));
     const result = await tool.execute(
       "call-1",
       { photoFile: "/nonexistent/img.jpg" },
@@ -297,7 +298,7 @@ describe("createSendPhotoTool", () => {
   it("returns structured error when bot.api.sendPhoto throws", async () => {
     const mock = makeBot();
     mock.failNext.photo = new Error("rate limited");
-    const tool = createSendPhotoTool(mock.bot, 1);
+    const tool = createSendPhotoTool(mock.bot, dmSurface(1));
     await withTempFile("img.jpg", "x", async (path) => {
       const result = await tool.execute(
         "call-1",
@@ -317,7 +318,7 @@ describe("createSendPhotoTool", () => {
 describe("createSendDocumentTool", () => {
   it("schema does not expose chatId", () => {
     const { bot } = makeBot();
-    const tool = createSendDocumentTool(bot, 123);
+    const tool = createSendDocumentTool(bot, dmSurface(123));
     const schema = tool.parameters as { properties?: Record<string, unknown> };
     expect(schema.properties).toBeDefined();
     expect(schema.properties).not.toHaveProperty("chatId");
@@ -327,7 +328,7 @@ describe("createSendDocumentTool", () => {
 
   it("calls bot.api.sendDocument with bound chatId and InputFile + caption", async () => {
     const mock = makeBot();
-    const tool = createSendDocumentTool(mock.bot, 777);
+    const tool = createSendDocumentTool(mock.bot, dmSurface(777));
     await withTempFile("data.json", "{}", async (path) => {
       const result = await tool.execute(
         "call-1",
@@ -347,7 +348,7 @@ describe("createSendDocumentTool", () => {
 
   it("omits caption from API call when not provided", async () => {
     const mock = makeBot();
-    const tool = createSendDocumentTool(mock.bot, 8);
+    const tool = createSendDocumentTool(mock.bot, dmSurface(8));
     await withTempFile("data.json", "{}", async (path) => {
       await tool.execute("call-1", { documentFile: path }, undefined, undefined, {} as never);
       expect(mock.document[0]!.other).toEqual({});
@@ -356,7 +357,7 @@ describe("createSendDocumentTool", () => {
 
   it("returns structured error when file does not exist", async () => {
     const mock = makeBot();
-    const tool = createSendDocumentTool(mock.bot, 1);
+    const tool = createSendDocumentTool(mock.bot, dmSurface(1));
     const result = await tool.execute(
       "call-1",
       { documentFile: "/nonexistent/data.json" },
@@ -373,7 +374,7 @@ describe("createSendDocumentTool", () => {
   it("returns structured error when bot.api.sendDocument throws", async () => {
     const mock = makeBot();
     mock.failNext.document = new Error("file too large");
-    const tool = createSendDocumentTool(mock.bot, 1);
+    const tool = createSendDocumentTool(mock.bot, dmSurface(1));
     await withTempFile("data.json", "{}", async (path) => {
       const result = await tool.execute(
         "call-1",
@@ -386,6 +387,48 @@ describe("createSendDocumentTool", () => {
       expect(parsed.ok).toBe(false);
       expect(parsed.error).toContain("Telegram API error");
       expect(parsed.error).toContain("file too large");
+    });
+  });
+});
+
+describe("tool surface routing", () => {
+  it("threads send_voice through message_thread_id for supergroup topics", async () => {
+    const mock = makeBot();
+    const tool = createSendVoiceTool(mock.bot, topicSurface("supergroup", 123, 7));
+    await withTempFile("voice.ogg", "fake", async (path) => {
+      await tool.execute("call-1", { voiceFile: path }, undefined, undefined, {} as never);
+      expect(mock.voice[0]!.chatId).toBe(123);
+      expect(mock.voice[0]!.other).toEqual({ message_thread_id: 7 });
+    });
+  });
+
+  it("threads send_voice through direct_messages_topic_id for direct-messages topics", async () => {
+    const mock = makeBot();
+    const tool = createSendVoiceTool(mock.bot, topicSurface("direct-messages", 123, 9));
+    await withTempFile("voice.ogg", "fake", async (path) => {
+      await tool.execute("call-1", { voiceFile: path }, undefined, undefined, {} as never);
+      expect(mock.voice[0]!.chatId).toBe(123);
+      expect(mock.voice[0]!.other).toEqual({ direct_messages_topic_id: 9 });
+    });
+  });
+
+  it("threads send_photo through message_thread_id for supergroup topics", async () => {
+    const mock = makeBot();
+    const tool = createSendPhotoTool(mock.bot, topicSurface("supergroup", 456, 12));
+    await withTempFile("img.jpg", "x", async (path) => {
+      await tool.execute("call-1", { photoFile: path, caption: "pic" }, undefined, undefined, {} as never);
+      expect(mock.photo[0]!.chatId).toBe(456);
+      expect(mock.photo[0]!.other).toEqual({ message_thread_id: 12, caption: "pic" });
+    });
+  });
+
+  it("threads send_document through direct_messages_topic_id for direct-messages topics", async () => {
+    const mock = makeBot();
+    const tool = createSendDocumentTool(mock.bot, topicSurface("direct-messages", 789, 3));
+    await withTempFile("data.json", "{}", async (path) => {
+      await tool.execute("call-1", { documentFile: path }, undefined, undefined, {} as never);
+      expect(mock.document[0]!.chatId).toBe(789);
+      expect(mock.document[0]!.other).toEqual({ direct_messages_topic_id: 3 });
     });
   });
 });

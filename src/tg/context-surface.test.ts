@@ -64,7 +64,7 @@ describe("surfaceFromCtx", () => {
     expect(
       surfaceFromCtx(
         makeCtx({
-          chat: { id: -1003958530002, type: "supergroup" },
+          chat: { id: -1003958530002, type: "supergroup", is_direct_messages: true },
           msg: { direct_messages_topic: { topic_id: 91 } },
         }),
       ),
@@ -80,7 +80,7 @@ describe("surfaceFromCtx", () => {
     expect(
       surfaceFromCtx(
         makeCtx({
-          chat: { id: -1003958530002, type: "supergroup" },
+          chat: { id: -1003958530002, type: "supergroup", is_direct_messages: true },
           msg: {
             is_topic_message: true,
             message_thread_id: 5,
@@ -94,6 +94,17 @@ describe("surfaceFromCtx", () => {
       chatId: -1003958530002,
       topicId: 91,
     });
+  });
+
+  it("rejects direct_messages_topic without is_direct_messages chat", () => {
+    expect(
+      surfaceFromCtx(
+        makeCtx({
+          chat: { id: -1003958530002, type: "supergroup" },
+          msg: { direct_messages_topic: { topic_id: 91 } },
+        }),
+      ),
+    ).toBeNull();
   });
 
   it("normalizes a topicless supergroup", () => {
@@ -128,8 +139,11 @@ describe("surfaceFromCtx", () => {
     expect(surfaceFromCtx(makeCtx({ msg: {} }))).toBeNull();
   });
 
-  it("rejects missing message", () => {
-    expect(surfaceFromCtx(makeCtx({ chat: { id: 1, type: "private" } }))).toBeNull();
+  it("normalizes a private chat even when the message object is absent", () => {
+    expect(surfaceFromCtx(makeCtx({ chat: { id: 1, type: "private" } }))).toEqual({
+      kind: "dm",
+      chatId: 1,
+    });
   });
 
   it("rejects zero chat ids", () => {

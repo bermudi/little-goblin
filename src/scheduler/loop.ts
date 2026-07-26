@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { log } from "../log.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
 import { heartbeatMdPathForSession } from "../sessions/paths.ts";
-import type { ChatLocator, SessionState } from "../sessions/mod.ts";
+import type { SessionState } from "../sessions/mod.ts";
+import type { Surface } from "../surface.ts";
 import type { ActiveScope } from "../memory/scope.ts";
 import type { MemoryEngine } from "../memory/engine.ts";
 import { DREAMING_CATEGORIES, type DreamingCategory } from "../memory/dreaming.ts";
@@ -138,7 +139,7 @@ const realClock: SchedulerClock = {
 export interface SchedulerDispatcher {
   enqueueScheduledTurn(
     session: SessionState,
-    locator: ChatLocator,
+    surface: Surface,
     content: string,
     onError?: (err: unknown) => void,
   ): void;
@@ -152,13 +153,11 @@ export interface SchedulerDispatcher {
 
 /**
  * The minimal session surface the scheduler needs: a non-mutating binding
- * peek and an archived check. `SessionManager` satisfies this structurally
- * (its `peekBinding(loc, opts?)` accepts an optional second arg the seam
- * omits — scheduled turns never carry `isGuest`). Injected so eligibility
- * tests can fake sessions without a filesystem.
+ * peek and an archived check. `SessionManager` satisfies this structurally.
+ * Injected so eligibility tests can fake sessions without a filesystem.
  */
 export interface SchedulerSessionSource {
-  peekBinding(loc: ChatLocator): { sessionId: string; state: SessionState } | null;
+  peekBinding(surface: Surface): { sessionId: string; state: SessionState } | null;
   isArchived(sessionId: string): boolean;
   list?(): SessionState[];
   ensureInternal?(id: string): SessionState;
@@ -612,7 +611,7 @@ ${formatted}`;
 
     // Validate the captured binding via the NON-MUTATING peek. Never resolve(),
     // which auto-creates sessions for topic/supergroup locators.
-    const peeked = this.sessionSource.peekBinding(schedule.locator);
+    const peeked = this.sessionSource.peekBinding(schedule.surface);
 
     if (peeked === null) {
       // No binding resolves to a live session. Distinguish archived (the
@@ -648,7 +647,7 @@ ${formatted}`;
     // and re-throw — the per-schedule catch in tick() logs it, the remaining
     // due schedules in this tick still run, and future ticks continue.
     try {
-      this.dispatcher.enqueueScheduledTurn(peeked.state, schedule.locator, prompt, (err) => {
+      this.dispatcher.enqueueScheduledTurn(peeked.state, schedule.surface, prompt, (err) => {
         const msg = err instanceof Error ? err.message : String(err);
         this.store.recordRun(schedule.id, {
           at: new Date(this.clock.now()).toISOString(),

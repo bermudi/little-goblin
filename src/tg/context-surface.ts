@@ -37,24 +37,34 @@ export function surfaceFromCtx(ctx: Context): Surface | null {
   }
 
   const chat = ctx.chat;
-  const msg = ctx.msg;
-  if (!chat || !msg) return null;
+  if (!chat) return null;
 
   const chatId = chat.id;
+  const msg = ctx.msg;
 
-  const directMessagesTopic = msg.direct_messages_topic;
-  if (directMessagesTopic && typeof directMessagesTopic.topic_id === "number") {
+  const directMessagesTopic = msg?.direct_messages_topic;
+  if (
+    chat.type === "supergroup" &&
+    chat.is_direct_messages === true &&
+    directMessagesTopic &&
+    typeof directMessagesTopic.topic_id === "number"
+  ) {
     return trySurface(() =>
       topicSurface("direct-messages", chatId, directMessagesTopic.topic_id)
     );
   }
 
+  // A direct_messages_topic on a non-direct-messages chat is malformed.
+  if (directMessagesTopic && typeof directMessagesTopic.topic_id === "number") {
+    return null;
+  }
+
   const isTopic =
-    msg.is_topic_message === true &&
-    typeof msg.message_thread_id === "number";
+    msg?.is_topic_message === true &&
+    typeof msg?.message_thread_id === "number";
 
   if (isTopic) {
-    const topicId = msg.message_thread_id!;
+    const topicId = msg!.message_thread_id!;
     if (chat.type === "private") {
       return trySurface(() => topicSurface("private", chatId, topicId));
     }

@@ -31,7 +31,8 @@ New feature work resumes when its architectural dependencies are explicit and th
 ```sh
 bun install
 cp .env.example .env   # BOT_TOKEN, ALLOWED_TG_USER_IDS, MODEL_NAME + API key
-bun run src/index.ts    # or: bun run dev
+bun run migrate        # write state-version.json and run offline migrations
+bun run src/index.ts   # or: bun run dev
 ```
 
 ## Shape

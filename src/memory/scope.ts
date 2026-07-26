@@ -1,4 +1,4 @@
-import type { ChatLocator } from "../sessions/types.ts";
+import type { Surface } from "../surface.ts";
 
 export type MemoryScope =
   | "general"
@@ -13,13 +13,13 @@ export interface ActiveScope {
   namedAgent: { name: string } | null;
 }
 
-export function resolveActiveScope(locator: ChatLocator, namedAgent?: string): ActiveScope {
+export function resolveActiveScope(surface: Surface, namedAgent?: string): ActiveScope {
   return {
-    chatId: locator.chatId,
+    chatId: surface.chatId,
     topicScope:
-      locator.topicId === undefined
-        ? "general"
-        : { topicId: locator.topicId },
+      surface.kind === "topic"
+        ? { topicId: surface.topicId }
+        : "general",
     namedAgent: namedAgent !== undefined && namedAgent.length > 0
       ? { name: namedAgent }
       : null,

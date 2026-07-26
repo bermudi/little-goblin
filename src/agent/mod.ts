@@ -31,7 +31,7 @@ import { activeMemoryScopeFor } from "../memory/scope.ts";
 import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
-import type { ChatLocator } from "../sessions/types.ts";
+import type { Surface } from "../surface.ts";
 import type { ActiveScope } from "../memory/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
@@ -45,7 +45,7 @@ import { McpRunner, createMcpTools } from "../mcp/mod.ts";
 export interface AgentRunnerOptions {
   cfg: Config;
   sessionId: string;
-  locator: ChatLocator;
+  surface: Surface;
   customTools: ToolDefinition[];
   subagentRunner?: SubagentRunner;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
@@ -201,7 +201,7 @@ function buildTurnMetricsEvent(args: {
 export class AgentRunner {
   private cfg: Config;
   private sessionId: string;
-  private locator: ChatLocator;
+  private surface: Surface;
   private customTools: ToolDefinition[];
   private subagentRunner: SubagentRunner | null;
   private scheduleStore: ScheduleStore | undefined;
@@ -278,8 +278,8 @@ export class AgentRunner {
   constructor(opts: AgentRunnerOptions) {
     this.cfg = opts.cfg;
     this.sessionId = opts.sessionId;
-    this.locator = opts.locator;
-    this.activeScope = resolveActiveScope(opts.locator);
+    this.surface = opts.surface;
+    this.activeScope = resolveActiveScope(opts.surface);
     this.customTools = opts.customTools;
     this.subagentRunner = opts.subagentRunner ?? null;
     this.scheduleStore = opts.scheduleStore;
@@ -397,7 +397,7 @@ export class AgentRunner {
         createScheduleTurnTool({
           store: this.scheduleStore,
           sessionId: this.sessionId,
-          locator: this.locator,
+          surface: this.surface,
           now: () => Date.now(),
         }),
       );

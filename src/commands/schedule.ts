@@ -19,7 +19,8 @@
  * `executeSchedule` is pure: it takes injectable store operations + parsed
  * inputs and returns a reply string. The registry handler wires real deps.
  */
-import type { ChatLocator, SessionState } from "../sessions/mod.ts";
+import type { SessionState } from "../sessions/mod.ts";
+import type { Surface } from "../surface.ts";
 import type { ScheduledTurn } from "../scheduler/types.ts";
 import { formatDuration, formatRunTime, parseAt, parseDuration, parseIn } from "../scheduler/time.ts";
 import type { SystemTag } from "../tg/format.ts";
@@ -59,7 +60,7 @@ export const HEARTBEAT_USAGE_REPLY = "Usage: /schedule heartbeat <on [duration] 
 export interface ScheduleCommandDeps {
   hasSession: boolean;
   session: SessionState | null;
-  locator: ChatLocator;
+  surface: Surface;
   now: number;
   create: (params: {
     kind: "once" | "recurring";
@@ -290,7 +291,7 @@ export function buildScheduleDeps(
   store: {
     create: (params: {
       sessionId: string;
-      locator: ChatLocator;
+      surface: Surface;
       kind: "once" | "recurring";
       prompt: string;
       nextRunAt: string;
@@ -302,7 +303,7 @@ export function buildScheduleDeps(
     resume: (sessionId: string, id: string) => ScheduledTurn | null;
     setHeartbeat: (params: {
       sessionId: string;
-      locator: ChatLocator;
+      surface: Surface;
       enabled: boolean;
       intervalMs?: number;
       now: string;
@@ -310,16 +311,16 @@ export function buildScheduleDeps(
     getHeartbeat: (sessionId: string) => ScheduledTurn | null;
   },
   session: SessionState,
-  locator: ChatLocator,
+  surface: Surface,
   now: number,
 ): ScheduleCommandDeps {
   return {
     hasSession: true,
     session,
-    locator,
+    surface,
     now,
     create: (params) =>
-      store.create({ sessionId: session.id, locator, ...params }),
+      store.create({ sessionId: session.id, surface, ...params }),
     list: () => store.listBySession(session.id),
     remove: (id) => store.remove(session.id, id),
     pause: (id) => store.pause(session.id, id),
@@ -327,7 +328,7 @@ export function buildScheduleDeps(
     setHeartbeat: (params) =>
       store.setHeartbeat({
         sessionId: session.id,
-        locator,
+        surface,
         enabled: params.enabled,
         intervalMs: params.intervalMs,
         now: new Date(now).toISOString(),

@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { Bot, InputFile } from "grammy";
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { Surface } from "../surface.ts";
+import { deliveryOpts } from "./delivery.ts";
 import { edgeTts, resolveVoiceName, voiceTmpPath } from "../voice.ts";
 
 function jsonResult(value: unknown): {
@@ -77,7 +79,7 @@ async function resolveTextToSpeechSource(params: TextToSpeechInput): Promise<
 
 type SendVoiceInput = Static<typeof sendVoiceSchema>;
 
-export function createSendVoiceTool(bot: Bot, chatId: number, topicId?: number): ToolDefinition {
+export function createSendVoiceTool(bot: Bot, surface: Surface): ToolDefinition {
   return defineTool({
     name: "send_voice",
     label: "Send Voice",
@@ -89,12 +91,9 @@ export function createSendVoiceTool(bot: Bot, chatId: number, topicId?: number):
       }
       try {
         const result = await bot.api.sendVoice(
-          chatId,
+          surface.chatId,
           new InputFile(params.voiceFile),
-          {
-            ...(params.caption !== undefined ? { caption: params.caption } : {}),
-            ...(topicId !== undefined ? { message_thread_id: topicId } : {}),
-          },
+          deliveryOpts(surface, params.caption !== undefined ? { caption: params.caption } : {}),
         );
         return jsonResult({ ok: true, messageId: result.message_id });
       } catch (err) {
@@ -106,7 +105,7 @@ export function createSendVoiceTool(bot: Bot, chatId: number, topicId?: number):
 
 type SendPhotoInput = Static<typeof sendPhotoSchema>;
 
-export function createSendPhotoTool(bot: Bot, chatId: number, topicId?: number): ToolDefinition {
+export function createSendPhotoTool(bot: Bot, surface: Surface): ToolDefinition {
   return defineTool({
     name: "send_photo",
     label: "Send Photo",
@@ -118,12 +117,9 @@ export function createSendPhotoTool(bot: Bot, chatId: number, topicId?: number):
       }
       try {
         const result = await bot.api.sendPhoto(
-          chatId,
+          surface.chatId,
           new InputFile(params.photoFile),
-          {
-            ...(params.caption !== undefined ? { caption: params.caption } : {}),
-            ...(topicId !== undefined ? { message_thread_id: topicId } : {}),
-          },
+          deliveryOpts(surface, params.caption !== undefined ? { caption: params.caption } : {}),
         );
         return jsonResult({ ok: true, messageId: result.message_id });
       } catch (err) {
@@ -135,7 +131,7 @@ export function createSendPhotoTool(bot: Bot, chatId: number, topicId?: number):
 
 type SendDocumentInput = Static<typeof sendDocumentSchema>;
 
-export function createSendDocumentTool(bot: Bot, chatId: number, topicId?: number): ToolDefinition {
+export function createSendDocumentTool(bot: Bot, surface: Surface): ToolDefinition {
   return defineTool({
     name: "send_document",
     label: "Send Document",
@@ -150,12 +146,9 @@ export function createSendDocumentTool(bot: Bot, chatId: number, topicId?: numbe
       }
       try {
         const result = await bot.api.sendDocument(
-          chatId,
+          surface.chatId,
           new InputFile(params.documentFile),
-          {
-            ...(params.caption !== undefined ? { caption: params.caption } : {}),
-            ...(topicId !== undefined ? { message_thread_id: topicId } : {}),
-          },
+          deliveryOpts(surface, params.caption !== undefined ? { caption: params.caption } : {}),
         );
         return jsonResult({ ok: true, messageId: result.message_id });
       } catch (err) {

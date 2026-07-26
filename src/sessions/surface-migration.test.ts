@@ -186,4 +186,56 @@ describe("migrateSurfaceState", () => {
 
     expect(() => migrateSurfaceState(tmpDir)).toThrow(/invalid chat id/);
   });
+
+  it("migrates a topicless schedule with explicit isPrivate to a DM", () => {
+    writeLegacyBindings({ dm: { [CHAT_ID]: SESSION_ID }, supergroups: {}, topics: {}, guest: {} });
+    writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
+    writeSchedules({
+      schedules: [{ id: "s1", sessionId: SESSION_ID, locator: { chatId: CHAT_ID, isPrivate: true } }],
+    });
+
+    migrateSurfaceState(tmpDir);
+
+    const raw = readFileSync(schedulesPath(tmpDir), "utf-8");
+    const file = JSON.parse(raw);
+    expect(file.schedules[0].surfaceId).toBe(surfaceId(dmSurface(CHAT_ID)));
+  });
+
+  it("migrates a topicless schedule with explicit isPrivate=false to a supergroup", () => {
+    writeLegacyBindings({ dm: {}, supergroups: { [SG_ID]: SESSION_ID }, topics: {}, guest: {} });
+    writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
+    writeSchedules({
+      schedules: [{ id: "s1", sessionId: SESSION_ID, locator: { chatId: SG_ID, isPrivate: false } }],
+    });
+
+    migrateSurfaceState(tmpDir);
+
+    const raw = readFileSync(schedulesPath(tmpDir), "utf-8");
+    const file = JSON.parse(raw);
+    expect(file.schedules[0].surfaceId).toBe(surfaceId(supergroupSurface(SG_ID)));
+  });
+
+  it("resolves an ambiguous topicless schedule by matching its session binding", () => {
+    writeLegacyBindings({ dm: {}, supergroups: {}, topics: {}, guest: { [CHAT_ID]: SESSION_ID } });
+    writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
+    writeSchedules({
+      schedules: [{ id: "s1", sessionId: SESSION_ID, locator: { chatId: CHAT_ID } }],
+    });
+
+    migrateSurfaceState(tmpDir);
+
+    const raw = readFileSync(schedulesPath(tmpDir), "utf-8");
+    const file = JSON.parse(raw);
+    expect(file.schedules[0].surfaceId).toBe(surfaceId(guestSurface(CHAT_ID)));
+  });
+
+  it("fails a topicless schedule with no isPrivate and no matching binding", () => {
+    writeLegacyBindings({ dm: {}, supergroups: {}, topics: {}, guest: {} });
+    writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
+    writeSchedules({
+      schedules: [{ id: "s1", sessionId: SESSION_ID, locator: { chatId: CHAT_ID } }],
+    });
+
+    expect(() => migrateSurfaceState(tmpDir)).toThrow(/no binding candidate/);
+  });
 });

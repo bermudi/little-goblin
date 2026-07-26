@@ -349,7 +349,7 @@ Named-agent definitions and machine-managed instances must not share one workspa
 
 ## Startup, migration, and reconciliation
 
-**TARGET — proposed decision 0038.** Migration and reconciliation are different operations and must stop sharing the word "startup".
+**TARGET — accepted decision 0038.** Migration and reconciliation are different operations and must stop sharing the word "startup".
 
 | | Migration | Reconciliation |
 |---|---|---|
@@ -375,7 +375,7 @@ Target startup is fail-before-polling:
 
 Migrations compute and validate every transformation before the first write, use atomic replacement per file, and fail loudly on ambiguity without selecting a winner. They are *not* required to be idempotent, restart-safe, or mixed-generation tolerant; recovery from a failed migration is restoration from backup.
 
-Six changes currently specify their own restart-safe startup migration and need a patch stripping that language before they are built: `telegram-surface-identity`, `immutable-project-environments`, `pi-native-skill-layout`, `conversation-lifecycle`, `transcript-surface-provenance`, and `delegated-work-ownership`.
+Five remaining changes currently specify their own restart-safe startup migration and need a patch stripping that language before they are built: `immutable-project-environments`, `pi-native-skill-layout`, `conversation-lifecycle`, `transcript-surface-provenance`, and `delegated-work-ownership`.
 
 ## Current-to-target repair map
 

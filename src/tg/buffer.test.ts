@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MetricsStore, readMetricsSummary, type TelegramMetricsEvent } from "../metrics/mod.ts";
+import { dmSurface, topicSurface } from "../surface.ts";
 import {
   MessageBuffer,
   BIG_OUTPUT_THRESHOLD,
@@ -191,7 +192,7 @@ function readTelegramEvents(home: string): TelegramMetricsEvent[] {
 describe("MessageBuffer", () => {
   it("instantiates with default visibility and empty slots", () => {
     const { bot } = makeBot();
-    const buffer = new MessageBuffer(bot, 123, undefined);
+    const buffer = new MessageBuffer(bot, dmSurface(123));
     const s = buffer._state();
     expect(s.chatId).toBe(123);
     expect(s.visibility).toBe("standard");
@@ -207,13 +208,13 @@ describe("MessageBuffer", () => {
 
   it("respects visibility option", () => {
     const { bot } = makeBot();
-    const buffer = new MessageBuffer(bot, 7, undefined, { visibility: "verbose" });
+    const buffer = new MessageBuffer(bot, dmSurface(7), { visibility: "verbose" });
     expect(buffer._state().visibility).toBe("verbose");
   });
 
   it("exposes all TurnCallbacks methods without throwing", async () => {
     const { bot } = makeBot();
-    const buffer = new MessageBuffer(bot, 1, undefined);
+    const buffer = new MessageBuffer(bot, dmSurface(1));
     expect(() => buffer.onTextDelta("hi")).not.toThrow();
     expect(() => buffer.onToolStart("bash", {})).not.toThrow();
     expect(() => buffer.onToolEnd("bash", false)).not.toThrow();
@@ -239,14 +240,14 @@ describe("MessageBuffer", () => {
     describe("buildStatusLine rendering", () => {
       it("renders empty string before placeholder and slots", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         // No placeholder sent, no slots — nothing to render.
         expect(buffer.buildStatusLine()).toBe("");
       });
 
       it("renders header when placeholder has been sent", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         // Simulate placeholder sent via commitStatus (which is suppressed by
         // the NO_AUTO throttle — but placeholderSent is set by onStatusUpdate).
         buffer.onStatusUpdate("thinking...");
@@ -255,14 +256,14 @@ describe("MessageBuffer", () => {
 
       it("renders header + running slot when a tool starts", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 bash");
       });
 
       it("renders header + ok slot when a tool completes", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
         expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n✅ bash");
@@ -270,7 +271,7 @@ describe("MessageBuffer", () => {
 
       it("renders header + err slot when a tool errors", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", true);
         expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n❌ bash");
@@ -278,7 +279,7 @@ describe("MessageBuffer", () => {
 
       it("renders multiple tools each on their own line in observation order", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("read", {});
         buffer.onToolEnd("bash", false);
@@ -288,7 +289,7 @@ describe("MessageBuffer", () => {
 
       it("renders mixed success/error independently per slot", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("read", {});
         buffer.onToolEnd("bash", true);
@@ -298,7 +299,7 @@ describe("MessageBuffer", () => {
 
       it("folds repeat invocations with ×N count", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("read", {});
         buffer.onToolEnd("read", false);
         buffer.onToolStart("read", {});
@@ -310,7 +311,7 @@ describe("MessageBuffer", () => {
 
       it("re-entry from ok back to running increments count", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("read", {});
         buffer.onToolEnd("read", false);
         // Second invocation starts — slot goes back to running.
@@ -320,7 +321,7 @@ describe("MessageBuffer", () => {
 
       it("parallel invocations stay running until all ends arrive", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("bash", {});
         // One end: runningCount drops to 1, still running.
@@ -333,7 +334,7 @@ describe("MessageBuffer", () => {
 
       it("mixed success and error uses latest completed outcome", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("read", {});
         buffer.onToolEnd("read", true);
         buffer.onToolStart("read", {});
@@ -343,7 +344,7 @@ describe("MessageBuffer", () => {
 
       it("retry trajectory renders successful final edit after earlier failures", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("edit", {});
         buffer.onToolEnd("edit", true);
         expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n❌ edit");
@@ -357,7 +358,7 @@ describe("MessageBuffer", () => {
 
       it("renders empty string in none visibility (any state)", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, {
+        const buffer = new MessageBuffer(bot, dmSurface(1), {
           ...NO_AUTO,
           visibility: "none",
         });
@@ -368,7 +369,7 @@ describe("MessageBuffer", () => {
 
       it("zero-tool turn with placeholder sent renders header only", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onStatusUpdate("thinking...");
         buffer.onAgentEnd();
         expect(buffer.buildStatusLine()).toBe("🤔 thinking…");
@@ -376,14 +377,14 @@ describe("MessageBuffer", () => {
 
       it("zero-tool turn with no placeholder renders empty", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onAgentEnd();
         expect(buffer.buildStatusLine()).toBe("");
       });
 
       it("✍️ composing indicator is gone (chat_action covers liveness)", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onTextDelta("hello");
         expect(buffer.buildStatusLine()).not.toContain("composing");
         expect(buffer.buildStatusLine()).not.toContain("✍️");
@@ -391,7 +392,7 @@ describe("MessageBuffer", () => {
 
       it("header persists across slot transitions", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         expect(buffer.buildStatusLine()).toBe("🤔 thinking…\n🔧 bash");
         buffer.onToolEnd("bash", false);
@@ -400,7 +401,7 @@ describe("MessageBuffer", () => {
 
       it("filtered tool produces no slot", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, {
+        const buffer = new MessageBuffer(bot, dmSurface(1), {
           ...NO_AUTO,
           visibility: "minimal",
         });
@@ -413,7 +414,7 @@ describe("MessageBuffer", () => {
     describe("slot state transitions", () => {
       it("first onToolStart creates a running slot", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         expect(buffer._state().slots).toEqual([]);
         buffer.onToolStart("bash", {});
         const slots = buffer._state().slots;
@@ -426,7 +427,7 @@ describe("MessageBuffer", () => {
 
       it("subsequent onToolStart for different tools create separate slots", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("read", {});
         const slotNames = buffer._state().slots.map(([n]) => n);
@@ -435,7 +436,7 @@ describe("MessageBuffer", () => {
 
       it("repeated onToolStart for the same tool increments runningCount", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("bash", {});
         const slot = buffer._state().slots[0]![1];
@@ -444,7 +445,7 @@ describe("MessageBuffer", () => {
 
       it("onToolEnd decrements runningCount and increments completedCount", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
         const slot = buffer._state().slots[0]![1];
@@ -455,7 +456,7 @@ describe("MessageBuffer", () => {
 
       it("parallel invocations: slot stays running until runningCount hits zero", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
@@ -470,7 +471,7 @@ describe("MessageBuffer", () => {
 
       it("error sets lastCompletedError on the slot", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", true);
         const slot = buffer._state().slots[0]![1];
@@ -480,7 +481,7 @@ describe("MessageBuffer", () => {
 
       it("filtered tools do not produce a slot", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, {
+        const buffer = new MessageBuffer(bot, dmSurface(1), {
           ...NO_AUTO,
           visibility: "minimal",
         });
@@ -492,14 +493,14 @@ describe("MessageBuffer", () => {
 
       it("onAgentEnd freezes the status", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onAgentEnd();
         expect(buffer._state().statusFrozen).toBe(true);
       });
 
       it("onAgentEnd leaves running slots as-is (still running)", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         // Tool never ended; agent ends anyway.
         buffer.onAgentEnd();
@@ -510,7 +511,7 @@ describe("MessageBuffer", () => {
 
       it("clears isStreaming on onAgentEnd", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onTextDelta("text");
         expect(buffer._state().isStreaming).toBe(true);
         buffer.onAgentEnd();
@@ -519,7 +520,7 @@ describe("MessageBuffer", () => {
 
       it("onTextDelta does not change slot state", () => {
         const { bot } = makeBot();
-        const buffer = new MessageBuffer(bot, 1, undefined, NO_AUTO);
+        const buffer = new MessageBuffer(bot, dmSurface(1), NO_AUTO);
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
         buffer.onTextDelta("answer");
@@ -532,7 +533,7 @@ describe("MessageBuffer", () => {
   describe("eager placeholder via onStatusUpdate", () => {
     it("sends the thinking placeholder on first onStatusUpdate", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 7, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(7));
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(1);
@@ -543,7 +544,7 @@ describe("MessageBuffer", () => {
 
     it("is idempotent — repeated onStatusUpdate does not resend", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
       buffer.onStatusUpdate("a");
       await tick();
       buffer.onStatusUpdate("b");
@@ -554,7 +555,7 @@ describe("MessageBuffer", () => {
 
     it("none visibility suppresses the placeholder entirely", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" });
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), { visibility: "none" });
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(0);
@@ -563,7 +564,7 @@ describe("MessageBuffer", () => {
 
     it("placeholder is sent before any response message", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
       // Real AgentRunner ordering: agent_start (→ onStatusUpdate) then text.
       buffer.onStatusUpdate("thinking...");
       buffer.onTextDelta("hello");
@@ -577,7 +578,7 @@ describe("MessageBuffer", () => {
 
     it("does NOT send placeholder on first onTextDelta — only onStatusUpdate or onToolStart trigger it", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
       buffer.onTextDelta("hi");
       await tick();
       // Only the response message is sent; no status placeholder.
@@ -589,7 +590,7 @@ describe("MessageBuffer", () => {
 
     it("sends placeholder on first onToolStart if no onStatusUpdate fired", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
       buffer.onToolStart("bash", {});
       await tick();
       // One send: the slot model renders header + running slot.
@@ -604,7 +605,7 @@ describe("MessageBuffer", () => {
       // Typical agent flow: agent_start → 4 tool starts → 4 tool ends → text → end.
       // The slot model should coalesce rapid state changes into few writes.
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
 
       buffer.onStatusUpdate("thinking...");
       await tick();
@@ -647,7 +648,7 @@ describe("MessageBuffer", () => {
 
     it("many sequential tools coalesce via throttle and in-flight dedupe", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
 
       buffer.onStatusUpdate("thinking...");
       await tick();
@@ -671,7 +672,7 @@ describe("MessageBuffer", () => {
 
     it("first phase-driven flush sends and tracks statusMessageId", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 42, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(42));
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(1);
@@ -682,7 +683,7 @@ describe("MessageBuffer", () => {
     it("phase transitions edit the tracked message", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 42, undefined, { now: () => t });
+      const buffer = new MessageBuffer(m.bot, dmSurface(42), { now: () => t });
       buffer.onStatusUpdate("thinking...");
       await tick();
 
@@ -698,7 +699,7 @@ describe("MessageBuffer", () => {
 
     it("statusFrozen blocks any further edits after onAgentEnd", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
       buffer.onStatusUpdate("thinking...");
       await tick();
       buffer.onToolStart("bash", {});
@@ -723,7 +724,7 @@ describe("MessageBuffer", () => {
 
     it("stray onToolStart after onAgentEnd does not flush response (force-flush IIFE bypass)", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
       buffer.onTextDelta("residual text that arrived late");
       await tick();
       buffer.onAgentEnd();
@@ -746,7 +747,7 @@ describe("MessageBuffer", () => {
     it("force=true bypasses throttle (used by onAgentEnd)", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, { now: () => t });
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), { now: () => t });
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(1);
@@ -761,7 +762,7 @@ describe("MessageBuffer", () => {
 
     it("skips when status line is empty (none visibility, no force)", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" });
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), { visibility: "none" });
       await buffer.flushStatus(true);
       expect(m.send.length).toBe(0);
       expect(m.edit.length).toBe(0);
@@ -770,7 +771,7 @@ describe("MessageBuffer", () => {
     it("handles 429 rate limit by logging and not setting statusMessageId", async () => {
       const m = makeBot();
       m.failNext.send = { error_code: 429, description: "Too Many Requests" };
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
 
       buffer.onStatusUpdate("thinking...");
       await tick();
@@ -781,7 +782,7 @@ describe("MessageBuffer", () => {
     it("handles deleted status message by resetting statusMessageId", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, { now: () => t });
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), { now: () => t });
 
       buffer.onStatusUpdate("thinking...");
       await tick();
@@ -801,14 +802,14 @@ describe("MessageBuffer", () => {
     it("does not throw out of flushStatus on unknown errors", async () => {
       const m = makeBot();
       m.failNext.send = new Error("boom");
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
       buffer.onStatusUpdate("thinking...");
       await expect(buffer.flushStatus()).resolves.toBeUndefined();
     });
 
     it("auto-flushes from callbacks (fire-and-forget)", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
       buffer.onStatusUpdate("thinking...");
       await tick();
       expect(m.send.length).toBe(1);
@@ -816,7 +817,7 @@ describe("MessageBuffer", () => {
 
     it("zero-tool turn: agent_end with no tools observed sends nothing", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1));
       // No onStatusUpdate, no onToolStart — just an immediate end.
       buffer.onAgentEnd();
       await tick();
@@ -842,7 +843,7 @@ describe("MessageBuffer", () => {
 
     it("accumulates text deltas in accumulatedText", () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         ...STATUS_OFF,
       });
       buffer.onTextDelta("Hello, ");
@@ -852,7 +853,7 @@ describe("MessageBuffer", () => {
 
     it("first flush sends a new response message and tracks responseMessageId", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 99, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(99), {
         now: () => 1000,
         ...STATUS_OFF,
       });
@@ -866,7 +867,7 @@ describe("MessageBuffer", () => {
     it("subsequent flushes edit the response message with full accumulated text", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -890,7 +891,7 @@ describe("MessageBuffer", () => {
     it("throttles response edits within ~200ms window", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -913,7 +914,7 @@ describe("MessageBuffer", () => {
     it("force=true bypasses response throttle (used by onAgentEnd)", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -931,7 +932,7 @@ describe("MessageBuffer", () => {
 
     it("skips when accumulatedText is empty", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         ...STATUS_OFF,
       });
       await buffer.flushResponse(true);
@@ -946,7 +947,7 @@ describe("MessageBuffer", () => {
       // turns this into a no-op.
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -979,7 +980,7 @@ describe("MessageBuffer", () => {
       // stays usable, no error throws out.
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -1003,7 +1004,7 @@ describe("MessageBuffer", () => {
     it("handles deleted response message by resetting responseMessageId", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -1030,7 +1031,7 @@ describe("MessageBuffer", () => {
     it("recovers from a deleted response message on the final agent-end flush", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -1058,7 +1059,7 @@ describe("MessageBuffer", () => {
     it("keeps the response message after a mid-stream 429 and retries latest text after backoff", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -1094,7 +1095,7 @@ describe("MessageBuffer", () => {
     it("survives an unknown mid-stream edit failure and finalizes with full text", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -1125,7 +1126,7 @@ describe("MessageBuffer", () => {
     it("does not throw out of flushResponse on unknown errors", async () => {
       const m = makeBot();
       m.failNext.send = new Error("boom");
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         ...STATUS_OFF,
       });
       buffer.onTextDelta("x");
@@ -1136,7 +1137,7 @@ describe("MessageBuffer", () => {
       let t = 1000;
       const m = makeBot();
       let callbackCalled = false;
-      const buffer = new MessageBuffer(m.bot, 1, 42, {
+      const buffer = new MessageBuffer(m.bot, topicSurface("supergroup", 1, 42), {
         now: () => t,
         ...STATUS_OFF,
         onTopicNotFound: () => {
@@ -1162,7 +1163,7 @@ describe("MessageBuffer", () => {
       let t = 1000;
       const m = makeBot();
       let callbackCount = 0;
-      const buffer = new MessageBuffer(m.bot, 1, 42, {
+      const buffer = new MessageBuffer(m.bot, topicSurface("supergroup", 1, 42), {
         now: () => t,
         ...STATUS_OFF,
         onTopicNotFound: () => {
@@ -1199,7 +1200,7 @@ describe("MessageBuffer", () => {
       let t = 1000;
       const m = makeBot();
       let callbackCalled = false;
-      const buffer = new MessageBuffer(m.bot, 1, 42, {
+      const buffer = new MessageBuffer(m.bot, topicSurface("supergroup", 1, 42), {
         now: () => t,
         ...STATUS_OFF,
         onTopicNotFound: () => {
@@ -1226,7 +1227,7 @@ describe("MessageBuffer", () => {
 
     it("auto-flushes response from onTextDelta", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         ...STATUS_OFF,
       });
       buffer.onTextDelta("auto");
@@ -1282,7 +1283,7 @@ describe("MessageBuffer", () => {
       } as unknown as Bot;
 
       let t = 1000;
-      const buffer = new MessageBuffer(bot, 1, undefined, {
+      const buffer = new MessageBuffer(bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -1359,7 +1360,7 @@ describe("MessageBuffer", () => {
       } as unknown as Bot;
 
       let t = 1000;
-      const buffer = new MessageBuffer(bot, 1, undefined, {
+      const buffer = new MessageBuffer(bot, dmSurface(1), {
         now: () => t,
         visibility: "none" as const,
         responseThrottleMs: 200,
@@ -1429,7 +1430,7 @@ describe("MessageBuffer", () => {
         },
       } as unknown as Bot;
 
-      const buffer = new MessageBuffer(bot, 1, undefined, {
+      const buffer = new MessageBuffer(bot, dmSurface(1), {
         ...STATUS_OFF,
       });
 
@@ -1462,7 +1463,7 @@ describe("MessageBuffer", () => {
     it("onAgentEnd force-flushes the final response despite throttle", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -1484,7 +1485,7 @@ describe("MessageBuffer", () => {
 
     it("creates a rich draft on the first flush and updates it on subsequent deltas", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), DRAFT_ON);
       buffer.onTextDelta("hello");
       await tick();
       expect(m.drafts.length).toBe(1);
@@ -1501,7 +1502,7 @@ describe("MessageBuffer", () => {
 
     it("finalizes the draft to a persistent message on agent_end", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), DRAFT_ON);
       buffer.onTextDelta("final answer");
       await tick();
       expect(m.drafts.length).toBe(1);
@@ -1517,7 +1518,7 @@ describe("MessageBuffer", () => {
 
     it("finalizes and resets draft at tool boundaries so post-tool text starts fresh", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), DRAFT_ON);
       buffer.onTextDelta("before tool");
       buffer.onToolStart("bash", {});
       await tick();
@@ -1541,7 +1542,7 @@ describe("MessageBuffer", () => {
 
     it("finalizes and resets draft at assistant message boundaries so the next message starts fresh", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), DRAFT_ON);
       buffer.onMessageStart(); // first assistant message
       buffer.onTextDelta("first reply");
       await tick();
@@ -1568,7 +1569,7 @@ describe("MessageBuffer", () => {
 
     it("finalizes the draft on message_end so the next assistant message starts fresh", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), DRAFT_ON);
       buffer.onMessageStart();
       buffer.onTextDelta("first reply");
       await tick();
@@ -1591,7 +1592,7 @@ describe("MessageBuffer", () => {
 
     it("falls back to plain-text drafts after a rich parse error", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, DRAFT_ON);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), DRAFT_ON);
       m.failNext.richDraft = { error_code: 400, description: "Bad Request: can't parse markdown" };
       buffer.onTextDelta("*bold*");
       await tick();
@@ -1610,7 +1611,7 @@ describe("MessageBuffer", () => {
 
     it("does not use drafts when drafts option is false", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" as const, responseThrottleMs: 0 });
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), { visibility: "none" as const, responseThrottleMs: 0 });
       buffer.onTextDelta("plain path");
       await tick();
       expect(m.drafts.length).toBe(0);
@@ -1628,7 +1629,7 @@ describe("MessageBuffer", () => {
 
     it("does not escape when text is at or below threshold", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), ALL_OFF);
       buffer.onTextDelta("a".repeat(BIG_OUTPUT_THRESHOLD));
       await buffer.flushResponse(true);
       expect(m.documents.length).toBe(0);
@@ -1636,7 +1637,7 @@ describe("MessageBuffer", () => {
 
     it("escapes >20KB text to reply.md attachment with summary", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 42, undefined, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, dmSurface(42), ALL_OFF);
       const big = "X".repeat(BIG_OUTPUT_THRESHOLD + 1000);
       buffer.onTextDelta(big);
       await buffer.flushResponse(true);
@@ -1659,7 +1660,7 @@ describe("MessageBuffer", () => {
 
     it("clears state after file escape so future deltas start fresh", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), ALL_OFF);
       buffer.onTextDelta("Y".repeat(BIG_OUTPUT_THRESHOLD + 100));
       await buffer.flushResponse(true);
 
@@ -1677,7 +1678,7 @@ describe("MessageBuffer", () => {
     it("clears state even if sendDocument fails", async () => {
       const m = makeBot();
       m.failNext.document = new Error("network");
-      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), ALL_OFF);
       buffer.onTextDelta("Z".repeat(BIG_OUTPUT_THRESHOLD + 5));
       await buffer.flushResponse(true);
 
@@ -1689,7 +1690,7 @@ describe("MessageBuffer", () => {
 
     it("file escape pre-empts rollover (no 4096-message spam)", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, ALL_OFF);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), ALL_OFF);
       // 50KB would otherwise produce ~12 rollover messages.
       buffer.onTextDelta("Q".repeat(50_000));
       await buffer.flushResponse(true);
@@ -1761,7 +1762,7 @@ describe("MessageBuffer", () => {
     describe("MessageBuffer integration", () => {
       it("none visibility: no slots, no status line, no flush", async () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" });
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), { visibility: "none" });
         buffer.onStatusUpdate("thinking...");
         buffer.onToolStart("bash", {});
         buffer.onToolEnd("bash", false);
@@ -1774,7 +1775,7 @@ describe("MessageBuffer", () => {
 
       it("none visibility: suppresses status entirely on text deltas", async () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, undefined, { visibility: "none" });
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), { visibility: "none" });
         buffer.onTextDelta("hello");
         await tick();
         expect(buffer.buildStatusLine()).toBe("");
@@ -1787,7 +1788,7 @@ describe("MessageBuffer", () => {
 
       it("minimal visibility: bash visible, read filtered", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           visibility: "minimal",
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
@@ -1800,7 +1801,7 @@ describe("MessageBuffer", () => {
 
       it("standard visibility (default): read + bash both visible, γ filtered", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
         buffer.onToolStart("read", {});
@@ -1812,7 +1813,7 @@ describe("MessageBuffer", () => {
 
       it("verbose visibility: revive_subagent now visible", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           visibility: "verbose",
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
@@ -1823,7 +1824,7 @@ describe("MessageBuffer", () => {
 
       it("debug visibility: even unknown tools are shown", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           visibility: "debug",
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
@@ -1835,7 +1836,7 @@ describe("MessageBuffer", () => {
 
       it("filtering applies to onToolEnd as well", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           visibility: "minimal",
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
@@ -1849,7 +1850,7 @@ describe("MessageBuffer", () => {
 
       it("unmatched onToolEnd without prior onToolStart is a no-op", () => {
         const m = makeBot();
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           statusThrottleMs: Number.MAX_SAFE_INTEGER,
         });
         buffer.onToolEnd("bash", false);
@@ -1878,7 +1879,7 @@ describe("MessageBuffer", () => {
 
     it("under-cap renders all slots without footer", () => {
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, { ...NO_AUTO, visibility: "debug" });
+      const buffer = new MessageBuffer(bot, dmSurface(1), { ...NO_AUTO, visibility: "debug" });
       // debug cap is 25; create 5 completed tools.
       for (let i = 0; i < 5; i++) {
         buffer.onToolStart(`tool_${i}`, {});
@@ -1894,7 +1895,7 @@ describe("MessageBuffer", () => {
     it("over cap elides oldest completed slots", () => {
       let t = 1000;
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, { ...NO_AUTO, visibility: "debug", now: () => t });
+      const buffer = new MessageBuffer(bot, dmSurface(1), { ...NO_AUTO, visibility: "debug", now: () => t });
       // debug cap is 25; create 30 completed tools.
       for (let i = 0; i < 30; i++) {
         buffer.onToolStart(`tool_${i}`, {});
@@ -1912,7 +1913,7 @@ describe("MessageBuffer", () => {
 
     it("running slots are exempt from elision", () => {
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, { ...NO_AUTO, visibility: "debug" });
+      const buffer = new MessageBuffer(bot, dmSurface(1), { ...NO_AUTO, visibility: "debug" });
       // debug cap is 25. Create 26 tools, with the very oldest still running.
       buffer.onToolStart("oldest", {}); // still running — never ends
       for (let i = 1; i < 26; i++) {
@@ -1935,7 +1936,7 @@ describe("MessageBuffer", () => {
       // 16 running exempt. 16 completed, cap allows 25 - 16 = 9 completed kept.
       // 7 completed elided.
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, { ...NO_AUTO, visibility: "debug" });
+      const buffer = new MessageBuffer(bot, dmSurface(1), { ...NO_AUTO, visibility: "debug" });
       for (let i = 0; i < 16; i++) {
         buffer.onToolStart(`run_${i}`, {}); // stay running
       }
@@ -1966,7 +1967,7 @@ describe("MessageBuffer", () => {
     it("verbose renders timing on completed slots", () => {
       let t = 1000;
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, {
+      const buffer = new MessageBuffer(bot, dmSurface(1), {
         ...NO_AUTO,
         visibility: "verbose",
         now: () => t,
@@ -1980,7 +1981,7 @@ describe("MessageBuffer", () => {
     it("standard does not render timing", () => {
       let t = 1000;
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, {
+      const buffer = new MessageBuffer(bot, dmSurface(1), {
         ...NO_AUTO,
         visibility: "standard",
         now: () => t,
@@ -1994,7 +1995,7 @@ describe("MessageBuffer", () => {
     it("running slot has no timing under verbose", () => {
       let t = 1000;
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, {
+      const buffer = new MessageBuffer(bot, dmSurface(1), {
         ...NO_AUTO,
         visibility: "verbose",
         now: () => t,
@@ -2007,7 +2008,7 @@ describe("MessageBuffer", () => {
     it("debug renders timing like verbose", () => {
       let t = 1000;
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, {
+      const buffer = new MessageBuffer(bot, dmSurface(1), {
         ...NO_AUTO,
         visibility: "debug",
         now: () => t,
@@ -2021,7 +2022,7 @@ describe("MessageBuffer", () => {
     it("re-entered slot timing reflects most recent invocation only", () => {
       let t = 1000;
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, {
+      const buffer = new MessageBuffer(bot, dmSurface(1), {
         ...NO_AUTO,
         visibility: "verbose",
         now: () => t,
@@ -2041,7 +2042,7 @@ describe("MessageBuffer", () => {
     it("error slot also gets timing", () => {
       let t = 1000;
       const { bot } = makeBot();
-      const buffer = new MessageBuffer(bot, 1, undefined, {
+      const buffer = new MessageBuffer(bot, dmSurface(1), {
         ...NO_AUTO,
         visibility: "verbose",
         now: () => t,
@@ -2063,7 +2064,7 @@ describe("MessageBuffer", () => {
       // sees "Let" for seconds until the tool finishes and more text arrives.
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -2095,7 +2096,7 @@ describe("MessageBuffer", () => {
       // still fire — it's about the response text, not the status line.
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         visibility: "minimal",
         responseThrottleMs: 200,
@@ -2129,7 +2130,7 @@ describe("MessageBuffer", () => {
 
     it("no-ops when there is no accumulated text", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), STATUS_OFF);
       buffer.onToolStart("bash", {});
       await tick();
       // No text was emitted, so nothing to flush.
@@ -2147,7 +2148,7 @@ describe("MessageBuffer", () => {
       // fresh sendMessage rather than an edit of the first bubble.
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -2187,7 +2188,7 @@ describe("MessageBuffer", () => {
       // last seal (or since turn start), the buffer SHALL NOT send
       // anything and SHALL NOT mutate state."
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), STATUS_OFF);
 
       buffer.onToolStart("delegate", {});
       await tick();
@@ -2204,7 +2205,7 @@ describe("MessageBuffer", () => {
     it("text → tool → text → tool → text produces three response messages", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -2242,7 +2243,7 @@ describe("MessageBuffer", () => {
     it("final segment is force-flushed in full on agent_end", async () => {
       let t = 1000;
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         now: () => t,
         ...STATUS_OFF,
       });
@@ -2287,7 +2288,7 @@ describe("MessageBuffer", () => {
 
     it("two assistant messages in one turn produce two Telegram bubbles", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), STATUS_OFF);
 
       // First assistant message_start arrives before any text.
       buffer.onMessageStart();
@@ -2326,7 +2327,7 @@ describe("MessageBuffer", () => {
 
     it("no stub on the first assistant message", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), STATUS_OFF);
 
       // First assistant message_start with no response in progress should not
       // send a stub and should not mutate response state.
@@ -2347,7 +2348,7 @@ describe("MessageBuffer", () => {
 
     it("onMessageEnd force-flushes text that is within the throttle window", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 1, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), {
         visibility: "none",
         responseThrottleMs: 10000,
         now: () => 0,
@@ -2368,7 +2369,7 @@ describe("MessageBuffer", () => {
     it("resets sticky plain-text flag on new assistant message", async () => {
       const m = makeBot();
       m.failNext.rich = { error_code: 400, description: "Bad Request: can't parse markdown" };
-      const buffer = new MessageBuffer(m.bot, 1, undefined, STATUS_OFF);
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), STATUS_OFF);
 
       // First assistant message falls back to plain text.
       buffer.onTextDelta("*bad*");
@@ -2430,7 +2431,7 @@ describe("MessageBuffer", () => {
       sched: FakeScheduler,
       extra: Partial<{ chatActionMs: number; visibility: string }> = {},
     ) {
-      return new MessageBuffer(m.bot, 1, undefined, {
+      return new MessageBuffer(m.bot, dmSurface(1), {
         statusThrottleMs: Number.MAX_SAFE_INTEGER,
         responseThrottleMs: Number.MAX_SAFE_INTEGER,
         setIntervalFn: sched.setIntervalFn,
@@ -2548,7 +2549,7 @@ describe("MessageBuffer", () => {
   describe("rich message mode on response sends", () => {
     it("sends response as a rich message", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(123), {
         responseThrottleMs: 0,
         visibility: "none",
       });
@@ -2561,7 +2562,7 @@ describe("MessageBuffer", () => {
 
     it("edits response as a rich message", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(123), {
         responseThrottleMs: 0,
         visibility: "none",
       });
@@ -2576,7 +2577,7 @@ describe("MessageBuffer", () => {
 
     it("status-line sends remain plain text (no rich content)", async () => {
       const m = makeBot();
-      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(123), {
         statusThrottleMs: 0,
         responseThrottleMs: 0,
         visibility: "standard",
@@ -2595,7 +2596,7 @@ describe("MessageBuffer", () => {
     it("falls back to plain text on a 400 parse error and sets sticky flag", async () => {
       const m = makeBot();
       m.failNext.rich = { error_code: 400, description: "Bad Request: can't parse entities" };
-      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(123), {
         responseThrottleMs: 0,
         visibility: "none",
       });
@@ -2612,7 +2613,7 @@ describe("MessageBuffer", () => {
     it("subsequent edits skip rich content after sticky flag is set", async () => {
       const m = makeBot();
       m.failNext.rich = { error_code: 400, description: "can't parse markdown" };
-      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(123), {
         responseThrottleMs: 0,
         visibility: "none",
       });
@@ -2638,7 +2639,7 @@ describe("MessageBuffer", () => {
     it("resets sticky flag on tool boundary seal", async () => {
       const m = makeBot();
       m.failNext.rich = { error_code: 400, description: "can't parse markdown" };
-      const buffer = new MessageBuffer(m.bot, 123, undefined, {
+      const buffer = new MessageBuffer(m.bot, dmSurface(123), {
         responseThrottleMs: 0,
         statusThrottleMs: 0,
         visibility: "none",
@@ -2673,7 +2674,7 @@ describe("MessageBuffer", () => {
       const m = makeBot();
       const metrics = makeMetrics();
       try {
-        const buffer = new MessageBuffer(m.bot, 7, undefined, { metrics: metrics.store });
+        const buffer = new MessageBuffer(m.bot, dmSurface(7), { metrics: metrics.store });
         buffer.onStatusUpdate("thinking...");
         await tick();
         const events = readTelegramEvents(metrics.home);
@@ -2694,7 +2695,7 @@ describe("MessageBuffer", () => {
       const metrics = makeMetrics();
       try {
         let t = 1000;
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           now: () => t,
           responseThrottleMs: 200,
           visibility: "none",
@@ -2723,7 +2724,7 @@ describe("MessageBuffer", () => {
       const metrics = makeMetrics();
       try {
         let t = 1000;
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           now: () => t,
           responseThrottleMs: 200,
           visibility: "none",
@@ -2759,7 +2760,7 @@ describe("MessageBuffer", () => {
       try {
         let t = 1000;
         let topicNotFoundCalled = false;
-        const buffer = new MessageBuffer(m.bot, 1, 42, {
+        const buffer = new MessageBuffer(m.bot, topicSurface("supergroup", 1, 42), {
           now: () => t,
           responseThrottleMs: 200,
           visibility: "none",
@@ -2794,7 +2795,7 @@ describe("MessageBuffer", () => {
       const m = makeBot();
       const metrics = makeMetrics();
       try {
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           visibility: "none",
           metrics: metrics.store,
         });
@@ -2819,7 +2820,7 @@ describe("MessageBuffer", () => {
       const metrics = makeMetrics();
       try {
         let t = 1000;
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           now: () => t,
           responseThrottleMs: 200,
           visibility: "none",
@@ -2848,7 +2849,7 @@ describe("MessageBuffer", () => {
       const m = makeBot();
       const metrics = makeMetrics();
       try {
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           responseThrottleMs: 0,
           visibility: "none",
           metrics: metrics.store,
@@ -2881,7 +2882,7 @@ describe("MessageBuffer", () => {
       const m = makeBot();
       const metrics = makeMetrics();
       try {
-        const buffer = new MessageBuffer(m.bot, 1, undefined, {
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), {
           visibility: "none",
           metrics: metrics.store,
         });

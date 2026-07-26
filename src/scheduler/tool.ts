@@ -2,7 +2,7 @@ import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { parseDuration, parseAt, parseIn } from "./time.ts";
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from "./store.ts";
-import type { ChatLocator } from "../sessions/types.ts";
+import type { Surface } from "../surface.ts";
 import type { ScheduleStore } from "./store.ts";
 
 const scheduleTurnSchema = Type.Object(
@@ -34,7 +34,7 @@ export type ScheduleTurnInput = Static<typeof scheduleTurnSchema>;
 export interface ScheduleTurnToolArgs {
   store: ScheduleStore;
   sessionId: string;
-  locator: ChatLocator;
+  surface: Surface;
   now: () => number;
 }
 
@@ -143,7 +143,7 @@ Actions:
     promptSnippet: "schedule_turn: schedule or manage a future autonomous turn for the current session.",
     parameters: scheduleTurnSchema,
     async execute(_toolCallId, params: ScheduleTurnInput) {
-      const { store, sessionId, locator, now } = args;
+      const { store, sessionId, surface, now } = args;
 
       switch (params.action) {
         case "create_once": {
@@ -171,7 +171,7 @@ Actions:
 
           const record = store.create({
             sessionId,
-            locator,
+            surface,
             kind: "once",
             prompt,
             nextRunAt: new Date(runResult.ms).toISOString(),
@@ -193,7 +193,7 @@ Actions:
           const intervalMs = parseDurationOrThrow(params.every.trim(), "every");
           const record = store.create({
             sessionId,
-            locator,
+            surface,
             kind: "recurring",
             prompt,
             nextRunAt: new Date(now() + intervalMs).toISOString(),
@@ -279,7 +279,7 @@ Actions:
             }
             const record = store.setHeartbeat({
               sessionId,
-              locator,
+              surface,
               enabled: true,
               intervalMs,
               now: nowIso(now),
@@ -305,7 +305,7 @@ Actions:
           }
           const record = store.setHeartbeat({
             sessionId,
-            locator,
+            surface,
             enabled: false,
             now: nowIso(now),
             agent: true,

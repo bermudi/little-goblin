@@ -7,6 +7,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { TurnCallbacks } from "../agent/mod.ts";
 import { log } from "../log.ts";
 import { MetricsStore, type TelegramMetricsEvent } from "../metrics/mod.ts";
+import type { Surface } from "../surface.ts";
+import { deliveryOpts } from "./delivery.ts";
 import { stripRichMarkdown, isParseError, classifyTelegramError } from "./format.ts";
 
 /**
@@ -147,9 +149,12 @@ export function shouldShowTool(name: string, visibility: string): boolean {
 
 export class MessageBuffer implements TurnCallbacks {
   private bot: Bot;
-  private chatId: number;
-  private topicId: number | undefined;
+  private surface: Surface;
   private visibility: string;
+
+  private get chatId(): number {
+    return this.surface.chatId;
+  }
 
   // Telegram message tracking.
   private statusMessageId: number | undefined = undefined;
@@ -263,25 +268,27 @@ export class MessageBuffer implements TurnCallbacks {
    */
   private inSeal: boolean = false;
 
-  constructor(bot: Bot, chatId: number, topicId: number | undefined, options: MessageBufferOptions = {}) {
+  constructor(bot: Bot, surface: Surface, options?: MessageBufferOptions) {
     this.bot = bot;
-    this.chatId = chatId;
-    this.topicId = topicId;
-    this.visibility = options.visibility ?? DEFAULT_VISIBILITY;
-    this.now = options.now ?? Date.now;
-    this.statusThrottleMs = options.statusThrottleMs ?? 1100;
-    this.responseThrottleMs = options.responseThrottleMs ?? 1100;
-    this.chatActionMs = options.chatActionMs ?? 4000;
+    this.surface = surface;
+
+    const resolvedOptions = options ?? {};
+
+    this.visibility = resolvedOptions.visibility ?? DEFAULT_VISIBILITY;
+    this.now = resolvedOptions.now ?? Date.now;
+    this.statusThrottleMs = resolvedOptions.statusThrottleMs ?? 1100;
+    this.responseThrottleMs = resolvedOptions.responseThrottleMs ?? 1100;
+    this.chatActionMs = resolvedOptions.chatActionMs ?? 4000;
     this.setIntervalFn =
-      options.setIntervalFn ??
+      resolvedOptions.setIntervalFn ??
       ((fn, ms) => setInterval(fn, ms) as unknown);
     this.clearIntervalFn =
-      options.clearIntervalFn ??
+      resolvedOptions.clearIntervalFn ??
       ((handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]));
-    this.onTopicNotFound = options.onTopicNotFound;
-    this.onTurnEnd = options.onTurnEnd;
-    this.metrics = options.metrics;
-    this.useDrafts = options.drafts ?? false;
+    this.onTopicNotFound = resolvedOptions.onTopicNotFound;
+    this.onTurnEnd = resolvedOptions.onTurnEnd;
+    this.metrics = resolvedOptions.metrics;
+    this.useDrafts = resolvedOptions.drafts ?? false;
   }
 
   /** Best-effort record of a `telegram` metrics event; swallows metric errors. */
@@ -483,12 +490,9 @@ export class MessageBuffer implements TurnCallbacks {
     this.chatActionHandle = undefined;
   }
 
-  /** Build API options with message_thread_id if topicId is set. */
+  /** Build API options with the correct topic parameter for this surface. */
   private withThread(opts: Record<string, unknown> = {}): Record<string, unknown> {
-    if (this.topicId !== undefined) {
-      return { ...opts, message_thread_id: this.topicId };
-    }
-    return opts;
+    return deliveryOpts(this.surface, opts);
   }
 
   /**

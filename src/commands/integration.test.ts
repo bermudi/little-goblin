@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "../sessions/manager.ts";
 import type { Config } from "../config.ts";
-import type { ChatLocator } from "../sessions/types.ts";
+import { dmSurface } from "../surface.ts";
 import { executeNew } from "./new.ts";
 import { executeArchive } from "./archive.ts";
 import { executeName } from "./name.ts";
@@ -51,18 +51,18 @@ describe("rapid command spam integration", () => {
   });
 
   it("/new then /archive leaves session archived and binding cleared (W2)", () => {
-    const locator: ChatLocator = { chatId: 123456 };
+    const surface = dmSurface(123456);
 
     // Step 1: /new creates a session
     const newResult = executeNew({
-      createSession: () => manager.createForChat(locator, { isSupergroup: false }),
+      createSession: () => manager.createForSurface(surface),
     });
     expect(newResult.kind).toBe("created");
     const sessionId = newResult.session.id;
     expect(existsSync(sessionDir(cfg.goblinHome, sessionId))).toBe(true);
 
     // Verify binding exists
-    const afterNew = manager.resolve(locator);
+    const afterNew = manager.resolve(surface);
     expect(afterNew).not.toBeNull();
     expect(afterNew?.id).toBe(sessionId);
 
@@ -81,22 +81,22 @@ describe("rapid command spam integration", () => {
     expect(existsSync(join(sessionsDir(cfg.goblinHome), "archive", sessionId))).toBe(true);
 
     // Final state: binding is cleared (DM returns null on resolve)
-    const afterArchive = manager.resolve(locator);
+    const afterArchive = manager.resolve(surface);
     expect(afterArchive).toBeNull();
   });
 
   it("rapid /new → /new → /archive leaves prior sessions resumable and archives only the last", () => {
-    const locator: ChatLocator = { chatId: 123456 };
+    const surface = dmSurface(123456);
 
     // First /new
     const first = executeNew({
-      createSession: () => manager.createForChat(locator, { isSupergroup: false }),
+      createSession: () => manager.createForSurface(surface),
     });
     const firstId = first.session.id;
 
     // Second /new switches to a fresh session without archiving the prior one.
     const second = executeNew({
-      createSession: () => manager.createForChat(locator, { isSupergroup: false }),
+      createSession: () => manager.createForSurface(surface),
     });
     const secondId = second.session.id;
     expect(secondId).not.toBe(firstId);
@@ -105,7 +105,7 @@ describe("rapid command spam integration", () => {
     expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
     expect(existsSync(join(sessionsDir(cfg.goblinHome), "archive", firstId))).toBe(false);
     expect(existsSync(sessionDir(cfg.goblinHome, secondId))).toBe(true);
-    expect(manager.resolve(locator)?.id).toBe(secondId);
+    expect(manager.resolve(surface)?.id).toBe(secondId);
 
     // Archive second
     const archiveResult = executeArchive({
@@ -118,14 +118,14 @@ describe("rapid command spam integration", () => {
     // Only second is archived; first remains resumable but unbound.
     expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
     expect(existsSync(join(sessionsDir(cfg.goblinHome), "archive", secondId))).toBe(true);
-    expect(manager.resolve(locator)).toBeNull();
+    expect(manager.resolve(surface)).toBeNull();
   });
 
   it("/name → /new → /resume switches back to the named prior session", () => {
-    const locator: ChatLocator = { chatId: 123456 };
+    const surface = dmSurface(123456);
 
     const first = executeNew({
-      createSession: () => manager.createForChat(locator, { isSupergroup: false }),
+      createSession: () => manager.createForSurface(surface),
     });
     const firstId = first.session.id;
 
@@ -138,21 +138,21 @@ describe("rapid command spam integration", () => {
     expect(nameResult.kind).toBe("renamed");
 
     const second = executeNew({
-      createSession: () => manager.createForChat(locator, { isSupergroup: false }),
+      createSession: () => manager.createForSurface(surface),
     });
     const secondId = second.session.id;
     expect(secondId).not.toBe(firstId);
-    expect(manager.resolve(locator)?.id).toBe(secondId);
+    expect(manager.resolve(surface)?.id).toBe(secondId);
     expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
 
     const resumeResult = executeResume({
       rawText: "/resume ttt",
       sessions: manager.list(),
-      bindSession: (sessionId) => manager.bindExistingToChat(sessionId, locator, { isSupergroup: false }),
+      bindSession: (sessionId) => manager.bindExistingToSurface(sessionId, surface),
     });
 
     expect(resumeResult.kind).toBe("resumed");
-    expect(manager.resolve(locator)?.id).toBe(firstId);
+    expect(manager.resolve(surface)?.id).toBe(firstId);
     expect(existsSync(sessionDir(cfg.goblinHome, secondId))).toBe(true);
   });
 });

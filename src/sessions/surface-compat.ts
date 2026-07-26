@@ -1,49 +1,28 @@
 /**
- * Compatibility bridge from the legacy `ChatLocator` + flags shape to the
- * canonical `Surface` value. This exists only to keep not-yet-migrated callers
- * compiling and behaving correctly during the phased Surface migration; it
- * is removed once all callers pass complete `Surface` values.
+ * Migration-only bridge from the legacy `ChatLocator` shape to the canonical
+ * `Surface` value. It is used by `surface-migration.ts` when converting
+ * topicless legacy locators (schedule entries that have no topicId) and is not
+ * exposed in the public session API.
  */
 
-import {
-  dmSurface,
-  guestSurface,
-  supergroupSurface,
-  topicSurface,
-  type Surface,
-} from "../surface.ts";
+import { dmSurface, supergroupSurface, type Surface } from "../surface.ts";
 import type { ChatLocator } from "./types.ts";
 
-export interface SurfaceCompatOpts {
-  isSupergroup?: boolean;
-  isGuest?: boolean;
-}
-
 /**
- * Convert a legacy `ChatLocator` and optional routing flags to a `Surface`.
- *
- * - DM: topicless, positive chat id, no guest/supergroup flag.
- * - Supergroup: topicless, `isSupergroup` flag or negative chat id.
- * - Guest: `isGuest` flag.
- * - Topic: `topicId` present; container is `private` when `loc.isPrivate` is
- *   true, otherwise `supergroup`.
- *
- * This helper intentionally does not produce `direct-messages` container
- * surfaces; legacy callers had no representation for that lane.
+ * Convert a topicless legacy `ChatLocator` to a `Surface` using its explicit
+ * private/supergroup metadata. Legacy locators could not represent guest or
+ * direct-messages containers, and the caller is responsible for disambiguating
+ * ambiguous topicless locators (no `isPrivate` flag) by matching the captured
+ * session id against converted bindings.
  */
-export function surfaceFromLocatorCompat(loc: ChatLocator, opts?: SurfaceCompatOpts): Surface {
-  if (opts?.isGuest) {
-    return guestSurface(loc.chatId);
+export function surfaceFromLocatorCompat(loc: ChatLocator): Surface {
+  if (loc.isPrivate === true) {
+    return dmSurface(loc.chatId);
   }
-
-  if (loc.topicId !== undefined) {
-    const container = loc.isPrivate === true ? "private" : "supergroup";
-    return topicSurface(container, loc.chatId, loc.topicId);
-  }
-
-  if (opts?.isSupergroup || loc.chatId < 0) {
+  if (loc.isPrivate === false) {
     return supergroupSurface(loc.chatId);
   }
-
-  return dmSurface(loc.chatId);
+  throw new Error(
+    `Cannot migrate topicless locator for chat ${loc.chatId}: isPrivate metadata is missing. Resolve by matching the schedule's session against converted bindings or set isPrivate explicitly.`,
+  );
 }

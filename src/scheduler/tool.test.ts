@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { createScheduleTurnTool, type ScheduleTurnInput } from "./tool.ts";
 import { ScheduleStore } from "./store.ts";
 import { MAX_AGENT_SCHEDULES } from "./types.ts";
-import type { ChatLocator } from "../sessions/types.ts";
+import { dmSurface, type Surface } from "../surface.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const NOW_MS = new Date("2026-07-04T12:00:00.000Z").getTime();
 const FUTURE_ISO = new Date(NOW_MS + 3600_000).toISOString();
-const LOC: ChatLocator = { chatId: 1 };
+const LOC: Surface = dmSurface(1);
 
 function makeNow() {
   return () => NOW_MS;
@@ -47,7 +47,7 @@ describe("createScheduleTurnTool", () => {
     tool = createScheduleTurnTool({
       store,
       sessionId: "abcdef1234",
-      locator: LOC,
+      surface: LOC,
       now: makeNow(),
     });
   });
@@ -127,7 +127,7 @@ describe("createScheduleTurnTool", () => {
       const agent = await run(tool, "create_once", { in: "1h", prompt: "agent prompt" });
       const user = store.create({
         sessionId: "abcdef1234",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "user prompt",
         nextRunAt: FUTURE_ISO,
@@ -176,7 +176,7 @@ describe("createScheduleTurnTool", () => {
     it("rejects mutating a user-owned schedule", async () => {
       const user = store.create({
         sessionId: "abcdef1234",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "user-owned",
         nextRunAt: FUTURE_ISO,
@@ -215,7 +215,7 @@ describe("createScheduleTurnTool", () => {
     it("rejects turning on or off a user-owned heartbeat", async () => {
       store.setHeartbeat({
         sessionId: "abcdef1234",
-        locator: LOC,
+        surface: LOC,
         enabled: true,
         now: new Date(NOW_MS).toISOString(),
       });
@@ -245,7 +245,7 @@ describe("createScheduleTurnTool", () => {
     it("status on a user-owned heartbeat returns metadata with source user", async () => {
       store.setHeartbeat({
         sessionId: "abcdef1234",
-        locator: LOC,
+        surface: LOC,
         enabled: true,
         now: new Date(NOW_MS).toISOString(),
       });

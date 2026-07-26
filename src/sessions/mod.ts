@@ -4,6 +4,6 @@
  */
 
 export { SessionManager } from "./manager.ts";
-export type { ChatLocator, SessionState, SurfaceCompatOpts, Surface, SurfaceId } from "./types.ts";
+export type { SessionState, Surface, SurfaceId } from "./types.ts";
 export type { TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile } from "./topic-settings.ts";
 export type { BindingsFile, LegacyBindingsFile } from "./types.ts";

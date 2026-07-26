@@ -7,13 +7,20 @@ import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
 import { syncTelegramMenu } from "./commands/registry.ts";
 import { SchedulerLoop, DEFAULT_TRANSCRIPT_SYNC_MAX_MS } from "./scheduler/loop.ts";
 import { runPreflight } from "./preflight.ts";
-import { migrateSurfaceState } from "./sessions/surface-migration.ts";
+import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
   initLog(cfg.logLevel);
   ensureGoblinHome(cfg);
-  migrateSurfaceState(cfg.goblinHome);
+  const stateVersion = readStateVersion(cfg.goblinHome);
+  if (stateVersion !== CURRENT_STATE_VERSION) {
+    log.error("state version mismatch; run `bun run migrate` with the service stopped", {
+      current: stateVersion,
+      required: CURRENT_STATE_VERSION,
+    });
+    process.exit(1);
+  }
   const memoryEngine = new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
   await memoryEngine.migrate();
   await memoryEngine.embeddingProvider.reindexIfNeeded();

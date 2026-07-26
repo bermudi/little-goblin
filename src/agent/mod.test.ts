@@ -268,7 +268,7 @@ import { AgentRunner, ModelNotCapableError, type TurnCallbacks } from "./mod.ts"
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
-import type { ChatLocator } from "../sessions/types.ts";
+import { dmSurface, topicSurface, type Surface } from "../surface.ts";
 import { MemoryStore } from "../memory/store.ts";
 import {
   DreamingPipeline,
@@ -312,7 +312,7 @@ function nopCallbacks(): TurnCallbacks {
 function makeRunner(
   home: string,
   customTools: unknown[] = [],
-  locator: ChatLocator = { chatId: 123 },
+  surface: Surface = dmSurface(123),
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>,
   modelName?: string,
   configOverrides: Partial<Config> = {},
@@ -324,7 +324,7 @@ function makeRunner(
   return new AgentRunner({
     cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }), ...configOverrides },
     sessionId: "abcdef1234",
-    locator,
+    surface,
     customTools: customTools as never,
     getTopicName,
     projectDir,
@@ -405,7 +405,7 @@ describe("AgentRunner", () => {
         "utf-8",
       );
 
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, {}, "/home/daniel/build/scribus-card");
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, {}, "/home/daniel/build/scribus-card");
       await runner.prompt("hello", nopCallbacks());
 
       const methods = sessionManagerCalls.map((c) => c.method);
@@ -459,7 +459,7 @@ describe("AgentRunner", () => {
     });
 
     it("topic-bound memory_write targets the runner's active topic scope", async () => {
-      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("hello", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -475,7 +475,7 @@ describe("AgentRunner", () => {
       );
       const verifyStore = new MemoryStore(tmpDir);
       try {
-        expect(verifyStore.readBody({ topic: { chatId: -100, topicId: 42 } })).toBe("topic fact");
+        expect(verifyStore.readBody({ topic: topicSurface("supergroup", -100, 42) })).toBe("topic fact");
       } finally {
         verifyStore.close();
       }
@@ -491,7 +491,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("hello", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -516,14 +516,14 @@ describe("AgentRunner", () => {
       // Same-chat topic + other-chat topic both matching.
       const store = new MemoryStore(tmpDir);
       try {
-        await store.add({ topic: { chatId: -100, topicId: 42 } }, "active backups note");
+        await store.add({ topic: topicSurface("supergroup", -100, 42) }, "active backups note");
         await store.add({ topic: { chatId: -100, topicId: 7 } }, "peer backups note");
         await store.add({ topic: { chatId: -200, topicId: 9 } }, "other chat backups note");
       } finally {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("hello", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -562,7 +562,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("tell me about backups", nopCallbacks());
 
       expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
@@ -597,7 +597,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("backups", nopCallbacks());
 
       expect(sessionHolder.callOrder).toEqual([
@@ -614,7 +614,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       // Start a turn while idle — this injects the relevant-memory aside.
       await runner.prompt("backups", nopCallbacks());
       const snapshotCallsBefore = sessionHolder.sendCustomMessage.mock.calls.length;
@@ -635,7 +635,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 });
+      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("backups", nopCallbacks());
       const callsBefore = sessionHolder.sendCustomMessage.mock.calls.length;
 
@@ -847,7 +847,7 @@ describe("AgentRunner", () => {
 
   describe("skillSources resource loader modes", () => {
     it("goblin-only passes noSkills true to the resource loader", async () => {
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, { skillSources: "goblin-only" });
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, { skillSources: "goblin-only" });
       await runner.prompt("hi", nopCallbacks());
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
@@ -858,7 +858,7 @@ describe("AgentRunner", () => {
     });
 
     it("user omits noSkills from the resource loader constructor", async () => {
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, { skillSources: "user" });
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, { skillSources: "user" });
       await runner.prompt("hi", nopCallbacks());
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
@@ -887,7 +887,7 @@ describe("AgentRunner", () => {
       mkdirSync(projectDir);
       writeFileSync(join(projectDir, "AGENTS.md"), "exact project guidance\n", "utf-8");
 
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, undefined, {}, projectDir);
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, {}, projectDir);
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -969,7 +969,7 @@ describe("AgentRunner", () => {
     });
 
     it("throws ModelNotCapableError for image content on an image-incapable model", async () => {
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "zai/glm-4.5", { zaiApiKey: "test-key" });
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "zai/glm-4.5", { zaiApiKey: "test-key" });
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
 
@@ -978,7 +978,7 @@ describe("AgentRunner", () => {
     });
 
     it("unpacks multimodal content into session.followUp(text, images) on an image-capable model", async () => {
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "poe/kimi-k2.6");
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
 
@@ -1041,7 +1041,7 @@ describe("AgentRunner", () => {
     const image: ImageContent = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
 
     it("adds default text before image-only messages for Poe chat completions", async () => {
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "poe/kimi-k2.6");
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
       await runner.prompt([image], nopCallbacks());
 
       expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith([
@@ -1052,7 +1052,7 @@ describe("AgentRunner", () => {
 
     it("does not rewrite captioned Poe chat completion image messages", async () => {
       const content: (TextContent | ImageContent)[] = [{ type: "text", text: "caption" }, image];
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "poe/kimi-k2.6");
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
       await runner.prompt(content, nopCallbacks());
 
       expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith(content);
@@ -1060,14 +1060,14 @@ describe("AgentRunner", () => {
 
     it("does not rewrite image-only messages for non-Poe models", async () => {
       const content: ImageContent[] = [image];
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "openai/gpt-5.4");
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "openai/gpt-5.4");
       await runner.prompt(content, nopCallbacks());
 
       expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith(content);
     });
 
     it("uses the default text for Poe chat completion image follow-ups", async () => {
-      const runner = makeRunner(tmpDir, [], { chatId: 123 }, undefined, "poe/kimi-k2.6");
+      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
       await runner.prompt("hi", nopCallbacks());
       sessionHolder.streaming = true;
       await runner.followUp([image]);
@@ -1430,14 +1430,14 @@ describe("AgentRunner", () => {
       // the frozen summary during session init.
       const store = new MemoryStore(tmpDir);
       try {
-        await store.add({ topic: { chatId: -100, topicId: 42 } }, "fact-42");
+        await store.add({ topic: topicSurface("supergroup", -100, 42) }, "fact-42");
         await store.add({ topic: { chatId: -100, topicId: 7 } }, "fact-7");
         await store.add("user", "user pref");
       } finally {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 }, getTopicName);
+      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42), getTopicName);
 
       // First prompt - should call getTopicName for peer topics
       await runner.prompt("first", nopCallbacks());
@@ -1459,14 +1459,14 @@ describe("AgentRunner", () => {
 
       const store = new MemoryStore(tmpDir);
       try {
-        await store.add({ topic: { chatId: -100, topicId: 42 } }, "fact-42");
+        await store.add({ topic: topicSurface("supergroup", -100, 42) }, "fact-42");
         await store.add({ topic: { chatId: -100, topicId: 7 } }, "fact-7");
         await store.add("user", "user pref");
       } finally {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], { chatId: -100, topicId: 42 }, getTopicName);
+      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42), getTopicName);
 
       await runner.prompt("first", nopCallbacks());
       const callsAfterFirst = callCount;
@@ -1483,7 +1483,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
-        locator: { chatId: 123 },
+        surface: dmSurface(123),
         customTools: [],
         subagentRunner: subRunner,
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -1515,7 +1515,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
-        locator: { chatId: 123 },
+        surface: dmSurface(123),
         customTools: [],
         subagentRunner: subRunner,
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -1545,7 +1545,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
-        locator: { chatId: 123 },
+        surface: dmSurface(123),
         customTools: [],
         scheduleStore,
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -1600,7 +1600,7 @@ describe("AgentRunner", () => {
       dreaming.runLightSleep = runSpy as never;
 
       const runner = makeRunner(
-        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, dreaming,
       );
       await runner.prompt("hello", nopCallbacks());
 
@@ -1621,7 +1621,7 @@ describe("AgentRunner", () => {
       dreaming.runLightSleep = runSpy as never;
 
       const runner = makeRunner(
-        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, dreaming,
       );
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
@@ -1636,7 +1636,7 @@ describe("AgentRunner", () => {
       const dreaming = makeDreamingPipeline(tmpDir);
 
       const runner = makeRunner(
-        tmpDir, [], { chatId: 123 }, undefined, undefined, {}, undefined, undefined, undefined, dreaming,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, dreaming,
       );
       await runner.prompt("hello", nopCallbacks());
 
@@ -1675,7 +1675,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg: extCfg,
         sessionId: "abcdef1234",
-        locator: { chatId: 123 },
+        surface: dmSurface(123),
         customTools: [],
         projectDir: tmpDir,
         externalAgentRunner,
@@ -1704,7 +1704,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg: extCfg,
         sessionId: "abcdef1234",
-        locator: { chatId: 123 },
+        surface: dmSurface(123),
         customTools: [],
         externalAgentRunner,
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -1731,7 +1731,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg: extCfg,
         sessionId: "abcdef1234",
-        locator: { chatId: 123 },
+        surface: dmSurface(123),
         customTools: [],
         projectDir: tmpDir,
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -1769,7 +1769,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg,
         sessionId: "abcdef1234",
-        locator: { chatId: 123 },
+        surface: dmSurface(123),
         customTools: [],
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -1796,7 +1796,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg,
         sessionId: "abcdef1234",
-        locator: { chatId: 123 },
+        surface: dmSurface(123),
         customTools: [],
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):"),
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -1826,7 +1826,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg,
         sessionId: "abcdef1234",
-        locator: { chatId: 123 },
+        surface: dmSurface(123),
         customTools: [],
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
@@ -1843,7 +1843,7 @@ describe("AgentRunner", () => {
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
-        locator: { chatId: 123 },
+        surface: dmSurface(123),
         customTools: [],
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),
         backendFactory: (opts) => new FakeAgentBackend(opts),

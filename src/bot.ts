@@ -2,13 +2,14 @@ import { Bot } from "grammy";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
 import { log } from "./log.ts";
-import { buildAllowlistMiddleware, locatorFromCtx, TextCoalescer } from "./tg/mod.ts";
+import { buildAllowlistMiddleware, surfaceFromCtx, TextCoalescer } from "./tg/mod.ts";
 import { prepareUserContent } from "./tg/user-context.ts";
 import { MemoryEngine } from "./memory/mod.ts";
 import { MetricsStore, type TelegramMetricsEvent } from "./metrics/mod.ts";
 import { classifyTelegramError, type ReplyOpts } from "./tg/format.ts";
 import { registerCommands } from "./commands/mod.ts";
-import { SessionManager, type ChatLocator } from "./sessions/mod.ts";
+import { SessionManager } from "./sessions/mod.ts";
+import { surfaceId, type Surface } from "./surface.ts";
 import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
@@ -93,8 +94,7 @@ function wrapReply(
 }
 
 function intakeMessageFromCtx(ctx: Context, manager: SessionManager, cfg: Config): TelegramIntakeMessage {
-  const locator = locatorFromCtx(ctx);
-  const isSupergroup = ctx.chat?.type === "supergroup";
+  const surface = surfaceFromCtx(ctx);
   // System-reply metrics are attributed to the session bound at reply
   // completion time, not at message construction time. This differs from
   // MessageBuffer, which pins its MetricsStore at createMessageBuffer time.
@@ -105,14 +105,12 @@ function intakeMessageFromCtx(ctx: Context, manager: SessionManager, cfg: Config
   // would lose metrics for /new replies (the session does not exist yet at
   // intakeMessageFromCtx time).
   const getMetrics = (): MetricsStore | undefined => {
-    if (!locator) return undefined;
-    const session = manager.resolve(locator, { isSupergroup });
+    if (!surface) return undefined;
+    const session = manager.resolve(surface);
     return session ? new MetricsStore(cfg.goblinHome, session.id) : undefined;
   };
   return {
-    locator,
-    isSupergroup,
-    threadId: ctx.message?.message_thread_id,
+    surface,
     reply: wrapReply(async (text, opts) => {
       await ctx.reply(text, opts as Record<string, unknown> | undefined);
     }, getMetrics),
@@ -128,16 +126,14 @@ function intakeMessageFromCtx(ctx: Context, manager: SessionManager, cfg: Config
  * Only pings the user in DMs — in topics, we silently drop to avoid
  * spamming every topic in a forum with the same prompt. Always logs.
  */
-export function replyNoActiveSession(ctx: Context, locator: ChatLocator, kind: string): void {
+export function replyNoActiveSession(ctx: Context, surface: Surface, kind: string): void {
   replyNoActiveSessionForMessage({
-    locator,
-    isSupergroup: ctx.chat?.type === "supergroup",
-    threadId: ctx.message?.message_thread_id,
+    surface,
     reply: wrapReply(async (text, opts) => {
       await ctx.reply(text, opts as Record<string, unknown> | undefined);
     }, () => undefined),
     prepare: (content) => content,
-  }, locator, kind);
+  }, surface, kind);
 }
 
 /**
@@ -206,7 +202,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   bot.on("message:text", async (ctx: Context) => {
     const message = intakeMessageFromCtx(ctx, manager, cfg);
     // No valid chat → drop, same as the handler did before coalescing.
-    if (!message.locator) return;
+    if (!message.surface) return;
     // Telegram always populates `from` on user-originated text messages and
     // `message_id` on Message objects, and the allowlist middleware has already
     // gated this update. Guard defensively anyway so a future invariant shift
@@ -218,8 +214,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
       message,
       text: ctx.msg?.text ?? "",
       key: {
-        chatId: message.locator.chatId,
-        topicId: message.locator.topicId,
+        surfaceId: message.surface ? surfaceId(message.surface) : "unknown",
         fromUserId: fromId,
       },
       messageId,

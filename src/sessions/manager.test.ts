@@ -247,30 +247,4 @@ describe("SessionManager", () => {
     });
   });
 
-  describe("legacy ChatLocator compatibility", () => {
-    it("resolve(loc, opts) still works for DM and supergroup", () => {
-      const dm = manager.resolve({ chatId: 1000 }) ?? manager.createForSurface(dmSurface(1000));
-      expect(manager.resolve({ chatId: 1000 })?.id).toBe(dm.id);
-
-      const sg = manager.resolve({ chatId: -1000 }, { isSupergroup: true });
-      expect(manager.resolve({ chatId: -1000 }, { isSupergroup: true })?.id).toBe(sg!.id);
-    });
-
-    it("peekBinding(loc, opts) still works for guest", () => {
-      manager.resolve({ chatId: 888 }, { isGuest: true });
-      const peeked = manager.peekBinding({ chatId: 888 }, { isGuest: true });
-      expect(peeked).not.toBeNull();
-      expect(manager.peekBinding({ chatId: 888 })).toBeNull();
-    });
-
-    it("createForChat and bindExistingToChat still delegate", () => {
-      const state = manager.createForChat({ chatId: 42 });
-      expect(manager.resolve({ chatId: 42 })?.id).toBe(state.id);
-
-      const other = manager.createForChat({ chatId: 99 });
-      manager.bindExistingToChat(state.id, { chatId: 99 });
-      expect(manager.resolve({ chatId: 99 })?.id).toBe(state.id);
-      expect(existsSync(statePath(tmpDir, other.id))).toBe(true);
-    });
-  });
 });

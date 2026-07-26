@@ -1,4 +1,4 @@
-import type { ChatLocator } from "../sessions/types.ts";
+import type { Surface } from "../surface.ts";
 
 /**
  * Scheduler type definitions for scheduled turns.
@@ -55,7 +55,31 @@ export interface LastRunStatus {
 export interface ScheduledTurn {
   id: string;
   sessionId: string;
-  locator: ChatLocator;
+  surface: Surface;
+  kind: ScheduleKind;
+  prompt: string | null;
+  enabled: boolean;
+  state: ScheduleState;
+  /** ISO-8601 timestamp of the next run. */
+  nextRunAt: string;
+  /** Recurrence interval in milliseconds. Present for recurring/heartbeat only. */
+  intervalMs?: number;
+  /** ISO-8601 creation timestamp. */
+  createdAt: string;
+  /** Provenance: who created the schedule. Absent/legacy records read as "user". */
+  source?: "user" | "agent";
+  lastRun?: LastRunStatus;
+}
+
+/**
+ * On-disk DTO for a scheduled turn. The canonical on-disk representation stores
+ * the surface as a validated `SurfaceId`; the in-memory model carries the
+ * decoded `Surface`.
+ */
+export interface PersistedScheduledTurn {
+  id: string;
+  sessionId: string;
+  surfaceId: string;
   kind: ScheduleKind;
   prompt: string | null;
   enabled: boolean;
@@ -76,5 +100,5 @@ export interface ScheduledTurn {
  * lookup, removal, and iteration are O(n) and writes stay simple.
  */
 export interface ScheduleStoreFile {
-  schedules: ScheduledTurn[];
+  schedules: PersistedScheduledTurn[];
 }

@@ -6,6 +6,7 @@ import type { Bot } from "grammy";
 import { InputFile } from "grammy";
 import { executeVoice, readLastAssistantMessage } from "./voice.ts";
 import { sessionDir, transcriptPath } from "../sessions/paths.ts";
+import { dmSurface, topicSurface } from "../surface.ts";
 
 function writeTranscript(home: string, sessionId: string, lines: object[]): void {
   const dir = sessionDir(home, sessionId);
@@ -108,7 +109,9 @@ describe("executeVoice", () => {
     writeFileSync(transcriptPath(home, sessionId), content);
   }
 
-  type SendVoiceMock = ReturnType<typeof mock<(chatId: number, file: InputFile, opts?: { message_thread_id?: number }) => Promise<{ message_id: number }>>>;
+  type SendVoiceMock = ReturnType<
+    typeof mock<(chatId: number, file: InputFile, opts?: Record<string, unknown>) => Promise<{ message_id: number }>>
+  >;
 
   function makeBot(sendVoice: SendVoiceMock = mock(async () => ({ message_id: 1 }))): Bot {
     return { api: { sendVoice } } as unknown as Bot;
@@ -117,33 +120,44 @@ describe("executeVoice", () => {
   it("returns no-messages when the transcript has no assistant text", async () => {
     writeTranscript([{ role: "user", content: "hello" }]);
     const sendVoice = mock(async () => ({ message_id: 1 }));
-    const result = await executeVoice({ home, sessionId, bot: makeBot(sendVoice), chatId });
+    const result = await executeVoice({ home, sessionId, bot: makeBot(sendVoice), surface: dmSurface(chatId) });
     expect(result).toEqual({ kind: "no-messages" });
     expect(sendVoice).not.toHaveBeenCalled();
   });
 
-  it("generates audio and sends a voice message", async () => {
+  it("generates audio and sends a voice message in a supergroup topic", async () => {
     writeTranscript([{ role: "assistant", content: "Hello from goblin." }]);
     const sendVoice = mock(async () => ({ message_id: 99 }));
     const result = await executeVoice({
       home,
       sessionId,
       bot: makeBot(sendVoice),
-      chatId,
-      topicId,
+      surface: topicSurface("supergroup", chatId, topicId),
     });
     expect(result).toEqual({ kind: "sent" });
     expect(sendVoice).toHaveBeenCalledTimes(1);
     const call = sendVoice.mock.calls[0];
     expect(call).toBeDefined();
-    const [calledChatId, file, opts] = call as unknown as [
-      number,
-      InputFile,
-      { message_thread_id?: number },
-    ];
+    const [calledChatId, file, opts] = call as unknown as [number, InputFile, Record<string, unknown>];
     expect(calledChatId).toBe(chatId);
     expect(file).toBeInstanceOf(InputFile);
     expect(opts).toEqual({ message_thread_id: topicId });
+  }, 60_000);
+
+  it("uses direct_messages_topic_id for a direct-messages topic", async () => {
+    writeTranscript([{ role: "assistant", content: "Hello from goblin." }]);
+    const sendVoice = mock(async () => ({ message_id: 99 }));
+    const result = await executeVoice({
+      home,
+      sessionId,
+      bot: makeBot(sendVoice),
+      surface: topicSurface("direct-messages", chatId, topicId),
+    });
+    expect(result).toEqual({ kind: "sent" });
+    const call = sendVoice.mock.calls[0];
+    expect(call).toBeDefined();
+    const [, , opts] = call as unknown as [number, InputFile, Record<string, unknown>];
+    expect(opts).toEqual({ direct_messages_topic_id: topicId });
   }, 60_000);
 
   it("cleans up the temp mp3 after sending", async () => {
@@ -153,7 +167,7 @@ describe("executeVoice", () => {
       capturedPath = file.filename;
       return { message_id: 1 };
     });
-    await executeVoice({ home, sessionId, bot: makeBot(sendVoice), chatId });
+    await executeVoice({ home, sessionId, bot: makeBot(sendVoice), surface: dmSurface(chatId) });
     expect(capturedPath).toBeDefined();
     expect(existsSync(capturedPath!)).toBe(false);
   }, 60_000);
@@ -163,7 +177,12 @@ describe("executeVoice", () => {
     const sendVoice = mock(async () => {
       throw new Error("network down");
     });
-    const result = await executeVoice({ home, sessionId, bot: makeBot(sendVoice), chatId });
+    const result = await executeVoice({
+      home,
+      sessionId,
+      bot: makeBot(sendVoice),
+      surface: dmSurface(chatId),
+    });
     expect(result).toEqual({ kind: "tts-failed", error: "network down" });
   }, 60_000);
 });

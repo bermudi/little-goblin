@@ -2,7 +2,7 @@
 
 ## Status
 
-proposed
+accepted
 
 ## Context
 
@@ -45,7 +45,7 @@ The memory SQLite schema retains its own in-process versioned migration in `src/
 
 ## Consequences
 
-Seven bespoke restart-safe migrations collapse into one ordered list behind one version counter, and the fourteen-step startup order loses its migration steps entirely. The interrupted-write, mixed-generation, and partial-restart-convergence requirements are removed from `telegram-surface-identity`, `immutable-project-environments`, `pi-native-skill-layout`, `conversation-lifecycle`, `transcript-surface-provenance`, and `delegated-work-ownership`; each keeps its compute-before-write and refuse-on-ambiguity requirements, which are about correctness rather than crash recovery. Those six changes need a patch to strip the restart-safety language before they are built.
+Seven bespoke restart-safe migrations collapse into one ordered list behind one version counter, and the fourteen-step startup order loses its migration steps entirely. The interrupted-write, mixed-generation, and partial-restart-convergence requirements are removed from `immutable-project-environments`, `pi-native-skill-layout`, `conversation-lifecycle`, `transcript-surface-provenance`, and `delegated-work-ownership`; each keeps its compute-before-write and refuse-on-ambiguity requirements, which are about correctness rather than crash recovery. Those five remaining changes need a patch to strip the restart-safety language before they are built.
 
 Migration correctness becomes far easier to test: a fixture directory in, a fixture directory out, no interruption matrix.
 

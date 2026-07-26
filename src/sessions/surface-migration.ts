@@ -16,9 +16,13 @@
 
 import { readFileSync } from "node:fs";
 import { surfaceId, parseSurfaceId, topicSurface, dmSurface, supergroupSurface, guestSurface, type Surface, type SurfaceId } from "../surface.ts";
+import { saveStore } from "../scheduler/store.ts";
+import type { ScheduleStoreFile, PersistedScheduledTurn } from "../scheduler/types.ts";
 import { loadBindings, saveBindings, loadLegacyBindings } from "./bindings.ts";
 import { loadTopicSettings, saveTopicSettings, loadLegacyTopicSettings } from "./topic-settings.ts";
 import { schedulesPath } from "./paths.ts";
+import { surfaceFromLocatorCompat } from "./surface-compat.ts";
+
 import type { BindingsFile, LegacyBindingsFile, LegacyTopicSettingsFile, TopicSettingsFile, ChatLocator, TopicSettings } from "./types.ts";
 
 interface TopicEvidence {
@@ -46,7 +50,7 @@ function loadSchedulesForEvidence(home: string): { locator: ChatLocator }[] {
     const raw = readFileSync(schedulesPath(home), "utf-8");
     const parsed = JSON.parse(raw) as { schedules?: { locator?: ChatLocator }[] };
     if (!Array.isArray(parsed?.schedules)) return [];
-    return parsed.schedules.filter((s) => s?.locator !== undefined) as { locator: ChatLocator }[];
+    return parsed.schedules.filter((s) => s?.locator !== undefined && s.locator !== null) as { locator: ChatLocator }[];
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
     // Malformed schedules should not block bindings/settings migration.
@@ -135,6 +139,17 @@ function collectTopicEvidence(
   return evidence;
 }
 
+function buildSessionSurfaces(bindings: BindingsFile): Map<string, Surface[]> {
+  const map = new Map<string, Surface[]>();
+  for (const [key, sessionId] of Object.entries(bindings.surfaces)) {
+    const surface = parseSurfaceId(key as string);
+    const arr = map.get(sessionId) ?? [];
+    arr.push(surface);
+    map.set(sessionId, arr);
+  }
+  return map;
+}
+
 function resolveTopicContainer(
   evidence: Map<string, TopicEvidence>,
   ref: TopicRef,
@@ -165,6 +180,10 @@ function migrateBindings(
   evidence: Map<string, TopicEvidence>,
 ): BindingsFile {
   const surfaces: Record<SurfaceId, string> = { ...canonical.surfaces };
+
+  for (const key of Object.keys(surfaces)) {
+    parseSurfaceId(key as string);
+  }
 
   function add(surface: Surface, sessionId: string): void {
     const key = surfaceId(surface);
@@ -227,6 +246,10 @@ function migrateSettings(
 ): TopicSettingsFile {
   const surfaces: Record<SurfaceId, TopicSettings> = { ...canonical.surfaces };
 
+  for (const key of Object.keys(surfaces)) {
+    parseSurfaceId(key as string);
+  }
+
   function add(surface: Surface, settings: TopicSettings): void {
     const key = surfaceId(surface);
     if (Object.prototype.hasOwnProperty.call(surfaces, key)) {
@@ -271,12 +294,139 @@ function migrateSettings(
   return { version: 1, surfaces };
 }
 
+type LegacyScheduleRecord = {
+  id: string;
+  sessionId: string;
+  surfaceId?: string;
+  locator?: ChatLocator;
+  kind: unknown;
+  prompt?: string | null;
+  enabled?: boolean;
+  state?: unknown;
+  nextRunAt?: string;
+  intervalMs?: number;
+  createdAt?: string;
+  source?: unknown;
+  lastRun?: unknown;
+};
+
+function scheduleSurface(
+  loc: ChatLocator,
+  sessionId: string,
+  sessionSurfaces: Map<string, Surface[]>,
+  evidence: Map<string, TopicEvidence>,
+  recordId: string,
+): Surface {
+  if (loc.topicId !== undefined) {
+    if (loc.isPrivate === true) {
+      return topicSurface("private", loc.chatId, loc.topicId);
+    }
+    if (loc.isPrivate === false) {
+      return topicSurface("supergroup", loc.chatId, loc.topicId);
+    }
+    const container = resolveTopicContainer(evidence, { chatId: loc.chatId, topicId: loc.topicId });
+    return topicSurface(container, loc.chatId, loc.topicId);
+  }
+
+  if (loc.isPrivate !== undefined) {
+    return surfaceFromLocatorCompat(loc);
+  }
+
+  const candidates = sessionSurfaces.get(sessionId) ?? [];
+  const matches = candidates.filter((s) => s.kind !== "topic" && s.chatId === loc.chatId);
+  if (matches.length === 1) {
+    return matches[0]!;
+  }
+  if (matches.length === 0) {
+    throw new Error(
+      `Cannot migrate schedule ${recordId} (session ${sessionId}, chat ${loc.chatId}): no binding candidate. Bind the session to a DM, supergroup, or guest surface first, or set the locator's isPrivate flag.`,
+    );
+  }
+  throw new Error(
+    `Cannot migrate schedule ${recordId} (session ${sessionId}, chat ${loc.chatId}): multiple binding candidates. Set the locator's isPrivate flag or resolve the ambiguous bindings before migrating.`,
+  );
+}
+
 /**
- * Migrate legacy bindings and topic-settings to canonical SurfaceId-keyed files.
+ * Migrate legacy `schedules.json` entries from `locator` to `surfaceId`.
  *
- * The migration is fully precomputed: it throws before writing if any topic
- * lacks unambiguous container evidence. It is idempotent across legacy,
- * canonical, and mixed-generation inputs.
+ * The file is read directly so partially-migrated files (some legacy, some
+ * canonical) are handled: canonical records with `surfaceId` are preserved;
+ * legacy records with `locator` are rewritten to `surfaceId`. The returned
+ * canonical file is validated in memory; the caller writes it atomically after
+ * all other outputs have been computed.
+ */
+function migrateSchedules(
+  home: string,
+  evidence: Map<string, TopicEvidence>,
+  sessionSurfaces: Map<string, Surface[]>,
+): ScheduleStoreFile | null {
+  let raw: string;
+  try {
+    raw = readFileSync(schedulesPath(home), "utf-8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Malformed schedules are left as-is; the scheduler will log and treat
+    // the store as empty at runtime.
+    return null;
+  }
+
+  if (parsed === null || typeof parsed !== "object" || !Array.isArray((parsed as Record<string, unknown>).schedules)) {
+    return null;
+  }
+
+  const file = parsed as ScheduleStoreFile;
+  let changed = false;
+
+  const migrated: PersistedScheduledTurn[] = file.schedules.map((entry) => {
+    const rawEntry = entry as unknown as LegacyScheduleRecord;
+    if (rawEntry.surfaceId !== undefined) {
+      return entry as PersistedScheduledTurn;
+    }
+    if (rawEntry.locator === undefined) {
+      throw new Error(
+        `Cannot migrate schedule ${rawEntry.id ?? "(unknown)"}: missing both surfaceId and locator`,
+      );
+    }
+
+    changed = true;
+    const surface = scheduleSurface(
+      rawEntry.locator,
+      rawEntry.sessionId,
+      sessionSurfaces,
+      evidence,
+      rawEntry.id ?? "(unknown)",
+    );
+    const newEntry = { ...entry, surfaceId: surfaceId(surface) } as PersistedScheduledTurn;
+    // @ts-expect-error drop legacy locator field
+    delete newEntry.locator;
+    return newEntry;
+  });
+
+  for (const entry of migrated) {
+    parseSurfaceId(entry.surfaceId as string);
+  }
+
+  if (!changed) return null;
+
+  return { schedules: migrated };
+}
+
+/**
+ * Migrate legacy bindings, topic-settings, and schedules to canonical
+ * SurfaceId-keyed files.
+ *
+ * The migration is fully precomputed: it computes the canonical replacement for
+ * every file in memory, validates every SurfaceId, and only then writes the
+ * files atomically per file. It is idempotent across legacy, canonical, and
+ * mixed-generation inputs.
  */
 export function migrateSurfaceState(home: string): void {
   const canonicalBindings = loadBindings(home);
@@ -293,7 +443,8 @@ export function migrateSurfaceState(home: string): void {
     Object.keys(legacyBindings.guest ?? {}).length > 0 ||
     Object.keys(legacySettings.dm ?? {}).length > 0 ||
     Object.keys(legacySettings.topics ?? {}).length > 0 ||
-    Object.keys(legacySettings.supergroups ?? {}).length > 0;
+    Object.keys(legacySettings.supergroups ?? {}).length > 0 ||
+    schedules.length > 0;
 
   if (!hasLegacy) {
     return;
@@ -309,7 +460,13 @@ export function migrateSurfaceState(home: string): void {
 
   const newBindings = migrateBindings(canonicalBindings, legacyBindings, evidence);
   const newSettings = migrateSettings(canonicalSettings, legacySettings, evidence);
+  const sessionSurfaces = buildSessionSurfaces(newBindings);
+  const newSchedules = migrateSchedules(home, evidence, sessionSurfaces);
 
+  // All outputs are computed and validated in memory before the first write.
   saveBindings(home, newBindings);
   saveTopicSettings(home, newSettings);
+  if (newSchedules !== null) {
+    saveStore(home, newSchedules);
+  }
 }

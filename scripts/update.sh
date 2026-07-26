@@ -70,6 +70,10 @@ su -s /bin/bash "${user}" -c "cd ${repo_dir} && bun install"
 echo "Running validate-config..."
 su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run validate-config"
 
+echo "Backing up state and running offline migration..."
+cp -a "${goblin_home}/state" "${goblin_home}/.migration-backup-$(date +%s)"
+su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run migrate"
+
 echo "Restarting goblin service..."
 systemctl restart goblin
 

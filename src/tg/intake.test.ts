@@ -6,7 +6,8 @@ import type { Bot } from "grammy";
 import type { Config } from "../config.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
-import { SessionManager, type ChatLocator } from "../sessions/mod.ts";
+import { SessionManager } from "../sessions/mod.ts";
+import { dmSurface, guestSurface, topicSurface, type Surface } from "../surface.ts";
 import { metricsPath, transcriptPath } from "../sessions/paths.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { SchedulerLoop, type SchedulerClock } from "../scheduler/loop.ts";
@@ -102,7 +103,7 @@ interface IntakeHarness {
   agentRunners: Map<string, AgentRunner>;
   intake: ReturnType<typeof createTelegramIntake>;
   bot: Bot;
-  bufferLocators: ChatLocator[];
+  bufferLocators: Surface[];
   editForumTopic: ReturnType<typeof mock>;
   subagentRunner: SubagentRunner;
 }
@@ -183,7 +184,7 @@ function installVoiceFetch(opts: {
 function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new SubagentRunner(cfg)): IntakeHarness {
   const manager = new SessionManager(cfg);
   const agentRunners = new Map<string, AgentRunner>();
-  const bufferLocators: ChatLocator[] = [];
+  const bufferLocators: Surface[] = [];
   const editForumTopic = mock(async () => true);
   const bot = fakeBot(editForumTopic);
   const intake = createTelegramIntake({
@@ -193,8 +194,8 @@ function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new Su
     subagentRunner,
     memoryStore: new MemoryStore(cfg.goblinHome),
     agentRunners,
-    createMessageBuffer: (locator) => {
-      bufferLocators.push(locator);
+    createMessageBuffer: (surface) => {
+      bufferLocators.push(surface);
       return {} as MessageBuffer;
     },
     createAgentRunner: (opts) => {
@@ -208,8 +209,7 @@ function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new Su
 
 function makeMessage(replies: string[] = [], overrides: Partial<TelegramIntakeMessage> = {}): TelegramIntakeMessage {
   return {
-    locator: { chatId: 1 },
-    isSupergroup: false,
+    surface: dmSurface(1),
     reply: async (text, _opts) => {
       replies.push(text);
     },
@@ -349,8 +349,8 @@ describe("Telegram intake", () => {
     const dmReplies: string[] = [];
     const topicReplies: string[] = [];
 
-    replyNoActiveSession(makeMessage(dmReplies), { chatId: 1 }, "message");
-    replyNoActiveSession(makeMessage(topicReplies), { chatId: 1, topicId: 42 }, "message");
+    replyNoActiveSession(makeMessage(dmReplies), dmSurface(1), "message");
+    replyNoActiveSession(makeMessage(topicReplies), topicSurface("supergroup", 1, 42), "message");
 
     expect(dmReplies).toEqual(["`[info]` No active session\\. Use /new to start one\\."]);
     expect(topicReplies).toEqual([]);
@@ -735,7 +735,7 @@ describe("Telegram intake", () => {
     await flushMicrotasks();
 
     // 3. Enqueue a scheduled turn on the SAME dispatcher (scheduler path).
-    dispatcher.enqueueScheduledTurn(session, { chatId: 1 }, "third (scheduled)");
+    dispatcher.enqueueScheduledTurn(session, dmSurface(1), "third (scheduled)");
     await flushMicrotasks();
 
     // Only the first turn has started; the other two wait on the chain.
@@ -768,7 +768,7 @@ describe("Telegram intake", () => {
     const session = manager.list()[0]!;
     const schedule = store.create({
       sessionId: session.id,
-      locator: { chatId: 1 },
+      surface: dmSurface(1),
       kind: "once",
       prompt: "scheduled while busy",
       nextRunAt: new Date(now - 1000).toISOString(),
@@ -819,7 +819,7 @@ describe("Telegram intake", () => {
     // Start a slow turn, then enqueue a scheduled turn behind it.
     await intake.handleText(message, "slow");
     await waitFor(() => firstRunner.isStreaming);
-    dispatcher.enqueueScheduledTurn(session, { chatId: 1 }, "scheduled prompt");
+    dispatcher.enqueueScheduledTurn(session, dmSurface(1), "scheduled prompt");
     await flushMicrotasks();
 
     // Swap the runner out (as /new does) before the scheduled turn starts.
@@ -1207,9 +1207,9 @@ describe("Telegram intake", () => {
       await intake.handleGuestMessage(message, "first");
 
       // A guest binding for chat 7777 now exists.
-      expect(manager.peekBinding({ chatId: 7777 }, { isGuest: true })).not.toBeNull();
+      expect(manager.peekBinding(guestSurface(7777))).not.toBeNull();
       // And NOT a DM binding for the same id.
-      expect(manager.peekBinding({ chatId: 7777 })).toBeNull();
+      expect(manager.peekBinding(dmSurface(7777))).toBeNull();
       expect(results).toHaveLength(1);
     });
 
@@ -1220,11 +1220,11 @@ describe("Telegram intake", () => {
       };
 
       await intake.handleGuestMessage(makeGuestMessage(7777).message, "first");
-      const firstSession = manager.peekBinding({ chatId: 7777 }, { isGuest: true });
+      const firstSession = manager.peekBinding(guestSurface(7777));
       expect(firstSession).not.toBeNull();
 
       await intake.handleGuestMessage(makeGuestMessage(7777).message, "second");
-      const secondSession = manager.peekBinding({ chatId: 7777 }, { isGuest: true });
+      const secondSession = manager.peekBinding(guestSurface(7777));
 
       expect(secondSession!.sessionId).toBe(firstSession!.sessionId);
       // Only one session was ever created.
@@ -1255,7 +1255,7 @@ describe("createMessageBuffer factory", () => {
     const cfg = makeConfig();
     const manager = new SessionManager(cfg);
     const agentRunners = new Map<string, AgentRunner>();
-    const session = manager.createForChat({ chatId: 1 }, { isSupergroup: false });
+    const session = manager.createForSurface(dmSurface(1));
     const bot = fakeBot();
     const intake = createTelegramIntake({
       cfg,
@@ -1326,8 +1326,8 @@ describe("createMessageBuffer factory", () => {
       agentRunners: new Map<string, AgentRunner>(),
     });
 
-    const locator: ChatLocator = { chatId: 1 };
-    const buffer = intake.dispatcher.createMessageBuffer(locator, undefined) as unknown as MessageBuffer;
+    const surface = dmSurface(1);
+    const buffer = intake.dispatcher.createMessageBuffer(surface, undefined) as unknown as MessageBuffer;
     expect(buffer._state().metrics).toBeUndefined();
   });
 });

@@ -6,6 +6,7 @@ import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { AgentRunner } from "./mod.ts";
+import { dmSurface } from "../surface.ts";
 import { PiAgentBackend } from "./backend.ts";
 import { createFauxPiServices } from "../test/faux-pi-services.ts";
 import type { TurnCallbacks } from "./mod.ts";
@@ -54,7 +55,7 @@ describe("AgentRunner pi-ai contract", () => {
     const runner = new AgentRunner({
       cfg: makeConfig(tmpDir),
       sessionId: "abcdef1234",
-      locator: { chatId: 1 },
+      surface: dmSurface(1),
       customTools: [],
       resolvedModel: { model, apiKey: "fake-key", thinkingLevel: "medium" },
       backendFactory: (opts) =>

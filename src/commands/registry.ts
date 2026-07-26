@@ -5,7 +5,7 @@ import type { Bot, Context } from "grammy";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { sessionDir } from "../sessions/paths.ts";
-import type { ChatLocator, SessionManager, SessionState } from "../sessions/mod.ts";
+import type { Surface, SessionManager, SessionState } from "../sessions/mod.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { ResolvedModel } from "../agent/models.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
@@ -42,7 +42,7 @@ import type { SystemTag } from "../tg/format.ts";
 // ---------------------------------------------------------------------------
 
 export type SideEffect =
-  | { kind: "runner-created"; session: SessionState; locator: ChatLocator }
+  | { kind: "runner-created"; session: SessionState; surface: Surface }
   | { kind: "runner-disposed"; sessionId: string }
   | { kind: "queue-prompt"; session: SessionState; text: string };
 
@@ -85,8 +85,7 @@ export interface DispatchOpts {
   command: string;
   deps: DispatchDeps;
   rawText: string;
-  locator: ChatLocator;
-  isSupergroup: boolean;
+  surface: Surface;
   session: SessionState | null;
   existingRunner: AgentRunner | null;
   bot?: Bot;
@@ -186,16 +185,16 @@ const cancelHandler: CommandHandler = async ({ deps, session, existingRunner }) 
   }), [], tag);
 };
 
-const newHandler: CommandHandler = async ({ deps, locator, isSupergroup, session }) => {
+const newHandler: CommandHandler = async ({ deps, surface, session }) => {
   const { manager } = deps;
   const sideEffects: SideEffect[] = [];
   const priorSession = session;
   try {
     const result = executeNew({
-      createSession: () => manager.createForChat(locator, { isSupergroup }),
+      createSession: () => manager.createForSurface(surface),
     });
     if (priorSession) sideEffects.push({ kind: "runner-disposed", sessionId: priorSession.id });
-    sideEffects.push({ kind: "runner-created", session: result.session, locator });
+    sideEffects.push({ kind: "runner-created", session: result.session, surface });
     return replied(result.reply, sideEffects, "ok");
   } catch (err) {
     log.error("new session creation failed", { error: String(err), sessionId: priorSession?.id });
@@ -227,7 +226,7 @@ const archiveHandler: CommandHandler = async ({ deps, session }) => {
   }
 };
 
-const projectHandler: CommandHandler = async ({ deps, locator, session, rawText }) => {
+const projectHandler: CommandHandler = async ({ deps, surface, session, rawText }) => {
   const { manager } = deps;
   const sideEffects: SideEffect[] = [];
   try {
@@ -236,7 +235,7 @@ const projectHandler: CommandHandler = async ({ deps, locator, session, rawText 
       rawText,
       setProjectDir: (dir) => {
         if (!session) return;
-        manager.bindProjectDir(locator, dir);
+        manager.bindProjectDir(surface, dir);
         sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
       },
     });
@@ -314,7 +313,7 @@ const thinkHandler: CommandHandler = async ({ deps, session, existingRunner, raw
   }
 };
 
-const debugHandler: CommandHandler = async ({ deps, locator, session, existingRunner }) => {
+const debugHandler: CommandHandler = async ({ deps, surface, session, existingRunner }) => {
   const { manager, cfg, subagentRunner } = deps;
   if (!session) return replied("No active session.", [], "info");
   const diag = generateDiagnostics({
@@ -323,7 +322,7 @@ const debugHandler: CommandHandler = async ({ deps, locator, session, existingRu
     subagentRunner,
     goblinHome: cfg.goblinHome,
     modelName: cfg.modelName,
-    projectDir: manager.getProjectDir(locator),
+    projectDir: manager.getProjectDir(surface),
   });
   return replied(diag, [], "info");
 };
@@ -361,18 +360,18 @@ const nameHandler: CommandHandler = async ({ deps, session, rawText }) => {
   }
 };
 
-const resumeHandler: CommandHandler = async ({ deps, locator, isSupergroup, session, rawText }) => {
+const resumeHandler: CommandHandler = async ({ deps, surface, session, rawText }) => {
   const { manager } = deps;
   const sideEffects: SideEffect[] = [];
   try {
     const result = executeResume({
       rawText,
       sessions: manager.list(),
-      bindSession: (sessionId) => manager.bindExistingToChat(sessionId, locator, { isSupergroup }),
+      bindSession: (sessionId) => manager.bindExistingToSurface(sessionId, surface),
     });
     if (result.kind === "resumed") {
       if (session) sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
-      sideEffects.push({ kind: "runner-created", session: result.session, locator });
+      sideEffects.push({ kind: "runner-created", session: result.session, surface });
     }
     const tag: SystemTag = result.kind === "resumed" ? "ok"
       : result.kind === "not-found" || result.kind === "ambiguous" ? "warn"
@@ -416,7 +415,7 @@ const reviveHandler: CommandHandler = async ({ deps, rawText }) => {
 
 const helpHandler: CommandHandler = async () => replied(helpReply(), [], "info");
 
-const voiceHandler: CommandHandler = async ({ deps, session, locator, bot }) => {
+const voiceHandler: CommandHandler = async ({ deps, session, surface, bot }) => {
   if (!session) return replied("No active session. Use /new to start one.", [], "info");
   if (!bot) {
     log.error("voice dispatch bot missing");
@@ -427,8 +426,7 @@ const voiceHandler: CommandHandler = async ({ deps, session, locator, bot }) => 
       home: deps.cfg.goblinHome,
       sessionId: session.id,
       bot,
-      chatId: locator.chatId,
-      topicId: locator.topicId,
+      surface,
     });
     switch (voiceResult.kind) {
       case "no-messages":
@@ -455,14 +453,14 @@ const queueHandler: CommandHandler = async ({ session, existingRunner, rawText }
   return replied(ack, sideEffects, tag);
 };
 
-const scheduleHandler: CommandHandler = async ({ deps, session, locator, rawText }) => {
+const scheduleHandler: CommandHandler = async ({ deps, session, surface, rawText }) => {
   // `/schedule` is instant-timing: it only mutates the schedule store and does
   // not touch the in-flight runner, so it never defers behind a streaming turn.
   if (!deps.scheduleStore) {
     return replied("Scheduling is not available.", [], "warn");
   }
   if (!session) return replied("No active session. Use /new to start one.", [], "info");
-  const depsForSchedule = buildScheduleDeps(deps.scheduleStore, session, locator, Date.now());
+  const depsForSchedule = buildScheduleDeps(deps.scheduleStore, session, surface, Date.now());
   const result = executeSchedule(depsForSchedule, rawText);
   return replied(result.reply, [], result.tag);
 };

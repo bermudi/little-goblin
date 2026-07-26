@@ -3,13 +3,14 @@ import { InputFile } from "grammy";
 import type { Bot } from "grammy";
 import { transcriptPath } from "../sessions/paths.ts";
 import { edgeTts, resolveVoiceName, voiceTmpPath } from "../voice.ts";
+import { deliveryOpts } from "../tg/delivery.ts";
+import type { Surface } from "../surface.ts";
 
 export interface ExecuteVoiceOpts {
   home: string;
   sessionId: string;
   bot: Bot;
-  chatId: number;
-  topicId?: number;
+  surface: Surface;
 }
 
 export type VoiceResult =
@@ -70,9 +71,9 @@ export async function executeVoice(opts: ExecuteVoiceOpts): Promise<VoiceResult>
   try {
     await edgeTts(text, resolveVoiceName(), tmpPath);
     await opts.bot.api.sendVoice(
-      opts.chatId,
+      opts.surface.chatId,
       new InputFile(tmpPath),
-      opts.topicId !== undefined ? { message_thread_id: opts.topicId } : {},
+      deliveryOpts(opts.surface),
     );
     return { kind: "sent" };
   } catch (err) {

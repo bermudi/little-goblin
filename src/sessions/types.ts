@@ -5,7 +5,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Surface, SurfaceId } from "../surface.ts";
 
-/** Locator derived from a Telegram context: chat + optional topic. */
+/** Migration-only legacy locator shape (chat + optional topic). Not exported from the session module API. */
 export interface ChatLocator {
   chatId: number;
   topicId?: number;
@@ -75,9 +75,3 @@ export interface TopicSettingsFile {
 }
 
 export type { Surface, SurfaceId };
-
-/** Options passed by legacy callers that have not yet migrated to `Surface`. */
-export interface SurfaceCompatOpts {
-  isSupergroup?: boolean;
-  isGuest?: boolean;
-}

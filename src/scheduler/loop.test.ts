@@ -8,9 +8,9 @@ import { SessionManager } from "../sessions/manager.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
 import { heartbeatMdPathForSession } from "../sessions/paths.ts";
 import type { Config } from "../config.ts";
-import type { ChatLocator } from "../sessions/types.ts";
 import type { SessionState } from "../sessions/mod.ts";
 import type { SchedulerClock, SchedulerDispatcher, SchedulerSessionSource } from "./loop.ts";
+import { dmSurface, type Surface } from "../surface.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -29,13 +29,13 @@ function makeTestConfig(home: string): Config {
 
 /** Fake dispatcher that records every enqueueScheduledTurn call. */
 function makeFakeDispatcher(): SchedulerDispatcher & {
-  calls: { session: SessionState; locator: ChatLocator; content: string }[];
+  calls: { session: SessionState; surface: Surface; content: string }[];
 } {
-  const calls: { session: SessionState; locator: ChatLocator; content: string }[] = [];
+  const calls: { session: SessionState; surface: Surface; content: string }[] = [];
   return {
     calls,
-    enqueueScheduledTurn(session, locator, content) {
-      calls.push({ session, locator, content });
+    enqueueScheduledTurn(session, surface, content) {
+      calls.push({ session, surface, content });
     },
   };
 }
@@ -117,11 +117,11 @@ describe("SchedulerLoop", () => {
 
   describe("due dispatch", () => {
     it("dispatches a due schedule whose session is still bound", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "once",
         prompt: "check backups",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -142,11 +142,11 @@ describe("SchedulerLoop", () => {
       // The fake dispatcher only exposes enqueueScheduledTurn; the loop MUST
       // route through it rather than any followUp path. Asserting the call
       // went through enqueueScheduledTurn (not a followUp field) is the proof.
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "once",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -167,11 +167,11 @@ describe("SchedulerLoop", () => {
       // session queue; here we assert the loop hands the work to the
       // dispatcher and does not await prompt completion itself. The fake
       // dispatcher records the call synchronously and returns immediately.
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "recurring",
         prompt: "tick",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -189,11 +189,11 @@ describe("SchedulerLoop", () => {
 
   describe("overlapping ticks", () => {
     it("does not double-dispatch the same due occurrence", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "once",
         prompt: "once",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -209,11 +209,11 @@ describe("SchedulerLoop", () => {
     });
 
     it("re-entrant tick is a no-op while one is in flight", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "once",
         prompt: "once",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -229,11 +229,11 @@ describe("SchedulerLoop", () => {
 
   describe("one-shot completion", () => {
     it("marks a one-shot completed before dispatch and does not re-run it", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "once",
         prompt: "once",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -249,11 +249,11 @@ describe("SchedulerLoop", () => {
 
   describe("recurring advancement", () => {
     it("advances nextRunAt by the interval before dispatch", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "recurring",
         prompt: "recur",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -269,11 +269,11 @@ describe("SchedulerLoop", () => {
     });
 
     it("does not dispatch the same occurrence again on a later tick", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "recurring",
         prompt: "recur",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -288,11 +288,11 @@ describe("SchedulerLoop", () => {
     });
 
     it("dispatches a one-shot missed during downtime exactly once after restart", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "once",
         prompt: "missed once",
         nextRunAt: new Date(NOW_MS - 3600_000).toISOString(),
@@ -314,11 +314,11 @@ describe("SchedulerLoop", () => {
     });
 
     it("catches up a recurring schedule missed during downtime without replaying every missed interval", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "recurring",
         prompt: "missed recurring",
         nextRunAt: new Date(NOW_MS - 3 * 3600_000).toISOString(),
@@ -343,9 +343,9 @@ describe("SchedulerLoop", () => {
   });
 
   describe("stale bindings", () => {
-    it("disables a schedule whose locator is now bound to a different session", async () => {
+    it("disables a schedule whose surface is now bound to a different session", async () => {
       // Eligibility test: uses a fake session source (no filesystem).
-      // The locator is now bound to a different session id than captured.
+      // The surface is now bound to a different session id than captured.
       const capturedSessionId = "session-original";
       const reboundState: SessionState = {
         id: "session-rebound",
@@ -354,7 +354,7 @@ describe("SchedulerLoop", () => {
       } as SessionState;
       const created = store.create({
         sessionId: capturedSessionId,
-        locator: { chatId: 100 },
+        surface: dmSurface(100),
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -372,12 +372,12 @@ describe("SchedulerLoop", () => {
       expect(dispatcher.calls).toHaveLength(0);
     });
 
-    it("disables a schedule whose locator resolves to no session (mismatch)", async () => {
+    it("disables a schedule whose surface resolves to no session (mismatch)", async () => {
       // Eligibility test: peekBinding returns null (no live binding).
       const sessionId = "session-unbound";
       const created = store.create({
         sessionId,
-        locator: { chatId: 999 }, // unbound locator
+        surface: dmSurface(999), // unbound surface
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -402,7 +402,7 @@ describe("SchedulerLoop", () => {
       const sessionId = "session-archived";
       const created = store.create({
         sessionId,
-        locator: { chatId: 100 },
+        surface: dmSurface(100),
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -427,7 +427,7 @@ describe("SchedulerLoop", () => {
       const sessionId = "session-deleted";
       const created = store.create({
         sessionId,
-        locator: { chatId: 100 },
+        surface: dmSurface(100),
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -447,11 +447,11 @@ describe("SchedulerLoop", () => {
 
   describe("tick errors", () => {
     it("logs a tick error and continues on the next tick", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "once",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -475,7 +475,7 @@ describe("SchedulerLoop", () => {
       // ticks continue.
       store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "once",
         prompt: "y",
         nextRunAt: new Date(NOW_MS - 2000).toISOString(),
@@ -490,11 +490,11 @@ describe("SchedulerLoop", () => {
       // was already claimed (one-shot completed, recurring advanced) before
       // dispatch; the throw records outcome "error" so the record reflects
       // reality.
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       const created = store.create({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -521,11 +521,11 @@ describe("SchedulerLoop", () => {
 
   describe("heartbeat prompt content", () => {
     it("dispatches the heartbeat prompt for a due heartbeat schedule", async () => {
-      const loc: ChatLocator = { chatId: 100 };
-      const session = manager.createForChat(loc);
+      const loc: Surface = dmSurface(100);
+      const session = manager.createForSurface(loc);
       store.setHeartbeat({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         enabled: true,
         now: new Date(NOW_MS - 1800_000).toISOString(), // 30m ago → due now
       });
@@ -628,11 +628,11 @@ describe("SchedulerLoop", () => {
       writeFileSync(path, content, "utf-8");
     }
 
-    function enableHeartbeat(loc: ChatLocator): string {
-      const session = manager.createForChat(loc);
+    function enableHeartbeat(loc: Surface): string {
+      const session = manager.createForSurface(loc);
       store.setHeartbeat({
         sessionId: session.id,
-        locator: loc,
+        surface: loc,
         enabled: true,
         now: new Date(NOW_MS - 1800_000).toISOString(), // 30m ago → due now
       });
@@ -640,7 +640,7 @@ describe("SchedulerLoop", () => {
     }
 
     it("dispatches HEARTBEAT.md content with exactly one [heartbeat] marker when the file exists", async () => {
-      const loc: ChatLocator = { chatId: 100 };
+      const loc: Surface = dmSurface(100);
       enableHeartbeat(loc);
       writeHeartbeat(tmpDir, "Check the build; if red, ping me.");
 
@@ -655,7 +655,7 @@ describe("SchedulerLoop", () => {
     });
 
     it("dispatches the constant fallback when HEARTBEAT.md is absent", async () => {
-      const loc: ChatLocator = { chatId: 100 };
+      const loc: Surface = dmSurface(100);
       enableHeartbeat(loc);
       // No workspace/HEARTBEAT.md in tmpDir.
 
@@ -667,7 +667,7 @@ describe("SchedulerLoop", () => {
     });
 
     it("dispatches the constant fallback when HEARTBEAT.md is empty/whitespace-only", async () => {
-      const loc: ChatLocator = { chatId: 100 };
+      const loc: Surface = dmSurface(100);
       enableHeartbeat(loc);
       writeHeartbeat(tmpDir, "   \n\t \n");
 
@@ -678,7 +678,7 @@ describe("SchedulerLoop", () => {
     });
 
     it("uses updated HEARTBEAT.md content on the next tick after an edit (no restart)", async () => {
-      const loc: ChatLocator = { chatId: 100 };
+      const loc: Surface = dmSurface(100);
       const sessionId = enableHeartbeat(loc);
       writeHeartbeat(tmpDir, "first body");
 
@@ -690,7 +690,7 @@ describe("SchedulerLoop", () => {
       writeHeartbeat(tmpDir, "second body");
       store.setHeartbeat({
         sessionId,
-        locator: loc,
+        surface: loc,
         enabled: true,
         now: new Date(NOW_MS).toISOString(),
       });
@@ -710,21 +710,21 @@ describe("SchedulerLoop", () => {
       // would abort the tick and skip every later due schedule. We force the
       // failure by pointing the loop's `home` at a path where workspace/ resolves
       // under a non-directory, then assert a co-due one-shot still dispatches.
-      const heartbeatLoc: ChatLocator = { chatId: 100 };
-      const heartbeatSession = manager.createForChat(heartbeatLoc);
+      const heartbeatLoc: Surface = dmSurface(100);
+      const heartbeatSession = manager.createForSurface(heartbeatLoc);
       store.setHeartbeat({
         sessionId: heartbeatSession.id,
-        locator: heartbeatLoc,
+        surface: heartbeatLoc,
         enabled: true,
         now: new Date(NOW_MS - 1800_000).toISOString(), // due now
       });
 
       // A second, unrelated schedule also due in this tick.
-      const otherLoc: ChatLocator = { chatId: 200 };
-      const otherSession = manager.createForChat(otherLoc);
+      const otherLoc: Surface = dmSurface(200);
+      const otherSession = manager.createForSurface(otherLoc);
       store.create({
         sessionId: otherSession.id,
-        locator: otherLoc,
+        surface: otherLoc,
         kind: "once",
         prompt: "deploy reminder",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -761,20 +761,20 @@ describe("SchedulerLoop", () => {
       // Same fault-isolation property, exercised via the pre-existing
       // synchronous-dispatcher-throw path (processOne re-throws after recording
       // an "error" outcome). The throw must stop only its own schedule.
-      const firstLoc: ChatLocator = { chatId: 100 };
-      const firstSession = manager.createForChat(firstLoc);
+      const firstLoc: Surface = dmSurface(100);
+      const firstSession = manager.createForSurface(firstLoc);
       store.create({
         sessionId: firstSession.id,
-        locator: firstLoc,
+        surface: firstLoc,
         kind: "once",
         prompt: "first (will throw)",
         nextRunAt: new Date(NOW_MS - 2000).toISOString(),
       });
-      const secondLoc: ChatLocator = { chatId: 200 };
-      const secondSession = manager.createForChat(secondLoc);
+      const secondLoc: Surface = dmSurface(200);
+      const secondSession = manager.createForSurface(secondLoc);
       store.create({
         sessionId: secondSession.id,
-        locator: secondLoc,
+        surface: secondLoc,
         kind: "once",
         prompt: "second (should still run)",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -785,12 +785,12 @@ describe("SchedulerLoop", () => {
       // still run. This makes the test robust to listDue ordering.
       let firstSeen = false;
       const mixedDispatcher: SchedulerDispatcher = {
-        enqueueScheduledTurn(session, locator, content) {
+        enqueueScheduledTurn(session, surface, content) {
           if (!firstSeen) {
             firstSeen = true;
             throw new Error("boom on first");
           }
-          dispatcher.enqueueScheduledTurn(session, locator, content);
+          dispatcher.enqueueScheduledTurn(session, surface, content);
         },
       };
       const loop = new SchedulerLoop({

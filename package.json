@@ -14,6 +14,7 @@
     "install-service": "bash scripts/install-service.sh",
     "backup": "bash scripts/backup.sh",
     "update:prod": "bash scripts/update.sh",
+    "migrate": "bun run src/migrate.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "e2e:smoke": "cd e2e && go run ."

@@ -21,11 +21,10 @@ export const MAX_FRAGMENTS = 12;
 /** Hard cap on total concatenated chars; reaching it forces an immediate flush. */
 export const MAX_TOTAL_CHARS = 50_000;
 
-/** Bucket key: chat + optional topic + sender. Splits from different senders,
- * different topics, or different DMs never merge. */
+/** Bucket key: canonical surface identity + sender. Splits from different
+ * senders, different surfaces, or different topic containers never merge. */
 export interface CoalesceKey {
-  chatId: number;
-  topicId: number | undefined;
+  surfaceId: string;
   fromUserId: number;
 }
 
@@ -192,9 +191,7 @@ export class TextCoalescer {
   }
 }
 
-/** Stable string key for the `(chatId, topicId, fromUserId)` tuple. `topicId`
- * is `undefined` outside forum topics; encode it distinctly so DM/topic keys
- * never collide. */
+/** Stable string key for the `(SurfaceId, fromUserId)` tuple. */
 function keyToString(key: CoalesceKey): string {
-  return `${key.chatId}|${key.topicId ?? ""}|${key.fromUserId}`;
+  return `${key.surfaceId}|${key.fromUserId}`;
 }

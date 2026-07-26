@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { surfaceId, type Surface } from "../surface.ts";
-import type { BindingsFile, ChatLocator, SessionState, SurfaceCompatOpts } from "./types.ts";
+import type { BindingsFile, SessionState } from "./types.ts";
 import { loadBindings, saveBindings } from "./bindings.ts";
 import { loadState, saveState } from "./state.ts";
 import {
@@ -13,7 +13,6 @@ import {
   consumeProjectNotice as consumeProjectNoticeFromSettings,
 } from "./topic-settings.ts";
 import { sessionsDir, sessionDir, transcriptPath, metricsPath } from "./paths.ts";
-import { surfaceFromLocatorCompat } from "./surface-compat.ts";
 
 /**
  * Generate a short URL-safe session ID from a UUID.
@@ -81,13 +80,9 @@ export class SessionManager {
    * - `topic`, `supergroup`, `guest`: auto-create on first resolve
    * - Stale bindings are repaired according to the surface kind.
    */
-  resolve(surface: Surface): SessionState | null;
-  /** @deprecated Use surface-based resolve. */
-  resolve(loc: ChatLocator, opts?: SurfaceCompatOpts): SessionState | null;
-  resolve(input: Surface | ChatLocator, opts?: SurfaceCompatOpts): SessionState | null {
-    const surface = "kind" in input ? input : surfaceFromLocatorCompat(input, opts);
-    const bindings = loadBindings(this.home);
+  resolve(surface: Surface): SessionState | null {
     const key = surfaceId(surface);
+    const bindings = loadBindings(this.home);
     const existingId = bindings.surfaces[key];
 
     if (surface.kind === "dm") {
@@ -134,11 +129,6 @@ export class SessionManager {
     return state;
   }
 
-  /** @deprecated Use surface-based createForSurface. */
-  createForChat(loc: ChatLocator, opts?: { title?: string } & SurfaceCompatOpts): SessionState {
-    return this.createForSurface(surfaceFromLocatorCompat(loc, opts), opts);
-  }
-
   bindExistingToSurface(sessionId: string, surface: Surface): SessionState {
     const state = loadState(this.home, sessionId);
     if (!state) {
@@ -150,11 +140,6 @@ export class SessionManager {
     saveBindings(this.home, bindings);
     log.info("bound existing session", { sessionId, surfaceId: surfaceId(surface) });
     return state;
-  }
-
-  /** @deprecated Use surface-based bindExistingToSurface. */
-  bindExistingToChat(sessionId: string, loc: ChatLocator, opts?: SurfaceCompatOpts): SessionState {
-    return this.bindExistingToSurface(sessionId, surfaceFromLocatorCompat(loc, opts));
   }
 
   /**
@@ -185,33 +170,21 @@ export class SessionManager {
   /**
    * Get the projectDir for a complete Surface from topic-settings.json.
    */
-  getProjectDir(surface: Surface): string | undefined;
-  /** @deprecated Use surface-based getProjectDir. */
-  getProjectDir(loc: ChatLocator): string | undefined;
-  getProjectDir(input: Surface | ChatLocator): string | undefined {
-    const surface = typeof input === "object" && "kind" in input ? input : surfaceFromLocatorCompat(input);
+  getProjectDir(surface: Surface): string | undefined {
     return getProjectDirFromSettings(this.home, surface);
   }
 
   /**
    * Bind (or clear) the projectDir for a complete Surface.
    */
-  bindProjectDir(surface: Surface, projectDir: string | undefined): void;
-  /** @deprecated Use surface-based bindProjectDir. */
-  bindProjectDir(loc: ChatLocator, projectDir: string | undefined): void;
-  bindProjectDir(input: Surface | ChatLocator, projectDir: string | undefined): void {
-    const surface = typeof input === "object" && "kind" in input ? input : surfaceFromLocatorCompat(input);
+  bindProjectDir(surface: Surface, projectDir: string | undefined): void {
     bindProjectDirInSettings(this.home, surface, projectDir);
   }
 
   /**
    * Read and clear the pending project notice for a complete Surface.
    */
-  consumeProjectNotice(surface: Surface): string | undefined;
-  /** @deprecated Use surface-based consumeProjectNotice. */
-  consumeProjectNotice(loc: ChatLocator): string | undefined;
-  consumeProjectNotice(input: Surface | ChatLocator): string | undefined {
-    const surface = typeof input === "object" && "kind" in input ? input : surfaceFromLocatorCompat(input);
+  consumeProjectNotice(surface: Surface): string | undefined {
     return consumeProjectNoticeFromSettings(this.home, surface);
   }
 
@@ -265,13 +238,10 @@ export class SessionManager {
    * Used by the scheduler to validate that a captured schedule still targets
    * its captured session surface before dispatch.
    */
-  peekBinding(surface: Surface): { sessionId: string; state: SessionState } | null;
-  /** @deprecated Use surface-based peekBinding. */
-  peekBinding(loc: ChatLocator, opts?: SurfaceCompatOpts): { sessionId: string; state: SessionState } | null;
-  peekBinding(input: Surface | ChatLocator, opts?: SurfaceCompatOpts): { sessionId: string; state: SessionState } | null {
-    const surface = typeof input === "object" && "kind" in input ? input : surfaceFromLocatorCompat(input as ChatLocator, opts);
+  peekBinding(surface: Surface): { sessionId: string; state: SessionState } | null {
+    const key = surfaceId(surface);
     const bindings = loadBindings(this.home);
-    const boundId = bindings.surfaces[surfaceId(surface)];
+    const boundId = bindings.surfaces[key];
     if (!boundId) return null;
     const state = loadState(this.home, boundId);
     if (!state) return null;

@@ -111,7 +111,7 @@ interface PersistedScheduledTurn {
 - direct-messages topic: `chatId` plus `direct_messages_topic_id`;
 - guest: rejected by normal-send helpers because delivery is through the one-shot `replyVia` closure.
 
-`MessageBuffer`, send-photo/document/voice tools, `/voice`, chat actions, drafts, rich-message sends, edits, and file fallback all call this helper. Intake and orchestration no longer pass a `threadId`. Draft mode is derived from the complete surface (`dm` and private-topic lanes retain private-chat draft behavior), rather than the current optional `ChatLocator.isPrivate` field.
+`MessageBuffer`, send-photo/document/voice tools, `/voice`, chat actions, drafts, rich-message sends, edits, and file fallback all call this helper. Intake and orchestration no longer pass a `threadId`. Draft mode is derived from the complete surface (`dm` and private-topic lanes retain private-chat draft behavior), rather than any legacy locator flag.
 
 The guest adapter constructs `{ kind: "guest", chatId }` beside the reply closure. The guest query identifier remains inside `ctx.answerGuestQuery` exactly as today; SurfaceId never includes it.
 
@@ -126,9 +126,11 @@ No memory paths or SQLite scope tags change. Topic container is routing identity
 
 Internal dreaming turns are not Telegram surfaces. The current `chatId: 0` compatibility sentinel remains on the internal dispatch path, represented explicitly as no Telegram surface (or an internal runner option), rather than adding an `internal` member to `Surface`. This follows the proposal's “Internal model-run identity” non-goal.
 
-### Startup migration is precomputed, atomic per file, and restart-safe
+### Offline migration is precomputed and atomic per file
 
-A startup migration runs after configuration/home creation and before scheduler startup or polling. It loads all three legacy/canonical inputs, computes all canonical outputs in memory, validates every SurfaceId, and only then begins writes.
+The filesystem layout is versioned separately from the memory SQLite schema. A new `state/state-version.json` is read at startup; if it does not match `CURRENT_STATE_VERSION`, the process refuses to poll and tells the operator to run `bun run migrate` with the service stopped.
+
+`bun run migrate` is an offline command. It takes a backup of `state/` before its first mutation, loads all legacy and canonical inputs, computes every canonical output in memory, validates every `SurfaceId`, and only then writes. It is not restart-safe or mixed-generation-tolerant; recovery from a failed migration is restoration from the backup.
 
 Conversion rules:
 
@@ -143,7 +145,7 @@ Conversion rules:
 
 This deliberately refuses ambiguous legacy topic bindings/settings even though most historical topics were probably forum supergroups. `ChatLocator` did not persist that fact, and defaulting would violate the promise to preserve the Telegram lane. The diagnostic tells the operator which canonical `SurfaceId` alternatives can replace the legacy entry explicitly.
 
-If any topic or schedule has absent/conflicting evidence or zero/multiple candidates, migration throws with its source identity before any write. If all outputs are valid, each file is replaced through the existing atomic JSON writer. A filesystem cannot atomically rename three files as one transaction, so crash consistency comes from idempotence: loaders accept legacy, canonical, or mixed-generation inputs, and the next startup recomputes the same canonical outputs. This is a real recovery mechanism, not a claim of impossible cross-file atomicity.
+If any topic or schedule has absent/conflicting evidence or zero/multiple candidates, migration throws with its source identity before any write. If all outputs are valid, each file is replaced through the existing atomic JSON writer.
 
 ## Decisions
 
@@ -204,8 +206,10 @@ If any topic or schedule has absent/conflicting evidence or zero/multiple candid
 - **`src/surface.ts`** — Define `Surface`, `TopicContainer`, branded `SurfaceId`, validated constructors, `surfaceId`, `parseSurfaceId`, and small narrowing helpers. Implements “Telegram surfaces are complete discriminated values” and “SurfaceId is canonical and reversible” without introducing a dependency on Telegram adapters.
 - **`src/tg/context-surface.ts`** — Normalize grammy message contexts and guest messages into validated surfaces. Replaces `locatorFromCtx` and owns support/rejection by Telegram chat/update shape.
 - **`src/tg/delivery.ts`** — Convert a non-guest Surface into Telegram API `chatId` and the correct `message_thread_id`/`direct_messages_topic_id` options; reject normal-send use for guests. Implements “Telegram adapter derives delivery parameters from Surface.”
-- **`src/sessions/surface-migration.ts`** — Precompute and apply the bindings/settings/schedule migration, accept mixed generations, emit diagnostics, and expose the startup migration entry point. Implements “Legacy surface state migrates before polling.”
-- **`src/surface.test.ts`, `src/tg/context-surface.test.ts`, `src/tg/delivery.test.ts`, `src/sessions/surface-migration.test.ts`** — Colocated round-trip, normalization, delivery-option, collision, migration, ambiguity, and restart-idempotence coverage.
+- **`src/migrate.ts`** — Offline migration command: backups `state/`, runs each pending step, writes `state-version.json`, and exits nonzero on any step failure.
+- **`src/state-version.ts`** — Persist and read the monotonic `stateVersion` for `$GOBLIN_HOME/state/`.
+- **`src/sessions/surface-migration.ts`** — Precompute and apply the bindings/settings/schedule migration as an offline step called from `bun run migrate`; fail before writes on ambiguous evidence.
+- **`src/surface.test.ts`, `src/tg/context-surface.test.ts`, `src/tg/delivery.test.ts`, `src/sessions/surface-migration.test.ts`, `src/migrate.test.ts`, `src/state-version.test.ts`** — Colocated round-trip, normalization, delivery-option, collision, migration, ambiguity, state-version, and offline-migration coverage.
 
 ### Deleted files
 
@@ -223,13 +227,14 @@ If any topic or schedule has absent/conflicting evidence or zero/multiple candid
 
 ### Modified session and migration wiring files
 
-- **`src/sessions/types.ts`** — Replace the legacy multi-map `BindingsFile` with versioned SurfaceId-keyed bindings; retain `SessionState` fields and remove `ChatLocator`.
+- **`src/sessions/types.ts`** — Replace the legacy multi-map `BindingsFile` with versioned SurfaceId-keyed bindings; retain `SessionState` fields and keep a migration-only `ChatLocator` type (not exported from `sessions/mod.ts`).
 - **`src/sessions/bindings.ts`** — Load/save the canonical binding shape and expose legacy parsing only to the migration path.
 - **`src/sessions/topic-settings.ts`** — Replace sign/topic branching with one SurfaceId slot lookup while preserving empty-slot pruning and pending notices.
-- **`src/sessions/manager.ts`** — Change public methods to complete Surface inputs, rename creation/rebinding methods, branch auto-create policy on `surface.kind`, and clear/archive through one binding map.
+- **`src/sessions/manager.ts`** — Change public methods to complete Surface inputs, remove `ChatLocator`/flag overloads, branch auto-create policy on `surface.kind`, and clear/archive through one binding map.
 - **`src/sessions/mod.ts`** — Stop exporting `ChatLocator`; continue exporting manager/state and optionally re-export the shared types from `src/surface.ts` for compatibility.
+- **`src/sessions/surface-compat.ts`** — Keep a narrow migration-only bridge from legacy topicless locators to `Surface`; remove non-migration flag-based routing.
 - **`src/sessions/manager.test.ts`, `src/sessions/topic-settings.test.ts`** — Cover all surface kinds, topic containers, numeric collisions, stale behavior, and no-sign-inference settings.
-- **`src/index.ts`** — Invoke the surface-state migration after home/preflight setup and before `manager.init()`, scheduler startup, or Telegram polling.
+- **`src/index.ts`** — Read `stateVersion` after `ensureGoblinHome` and refuse to begin polling or scheduler startup when it does not match `CURRENT_STATE_VERSION`, directing the operator to `bun run migrate`.
 
 ### Modified schedule files
 

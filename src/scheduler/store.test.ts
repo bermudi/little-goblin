@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ScheduleStore, makeScheduleId, loadStore } from "./store.ts";
 import { schedulesPath } from "../sessions/paths.ts";
-import type { ChatLocator } from "../sessions/types.ts";
+import { dmSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
 import type { ScheduledTurn } from "./types.ts";
 
-const LOC: ChatLocator = { chatId: 100, topicId: 5 };
-const OTHER_LOC: ChatLocator = { chatId: 200 };
+const LOC: Surface = topicSurface("supergroup", 100, 5);
+const OTHER_LOC: Surface = dmSurface(200);
 const NOW_ISO = "2026-07-04T12:00:00Z";
 const PAST_ISO = "2026-07-04T11:00:00Z";
 const FUTURE_ISO = "2026-07-04T13:00:00Z";
@@ -44,7 +44,7 @@ describe("ScheduleStore", () => {
     it("persists a created one-shot schedule to disk via atomic write", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "check backups",
         nextRunAt: FUTURE_ISO,
@@ -59,16 +59,16 @@ describe("ScheduleStore", () => {
         kind: "once",
         prompt: "check backups",
         enabled: true,
-        state: "enabled",
         nextRunAt: FUTURE_ISO,
-        locator: { chatId: 100, topicId: 5 },
+        surfaceId: surfaceId(LOC),
+        source: "user",
       });
     });
 
     it("reloads schedules from disk in a new store instance", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "hello",
         nextRunAt: FUTURE_ISO,
@@ -88,7 +88,7 @@ describe("ScheduleStore", () => {
     it("create assigns ids matching the makeScheduleId shape", () => {
       const created = store.create({
         sessionId: "s",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "x",
         nextRunAt: FUTURE_ISO,
@@ -98,10 +98,10 @@ describe("ScheduleStore", () => {
   });
 
   describe("one-shot records", () => {
-    it("creates an enabled one-shot with the captured locator and prompt", () => {
+    it("creates an enabled one-shot with the captured surface and prompt", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "check backups",
         nextRunAt: FUTURE_ISO,
@@ -109,7 +109,7 @@ describe("ScheduleStore", () => {
       expect(created.kind).toBe("once");
       expect(created.enabled).toBe(true);
       expect(created.prompt).toBe("check backups");
-      expect(created.locator).toEqual(LOC);
+      expect(created.surface).toEqual(LOC);
       expect(created.intervalMs).toBeUndefined();
     });
   });
@@ -118,7 +118,7 @@ describe("ScheduleStore", () => {
     it("stores kind=recurring and the interval in ms", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "recurring",
         prompt: "check backups",
         nextRunAt: FUTURE_ISO,
@@ -133,7 +133,7 @@ describe("ScheduleStore", () => {
     beforeEach(() => {
       store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "owned by a",
         nextRunAt: FUTURE_ISO,
@@ -179,7 +179,7 @@ describe("ScheduleStore", () => {
     it("pause disables and resume re-enables without changing the prompt", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "check backups",
         nextRunAt: FUTURE_ISO,
@@ -199,7 +199,7 @@ describe("ScheduleStore", () => {
     it("resume on a completed one-shot keeps it completed", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "once",
         nextRunAt: PAST_ISO,
@@ -216,7 +216,7 @@ describe("ScheduleStore", () => {
       // expects completed one-shots to display `completed`.
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "once",
         nextRunAt: PAST_ISO,
@@ -233,7 +233,7 @@ describe("ScheduleStore", () => {
     it("enabling heartbeat without an interval uses 30 minutes", () => {
       const hb = store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: true,
         now: NOW_ISO,
       });
@@ -248,7 +248,7 @@ describe("ScheduleStore", () => {
     it("enabling heartbeat with a custom interval applies it", () => {
       const hb = store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: true,
         intervalMs: 2 * 60 * 60 * 1000,
         now: NOW_ISO,
@@ -260,14 +260,14 @@ describe("ScheduleStore", () => {
     it("bare 'on' after a custom interval resets to 30 minutes", () => {
       store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: true,
         intervalMs: 2 * 60 * 60 * 1000,
         now: NOW_ISO,
       });
       const reset = store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: true,
         now: NOW_ISO,
       });
@@ -281,7 +281,7 @@ describe("ScheduleStore", () => {
     it("disabling a non-existent heartbeat does not persist a record", () => {
       const hb = store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: false,
         now: NOW_ISO,
       });
@@ -292,8 +292,8 @@ describe("ScheduleStore", () => {
     });
 
     it("disabling an enabled heartbeat keeps the record but disables it", () => {
-      store.setHeartbeat({ sessionId: "sess-a", locator: LOC, enabled: true, now: NOW_ISO });
-      const off = store.setHeartbeat({ sessionId: "sess-a", locator: LOC, enabled: false, now: NOW_ISO });
+      store.setHeartbeat({ sessionId: "sess-a", surface: LOC, enabled: true, now: NOW_ISO });
+      const off = store.setHeartbeat({ sessionId: "sess-a", surface: LOC, enabled: false, now: NOW_ISO });
       expect(off.enabled).toBe(false);
       expect(off.state).toBe("disabled");
       // Record still on disk
@@ -305,14 +305,14 @@ describe("ScheduleStore", () => {
     it("listDue returns enabled schedules whose nextRunAt is in the past", () => {
       const due = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "due",
         nextRunAt: PAST_ISO,
       });
       store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "future",
         nextRunAt: FUTURE_ISO,
@@ -324,7 +324,7 @@ describe("ScheduleStore", () => {
     it("listDue excludes disabled and completed schedules", () => {
       const a = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "a",
         nextRunAt: PAST_ISO,
@@ -336,7 +336,7 @@ describe("ScheduleStore", () => {
     it("claimDue marks a one-shot completed and disabled before dispatch", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "once",
         nextRunAt: PAST_ISO,
@@ -351,7 +351,7 @@ describe("ScheduleStore", () => {
     it("claimDue advances a recurring schedule by its interval before dispatch", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "recurring",
         prompt: "recur",
         nextRunAt: PAST_ISO,
@@ -368,7 +368,7 @@ describe("ScheduleStore", () => {
     it("claimDue advances past multiple missed intervals without drift accumulation past now", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "recurring",
         prompt: "recur",
         nextRunAt: "2026-07-04T09:00:00Z",
@@ -382,7 +382,7 @@ describe("ScheduleStore", () => {
     it("claimDue on a future schedule returns null", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "future",
         nextRunAt: FUTURE_ISO,
@@ -393,7 +393,7 @@ describe("ScheduleStore", () => {
     it("two overlapping ticks claim the same occurrence at most once", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "once",
         nextRunAt: PAST_ISO,
@@ -409,7 +409,7 @@ describe("ScheduleStore", () => {
     it("records last-run status and disables on binding-mismatch", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "recurring",
         prompt: "x",
         nextRunAt: PAST_ISO,
@@ -425,7 +425,7 @@ describe("ScheduleStore", () => {
     it("records archived outcome and disables", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "recurring",
         prompt: "x",
         nextRunAt: PAST_ISO,
@@ -440,7 +440,7 @@ describe("ScheduleStore", () => {
     it("records ok outcome without disabling", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "recurring",
         prompt: "x",
         nextRunAt: PAST_ISO,
@@ -464,7 +464,7 @@ describe("ScheduleStore", () => {
       // transition.
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "once",
         nextRunAt: PAST_ISO,
@@ -481,7 +481,7 @@ describe("ScheduleStore", () => {
     it("preserves completed state when recording archived on a one-shot", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "once",
         nextRunAt: PAST_ISO,
@@ -495,16 +495,16 @@ describe("ScheduleStore", () => {
     });
   });
 
-  describe("locator capture", () => {
-    it("persists locator with chatId and topicId", () => {
+  describe("surface capture", () => {
+    it("persists surface with chatId and topicId", () => {
       const created = store.create({
         sessionId: "sess-a",
-        locator: OTHER_LOC,
+        surface: OTHER_LOC,
         kind: "once",
         prompt: "x",
         nextRunAt: FUTURE_ISO,
       });
-      expect(created.locator).toEqual({ chatId: 200 });
+      expect(created.surface).toEqual(dmSurface(200));
     });
   });
 
@@ -517,7 +517,7 @@ describe("ScheduleStore", () => {
       });
       const created = s.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "x",
         nextRunAt: FUTURE_ISO,
@@ -531,7 +531,7 @@ describe("ScheduleStore", () => {
       const seed = new ScheduleStore(tmpDir, () => "seedid0000");
       seed.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "first",
         nextRunAt: FUTURE_ISO,
@@ -544,7 +544,7 @@ describe("ScheduleStore", () => {
       });
       const created = colliding.create({
         sessionId: "sess-b",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "second",
         nextRunAt: FUTURE_ISO,
@@ -558,7 +558,7 @@ describe("ScheduleStore", () => {
       const seed = new ScheduleStore(tmpDir, () => "seedid0000");
       seed.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "first",
         nextRunAt: FUTURE_ISO,
@@ -567,7 +567,7 @@ describe("ScheduleStore", () => {
       const alwaysCollide = new ScheduleStore(tmpDir, () => "seedid0000");
       const created = alwaysCollide.create({
         sessionId: "sess-b",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "second",
         nextRunAt: FUTURE_ISO,
@@ -583,7 +583,7 @@ describe("ScheduleStore", () => {
     it("create stamps user by default and agent when passed", () => {
       const user = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "u",
         nextRunAt: FUTURE_ISO,
@@ -592,7 +592,7 @@ describe("ScheduleStore", () => {
 
       const agent = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "a",
         nextRunAt: FUTURE_ISO,
@@ -610,7 +610,7 @@ describe("ScheduleStore", () => {
             {
               id: "legacyid",
               sessionId: "sess-a",
-              locator: LOC,
+              surface: LOC,
               kind: "once",
               prompt: "legacy",
               enabled: true,
@@ -628,7 +628,7 @@ describe("ScheduleStore", () => {
     it("countEnabledAgentSchedules counts only enabled agent-source records", () => {
       store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "a1",
         nextRunAt: FUTURE_ISO,
@@ -636,7 +636,7 @@ describe("ScheduleStore", () => {
       });
       store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "a2",
         nextRunAt: FUTURE_ISO,
@@ -644,14 +644,14 @@ describe("ScheduleStore", () => {
       });
       store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "u",
         nextRunAt: FUTURE_ISO,
       });
       const paused = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "a3",
         nextRunAt: FUTURE_ISO,
@@ -669,7 +669,7 @@ describe("ScheduleStore", () => {
       for (let i = 0; i < 8; i++) {
         store.create({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           kind: "once",
           prompt: `a${i}`,
           nextRunAt: FUTURE_ISO,
@@ -680,7 +680,7 @@ describe("ScheduleStore", () => {
       expect(() =>
         store.create({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           kind: "once",
           prompt: "too many",
           nextRunAt: FUTURE_ISO,
@@ -696,7 +696,7 @@ describe("ScheduleStore", () => {
         created.push(
           store.create({
             sessionId: "sess-a",
-            locator: LOC,
+            surface: LOC,
             kind: "once",
             prompt: `a${i}`,
             nextRunAt: FUTURE_ISO,
@@ -708,7 +708,7 @@ describe("ScheduleStore", () => {
       expect(() =>
         store.create({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           kind: "once",
           prompt: "replacement",
           nextRunAt: FUTURE_ISO,
@@ -724,7 +724,7 @@ describe("ScheduleStore", () => {
         created.push(
           store.create({
             sessionId: "sess-a",
-            locator: LOC,
+            surface: LOC,
             kind: "once",
             prompt: `a${i}`,
             nextRunAt: FUTURE_ISO,
@@ -735,7 +735,7 @@ describe("ScheduleStore", () => {
       store.pause("sess-a", created[0]!.id, true);
       store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "replacement",
         nextRunAt: FUTURE_ISO,
@@ -749,7 +749,7 @@ describe("ScheduleStore", () => {
       for (let i = 0; i < 8; i++) {
         store.create({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           kind: "once",
           prompt: `a${i}`,
           nextRunAt: FUTURE_ISO,
@@ -759,7 +759,7 @@ describe("ScheduleStore", () => {
       expect(() =>
         store.setHeartbeat({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           enabled: true,
           now: NOW_ISO,
           agent: true,
@@ -772,7 +772,7 @@ describe("ScheduleStore", () => {
       for (let i = 0; i < 8; i++) {
         store.create({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           kind: "once",
           prompt: `a${i}`,
           nextRunAt: FUTURE_ISO,
@@ -782,7 +782,7 @@ describe("ScheduleStore", () => {
       expect(() =>
         store.create({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           kind: "once",
           prompt: "user extra",
           nextRunAt: FUTURE_ISO,
@@ -797,7 +797,7 @@ describe("ScheduleStore", () => {
     it("agent remove/pause/resume on a user-owned schedule fails", () => {
       const user = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "user",
         nextRunAt: FUTURE_ISO,
@@ -812,7 +812,7 @@ describe("ScheduleStore", () => {
     it("user command remove/pause/resume on an agent-owned schedule succeeds", () => {
       const agent = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "agent",
         nextRunAt: FUTURE_ISO,
@@ -827,14 +827,14 @@ describe("ScheduleStore", () => {
     it("agent cannot turn off or overwrite a user-owned heartbeat", () => {
       store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: true,
         now: NOW_ISO,
       });
       expect(() =>
         store.setHeartbeat({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           enabled: true,
           intervalMs: 60_000,
           now: NOW_ISO,
@@ -844,7 +844,7 @@ describe("ScheduleStore", () => {
       expect(() =>
         store.setHeartbeat({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           enabled: false,
           now: NOW_ISO,
           agent: true,
@@ -859,14 +859,14 @@ describe("ScheduleStore", () => {
       // Agent creates and disables a heartbeat.
       store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: true,
         now: NOW_ISO,
         agent: true,
       });
       store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: false,
         now: NOW_ISO,
         agent: true,
@@ -876,7 +876,7 @@ describe("ScheduleStore", () => {
       // User re-enables it via /schedule (agent: false).
       store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: true,
         now: NOW_ISO,
       });
@@ -886,7 +886,7 @@ describe("ScheduleStore", () => {
       expect(() =>
         store.setHeartbeat({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           enabled: false,
           now: NOW_ISO,
           agent: true,
@@ -898,7 +898,7 @@ describe("ScheduleStore", () => {
     it("user disabling an agent heartbeat re-stamps source to user", () => {
       store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: true,
         now: NOW_ISO,
         agent: true,
@@ -908,7 +908,7 @@ describe("ScheduleStore", () => {
       // User disables it via /schedule (agent: false).
       store.setHeartbeat({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         enabled: false,
         now: NOW_ISO,
       });
@@ -918,7 +918,7 @@ describe("ScheduleStore", () => {
       expect(() =>
         store.setHeartbeat({
           sessionId: "sess-a",
-          locator: LOC,
+          surface: LOC,
           enabled: true,
           now: NOW_ISO,
           agent: true,
@@ -930,7 +930,7 @@ describe("ScheduleStore", () => {
     it("user pausing an agent schedule re-stamps source to user", () => {
       const agent = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "agent-owned",
         nextRunAt: FUTURE_ISO,
@@ -950,7 +950,7 @@ describe("ScheduleStore", () => {
     it("user resuming an agent schedule re-stamps source to user", () => {
       const agent = store.create({
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "agent-owned",
         nextRunAt: FUTURE_ISO,

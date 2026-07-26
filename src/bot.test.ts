@@ -11,6 +11,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { replyNoActiveSession, buildBot } from "./bot.ts";
+import { dmSurface, topicSurface } from "./surface.ts";
 import { MemoryStore } from "./memory/store.ts";
 import { metricsPath } from "./sessions/paths.ts";
 import { workdirPath, soulMdPath } from "./workspace/paths.ts";
@@ -351,7 +352,7 @@ function readTelegramEvents(home: string, sessionId: string): Record<string, unk
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 250;
+  const deadline = Date.now() + 1000;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error("timed out waiting for condition");
     await new Promise<void>((resolve) => setTimeout(resolve, 1));
@@ -375,7 +376,7 @@ describe("replyNoActiveSession", () => {
   it("replies in DMs without a session", () => {
     const reply = mock(async () => ({}));
     const ctx = { reply } as unknown as Context;
-    replyNoActiveSession(ctx, { chatId: 1 }, "text");
+    replyNoActiveSession(ctx, dmSurface(1), "text");
     expect(reply).toHaveBeenCalledWith(
       "`[info]` No active session\\. Use /new to start one\\.",
       { disable_notification: true, parse_mode: "MarkdownV2" },
@@ -385,7 +386,7 @@ describe("replyNoActiveSession", () => {
   it("does not reply in topics without a session", () => {
     const reply = mock(async () => ({}));
     const ctx = { reply } as unknown as Context;
-    replyNoActiveSession(ctx, { chatId: 1, topicId: 42 }, "text");
+    replyNoActiveSession(ctx, topicSurface("supergroup", 1, 42), "text");
     expect(reply).not.toHaveBeenCalled();
   });
 });
@@ -420,7 +421,7 @@ describe("buildBot integration", () => {
 
     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
 
-    expect(built.manager.getProjectDir({ chatId: 1 })).toBe(built.cfg.goblinHome);
+    expect(built.manager.getProjectDir(dmSurface(1))).toBe(built.cfg.goblinHome);
     expect(prior.dispose).toHaveBeenCalled();
     expect(built.agentRunners.has(session.id)).toBe(false);
   });

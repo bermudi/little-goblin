@@ -1,8 +1,7 @@
-import type { ChatLocator, TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile, Surface } from "./types.ts";
+import type { TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile, Surface } from "./types.ts";
 import { topicSettingsPath } from "./paths.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 import { log } from "../log.ts";
-import { surfaceFromLocatorCompat } from "./surface-compat.ts";
 import { surfaceId } from "../surface.ts";
 
 export type { TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile } from "./types.ts";
@@ -91,21 +90,13 @@ function updateSurface(settings: TopicSettingsFile, surface: Surface, updater: (
 }
 
 /** Read the projectDir for a complete Surface. */
-export function getProjectDir(home: string, surface: Surface): string | undefined;
-/** @deprecated Use surface-based getProjectDir. */
-export function getProjectDir(home: string, loc: ChatLocator): string | undefined;
-export function getProjectDir(home: string, input: Surface | ChatLocator): string | undefined {
-  const surface = "kind" in input ? input : surfaceFromLocatorCompat(input);
+export function getProjectDir(home: string, surface: Surface): string | undefined {
   const settings = loadTopicSettings(home);
   return settingsForSurface(settings, surface)?.projectDir;
 }
 
 /** Bind (or clear) the projectDir for a complete Surface. */
-export function bindProjectDir(home: string, surface: Surface, projectDir: string | undefined): void;
-/** @deprecated Use surface-based bindProjectDir. */
-export function bindProjectDir(home: string, loc: ChatLocator, projectDir: string | undefined): void;
-export function bindProjectDir(home: string, input: Surface | ChatLocator, projectDir: string | undefined): void {
-  const surface = "kind" in input ? input : surfaceFromLocatorCompat(input);
+export function bindProjectDir(home: string, surface: Surface, projectDir: string | undefined): void {
   const notice = projectDir !== undefined
     ? `Project directory changed to \`${projectDir}\`.`
     : undefined;
@@ -116,11 +107,7 @@ export function bindProjectDir(home: string, input: Surface | ChatLocator, proje
 }
 
 /** Read and clear the pending project notice for a complete Surface. */
-export function consumeProjectNotice(home: string, surface: Surface): string | undefined;
-/** @deprecated Use surface-based consumeProjectNotice. */
-export function consumeProjectNotice(home: string, loc: ChatLocator): string | undefined;
-export function consumeProjectNotice(home: string, input: Surface | ChatLocator): string | undefined {
-  const surface = "kind" in input ? input : surfaceFromLocatorCompat(input);
+export function consumeProjectNotice(home: string, surface: Surface): string | undefined {
   const settings = loadTopicSettings(home);
   const existing = settingsForSurface(settings, surface);
   if (!existing?.pendingProjectNotice) return undefined;

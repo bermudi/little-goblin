@@ -2,7 +2,8 @@ import { describe, it, expect } from "bun:test";
 import type { Context } from "grammy";
 import { buildStartHandler } from "./start.ts";
 import type { SessionManager } from "../sessions/mod.ts";
-import type { SessionState, ChatLocator } from "../sessions/types.ts";
+import type { SessionState } from "../sessions/types.ts";
+import { dmSurface, type Surface } from "../surface.ts";
 
 type ReplyCall = { text: string; opts?: Record<string, unknown> };
 
@@ -23,17 +24,17 @@ function makeCtx(overrides: {
 function makeManager(
   sessionId: string,
   existing?: SessionState | null,
-): { manager: SessionManager; calls: ChatLocator[]; resolveCalls: ChatLocator[] } {
-  const calls: ChatLocator[] = [];
-  const resolveCalls: ChatLocator[] = [];
+): { manager: SessionManager; calls: Surface[]; resolveCalls: Surface[] } {
+  const calls: Surface[] = [];
+  const resolveCalls: Surface[] = [];
   const manager = {
-    resolve: (loc: ChatLocator) => {
-      resolveCalls.push(loc);
+    resolve: (surface: Surface) => {
+      resolveCalls.push(surface);
       return existing ?? null;
     },
-    createForChat: (loc: ChatLocator) => {
-      calls.push(loc);
-      return { id: sessionId, createdAt: new Date().toISOString(), chatId: loc.chatId, topicId: loc.topicId } as SessionState;
+    createForSurface: (surface: Surface) => {
+      calls.push(surface);
+      return { id: sessionId, createdAt: new Date().toISOString(), chatId: surface.chatId, topicId: surface.kind === "topic" ? surface.topicId : undefined } as SessionState;
     },
   } as unknown as SessionManager;
   return { manager, calls, resolveCalls };
@@ -58,7 +59,7 @@ describe("buildStartHandler", () => {
     expect(replies[0]!.text).toBe("`[info]` Session `sess-abc-123` ready\\. Just start typing\\!");
     expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
     expect(calls.length).toBe(1);
-    expect(calls[0]!).toEqual({ chatId: 123, topicId: undefined, isPrivate: true });
+    expect(calls[0]!).toEqual(dmSurface(123));
   });
 
   it("welcomes back without creating when DM session already exists", async () => {
@@ -106,7 +107,7 @@ describe("buildStartHandler", () => {
 
     expect(replies.length).toBe(1);
     expect(replies[0]!.text).toBe("`[info]` This topic is already its own session\\. Just start typing\\!");
-    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true, message_thread_id: 1 });
+    expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true });
     expect(calls.length).toBe(0); // No session created for forum topics
   });
 
@@ -149,7 +150,7 @@ describe("buildStartHandler", () => {
     expect(replies[0]!.opts).toEqual({ parse_mode: "MarkdownV2", disable_notification: true, message_thread_id: 42 });
   });
 
-  it("handles missing locator", async () => {
+  it("handles missing surface", async () => {
     const replies: ReplyCall[] = [];
     const ctx = makeCtx({
       chat: { id: undefined as unknown as number, type: "private" },

@@ -4,7 +4,8 @@ import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { AgentRunner, type TurnCallbacks } from "../agent/mod.ts";
 import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
-import { SessionManager, type ChatLocator, type SessionState } from "../sessions/mod.ts";
+import { SessionManager, type SessionState } from "../sessions/mod.ts";
+import { dmSurface, type Surface } from "../surface.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
@@ -60,18 +61,18 @@ export interface TurnDispatcherOptions {
    */
   dreamingPipeline?: DreamingPipeline;
   /**
-   * Mandatory factory that builds the turn sink for a locator. The dispatcher
+   * Mandatory factory that builds the turn sink for a surface. The dispatcher
    * never constructs a `MessageBuffer` itself — the Telegram-aware caller
    * (intake) injects this so rendering knowledge stays in `src/tg/`.
    */
-  createMessageBuffer: (locator: ChatLocator, session?: SessionState) => TurnSink;
+  createMessageBuffer: (surface: Surface, session?: SessionState) => TurnSink;
   /**
    * Mandatory factory that builds Telegram-specific beta tools (voice, photo,
-   * document, TTS) for a chat. The dispatcher does not import from `src/tg/`;
+   * document, TTS) for a surface. The dispatcher does not import from `src/tg/`;
    * the Telegram-aware caller (intake) injects this so beta tool creation stays
    * in the Telegram layer.
    */
-  createBetaTools: (chatId: number, threadId?: number) => ToolDefinition[];
+  createBetaTools: (surface: Surface) => ToolDefinition[];
   /** Shared schedule store. When present, the `schedule_turn` tool is wired to the main agent. */
   scheduleStore?: ScheduleStore;
   /**
@@ -109,8 +110,8 @@ export class TurnDispatcher {
   private readonly embeddingProvider?: EmbeddingProvider;
   private readonly dreamingPipeline?: DreamingPipeline;
   private readonly createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
-  private readonly createMessageBufferFn: (locator: ChatLocator, session?: SessionState) => TurnSink;
-  private readonly createBetaToolsFn: (chatId: number, threadId?: number) => ToolDefinition[];
+  private readonly createMessageBufferFn: (surface: Surface, session?: SessionState) => TurnSink;
+  private readonly createBetaToolsFn: (surface: Surface) => ToolDefinition[];
   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
   private readonly promptQueueMeta: Map<string, PromptQueueEntry>;
   private readonly scheduleStore: ScheduleStore | undefined;
@@ -153,24 +154,22 @@ export class TurnDispatcher {
   }
 
   /**
-   * Construct a new `AgentRunner` for a session. `threadId` is the Telegram
-   * thread id used to scope beta tools (voice/photo/document); for scheduled
-   * turns it is derived from `locator.topicId`.
+   * Construct a new `AgentRunner` for a session. Telegram delivery parameters
+   * are derived entirely from the provided `surface`.
    */
-  createRunner(session: SessionState, locator: ChatLocator, threadId?: number): AgentRunner {
-    const chatId = locator.chatId;
-    const betaTools = this.createBetaToolsFn(chatId, threadId);
+  createRunner(session: SessionState, surface: Surface): AgentRunner {
+    const betaTools = this.createBetaToolsFn(surface);
     const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
       cfg: this.cfg,
       sessionId: session.id,
-      locator,
+      surface,
       customTools: betaTools,
       subagentRunner: this.subagentRunner,
       getTopicName: this.getTopicName,
-      projectDir: this.manager.getProjectDir(locator),
+      projectDir: this.manager.getProjectDir(surface),
       modelName: session.modelName,
       thinkingLevel: session.thinkingLevel,
-      pendingProjectNotice: this.manager.consumeProjectNotice(locator),
+      pendingProjectNotice: this.manager.consumeProjectNotice(surface),
       scheduleStore: this.scheduleStore,
       externalAgentRunner: this.externalAgentRunner,
       mcpRunner: this.mcpRunner,
@@ -183,23 +182,23 @@ export class TurnDispatcher {
   /**
    * Return the existing runner for a session, creating one if none exists.
    */
-  getOrCreateRunner(session: SessionState, locator: ChatLocator, threadId?: number): AgentRunner {
+  getOrCreateRunner(session: SessionState, surface: Surface): AgentRunner {
     const existing = this.runners.get(session.id);
     if (existing) return existing;
 
-    const runner = this.createRunner(session, locator, threadId);
+    const runner = this.createRunner(session, surface);
     this.runners.set(session.id, runner);
     log.debug("created runner for session", { sessionId: session.id });
     return runner;
   }
 
   /**
-   * Build the turn sink for a locator via the injected factory. Always
+   * Build the turn sink for a surface via the injected factory. Always
    * delegates to `createMessageBufferFn` — there is no fallback, the factory
    * is mandatory at construction.
    */
-  createMessageBuffer(locator: ChatLocator, session?: SessionState): TurnSink {
-    return this.createMessageBufferFn(locator, session);
+  createMessageBuffer(surface: Surface, session?: SessionState): TurnSink {
+    return this.createMessageBufferFn(surface, session);
   }
 
   /**
@@ -360,8 +359,8 @@ export class TurnDispatcher {
    * Set a session's runner directly. Used when a command creates a new runner
    * (e.g. `/new`, `/resume`) outside the get-or-create path.
    */
-  setRunner(session: SessionState, locator: ChatLocator, threadId?: number): AgentRunner {
-    const runner = this.createRunner(session, locator, threadId);
+  setRunner(session: SessionState, surface: Surface): AgentRunner {
+    const runner = this.createRunner(session, surface);
     this.runners.set(session.id, runner);
     log.debug("created runner", { sessionId: session.id });
     return runner;
@@ -384,7 +383,10 @@ export class TurnDispatcher {
       const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
         cfg: this.cfg,
         sessionId: session.id,
-        locator: { chatId: 0 },
+        // Internal sessions have no Telegram chat; a placeholder DM surface is
+        // used because the runner needs a complete Surface. chatId is not used
+        // for memory scoping because the active scope is "general".
+        surface: dmSurface(1),
         customTools: [],
         memoryStore: this.memoryStore,
         embeddingProvider: this.embeddingProvider,
@@ -427,13 +429,12 @@ export class TurnDispatcher {
    */
   enqueueScheduledTurn(
     session: SessionState,
-    locator: ChatLocator,
+    surface: Surface,
     content: PromptContent,
     onError?: (err: unknown) => void,
   ): void {
-    const threadId = locator.topicId;
-    const runner = this.getOrCreateRunner(session, locator, threadId);
-    const buffer = this.createMessageBuffer(locator, session);
+    const runner = this.getOrCreateRunner(session, surface);
+    const buffer = this.createMessageBuffer(surface, session);
     this.schedulePrompt(
       session,
       runner,

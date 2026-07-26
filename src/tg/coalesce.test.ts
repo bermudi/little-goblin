@@ -9,6 +9,7 @@ import {
   type CoalesceInput,
   type CoalesceKey,
 } from "./coalesce.ts";
+import { dmSurface, surfaceId, topicSurface } from "../surface.ts";
 import type { PromptContent } from "./intake.ts";
 import type { TelegramIntakeMessage } from "./intake.ts";
 
@@ -18,8 +19,7 @@ import type { TelegramIntakeMessage } from "./intake.ts";
  * which fragment's message was passed on flush (D9). */
 function makeMessage(id: number): TelegramIntakeMessage {
   return {
-    locator: { chatId: 1, topicId: undefined },
-    isSupergroup: false,
+    surface: dmSurface(1),
     reply: async () => {},
     prepare: (c: PromptContent) => c,
     // Attach an out-of-band tag for identity assertions. The interface doesn't
@@ -28,7 +28,7 @@ function makeMessage(id: number): TelegramIntakeMessage {
   } as unknown as TelegramIntakeMessage;
 }
 
-const DEFAULT_KEY: CoalesceKey = { chatId: 1, topicId: undefined, fromUserId: 100 };
+const DEFAULT_KEY: CoalesceKey = { surfaceId: surfaceId(dmSurface(1)), fromUserId: 100 };
 
 function makeInput(
   text: string,
@@ -277,8 +277,8 @@ describe("TextCoalescer — commands", () => {
 describe("TextCoalescer — key isolation", () => {
   it("keeps fragments from different senders in separate buckets", () => {
     const { coalescer, dispatch } = makeCoalescer();
-    const keyA: CoalesceKey = { chatId: 1, topicId: undefined, fromUserId: 100 };
-    const keyB: CoalesceKey = { chatId: 1, topicId: undefined, fromUserId: 200 };
+    const keyA: CoalesceKey = { surfaceId: surfaceId(dmSurface(1)), fromUserId: 100 };
+    const keyB: CoalesceKey = { surfaceId: surfaceId(dmSurface(1)), fromUserId: 200 };
     const longA = textOf(TEXT_SPLIT_THRESHOLD, "A");
 
     // A opens a buffer. B's interleaving short message is under a different key
@@ -300,8 +300,8 @@ describe("TextCoalescer — key isolation", () => {
 
   it("keeps fragments in different topics in separate buckets", () => {
     const { coalescer, dispatch } = makeCoalescer();
-    const keyX: CoalesceKey = { chatId: 1, topicId: 10, fromUserId: 100 };
-    const keyY: CoalesceKey = { chatId: 1, topicId: 20, fromUserId: 100 };
+    const keyX: CoalesceKey = { surfaceId: surfaceId(topicSurface("supergroup", 1, 10)), fromUserId: 100 };
+    const keyY: CoalesceKey = { surfaceId: surfaceId(topicSurface("supergroup", 1, 20)), fromUserId: 100 };
     const longX = textOf(TEXT_SPLIT_THRESHOLD, "X");
 
     coalescer.submit(makeInput(longX, { messageIdFor: 1, messageId: 1, key: keyX }));

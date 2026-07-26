@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { atomicWrite } from "../fs.ts";
 import { log } from "../log.ts";
 import { schedulesPath } from "../sessions/paths.ts";
-import type { ChatLocator } from "../sessions/types.ts";
+import { surfaceId, parseSurfaceId, type Surface } from "../surface.ts";
 import {
   MAX_AGENT_SCHEDULES,
   type LastRunStatus,
@@ -11,6 +11,7 @@ import {
   type ScheduleStoreFile,
   type ScheduleState,
   type ScheduledTurn,
+  type PersistedScheduledTurn,
 } from "./types.ts";
 
 /**
@@ -34,6 +35,50 @@ function pathFor(home: string): string {
   return schedulesPath(home);
 }
 
+function encodeSurface(surface: Surface): string {
+  return surfaceId(surface);
+}
+
+function decodeSurface(
+  surfaceIdText: string | undefined,
+  legacySurface: unknown,
+  recordId: string,
+): Surface {
+  if (surfaceIdText !== undefined) {
+    try {
+      return parseSurfaceId(surfaceIdText);
+    } catch (err) {
+      throw new Error(`Schedule ${recordId} has invalid surfaceId ${surfaceIdText}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Fallback for legacy records that persisted the full Surface object
+  // instead of a SurfaceId. This path is used by tests and any pre-migration
+  // schedules.json that has not yet been rewritten by surface-migration.ts.
+  if (legacySurface && typeof legacySurface === "object") {
+    try {
+      // surfaceId() validates the Surface shape and returns the canonical
+      // SurfaceId string. parseSurfaceId then decodes it back to a canonical
+      // Surface object, just as for first-class surfaceId records.
+      return parseSurfaceId(surfaceId(legacySurface as Surface));
+    } catch {
+      // surfaceId validation or parseSurfaceId decoding failed; fall through.
+    }
+  }
+
+  throw new Error(`Schedule ${recordId} has no surfaceId or legacy surface`);
+}
+
+function encodeTurn(s: ScheduledTurn): PersistedScheduledTurn {
+  const { surface, ...rest } = s;
+  return { ...rest, surfaceId: encodeSurface(surface) };
+}
+
+function decodeTurn(p: PersistedScheduledTurn): ScheduledTurn {
+  const { surfaceId, ...rest } = p;
+  return { ...rest, surface: decodeSurface(surfaceId, (p as { surface?: unknown }).surface, p.id) };
+}
+
 /**
  * Load the schedule store. Returns an empty store when the file is missing
  * (ENOENT is expected — first run). Malformed JSON logs a warning and yields
@@ -42,7 +87,11 @@ function pathFor(home: string): string {
 export function loadStore(home: string): ScheduleStoreFile {
   try {
     const raw = readFileSync(pathFor(home), "utf-8");
-    return JSON.parse(raw) as ScheduleStoreFile;
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed !== null && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).schedules)) {
+      return parsed as ScheduleStoreFile;
+    }
+    return structuredClone(EMPTY_STORE);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {
       return structuredClone(EMPTY_STORE);
@@ -96,12 +145,12 @@ export class ScheduleStore {
     this.generateId = generateId;
   }
 
-  private read(): ScheduleStoreFile {
-    return loadStore(this.home);
+  private read(): ScheduledTurn[] {
+    return loadStore(this.home).schedules.map(decodeTurn);
   }
 
-  private write(store: ScheduleStoreFile): void {
-    saveStore(this.home, store);
+  private write(schedules: ScheduledTurn[]): void {
+    saveStore(this.home, { schedules: schedules.map(encodeTurn) });
   }
 
   /**
@@ -113,8 +162,8 @@ export class ScheduleStore {
    * list (no fresh disk read between count and write). When omitted, a fresh
    * read is performed — used by external callers that are not mid-mutation.
    */
-  countEnabledAgentSchedules(sessionId: string, snapshot?: ScheduleStoreFile): number {
-    const schedules = snapshot ? snapshot.schedules : this.read().schedules;
+  countEnabledAgentSchedules(sessionId: string, snapshot?: ScheduledTurn[]): number {
+    const schedules = snapshot ?? this.read();
     return schedules.filter(
       (s) => s.sessionId === sessionId && s.state === "enabled" && effectiveSource(s) === "agent",
     ).length;
@@ -127,7 +176,7 @@ export class ScheduleStore {
    */
   listBySession(sessionId: string): ScheduledTurn[] {
     return this.read()
-      .schedules.filter((s) => s.sessionId === sessionId)
+      .filter((s) => s.sessionId === sessionId)
       .sort((a, b) => {
         if (a.state === "completed" && b.state !== "completed") return 1;
         if (b.state === "completed" && a.state !== "completed") return -1;
@@ -141,7 +190,7 @@ export class ScheduleStore {
    * both the same way ("no matching schedule was found").
    */
   getForSession(sessionId: string, id: string): ScheduledTurn | null {
-    const s = this.read().schedules.find((x) => x.id === id);
+    const s = this.read().find((x) => x.id === id);
     if (!s || s.sessionId !== sessionId) return null;
     return s;
   }
@@ -155,7 +204,7 @@ export class ScheduleStore {
    */
   create(params: {
     sessionId: string;
-    locator: ChatLocator;
+    surface: Surface;
     kind: Exclude<ScheduleKind, "heartbeat">;
     prompt: string;
     nextRunAt: string;
@@ -177,7 +226,7 @@ export class ScheduleStore {
     const record: ScheduledTurn = {
       id: this.freshId(store),
       sessionId: params.sessionId,
-      locator: params.locator,
+      surface: params.surface,
       kind: params.kind,
       prompt: params.prompt,
       enabled: true,
@@ -187,7 +236,7 @@ export class ScheduleStore {
       createdAt: new Date().toISOString(),
       source,
     };
-    store.schedules.push(record);
+    store.push(record);
     this.write(store);
     log.info("created schedule", { id: record.id, kind: record.kind, sessionId: record.sessionId, source });
     return record;
@@ -206,7 +255,7 @@ export class ScheduleStore {
    */
   setHeartbeat(params: {
     sessionId: string;
-    locator: ChatLocator;
+    surface: Surface;
     enabled: boolean;
     intervalMs?: number;
     now: string;
@@ -214,7 +263,7 @@ export class ScheduleStore {
   }): ScheduledTurn {
     const agent = params.agent ?? false;
     const store = this.read();
-    const existing = store.schedules.find(
+    const existing = store.find(
       (s) => s.kind === "heartbeat" && s.sessionId === params.sessionId,
     );
 
@@ -245,6 +294,7 @@ export class ScheduleStore {
         existing.source = "user";
       }
 
+      existing.surface = params.surface;
       existing.intervalMs = intervalMs;
       if (params.enabled) {
         existing.enabled = true;
@@ -265,7 +315,7 @@ export class ScheduleStore {
       const record: ScheduledTurn = {
         id: this.freshId(store),
         sessionId: params.sessionId,
-        locator: params.locator,
+        surface: params.surface,
         kind: "heartbeat",
         prompt: null,
         enabled: false,
@@ -291,7 +341,7 @@ export class ScheduleStore {
     const record: ScheduledTurn = {
       id: this.freshId(store),
       sessionId: params.sessionId,
-      locator: params.locator,
+      surface: params.surface,
       kind: "heartbeat",
       prompt: null,
       enabled: true,
@@ -301,7 +351,7 @@ export class ScheduleStore {
       createdAt: new Date().toISOString(),
       source: agent ? "agent" : "user",
     };
-    store.schedules.push(record);
+    store.push(record);
     this.write(store);
     log.info("enabled heartbeat", { id: record.id, sessionId: record.sessionId, intervalMs, source: record.source });
     return record;
@@ -312,7 +362,7 @@ export class ScheduleStore {
    */
   getHeartbeat(sessionId: string): ScheduledTurn | null {
     return (
-      this.read().schedules.find((s) => s.kind === "heartbeat" && s.sessionId === sessionId) ?? null
+      this.read().find((s) => s.kind === "heartbeat" && s.sessionId === sessionId) ?? null
     );
   }
 
@@ -324,10 +374,10 @@ export class ScheduleStore {
    */
   remove(sessionId: string, id: string, agent = false): boolean {
     const store = this.read();
-    const idx = store.schedules.findIndex((s) => s.id === id && s.sessionId === sessionId);
+    const idx = store.findIndex((s) => s.id === id && s.sessionId === sessionId);
     if (idx === -1) return false;
-    if (agent && effectiveSource(store.schedules[idx]!) === "user") return false;
-    store.schedules.splice(idx, 1);
+    if (agent && effectiveSource(store[idx]!) === "user") return false;
+    store.splice(idx, 1);
     this.write(store);
     log.info("removed schedule", { id, sessionId });
     return true;
@@ -358,7 +408,7 @@ export class ScheduleStore {
 
   private setState(sessionId: string, id: string, state: ScheduleState, agent = false): ScheduledTurn | null {
     const store = this.read();
-    const s = store.schedules.find((x) => x.id === id && x.sessionId === sessionId);
+    const s = store.find((x) => x.id === id && x.sessionId === sessionId);
     if (!s) return null;
 
     // Authority: agent callers cannot mutate user-owned schedules.
@@ -402,7 +452,7 @@ export class ScheduleStore {
    */
   listDue(now: string): ScheduledTurn[] {
     const nowMs = new Date(now).getTime();
-    return this.read().schedules.filter(
+    return this.read().filter(
       (s) => s.enabled && s.state === "enabled" && new Date(s.nextRunAt).getTime() <= nowMs,
     );
   }
@@ -421,7 +471,7 @@ export class ScheduleStore {
    */
   claimDue(id: string, now: string): ScheduledTurn | null {
     const store = this.read();
-    const s = store.schedules.find((x) => x.id === id);
+    const s = store.find((x) => x.id === id);
     if (!s || !s.enabled || s.state !== "enabled") return null;
     const nowMs = new Date(now).getTime();
     if (new Date(s.nextRunAt).getTime() > nowMs) return null;
@@ -460,7 +510,7 @@ export class ScheduleStore {
    */
   recordRun(id: string, status: LastRunStatus): void {
     const store = this.read();
-    const s = store.schedules.find((x) => x.id === id);
+    const s = store.find((x) => x.id === id);
     if (!s) return;
     s.lastRun = status;
     if (status.outcome === "binding-mismatch" || status.outcome === "archived") {
@@ -474,8 +524,8 @@ export class ScheduleStore {
    * Generate a unique id, retrying on the astronomically unlikely collision.
    * After 8 collisions, fall back to a longer slice to guarantee uniqueness.
    */
-  private freshId(store: ScheduleStoreFile): string {
-    const existing = new Set(store.schedules.map((s) => s.id));
+  private freshId(store: ScheduledTurn[]): string {
+    const existing = new Set(store.map((s) => s.id));
     for (let attempt = 0; attempt < 8; attempt++) {
       const id = this.generateId();
       if (!existing.has(id)) return id;

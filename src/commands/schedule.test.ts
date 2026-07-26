@@ -12,11 +12,12 @@ import {
   type ScheduleCommandDeps,
 } from "./schedule.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
-import type { ChatLocator, SessionState } from "../sessions/types.ts";
+import type { SessionState } from "../sessions/types.ts";
+import { dmSurface, topicSurface, type Surface } from "../surface.ts";
 import type { ScheduledTurn } from "../scheduler/types.ts";
 
 const NOW = Date.parse("2026-07-04T12:00:00Z");
-const LOC: ChatLocator = { chatId: 100, topicId: 5 };
+const LOC: Surface = topicSurface("supergroup", 100, 5);
 const FUTURE_ISO = "2026-07-05T09:00:00Z";
 
 function makeSession(id = "sess-a"): SessionState {
@@ -44,7 +45,7 @@ function makeFakeDeps(session: SessionState | null = makeSession()): ScheduleCom
   return {
     hasSession: session !== null,
     session,
-    locator: LOC,
+    surface: LOC,
     now: NOW,
     created: [],
     removed: [],
@@ -58,7 +59,7 @@ function makeFakeDeps(session: SessionState | null = makeSession()): ScheduleCom
       return {
         id: "newid1",
         sessionId: session?.id ?? "?",
-        locator: LOC,
+        surface: LOC,
         kind: params.kind,
         prompt: params.prompt,
         enabled: true,
@@ -88,7 +89,7 @@ function makeFakeDeps(session: SessionState | null = makeSession()): ScheduleCom
       return {
         id: "hb1",
         sessionId: session?.id ?? "?",
-        locator: LOC,
+        surface: LOC,
         kind: "heartbeat" as const,
         prompt: null,
         enabled: params.enabled,
@@ -158,7 +159,7 @@ describe("executeSchedule — list", () => {
       {
         id: "abc123",
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "recurring",
         prompt: "check backups",
         enabled: true,
@@ -170,7 +171,7 @@ describe("executeSchedule — list", () => {
       {
         id: "def456",
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "one and done",
         enabled: false,
@@ -196,7 +197,7 @@ describe("executeSchedule — list", () => {
       {
         id: "hb1",
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "heartbeat",
         prompt: null,
         enabled: true,
@@ -217,7 +218,7 @@ describe("executeSchedule — list", () => {
       {
         id: "user1",
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "user prompt",
         enabled: true,
@@ -228,7 +229,7 @@ describe("executeSchedule — list", () => {
       {
         id: "agent1",
         sessionId: "sess-a",
-        locator: LOC,
+        surface: LOC,
         kind: "once",
         prompt: "agent prompt",
         enabled: true,
@@ -398,7 +399,7 @@ describe("executeSchedule — heartbeat", () => {
     deps.heartbeatReturn = {
       id: "hb1",
       sessionId: "sess-a",
-      locator: LOC,
+      surface: LOC,
       kind: "heartbeat",
       prompt: null,
       enabled: true,
@@ -469,7 +470,7 @@ describe("buildScheduleDeps + ScheduleStore (integration)", () => {
     // Create a schedule owned by session B.
     store.create({
       sessionId: "sess-b",
-      locator: { chatId: 999 },
+      surface: dmSurface(999),
       kind: "once",
       prompt: "foreign",
       nextRunAt: FUTURE_ISO,
@@ -485,7 +486,7 @@ describe("buildScheduleDeps + ScheduleStore (integration)", () => {
   it("ownership: pause returns no-match for a foreign-owned schedule", () => {
     store.create({
       sessionId: "sess-b",
-      locator: { chatId: 999 },
+      surface: dmSurface(999),
       kind: "once",
       prompt: "foreign",
       nextRunAt: FUTURE_ISO,
@@ -499,7 +500,7 @@ describe("buildScheduleDeps + ScheduleStore (integration)", () => {
   it("ownership: resume returns no-match for a foreign-owned schedule", () => {
     store.create({
       sessionId: "sess-b",
-      locator: { chatId: 999 },
+      surface: dmSurface(999),
       kind: "once",
       prompt: "foreign",
       nextRunAt: FUTURE_ISO,

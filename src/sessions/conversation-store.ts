@@ -2,11 +2,10 @@ import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "n
 import { join } from "node:path";
 import { log } from "../log.ts";
 import { environmentsEqual, type ExecutionEnvironment } from "./environment.ts";
-import type { ConversationId, ConversationState, SessionState } from "./types.ts";
+import type { ConversationId, ConversationState } from "./types.ts";
 import { isValidConversationId, makeConversationId, validateConversationId } from "./conversation.ts";
-import { isValidExecutionEnvironment, loadConversationState, saveConversationState } from "./state.ts";
-import { loadJsonFile } from "./state-file.ts";
-import { metricsPath, sessionDir, sessionsDir, statePath, transcriptPath } from "./paths.ts";
+import { loadConversationState, saveConversationState } from "./state.ts";
+import { metricsPath, sessionDir, sessionsDir, transcriptPath } from "./paths.ts";
 
 /**
  * Initialize the on-disk artifacts for a new conversation in the legacy
@@ -114,24 +113,13 @@ export class ConversationStore {
       if (id === "archive") continue;
       if (!isValidConversationId(id)) continue;
 
-      const raw = loadJsonFile<SessionState | null>(statePath(this.home, id), null);
-      if (raw === null) continue;
-      if (!isValidExecutionEnvironment(raw.executionEnvironment)) continue;
-      if (raw.chatId === 0) continue; // internal (e.g. dreaming) conversations are not user-resumable
+      const conv = this.load(id as ConversationId);
+      if (conv === null) continue;
 
-      if (envFilter !== undefined && !environmentsEqual(raw.executionEnvironment, envFilter)) {
+      if (envFilter !== undefined && !environmentsEqual(conv.executionEnvironment, envFilter)) {
         continue;
       }
-      if (raw.id !== undefined && raw.id !== id) {
-        throw new Error(`conversation ${id} state file id mismatch: ${String(raw.id)}`);
-      }
-
-      states.push({
-        id: id as ConversationId,
-        createdAt: raw.createdAt,
-        title: raw.title,
-        executionEnvironment: raw.executionEnvironment,
-      });
+      states.push(conv);
     }
 
     return states.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));

@@ -13,6 +13,46 @@ export function isValidExecutionEnvironment(value: unknown): value is ExecutionE
   return false;
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function validateCreatedAt(value: unknown): string {
+  if (!isNonEmptyString(value) || Number.isNaN(Date.parse(value))) {
+    throw new Error(`conversation has missing or invalid createdAt: ${String(value)}`);
+  }
+  return value;
+}
+
+function validateTitle(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`conversation has invalid title: ${String(value)}`);
+  }
+  return value;
+}
+
+function validateConversationState(id: ConversationId, raw: unknown): ConversationState {
+  if (raw === null || typeof raw !== "object") {
+    throw new Error(`conversation ${id} state is not an object`);
+  }
+  const state = raw as Record<string, unknown>;
+  if (!isValidExecutionEnvironment(state.executionEnvironment)) {
+    throw new Error(`conversation ${id} has missing or invalid executionEnvironment`);
+  }
+  const createdAt = validateCreatedAt(state.createdAt);
+  const title = validateTitle(state.title);
+  if (state.id !== undefined && (typeof state.id !== "string" || state.id !== id)) {
+    throw new Error(`conversation ${id} state file id mismatch: ${String(state.id)}`);
+  }
+  return {
+    id,
+    createdAt,
+    title,
+    executionEnvironment: state.executionEnvironment,
+  };
+}
+
 function validateState(state: SessionState | null): SessionState | null {
   if (state === null) return null;
   if (!isValidExecutionEnvironment(state.executionEnvironment)) {
@@ -32,22 +72,12 @@ export function loadConversationState(home: string, id: string): ConversationSta
   validateConversationId(id);
   const raw = loadJsonFile<SessionState | null>(statePath(home, id), null);
   if (raw === null) return null;
-  if (!isValidExecutionEnvironment(raw.executionEnvironment)) {
-    throw new Error(`conversation ${id} has missing or invalid executionEnvironment`);
-  }
-  if (raw.id !== undefined && raw.id !== id) {
-    throw new Error(`conversation ${id} state file id mismatch: ${String(raw.id)}`);
-  }
+  const state = validateConversationState(id as ConversationId, raw);
   // Internal sessions (e.g. dreaming) are never bound to a Surface.
   if (raw.chatId === 0) return null;
   // The directory name is the source of truth for the conversation identity.
   // The JSON id field is only validated, never used as a path component.
-  return {
-    id: id as ConversationId,
-    createdAt: raw.createdAt,
-    title: raw.title,
-    executionEnvironment: raw.executionEnvironment,
-  };
+  return state;
 }
 
 /**
@@ -56,15 +86,7 @@ export function loadConversationState(home: string, id: string): ConversationSta
  */
 export function saveConversationState(home: string, state: ConversationState): void {
   validateConversationId(state.id);
-  if (!isValidExecutionEnvironment(state.executionEnvironment)) {
-    throw new Error(`conversation ${state.id} has missing or invalid executionEnvironment`);
-  }
-  const canonical = {
-    id: state.id,
-    createdAt: state.createdAt,
-    title: state.title,
-    executionEnvironment: state.executionEnvironment,
-  };
+  const canonical = validateConversationState(state.id, state);
   saveJsonFile(statePath(home, state.id), canonical);
 }
 

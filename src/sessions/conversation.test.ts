@@ -26,6 +26,18 @@ describe("conversation id", () => {
     expect(() => validateConversationId("")).toThrow(/non-empty string/);
   });
 
+  it("validateConversationId rejects non-strings", () => {
+    expect(() => validateConversationId(null as unknown as string)).toThrow(/non-empty string/);
+    expect(() => validateConversationId(undefined as unknown as string)).toThrow(/non-empty string/);
+    expect(() => validateConversationId(12345 as unknown as string)).toThrow(/non-empty string/);
+  });
+
+  it("isValidConversationId rejects non-strings without throwing", () => {
+    expect(isValidConversationId(null as unknown as string)).toBe(false);
+    expect(isValidConversationId(undefined as unknown as string)).toBe(false);
+    expect(isValidConversationId(12345 as unknown as string)).toBe(false);
+  });
+
   it("validateConversationId rejects path traversal", () => {
     expect(() => validateConversationId("../escape")).toThrow();
     expect(() => validateConversationId("abc/123")).toThrow();

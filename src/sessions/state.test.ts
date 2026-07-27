@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadState, saveState } from "./state.ts";
-import { sessionDir } from "./paths.ts";
+import { loadConversationState, loadState, saveConversationState, saveState } from "./state.ts";
+import { sessionDir, statePath } from "./paths.ts";
 import { personalEnvironment, projectEnvironment } from "./environment.ts";
-import type { SessionState } from "./types.ts";
+import type { ConversationState, SessionState } from "./types.ts";
 
 function makeState(env: SessionState["executionEnvironment"], overrides?: Partial<SessionState>): SessionState {
   return {
@@ -61,5 +61,114 @@ describe("state", () => {
     const state = makeState(personalEnvironment());
     saveState(tmpDir, state);
     expect(existsSync(sessionDir(tmpDir, state.id))).toBe(true);
+  });
+});
+
+describe("conversation state", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "goblin-conversation-state-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("loadConversationState returns null for a missing conversation", () => {
+    expect(loadConversationState(tmpDir, "0000000000")).toBeNull();
+  });
+
+  it("loadConversationState drops legacy fields when loading a legacy record", () => {
+    const legacy = {
+      id: "abc123def0",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      chatId: 123,
+      topicId: 7,
+      title: "legacy",
+      modelName: "poe/test",
+      thinkingLevel: "medium",
+      executionEnvironment: personalEnvironment(),
+    };
+    mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
+    writeFileSync(statePath(tmpDir, "abc123def0"), JSON.stringify(legacy));
+
+    const loaded = loadConversationState(tmpDir, "abc123def0");
+    expect(loaded).toEqual({
+      id: "abc123def0",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      title: "legacy",
+      executionEnvironment: personalEnvironment(),
+    });
+  });
+
+  it("loadConversationState throws for a missing createdAt", () => {
+    mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
+    writeFileSync(
+      statePath(tmpDir, "abc123def0"),
+      JSON.stringify({ id: "abc123def0", executionEnvironment: personalEnvironment() }),
+    );
+    expect(() => loadConversationState(tmpDir, "abc123def0")).toThrow(/missing or invalid createdAt/);
+  });
+
+  it("loadConversationState throws for an unparseable createdAt", () => {
+    mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
+    writeFileSync(
+      statePath(tmpDir, "abc123def0"),
+      JSON.stringify({ id: "abc123def0", createdAt: "not-a-date", executionEnvironment: personalEnvironment() }),
+    );
+    expect(() => loadConversationState(tmpDir, "abc123def0")).toThrow(/missing or invalid createdAt/);
+  });
+
+  it("loadConversationState throws for a non-string title", () => {
+    mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
+    writeFileSync(
+      statePath(tmpDir, "abc123def0"),
+      JSON.stringify({
+        id: "abc123def0",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        title: 123,
+        executionEnvironment: personalEnvironment(),
+      }),
+    );
+    expect(() => loadConversationState(tmpDir, "abc123def0")).toThrow(/invalid title/);
+  });
+
+  it("loadConversationState throws for a non-object state file", () => {
+    mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
+    writeFileSync(statePath(tmpDir, "abc123def0"), JSON.stringify("not an object"));
+    expect(() => loadConversationState(tmpDir, "abc123def0")).toThrow(/state is not an object/);
+  });
+
+  it("loadConversationState throws when state.json id field is wrong", () => {
+    mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
+    writeFileSync(
+      statePath(tmpDir, "abc123def0"),
+      JSON.stringify({
+        id: "0000000000",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        executionEnvironment: personalEnvironment(),
+      }),
+    );
+    expect(() => loadConversationState(tmpDir, "abc123def0")).toThrow(/state file id mismatch/);
+  });
+
+  it("saveConversationState validates required fields", () => {
+    const bad = { id: "abc123def0", executionEnvironment: personalEnvironment() } as ConversationState;
+    expect(() => saveConversationState(tmpDir, bad)).toThrow(/missing or invalid createdAt/);
+  });
+
+  it("saveConversationState writes only canonical fields", () => {
+    const state: ConversationState = {
+      id: "abc123def0",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      title: "test",
+      executionEnvironment: personalEnvironment(),
+    };
+    mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
+    saveConversationState(tmpDir, state);
+    const raw = JSON.parse(readFileSync(statePath(tmpDir, "abc123def0"), "utf-8"));
+    expect(raw).toEqual(state);
+    expect(raw).not.toHaveProperty("chatId");
   });
 });

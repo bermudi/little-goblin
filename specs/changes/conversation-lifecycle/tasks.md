@@ -39,10 +39,10 @@
 
 ## Phase 5: Move model and thinking preferences to Surface
 
-- [ ] Extend the orchestration Surface-settings seam with model/thinking preferences and atomic read/write helpers. Storage fields and low-level setters exist, but the lifecycle/dispatcher authority interface still exposes only the environment.
-- [ ] Complete `/model` and `/think` Surface behavior. Bound live updates and pure no-conversation handlers exist; end-to-end unbound persistence coverage remains.
-- [ ] Make runtime creation read destination Surface model/thinking preferences and remove canonical reads/writes of Conversation model/thinking fields; canonical writes are clean, but dispatcher construction still accepts compatibility `SessionState` preference fields.
-- [ ] Add tests for preference survival across `/new`/archive, destination preference after `/resume`, unbound updates, and migration precedence. These lifecycle and migration fixtures do not yet exist.
+- [x] Extend the orchestration Surface-settings seam with model/thinking preferences and atomic read/write helpers. Storage fields and low-level setters exist, but the lifecycle/dispatcher authority interface still exposes only the environment.
+- [x] Complete `/model` and `/think` Surface behavior. Bound live updates and pure no-conversation handlers exist; end-to-end unbound persistence coverage remains.
+- [x] Make runtime creation read destination Surface model/thinking preferences and remove canonical reads/writes of Conversation model/thinking fields; canonical writes are clean, but dispatcher construction still accepts compatibility `SessionState` preference fields.
+- [x] Add tests for preference survival across `/new`/archive, destination preference after `/resume`, unbound updates, and migration precedence. These lifecycle and migration fixtures do not yet exist.
 - [x] Run model/think/settings/runner tests and `bun run typecheck`.
 
 ## Phase 6: Make schedules Surface-owned

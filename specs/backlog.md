@@ -2,6 +2,18 @@
 
 Parked scope and open questions. Items graduate to litespec changes when implementation begins.
 
+## Parked changes
+
+Specced-but-unstarted changes live in `specs/parked/` (out of the active `specs/changes/` scan) to honor the one-change WIP rule. Each retains its proposal/design/specs/tasks; graduate by `git mv specs/parked/<name> specs/changes/<name>` when its turn in the implementation train arrives. Do not archive these — they are not implemented.
+
+- **`acp-external-agents`** — external ACP runner. Deferred until the core train (transcript provenance → lifecycle) lands; research/build only after.
+- **`delegated-work-ownership`** — deferred; depends on `conversation-lifecycle` and `acp-external-agents`. Patch migration-vs-reconciliation wording when revisited.
+- **`inner-life`** — direction sound; deferred until `conversation-lifecycle` is accepted.
+- **`pi-native-skill-layout`** — deferred; change its startup migration to an offline versioned migration before revival.
+- **`skill-catalog-resolution`** — deferred until lifecycle runtime assembly stabilizes.
+- **`surface-skill-policy`** — replan after lifecycle; do not create the proposed parallel policy coordinator.
+- **`subagent-skill-inheritance`** — deferred; current spec still uses stale paths and startup migration.
+
 ## Deferred
 
 - **Architecture review 2026-07-05 — amber candidates deferred from the deepening program.** Five "Worth exploring" candidates were parked in favor of the five Strong candidates that now have active changes. They graduate individually when ready:

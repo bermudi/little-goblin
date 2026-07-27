@@ -25,7 +25,7 @@ The transcript module remains the only JSONL parser and producer. It exposes nor
 
 `TranscriptProvenanceMigrator` implements filesystem migration step 3 in the canonical append-only list owned by `src/migrate.ts`, advancing `CURRENT_STATE_VERSION` from 2 to 3 only after success. It runs only through explicit `bun run migrate` while the service is stopped, after canonical Surface and execution-environment migration and before the Conversation lifecycle migration step. It scans every non-internal transcript and computes and validates all candidate outputs before the first write. Changed files are replaced atomically with line order and all fields preserved.
 
-A backfill is allowed only when persisted historical evidence proves a unique event/file source. Existing valid per-entry provenance is proof. Explicit historical migration records may also be proof. These are not proof by themselves:
+A backfill is allowed only when persisted historical evidence proves a unique event/file source. In this deployment the only such evidence is an entry's own existing valid per-entry `sourceSurfaceId`; no named historical-evidence store exists, and legacy `SessionState` carries only creation-time `chatId`/`topicId`, which is explicitly insufficient. These are not proof by themselves:
 
 - a current binding;
 - Conversation creation `chatId`/`topicId` metadata;
@@ -33,7 +33,7 @@ A backfill is allowed only when persisted historical evidence proves a unique ev
 - an Execution Environment;
 - numeric chat similarity.
 
-Legacy `/resume` could move history without event boundaries, so stamping current state would be false precision. Unknown or invalid provenance remains absent and is reported as bounded counts without transcript content.
+Legacy `/resume` could move history without event boundaries, so stamping current state would be false precision. Unknown or invalid provenance remains absent and is reported as bounded counts without transcript content. Introducing a named historical-evidence store is out of scope and would be a separate change; until then the step preserves valid provenance and leaves everything else null.
 
 The canonical migration command owns the pre-mutation backup and advances `stateVersion` only after the complete step succeeds. The step has no independent completion marker and is not required to accept mixed-generation files, restart after partial writes, or converge idempotently. Failure recovery restores the command's backup under decision 0038.
 
@@ -79,9 +79,9 @@ The model invocation remains only an extraction vehicle. It uses the dependency'
 
 ### Decision: Unknown history remains unknown
 
-**Chosen:** Backfill only from explicit historical evidence; never stamp a transcript from its current binding or creation metadata alone.
+**Chosen:** Preserve existing valid per-entry provenance; never stamp a transcript from its current binding or creation metadata alone. In this deployment no other historical-evidence source exists, so legacy entries without proven provenance stay null with bounded unknown counts.
 
-**Why:** Null provenance reduces default recall but is recoverable through explicit cross-chat search. False attribution silently leaks search results and promotes memory into the wrong scope.
+**Why:** Null provenance reduces default recall but is recoverable through explicit cross-chat search. False attribution silently leaks search results and promotes memory into the wrong scope. A named evidence store could be introduced later, but inventing one now would be speculative.
 
 ### Decision: Rebuild rather than patch transcript rows
 
@@ -100,7 +100,7 @@ The model invocation remains only an extraction vehicle. It uses the dependency'
 ### New files
 
 - **`src/sessions/transcript-provenance-migration.ts`** — Conservative precomputed offline backfill step, atomic rewrites, and bounded diagnostics, registered by the canonical migration runner.
-- **`src/sessions/transcript-provenance-migration.test.ts`** — Proven evidence, invalid/unknown history, no-current-binding guess, complete output, conflicts, and field/order preservation.
+- **`src/sessions/transcript-provenance-migration.test.ts`** — Existing valid provenance preserved, invalid/unknown history left null with bounded counts, no-current-binding guess rejected, complete output, conflicts, and field/order preservation.
 
 ### Transcript and agent writing
 

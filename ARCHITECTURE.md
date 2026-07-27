@@ -219,7 +219,7 @@ Pi context-file auto-discovery stays disabled for the main runtime. Project guid
 
 ### Prompt-file write authority
 
-**TARGET — settled by decision 0039.** Prompt files are **agent-owned**. Goblin MAY rewrite `workspace/SOUL.md`, `AGENTS.md`, and `HEARTBEAT.md` with ordinary file tools during a user-facing turn. Onboarding creates them from templates and never overwrites; `SOUL.md` remains required at startup.
+**CURRENT — settled by decision 0039 and implemented by `agent-owned-prompt-files` (pending review/archive).** Prompt files are **agent-owned**. Goblin MAY rewrite `workspace/SOUL.md`, `AGENTS.md`, and `HEARTBEAT.md` with ordinary file tools during a user-facing turn. Onboarding creates them from templates and never overwrites; `SOUL.md` remains required at startup.
 
 There is no reserved-path write guard. The main runtime already has `bash` active (`src/agent/backend.ts:145-155` passes no tool allowlist; pi's default active set is `[read, bash, edit, write]`), and pi resolves absolute paths, so a guard could prevent accidents but never constitute a boundary. Per decision 0012, real isolation is an OS-level concern.
 
@@ -231,7 +231,7 @@ Three constraints bound the authority:
 
 Recovery is git in `$GOBLIN_HOME/workspace`, documented for the operator. Goblin builds no snapshot or undo store.
 
-The `agent-owned-prompt-files` change amends the canon statements that previously called `SOUL.md` "deployment-owned" (`specs/glossary.md:75`, `specs/canon/agent/spec.md`), implements the bounded Surface notice, filters Goblin's agent-owned prompt files out of subagent bootstrap, and documents the `git-in-workspace/` recovery path.
+The `agent-owned-prompt-files` change amends the canon statements that previously called `SOUL.md` "deployment-owned" (`specs/glossary.md:75`, `specs/canon/agent/spec.md`), implements the bounded Surface notice, filters Goblin's agent-owned prompt files out of subagent bootstrap, and documents the `git-in-workspace/` recovery path. Its artifacts are complete and validated; it awaits review and archive.
 
 ## Skill architecture
 
@@ -253,7 +253,7 @@ Legacy `workspace/skills/` migrates to the Goblin catalog because it historicall
 
 ## Attachment architecture
 
-**TARGET — `personal-attachment-intake` patch.** File attachments derive their destination from the Conversation environment:
+**CURRENT — `personal-attachment-intake` patch (implemented, pending review/archive).** File attachments derive their destination from the Conversation environment:
 
 - personal: `$GOBLIN_HOME/workspace/attachments/`;
 - project: canonical project root, preserving existing project behavior.
@@ -282,7 +282,9 @@ Memory's canonical store is `$GOBLIN_HOME/state/memory/memory.sqlite`. Markdown 
 
 **TARGET — decision 0037, `surface-derived-memory-context`, and `transcript-surface-provenance`.** The current Surface is the sole input to `Surface → ActiveScope`; the projection is not persisted as a mutable setting. A conversation runtime captures that context and frozen summary at runtime creation. Subagents capture the parent runtime's context per invocation rather than resolving a later binding. Equal project roots do not merge memory context.
 
-Each new user-visible transcript entry records event-time `sourceSurfaceId`. Indexing and dreaming use that provenance per entry, so one moved Conversation may contain several source Surfaces without rewriting history. Unknown legacy provenance stays null rather than being guessed from the current binding. CURRENT locator/session-derived memory and file-level transcript chat attribution remain compatibility seams until both changes land.
+Each new user-visible transcript entry records event-time `sourceSurfaceId`. Indexing and dreaming use that provenance per entry, so one moved Conversation may contain several source Surfaces without rewriting history. Unknown legacy provenance stays null rather than being guessed from the current binding.
+
+**CURRENT hazard — lifecycle movement is exposed ahead of provenance-aware indexing and dreaming.** `transcript-surface-provenance` Phase 1 (writer-side provenance) is implemented, but Phases 2–5 are not: `stateVersion` is still 2, `src/memory/transcript-index.ts` still derives one chat ID from legacy session state, and `src/scheduler/loop.ts` still passes a session-derived `ActiveScope` to dreaming. `conversation-lifecycle` has already wired cross-Surface movement into intake and commands. Until transcript Phases 2–5 land, moving a Conversation can expose old entries in the wrong default chat and promote memory into the wrong topic scope. Treat the current branch as not production-ready for lifecycle movement; do not advance lifecycle automation or skill work until transcript provenance is complete.
 
 Dreaming currently uses compatibility internal-session machinery. TARGET architecture uses an explicit Surface-free internal memory context and later removes fake Telegram/session identity through `inner-life`/`visible-dreaming`, never by adding an internal Surface variant.
 
@@ -377,7 +379,7 @@ Migrations compute and validate every transformation before the first write, use
 
 The accepted filesystem sequence is Surface identity (step 1), immutable Execution Environments (step 2), transcript Surface provenance (step 3), then Conversation lifecycle ownership (step 4). Environment step 2 includes personal-workdir promotion and advances the version only after the complete transformation succeeds.
 
-Two remaining changes still specify their own restart-safe startup migration and need a patch stripping that language before they are built: `pi-native-skill-layout` and `delegated-work-ownership`. `immutable-project-environments`, `transcript-surface-provenance`, and `conversation-lifecycle` now specify offline steps in the canonical migration runner.
+Two parked changes still specify their own restart-safe startup migration and need a patch stripping that language before they are revived: `pi-native-skill-layout` and `delegated-work-ownership` (both in `specs/parked/`). `immutable-project-environments`, `transcript-surface-provenance`, and `conversation-lifecycle` now specify offline steps in the canonical migration runner.
 
 ## Current-to-target repair map
 
@@ -438,36 +440,28 @@ A temporary "same-Surface resume" mode was rejected because canonical unbound Co
 
 One ordered sequence, walked end to end. The unit of specification is a litespec change; the unit of delivery is this train.
 
-| # | Change | Tasks | Value delivered |
-|--:|---|--:|---|
-| 1 | `telegram-surface-identity` | 33 | None user-visible. Unblocks everything; removes chat-ID-sign inference |
-| 2 | `immutable-project-environments` | 24 | `/project` becomes set-once; personal CWD moves to `workspace/`; `scratch/workdir` dies |
-| 3 | `personal-attachment-intake` | patch | **First user-visible fix**: captioned uploads stop being silently discarded |
-| 3b | `agent-owned-prompt-files` | — | Decision 0039: canon amendment, prompt-file write notice, subagent bootstrap filter. Not yet specced |
-| 4 | `surface-derived-memory-context` | 27 | Memory scope derives from Surface, not session metadata |
-| 5 | `transcript-surface-provenance` | 29 | Event-time provenance for history that may move |
-| 6 | `conversation-lifecycle` | 48 | Surface/Binding/Conversation split; stale-runner and multi-binding bugs fixed; compatible cross-Surface `/resume` |
-| 7 | `pi-native-skill-layout` | 9 | `workspace/skills/` → `.agents/skills/` |
-| 8 | `skill-catalog-resolution` | 16 | Explicit catalog roots; `skillSources` switch dies |
-| 9 | `surface-skill-policy` | 16 | Per-Surface `/skills` selection |
-| 10 | `subagent-skill-inheritance` | patch | Generic subagents inherit the frozen resolved manifest |
-| 11 | `inner-life` | 25 | Bounded wake/effect authority |
-| 12 | `delegated-work-ownership` | 36 | Attached vs durable work; origin-Surface delivery |
-| 13 | `visible-dreaming` | — | Rewrite against `inner-life`; must not be built from its placeholder |
+| # | Change | Tasks | Status | Value delivered |
+|--:|---|--:|---|---|
+| 1 | `telegram-surface-identity` | 33 | **archived** | None user-visible. Unblocks everything; removes chat-ID-sign inference |
+| 2 | `immutable-project-environments` | 24 | **archived** | `/project` becomes set-once; personal CWD moves to `workspace/`; `scratch/workdir` dies |
+| 3 | `personal-attachment-intake` | patch | **implemented, pending review/archive** | **First user-visible fix**: captioned uploads stop being silently discarded |
+| 3b | `agent-owned-prompt-files` | 12 | **implemented, pending review/archive** | Decision 0039: canon amendment, prompt-file write notice, subagent bootstrap filter |
+| 4 | `surface-derived-memory-context` | 27 | **archived** | Memory scope derives from Surface, not session metadata |
+| 5 | `transcript-surface-provenance` | 29 | **WIP — Phase 1 done (6/29)** | Event-time provenance for history that may move |
+| 6 | `conversation-lifecycle` | 48 | **specced-next, paused behind 5** (8/48 started) | Surface/Binding/Conversation split; stale-runner and multi-binding bugs fixed; compatible cross-Surface `/resume` |
+| 7 | `pi-native-skill-layout` | 9 | **parked** (`specs/parked/`) | `workspace/skills/` → `.agents/skills/` |
+| 8 | `skill-catalog-resolution` | 16 | **parked** | Explicit catalog roots; `skillSources` switch dies |
+| 9 | `surface-skill-policy` | 16 | **parked** | Per-Surface `/skills` selection |
+| 10 | `subagent-skill-inheritance` | patch | **parked** | Generic subagents inherit the frozen resolved manifest |
+| 11 | `inner-life` | 25 | **parked** | Bounded wake/effect authority |
+| 12 | `delegated-work-ownership` | 36 | **parked** | Attached vs durable work; origin-Surface delivery |
+| 13 | `visible-dreaming` | — | **parked (placeholder)** | Rewrite against `inner-life`; must not be built from its placeholder |
 
-Step 1 is a routing-identity refactor. Step 2 is an authority repair with deliberate user-visible changes: `/project` becomes set-once, project assignment starts fresh compatible history, and personal CWD moves to persistent `workspace/`. Step 3 follows immediately as the first direct UX bug fix, stopping captioned uploads from disappearing. Steps 7–9 may be walked in parallel with 4–6 by a second worker; nothing else may.
+Steps 1, 2, and 4 are archived. Steps 3 and 3b are implemented and await review/archive. Step 5 is the active WIP; its Phase 1 (writer-side provenance) is done and Phases 2–5 (migration, provenance-aware indexing, dreaming, startup gate) are next. Step 6 is the fully specced next change but is paused behind step 5 — lifecycle movement is already exposed in intake/commands while provenance-aware indexing and dreaming are not, so advancing lifecycle before transcript Phases 2–5 would compound the hazard. Steps 7–13 are parked under `specs/parked/` (see `specs/backlog.md`); they graduate back into `specs/changes/` only when their predecessor in the train lands.
 
-**WIP limit: one change in progress, one fully specced next.** Everything beyond position 2 in the train stays a paragraph in `specs/backlog.md` until its predecessor lands. Discovery has outpaced closure since 2026-07-22; the only thing that closes the gap is building.
+**WIP limit: one change in progress, one fully specced next.** Everything beyond position 6 in the train stays a paragraph in `specs/backlog.md` (or a parked change) until its predecessor lands. Discovery has outpaced closure since 2026-07-22; the only thing that closes the gap is building.
 
 Storage-layout cleanup and workspace write authority cross this chain and must declare dependencies before implementation.
-
-### Overlapping requirement targets
-
-`litespec validate --changes` currently reports one pair of changes editing the same canonical requirement:
-
-- `immutable-project-environments` and `surface-skill-policy` both target *"Surface settings are keyed by SurfaceId"* (`sessions`)
-
-This is a merge conflict waiting to happen. Whichever lands first wins; the second must be re-based against the new canon before it is built, not after.
 
 ## Feature readiness gate
 

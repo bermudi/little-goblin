@@ -12,8 +12,8 @@
 ## Phase 2: Migrate legacy transcript files conservatively
 
 - [ ] Implement `TranscriptProvenanceMigrator` as canonical offline filesystem step 3 after execution-environment migration and before Conversation lifecycle migration, set `CURRENT_STATE_VERSION = 3`, and use all-file precomputation plus atomic per-file replacement.
-- [ ] Preserve valid existing provenance, every other field, and line order; backfill only when persisted historical evidence proves one canonical event source.
-- [ ] Leave provenance absent when only current binding, creation metadata, shared scope/CWD, or Execution Environment is available; report bounded counts without transcript content.
+- [ ] Preserve valid existing per-entry provenance, every other field, and line order; in this deployment no backfill source beyond an entry's own valid `sourceSurfaceId` exists, so legacy entries without it stay null.
+- [ ] Leave provenance absent when only current binding, creation metadata, shared scope/CWD, or Execution Environment is available; report bounded unknown-provenance counts without transcript content.
 - [ ] Fail loudly on non-`ENOENT` I/O and invalid rewrites before filesystem `stateVersion` advances; do not add an independent marker, startup execution, mixed-generation support, or partial-restart recovery.
 - [ ] Cover migration from filesystem version 2 to 3, exact once-only step execution, explicit evidence, invalid IDs, no-current-binding guess, successful complete output, malformed input, non-`ENOENT` failures, and unchanged order/fields.
 - [ ] Run focused transcript migration tests and `bun run typecheck`.

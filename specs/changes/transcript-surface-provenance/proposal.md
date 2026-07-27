@@ -15,7 +15,7 @@ This change depends on `telegram-surface-identity`, archived `immutable-project-
 - Extend the exclusive transcript seam with optional `sourceSurfaceId` plus an explicit Surface/internal writer context.
 - Require every new user-visible main-runtime and synthetic user-visible entry to carry the runtime capture's canonical SurfaceId. Internal writes use an explicit internal context. A delivered synthetic reply without a current runtime context is not appended rather than looking up a binding.
 - Preserve validated provenance through parsing, display extraction, range reads, logical cursors, and chunking. Malformed legacy provenance remains readable and losslessly preserved for migration/rewrite but is unavailable as typed authority. Moving a Conversation never rewrites prior entries.
-- Add a conservative offline step to the canonical versioned migration runner. It precomputes every transcript rewrite and backfills only from persisted historical evidence proving an event source. Current bindings and creation metadata alone are never historical proof.
+- Add a conservative offline step to the canonical versioned migration runner. It precomputes every transcript rewrite and preserves existing valid per-entry provenance. In this deployment no historical evidence source beyond an entry's own valid `sourceSurfaceId` exists: legacy `SessionState` carries only creation-time `chatId`/`topicId`, which is explicitly insufficient. Legacy entries without proven provenance are left null and reported as bounded unknown counts. The step performs no legacy backfill from a current binding, creation metadata, shared scope, shared Execution Environment, or numeric chat similarity. Introducing a named historical-evidence store is out of scope and would be a separate change. The migration is still valuable: it establishes filesystem version 3 so startup can safely invalidate old guessed memory-index rows.
 
 ### Memory
 
@@ -38,7 +38,7 @@ This change depends on `telegram-surface-identity`, archived `immutable-project-
 ## Non-Goals
 
 - No change to Surface-to-ActiveScope projection, frozen memory capture, memory tool authority, or subagent invocation inheritance; those are provided by `surface-derived-memory-context`.
-- No guessed legacy backfill from a current binding, Conversation creation metadata alone, shared scope, or shared Execution Environment.
+- No guessed legacy backfill from a current binding, Conversation creation metadata alone, shared scope, or shared Execution Environment. No named historical-evidence store is introduced in this deployment; existing valid per-entry provenance is the only proof, so legacy entries without it stay null.
 - No curated-memory key migration, search-ranking change, embedding-provider change, budget change, or public memory-search result schema change.
 - No Conversation movement, lifecycle commands, execution-environment migration, delegated-work delivery, or reachability behavior.
 - No `internal` Surface variant and no synthetic zero-chat SurfaceId.

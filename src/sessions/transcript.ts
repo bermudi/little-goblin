@@ -340,13 +340,13 @@ export interface IndexedTranscriptEntry {
 }
 
 /**
- * A lossless raw transcript line plus its normalized entry, exposed only for
- * the offline provenance migrator. Ordinary readers must use the normalized
- * typed interfaces; this shape preserves the original JSON text so rewrites
- * can leave unchanged records byte-for-byte.
+ * A physical line in a lossless raw transcript document. Exposed only for the
+ * offline provenance migrator. The `line` field preserves the original bytes
+ * (including blank, whitespace-only, or trailing-newline lines) so rewrites can
+ * leave unchanged records byte-for-byte and framing can be reconstructed exactly.
  */
 export interface TranscriptRawLine {
-  /** Zero-based logical line index (non-blank lines only). */
+  /** Zero-based physical line index in the file. */
   lineIndex: number;
   /** Original JSONL text for this line, used for byte-preserving rewrites. */
   line: string;
@@ -356,36 +356,45 @@ export interface TranscriptRawLine {
   entry: TranscriptEntry | null;
 }
 
-function readTranscriptRawLinesInternal(path: string): TranscriptRawLine[] {
+/**
+ * A lossless raw transcript document. Preserves the exact framing of the JSONL
+ * file, including blank lines, whitespace-only lines, malformed lines, missing
+ * final newlines, and multiple trailing newlines. Exposed only for the offline
+ * provenance migrator; ordinary readers must use the normalized typed readers.
+ */
+export interface TranscriptRawDocument {
+  /** Physical lines in file order, including blank and trailing-newline lines. */
+  lines: TranscriptRawLine[];
+}
+
+function parseRawTranscriptLine(line: string): { raw: Record<string, unknown> | null; entry: TranscriptEntry | null } {
+  if (line.trim().length === 0) return { raw: null, entry: null };
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (typeof parsed === "object" && parsed !== null) {
+      const rawObj = parsed as Record<string, unknown>;
+      return { raw: rawObj, entry: parseTranscriptEntry(rawObj) };
+    }
+  } catch {
+    // malformed line
+  }
+  return { raw: null, entry: null };
+}
+
+function readTranscriptRawDocumentInternal(path: string): TranscriptRawDocument {
   let raw: string;
   try {
     raw = readFileSync(path, "utf-8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { lines: [] };
     throw e;
   }
 
-  const lines = raw.split("\n");
-  const result: TranscriptRawLine[] = [];
-  let lineIndex = 0;
-  for (const line of lines) {
-    if (line.trim().length === 0) continue;
-    const index = lineIndex;
-    lineIndex++;
-    try {
-      const parsed = JSON.parse(line) as unknown;
-      if (typeof parsed === "object" && parsed !== null) {
-        const rawObj = parsed as Record<string, unknown>;
-        const entry = parseTranscriptEntry(rawObj);
-        result.push({ lineIndex: index, line, raw: rawObj, entry });
-        continue;
-      }
-    } catch {
-      // malformed line — counted but null
-    }
-    result.push({ lineIndex: index, line, raw: null, entry: null });
-  }
-  return result;
+  const lines = raw.split("\n").map((line, i) => {
+    const { raw, entry } = parseRawTranscriptLine(line);
+    return { lineIndex: i, line, raw, entry };
+  });
+  return { lines };
 }
 
 /**
@@ -395,11 +404,15 @@ function readTranscriptRawLinesInternal(path: string): TranscriptRawLine[] {
  * typing authority for parsing transcript JSONL.
  */
 export function readTranscriptEntries(home: string, sessionId: string): IndexedTranscriptEntry[] {
-  const path = transcriptPath(home, sessionId);
-  return readTranscriptRawLinesInternal(path).map(({ lineIndex, entry }) => ({
-    lineIndex,
-    entry,
-  }));
+  const doc = readTranscriptRawDocumentInternal(transcriptPath(home, sessionId));
+  const result: IndexedTranscriptEntry[] = [];
+  let lineIndex = 0;
+  for (const { line, entry } of doc.lines) {
+    if (line.trim().length === 0) continue;
+    result.push({ lineIndex, entry });
+    lineIndex++;
+  }
+  return result;
 }
 
 export function countTranscriptLines(home: string, sessionId: string): number {
@@ -450,25 +463,35 @@ export function readTranscriptAfter(
 }
 
 /**
- * Migration-only raw-record reader. Returns every non-blank JSONL line with
- * its original text, parsed raw object, and normalized entry. The `line`
- * field preserves the original bytes so rewrites can leave unchanged records
- * untouched. This operation is exported only for `TranscriptProvenanceMigrator`;
- * ordinary readers, indexers, dreaming, commands, and intake must not use it.
+ * Migration-only raw-record reader. Returns a lossless document containing every
+ * physical line (blank, whitespace-only, malformed, valid JSON, trailing
+ * newlines) with its original text, parsed raw object, and normalized entry.
+ * The `line` field preserves the original bytes so rewrites can leave unchanged
+ * records untouched and callers can reconstruct exact framing. This operation is
+ * exported only for `TranscriptProvenanceMigrator`; ordinary readers, indexers,
+ * dreaming, commands, and intake must not use it.
  */
-export function readTranscriptRawLines(home: string, sessionId: string): TranscriptRawLine[] {
-  return readTranscriptRawLinesInternal(transcriptPath(home, sessionId));
+export function readTranscriptRawDocument(home: string, sessionId: string): TranscriptRawDocument {
+  return readTranscriptRawDocumentInternal(transcriptPath(home, sessionId));
 }
 
 /**
- * Migration-only raw-record writer. Replaces the transcript file with the
- * supplied lines. Callers (the offline migrator) are responsible for atomic
- * tmp/rename replacement and precomputing all candidate rewrites.
+ * Serialize a raw document back to its original byte stream. This is the only
+ * serialization primitive that preserves framing: blank lines, missing final
+ * newlines, multiple trailing newlines, and whitespace-only lines are all kept.
  */
-export function writeTranscriptRawLines(home: string, sessionId: string, lines: TranscriptRawLine[]): void {
-  const path = transcriptPath(home, sessionId);
-  const text = lines.map((l) => l.line).join("\n") + (lines.length > 0 ? "\n" : "");
-  writeFileSync(path, text, "utf-8");
+export function serializeTranscriptRawDocument(doc: TranscriptRawDocument): string {
+  return doc.lines.map((l) => l.line).join("\n");
+}
+
+/**
+ * Migration-only raw-record writer. Writes the document to an arbitrary file
+ * path. Callers (the offline migrator) are responsible for writing to a temp
+ * path and performing atomic tmp/rename replacement; this function must not be
+ * used to overwrite the canonical transcript file directly.
+ */
+export function writeTranscriptRawDocument(filePath: string, doc: TranscriptRawDocument): void {
+  writeFileSync(filePath, serializeTranscriptRawDocument(doc), "utf-8");
 }
 
 const DEFAULT_MAX_CHUNK_CHARS = 500;

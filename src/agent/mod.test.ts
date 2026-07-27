@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { heartbeatMdPathForSession, sessionDir, transcriptPath } from "../sessions/paths.ts";
+import { readTranscriptEntries } from "../sessions/transcript.ts";
 import { piAgentDir } from "../pi-host.ts";
 import { agentsMdPath, skillsPath, soulMdPath, workspacePath } from "../workspace/paths.ts";
 import { personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
@@ -269,7 +270,7 @@ import { AgentRunner, ModelNotCapableError, type TurnCallbacks } from "./mod.ts"
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
-import { dmSurface, topicSurface, type Surface } from "../surface.ts";
+import { dmSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
 import { MemoryStore } from "../memory/store.ts";
 import { captureRuntimeMemoryContext } from "../memory/mod.ts";
 import {
@@ -1474,6 +1475,92 @@ describe("AgentRunner", () => {
       expect(parsed.role).toBe("assistant");
       expect(parsed.content).toEqual([{ type: "text", text: "final" }]);
       expect(parsed.model).toBe("gpt-test");
+    });
+
+    it("stamps user, assistant, and toolResult entries from the frozen writer context", async () => {
+      const surface = dmSurface(123);
+      const runner = await makeRunner(tmpDir, [], surface);
+      await runner.prompt("hi", nopCallbacks());
+
+      sessionHolder.emit({
+        type: "message_end",
+        ts: "2026-07-07T10:00:00.000Z",
+        message: { role: "user", content: "hello" },
+      });
+      sessionHolder.emit({
+        type: "message_end",
+        ts: "2026-07-07T10:00:01.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "hi" }],
+          model: "gpt-test",
+        },
+      });
+      sessionHolder.emit({
+        type: "message_end",
+        ts: "2026-07-07T10:00:02.000Z",
+        message: {
+          role: "toolResult",
+          content: "result",
+          toolCallId: "tc-1",
+          toolName: "test_tool",
+        },
+      });
+
+      const entries = readTranscriptEntries(tmpDir, "abcdef1234");
+      expect(entries).toHaveLength(3);
+      expect(entries[0]!.entry!.role).toBe("user");
+      expect(entries[0]!.entry!.sourceSurfaceId).toBe(surfaceId(dmSurface(123)));
+      expect(entries[1]!.entry!.role).toBe("assistant");
+      expect(entries[1]!.entry!.sourceSurfaceId).toBe(surfaceId(dmSurface(123)));
+      expect(entries[2]!.entry!.role).toBe("toolResult");
+      expect(entries[2]!.entry!.sourceSurfaceId).toBe(surfaceId(dmSurface(123)));
+      await runner.dispose();
+    });
+
+    it("keeps old entries on X when a replacement runtime writes on Y", async () => {
+      const runnerX = await makeRunner(tmpDir, [], dmSurface(111));
+      await runnerX.prompt("first", nopCallbacks());
+
+      sessionHolder.emit({
+        type: "message_end",
+        ts: "2026-07-07T10:00:00.000Z",
+        message: { role: "user", content: "from x" },
+      });
+      sessionHolder.emit({
+        type: "message_end",
+        ts: "2026-07-07T10:00:01.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: "reply x" }], model: "gpt-test" },
+      });
+
+      await runnerX.dispose();
+
+      const runnerY = await makeRunner(tmpDir, [], dmSurface(222));
+      await runnerY.prompt("second", nopCallbacks());
+
+      sessionHolder.emit({
+        type: "message_end",
+        ts: "2026-07-07T10:00:02.000Z",
+        message: { role: "toolResult", content: "from y", toolCallId: "tc-1", toolName: "test_tool" },
+      });
+      sessionHolder.emit({
+        type: "message_end",
+        ts: "2026-07-07T10:00:03.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: "reply y" }], model: "gpt-test" },
+      });
+
+      const entries = readTranscriptEntries(tmpDir, "abcdef1234");
+      expect(entries).toHaveLength(4);
+      expect(entries[0]!.entry!.role).toBe("user");
+      expect(entries[0]!.entry!.sourceSurfaceId).toBe(surfaceId(dmSurface(111)));
+      expect(entries[1]!.entry!.role).toBe("assistant");
+      expect(entries[1]!.entry!.sourceSurfaceId).toBe(surfaceId(dmSurface(111)));
+      expect(entries[2]!.entry!.role).toBe("toolResult");
+      expect(entries[2]!.entry!.sourceSurfaceId).toBe(surfaceId(dmSurface(222)));
+      expect(entries[3]!.entry!.role).toBe("assistant");
+      expect(entries[3]!.entry!.sourceSurfaceId).toBe(surfaceId(dmSurface(222)));
+
+      await runnerY.dispose();
     });
   });
 

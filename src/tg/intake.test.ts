@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { attachmentsPath } from "../workspace/paths.ts";
 import type { Bot } from "grammy";
 import type { Config } from "../config.ts";
 import type { AgentRunner } from "../agent/mod.ts";
+import { log } from "../log.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager } from "../sessions/mod.ts";
 import { dmSurface, guestSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
@@ -454,6 +455,70 @@ describe("Telegram intake", () => {
       content: "[system] Sorry, I couldn't download that image.",
       sourceSurfaceId: "tg:v1:dm:1",
     });
+  });
+
+  it("delivers a synthetic reply with no transcript writer context, leaves JSONL unchanged, and logs bounded telemetry", async () => {
+    // A runner with an internal memory context has no Surface authority, so any
+    // synthetic assistant reply must be delivered to the user without stamping
+    // the transcript. This verifies the no-context path never materializes a
+    // Surface context, never mutates the transcript, and emits a telemetry
+    // signal that contains only bounded identifiers.
+    const cfg = makeConfig();
+    const manager = new SessionManager(cfg);
+    const agentRunners = new Map<string, AgentRunner>();
+    const warnSpy = spyOn(log, "warn");
+
+    const internalContext: InternalMemoryContext = { kind: "internal", caller: { kind: "internal" } };
+    const intake = createTelegramIntake({
+      cfg,
+      bot: fakeBot(),
+      subagentRunner: new SubagentRunner(cfg),
+      memoryStore: new MemoryStore(cfg.goblinHome),
+      agentRunners,
+      createMessageBuffer: () => ({}) as MessageBuffer,
+      createAgentRunner: (opts) => {
+        const runner = new MockAgentRunner({ ...opts, memoryContext: internalContext });
+        runners.push(runner);
+        return runner as unknown as AgentRunner;
+      },
+    });
+
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    globalThis.fetch = mock(async () => new Response("", { status: 404 })) as unknown as typeof fetch;
+
+    await intake.handleText(message, "/new");
+    const conversationCount = manager.list().length;
+    const runnerCount = agentRunners.size;
+    const sessionId = manager.list()[0]!.id;
+
+    await intake.handlePhoto(message, fakeApi(), ["file-id"], undefined);
+    await flushMicrotasks();
+
+    // 1. The user-visible reply is still delivered.
+    const replyText = "`[error]` Sorry, I couldn't download that image\\.";
+    expect(replies.some((r) => r === replyText)).toBe(true);
+
+    // 2. The transcript JSONL is unchanged (no synthetic entry appended).
+    const path = transcriptPath(cfg.goblinHome, sessionId);
+    expect(readFileSync(path, "utf-8").trim()).toBe("");
+
+    // 3. No additional binding lookup or runtime creation occurred.
+    expect(manager.list()).toHaveLength(conversationCount);
+    expect(agentRunners.size).toBe(runnerCount);
+
+    // 4. The telemetry signal is bounded and contains no reply text.
+    const noContextCall = warnSpy.mock.calls.find((call) => call[0] === "no-transcript-writer-context");
+    expect(noContextCall).toBeDefined();
+    const payload = noContextCall![1] as Record<string, unknown>;
+    expect(payload.sessionId).toBe(sessionId);
+    expect(payload.surfaceId).toBe("tg:v1:dm:1");
+    expect(payload.surfaceKind).toBe("dm");
+    expect(payload.runnerPresent).toBe(true);
+    expect(payload.runnerKind).toBe("internal");
+    expect("text" in payload).toBe(false);
+
+    warnSpy.mockRestore();
   });
 
   it("falls back to a fresh turn when a steer loses the streaming race", async () => {

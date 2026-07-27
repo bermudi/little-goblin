@@ -30,11 +30,12 @@ import {
 import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
-import type { Surface, SurfaceId } from "../surface.ts";
+import type { Surface } from "../surface.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
 import { AgentBackend, AgentBackendOptions, PiAgentBackend } from "./backend.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
+import type { TranscriptWriterContext } from "../sessions/transcript.ts";
 import { createExternalAgentTool } from "../external-agents/tool.ts";
 import { McpRunner, createMcpTools } from "../mcp/mod.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
@@ -284,6 +285,7 @@ export class AgentRunner {
    * runner is the only way to change its memory context.
    */
   public readonly memoryContext: CapturedMemoryContext | InternalMemoryContext;
+  private readonly transcriptWriterContext: TranscriptWriterContext;
   private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
   private topicNameCache = new Map<string, string | null>();
   private executionEnvironment: ExecutionEnvironment;
@@ -347,6 +349,10 @@ export class AgentRunner {
     this.sessionId = opts.sessionId;
     this.surface = opts.surface;
     this.memoryContext = opts.memoryContext;
+    this.transcriptWriterContext =
+      this.memoryContext.kind === "surface"
+        ? { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId }
+        : { kind: "internal" };
     this.customTools = opts.customTools;
     this.subagentRunner = opts.subagentRunner ?? null;
     this.scheduleStore = opts.scheduleStore;
@@ -505,14 +511,10 @@ export class AgentRunner {
    * Handle AgentSession events, dispatch to callbacks and log to transcript.
    */
   private handleEvent(event: AgentSessionEvent): void {
-    // Append to transcript (compact message-level log). The runtime's
-    // captured memory context is the source of truth for event-time provenance;
-    // the transcript module validates and stamps it.
-    const writerCtx: { kind: "surface"; sourceSurfaceId: SurfaceId } | { kind: "internal" } =
-      this.memoryContext.kind === "surface"
-        ? { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId }
-        : { kind: "internal" };
-    appendTranscriptEntry(this.sessionId, this.cfg.goblinHome, event, writerCtx);
+    // Append to transcript (compact message-level log). The writer context was
+    // frozen at construction from the completed runtime memory context; the
+    // transcript module validates and stamps it.
+    appendTranscriptEntry(this.sessionId, this.cfg.goblinHome, event, this.transcriptWriterContext);
 
     // Update session metrics from backend events. This runs before the
     // callback guard so turn and tool counters are recorded even when no

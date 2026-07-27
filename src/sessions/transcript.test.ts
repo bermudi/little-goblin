@@ -8,8 +8,8 @@ import {
   chunkTranscriptEntry,
   extractEntryText,
   readTranscriptAfter,
-  readTranscriptRawLines,
-  writeTranscriptRawLines,
+  readTranscriptRawDocument,
+  writeTranscriptRawDocument,
   type TranscriptEntry,
   type TranscriptWriterContext,
 } from "./transcript.ts";
@@ -306,17 +306,18 @@ describe("transcript module", () => {
     it("preserves every raw field including invalid provenance on read", () => {
       const path = transcriptPath(tmpDir, sessionId);
       const raw = { ts: "2026-07-07T10:00:00.000Z", role: "user", content: "x", sourceSurfaceId: "not-a-surface-id", extra: [1, 2] };
-      writeFileSync(path, `${JSON.stringify(raw)}\n`, "utf-8");
+      // Intentionally no trailing newline to verify a missing final newline is kept.
+      writeFileSync(path, JSON.stringify(raw), "utf-8");
 
-      const rawLines = readTranscriptRawLines(tmpDir, sessionId);
-      expect(rawLines).toHaveLength(1);
-      expect(rawLines[0]!.line).toBe(JSON.stringify(raw));
-      expect(rawLines[0]!.raw).toEqual(raw);
-      expect(rawLines[0]!.entry).not.toBeNull();
-      expect(rawLines[0]!.entry!.role).toBe("user");
-      expect(rawLines[0]!.entry!.content).toBe("x");
-      expect(rawLines[0]!.entry!.sourceSurfaceId).toBeUndefined();
-      expect(rawLines[0]!.lineIndex).toBe(0);
+      const doc = readTranscriptRawDocument(tmpDir, sessionId);
+      expect(doc.lines).toHaveLength(1);
+      expect(doc.lines[0]!.line).toBe(JSON.stringify(raw));
+      expect(doc.lines[0]!.raw).toEqual(raw);
+      expect(doc.lines[0]!.entry).not.toBeNull();
+      expect(doc.lines[0]!.entry!.role).toBe("user");
+      expect(doc.lines[0]!.entry!.content).toBe("x");
+      expect(doc.lines[0]!.entry!.sourceSurfaceId).toBeUndefined();
+      expect(doc.lines[0]!.lineIndex).toBe(0);
     });
 
     it("round-trips raw lines losslessly", () => {
@@ -326,11 +327,81 @@ describe("transcript module", () => {
       const invalidProv = JSON.stringify({ ts: "2026-07-07T10:00:01.000Z", role: "assistant", content: [{ type: "text", text: "b" }], sourceSurfaceId: "oops" });
       writeFileSync(path, `${good}\n${malformed}\n${invalidProv}\n`, "utf-8");
 
-      const rawLines = readTranscriptRawLines(tmpDir, sessionId);
-      writeTranscriptRawLines(tmpDir, sessionId, rawLines);
+      const doc = readTranscriptRawDocument(tmpDir, sessionId);
+      const tmpPath = `${path}.tmp`;
+      writeTranscriptRawDocument(tmpPath, doc);
 
-      const written = readFileSync(path, "utf-8");
+      const written = readFileSync(tmpPath, "utf-8");
       expect(written).toBe(`${good}\n${malformed}\n${invalidProv}\n`);
+    });
+
+    it("preserves interior blank and whitespace-only lines", () => {
+      const path = transcriptPath(tmpDir, sessionId);
+      const good = JSON.stringify({ ts: "2026-07-07T10:00:00.000Z", role: "user", content: "a" });
+      const whitespace = "   ";
+      const original = `${good}\n\n${whitespace}\n${good}\n`;
+      writeFileSync(path, original, "utf-8");
+
+      const doc = readTranscriptRawDocument(tmpDir, sessionId);
+      const tmpPath = `${path}.blank`;
+      writeTranscriptRawDocument(tmpPath, doc);
+
+      expect(readFileSync(tmpPath, "utf-8")).toBe(original);
+      const nonBlank = doc.lines.filter((l) => l.line.trim().length > 0);
+      expect(nonBlank).toHaveLength(2);
+      expect(nonBlank[0]!.lineIndex).toBe(0);
+      expect(nonBlank[1]!.lineIndex).toBe(3);
+    });
+
+    it("preserves multiple trailing newlines", () => {
+      const path = transcriptPath(tmpDir, sessionId);
+      const good = JSON.stringify({ ts: "2026-07-07T10:00:00.000Z", role: "user", content: "a" });
+      const original = `${good}\n\n\n`;
+      writeFileSync(path, original, "utf-8");
+
+      const doc = readTranscriptRawDocument(tmpDir, sessionId);
+      const tmpPath = `${path}.trail`;
+      writeTranscriptRawDocument(tmpPath, doc);
+
+      expect(readFileSync(tmpPath, "utf-8")).toBe(original);
+      expect(doc.lines).toHaveLength(4);
+      expect(doc.lines[0]!.line).toBe(good);
+      expect(doc.lines[1]!.line).toBe("");
+      expect(doc.lines[2]!.line).toBe("");
+      expect(doc.lines[3]!.line).toBe("");
+    });
+
+    it("preserves a missing final newline", () => {
+      const path = transcriptPath(tmpDir, sessionId);
+      const good = JSON.stringify({ ts: "2026-07-07T10:00:00.000Z", role: "user", content: "a" });
+      writeFileSync(path, good, "utf-8");
+
+      const doc = readTranscriptRawDocument(tmpDir, sessionId);
+      const tmpPath = `${path}.nonl`;
+      writeTranscriptRawDocument(tmpPath, doc);
+
+      expect(readFileSync(tmpPath, "utf-8")).toBe(good);
+      expect(doc.lines).toHaveLength(1);
+    });
+
+    it("preserves malformed lines and unknown/invalid provenance unchanged", () => {
+      const path = transcriptPath(tmpDir, sessionId);
+      const malformed = "this is not json";
+      const invalidProv = JSON.stringify({ ts: "2026-07-07T10:00:00.000Z", role: "assistant", content: [{ type: "text", text: "b" }], sourceSurfaceId: "oops" });
+      const unknown = JSON.stringify({ ts: "2026-07-07T10:00:01.000Z", role: "user", content: "x", sourceSurfaceId: "tg:v2:dm:1" });
+      const original = `${malformed}\n${invalidProv}\n${unknown}`;
+      writeFileSync(path, original, "utf-8");
+
+      const doc = readTranscriptRawDocument(tmpDir, sessionId);
+      const tmpPath = `${path}.malformed`;
+      writeTranscriptRawDocument(tmpPath, doc);
+
+      expect(readFileSync(tmpPath, "utf-8")).toBe(original);
+      expect(doc.lines[0]!.raw).toBeNull();
+      expect(doc.lines[1]!.entry!.sourceSurfaceId).toBeUndefined();
+      expect(doc.lines[2]!.entry!.sourceSurfaceId).toBeUndefined();
+      expect(doc.lines[1]!.raw!.sourceSurfaceId).toBe("oops");
+      expect(doc.lines[2]!.raw!.sourceSurfaceId).toBe("tg:v2:dm:1");
     });
   });
 

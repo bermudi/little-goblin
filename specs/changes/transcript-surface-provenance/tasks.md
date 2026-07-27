@@ -2,12 +2,12 @@
 
 ## Phase 1: Stamp event-time transcript provenance
 
-- [ ] Verify dependency APIs provide canonical Surface codecs and immutable runtime `sourceSurfaceId` capture before changing transcript writes.
-- [ ] Extend `src/sessions/transcript.ts` with optional typed `sourceSurfaceId` and a required Surface/internal writer context; validate canonical Surface IDs at the seam and expose migration-only lossless raw records.
-- [ ] Preserve validated provenance through parsing, display extraction, range reads, logical cursor alignment, and per-entry chunking; keep malformed/unknown raw provenance readable and byte-preserved on rewrite without exposing it as typed authority.
-- [ ] Bind main-agent event writes to the runtime's frozen writer context and make every internal write select the explicit internal writer path.
-- [ ] Update intake and command-generated synthetic user-visible replies to use the current runtime's captured writer context, never a binding lookup; deliver but do not append and emit a bounded signal when no context exists.
-- [ ] Route every transcript JSONL read, including voice-command display lookup, through the transcript module; add transcript/agent/intake tests for all entry roles, synthetic replies, and X-to-Y movement; prove no-context delivery leaves JSONL unchanged, consults neither binding nor runtime creation, and emits bounded `no-transcript-writer-context`; cover internal omission, malformed/absent legacy values, lossless raw round trips, and chunk propagation; run focused tests and `bun run typecheck`.
+- [x] Verify dependency APIs provide canonical Surface codecs and immutable runtime `sourceSurfaceId` capture before changing transcript writes.
+- [x] Extend `src/sessions/transcript.ts` with optional typed `sourceSurfaceId` and a required Surface/internal writer context; validate canonical Surface IDs at the seam and expose migration-only lossless raw records.
+- [x] Preserve validated provenance through parsing, display extraction, range reads, logical cursor alignment, and per-entry chunking; keep malformed/unknown raw provenance readable and byte-preserved on rewrite without exposing it as typed authority.
+- [x] Bind main-agent event writes to the runtime's frozen writer context and make every internal write select the explicit internal writer path.
+- [x] Update intake and command-generated synthetic user-visible replies to use the current runtime's captured writer context, never a binding lookup; deliver but do not append and emit a bounded signal when no context exists.
+- [x] Route every transcript JSONL read, including voice-command display lookup, through the transcript module; add transcript/agent/intake tests for all entry roles, synthetic replies, and X-to-Y movement; prove no-context delivery leaves JSONL unchanged, consults neither binding nor runtime creation, and emits bounded `no-transcript-writer-context`; cover internal omission, malformed/absent legacy values, lossless raw round trips, and chunk propagation; run focused tests and `bun run typecheck`.
 
 ## Phase 2: Migrate legacy transcript files conservatively
 

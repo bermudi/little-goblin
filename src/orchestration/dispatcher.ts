@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
-import { log } from "../log.ts";
+import { boundedError, log } from "../log.ts";
 import { AgentRunner, type TurnCallbacks } from "../agent/mod.ts";
 import {
   MemoryStore,
@@ -55,6 +55,22 @@ function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number
  */
 export interface SurfaceSettings {
   effectiveEnvironment(surface: Surface): ExecutionEnvironment;
+}
+
+/**
+ * Lifecycle-provided guard that runs work while excluding binding replacement.
+ *
+ * The implementation is owned by `ConversationLifecycle`; the dispatcher only
+ * consumes the seam. The guard verifies that the requested Surface is still bound
+ * to the expected conversation before running `fn`, and holds the transition
+ * exclusion until `fn` resolves.
+ */
+export interface CurrentBindingGuard {
+  withCurrentBinding<T>(
+    surface: Surface,
+    conversationId: string,
+    fn: () => Promise<T>,
+  ): Promise<T>;
 }
 
 export interface TurnDispatcherOptions {
@@ -153,6 +169,7 @@ export class TurnDispatcher {
   private readonly externalAgentRunner: ExternalAgentRunner | undefined;
   private readonly mcpRunner: McpRunner | undefined;
   private bindingInspector: ((surface: Surface) => string | undefined) | undefined;
+  private currentBindingGuard: CurrentBindingGuard | undefined;
 
   constructor(options: TurnDispatcherOptions) {
     this.cfg = options.cfg;
@@ -183,6 +200,14 @@ export class TurnDispatcher {
    */
   setBindingInspector(inspector: (surface: Surface) => string | undefined): void {
     this.bindingInspector = inspector;
+  }
+
+  /**
+   * Set or replace the lifecycle-provided current-binding guard. The caller
+   * (intake) wires this after the conversation lifecycle is constructed.
+   */
+  setCurrentBindingGuard(guard: CurrentBindingGuard): void {
+    this.currentBindingGuard = guard;
   }
 
   /**
@@ -240,6 +265,70 @@ export class TurnDispatcher {
       dreamingPipeline: this.dreamingPipeline,
     };
     return this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
+  }
+
+  /**
+   * Revive a persisted subagent from the current runner's captured Surface
+   * authority. Commands only parse/reply and call this method; they never join
+   * runner, capture, and binding state themselves.
+   *
+   * The operation runs under the lifecycle-provided current-binding guard.
+   * The guard verifies the requested Surface is still bound to the Conversation,
+   * the registered runner is current for that Surface, and its captured
+   * `sourceSurfaceId` matches. The revived invocation is attached before the
+   * guard is released, so a concurrent lifecycle replacement waits for
+   * attachment and then cancels the subagent through the normal disposal path
+   * if it chooses.
+   *
+   * Throws before `AgentSession` creation when the runner is absent, stale,
+   * or Surface-backed capture mismatch.
+   */
+  async reviveSubagent(
+    surface: Surface,
+    session: SessionState,
+    subagentId: string,
+    prompt: string,
+  ): Promise<string> {
+    if (!this.currentBindingGuard) {
+      throw new Error("TurnDispatcher: current binding guard not wired");
+    }
+
+    const expectedSurfaceId = surfaceId(surface);
+    let resolveAttached!: () => void;
+    const attached = new Promise<void>((resolve) => {
+      resolveAttached = resolve;
+    });
+
+    return this.currentBindingGuard.withCurrentBinding(surface, session.id, async () => {
+      const runner = this.runners.get(session.id);
+      if (runner === undefined) {
+        throw new Error(
+          `no current runner for session ${session.id}; cannot revive subagent '${subagentId}'`,
+        );
+      }
+      if (runner.memoryContext.kind !== "surface") {
+        throw new Error(
+          `runner memory context is not Surface-backed for session ${session.id}`,
+        );
+      }
+      if (runner.memoryContext.authority.sourceSurfaceId !== expectedSurfaceId) {
+        throw new Error(
+          `runner capture sourceSurfaceId mismatch for session ${session.id}: ${runner.memoryContext.authority.sourceSurfaceId} !== ${expectedSurfaceId}`,
+        );
+      }
+
+      const result = this.subagentRunner.revive(
+        runner.memoryContext,
+        subagentId,
+        prompt,
+        undefined,
+        () => {
+          resolveAttached();
+        },
+      );
+      await attached;
+      return result;
+    });
   }
 
   /**
@@ -322,12 +411,22 @@ export class TurnDispatcher {
       await this.disposeRunner(session.id, creationPromise);
     }
 
-    const memoryContext = await captureRuntimeMemoryContext({
-      surface,
-      caller: { kind: "main" },
-      store: this.memoryStore,
-      getTopicName: this.getTopicName,
-    });
+    let memoryContext: CapturedMemoryContext;
+    try {
+      memoryContext = await captureRuntimeMemoryContext({
+        surface,
+        caller: { kind: "main" },
+        store: this.memoryStore,
+        getTopicName: this.getTopicName,
+      });
+    } catch (err) {
+      log.error("runtime capture failed", {
+        sessionId: session.id,
+        surfaceId: expectedSurfaceId,
+        ...boundedError(err),
+      });
+      throw new Error("runtime capture failed");
+    }
 
     // Recheck 1 — in-flight identity: if the in-flight entry no longer holds
     // this creation's promise, a disposal or newer (different-surface)

@@ -8,7 +8,9 @@ import { type SessionState, runtimeSessionWithPreferences } from "../sessions/mo
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { createConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
-import { dmSurface, type Surface } from "../surface.ts";
+import type { TurnDispatcher } from "../orchestration/dispatcher.ts";
+import { dmSurface, surfaceId, type Surface } from "../surface.ts";
+import type { CapturedMemoryContext } from "../memory/mod.ts";
 import { MetricsStore, type MetricsEvent, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { AgentRunner } from "../agent/mod.ts";
@@ -95,9 +97,28 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
   const runtimeHost = { disposeRuntime: async () => {} };
   const lifecycle = createConversationLifecycle(cfg.goblinHome, runtimeHost);
   const conversationStore = new ConversationStore(cfg.goblinHome);
+  const surface = dmSurface(123);
+  const dispatcher: TurnDispatcher = {
+    cancelPending: mock(async () => false),
+    reviveSubagent: async (_surface: Surface, _session: SessionState, id: string, prompt: string) => {
+      const parentCapture: CapturedMemoryContext = {
+        kind: "surface",
+        authority: {
+          kind: "surface",
+          sourceSurfaceId: surfaceId(surface),
+          activeScope: { chatId: surface.chatId, topicScope: "general" },
+        },
+        caller: { kind: "main" },
+        frozenSummary: null,
+        frozenUserBody: "",
+        frozenActiveMemoryBody: "",
+      };
+      return await subagentRunner.revive(parentCapture, id, prompt);
+    },
+  } as unknown as TurnDispatcher;
   return {
     cfg,
-    surface: dmSurface(123),
+    surface,
     interrupt,
     lifecycle,
     conversationStore,
@@ -106,6 +127,7 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
       conversationStore,
       cfg,
       subagentRunner,
+      dispatcher,
       tryResolveModel: mock(() => undefined),
       interruptAndCascade: interrupt as unknown as DispatchDeps["interruptAndCascade"],
     },
@@ -372,12 +394,13 @@ describe("handleCommand", () => {
     expect(result.reply).toBe("Failed to cancel subagent `missing`: Subagent not found");
   });
 
-  it("revives a subagent with an explicit prompt", async () => {
+  it("revives a subagent with an active conversation and dispatcher", async () => {
     const revive = mock(async () => "done");
     const subagentRunner = makeSubagentRunner({ revive });
     const harness = makeHarness(baseCascade(), subagentRunner);
+    const session = await createSession(harness);
 
-    const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive abc inspect again", harness }));
+    const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive abc inspect again", session, harness }));
     expect(result.reply).toBe("Revived subagent `abc`:\ndone");
     const calls = revive.mock.calls as unknown as unknown[][];
     expect(calls.length).toBe(1);
@@ -405,9 +428,10 @@ describe("handleCommand", () => {
       revive: mock(async () => { throw new Error("Subagent not found"); }),
     });
     const harness = makeHarness(baseCascade(), subagentRunner);
+    const session = await createSession(harness);
 
-    const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive missing try again", harness }));
-    expect(result.reply).toBe("Failed to revive subagent `missing`: Subagent not found");
+    const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive missing try again", session, harness }));
+    expect(result.reply).toBe("Failed to revive subagent `missing`.");
   });
 
   it("/voice returns handled when voice is sent", async () => {

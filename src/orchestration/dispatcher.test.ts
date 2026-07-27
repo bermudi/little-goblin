@@ -3,10 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TurnDispatcher } from "./dispatcher.ts";
+import type { CurrentBindingGuard } from "./dispatcher.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
-import type { CapturedMemoryContext } from "../memory/mod.ts";
+import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
 import type { SessionState } from "../sessions/mod.ts";
 import type { Config } from "../config.ts";
 import type { Surface } from "../surface.ts";
@@ -22,6 +23,7 @@ class FakeAgentRunner {
   _isPrompting = false;
   _isAbortTimedOut = false;
   _modelName = "";
+  memoryContext: CapturedMemoryContext | InternalMemoryContext | undefined = undefined;
 
   get isStreaming(): boolean {
     return this._isStreaming;
@@ -58,6 +60,12 @@ class FakeAgentRunner {
 
 class FakeSubagentRunner {
   cancelled: string[] = [];
+  lastReviveArgs: {
+    parentCapture: CapturedMemoryContext | InternalMemoryContext;
+    id: string;
+    prompt: string;
+    onStatusUpdate?: (msg: string) => void;
+  } | null = null;
 
   cancelBySession(sessionId: string): Promise<void> {
     this.cancelled.push(sessionId);
@@ -76,8 +84,18 @@ class FakeSubagentRunner {
     return Promise.resolve();
   }
 
-  revive(_id: string, _prompt: string): Promise<string> {
-    return Promise.resolve("");
+  revive(
+    parentCapture: CapturedMemoryContext | InternalMemoryContext,
+    id: string,
+    prompt: string,
+    _onStatusUpdate?: (msg: string) => void,
+    onAttached?: () => void | Promise<void>,
+  ): Promise<string> {
+    this.lastReviveArgs = { parentCapture, id, prompt };
+    if (onAttached) {
+      onAttached();
+    }
+    return Promise.resolve("revived result");
   }
 }
 
@@ -145,6 +163,28 @@ function buildDispatcher(
 
 function makeSession(id: string, env: ExecutionEnvironment = personalEnvironment()): SessionState {
   return { id, createdAt: new Date().toISOString(), chatId: 1, executionEnvironment: env } as SessionState;
+}
+
+class FakeBindingGuard implements CurrentBindingGuard {
+  private readonly bindings = new Map<string, string>();
+
+  bind(surface: Surface, conversationId: string): void {
+    this.bindings.set(surfaceId(surface), conversationId);
+  }
+
+  async withCurrentBinding<T>(
+    surface: Surface,
+    conversationId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const bound = this.bindings.get(surfaceId(surface));
+    if (bound !== conversationId) {
+      throw new Error(
+        `binding rotated: ${bound ?? "unbound"} !== ${conversationId}`,
+      );
+    }
+    return fn();
+  }
 }
 
 /** A minimal fake CapturedMemoryContext for tests that exercise dispatcher logic. */
@@ -264,10 +304,11 @@ describe("TurnDispatcher async runner creation", () => {
   ): {
     dispatcher: TurnDispatcher;
     runners: Map<string, AgentRunner>;
+    subagentRunner: FakeSubagentRunner;
     createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][];
   } {
     const runners = new Map<string, AgentRunner>();
-    const subagentRunner = new FakeSubagentRunner() as unknown as SubagentRunner;
+    const subagentRunner = new FakeSubagentRunner();
     const surfaceSettings: SurfaceSettings = {
       effectiveEnvironment: (_surface: Surface): ExecutionEnvironment => personalEnvironment(),
     };
@@ -276,13 +317,14 @@ describe("TurnDispatcher async runner creation", () => {
       createAgentRunnerCalls.push(o);
       const runner = new FakeAgentRunner();
       runner.disposeCalled = false;
+      runner.memoryContext = o.memoryContext;
       return runner as unknown as AgentRunner;
     });
 
     const dispatcher = new TurnDispatcher({
       cfg: {} as Config,
       surfaceSettings,
-      subagentRunner,
+      subagentRunner: subagentRunner as unknown as SubagentRunner,
       memoryStore,
       agentRunners: runners,
       createMessageBuffer: (_surface: Surface, _session?: SessionState): TurnSink => ({
@@ -299,7 +341,7 @@ describe("TurnDispatcher async runner creation", () => {
       bindingInspector: opts.bindingInspector,
     });
 
-    return { dispatcher, runners, createAgentRunnerCalls };
+    return { dispatcher, runners, subagentRunner, createAgentRunnerCalls };
   }
 
   it("getOrCreateRunner is async and returns a runner with a captured memory context", async () => {
@@ -473,5 +515,78 @@ describe("TurnDispatcher async runner creation", () => {
     const secondCreateIdx = disposeTimeline.indexOf("create:abc123def0:2");
     expect(firstDisposeIdx).toBeGreaterThanOrEqual(0);
     expect(secondCreateIdx).toBeGreaterThan(firstDisposeIdx);
+  });
+
+  it("reviveSubagent delegates to subagentRunner.revive with the runner's captured Surface authority", async () => {
+    await memoryStore.add("general", "test fact");
+    const { dispatcher, subagentRunner } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+
+    const guard = new FakeBindingGuard();
+    guard.bind(surface, session.id);
+    dispatcher.setCurrentBindingGuard(guard);
+
+    await dispatcher.getOrCreateRunner(session, surface);
+    const result = await dispatcher.reviveSubagent(surface, session, "sub-1", "follow-up");
+
+    expect(result).toBe("revived result");
+    expect(subagentRunner.lastReviveArgs).not.toBeNull();
+    expect(subagentRunner.lastReviveArgs!.id).toBe("sub-1");
+    expect(subagentRunner.lastReviveArgs!.prompt).toBe("follow-up");
+    expect(subagentRunner.lastReviveArgs!.parentCapture.kind).toBe("surface");
+    if (subagentRunner.lastReviveArgs!.parentCapture.kind === "surface") {
+      expect(subagentRunner.lastReviveArgs!.parentCapture.authority.sourceSurfaceId).toBe(surfaceId(surface));
+    }
+  });
+
+  it("reviveSubagent rejects when no runner exists for the session", async () => {
+    const { dispatcher } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+
+    const guard = new FakeBindingGuard();
+    guard.bind(surface, session.id);
+    dispatcher.setCurrentBindingGuard(guard);
+
+    await expect(dispatcher.reviveSubagent(surface, session, "sub-1", "go")).rejects.toThrow(
+      /no current runner/,
+    );
+  });
+
+  it("reviveSubagent rejects when the binding has rotated", async () => {
+    await memoryStore.add("general", "test fact");
+    const { dispatcher } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+
+    const guard = new FakeBindingGuard();
+    guard.bind(surface, "other-session-id");
+    dispatcher.setCurrentBindingGuard(guard);
+
+    await dispatcher.getOrCreateRunner(session, surface);
+    await expect(dispatcher.reviveSubagent(surface, session, "sub-1", "go")).rejects.toThrow(
+      /binding rotated/,
+    );
+  });
+
+  it("reviveSubagent rejects when the runner's captured Surface does not match the requested surface", async () => {
+    await memoryStore.add("general", "test fact");
+    const { dispatcher } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+
+    const guard = new FakeBindingGuard();
+    guard.bind(dmSurface(1), session.id);
+    dispatcher.setCurrentBindingGuard(guard);
+
+    await dispatcher.getOrCreateRunner(session, dmSurface(1));
+
+    // The conversation binding rotates to Surface 2, but the in-memory runner
+    // still carries a Surface 1 capture. The guard passes the new Surface, and
+    // the runner-capture mismatch is detected inside.
+    guard.bind(dmSurface(2), session.id);
+    await expect(dispatcher.reviveSubagent(dmSurface(2), session, "sub-1", "go")).rejects.toThrow(
+      /sourceSurfaceId mismatch/,
+    );
   });
 });

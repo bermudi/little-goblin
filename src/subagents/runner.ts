@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.ts";
-import { log } from "../log.ts";
+import { boundedError, log } from "../log.ts";
 import {
   memoryDir,
   MemoryStore,
@@ -149,6 +149,7 @@ export class SubagentRunner {
       typeof authority.sourceSurfaceId !== "string" ||
       authority.activeScope === undefined
     ) {
+      log.warn("subagent spawn rejected: invalid authority", boundedError({ authority }));
       throw new Error("Subagent spawn requires a SurfaceMemoryAuthority");
     }
     const caller: SurfaceMemoryCaller =
@@ -285,6 +286,7 @@ export class SubagentRunner {
     id: string,
     prompt: string,
     onStatusUpdate?: (message: string) => void,
+    onAttached?: () => void | Promise<void>,
   ): Promise<string> {
     if (this.disposed) {
       throw new Error("SubagentRunner is disposed");
@@ -309,6 +311,7 @@ export class SubagentRunner {
       typeof parentCapture.authority.sourceSurfaceId !== "string"
     ) {
       this.revivesInProgress.delete(id);
+      log.warn("subagent revive rejected: invalid parent authority", boundedError(parentCapture));
       throw new Error("Revival requires a Surface-backed parent memory context");
     }
 
@@ -394,6 +397,9 @@ export class SubagentRunner {
       result,
     };
     this.activeSubagents.set(id, instance);
+    if (onAttached) {
+      await onAttached();
+    }
 
     // Update meta to reflect the revival — clear stale terminal fields.
     // Best-effort: stale meta is cosmetic; the session file is the

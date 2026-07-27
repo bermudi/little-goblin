@@ -12,6 +12,7 @@ import { isValidConversationId } from "../sessions/conversation.ts";
 import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
 import { log } from "../log.ts";
 import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
+import type { CurrentBindingGuard } from "./dispatcher.ts";
 import { withLifecycleTransitionLock } from "./lifecycle-transition-lock.ts";
 import type { ProjectAssignmentIntent } from "../sessions/project-assignment.ts";
 import {
@@ -34,7 +35,7 @@ export interface SurfaceSettings {
  * Public seam for callers (intake, commands, scheduler). Every method that
  * changes a binding runs under the lifecycle transition lock internally.
  */
-export interface ConversationLifecycle {
+export interface ConversationLifecycle extends CurrentBindingGuard {
   inspect(surface: Surface): ConversationState | null;
   resolveOrStart(surface: Surface): Promise<ConversationState>;
   rotate(surface: Surface): Promise<ConversationState>;
@@ -332,6 +333,24 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   listResumable(surface: Surface): ConversationState[] {
     const env = this.settings.effectiveEnvironment(surface);
     return this.store.list(env);
+  }
+
+  async withCurrentBinding<T>(
+    surface: Surface,
+    conversationId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    return withLifecycleTransitionLock(async () => {
+      const key = surfaceId(surface);
+      const bindings = this.bindings.load();
+      const currentId = bindings.surfaces[key];
+      if (currentId !== conversationId) {
+        throw new Error(
+          `binding rotated: surface ${key} is bound to ${currentId ?? "unbound"}, expected ${conversationId}`,
+        );
+      }
+      return fn();
+    });
   }
 
   private findBoundSurface(bindings: BindingsFile, conversationId: string): SurfaceId | undefined {

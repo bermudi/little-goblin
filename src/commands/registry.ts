@@ -2,7 +2,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Bot, Context } from "grammy";
 import type { Config } from "../config.ts";
-import { log } from "../log.ts";
+import { boundedError, log } from "../log.ts";
 import type { Surface, SessionState, ConversationId, ConversationStore } from "../sessions/mod.ts";
 import { runtimeSessionWithPreferences } from "../sessions/mod.ts";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
@@ -14,8 +14,6 @@ import {
 } from "../sessions/topic-settings.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { ResolvedModel } from "../agent/models.ts";
-import { captureRuntimeMemoryContext, MemoryStore } from "../memory/mod.ts";
-import type { CapturedMemoryContext } from "../memory/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import type { TurnDispatcher } from "../orchestration/dispatcher.ts";
 import { projectRootOf } from "../sessions/environment.ts";
@@ -444,33 +442,19 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText }) => {
   }
 };
 
-const reviveHandler: CommandHandler = async ({ deps, rawText, surface, existingRunner }) => {
+const reviveHandler: CommandHandler = async ({ deps, rawText, surface, session }) => {
   const args = parseReviveSubagentArgs(rawText);
   if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY, [], "info");
-
-  let parentCapture: CapturedMemoryContext;
-  if (existingRunner !== null && existingRunner.memoryContext.kind === "surface") {
-    parentCapture = existingRunner.memoryContext;
-  } else {
-    const store = new MemoryStore(deps.cfg.goblinHome);
-    try {
-      parentCapture = await captureRuntimeMemoryContext({
-        surface,
-        caller: { kind: "main" },
-        store,
-      });
-    } finally {
-      store.close();
-    }
+  if (session === null || deps.dispatcher === undefined) {
+    return replied("No active conversation to revive from.", [], "error");
   }
 
   try {
-    const result = await deps.subagentRunner.revive(parentCapture, args.id, args.prompt);
+    const result = await deps.dispatcher.reviveSubagent(surface, session, args.id, args.prompt);
     return replied(result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`, [], "ok");
   } catch (err) {
-    const message = errorMessage(err);
-    log.error("revive failed", { id: args.id, error: message });
-    return replied(`Failed to revive subagent \`${args.id}\`: ${message}`, [], "error");
+    log.error("revive failed", { id: args.id, ...boundedError(err) });
+    return replied(`Failed to revive subagent \`${args.id}\`.`, [], "error");
   }
 };
 

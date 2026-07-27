@@ -264,6 +264,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   // in-flight identity check alone cannot detect.
   dispatcher.setBindingInspector((surface) => lifecycle.inspect(surface)?.id);
 
+  // Wire the lifecycle-provided current-binding guard. The dispatcher uses it to
+  // revive subagents under binding-transition exclusion, so a /revive cannot
+  // attach to a Surface whose Conversation has already moved.
+  dispatcher.setCurrentBindingGuard(lifecycle);
+
   function recordAssistantReply(sessionId: string, text: string): void {
     appendAssistantTranscriptEntry(sessionId, cfg.goblinHome, text);
   }

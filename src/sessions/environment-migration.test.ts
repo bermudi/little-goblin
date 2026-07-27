@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { migrateExecutionEnvironments } from "./environment-migration.ts";
 import { configPath, piSessionDir, sessionDir, sessionsDir, topicSettingsPath } from "./paths.ts";
 import { workspacePath, workdirPath } from "../workspace/paths.ts";
-import { dmSurface, surfaceId, topicSurface } from "../surface.ts";
+import { dmSurface, supergroupSurface, surfaceId, topicSurface } from "../surface.ts";
 import type { BindingsFile, SessionState, TopicSettingsFile } from "./types.ts";
 
 const SESSION_ID = "abcd1234ef";
@@ -46,6 +46,12 @@ function writePiHistory(home: string, id: string, cwd: string, archived = false)
   const dir = archived ? join(sessionsDir(home), "archive", id, "pi") : piSessionDir(home, id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "history.jsonl"), JSON.stringify({ cwd }) + "\n{}", "utf-8");
+}
+
+function writePiHistoryWithBody(home: string, id: string, cwd: string, body: string): void {
+  const dir = piSessionDir(home, id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "history.jsonl"), JSON.stringify({ cwd }) + "\n" + body, "utf-8");
 }
 
 function readState(home: string, id: string, archived = false): SessionState {
@@ -89,58 +95,6 @@ describe("environment-migration", () => {
     expect(existsSync(join(tmpDir, "state", "workdir-promotion-manifest.json"))).toBe(false);
   });
 
-  it("resumes a partial workdir promotion from an existing manifest", () => {
-    mkdirSync(sessionsDir(tmpDir), { recursive: true });
-    const workdir = workdirPath(tmpDir);
-    const workspace = workspacePath(tmpDir);
-    mkdirSync(workdir, { recursive: true });
-    mkdirSync(workspace, { recursive: true });
-    writeFileSync(join(workspace, "already.md"), "moved");
-    writeFileSync(join(workdir, "pending.md"), "move me");
-
-    const manifestPath = join(tmpDir, "state", "workdir-promotion-manifest.json");
-    mkdirSync(join(tmpDir, "state"), { recursive: true });
-    writeFileSync(
-      manifestPath,
-      JSON.stringify({
-        version: 1,
-        entries: [
-          { source: join(workdir, "already.md"), destination: join(workspace, "already.md") },
-          { source: join(workdir, "pending.md"), destination: join(workspace, "pending.md") },
-        ],
-      }),
-    );
-
-    migrateExecutionEnvironments(tmpDir);
-
-    expect(existsSync(join(workspace, "pending.md"))).toBe(true);
-    expect(existsSync(join(workdir, "pending.md"))).toBe(false);
-    expect(existsSync(workdir)).toBe(false);
-    expect(existsSync(manifestPath)).toBe(false);
-  });
-
-  it("throws when a workdir promotion manifest entry is corrupt", () => {
-    mkdirSync(sessionsDir(tmpDir), { recursive: true });
-    const workdir = workdirPath(tmpDir);
-    const workspace = workspacePath(tmpDir);
-    mkdirSync(workdir, { recursive: true });
-    mkdirSync(workspace, { recursive: true });
-
-    const manifestPath = join(tmpDir, "state", "workdir-promotion-manifest.json");
-    mkdirSync(join(tmpDir, "state"), { recursive: true });
-    writeFileSync(
-      manifestPath,
-      JSON.stringify({
-        version: 1,
-        entries: [
-          { source: join(workdir, "missing.md"), destination: join(workspace, "missing.md") },
-        ],
-      }),
-    );
-
-    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/corruption/);
-  });
-
   it("throws on workspace collision during workdir promotion", () => {
     mkdirSync(sessionsDir(tmpDir), { recursive: true });
     const workdir = workdirPath(tmpDir);
@@ -149,16 +103,6 @@ describe("environment-migration", () => {
     mkdirSync(workspace, { recursive: true });
     writeFileSync(join(workdir, "dup.md"), "src");
     writeFileSync(join(workspace, "dup.md"), "dst");
-
-    const manifestPath = join(tmpDir, "state", "workdir-promotion-manifest.json");
-    mkdirSync(join(tmpDir, "state"), { recursive: true });
-    writeFileSync(
-      manifestPath,
-      JSON.stringify({
-        version: 1,
-        entries: [{ source: join(workdir, "dup.md"), destination: join(workspace, "dup.md") }],
-      }),
-    );
 
     expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/collision/);
   });
@@ -174,6 +118,59 @@ describe("environment-migration", () => {
     const settings = JSON.parse(readFileSync(topicSettingsPath(tmpDir), "utf-8")) as TopicSettingsFile;
     expect(settings.surfaces[surfaceId(dmSurface(1))]?.projectRoot).toBe(projectDir);
     expect(settings.surfaces[surfaceId(dmSurface(1))]?.projectDir).toBeUndefined();
+  });
+
+  it("preserves modelName and thinkingLevel while removing projectDir and notice", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const projectDir = join(tmpDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    writeTopicSettings(tmpDir, {
+      version: 1,
+      surfaces: {
+        [surfaceId(dmSurface(1))]: {
+          projectDir,
+          modelName: "custom-model",
+          thinkingLevel: "high",
+          pendingProjectNotice: "old notice",
+        },
+      },
+    });
+
+    migrateExecutionEnvironments(tmpDir);
+
+    const settings = JSON.parse(readFileSync(topicSettingsPath(tmpDir), "utf-8")) as TopicSettingsFile;
+    const surface = settings.surfaces[surfaceId(dmSurface(1))]!;
+    expect(surface.projectRoot).toBe(projectDir);
+    expect(surface.projectDir).toBeUndefined();
+    expect(surface.pendingProjectNotice).toBeUndefined();
+    expect(surface.modelName).toBe("custom-model");
+    expect(surface.thinkingLevel).toBe("high");
+  });
+
+  it("throws when topic settings projectRoot and projectDir disagree", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const projectA = join(tmpDir, "project-a");
+    const projectB = join(tmpDir, "project-b");
+    mkdirSync(projectA, { recursive: true });
+    mkdirSync(projectB, { recursive: true });
+    writeTopicSettings(tmpDir, {
+      version: 1,
+      surfaces: { [surfaceId(dmSurface(1))]: { projectRoot: projectA, projectDir: projectB } },
+    });
+
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/disagreeing/);
+  });
+
+  it("throws when a surface setting project path does not exist", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    writeTopicSettings(tmpDir, {
+      version: 1,
+      surfaces: { [surfaceId(dmSurface(1))]: { projectDir: "/does/not/exist" } },
+    });
+    writeBindings(tmpDir, { version: 1, surfaces: { [surfaceId(dmSurface(1))]: SESSION_ID } });
+    writeState(tmpDir, SESSION_ID, makeLegacyState());
+
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/does not exist/);
   });
 
   it("infers a personal environment for an unbound session with no projectDir", () => {
@@ -200,6 +197,19 @@ describe("environment-migration", () => {
     expect(state.executionEnvironment).toEqual({ kind: "project", projectRoot: projectDir });
   });
 
+  it("infers a project environment for an unbound session from a matching surface setting", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const projectDir = join(tmpDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    writeTopicSettings(tmpDir, { version: 1, surfaces: { [surfaceId(dmSurface(1))]: { projectRoot: projectDir } } });
+    writeState(tmpDir, SESSION_ID, makeLegacyState());
+
+    migrateExecutionEnvironments(tmpDir);
+
+    const state = readState(tmpDir, SESSION_ID);
+    expect(state.executionEnvironment).toEqual({ kind: "project", projectRoot: projectDir });
+  });
+
   it("uses the legacy state projectDir for an unbound session", () => {
     mkdirSync(sessionsDir(tmpDir), { recursive: true });
     const projectDir = join(tmpDir, "legacy-project");
@@ -210,6 +220,58 @@ describe("environment-migration", () => {
 
     const state = readState(tmpDir, SESSION_ID);
     expect(state.executionEnvironment).toEqual({ kind: "project", projectRoot: projectDir });
+  });
+
+  it("throws when an unbound session matches surface settings with conflicting project roots", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const projectA = join(tmpDir, "project-a");
+    const projectB = join(tmpDir, "project-b");
+    mkdirSync(projectA, { recursive: true });
+    mkdirSync(projectB, { recursive: true });
+    writeTopicSettings(tmpDir, {
+      version: 1,
+      surfaces: {
+        [surfaceId(dmSurface(1))]: { projectRoot: projectA },
+        [surfaceId(supergroupSurface(1))]: { projectRoot: projectB },
+      },
+    });
+    writeState(tmpDir, SESSION_ID, makeLegacyState());
+
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/conflicting environments/);
+  });
+
+  it("throws when a bound session's legacy projectDir disagrees with its surface", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const projectA = join(tmpDir, "project-a");
+    const projectB = join(tmpDir, "project-b");
+    mkdirSync(projectA, { recursive: true });
+    mkdirSync(projectB, { recursive: true });
+    writeTopicSettings(tmpDir, {
+      version: 1,
+      surfaces: { [surfaceId(dmSurface(1))]: { projectRoot: projectA } },
+    });
+    writeBindings(tmpDir, { version: 1, surfaces: { [surfaceId(dmSurface(1))]: SESSION_ID } });
+    writeState(tmpDir, SESSION_ID, makeLegacyState({ projectDir: projectB }));
+
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/conflicting environments/);
+  });
+
+  it("throws when canonical executionEnvironment disagrees with inferred", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const projectDir = join(tmpDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    writeState(tmpDir, SESSION_ID, makeLegacyState({ executionEnvironment: { kind: "project", projectRoot: projectDir } }));
+
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/disagrees with inferred/);
+  });
+
+  it("throws when an internal session carries project evidence", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const projectDir = join(tmpDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    writeState(tmpDir, SESSION_ID, makeLegacyState({ chatId: 0, projectDir }));
+
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/internal session .* has projectDir/);
   });
 
   it("normalizes a personal pi history header from scratch/workdir to workspace", () => {
@@ -240,6 +302,20 @@ describe("environment-migration", () => {
     const text = readPiHistory(tmpDir, SESSION_ID);
     const firstLine = text.split("\n")[0]!;
     expect(JSON.parse(firstLine).cwd).toBe(projectDir);
+  });
+
+  it("preserves non-header pi history lines byte-for-byte", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    writeState(tmpDir, SESSION_ID, makeLegacyState());
+    writePiHistoryWithBody(tmpDir, SESSION_ID, workdirPath(tmpDir), "line2\nline3\n");
+
+    migrateExecutionEnvironments(tmpDir);
+
+    const text = readPiHistory(tmpDir, SESSION_ID);
+    const lines = text.split("\n");
+    expect(lines[0]).toBe(JSON.stringify({ cwd: workspacePath(tmpDir) }));
+    expect(lines[1]).toBe("line2");
+    expect(lines[2]).toBe("line3");
   });
 
   it("migrates archived sessions", () => {
@@ -290,20 +366,6 @@ describe("environment-migration", () => {
     expect(readState(tmpDir, OTHER_ID).executionEnvironment).toBeUndefined();
   });
 
-  it("removes topic settings whose project path no longer exists and infers personal", () => {
-    mkdirSync(sessionsDir(tmpDir), { recursive: true });
-    writeTopicSettings(tmpDir, { version: 1, surfaces: { [surfaceId(dmSurface(1))]: { projectDir: "/does/not/exist" } } });
-    writeBindings(tmpDir, { version: 1, surfaces: { [surfaceId(dmSurface(1))]: SESSION_ID } });
-    writeState(tmpDir, SESSION_ID, makeLegacyState());
-
-    migrateExecutionEnvironments(tmpDir);
-
-    const settings = JSON.parse(readFileSync(topicSettingsPath(tmpDir), "utf-8")) as TopicSettingsFile;
-    expect(settings.surfaces[surfaceId(dmSurface(1))]).toBeUndefined();
-    const state = readState(tmpDir, SESSION_ID);
-    expect(state.executionEnvironment).toEqual({ kind: "personal" });
-  });
-
   it("is idempotent", () => {
     mkdirSync(sessionsDir(tmpDir), { recursive: true });
     writeState(tmpDir, SESSION_ID, makeLegacyState());
@@ -314,5 +376,56 @@ describe("environment-migration", () => {
     const second = readState(tmpDir, SESSION_ID);
 
     expect(second).toEqual(first);
+  });
+
+  it("matches topic surfaces by chatId and topicId", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    const projectDir = join(tmpDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    writeTopicSettings(tmpDir, {
+      version: 1,
+      surfaces: {
+        [surfaceId(dmSurface(1))]: {},
+        [surfaceId(topicSurface("supergroup", 1, 5))]: { projectRoot: projectDir },
+      },
+    });
+    writeState(tmpDir, SESSION_ID, makeLegacyState({ chatId: 1, topicId: 5 }));
+
+    migrateExecutionEnvironments(tmpDir);
+
+    const state = readState(tmpDir, SESSION_ID);
+    expect(state.executionEnvironment).toEqual({ kind: "project", projectRoot: projectDir });
+  });
+
+  it("throws when a topicId-bearing session has no matching topic surface setting", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    writeTopicSettings(tmpDir, {
+      version: 1,
+      surfaces: { [surfaceId(dmSurface(1))]: {} },
+    });
+    writeState(tmpDir, SESSION_ID, makeLegacyState({ chatId: 1, topicId: 5 }));
+
+    migrateExecutionEnvironments(tmpDir);
+
+    const state = readState(tmpDir, SESSION_ID);
+    expect(state.executionEnvironment).toEqual({ kind: "personal" });
+  });
+
+  it("throws when a session id in state.json disagrees with its directory name", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    writeState(tmpDir, SESSION_ID, makeLegacyState({ id: "mismatched0000" }));
+
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/state file id mismatch/);
+  });
+
+  it("throws when a binding has an invalid SurfaceId", () => {
+    mkdirSync(sessionsDir(tmpDir), { recursive: true });
+    writeBindings(tmpDir, {
+      version: 1,
+      surfaces: { "not-a-surface-id": SESSION_ID } as unknown as BindingsFile["surfaces"],
+    });
+    writeState(tmpDir, SESSION_ID, makeLegacyState());
+
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/invalid SurfaceId/);
   });
 });

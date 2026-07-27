@@ -14,7 +14,7 @@
  * and aborts the whole run before the applier mutates persisted input.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../log.ts";
@@ -22,7 +22,7 @@ import { workdirPath, workspacePath } from "../workspace/paths.ts";
 import { readPiSessionHeader } from "../pi-host.ts";
 import { loadBindings } from "./bindings.ts";
 import { loadTopicSettings, saveTopicSettings } from "./topic-settings.ts";
-import { loadLegacyState } from "./state.ts";
+import { loadLegacyState, isValidExecutionEnvironment } from "./state.ts";
 import { saveJsonFile } from "./state-file.ts";
 import { sessionsDir, piSessionDir, sessionDir } from "./paths.ts";
 import { surfaceId, parseSurfaceId, type Surface, type SurfaceId } from "../surface.ts";
@@ -34,64 +34,77 @@ import {
   resolveProjectRoot,
   type ExecutionEnvironment,
 } from "./environment.ts";
-import type { SessionState, TopicSettingsFile, BindingsFile } from "./types.ts";
+import type { SessionState, TopicSettings, TopicSettingsFile, BindingsFile } from "./types.ts";
 import { atomicWrite } from "../fs.ts";
 
 function isHexSessionId(id: string): boolean {
   return /^[0-9a-f]{10}$/.test(id);
 }
 
-/** Canonicalize a stored project path. Returns null if it is missing, not a directory, or inaccessible. */
-function canonicalizeProjectPath(raw: string | undefined): string | null {
-  if (!raw) return null;
+/** Canonicalize a project path and require it to be an accessible directory. */
+function canonicalizeProjectPath(raw: string, context: string): string {
+  if (typeof raw !== "string" || raw.length === 0) {
+    throw new Error(`${context} has an empty project path`);
+  }
   try {
     return resolveProjectRoot(raw);
-  } catch {
-    return null;
+  } catch (err) {
+    throw new Error(`${context} project path ${raw} is invalid: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/**
+ * Resolve the canonical project root for a `TopicSettings` value. Both the
+ * canonical `projectRoot` and the legacy `projectDir` must agree when both are
+ * present. Missing/empty values mean "no project". Invalid or disagreeing
+ * values throw.
+ */
+function canonicalSurfaceProjectRoot(value: TopicSettings | undefined, context: string): string | undefined {
+  if (!value) return undefined;
+  const rootRaw = value.projectRoot;
+  const dirRaw = value.projectDir;
+  const hasRoot = typeof rootRaw === "string" && rootRaw.length > 0;
+  const hasDir = typeof dirRaw === "string" && dirRaw.length > 0;
+  if (!hasRoot && !hasDir) return undefined;
+  if (hasRoot && !hasDir) return canonicalizeProjectPath(rootRaw, context);
+  if (!hasRoot && hasDir) return canonicalizeProjectPath(dirRaw, context);
+
+  const rootCanonical = canonicalizeProjectPath(rootRaw!, `${context} projectRoot`);
+  const dirCanonical = canonicalizeProjectPath(dirRaw!, `${context} projectDir`);
+  if (rootCanonical !== dirCanonical) {
+    throw new Error(`${context} has disagreeing projectRoot (${rootRaw}) and projectDir (${dirRaw})`);
+  }
+  return rootCanonical;
 }
 
 /**
  * Canonicalize topic settings: every `projectDir` is resolved to a canonical
  * `projectRoot`; the legacy field and any pending notice are removed.
- * Empty records are dropped. Returns null when no change is required.
+ * Surface records that only carry model/thinking overrides are preserved.
+ * Returns null when no change is required.
  */
 function planTopicSettingsMigration(settings: TopicSettingsFile): TopicSettingsFile | null {
   let changed = false;
   const next: TopicSettingsFile = { version: 1, surfaces: {} };
 
   for (const [key, value] of Object.entries(settings.surfaces)) {
-    const raw = value?.projectRoot ?? value?.projectDir;
-    if (!raw) {
-      // Preserve records that have no project path but may carry model/thinking
-      // overrides, stripping only a possible pending notice.
-      if (value?.pendingProjectNotice !== undefined) {
-        changed = true;
-      }
-      const cleaned = { ...value };
-      delete cleaned.pendingProjectNotice;
-      if (Object.keys(cleaned).length > 0) {
-        next.surfaces[key as SurfaceId] = cleaned;
-      }
-      continue;
-    }
-
-    const canonical = canonicalizeProjectPath(raw);
-    if (canonical === null) {
-      // Drop settings whose project path is missing or inaccessible.
-      changed = true;
-      log.warn("removing topic setting with missing/inaccessible project path", { surfaceId: key, raw });
-      continue;
-    }
-
-    const cleaned: typeof value = {};
+    const root = canonicalSurfaceProjectRoot(value, `topic setting ${key}`);
+    const cleaned: TopicSettings = {};
     if (value?.modelName !== undefined) cleaned.modelName = value.modelName;
     if (value?.thinkingLevel !== undefined) cleaned.thinkingLevel = value.thinkingLevel;
-    cleaned.projectRoot = canonical;
-    next.surfaces[key as SurfaceId] = cleaned;
+    if (root !== undefined) cleaned.projectRoot = root;
 
-    if (canonical !== value?.projectRoot || value?.projectDir !== undefined || value?.pendingProjectNotice !== undefined) {
+    const hadProjectDir = value?.projectDir !== undefined;
+    const hadNotice = value?.pendingProjectNotice !== undefined;
+    const hadRoot = value?.projectRoot !== undefined;
+    const rootChanged = hadRoot && value!.projectRoot !== root;
+
+    if (hadProjectDir || hadNotice || rootChanged || (hadRoot && root === undefined)) {
       changed = true;
+    }
+
+    if (Object.keys(cleaned).length > 0) {
+      next.surfaces[key as SurfaceId] = cleaned;
     }
   }
 
@@ -103,10 +116,7 @@ function applyTopicSettingsMigration(home: string, settings: TopicSettingsFile):
 }
 
 function canonicalProjectRootForSurface(settings: TopicSettingsFile, surface: Surface): string | undefined {
-  const s = settings.surfaces[surfaceId(surface)];
-  const raw = s?.projectRoot ?? s?.projectDir;
-  if (!raw) return undefined;
-  return canonicalizeProjectPath(raw) ?? undefined;
+  return canonicalSurfaceProjectRoot(settings.surfaces[surfaceId(surface)], `surface ${surfaceId(surface)}`);
 }
 
 function collectSessionSurfaces(bindings: BindingsFile): Map<string, Surface[]> {
@@ -116,7 +126,7 @@ function collectSessionSurfaces(bindings: BindingsFile): Map<string, Surface[]> 
     try {
       surface = parseSurfaceId(key);
     } catch {
-      continue;
+      throw new Error(`binding has invalid SurfaceId: ${key}`);
     }
     const arr = map.get(sessionId) ?? [];
     arr.push(surface);
@@ -125,45 +135,102 @@ function collectSessionSurfaces(bindings: BindingsFile): Map<string, Surface[]> 
   return map;
 }
 
+function surfaceMatchesLegacyState(surface: Surface, state: SessionState): boolean {
+  if (surface.chatId !== state.chatId) return false;
+  if (surface.kind === "topic") {
+    return typeof state.topicId === "number" && surface.topicId === state.topicId;
+  }
+  return state.topicId === undefined || state.topicId === null;
+}
+
 function inferSessionEnvironment(
   id: string,
   state: SessionState,
-  surfaces: Surface[],
+  boundSurfaces: Surface[],
   settings: TopicSettingsFile,
 ): ExecutionEnvironment {
-  if (state.chatId === 0) return personalEnvironment();
+  if (typeof state.chatId !== "number" || !Number.isSafeInteger(state.chatId)) {
+    throw new Error(`session ${id} has malformed routing identity: chatId ${String(state.chatId)}`);
+  }
+  if (state.id !== undefined && state.id !== id) {
+    throw new Error(`session ${id} state file id mismatch: ${String(state.id)}`);
+  }
 
-  // Bound surfaces: all must agree on the environment.
-  const roots = new Set<string>();
-  let hasPersonalSurface = false;
-  for (const surface of surfaces) {
-    const root = canonicalProjectRootForSurface(settings, surface);
-    if (root) {
-      roots.add(root);
-    } else {
-      hasPersonalSurface = true;
+  const rootSources = new Map<string, string>();
+  let hasPersonalCandidate = false;
+
+  if (state.chatId === 0) {
+    if (boundSurfaces.length > 0) {
+      throw new Error(`internal session ${id} is bound to ${boundSurfaces.length} surface(s)`);
     }
-  }
-  const rootArray = Array.from(roots);
-  if (rootArray.length > 1 || (rootArray.length === 1 && hasPersonalSurface)) {
-    const details = hasPersonalSurface ? [...rootArray, "<personal>"].join(", ") : rootArray.join(", ");
-    throw new Error(`session ${id} is bound to surfaces with conflicting environments: ${details}`);
-  }
-  if (rootArray.length === 1) {
-    return projectEnvironment(rootArray[0]!);
-  }
-  if (hasPersonalSurface) {
+    const legacyProjectDir = (state as unknown as Record<string, unknown>).projectDir;
+    if (typeof legacyProjectDir === "string" && legacyProjectDir.length > 0) {
+      throw new Error(`internal session ${id} has projectDir ${legacyProjectDir}`);
+    }
+    if (state.executionEnvironment !== undefined && state.executionEnvironment.kind === "project") {
+      throw new Error(`internal session ${id} has project executionEnvironment`);
+    }
     return personalEnvironment();
   }
 
-  // Unbound session: use legacy projectDir from state if present.
   const legacyProjectDir = (state as unknown as Record<string, unknown>).projectDir;
   if (typeof legacyProjectDir === "string" && legacyProjectDir.length > 0) {
-    const canonical = canonicalizeProjectPath(legacyProjectDir);
-    if (canonical !== null) return projectEnvironment(canonical);
+    const canonical = canonicalizeProjectPath(legacyProjectDir, `session ${id} projectDir`);
+    rootSources.set(canonical, `session ${id} projectDir`);
   }
 
-  return personalEnvironment();
+  for (const surface of boundSurfaces) {
+    const root = canonicalProjectRootForSurface(settings, surface);
+    if (root !== undefined) {
+      rootSources.set(root, `surface ${surfaceId(surface)}`);
+    } else {
+      hasPersonalCandidate = true;
+    }
+  }
+
+  if (boundSurfaces.length === 0) {
+    for (const [key, value] of Object.entries(settings.surfaces)) {
+      let surface: Surface;
+      try {
+        surface = parseSurfaceId(key);
+      } catch {
+        throw new Error(`topic setting has invalid SurfaceId: ${key}`);
+      }
+      if (!surfaceMatchesLegacyState(surface, state)) continue;
+      const root = canonicalSurfaceProjectRoot(value, `topic setting ${key}`);
+      if (root !== undefined) {
+        rootSources.set(root, `surface setting ${key}`);
+      } else {
+        hasPersonalCandidate = true;
+      }
+    }
+  }
+
+  let selected: ExecutionEnvironment;
+  if (rootSources.size > 1 || (rootSources.size === 1 && hasPersonalCandidate)) {
+    const roots = Array.from(rootSources.entries()).map(([root, source]) => `${root} (${source})`);
+    const details = hasPersonalCandidate ? [...roots, "<personal>"].join(", ") : roots.join(", ");
+    throw new Error(`session ${id} has conflicting environments: ${details}`);
+  }
+  if (rootSources.size === 1) {
+    selected = projectEnvironment([...rootSources.keys()][0]!);
+  } else {
+    selected = personalEnvironment();
+  }
+
+  if (state.executionEnvironment !== undefined) {
+    if (!isValidExecutionEnvironment(state.executionEnvironment)) {
+      throw new Error(`session ${id} has malformed executionEnvironment`);
+    }
+    if (!environmentsEqual(state.executionEnvironment, selected)) {
+      throw new Error(
+        `session ${id} canonical executionEnvironment ${JSON.stringify(state.executionEnvironment)} disagrees with inferred ${JSON.stringify(selected)}`,
+      );
+    }
+    return state.executionEnvironment;
+  }
+
+  return selected;
 }
 
 /**
@@ -236,68 +303,18 @@ function normalizePiHistoryFile(filePath: string, env: ExecutionEnvironment, hom
   log.info("normalized pi history header", { file: filePath, cwd: normalizedCwd });
 }
 
-interface WorkdirManifestEntry {
+interface WorkdirEntry {
   source: string;
   destination: string;
 }
 
-interface WorkdirPromotionManifest {
-  version: 1;
-  entries: WorkdirManifestEntry[];
-}
-
 export interface WorkdirPromotionPlan {
-  readonly manifest: WorkdirManifestEntry[];
+  readonly entries: WorkdirEntry[];
   readonly sourceDir: string;
   readonly destinationDir: string;
 }
 
-function workdirManifestPath(home: string): string {
-  return join(home, "state", "workdir-promotion-manifest.json");
-}
-
-function readWorkdirManifest(home: string): WorkdirManifestEntry[] | null {
-  const path = workdirManifestPath(home);
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error(`corrupt workdir promotion manifest: ${path}`);
-  }
-  if (parsed === null || typeof parsed !== "object" || !Array.isArray((parsed as Record<string, unknown>).entries)) {
-    throw new Error(`corrupt workdir promotion manifest: ${path}`);
-  }
-  const entries = (parsed as Record<string, unknown>).entries as unknown[];
-  const result: WorkdirManifestEntry[] = [];
-  for (const entry of entries) {
-    if (
-      entry === null ||
-      typeof entry !== "object" ||
-      typeof (entry as Record<string, unknown>).source !== "string" ||
-      typeof (entry as Record<string, unknown>).destination !== "string"
-    ) {
-      throw new Error(`corrupt workdir promotion manifest entry: ${path}`);
-    }
-    result.push({
-      source: (entry as Record<string, unknown>).source as string,
-      destination: (entry as Record<string, unknown>).destination as string,
-    });
-  }
-  return result;
-}
-
-function saveWorkdirManifest(home: string, entries: WorkdirManifestEntry[]): void {
-  saveJsonFile(workdirManifestPath(home), { version: 1, entries } as WorkdirPromotionManifest);
-}
-
-function scanWorkdirEntries(home: string): WorkdirManifestEntry[] {
+function scanWorkdirEntries(home: string): WorkdirEntry[] {
   const src = workdirPath(home);
   if (!existsSync(src)) return [];
 
@@ -320,7 +337,7 @@ function scanWorkdirEntries(home: string): WorkdirManifestEntry[] {
     }
   }
 
-  const entries: WorkdirManifestEntry[] = [];
+  const entries: WorkdirEntry[] = [];
   for (const name of readdirSync(src)) {
     const srcPath = join(src, name);
     const dstPath = join(dst, name);
@@ -336,39 +353,17 @@ function scanWorkdirEntries(home: string): WorkdirManifestEntry[] {
 function planWorkdirPromotion(home: string): WorkdirPromotionPlan | null {
   const src = workdirPath(home);
   const dst = workspacePath(home);
-
-  const manifest = readWorkdirManifest(home) ?? [];
-  const completedSources = new Set<WorkdirManifestEntry["source"]>();
-  for (const entry of manifest) {
-    const srcExists = existsSync(entry.source);
-    const dstExists = existsSync(entry.destination);
-    if (!srcExists && dstExists) {
-      completedSources.add(entry.source);
-      continue;
-    }
-    if (srcExists && !dstExists) {
-      continue;
-    }
-    if (!srcExists && !dstExists) {
-      throw new Error(
-        `workdir promotion corruption: both source and destination missing for ${entry.source} -> ${entry.destination}`,
-      );
-    }
-    throw new Error(`workspace collision while promoting personal workdir: ${entry.destination}`);
-  }
-
-  const newEntries = scanWorkdirEntries(home).filter((e) => !completedSources.has(e.source));
-  const allEntries = manifest.concat(newEntries);
-  if (allEntries.length === 0) return null;
-
-  return { manifest: allEntries, sourceDir: src, destinationDir: dst };
+  const entries = scanWorkdirEntries(home);
+  if (entries.length === 0) return null;
+  return { entries, sourceDir: src, destinationDir: dst };
 }
 
-function applyWorkdirPromotion(home: string, plan: WorkdirPromotionPlan): void {
+function applyWorkdirPromotion(plan: WorkdirPromotionPlan): void {
   mkdirSync(plan.destinationDir, { recursive: true });
-  saveWorkdirManifest(home, plan.manifest);
-  for (const entry of plan.manifest) {
-    if (!existsSync(entry.source)) continue;
+  for (const entry of plan.entries) {
+    if (!existsSync(entry.source)) {
+      throw new Error(`personal workdir entry disappeared during migration: ${entry.source}`);
+    }
     if (existsSync(entry.destination)) {
       throw new Error(`workspace collision while promoting personal workdir: ${entry.destination}`);
     }
@@ -381,11 +376,6 @@ function applyWorkdirPromotion(home: string, plan: WorkdirPromotionPlan): void {
     throw new Error(
       `failed to remove empty personal workdir ${plan.sourceDir}: ${err instanceof Error ? err.message : String(err)}`,
     );
-  }
-  try {
-    unlinkSync(workdirManifestPath(home));
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
 }
 
@@ -400,9 +390,17 @@ function loadArchivedLegacyState(home: string, id: string): SessionState | null 
   }
 }
 
-function saveSessionState(home: string, id: string, state: SessionState, archived: boolean): void {
+function saveSessionState(home: string, id: string, state: SessionState, env: ExecutionEnvironment, archived: boolean): void {
   const dir = archived ? join(sessionsDir(home), "archive", id) : sessionDir(home, id);
-  saveJsonFile(join(dir, "state.json"), state);
+  const next: SessionState = {
+    id: state.id,
+    createdAt: state.createdAt,
+    chatId: state.chatId,
+    topicId: state.topicId,
+    title: state.title,
+    executionEnvironment: env,
+  };
+  saveJsonFile(join(dir, "state.json"), next);
 }
 
 export interface SessionEnvironmentPlan {
@@ -489,23 +487,14 @@ export function applyExecutionEnvironments(home: string, plan: ExecutionEnvironm
   }
 
   if (plan.workdirPromotion !== null) {
-    applyWorkdirPromotion(home, plan.workdirPromotion);
+    applyWorkdirPromotion(plan.workdirPromotion);
   }
 
   for (const sessionPlan of plan.sessionPlans) {
-    const next =
-      sessionPlan.state.executionEnvironment && environmentsEqual(sessionPlan.state.executionEnvironment, sessionPlan.env)
-        ? sessionPlan.state
-        : { ...sessionPlan.state, executionEnvironment: sessionPlan.env };
-    saveSessionState(home, sessionPlan.id, next, sessionPlan.archived);
+    saveSessionState(home, sessionPlan.id, sessionPlan.state, sessionPlan.env, sessionPlan.archived);
 
-    if (sessionPlan.piFiles.length > 0) {
-      const piDir = sessionPlan.archived
-        ? join(sessionsDir(home), "archive", sessionPlan.id, "pi")
-        : piSessionDir(home, sessionPlan.id);
-      for (const f of readdirSync(piDir).filter((f) => f.endsWith(".jsonl"))) {
-        normalizePiHistoryFile(join(piDir, f), sessionPlan.env, home);
-      }
+    for (const filePath of sessionPlan.piFiles) {
+      normalizePiHistoryFile(filePath, sessionPlan.env, home);
     }
   }
 }

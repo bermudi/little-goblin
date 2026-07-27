@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ConversationState, ConversationId, SessionState } from "./types.ts";
 import type { ExecutionEnvironment } from "./environment.ts";
 import { validateConversationId } from "./conversation.ts";
@@ -88,9 +89,18 @@ export function loadState(home: string, id: string): SessionState | null {
 /**
  * Load session state without validating executionEnvironment. Used only by
  * environment migration, which must read legacy state before rewriting it.
+ * Malformed JSON is treated as a migration failure, not a default value.
  */
 export function loadLegacyState(home: string, id: string): SessionState | null {
-  return loadJsonFile<SessionState | null>(statePath(home, id), null);
+  const path = statePath(home, id);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
+  return JSON.parse(raw) as SessionState;
 }
 
 /**

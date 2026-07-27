@@ -219,7 +219,7 @@ Pi context-file auto-discovery stays disabled for the main runtime. Project guid
 
 ### Prompt-file write authority
 
-**CURRENT — settled by decision 0039 and implemented by `agent-owned-prompt-files` (pending review/archive).** Prompt files are **agent-owned**. Goblin MAY rewrite `workspace/SOUL.md`, `AGENTS.md`, and `HEARTBEAT.md` with ordinary file tools during a user-facing turn. Onboarding creates them from templates and never overwrites; `SOUL.md` remains required at startup.
+**CURRENT — settled by decision 0039 and implemented by archived `agent-owned-prompt-files`.** Prompt files are **agent-owned**. Goblin MAY rewrite `workspace/SOUL.md`, `AGENTS.md`, and `HEARTBEAT.md` with ordinary file tools during a user-facing turn. Onboarding creates them from templates and never overwrites; `SOUL.md` remains required at startup.
 
 There is no reserved-path write guard. The main runtime already has `bash` active (`src/agent/backend.ts:145-155` passes no tool allowlist; pi's default active set is `[read, bash, edit, write]`), and pi resolves absolute paths, so a guard could prevent accidents but never constitute a boundary. Per decision 0012, real isolation is an OS-level concern.
 
@@ -231,7 +231,7 @@ Three constraints bound the authority:
 
 Recovery is git in `$GOBLIN_HOME/workspace`, documented for the operator. Goblin builds no snapshot or undo store.
 
-The `agent-owned-prompt-files` change amends the canon statements that previously called `SOUL.md` "deployment-owned" (`specs/glossary.md:75`, `specs/canon/agent/spec.md`), implements the bounded Surface notice, filters Goblin's agent-owned prompt files out of subagent bootstrap, and documents the `git-in-workspace/` recovery path. Its artifacts are complete and validated; it awaits review and archive.
+The archived `agent-owned-prompt-files` change amended the canon statements that previously called `SOUL.md` "deployment-owned" (`specs/glossary.md:75`, `specs/canon/agent/spec.md`), implemented the bounded Surface notice, filtered Goblin's agent-owned prompt files out of subagent bootstrap, and documented the `git-in-workspace/` recovery path.
 
 ## Skill architecture
 
@@ -253,7 +253,7 @@ Legacy `workspace/skills/` migrates to the Goblin catalog because it historicall
 
 ## Attachment architecture
 
-**CURRENT — `personal-attachment-intake` patch (implemented, pending review/archive).** File attachments derive their destination from the Conversation environment:
+**CURRENT — archived `personal-attachment-intake` patch.** File attachments derive their destination from the Conversation environment:
 
 - personal: `$GOBLIN_HOME/workspace/attachments/`;
 - project: canonical project root, preserving existing project behavior.
@@ -266,9 +266,9 @@ Native model document ingestion remains unavailable in the current pi-ai content
 
 ### Scheduled automation
 
-**TARGET — conversation-lifecycle.** Schedules and heartbeat configuration belong to Surface, not Conversation. At dispatch, automation resolves the Surface's current Conversation. An unbound Surface remains pending and does not auto-create history.
+**CURRENT partial / TARGET — conversation-lifecycle.** The target owner for schedules and heartbeat configuration is Surface, not Conversation. At dispatch, automation resolves the Surface's current Conversation. An unbound Surface remains pending and does not auto-create history.
 
-Schedule execution uses the same dispatcher and prompt queue as user turns. A captured occurrence becomes stale if its runtime is invalidated before execution.
+The current scheduler still uses the compatibility `SessionManager`/session-owned schedule seam and session-scoped heartbeat files. Surface-owned schedule records, late binding inspection, pending unbound occurrences, and Surface heartbeat paths remain lifecycle phases 6–7. The intended execution model uses the same dispatcher and prompt queue as user turns; a captured occurrence becomes stale if its runtime is invalidated before execution.
 
 ### Inner life
 
@@ -280,11 +280,11 @@ Schedule execution uses the same dispatcher and prompt queue as user turns. A ca
 
 Memory's canonical store is `$GOBLIN_HOME/state/memory/memory.sqlite`. Markdown under `state/memory/` is export-only.
 
-**TARGET — decision 0037, `surface-derived-memory-context`, and `transcript-surface-provenance`.** The current Surface is the sole input to `Surface → ActiveScope`; the projection is not persisted as a mutable setting. A conversation runtime captures that context and frozen summary at runtime creation. Subagents capture the parent runtime's context per invocation rather than resolving a later binding. Equal project roots do not merge memory context.
+**CURRENT — decision 0037, `surface-derived-memory-context`, and `transcript-surface-provenance`.** The current Surface is the sole input to `Surface → ActiveScope`; the projection is not persisted as a mutable setting. A conversation runtime captures that context and frozen summary at runtime creation. Subagents capture the parent runtime's context per invocation rather than resolving a later binding. Equal project roots do not merge memory context.
 
-Each new user-visible transcript entry records event-time `sourceSurfaceId`. Indexing and dreaming use that provenance per entry, so one moved Conversation may contain several source Surfaces without rewriting history. Unknown legacy provenance stays null rather than being guessed from the current binding.
+Each new user-visible transcript entry records event-time `sourceSurfaceId`. Indexing and dreaming use that provenance per entry, so one moved Conversation may contain several source Surfaces without rewriting history. Unknown legacy provenance stays null rather than being guessed from the current binding. Filesystem `stateVersion` is now 3; the transcript migration, mixed-chat index rebuild, provenance-driven dreaming, startup gate, boundary tests, and two-Surface end-to-end fixture are implemented in `transcript-surface-provenance`.
 
-**CURRENT hazard — lifecycle movement is exposed ahead of provenance-aware indexing and dreaming.** `transcript-surface-provenance` Phase 1 (writer-side provenance) is implemented, but Phases 2–5 are not: `stateVersion` is still 2, `src/memory/transcript-index.ts` still derives one chat ID from legacy session state, and `src/scheduler/loop.ts` still passes a session-derived `ActiveScope` to dreaming. `conversation-lifecycle` has already wired cross-Surface movement into intake and commands. Until transcript Phases 2–5 land, moving a Conversation can expose old entries in the wrong default chat and promote memory into the wrong topic scope. Treat the current branch as not production-ready for lifecycle movement; do not advance lifecycle automation or skill work until transcript provenance is complete.
+**CURRENT partial — conversation-lifecycle.** Cross-Surface movement is wired into intake and commands, and runtime capture/writer authority is current. The remaining lifecycle work is canonical state validation, archive failure ordering, complete command/intake coverage, Surface-owned preferences/schedules/heartbeat, and offline ownership migration step 4. The branch is no longer blocked by transcript provenance, but lifecycle movement should not be called complete until those ownership and migration seams land.
 
 Dreaming currently uses compatibility internal-session machinery. TARGET architecture uses an explicit Surface-free internal memory context and later removes fake Telegram/session identity through `inner-life`/`visible-dreaming`, never by adding an internal Surface variant.
 
@@ -377,7 +377,7 @@ Target startup is fail-before-polling:
 
 Migrations compute and validate every transformation before the first write, use atomic replacement per file, and fail loudly on ambiguity without selecting a winner. They are *not* required to be idempotent, restart-safe, or mixed-generation tolerant; recovery from a failed migration is restoration from backup. The command's backup boundary covers every persisted root a pending step may mutate, not merely `state/` when a step also moves `workspace/` or legacy `scratch/` data.
 
-The accepted filesystem sequence is Surface identity (step 1), immutable Execution Environments (step 2), transcript Surface provenance (step 3), then Conversation lifecycle ownership (step 4). Environment step 2 includes personal-workdir promotion and advances the version only after the complete transformation succeeds.
+The accepted filesystem sequence is Surface identity (step 1), immutable Execution Environments (step 2), transcript Surface provenance (step 3), then Conversation lifecycle ownership (step 4). The current filesystem gate is state version 3; lifecycle migration step 4 will advance it to version 4 only after the complete ownership transformation succeeds. Environment step 2 includes personal-workdir promotion and advances the version only after the complete transformation succeeds.
 
 Two parked changes still specify their own restart-safe startup migration and need a patch stripping that language before they are revived: `pi-native-skill-layout` and `delegated-work-ownership` (both in `specs/parked/`). `immutable-project-environments`, `transcript-surface-provenance`, and `conversation-lifecycle` now specify offline steps in the canonical migration runner.
 
@@ -425,7 +425,7 @@ conversation-lifecycle ─┬─► inner-life ─► visible-dreaming rewrite
                         └─► delegated-work-ownership ◄─ immutable-project-environments, ACP boundary
 ```
 
-`conversation-lifecycle` has four hard prerequisites. Runtime assembly consumes the captured-memory interface from `surface-derived-memory-context`, and user-visible transcript writes consume the writer-context interface from `transcript-surface-provenance`; implementing movement before those interfaces means writing unsafe or throwaway adapters. Attachment intake remains a soft edge. Skill policy is handled by its later train and is not a lifecycle contract.
+`conversation-lifecycle` has four hard prerequisites, and all four are now implemented or complete as canonical contracts. Runtime assembly consumes the captured-memory interface from `surface-derived-memory-context`, and user-visible transcript writes consume the writer-context and event-time provenance interfaces from `transcript-surface-provenance`. The remaining lifecycle work is its own ownership split, automation migration, and compatibility cleanup; attachment intake remains a soft edge. Skill policy is handled by its later train and is not a lifecycle contract.
 
 ### Soft edges (sequencing, not blocking)
 
@@ -444,11 +444,11 @@ One ordered sequence, walked end to end. The unit of specification is a litespec
 |--:|---|--:|---|---|
 | 1 | `telegram-surface-identity` | 33 | **archived** | None user-visible. Unblocks everything; removes chat-ID-sign inference |
 | 2 | `immutable-project-environments` | 24 | **archived** | `/project` becomes set-once; personal CWD moves to `workspace/`; `scratch/workdir` dies |
-| 3 | `personal-attachment-intake` | patch | **implemented, pending review/archive** | **First user-visible fix**: captioned uploads stop being silently discarded |
-| 3b | `agent-owned-prompt-files` | 12 | **implemented, pending review/archive** | Decision 0039: canon amendment, prompt-file write notice, subagent bootstrap filter |
+| 3 | `personal-attachment-intake` | patch | **archived** | **First user-visible fix**: captioned uploads stop being silently discarded |
+| 3b | `agent-owned-prompt-files` | 12 | **archived** | Decision 0039: canon amendment, prompt-file write notice, subagent bootstrap filter |
 | 4 | `surface-derived-memory-context` | 27 | **archived** | Memory scope derives from Surface, not session metadata |
-| 5 | `transcript-surface-provenance` | 29 | **WIP — Phase 1 done (6/29)** | Event-time provenance for history that may move |
-| 6 | `conversation-lifecycle` | 48 | **specced-next, paused behind 5** (8/48 started) | Surface/Binding/Conversation split; stale-runner and multi-binding bugs fixed; compatible cross-Surface `/resume` |
+| 5 | `transcript-surface-provenance` | 29 | **archived** | Event-time provenance for history that may move; state version 3; provenance-aware indexing and dreaming |
+| 6 | `conversation-lifecycle` | 48 | **active WIP** (16/48 reconciled) | Surface/Binding/Conversation split; stale-runner and multi-binding bugs fixed; compatible cross-Surface `/resume`; Surface-owned automation and migration remain |
 | 7 | `pi-native-skill-layout` | 9 | **parked** (`specs/parked/`) | `workspace/skills/` → `.agents/skills/` |
 | 8 | `skill-catalog-resolution` | 16 | **parked** | Explicit catalog roots; `skillSources` switch dies |
 | 9 | `surface-skill-policy` | 16 | **parked** | Per-Surface `/skills` selection |
@@ -457,7 +457,7 @@ One ordered sequence, walked end to end. The unit of specification is a litespec
 | 12 | `delegated-work-ownership` | 36 | **parked** | Attached vs durable work; origin-Surface delivery |
 | 13 | `visible-dreaming` | — | **parked (placeholder)** | Rewrite against `inner-life`; must not be built from its placeholder |
 
-Steps 1, 2, and 4 are archived. Steps 3 and 3b are implemented and await review/archive. Step 5 is the active WIP; its Phase 1 (writer-side provenance) is done and Phases 2–5 (migration, provenance-aware indexing, dreaming, startup gate) are next. Step 6 is the fully specced next change but is paused behind step 5 — lifecycle movement is already exposed in intake/commands while provenance-aware indexing and dreaming are not, so advancing lifecycle before transcript Phases 2–5 would compound the hazard. Steps 7–13 are parked under `specs/parked/` (see `specs/backlog.md`); they graduate back into `specs/changes/` only when their predecessor in the train lands.
+Steps 1–5, including attachment intake and agent-owned prompt files, are archived. Step 6 is now the active WIP: its persistence, runtime host, movement, intake, and command foundation exists, while validation hardening, Surface-owned preferences/automation, and migration step 4 remain. Steps 7–13 are parked under `specs/parked/` (see `specs/backlog.md`); they graduate back into `specs/changes/` only when their predecessor in the train lands.
 
 **WIP limit: one change in progress, one fully specced next.** Everything beyond position 6 in the train stays a paragraph in `specs/backlog.md` (or a parked change) until its predecessor lands. Discovery has outpaced closure since 2026-07-22; the only thing that closes the gap is building.
 

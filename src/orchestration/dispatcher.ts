@@ -61,11 +61,24 @@ export interface SurfaceSettings {
  * Signal supplied to work running under {@link CurrentBindingGuard}. The work
  * calls `attached()` once it has acquired the resources it needs from the current
  * binding; the guard releases the lifecycle transition lock at that point. If
- * the work fails before `attached()` is called, the guard rejects the attachment
- * promise and releases the lock.
+ * the work fails before `attached()` is called, it may call `failed(err)` to
+ * reject the attachment promise and release the lock.
  */
 export interface AttachmentSignal {
+  /** True once `attached()` or `failed()` has been called. */
+  readonly settled: boolean;
   attached(): void;
+  failed(err: unknown): void;
+}
+
+/**
+ * Non-terminal value returned by work running under {@link CurrentBindingGuard}.
+ * The guard releases the transition lock as soon as the work is attached; the
+ * caller is responsible for awaiting the terminal `result` after the guard
+ * resolves.
+ */
+export interface AttachedWork<T> {
+  result: Promise<T>;
 }
 
 /**
@@ -74,15 +87,16 @@ export interface AttachmentSignal {
  * The implementation is owned by `ConversationLifecycle`; the dispatcher only
  * consumes the seam. The guard verifies that the requested Surface is still bound
  * to the expected conversation before running `fn`, holds the transition
- * exclusion only until the work signals attachment, and then returns the work's
- * terminal result. It never awaits the terminal result under the lock.
+ * exclusion only until the work signals attachment, and then returns an
+ * {@link AttachedWork} carrying the terminal result. It never awaits the
+ * terminal result under the lock.
  */
 export interface CurrentBindingGuard {
   withCurrentBinding<T>(
     surface: Surface,
     conversationId: string,
-    fn: (signal: AttachmentSignal) => Promise<T>,
-  ): Promise<T>;
+    fn: (signal: AttachmentSignal) => Promise<AttachedWork<T>>,
+  ): Promise<AttachedWork<T>>;
 }
 
 export interface TurnDispatcherOptions {
@@ -307,7 +321,7 @@ export class TurnDispatcher {
 
     const expectedSurfaceId = surfaceId(surface);
 
-    return this.currentBindingGuard.withCurrentBinding(
+    const attached = await this.currentBindingGuard.withCurrentBinding(
       surface,
       session.id,
       async (signal) => {
@@ -328,15 +342,28 @@ export class TurnDispatcher {
           );
         }
 
-        return this.subagentRunner.revive(
+        const result = this.subagentRunner.revive(
           runner.memoryContext,
           subagentId,
           prompt,
           undefined,
           () => signal.attached(),
         );
+
+        // If revival fails before attachment, reject the attachment gate so the
+        // lifecycle transition lock is released. After attachment, the terminal
+        // result promise is returned to the caller.
+        result.catch((err) => {
+          if (!signal.settled) {
+            signal.failed(err);
+          }
+        });
+
+        return { result };
       },
     );
+
+    return await attached.result;
   }
 
   /**

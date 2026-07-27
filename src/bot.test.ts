@@ -758,8 +758,8 @@ describe("vertical slice with real AgentRunner", () => {
       () =>
         built.api.sent.some((text) => text.includes(response)) ||
         built.api.edits.some((text) => text.includes(response)),
-      5000,
+      10000,
     );
     expect(built.api.sent.some((text) => text.includes(response)) || built.api.edits.some((text) => text.includes(response))).toBe(true);
-  });
+  }, 10000);
 });

@@ -12,7 +12,7 @@ import { isValidConversationId } from "../sessions/conversation.ts";
 import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
 import { log } from "../log.ts";
 import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
-import type { AttachmentSignal, CurrentBindingGuard } from "./dispatcher.ts";
+import type { AttachmentSignal, AttachedWork, CurrentBindingGuard } from "./dispatcher.ts";
 import { withLifecycleTransitionLock } from "./lifecycle-transition-lock.ts";
 import type { ProjectAssignmentIntent } from "../sessions/project-assignment.ts";
 import {
@@ -338,8 +338,8 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async withCurrentBinding<T>(
     surface: Surface,
     conversationId: string,
-    fn: (signal: AttachmentSignal) => Promise<T>,
-  ): Promise<T> {
+    fn: (signal: AttachmentSignal) => Promise<AttachedWork<T>>,
+  ): Promise<AttachedWork<T>> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
       const bindings = this.bindings.load();

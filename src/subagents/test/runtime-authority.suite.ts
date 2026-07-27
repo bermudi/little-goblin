@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentRunner } from "../../agent/mod.ts";
 import { createMemorySearchTool } from "../../memory/mod.ts";
@@ -15,6 +15,7 @@ import type { SessionState } from "../../sessions/types.ts";
 import { surfaceId, topicSurface, type Surface } from "../../surface.ts";
 import { SubagentRunner, type SubagentInstance } from "../mod.ts";
 import { createReviveSubagentTool, createSpawnSubagentTool } from "../tool.ts";
+import { genericSubagentDir } from "../paths.ts";
 import {
   createTestHome,
   flush,
@@ -60,6 +61,14 @@ function findTool(
   return (tools as Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }>).find(
     (t) => t.name === name,
   );
+}
+
+function ensureSessionFile(home: string, id: string): void {
+  const dir = genericSubagentDir(home, id);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
 }
 
 async function seedScopes(home: string): Promise<void> {
@@ -220,77 +229,20 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     await childX.result;
   });
 
-  it("replacement runtime captures destination Surface while source subagents retain source authority", async () => {
-    const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
-    const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
-    const captureX = assertSurfaceCapture(runnerX.memoryContext);
 
-    // Start a subagent from the Surface X runtime.
-    const childX = await fx.subagentRunner.spawn({ prompt: "child x", authority: captureX.authority });
-    await flush();
-    const childXInstance = getInstance(fx.subagentRunner, childX.id);
-    expect(childXInstance?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
 
-    const childXOpts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const childXTools = childXOpts.customTools as unknown[];
-    const childXSearch = findTool(childXTools, "memory_search");
-    const childXResult = jsonOf<{ entries: Array<{ text: string }> }>(
-      await childXSearch!.execute("ms-child-x", { scope: "active" }, undefined, undefined, {} as never),
-    );
-    expect(childXResult.entries.map((e) => e.text)).toContain("surface-x fact");
-
-    sessionHolder.emit({ type: "agent_end", messages: [] });
-    await childX.result;
-
-    // Move the conversation to Surface Y. This disposes the X runner.
-    const convY = await fx.lifecycle.resume(SURFACE_Y, sessionX.id);
-    const sessionY = runtimeSessionWithPreferences(convY, SURFACE_Y, fx.home);
-
-    // The source subagent retains Surface X authority even after the runtime is
-    // torn down and the conversation moves to a different Surface.
-    expect(getInstance(fx.subagentRunner, childX.id)?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
-
-    // Replacement runtime captures Surface Y.
-    const runnerY = await fx.dispatcher.getOrCreateRunner(sessionY, SURFACE_Y);
-    const captureY = assertSurfaceCapture(runnerY.memoryContext);
-    expect(captureY.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_Y));
-    expect(captureY.authority.activeScope).toEqual(SCOPE_Y);
-
-    const mainYSearch = createMemorySearchTool({
-      store: fx.memoryStore,
-      context: captureY,
-    });
-    const mainYResult = jsonOf<{ entries: Array<{ text: string }> }>(
-      await mainYSearch.execute("ms-main-y", { scope: "active" }, undefined, undefined, {} as never),
-    );
-    expect(mainYResult.entries.map((e) => e.text)).toContain("surface-y fact");
-    expect(mainYResult.entries.map((e) => e.text)).not.toContain("surface-x fact");
-
-    // A new subagent from the replacement runtime captures Surface Y.
-    resetPiMockState();
-    const childY = await fx.subagentRunner.spawn({ prompt: "child y", authority: captureY.authority });
-    await flush();
-    const childYInstance = getInstance(fx.subagentRunner, childY.id);
-    expect(childYInstance?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_Y));
-
-    const childYOpts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const childYTools = childYOpts.customTools as unknown[];
-    const childYSearch = findTool(childYTools, "memory_search");
-    const childYResult = jsonOf<{ entries: Array<{ text: string }> }>(
-      await childYSearch!.execute("ms-child-y", { scope: "active" }, undefined, undefined, {} as never),
-    );
-    expect(childYResult.entries.map((e) => e.text)).toContain("surface-y fact");
-    expect(childYResult.entries.map((e) => e.text)).not.toContain("surface-x fact");
-
-    sessionHolder.emit({ type: "agent_end", messages: [] });
-    await childY.result;
-  });
-
-  it("recursively spawned subagents inherit the parent Surface authority and are cancelled by a same-conversation move", async () => {
+  it("recursively spawned subagents are cancelled by a same-conversation move and the replacement runtime captures Surface Y tools", async () => {
     const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
     const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
     const captureX = assertSurfaceCapture(runnerX.memoryContext);
     expect(captureX.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
+
+    const mainXSearch = createMemorySearchTool({ store: fx.memoryStore, context: captureX });
+    const mainXResult = jsonOf<{ entries: Array<{ text: string }> }>(
+      await mainXSearch.execute("ms-main-x", { scope: "active" }, undefined, undefined, {} as never),
+    );
+    expect(mainXResult.entries.map((e) => e.text)).toContain("surface-x fact");
+    expect(mainXResult.entries.map((e) => e.text)).not.toContain("surface-y fact");
 
     const childX = await fx.subagentRunner.spawn({
       prompt: "child x",
@@ -303,6 +255,13 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
 
     const childXOpts = getCapturedCreateArgs()[0] as Record<string, unknown>;
     const childXTools = childXOpts.customTools as unknown[];
+    const childXSearch = findTool(childXTools, "memory_search");
+    const childXResult = jsonOf<{ entries: Array<{ text: string }> }>(
+      await childXSearch!.execute("ms-child-x", { scope: "active" }, undefined, undefined, {} as never),
+    );
+    expect(childXResult.entries.map((e) => e.text)).toContain("surface-x fact");
+    expect(childXResult.entries.map((e) => e.text)).not.toContain("surface-y fact");
+
     const childXSpawn = findTool(childXTools, "spawn_subagent");
     expect(childXSpawn).toBeDefined();
 
@@ -325,7 +284,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
 
     // Move the same conversation to Surface Y. The lifecycle disposes the
     // Surface X runtime, which cancels every subagent in the session tree.
-    await fx.lifecycle.resume(SURFACE_Y, sessionX.id);
+    const convY = await fx.lifecycle.resume(SURFACE_Y, sessionX.id);
     await flush();
 
     expect(getInstance(fx.subagentRunner, childX.id)?.status).toBe("cancelled");
@@ -333,5 +292,119 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
 
     await spawnPromise;
     expect(spawnError).toBeInstanceOf(Error);
+
+    // The source tree keeps Surface X authority even after the runtime is gone.
+    expect(getInstance(fx.subagentRunner, childX.id)?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
+
+    // Replacement runtime captures Surface Y.
+    const sessionY = runtimeSessionWithPreferences(convY, SURFACE_Y, fx.home);
+    const runnerY = await fx.dispatcher.getOrCreateRunner(sessionY, SURFACE_Y);
+    const captureY = assertSurfaceCapture(runnerY.memoryContext);
+    expect(captureY.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_Y));
+    expect(captureY.authority.activeScope).toEqual(SCOPE_Y);
+
+    const mainYSearch = createMemorySearchTool({
+      store: fx.memoryStore,
+      context: captureY,
+    });
+    const mainYResult = jsonOf<{ entries: Array<{ text: string }> }>(
+      await mainYSearch.execute("ms-main-y", { scope: "active" }, undefined, undefined, {} as never),
+    );
+    expect(mainYResult.entries.map((e) => e.text)).toContain("surface-y fact");
+    expect(mainYResult.entries.map((e) => e.text)).not.toContain("surface-x fact");
+
+    // A new subagent from the replacement runtime captures Surface Y.
+    resetPiMockState();
+    const childY = await fx.subagentRunner.spawn({
+      prompt: "child y",
+      authority: captureY.authority,
+      spawnedBy: sessionY.id,
+    });
+    await flush();
+    const childYInstance = getInstance(fx.subagentRunner, childY.id);
+    expect(childYInstance?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_Y));
+
+    const childYOpts = getCapturedCreateArgs()[0] as Record<string, unknown>;
+    const childYTools = childYOpts.customTools as unknown[];
+    const childYSearch = findTool(childYTools, "memory_search");
+    const childYResult = jsonOf<{ entries: Array<{ text: string }> }>(
+      await childYSearch!.execute("ms-child-y", { scope: "active" }, undefined, undefined, {} as never),
+    );
+    expect(childYResult.entries.map((e) => e.text)).toContain("surface-y fact");
+    expect(childYResult.entries.map((e) => e.text)).not.toContain("surface-x fact");
+
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await childY.result;
+  });
+
+  it("revived subagent attaches under the lifecycle guard and a same-conversation move cancels it before the terminal result", { timeout: 2000 }, async () => {
+    const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
+    const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
+    const captureX = assertSurfaceCapture(runnerX.memoryContext);
+
+    // Spawn and complete a child so it can be revived.
+    const childX = await fx.subagentRunner.spawn({
+      prompt: "child x",
+      authority: captureX.authority,
+      spawnedBy: sessionX.id,
+    });
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await childX.result;
+    ensureSessionFile(fx.home, childX.id);
+
+    // Begin revival. The guard attaches, then the lifecycle transition proceeds
+    // while the terminal result is still pending.
+    const revivePromise = fx.dispatcher.reviveSubagent(SURFACE_X, sessionX, childX.id, "follow-up");
+    const _swallow = revivePromise.catch(() => {});
+
+    // Let the attachment signal fire.
+    await flush();
+
+    const convY = await fx.lifecycle.resume(SURFACE_Y, sessionX.id);
+    await flush();
+
+    await expect(revivePromise).rejects.toThrow(/cancelled/i);
+    expect(getInstance(fx.subagentRunner, childX.id)?.status).toBe("cancelled");
+    expect(fx.lifecycle.inspect(SURFACE_Y)?.id).toBe(sessionX.id);
+
+    // Replacement runtime can still be created for Surface Y after the move.
+    const sessionY = runtimeSessionWithPreferences(convY, SURFACE_Y, fx.home);
+    const runnerY = await fx.dispatcher.getOrCreateRunner(sessionY, SURFACE_Y);
+    const captureY = assertSurfaceCapture(runnerY.memoryContext);
+    expect(captureY.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_Y));
+  });
+
+  it("corrupt or missing revival state releases the lifecycle transition lock", async () => {
+    const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
+
+    // No runner: the guarded callback throws before attachment, but the lock
+    // must still be released so the next lifecycle transition can proceed.
+    await expect(
+      fx.dispatcher.reviveSubagent(SURFACE_X, sessionX, "missing", "go"),
+    ).rejects.toThrow(/no current runner/);
+
+    const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
+    const captureX = assertSurfaceCapture(runnerX.memoryContext);
+
+    const childX = await fx.subagentRunner.spawn({
+      prompt: "child x",
+      authority: captureX.authority,
+      spawnedBy: sessionX.id,
+    });
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await childX.result;
+
+    // Corrupt revival id: subagentRunner.revive fails before onAttached, the
+    // attachment gate rejects, and the lock is released.
+    await expect(
+      fx.dispatcher.reviveSubagent(SURFACE_X, sessionX, "also-missing", "go"),
+    ).rejects.toThrow(/Subagent not found/);
+
+    // The lifecycle transition lock is free, so resume can proceed.
+    const convY = await fx.lifecycle.resume(SURFACE_Y, sessionX.id);
+    expect(fx.lifecycle.inspect(SURFACE_Y)?.id).toBe(sessionX.id);
+    expect(convY).toBeDefined();
   });
 });

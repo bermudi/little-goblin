@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TurnDispatcher } from "./dispatcher.ts";
-import type { AttachmentSignal, CurrentBindingGuard } from "./dispatcher.ts";
+import type { AttachmentSignal, AttachedWork, CurrentBindingGuard } from "./dispatcher.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
@@ -177,8 +177,8 @@ class FakeBindingGuard implements CurrentBindingGuard {
   withCurrentBinding<T>(
     surface: Surface,
     conversationId: string,
-    fn: (signal: AttachmentSignal) => Promise<T>,
-  ): Promise<T> {
+    fn: (signal: AttachmentSignal) => Promise<AttachedWork<T>>,
+  ): Promise<AttachedWork<T>> {
     const bound = this.bindings.get(surfaceId(surface));
     if (bound !== conversationId) {
       throw new Error(
@@ -226,7 +226,7 @@ class FakeBindingGuard implements CurrentBindingGuard {
     // not for the terminal result.
     this.tail = released.catch(() => {});
 
-    return resultPromise as Promise<T>;
+    return resultPromise as Promise<AttachedWork<T>>;
   }
 }
 
@@ -668,10 +668,10 @@ describe("TurnDispatcher async runner creation", () => {
     // A concurrent lifecycle transition can proceed while the revived work is
     // still pending.
     let secondEntered = false;
-    const secondPromise = guard.withCurrentBinding(surface, session.id, async (signal) => {
+    const secondPromise = guard.withCurrentBinding<string>(surface, session.id, async (signal) => {
       secondEntered = true;
       signal.attached();
-      return "second";
+      return { result: Promise.resolve("second") };
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(secondEntered).toBe(true);
@@ -703,10 +703,10 @@ describe("TurnDispatcher async runner creation", () => {
 
     // The guard must be fully released despite no attachment signal.
     let released = false;
-    await guard.withCurrentBinding(surface, session.id, async (signal) => {
+    await guard.withCurrentBinding<string>(surface, session.id, async (signal) => {
       released = true;
       signal.attached();
-      return "ok";
+      return { result: Promise.resolve("ok") };
     });
     expect(released).toBe(true);
   });

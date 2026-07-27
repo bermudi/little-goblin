@@ -23,38 +23,15 @@ The system SHALL provide middleware that drops messages from users not in the co
 - **WHEN** a message is received where `ctx.from` is undefined
 - **THEN** the middleware SHALL treat it as non-allowed and drop the message
 
-### Requirement: Derive ChatLocator from grammy context
-
-The system SHALL derive a `ChatLocator` from a grammy Context, distinguishing between DMs and forum topics.
-
-#### Scenario: Direct message context
-
-- **WHEN** `locatorFromCtx()` is called with a DM context
-- **THEN** it SHALL return `{ chatId: <number> }` (no topicId)
-
-#### Scenario: Forum topic message context
-
-- **WHEN** `locatorFromCtx()` is called with a message where `is_topic_message === true` and `message_thread_id` is a number
-- **THEN** it SHALL return `{ chatId: <number>, topicId: <number> }`
-
-#### Scenario: General topic context
-
-- **WHEN** `locatorFromCtx()` is called with a message that has `message_thread_id` but `is_topic_message !== true`
-- **THEN** it SHALL treat it as a DM (no topicId in result)
-
-#### Scenario: Context with no chat
-
-- **WHEN** `locatorFromCtx()` is called with a context where `ctx.chat` is undefined
-- **THEN** it SHALL return `null`
-
 ### Requirement: Export telegram module public API
 
-The system SHALL export the public API from `src/tg/mod.ts`.
+The system SHALL export the public Telegram API from `src/tg/mod.ts`, including `buildAllowlistMiddleware`, `Surface`, `SurfaceId`, `surfaceFromCtx`, the guest-surface normalizer, and the canonical SurfaceId encode/decode functions. `locatorFromCtx` and `ChatLocator` SHALL NOT remain as domain-facing compatibility APIs.
 
-#### Scenario: Module imports from tg/
+#### Scenario: Module imports from tg
 
 - **WHEN** a module imports from `"./tg/mod.ts"`
-- **THEN** it SHALL have access to `buildAllowlistMiddleware` and `locatorFromCtx`
+- **THEN** it SHALL have access to the surface types, normalizers, codecs, and `buildAllowlistMiddleware`
+- **AND** it SHALL NOT need a separate chat-kind flag to use a surface
 
 ### Requirement: Allowlist middleware caches chat member counts with TTL
 
@@ -180,57 +157,54 @@ The allowlist middleware SHALL route messages according to chat type, user allow
 
 ### Requirement: Telegram intake module owns the update-to-turn seam
 
-The system SHALL provide a Telegram intake module (`src/tg/intake.ts`) that owns "Telegram update → session turn" in domain terms. `createTelegramIntake(options)` SHALL return handlers for text, photo, document, voice, audio, and forum-topic-description updates. `src/bot.ts` (`buildBot`) SHALL be a thin grammy adapter: it SHALL construct the `Bot`, mount allowlist middleware, register grammy-side commands, construct a single text coalescer, and wire one-line `bot.on(...)` handlers that each build a `TelegramIntakeMessage` from the grammy `Context` and delegate to the intake module. The `message:text` handler SHALL route through the text coalescer, which is responsible for merging Telegram-split fragments before dispatching to `intake.handleText`. `buildBot` SHALL NOT contain turn-orchestration logic (runner creation, prompt scheduling, steer-vs-queue policy, media download, or project-file saving).
+The system SHALL provide a Telegram intake module (`src/tg/intake.ts`) that owns "Telegram update → session turn" in domain terms. `createTelegramIntake(options)` SHALL return handlers for text, photo, document, voice, audio, forum-topic-description, and guest-message updates. `src/bot.ts` (`buildBot`) SHALL remain a thin grammy adapter: it SHALL normalize each supported update to one complete `Surface`, construct one intake message, and delegate. Intake, command dispatch, orchestration, and session calls SHALL receive `Surface` rather than `ChatLocator` plus routing flags.
 
-The intake module SHALL expose the turn-orchestration seam as the test surface: intake decisions SHALL be exercisable with a fake runner, a fake message (`TelegramIntakeMessage`), and a fake `Bot["api"]`, without constructing a grammy `Bot` or calling `buildBot`.
+The intake seam SHALL remain testable with a fake runner, fake intake message, and fake `Bot["api"]`, without constructing a grammy `Bot`. An intake message SHALL carry `surface: Surface | null`, `reply`, and `prepare`; it SHALL NOT carry `isSupergroup`, `isGuest`, or `threadId` routing fields.
 
-#### Scenario: bot.ts is a thin adapter
+#### Scenario: bot.ts is a thin surface adapter
 
-- **WHEN** `buildBot()` wires grammy handlers
-- **THEN** each `bot.on(...)` handler SHALL build a `TelegramIntakeMessage` and delegate to a single `intake.*` method
-- **AND** the `message:text` handler SHALL route through the text coalescer before delegating to `intake.handleText`
-- **AND** `buildBot` SHALL NOT define runner-creation, prompt-scheduling, steer-vs-queue, media-download, or coalescing-buffer logic inline (the coalescer is a separate module)
+- **WHEN** `buildBot()` wires a supported Telegram update
+- **THEN** the handler SHALL normalize the update to a complete `Surface` and delegate to one intake method
+- **AND** it SHALL NOT reconstruct routing kind in downstream calls
 
 #### Scenario: Intake decisions are testable without grammy
 
 - **WHEN** an intake handler is exercised in a test
-- **THEN** it SHALL accept a `TelegramIntakeMessage` carrying `locator`, `isSupergroup`, `threadId`, `reply`, and `prepare`
-- **AND** it SHALL accept a fake `Bot["api"]` for media download
-- **AND** it SHALL accept injectable `createAgentRunner` and `createMessageBuffer` factories
+- **THEN** it SHALL accept a fake intake message carrying `surface`, `reply`, and `prepare`
+- **AND** injectable runner and sink factories SHALL receive the same complete surface
 - **AND** no grammy `Bot` construction or `handleUpdate` SHALL be required
 
 #### Scenario: Intake module surfaces
 
 - **WHEN** `createTelegramIntake(options)` is called
-- **THEN** it SHALL return `handleText`, `handlePhoto`, `handleDocument`, `handleVoice`, `handleAudio`, and `handleTopicDescription`
+- **THEN** it SHALL return `handleText`, `handlePhoto`, `handleDocument`, `handleVoice`, `handleAudio`, `handleTopicDescription`, and `handleGuestMessage`
 
 ### Requirement: Intake resolves an active turn once per media update
 
-The intake module SHALL resolve an active turn (`resolveActiveTurn`) once per media update: it SHALL resolve the `ChatLocator` to a session via the `SessionManager`, and return an `ActiveTurn` carrying the locator, the session, the bound `projectDir`, and a scheduling closure that obtains (or creates) the session's `AgentRunner` and schedules work through the per-session promise queue. If the locator is null, intake SHALL drop the update with a debug log and no reply. If no session resolves, intake SHALL reply in DMs (no `topicId`) and silently drop in topics.
+The intake module SHALL resolve an active turn once per media update by passing the message's complete `Surface` to the session manager. The resulting active turn SHALL carry the surface, session, bound `projectDir`, and a scheduling closure. If the surface is null, intake SHALL drop the update with a debug log and no reply. If no session resolves, intake SHALL reply only for a DM surface and SHALL silently drop topic surfaces. Auto-creating surface kinds retain their session-layer behavior.
 
-#### Scenario: Media update with no locator is dropped
+#### Scenario: Media update with no surface is dropped
 
-- **WHEN** a media handler receives a message with a null locator
-- **THEN** intake SHALL emit a debug log identifying the kind
+- **WHEN** a media handler receives a message with `surface: null`
+- **THEN** intake SHALL emit a debug log identifying the media kind
 - **AND** SHALL NOT resolve a session or reply
 
 #### Scenario: No active session in a DM
 
-- **WHEN** a media update resolves no session and the locator has no `topicId`
+- **WHEN** a media update on a DM surface resolves no session
 - **THEN** intake SHALL reply `No active session. Use /new to start one.`
 - **AND** SHALL NOT schedule a turn
 
 #### Scenario: No active session in a topic
 
-- **WHEN** a media update resolves no session and the locator has a `topicId`
+- **WHEN** a media update on any topic surface resolves no session
 - **THEN** intake SHALL NOT reply
-- **AND** SHALL emit a debug log identifying the kind and the `chatId`/`topicId`
+- **AND** SHALL emit a debug log containing the canonical `SurfaceId`
 
-#### Scenario: Active turn carries the bound projectDir
+#### Scenario: Active turn preserves its surface
 
-- **WHEN** `resolveActiveTurn` resolves a session for a media update
-- **THEN** the `ActiveTurn` SHALL carry the `projectDir` resolved from the `SessionManager` for that locator
-- **AND** the scheduling closure SHALL obtain the session's `AgentRunner`, creating it if absent
+- **WHEN** a media update resolves an active session
+- **THEN** the active turn, runner factory, output sink, project-setting lookup, and scheduling path SHALL receive the same complete surface
 
 ### Requirement: Intake serializes per-session turns with a stale-runner guard
 
@@ -497,151 +471,99 @@ The allowlist middleware SHALL recognize `guest_message` updates and apply the s
 
 ### Requirement: Guest message intake runs the agent to completion and replies once
 
-The intake module SHALL provide a `handleGuestMessage(message, text)` method that resolves (or auto-creates) a guest session keyed on the foreign `chat.id`, runs the agent to completion against a non-streaming sink, and sends exactly one reply via the `message.replyVia` callback. The reply SHALL be a single `InlineQueryResultArticle` wrapping `InputTextMessageContent(message_text = <full accumulated assistant text>)`. The handler SHALL NOT use `MessageBuffer`'s streaming-edit path, because `answerGuestQuery` accepts one short-lived single-use call per `guest_query_id`.
+The intake module SHALL provide `handleGuestMessage(message, text)` for a message carrying a validated guest `Surface` and a one-shot `replyVia` callback. It SHALL resolve or auto-create the guest session using that surface, run the agent to completion against a non-streaming sink, and call `replyVia` exactly once with a single article containing the accumulated text or a fixed empty-output fallback. It SHALL not use normal Telegram send methods, persist the guest query identifier, or queue behind a busy runner. A busy runner SHALL receive a one-shot busy fallback. A rejected `replyVia` SHALL be warned and swallowed.
 
-The `message` argument SHALL carry `{ chatId: number; replyVia: (result: InlineQueryResult) => Promise<unknown> }`. The `replyVia` callback encapsulates the `answerGuestQuery` call (the `bot.ts` adapter constructs it as `(result) => ctx.answerGuestQuery(result)`, so grammy auto-reads `guest_query_id` from `ctx.guestMessage`). The intake module SHALL NOT extract, name, log, or persist `guest_query_id` — it lives entirely inside the `replyVia` closure and SHALL NOT be written to session state, transcript, logs, or model context.
+#### Scenario: Guest surface produces one reply
 
-The `text` argument SHALL already have the `@botname` mention stripped and a sender prefix applied by the `bot.ts` adapter (the intake does not import grammy's `Context`, so it cannot call `stripBotMention`/`prepareUserContent` itself).
+- **WHEN** `handleGuestMessage` receives a valid guest surface and the turn produces text
+- **THEN** intake SHALL resolve the session with that complete surface
+- **AND** SHALL call `replyVia` exactly once with the full accumulated text
+- **AND** SHALL NOT call a normal send method for the foreign chat
 
-If the agent turn produces no text (empty accumulation), the handler SHALL reply with a short fixed fallback message (e.g. `(no response)`) so the summoner sees the bot acknowledged the mention, rather than silence.
+#### Scenario: Empty agent output sends fallback
 
-If the runner is already streaming when `handleGuestMessage` is invoked, the intake SHALL NOT queue the turn (the `guest_query_id` would expire before a queued turn runs). It SHALL reply immediately via `replyVia` with a short "busy" fallback so the summoner receives an acknowledgment and `guest_query_id` is consumed before it expires.
+- **WHEN** a guest turn completes with empty output
+- **THEN** intake SHALL call `replyVia` once with a fixed acknowledgment fallback
 
-If `replyVia` itself rejects (e.g. expired `guest_query_id`), the intake SHALL log a warning and swallow the rejection — the summoner sees nothing, but the bot does not crash. This is an inherent limitation of the one-shot API.
+#### Scenario: Busy guest runner does not queue
 
-#### Scenario: Allowed guest text summon produces one answerGuestQuery reply
-
-- **WHEN** `handleGuestMessage` is called for a guest message from an allowed summoner (already passed by the middleware)
-- **AND** the agent turn completes with non-empty text
-- **THEN** intake SHALL call `replyVia` exactly once
-- **AND** the `result` SHALL be an `InlineQueryResultArticle` whose `InputTextMessageContent.message_text` equals the full accumulated assistant text
-- **AND** SHALL NOT call `sendMessage` to the foreign `chat.id`
-
-#### Scenario: Empty agent output sends a fallback reply
-
-- **WHEN** `handleGuestMessage` runs the agent to completion
-- **AND** the accumulated assistant text is empty
-- **THEN** intake SHALL call `replyVia` exactly once with a short fixed fallback message
-- **AND** SHALL NOT omit the reply (the summoner MUST see an acknowledgment)
-
-#### Scenario: Busy runner replies with a fallback instead of queueing
-
-- **WHEN** `handleGuestMessage` is invoked for a guest session whose runner is already streaming
-- **THEN** intake SHALL NOT enqueue the turn or call `runner.prompt()`
-- **AND** SHALL call `replyVia` once with a short busy fallback (so `guest_query_id` is consumed before expiry)
+- **WHEN** the guest surface's runner is already streaming
+- **THEN** intake SHALL NOT enqueue or prompt another turn
+- **AND** SHALL call `replyVia` once with a busy fallback
 
 #### Scenario: replyVia rejection is swallowed
 
-- **WHEN** the `replyVia` callback rejects (e.g. expired `guest_query_id`)
-- **THEN** intake SHALL log a warning and swallow the rejection
-- **AND** SHALL NOT re-throw or crash
+- **WHEN** `replyVia` rejects
+- **THEN** intake SHALL log a warning and SHALL NOT rethrow
 
-#### Scenario: guest_query_id is not persisted
+#### Scenario: Guest query identifier stays encapsulated
 
 - **WHEN** a guest turn is handled
-- **THEN** the intake code SHALL NOT name or extract `guest_query_id` into a variable
-- **AND** the id SHALL NOT be written to `state/sessions/<id>/state.json`
-- **AND** SHALL NOT be appended to `state/sessions/<id>/transcript.jsonl`
-- **AND** SHALL NOT appear in any log payload
+- **THEN** the query identifier SHALL remain inside `replyVia`
+- **AND** SHALL NOT appear in state, transcript, model context, or logs
 
-#### Scenario: Guest media message is ignored
+#### Scenario: Guest media remains ignored
 
-- **WHEN** a `guest_message` update arrives carrying media (photo, document, voice, audio) and no `text` field (caption-only media counts as "no text" — captions are out of scope)
+- **WHEN** a guest update contains no text
 - **THEN** intake SHALL drop it with a debug log
 - **AND** SHALL NOT call `replyVia` or run the agent
 
 ### Requirement: buildBot wires a guest_message grammy handler
 
-`buildBot` (`src/bot.ts`) SHALL register `bot.on("guest_message", handler)` (grammy 1.44.0's native filter query for the Bot API 10.0 `guest_message` update type). The handler SHALL read `ctx.guestMessage`, drop media (no `text`) with a debug log, strip the `@botname` mention and prepend a sender prefix via `prepareUserContent(ctx, text)` (the adapter has `ctx`; the intake does not), and call `await intake.handleGuestMessage({ chatId: ctx.guestMessage.chat.id, replyVia: (result) => ctx.answerGuestQuery(result) }, cleanedText)`. The handler SHALL NOT extract `guest_query_id` into a named variable — grammy's `ctx.answerGuestQuery` reads it internally.
+`buildBot` SHALL register a `guest_message` handler that reads the foreign chat, normalizes it to a guest `Surface`, strips the bot mention, applies the sender prefix, and delegates to `handleGuestMessage({ surface, replyVia }, cleanedText)`. The handler SHALL keep the guest query identifier encapsulated in `replyVia` and SHALL not fire for non-guest updates.
 
-#### Scenario: guest_message routed to intake
+#### Scenario: guest_message routed with complete surface
 
-- **WHEN** a `guest_message` update passes the allowlist middleware
-- **THEN** `buildBot`'s guest handler SHALL read `ctx.guestMessage`
-- **AND** SHALL strip the `@botname` mention and prepend a sender prefix via `prepareUserContent`
-- **AND** SHALL delegate to `intake.handleGuestMessage({ chatId, replyVia }, cleanedText)`
+- **WHEN** an allowed text guest update reaches `buildBot`
+- **THEN** the adapter SHALL pass `{ kind: "guest", chatId: guest_message.chat.id }` to intake
+- **AND** SHALL pass a one-shot `replyVia` closure without naming the guest query identifier
 
-#### Scenario: Non-guest updates do not hit the guest handler
+#### Scenario: Non-guest update does not hit guest handler
 
-- **WHEN** a regular `message`, `callback_query`, or other non-guest update arrives
+- **WHEN** a regular message or other non-guest update arrives
 - **THEN** the guest handler SHALL NOT fire
-
-### Requirement: Guest session locator keys on the foreign chat id
-
-For guest turns, the intake module SHALL construct a `ChatLocator` whose `chatId` is `guest_message.chat.id` (the foreign chat the bot is not a member of) and whose `topicId` is `undefined`. The locator SHALL be passed to `SessionManager.resolve(loc, { isGuest: true })` so the session layer auto-creates a guest binding on first summon (mirroring topic/supergroup auto-create, NOT DM-style explicit-create).
-
-#### Scenario: Guest locator is the foreign chat id
-
-- **WHEN** `handleGuestMessage` builds a locator for a guest turn
-- **THEN** the locator SHALL be `{ chatId: <guest_message.chat.id> }` with no `topicId`
-
-#### Scenario: Guest session auto-creates on first summon
-
-- **WHEN** `handleGuestMessage` resolves a locator for a foreign chat that has no prior guest binding
-- **THEN** `SessionManager.resolve(loc, { isGuest: true })` SHALL create and return a new session
-- **AND** SHALL NOT require a prior `/new`
 
 ### Requirement: Text coalescer detects and merges Telegram-split messages
 
-The system SHALL provide a text coalescer (`src/tg/coalesce.ts`) that detects messages Telegram clients split at the 4096-character limit and merges consecutive fragments into a single logical message before dispatching to intake. A fragment SHALL be considered a likely split first-half when its length is at or above `TEXT_SPLIT_THRESHOLD` (4000 chars). When such a fragment arrives, the coalescer SHALL begin buffering; subsequent fragments SHALL be appended to the buffer when they arrive from the same sender within the same chat/topic, with a Telegram `message_id` exactly one greater than the last buffered fragment, and within `TEXT_SPLIT_WINDOW_MS` (1200 ms) of the prior fragment. Appended fragments SHALL extend the trailing debounce window. The coalescer SHALL concatenate buffered fragments with no separator (faithful to Telegram's hard client-side cut). The coalescer SHALL hard-cap the buffer at `MAX_FRAGMENTS` (12) fragments and `MAX_TOTAL_CHARS` (50,000) characters; reaching either cap SHALL trigger an immediate flush before buffering further text.
+The text coalescer SHALL detect and merge Telegram-split messages as before, but its routing key SHALL be `(SurfaceId, fromUserId)`. A long fragment (at least 4000 characters) SHALL open a buffer; adjacent message IDs from the same sender and surface within 1200 ms SHALL append; buffers SHALL concatenate without separators and SHALL retain the first intake message. The existing 12-fragment and 50,000-character caps SHALL remain. Different surface kinds or topic containers SHALL never merge even when their numeric identifiers match.
 
-#### Scenario: First half of a split message opens a buffer
+#### Scenario: First half opens a surface-keyed buffer
 
-- **WHEN** a text message of length >= 4000 chars arrives
-- **THEN** the coalescer SHALL open a buffer keyed on `(chatId, topicId, fromUserId)`
-- **AND** SHALL start a trailing debounce timer of 1200 ms
-- **AND** SHALL NOT immediately dispatch to `intake.handleText`
+- **WHEN** a text message of at least 4000 characters arrives
+- **THEN** the coalescer SHALL open a buffer keyed by its canonical `SurfaceId` and sender ID
+- **AND** SHALL NOT dispatch immediately
 
-#### Scenario: Consecutive adjacent fragment extends the buffer
+#### Scenario: Adjacent fragment extends the buffer
 
-- **WHEN** a buffer is open for `(chatId, topicId, fromUserId)` at message_id N
-- **AND** a second text message arrives from the same sender in the same chat/topic
-- **AND** its `message_id` is exactly N+1
-- **AND** it arrives within 1200 ms of the prior fragment
-- **THEN** the coalescer SHALL append the second fragment's text to the buffer
-- **AND** SHALL restart the 1200 ms debounce timer
-- **AND** SHALL NOT dispatch either fragment yet
+- **WHEN** an open buffer receives message ID N+1 from the same sender and `SurfaceId` within 1200 ms
+- **THEN** it SHALL append the text and restart the debounce timer
 
-#### Scenario: Buffer flushes concatenated text as one turn
+#### Scenario: Buffer flushes once
 
-- **WHEN** the debounce timer for an open buffer elapses with no further adjacent fragment
-- **THEN** the coalescer SHALL concatenate all buffered fragments with no separator
-- **AND** SHALL dispatch the result to `intake.handleText` exactly once, using the first buffered `TelegramIntakeMessage`
-- **AND** SHALL clear the buffer
+- **WHEN** the debounce expires
+- **THEN** the coalescer SHALL concatenate fragments without a separator and dispatch once using the first intake message
 
-#### Scenario: Non-adjacent message flushes pending buffer then dispatches fresh
+#### Scenario: Non-adjacent message flushes then evaluates fresh
 
-- **WHEN** a buffer is open at message_id N
-- **AND** a text message arrives whose `message_id` is greater than N+1, less than or equal to N (non-monotonic: an out-of-order, duplicate, or redelivered `message_id`), or after the debounce window elapsed
-- **THEN** the coalescer SHALL flush the pending buffer immediately (dispatch its concatenation to `intake.handleText`, using the first buffered `TelegramIntakeMessage`)
-- **AND** SHALL then evaluate the incoming message independently
+- **WHEN** an incoming message is non-adjacent, non-monotonic, duplicated, or late
+- **THEN** the coalescer SHALL flush the pending buffer and evaluate the incoming message independently
 
-#### Scenario: Short message never enters the buffer
+#### Scenario: Short message behavior is preserved
 
-- **WHEN** a text message of length < 4000 chars arrives and no buffer is open for its `(chatId, topicId, fromUserId)` key
-- **THEN** the coalescer SHALL dispatch it to `intake.handleText` immediately with no debounce
+- **WHEN** a short message arrives with no matching open buffer
+- **THEN** it SHALL dispatch immediately
+- **AND** when it is an adjacent tail for an open buffer, it SHALL append instead
 
-#### Scenario: Short message appends to an already-open buffer
+#### Scenario: Hard caps force a flush
 
-- **WHEN** a text message of length < 4000 chars arrives
-- **AND** a buffer is open for its `(chatId, topicId, fromUserId)` key at message_id N
-- **AND** its `message_id` is exactly N+1 and it arrives within 1200 ms
-- **THEN** the coalescer SHALL append it to the buffer (the short fragment is the tail of a split)
-- **AND** SHALL restart the debounce timer
+- **WHEN** another append would exceed 12 fragments or 50,000 characters
+- **THEN** the coalescer SHALL flush the current buffer and evaluate the incoming fragment as fresh
 
-#### Scenario: Hard cap on fragments forces a flush
+#### Scenario: Same numbers in different surfaces do not merge
 
-- **WHEN** a buffer already holds 12 fragments
-- **AND** a further adjacent fragment arrives
-- **THEN** the coalescer SHALL flush the 12-fragment buffer to `intake.handleText` immediately, using the first buffered `TelegramIntakeMessage`
-- **AND** SHALL NOT append the 13th fragment to the flushed buffer
-- **AND THEN** SHALL evaluate the 13th fragment as if fresh: open a new buffer if it is itself >= 4000 chars, or dispatch it immediately if it is short
-
-#### Scenario: Hard cap on total characters forces a flush
-
-- **WHEN** appending a fragment would push the buffer's total concatenated length past 50,000 chars
-- **THEN** the coalescer SHALL flush the current buffer to `intake.handleText` immediately, using the first buffered `TelegramIntakeMessage`
-- **AND** SHALL begin a new buffer with the incoming fragment if it is itself >= 4000 chars, or dispatch it immediately otherwise
+- **WHEN** two fragments have the same sender and numeric chat/topic identifiers but different surface kinds or topic containers
+- **THEN** their `SurfaceId` keys SHALL differ
+- **AND** the fragments SHALL NOT merge
 
 ### Requirement: Slash commands bypass and flush the coalescer
 
@@ -662,21 +584,17 @@ A text message whose first Telegram entity is type `bot_command` (as exposed by 
 
 ### Requirement: Coalescer is constructed once per bot and keyed per sender
 
-`buildBot` SHALL construct a single text coalescer instance shared across all `message:text` handlers. The coalescer's buffer state SHALL be keyed on the tuple `(chatId, topicId, fromUserId)` so that splits from different users in a group, different forum topics, or different DMs never merge. The coalescer SHALL NOT key on `chatId` alone.
+`buildBot` SHALL construct one text coalescer per bot. The coalescer SHALL key buffers by `(SurfaceId, fromUserId)`, using the `SurfaceId` produced from the intake message's complete surface. It SHALL NOT build keys from optional topic IDs or chat-ID sign.
 
 #### Scenario: Fragments from different senders stay separate
 
-- **WHEN** user A sends a long message that splits, and user B sends a text in the same group chat before A's buffer flushes
-- **THEN** the coalescer SHALL buffer A's fragments under A's key
-- **AND** SHALL dispatch B's message immediately under B's key (no buffer, assuming it is short)
-- **AND** the two senders' text SHALL NOT merge
+- **WHEN** different senders post fragments on the same surface
+- **THEN** their buffers SHALL remain separate
 
-#### Scenario: Fragments in different topics stay separate
+#### Scenario: Fragments on different surfaces stay separate
 
-- **WHEN** a long message splits in forum topic X
-- **AND** a text arrives in forum topic Y before X's buffer flushes
-- **THEN** the coalescer SHALL buffer X's fragments under `(chatId, topicX, fromUserId)`
-- **AND** SHALL evaluate Y's message under the separate key `(chatId, topicY, fromUserId)`
+- **WHEN** fragments arrive on different topic containers, topics, DMs, supergroups, or guest surfaces
+- **THEN** they SHALL be evaluated under different canonical surface keys
 
 ### Requirement: MessageBuffer records Telegram API call metrics
 
@@ -764,3 +682,131 @@ When `MessageBuffer.flushResponse` or `MessageBuffer.flushStatus` short-circuits
 - **WHEN** `sendSystemReply` calls `message.reply` with Markdown and `ctx.reply` throws a 400 parse error
 - **THEN** a `telegram` event with `op: "sendMessage"`, `channel: "system"`, `outcome: "error"`, `errorCode: 400`, and `errorDescription` containing parse SHALL be recorded
 - **AND** the plain-text retry `sendMessage` SHALL record a `success` event when it resolves
+
+### Requirement: Telegram surfaces are complete discriminated values
+
+The Telegram layer SHALL represent every supported delivery lane as a `Surface` discriminated union:
+
+- `{ kind: "dm", chatId }` for a topicless private chat;
+- `{ kind: "topic", container: "private" | "supergroup" | "direct-messages", chatId, topicId }` for a private-chat topic, forum-supergroup topic, or channel direct-messages topic;
+- `{ kind: "supergroup", chatId }` for a topicless supergroup; and
+- `{ kind: "guest", chatId }` for a guest summon in a foreign chat.
+
+`surfaceFromCtx()` and the guest-message adapter SHALL be the only grammy-context normalization points. They SHALL validate Telegram identifiers as non-zero safe integers and topic identifiers as positive safe integers. Downstream modules SHALL receive a complete `Surface`; they SHALL NOT infer its kind from chat-ID sign, topic-ID absence, or separate `isPrivate`, `isSupergroup`, `isGuest`, or thread-ID values. Ordinary channel posts and basic-group chats remain unsupported and SHALL NOT be normalized into a misleading surface kind.
+
+#### Scenario: Topicless private chat
+
+- **WHEN** `surfaceFromCtx()` receives a private-chat context with no topic metadata
+- **THEN** it SHALL return `{ kind: "dm", chatId }`
+
+#### Scenario: Private-chat topic
+
+- **WHEN** `surfaceFromCtx()` receives a private-chat message with `is_topic_message === true` and a numeric `message_thread_id`
+- **THEN** it SHALL return `{ kind: "topic", container: "private", chatId, topicId: message_thread_id }`
+
+#### Scenario: Forum-supergroup topic
+
+- **WHEN** `surfaceFromCtx()` receives a supergroup message with `is_topic_message === true` and a numeric `message_thread_id`
+- **AND** the chat is not a direct-messages chat
+- **THEN** it SHALL return `{ kind: "topic", container: "supergroup", chatId, topicId: message_thread_id }`
+
+#### Scenario: Channel direct-messages topic
+
+- **WHEN** `surfaceFromCtx()` receives a direct-messages-chat message with a numeric `direct_messages_topic.topic_id`
+- **THEN** it SHALL return `{ kind: "topic", container: "direct-messages", chatId, topicId: direct_messages_topic.topic_id }`
+- **AND** it SHALL NOT treat ordinary channel posts as supported surfaces
+
+#### Scenario: Topicless supergroup
+
+- **WHEN** `surfaceFromCtx()` receives a supergroup context without topic metadata
+- **THEN** it SHALL return `{ kind: "supergroup", chatId }`
+
+#### Scenario: Guest summon
+
+- **WHEN** the guest-message adapter receives a foreign `guest_message.chat.id`
+- **THEN** it SHALL produce `{ kind: "guest", chatId }`
+- **AND** the guest query identifier SHALL remain encapsulated in the one-shot reply closure
+
+#### Scenario: Missing or invalid routing data
+
+- **WHEN** normalization receives no chat, an unsupported chat type, a non-safe chat identifier, or invalid topic metadata
+- **THEN** it SHALL return `null` or reject at the normalization boundary
+- **AND** it SHALL NOT emit a partial surface
+
+### Requirement: SurfaceId is canonical and reversible
+
+The Telegram layer SHALL provide a branded `SurfaceId` and total encode/decode functions for `Surface`. The canonical version-one encoding SHALL be:
+
+- `tg:v1:dm:<chatId>`
+- `tg:v1:supergroup:<chatId>`
+- `tg:v1:guest:<chatId>`
+- `tg:v1:topic:<container>:<chatId>:<topicId>`
+
+where `<container>` is `private`, `supergroup`, or `direct-messages`, and every numeric component is canonical base-10 integer text. Encoding SHALL validate the value before returning an ID. Decoding SHALL reject malformed, non-canonical, unknown-version, unknown-kind, unsafe, zero chat, and non-positive topic values. `SurfaceId` SHALL be the equality and key representation for surface-addressed maps, persisted references, logs, and coalescing keys.
+
+#### Scenario: Every surface round-trips
+
+- **WHEN** any valid `Surface` is encoded and the resulting `SurfaceId` is decoded
+- **THEN** the decoded value SHALL equal the original surface in kind, container when present, `chatId`, and `topicId` when present
+
+#### Scenario: Same numbers in different kinds remain distinct
+
+- **WHEN** a DM and guest surface have the same numeric `chatId`
+- **THEN** their `SurfaceId` values SHALL differ
+- **AND** decoding each ID SHALL recover its original kind
+
+#### Scenario: Topic containers remain distinct
+
+- **WHEN** private, supergroup, and direct-messages topic surfaces share the same numeric `chatId` and `topicId`
+- **THEN** all three `SurfaceId` values SHALL differ
+
+#### Scenario: Invalid identifier is rejected
+
+- **WHEN** encoding or decoding encounters a fractional, non-finite, unsafe, zero chat, non-positive topic, exponent-form, padded, or otherwise non-canonical identifier
+- **THEN** it SHALL reject the value
+- **AND** it SHALL NOT create a `SurfaceId`
+
+### Requirement: Telegram adapter derives delivery parameters from Surface
+
+Telegram send/edit/media/draft adapters SHALL derive normal delivery options from a complete `Surface` using `deliveryOpts(surface)`. Telegram chat-action adapters SHALL derive `sendChatAction` options from a complete `Surface` using `chatActionDeliveryOpts(surface)`. The two derivations differ only for a forum General topic (`container === "supergroup"` and `topicId === 1`): normal sends, edits, media, and drafts to that surface SHALL target the surface `chatId` and SHALL NOT set `message_thread_id`; chat actions to that surface SHALL set `message_thread_id = 1` so the typing indicator appears in the General topic. For all other private and forum-supergroup topics, both normal and chat-action adapters SHALL set `message_thread_id = topicId`. Direct-messages topics SHALL use `direct_messages_topic_id = topicId` for both adapters. Topicless DM and supergroup surfaces SHALL use neither topic parameter. Guest surfaces SHALL use their encapsulated `answerGuestQuery` callback rather than normal chat send methods. Domain modules SHALL NOT construct either topic parameter.
+
+#### Scenario: Ordinary forum topic delivery
+
+- **WHEN** the Telegram adapter sends, edits, or replies to a forum topic whose container is `supergroup` and whose `topicId` is not `1`
+- **THEN** it SHALL target the surface `chatId` with `message_thread_id = topicId`
+- **AND** it SHALL NOT set `direct_messages_topic_id`
+
+#### Scenario: Private topic delivery
+
+- **WHEN** the Telegram adapter sends, edits, or replies to a private-chat topic (`container === "private"`)
+- **THEN** it SHALL target the surface `chatId` with `message_thread_id = topicId`
+- **AND** it SHALL NOT set `direct_messages_topic_id`
+
+#### Scenario: Supergroup General topic normal send
+
+- **WHEN** `deliveryOpts(surface)` is used for a `supergroup` topic surface whose `topicId` is `1`
+- **THEN** it SHALL target the surface `chatId` and SHALL NOT set `message_thread_id`
+- **AND** it SHALL NOT set `direct_messages_topic_id`
+
+#### Scenario: Supergroup General topic chat action
+
+- **WHEN** `chatActionDeliveryOpts(surface)` is used for a `supergroup` topic surface whose `topicId` is `1`
+- **THEN** it SHALL target the surface `chatId` with `message_thread_id = 1`
+- **AND** it SHALL NOT set `direct_messages_topic_id`
+
+#### Scenario: Direct-messages topic delivery
+
+- **WHEN** the Telegram adapter sends to a `direct-messages` topic
+- **THEN** it SHALL target the surface `chatId` with `direct_messages_topic_id = topicId`
+- **AND** it SHALL NOT set `message_thread_id`
+
+#### Scenario: Topicless delivery
+
+- **WHEN** the Telegram adapter sends to a DM or topicless supergroup surface
+- **THEN** it SHALL target the surface `chatId` without either topic parameter
+
+#### Scenario: Guest delivery
+
+- **WHEN** intake completes a guest turn
+- **THEN** it SHALL reply once through the guest surface's one-shot reply callback
+- **AND** it SHALL NOT call a normal Telegram send method for the foreign chat ID

@@ -12,7 +12,7 @@ import { isValidConversationId } from "../sessions/conversation.ts";
 import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
 import { log } from "../log.ts";
 import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
-import type { CurrentBindingGuard } from "./dispatcher.ts";
+import type { AttachmentSignal, CurrentBindingGuard } from "./dispatcher.ts";
 import { withLifecycleTransitionLock } from "./lifecycle-transition-lock.ts";
 import type { ProjectAssignmentIntent } from "../sessions/project-assignment.ts";
 import {
@@ -338,7 +338,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async withCurrentBinding<T>(
     surface: Surface,
     conversationId: string,
-    fn: () => Promise<T>,
+    fn: (signal: AttachmentSignal) => Promise<T>,
   ): Promise<T> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
@@ -349,7 +349,13 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
           `binding rotated: surface ${key} is bound to ${currentId ?? "unbound"}, expected ${conversationId}`,
         );
       }
-      return fn();
+      const signal = createAttachmentSignal();
+      const work = fn(signal);
+      work.catch((err) => {
+        if (!signal.settled) signal.failed(err);
+      });
+      await signal.promise;
+      return work;
     });
   }
 
@@ -389,6 +395,38 @@ class FileSurfaceSettings implements SurfaceSettings {
     const root = getProjectRoot(this.home, surface);
     return environmentFromProjectRoot(root);
   }
+}
+
+type MutableAttachmentSignal = AttachmentSignal & {
+  promise: Promise<void>;
+  failed(err: unknown): void;
+  settled: boolean;
+};
+
+function createAttachmentSignal(): MutableAttachmentSignal {
+  let resolveAttached!: () => void;
+  let rejectAttached!: (err: unknown) => void;
+  const promise = new Promise<void>((resolve, reject) => {
+    resolveAttached = resolve;
+    rejectAttached = reject;
+  });
+  const signal: MutableAttachmentSignal = {
+    attached: () => {
+      if (!signal.settled) {
+        signal.settled = true;
+        resolveAttached();
+      }
+    },
+    failed: (err) => {
+      if (!signal.settled) {
+        signal.settled = true;
+        rejectAttached(err);
+      }
+    },
+    promise,
+    settled: false,
+  };
+  return signal;
 }
 
 /**

@@ -29,12 +29,12 @@ function timeoutReject(
 ): Promise<never> {
   return new Promise<never>((_, reject) => {
     setTimeout(async () => {
+      reject(new Error(`Subagent ${subagentId} timed out after ${ms}ms`));
       try {
         await runner.cancel(subagentId);
       } catch {
         // Already completed/errored — ignore.
       }
-      reject(new Error(`Subagent ${subagentId} timed out after ${ms}ms`));
     }, ms);
   });
 }

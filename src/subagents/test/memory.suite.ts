@@ -7,6 +7,7 @@ import {
   type ActiveScope,
   type MemoryScope,
   type SurfaceMemoryAuthority,
+  type CapturedMemoryContext,
 } from "../../memory/mod.ts";
 import { memoryDir } from "../../memory/paths.ts";
 import { SubagentRunner } from "../mod.ts";
@@ -36,6 +37,17 @@ const TOPIC_AUTHORITY: SurfaceMemoryAuthority = {
   kind: "surface",
   sourceSurfaceId: surfaceId(TOPIC_SURFACE),
   activeScope: TOPIC_SCOPE,
+};
+
+const MAIN_CALLER = { kind: "main" } as const;
+
+const TOPIC_CAPTURE: CapturedMemoryContext = {
+  kind: "surface",
+  authority: TOPIC_AUTHORITY,
+  caller: MAIN_CALLER,
+  frozenSummary: null,
+  frozenUserBody: "",
+  frozenActiveMemoryBody: "",
 };
 
 type SeedScope = "user" | "memory" | MemoryScope;
@@ -188,8 +200,7 @@ describe("SubagentRunner — scoped memory", () => {
       JSON.stringify(
         createMemoryWriteTool({
           store: new MemoryStore(tmp),
-          activeScope: TOPIC_SCOPE,
-          caller: { kind: "main" },
+          context: TOPIC_CAPTURE,
         }).parameters,
       ),
     );

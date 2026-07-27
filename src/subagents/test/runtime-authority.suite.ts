@@ -41,6 +41,13 @@ function getInstance(runner: SubagentRunner, id: string): SubagentInstance | und
   return (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(id);
 }
 
+function findInstanceBySpawnedBy(runner: SubagentRunner, spawnedBy: string): SubagentInstance | undefined {
+  for (const inst of (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.values()) {
+    if (inst.spawnedBy === spawnedBy) return inst;
+  }
+  return undefined;
+}
+
 function jsonOf<T>(result: unknown): T {
   const r = result as { content: Array<{ type: string; text: string }> };
   return JSON.parse(r.content[0]!.text) as T;
@@ -85,7 +92,18 @@ function makeFakeAgentRunner(opts: ConstructorParameters<typeof AgentRunner>[0])
     get modelName() {
       return "poe/test-model";
     },
-    async prompt() {},
+    async prompt() {
+      return new Promise<void>((resolve) => {
+        const listener = (event: Record<string, unknown>) => {
+          if (event.type === "agent_end") {
+            const index = sessionHolder.listeners.indexOf(listener as (event: Record<string, unknown>) => void);
+            if (index !== -1) sessionHolder.listeners.splice(index, 1);
+            resolve();
+          }
+        };
+        sessionHolder.listeners.push(listener as (event: Record<string, unknown>) => void);
+      });
+    },
     async abort() {},
     async dispose() {},
     async followUp() {},
@@ -169,8 +187,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     // Main-runtime memory_search sees the Surface X capture.
     const mainSearch = createMemorySearchTool({
       store: fx.memoryStore,
-      activeScope: captureX.authority.activeScope,
-      caller: captureX.caller,
+      context: captureX,
     });
     const mainResult = jsonOf<{ entries: Array<{ text: string }> }>(
       await mainSearch.execute("ms-main", { scope: "active" }, undefined, undefined, {} as never),
@@ -241,8 +258,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
 
     const mainYSearch = createMemorySearchTool({
       store: fx.memoryStore,
-      activeScope: captureY.authority.activeScope,
-      caller: captureY.caller,
+      context: captureY,
     });
     const mainYResult = jsonOf<{ entries: Array<{ text: string }> }>(
       await mainYSearch.execute("ms-main-y", { scope: "active" }, undefined, undefined, {} as never),
@@ -268,5 +284,54 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await childY.result;
+  });
+
+  it("recursively spawned subagents inherit the parent Surface authority and are cancelled by a same-conversation move", async () => {
+    const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
+    const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
+    const captureX = assertSurfaceCapture(runnerX.memoryContext);
+    expect(captureX.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
+
+    const childX = await fx.subagentRunner.spawn({
+      prompt: "child x",
+      authority: captureX.authority,
+      spawnedBy: sessionX.id,
+    });
+    await flush();
+    const childXInstance = getInstance(fx.subagentRunner, childX.id);
+    expect(childXInstance?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
+
+    const childXOpts = getCapturedCreateArgs()[0] as Record<string, unknown>;
+    const childXTools = childXOpts.customTools as unknown[];
+    const childXSpawn = findTool(childXTools, "spawn_subagent");
+    expect(childXSpawn).toBeDefined();
+
+    let spawnError: unknown = undefined;
+    const spawnPromise = childXSpawn!.execute(
+      "gc-1",
+      { prompt: "grandchild" },
+      undefined,
+      undefined,
+      {} as never,
+    ).catch((err: unknown) => {
+      spawnError = err;
+      return undefined;
+    });
+    await flush();
+
+    const grandchild = findInstanceBySpawnedBy(fx.subagentRunner, childX.id);
+    expect(grandchild).toBeDefined();
+    expect(grandchild!.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
+
+    // Move the same conversation to Surface Y. The lifecycle disposes the
+    // Surface X runtime, which cancels every subagent in the session tree.
+    await fx.lifecycle.resume(SURFACE_Y, sessionX.id);
+    await flush();
+
+    expect(getInstance(fx.subagentRunner, childX.id)?.status).toBe("cancelled");
+    expect(grandchild!.status).toBe("cancelled");
+
+    await spawnPromise;
+    expect(spawnError).toBeInstanceOf(Error);
   });
 });

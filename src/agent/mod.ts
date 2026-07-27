@@ -435,16 +435,14 @@ export class AgentRunner {
     // runners (dreaming extraction) use the explicit Surface-free path and
     // receive no ordinary memory tools.
     if (this.memoryContext.kind === "surface") {
-      const { authority, caller } = this.memoryContext;
       tools.push(
         createMemorySearchTool({
           store: this.memoryStore,
-          activeScope: authority.activeScope,
-          caller,
+          context: this.memoryContext,
           getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
           metrics: this.metricsStore,
         }),
-        createMemoryWriteTool({ store: this.memoryStore, activeScope: authority.activeScope, caller }),
+        createMemoryWriteTool({ store: this.memoryStore, context: this.memoryContext }),
       );
     }
 
@@ -750,15 +748,11 @@ export class AgentRunner {
       // have no Surface-backed memory context.
       const promptText = extractPromptText(content);
       if (this.memoryContext.kind === "surface") {
-        const { authority, caller, frozenUserBody, frozenActiveMemoryBody } = this.memoryContext;
         const aside = await formatRelevantMemory({
           store: this.memoryStore,
-          activeScope: authority.activeScope,
-          caller,
+          context: this.memoryContext,
           promptText,
           metrics: this.metricsStore,
-          frozenUserBody,
-          frozenActiveMemoryBody,
         });
         if (aside !== null) {
           await this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" });

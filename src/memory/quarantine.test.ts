@@ -8,12 +8,27 @@ import { memoryDir } from "./paths.ts";
 import { formatSnapshot } from "./snapshot.ts";
 import { createMemorySearchTool } from "./tool.ts";
 import type { ActiveScope } from "./scope.ts";
+import type { MemoryCaller } from "./context.ts";
+import type { CapturedMemoryContext } from "./runtime-context.ts";
+import { topicSurface, surfaceId } from "../surface.ts";
 
 const NULL_CTX = {} as Parameters<ReturnType<typeof createMemorySearchTool>["execute"]>[4];
 const TOPIC_SCOPE: ActiveScope = {
   chatId: -100,
   topicScope: { topicId: 42 },
 };
+const TOPIC_SURFACE = topicSurface("supergroup", -100, 42);
+
+function capturedContext(activeScope: ActiveScope, caller: MemoryCaller): CapturedMemoryContext {
+  return {
+    kind: "surface",
+    authority: { kind: "surface", sourceSurfaceId: surfaceId(TOPIC_SURFACE), activeScope },
+    caller,
+    frozenSummary: null,
+    frozenUserBody: "",
+    frozenActiveMemoryBody: "",
+  };
+}
 
 function textOf(result: Awaited<ReturnType<ReturnType<typeof createMemorySearchTool>["execute"]>>): string {
   const content = result.content[0];
@@ -147,8 +162,7 @@ describe("quarantine store", () => {
       });
       const searchTool = createMemorySearchTool({
         store,
-        activeScope: TOPIC_SCOPE,
-        caller: { kind: "main" },
+        context: capturedContext(TOPIC_SCOPE, { kind: "main" }),
       });
       const index = jsonOf<{
         general: unknown[];
@@ -172,8 +186,7 @@ describe("quarantine store", () => {
       });
       const searchTool = createMemorySearchTool({
         store,
-        activeScope: TOPIC_SCOPE,
-        caller: { kind: "main" },
+        context: capturedContext(TOPIC_SCOPE, { kind: "main" }),
       });
       const result = jsonOf<{ entries: Array<{ text: string }> }>(
         await searchTool.execute("call-read", { scope: "user" }, undefined, undefined, NULL_CTX),

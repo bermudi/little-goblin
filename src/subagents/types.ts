@@ -146,6 +146,11 @@ export interface SubagentInstance {
   unsubscribe: (() => void) | null;
   /** Resolves with the subagent's final assistant text on `agent_end`. */
   result: Promise<string>;
+  /** Resolves/rejects `result`. Stored on the instance so cancellation paths
+   * can settle the handle when the agent session cannot. */
+  resolveResult: (text: string) => void;
+  /** Rejects `result`. Stored on the instance for cancellation paths. */
+  rejectResult: (err: unknown) => void;
 }
 
 /**

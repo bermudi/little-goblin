@@ -11,6 +11,7 @@ import {
 } from "./search.ts";
 import { includeAgentsFor, namedCallerPersona, personaPolicyForCaller, personaSectionFor, type MemoryCaller } from "./context.ts";
 import { stripBodyMetadata } from "./entry.ts";
+import type { CapturedMemoryContext } from "./runtime-context.ts";
 
 /**
  * Per-turn memory aside.
@@ -112,28 +113,57 @@ export async function formatSnapshot(
   });
 }
 
+export interface FormatRelevantMemoryArgs {
+  store: MemoryStore;
+  /** Surface-backed memory context captured at runtime/session creation. */
+  context: CapturedMemoryContext;
+  promptText?: string;
+  relevantLimit?: number;
+  /** Optional topic-name resolver for the scope index. */
+  getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
+  /** Optional metrics store to record the snapshot_built event. */
+  metrics?: MetricsStore;
+}
+
 /**
  * Build the per-turn `## relevant memory` aside. Uses hybrid search on the
  * current prompt text, deduplicates against the active scope body, and bounds
  * the result count (default 3, max 5). Returns `null` when there are no
  * relevant curated entries.
+ *
+ * Production callers pass the whole {@link CapturedMemoryContext} so the
+ * active scope, caller, and frozen deduplication bodies cannot be supplied
+ * piecemeal.
  */
 export async function formatRelevantMemory(
-  args: FormatSnapshotArgs,
+  args: FormatRelevantMemoryArgs,
 ): Promise<MemorySnapshotPayload | null> {
   if (args.promptText === undefined || args.promptText.trim().length === 0) {
     return null;
   }
 
-  const resolved: ResolvedSnapshotArgs = {
-    ...args,
-    includePersona: personaSectionFor(args.caller),
-    includeAgents: includeAgentsFor(args.caller),
-    personaPolicy: personaPolicyForCaller(args.caller),
+  const { authority, caller, frozenUserBody, frozenActiveMemoryBody } = args.context;
+  const snapshotArgs: FormatSnapshotArgs = {
+    store: args.store,
+    activeScope: authority.activeScope,
+    caller,
+    promptText: args.promptText,
+    relevantLimit: args.relevantLimit,
+    getTopicName: args.getTopicName,
+    metrics: args.metrics,
+    frozenUserBody,
+    frozenActiveMemoryBody,
   };
-  const activeMemoryScope = activeMemoryScopeFor(args.activeScope);
-  const activeMemoryBody = args.frozenActiveMemoryBody ?? args.store.read(activeMemoryScope).body;
-  const userMemoryBody = args.frozenUserBody ?? args.store.read("user").body;
+
+  const resolved: ResolvedSnapshotArgs = {
+    ...snapshotArgs,
+    includePersona: personaSectionFor(caller),
+    includeAgents: includeAgentsFor(caller),
+    personaPolicy: personaPolicyForCaller(caller),
+  };
+  const activeMemoryScope = activeMemoryScopeFor(authority.activeScope);
+  const activeMemoryBody = frozenActiveMemoryBody ?? args.store.read(activeMemoryScope).body;
+  const userMemoryBody = frozenUserBody ?? args.store.read("user").body;
   const lines = await buildRelevantMemoryLines(resolved, activeMemoryBody, userMemoryBody);
   if (lines.length === 0) return null;
 

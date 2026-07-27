@@ -8,6 +8,7 @@ import { checkMemorySafety } from "./safety.ts";
 import { searchMemoryEntries, type MemorySearchOutput } from "./search.ts";
 import { stripEntryMetadata } from "./entry.ts";
 import { includeAgentsFor, namedCallerPersona, personaPolicyForCaller, type MemoryCaller } from "./context.ts";
+import type { CapturedMemoryContext } from "./runtime-context.ts";
 
 const targetSchema = Type.Union([
   Type.Literal("memory"),
@@ -158,19 +159,15 @@ function summarize(action: MemoryWriteAction, target: MemoryTarget): string {
 
 export function createMemorySearchTool(args: {
   store: MemoryStore;
-  activeScope: ActiveScope;
-  /**
-   * Who is calling. The persona-eligibility policy is derived from the caller
-   * kind: main searches all personas, a named subagent searches only its own,
-   * an anonymous subagent searches none. Replaces the former `memory_read_index`
-   * `agents` gating.
-   */
-  caller: MemoryCaller;
+  /** Surface-backed memory context captured at runtime/session creation. */
+  context: CapturedMemoryContext;
   /** Optional topic-name resolver for the scope index. */
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
   /** Optional metrics store to record memory_search events. */
   metrics?: MetricsStore;
 }): ToolDefinition {
+  const activeScope = args.context.authority.activeScope;
+  const caller = args.context.caller;
   return defineTool({
     name: "memory_search",
     label: "Memory Search",
@@ -183,7 +180,7 @@ export function createMemorySearchTool(args: {
         throw new Error("memory_search requires a non-empty `query`");
       }
       const query = params.query?.trim();
-      const scope = params.scope !== undefined ? resolveSearchScope(args.activeScope, params.scope) : undefined;
+      const scope = params.scope !== undefined ? resolveSearchScope(activeScope, params.scope) : undefined;
 
       // No query: list entries for a scope, or the full scope index.
       if (query === undefined) {
@@ -192,8 +189,8 @@ export function createMemorySearchTool(args: {
           return jsonResult({ entries });
         }
         const index = await args.store.listScopeIndex({
-          chatId: params.all_chats ? undefined : args.activeScope.chatId,
-          includeAgents: includeAgentsFor(args.caller),
+          chatId: params.all_chats ? undefined : activeScope.chatId,
+          includeAgents: includeAgentsFor(caller),
           getTopicName: args.getTopicName,
         });
         return jsonResult({
@@ -204,10 +201,10 @@ export function createMemorySearchTool(args: {
       }
 
       // Search mode.
-      const persona = personaPolicyForCaller(args.caller);
+      const persona = personaPolicyForCaller(caller);
       const output = await searchMemoryEntries({
         store: args.store,
-        activeScope: args.activeScope,
+        activeScope,
         persona,
         query,
         limit: params.limit,
@@ -223,15 +220,11 @@ export function createMemorySearchTool(args: {
 
 export function createMemoryWriteTool(args: {
   store: MemoryStore;
-  activeScope: ActiveScope;
-  /**
-   * Who is calling. Persona identity for `target = "agent"` is derived from the
-   * caller descriptor — only named-subagent callers may write to a persona
-   * scope. The main agent and anonymous subagents are rejected with the same
-   * error. Replaces the former `activeScope.namedAgent` read.
-   */
-  caller: MemoryCaller;
+  /** Surface-backed memory context captured at runtime/session creation. */
+  context: CapturedMemoryContext;
 }): ToolDefinition {
+  const activeScope = args.context.authority.activeScope;
+  const caller = args.context.caller;
   return defineTool({
     name: "memory_write",
     label: "Memory Write",
@@ -241,7 +234,7 @@ export function createMemoryWriteTool(args: {
     parameters: memoryWriteSchema,
     async execute(_toolCallId, params: MemoryWriteInput) {
       const { action, target } = params;
-      const scope = resolveWriteScope(args.activeScope, target, args.caller);
+      const scope = resolveWriteScope(activeScope, target, caller);
       const onReject = () => args.store.recordSafetyReject(scope);
       let result: StoreResult;
       switch (action) {

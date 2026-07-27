@@ -167,7 +167,7 @@ export class SessionManager {
         continue;
       }
     }
-    return states.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    return states.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
   private runtimeSession(conv: ConversationState, surface: Surface): SessionState {

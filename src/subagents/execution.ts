@@ -31,7 +31,8 @@ import {
   type CapturedMemoryContext,
 } from "../memory/mod.ts";
 import { resolveModel } from "../agent/models.ts";
-import { log } from "../log.ts";
+import { boundedError, log } from "../log.ts";
+
 import { piAgentDir, type PiServices } from "../pi-host.ts";
 import { persistMetaPatch } from "./meta.ts";
 import { buildResourceLoader } from "./named-agents.ts";
@@ -96,7 +97,7 @@ export async function runInstance(
     } catch (err) {
       log.error("subagent memory store close failed", {
         id: instance.id,
-        err: err instanceof Error ? err.message : String(err),
+        ...boundedError(err),
       });
     }
   }
@@ -160,10 +161,9 @@ async function _runInstanceInner(
       // anonymous subagent searches none.
       createMemorySearchTool({
         store: memoryStore,
-        activeScope: capture.authority.activeScope,
-        caller: capture.caller,
+        context: capture,
       }),
-      createMemoryWriteTool({ store: memoryStore, activeScope: capture.authority.activeScope, caller: capture.caller }),
+      createMemoryWriteTool({ store: memoryStore, context: capture }),
     ],
     ...(resourceLoader ? { resourceLoader } : {}),
   });
@@ -215,7 +215,7 @@ async function _runInstanceInner(
     } catch (err) {
       log.error("subagent event handler threw", {
         id: instance.id,
-        err: err instanceof Error ? err.message : String(err),
+        ...boundedError(err),
       });
       // Ensure the completion promise settles even if handleEvent or
       // persistMeta throws — otherwise the parent's tool call hangs forever.
@@ -229,11 +229,8 @@ async function _runInstanceInner(
   try {
     const relevantAside = await formatRelevantMemory({
       store: memoryStore,
-      activeScope: capture.authority.activeScope,
-      caller: capture.caller,
+      context: capture,
       promptText: instance.initialPrompt,
-      frozenUserBody: capture.frozenUserBody,
-      frozenActiveMemoryBody: capture.frozenActiveMemoryBody,
     });
     if (relevantAside !== null) {
       await session.sendCustomMessage(relevantAside, { deliverAs: "nextTurn" });
@@ -305,7 +302,7 @@ export function markCompleted(instance: SubagentInstance): void {
   try {
     persistMetaPatch(instance, patch);
   } catch (err) {
-    log.error("failed to persist completed meta", { id: instance.id, err: err instanceof Error ? err.message : String(err) });
+    log.error("failed to persist completed meta", { id: instance.id, ...boundedError(err) });
   }
   instance.status = "completed";
   teardownInstance(instance);
@@ -338,11 +335,11 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
       errorMessage,
     });
   } catch (persistErr) {
-    log.error("failed to persist error meta", { id: instance.id, err: persistErr instanceof Error ? persistErr.message : String(persistErr) });
+    log.error("failed to persist error meta", { id: instance.id, ...boundedError(persistErr) });
   }
   instance.status = "error";
   teardownInstance(instance);
-  log.warn("subagent errored", { id: instance.id, errorMessage });
+  log.warn("subagent errored", { id: instance.id, ...boundedError(errorMessage) });
 }
 
 /**

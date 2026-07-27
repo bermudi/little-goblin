@@ -6,6 +6,9 @@ import { MemoryStore } from "./store.ts";
 import { createMemorySearchTool, createMemoryWriteTool } from "./tool.ts";
 import { memoryDir } from "./paths.ts";
 import type { ActiveScope } from "./scope.ts";
+import type { MemoryCaller } from "./context.ts";
+import type { CapturedMemoryContext } from "./runtime-context.ts";
+import { topicSurface, surfaceId } from "../surface.ts";
 
 // Pin a small global budget so the overflow test remains deterministic.
 process.env.GOBLIN_MEMORY_BUDGET_CHARS = "2000";
@@ -27,6 +30,18 @@ const NAMED_AGENT_SCOPE: ActiveScope = {
 };
 const MAIN_CALLER = { kind: "main" } as const;
 const RESEARCHER_CALLER = { kind: "named-subagent", name: "researcher" } as const;
+const TOPIC_SURFACE = topicSurface("supergroup", -100, 42);
+
+function capturedContext(activeScope: ActiveScope, caller: MemoryCaller): CapturedMemoryContext {
+  return {
+    kind: "surface",
+    authority: { kind: "surface", sourceSurfaceId: surfaceId(TOPIC_SURFACE), activeScope },
+    caller,
+    frozenSummary: null,
+    frozenUserBody: "",
+    frozenActiveMemoryBody: "",
+  };
+}
 
 function textOf(result: Awaited<ReturnType<ReturnType<typeof createMemoryWriteTool>["execute"]>>): string {
   const content = result.content[0];
@@ -48,8 +63,8 @@ describe("memory tool", () => {
     tmp = mkdtempSync(join(tmpdir(), "goblin-memory-tool-"));
     mkdirSync(memoryDir(tmp), { recursive: true });
     store = new MemoryStore(tmp);
-    writeTool = createMemoryWriteTool({ store, activeScope: TOPIC_SCOPE, caller: MAIN_CALLER });
-    searchTool = createMemorySearchTool({ store, activeScope: TOPIC_SCOPE, caller: MAIN_CALLER });
+    writeTool = createMemoryWriteTool({ store, context: capturedContext(TOPIC_SCOPE, MAIN_CALLER) });
+    searchTool = createMemorySearchTool({ store, context: capturedContext(TOPIC_SCOPE, MAIN_CALLER) });
   });
 
   afterEach(() => {
@@ -69,7 +84,7 @@ describe("memory tool", () => {
   });
 
   it("uses the same write schema for named and unnamed callers", () => {
-    const namedWriteTool = createMemoryWriteTool({ store, activeScope: NAMED_AGENT_SCOPE, caller: RESEARCHER_CALLER });
+    const namedWriteTool = createMemoryWriteTool({ store, context: capturedContext(NAMED_AGENT_SCOPE, RESEARCHER_CALLER) });
     expect(namedWriteTool.parameters).toEqual(writeTool.parameters);
   });
 
@@ -102,7 +117,7 @@ describe("memory tool", () => {
   });
 
   it("target=agent writes named-agent persona memory", async () => {
-    const namedWriteTool = createMemoryWriteTool({ store, activeScope: NAMED_AGENT_SCOPE, caller: RESEARCHER_CALLER });
+    const namedWriteTool = createMemoryWriteTool({ store, context: capturedContext(NAMED_AGENT_SCOPE, RESEARCHER_CALLER) });
     await namedWriteTool.execute(
       "call-named-agent",
       { action: "add", target: "agent", content: "persona fact" },
@@ -463,8 +478,7 @@ describe("memory tool", () => {
       await store.add({ agent: { name: "writer" } }, "writer persona backups note");
       const namedSearch = createMemorySearchTool({
         store,
-        activeScope: NAMED_AGENT_SCOPE,
-        caller: { kind: "named-subagent", name: "researcher" },
+        context: capturedContext(NAMED_AGENT_SCOPE, { kind: "named-subagent", name: "researcher" }),
       });
 
       const r = await namedSearch.execute(
@@ -482,8 +496,7 @@ describe("memory tool", () => {
       await store.add({ agent: { name: "researcher" } }, "researcher persona backups note");
       const anonSearch = createMemorySearchTool({
         store,
-        activeScope: TOPIC_SCOPE,
-        caller: { kind: "anonymous-subagent" },
+        context: capturedContext(TOPIC_SCOPE, { kind: "anonymous-subagent" }),
       });
 
       const r = await anonSearch.execute(

@@ -149,8 +149,11 @@ export class SubagentRunner {
       typeof authority.sourceSurfaceId !== "string" ||
       authority.activeScope === undefined
     ) {
-      log.warn("subagent spawn rejected: invalid authority", boundedError({ authority }));
-      throw new Error("Subagent spawn requires a SurfaceMemoryAuthority");
+      const err = new Error(
+        `Subagent spawn requires a SurfaceMemoryAuthority, got ${authority.kind ?? typeof authority}`,
+      );
+      log.warn("subagent spawn rejected: invalid authority", boundedError(err));
+      throw err;
     }
     const caller: SurfaceMemoryCaller =
       options.name !== undefined
@@ -233,6 +236,8 @@ export class SubagentRunner {
       session: null,
       unsubscribe: null,
       result,
+      resolveResult,
+      rejectResult,
     };
     this.activeSubagents.set(id, instance);
 
@@ -311,8 +316,11 @@ export class SubagentRunner {
       typeof parentCapture.authority.sourceSurfaceId !== "string"
     ) {
       this.revivesInProgress.delete(id);
-      log.warn("subagent revive rejected: invalid parent authority", boundedError(parentCapture));
-      throw new Error("Revival requires a Surface-backed parent memory context");
+      const err = new Error(
+        `Revival requires a Surface-backed parent memory context, got ${parentCapture.kind ?? typeof parentCapture}`,
+      );
+      log.warn("subagent revive rejected: invalid parent authority", boundedError(err));
+      throw err;
     }
 
     // Locate meta.json: could be generic or named. Scan both trees.
@@ -395,6 +403,8 @@ export class SubagentRunner {
       session: null,
       unsubscribe: null,
       result,
+      resolveResult,
+      rejectResult,
     };
     this.activeSubagents.set(id, instance);
     if (onAttached) {
@@ -407,7 +417,7 @@ export class SubagentRunner {
     try {
       persistMetaPatch(instance, { status: "running", completedAt: undefined, errorMessage: undefined });
     } catch (err) {
-      log.warn("failed to persist revive meta", { id, err: err instanceof Error ? err.message : String(err) });
+      log.warn("failed to persist revive meta", { id, ...boundedError(err) });
     }
 
     log.debug("subagent revived", { id, role: meta.role, name: meta.name });
@@ -477,6 +487,7 @@ export class SubagentRunner {
     // Mark cancelled synchronously before any await so concurrent
     // cancel() calls see a non-running status and exit early.
     instance.status = "cancelled";
+    instance.rejectResult(new Error("Subagent was cancelled"));
 
     // Capture session/unsubscribe before any await so a concurrent runInstance
     // cannot reassign them mid-cleanup.
@@ -502,7 +513,7 @@ export class SubagentRunner {
       } catch (err) {
         log.error("cancel persistMeta failed — disk state may be stale", {
           id,
-          err: err instanceof Error ? err.message : String(err),
+          ...boundedError(err),
         });
       }
 
@@ -517,7 +528,7 @@ export class SubagentRunner {
       try {
         teardownInstance(instance);
       } catch (err) {
-        log.error("cancel teardown failed", { id, err: err instanceof Error ? err.message : String(err) });
+        log.error("cancel teardown failed", { id, ...boundedError(err) });
       }
     } catch (err) {
       // teardown failed — still try to clean up.
@@ -528,7 +539,7 @@ export class SubagentRunner {
       }
       instance.unsubscribe = null;
       instance.session = null;
-      log.error("cancel cleanup failed", { id, err: err instanceof Error ? err.message : String(err) });
+      log.error("cancel cleanup failed", { id, ...boundedError(err) });
     }
 
     log.debug("subagent cancelled", { id });
@@ -569,6 +580,7 @@ export class SubagentRunner {
       const instance = this.activeSubagents.get(id);
       if (instance !== undefined && instance.status === "running") {
         instance.status = "cancelled";
+        instance.rejectResult(new Error("Subagent was cancelled"));
         targets.push(instance);
       }
     }
@@ -600,7 +612,7 @@ export class SubagentRunner {
         } catch (err) {
           log.error("cancelBySession persistMeta failed", {
             id: instance.id,
-            err: err instanceof Error ? err.message : String(err),
+            ...boundedError(err),
           });
         }
 
@@ -617,7 +629,7 @@ export class SubagentRunner {
         } catch (err) {
           log.error("cancelBySession teardown failed", {
             id: instance.id,
-            err: err instanceof Error ? err.message : String(err),
+            ...boundedError(err),
           });
         }
       }),
@@ -649,6 +661,7 @@ export class SubagentRunner {
           // Mark cancelled before any await so a concurrent runInstance sees
           // the non-running status and does not start/assign a new session.
           instance.status = "cancelled";
+          instance.rejectResult(new Error("Subagent was cancelled"));
           // Capture session/unsubscribe before any await so a concurrent
           // runInstance cannot reassign them mid-cleanup.
           const session = instance.session;
@@ -675,7 +688,7 @@ export class SubagentRunner {
           } catch (err) {
             log.error("dispose persistMeta failed", {
               id,
-              err: err instanceof Error ? err.message : String(err),
+              ...boundedError(err),
             });
           }
         }
@@ -684,7 +697,7 @@ export class SubagentRunner {
         } catch (err) {
           log.error("dispose teardown failed", {
             id,
-            err: err instanceof Error ? err.message : String(err),
+            ...boundedError(err),
           });
         }
       }),
@@ -747,4 +760,3 @@ export class SubagentRunner {
     };
   }
 }
-

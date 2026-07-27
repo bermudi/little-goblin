@@ -58,18 +58,30 @@ export interface SurfaceSettings {
 }
 
 /**
+ * Signal supplied to work running under {@link CurrentBindingGuard}. The work
+ * calls `attached()` once it has acquired the resources it needs from the current
+ * binding; the guard releases the lifecycle transition lock at that point. If
+ * the work fails before `attached()` is called, the guard rejects the attachment
+ * promise and releases the lock.
+ */
+export interface AttachmentSignal {
+  attached(): void;
+}
+
+/**
  * Lifecycle-provided guard that runs work while excluding binding replacement.
  *
  * The implementation is owned by `ConversationLifecycle`; the dispatcher only
  * consumes the seam. The guard verifies that the requested Surface is still bound
- * to the expected conversation before running `fn`, and holds the transition
- * exclusion until `fn` resolves.
+ * to the expected conversation before running `fn`, holds the transition
+ * exclusion only until the work signals attachment, and then returns the work's
+ * terminal result. It never awaits the terminal result under the lock.
  */
 export interface CurrentBindingGuard {
   withCurrentBinding<T>(
     surface: Surface,
     conversationId: string,
-    fn: () => Promise<T>,
+    fn: (signal: AttachmentSignal) => Promise<T>,
   ): Promise<T>;
 }
 
@@ -294,41 +306,37 @@ export class TurnDispatcher {
     }
 
     const expectedSurfaceId = surfaceId(surface);
-    let resolveAttached!: () => void;
-    const attached = new Promise<void>((resolve) => {
-      resolveAttached = resolve;
-    });
 
-    return this.currentBindingGuard.withCurrentBinding(surface, session.id, async () => {
-      const runner = this.runners.get(session.id);
-      if (runner === undefined) {
-        throw new Error(
-          `no current runner for session ${session.id}; cannot revive subagent '${subagentId}'`,
-        );
-      }
-      if (runner.memoryContext.kind !== "surface") {
-        throw new Error(
-          `runner memory context is not Surface-backed for session ${session.id}`,
-        );
-      }
-      if (runner.memoryContext.authority.sourceSurfaceId !== expectedSurfaceId) {
-        throw new Error(
-          `runner capture sourceSurfaceId mismatch for session ${session.id}: ${runner.memoryContext.authority.sourceSurfaceId} !== ${expectedSurfaceId}`,
-        );
-      }
+    return this.currentBindingGuard.withCurrentBinding(
+      surface,
+      session.id,
+      async (signal) => {
+        const runner = this.runners.get(session.id);
+        if (runner === undefined) {
+          throw new Error(
+            `no current runner for session ${session.id}; cannot revive subagent '${subagentId}'`,
+          );
+        }
+        if (runner.memoryContext.kind !== "surface") {
+          throw new Error(
+            `runner memory context is not Surface-backed for session ${session.id}`,
+          );
+        }
+        if (runner.memoryContext.authority.sourceSurfaceId !== expectedSurfaceId) {
+          throw new Error(
+            `runner capture sourceSurfaceId mismatch for session ${session.id}: ${runner.memoryContext.authority.sourceSurfaceId} !== ${expectedSurfaceId}`,
+          );
+        }
 
-      const result = this.subagentRunner.revive(
-        runner.memoryContext,
-        subagentId,
-        prompt,
-        undefined,
-        () => {
-          resolveAttached();
-        },
-      );
-      await attached;
-      return result;
-    });
+        return this.subagentRunner.revive(
+          runner.memoryContext,
+          subagentId,
+          prompt,
+          undefined,
+          () => signal.attached(),
+        );
+      },
+    );
   }
 
   /**

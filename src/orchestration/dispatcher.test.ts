@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TurnDispatcher } from "./dispatcher.ts";
-import type { CurrentBindingGuard } from "./dispatcher.ts";
+import type { AttachmentSignal, CurrentBindingGuard } from "./dispatcher.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
@@ -167,15 +167,17 @@ function makeSession(id: string, env: ExecutionEnvironment = personalEnvironment
 
 class FakeBindingGuard implements CurrentBindingGuard {
   private readonly bindings = new Map<string, string>();
+  private tail: Promise<unknown> = Promise.resolve();
+  lockReleases = 0;
 
   bind(surface: Surface, conversationId: string): void {
     this.bindings.set(surfaceId(surface), conversationId);
   }
 
-  async withCurrentBinding<T>(
+  withCurrentBinding<T>(
     surface: Surface,
     conversationId: string,
-    fn: () => Promise<T>,
+    fn: (signal: AttachmentSignal) => Promise<T>,
   ): Promise<T> {
     const bound = this.bindings.get(surfaceId(surface));
     if (bound !== conversationId) {
@@ -183,7 +185,48 @@ class FakeBindingGuard implements CurrentBindingGuard {
         `binding rotated: ${bound ?? "unbound"} !== ${conversationId}`,
       );
     }
-    return fn();
+
+    const prev = this.tail;
+    let resolveLock!: () => void;
+    let rejectLock!: (err: unknown) => void;
+    const released = new Promise<void>((resolve, reject) => {
+      resolveLock = resolve;
+      rejectLock = reject;
+    });
+
+    type MutableSignal = AttachmentSignal & { failed(err: unknown): void; settled: boolean };
+    const signal: MutableSignal = {
+      attached: () => {
+        if (!signal.settled) {
+          this.lockReleases++;
+          signal.settled = true;
+          resolveLock();
+        }
+      },
+      failed: (err) => {
+        if (!signal.settled) {
+          signal.settled = true;
+          rejectLock(err);
+        }
+      },
+      settled: false,
+    };
+
+    const resultPromise = (async () => {
+      await prev;
+      const work = fn(signal);
+      work.catch((err) => {
+        if (!signal.settled) signal.failed(err);
+      });
+      await released;
+      return work;
+    })();
+
+    // The next lifecycle transition waits for the lock (attachment or failure),
+    // not for the terminal result.
+    this.tail = released.catch(() => {});
+
+    return resultPromise as Promise<T>;
   }
 }
 
@@ -588,5 +631,83 @@ describe("TurnDispatcher async runner creation", () => {
     await expect(dispatcher.reviveSubagent(dmSurface(2), session, "sub-1", "go")).rejects.toThrow(
       /sourceSurfaceId mismatch/,
     );
+  });
+
+  it("reviveSubagent releases the binding guard at attachment, not at terminal result", async () => {
+    await memoryStore.add("general", "test fact");
+    const { dispatcher, subagentRunner } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+
+    const guard = new FakeBindingGuard();
+    guard.bind(surface, session.id);
+    dispatcher.setCurrentBindingGuard(guard);
+    await dispatcher.getOrCreateRunner(session, surface);
+
+    let finishRevive!: () => void;
+    subagentRunner.revive = async (
+      parentCapture,
+      id,
+      prompt,
+      _onStatusUpdate,
+      onAttached,
+    ) => {
+      subagentRunner.lastReviveArgs = { parentCapture, id, prompt };
+      onAttached?.();
+      return new Promise((resolve) => {
+        finishRevive = () => resolve("revived result");
+      });
+    };
+
+    const revivePromise = dispatcher.reviveSubagent(surface, session, "sub-1", "follow-up");
+
+    // Wait for microtask queue so the attachment signal fires.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(guard.lockReleases).toBe(1);
+
+    // A concurrent lifecycle transition can proceed while the revived work is
+    // still pending.
+    let secondEntered = false;
+    const secondPromise = guard.withCurrentBinding(surface, session.id, async (signal) => {
+      secondEntered = true;
+      signal.attached();
+      return "second";
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(secondEntered).toBe(true);
+
+    finishRevive();
+    await expect(revivePromise).resolves.toBe("revived result");
+    await secondPromise;
+  });
+
+  it("reviveSubagent releases the binding guard when subagentRunner.revive fails before attachment", async () => {
+    await memoryStore.add("general", "test fact");
+    const { dispatcher, subagentRunner } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+
+    const guard = new FakeBindingGuard();
+    guard.bind(surface, session.id);
+    dispatcher.setCurrentBindingGuard(guard);
+    await dispatcher.getOrCreateRunner(session, surface);
+
+    subagentRunner.revive = async () => {
+      throw new Error("Subagent not found");
+    };
+
+    await expect(dispatcher.reviveSubagent(surface, session, "missing", "go")).rejects.toThrow(
+      /Subagent not found/,
+    );
+    expect(guard.lockReleases).toBe(0);
+
+    // The guard must be fully released despite no attachment signal.
+    let released = false;
+    await guard.withCurrentBinding(surface, session.id, async (signal) => {
+      released = true;
+      signal.attached();
+      return "ok";
+    });
+    expect(released).toBe(true);
   });
 });

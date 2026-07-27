@@ -60,8 +60,6 @@ export interface AgentRunnerOptions {
   modelName?: string;
   /** Session-scoped thinking level override. Falls back to model default when absent. */
   thinkingLevel?: ThinkingLevel;
-  /** Queued notice to inject as context on the first prompt. Consumed once. */
-  pendingProjectNotice?: string;
   /**
    * Dreaming pipeline to use for background memory promotion after completed
    * turns. When absent, a default `DreamingPipeline` is constructed from
@@ -254,7 +252,6 @@ export class AgentRunner {
   private executionEnvironment: ExecutionEnvironment;
   private _modelName: string | undefined;
   private _thinkingLevel: ThinkingLevel | undefined;
-  private pendingProjectNotice: string | undefined;
   private resolvedModel: ResolvedModel | null = null;
   private metricsStore: MetricsStore;
   private turnStart: string | null = null;
@@ -326,7 +323,6 @@ export class AgentRunner {
     this.executionEnvironment = opts.executionEnvironment;
     this._modelName = opts.modelName ?? (opts.resolvedModel ? `${opts.resolvedModel.model.provider}/${opts.resolvedModel.model.id}` : undefined);
     this._thinkingLevel = opts.thinkingLevel;
-    this.pendingProjectNotice = opts.pendingProjectNotice;
     this.resolvedModel = opts.resolvedModel ?? null;
     this.metricsStore = new MetricsStore(opts.cfg.goblinHome, this.sessionId);
     this.ownsMemoryStore = opts.memoryStore === undefined;
@@ -399,16 +395,6 @@ export class AgentRunner {
       this.throwIfAbortedBeforeInit();
       // Consumed — any later setThinkingLevel() calls go through the live backend.
       this._thinkingLevel = undefined;
-
-      // Inject any queued project notice as a nextTurn custom message,
-      // so the model knows the cwd changed when it sees the next user message.
-      if (this.pendingProjectNotice) {
-        await this.backend.sendCustomMessage(
-          { customType: "project_notice", content: this.pendingProjectNotice, display: false, details: undefined },
-          { deliverAs: "nextTurn" },
-        );
-        this.pendingProjectNotice = undefined;
-      }
 
       log.debug("AgentRunner initialized", { sessionId: this.sessionId });
     } finally {

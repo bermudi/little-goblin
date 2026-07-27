@@ -25,7 +25,7 @@ import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { memoryDir, MemoryStore, EmbeddingProvider, type ActiveScope } from "../memory/mod.ts";
 import { createPiServices, type PiServices } from "../pi-host.ts";
-import { workdirPath } from "../workspace/paths.ts";
+import { workspacePath } from "../workspace/paths.ts";
 import {
   type ExecutionDeps,
   markErrored,
@@ -176,13 +176,13 @@ export class SubagentRunner {
     writeMetaAtomic(metaPath, meta);
 
     // Persisted session lives in the subagent's own directory.
-    // cwd: generic → goblin's workdir (inherits goblin's project context);
+    // cwd: generic → goblin's persistent workspace (personal/no-project fallback);
     //      named   → the named agent's root dir (so the resource loader
     //                discovers nothing outside the agent's tree).
     const cwd =
       role === "named"
         ? namedAgentDir(this.cfg.goblinHome, options.name as string)
-        : workdirPath(this.cfg.goblinHome);
+        : workspacePath(this.cfg.goblinHome);
     const sessionManager = SessionManager.create(cwd, dir);
 
     // The result promise is wired during runInstance; capture the resolver
@@ -307,7 +307,7 @@ export class SubagentRunner {
     const cwd =
       meta.role === "named" && meta.name !== null
         ? namedAgentDir(this.cfg.goblinHome, meta.name)
-        : workdirPath(this.cfg.goblinHome);
+        : workspacePath(this.cfg.goblinHome);
 
     // Open the existing session so conversation history is preserved.
     const sessionManager = SessionManager.open(sessionFile, dir, cwd);

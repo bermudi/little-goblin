@@ -48,7 +48,6 @@ function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number
  */
 export interface SurfaceSettings {
   effectiveEnvironment(surface: Surface): ExecutionEnvironment;
-  consumeProjectNotice(surface: Surface): string | undefined;
 }
 
 export interface TurnDispatcherOptions {
@@ -191,7 +190,6 @@ export class TurnDispatcher {
       executionEnvironment: session.executionEnvironment,
       modelName: session.modelName,
       thinkingLevel: session.thinkingLevel,
-      pendingProjectNotice: session.chatId === 0 ? undefined : this.surfaceSettings.consumeProjectNotice(surface),
       scheduleStore: this.scheduleStore,
       externalAgentRunner: this.externalAgentRunner,
       mcpRunner: this.mcpRunner,

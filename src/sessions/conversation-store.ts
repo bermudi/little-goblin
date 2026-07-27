@@ -18,7 +18,6 @@ export function ensureConversationFiles(home: string, id: string): void {
   validateConversationId(id);
   const dir = sessionDir(home, id);
   mkdirSync(dir, { recursive: true });
-  mkdirSync(join(dir, "workdir"), { recursive: true });
 
   const transcriptFile = transcriptPath(home, id);
   try {

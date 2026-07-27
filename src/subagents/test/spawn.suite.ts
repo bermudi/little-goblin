@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubagentRunner, type SubagentToolFactory } from "../mod.ts";
-import { agentsMdPath, heartbeatMdPath, skillsPath, soulMdPath, workdirPath } from "../../workspace/paths.ts";
+import { agentsMdPath, heartbeatMdPath, skillsPath, soulMdPath, workspacePath } from "../../workspace/paths.ts";
 import {
   MAX_SUBAGENT_DEPTH,
   type SubagentMeta,
@@ -303,7 +303,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     const captured = getCapturedCreateArgs();
     expect(captured).toHaveLength(1);
     const opts = captured[0] as Record<string, unknown>;
-    expect(opts.cwd).toBe(workdirPath(tmp));
+    expect(opts.cwd).toBe(workspacePath(tmp));
     expect(Array.isArray(opts.customTools)).toBe(true);
     const names = (opts.customTools as Array<{ name: string }>).map((tool) => tool.name);
     expect(names).not.toContain("schedule_turn");

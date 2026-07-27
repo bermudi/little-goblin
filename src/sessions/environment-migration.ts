@@ -37,6 +37,21 @@ import {
 import type { SessionState, TopicSettings, TopicSettingsFile, BindingsFile } from "./types.ts";
 import { atomicWrite } from "../fs.ts";
 
+/**
+ * Migration-only legacy `TopicSettings` value shape. Runtime `TopicSettings` no
+ * longer exposes `pendingProjectNotice`; migration reads it from disk to detect
+ * and strip it during environment canonicalization. This is the only type that
+ * surfaces the legacy notice field — no normal runtime type/code exposes it.
+ */
+export interface LegacyTopicSettingsValue {
+  projectRoot?: string;
+  projectDir?: string;
+  /** Legacy queued notice; stripped by environment migration. */
+  pendingProjectNotice?: string;
+  modelName?: string;
+  thinkingLevel?: string;
+}
+
 function isHexSessionId(id: string): boolean {
   return /^[0-9a-f]{10}$/.test(id);
 }
@@ -95,7 +110,7 @@ function planTopicSettingsMigration(settings: TopicSettingsFile): TopicSettingsF
     if (root !== undefined) cleaned.projectRoot = root;
 
     const hadProjectDir = value?.projectDir !== undefined;
-    const hadNotice = value?.pendingProjectNotice !== undefined;
+    const hadNotice = (value as LegacyTopicSettingsValue | undefined)?.pendingProjectNotice !== undefined;
     const hadRoot = value?.projectRoot !== undefined;
     const rootChanged = hadRoot && value!.projectRoot !== root;
 

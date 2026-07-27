@@ -149,6 +149,12 @@ Only after all four parts validate may the step apply the planned workdir moves 
 
 **Why:** Mutable historical CWD cannot be reconstructed perfectly, and changing a header does not revoke assumptions or tool effects already embedded in model history. Refusal is more honest than blessing unsafe history, continuing runtime overrides, or silently discarding it.
 
+### Decision: Legacy personal workdir is retired after successful migration
+
+**Chosen:** The persistent personal working directory is `$GOBLIN_HOME/workspace`. After step 2 succeeds, `scratch/workdir` is no longer created at startup, used as a personal fallback, or validated by preflight.
+
+**Why:** `scratch/` was meant for ephemeral runtime data, but mutable `/project` turned `scratch/workdir` into the de facto personal CWD. Promoting its contents into `workspace` once and then dropping the path removes the ambiguity: `workspace/` is the persistent deployment/user root, project roots are project roots, and `scratch/subagents` remains the generic subagent instance scratch area. Any code that still references `workdirPath` for personal execution is a bug, not a compatibility feature.
+
 ## File Changes
 
 ### New files

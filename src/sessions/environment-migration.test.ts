@@ -2,11 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrateExecutionEnvironments } from "./environment-migration.ts";
+import { migrateExecutionEnvironments, type LegacyTopicSettingsValue } from "./environment-migration.ts";
 import { configPath, piSessionDir, sessionDir, sessionsDir, topicSettingsPath } from "./paths.ts";
 import { workspacePath, workdirPath } from "../workspace/paths.ts";
 import { dmSurface, supergroupSurface, surfaceId, topicSurface } from "../surface.ts";
 import type { BindingsFile, SessionState, TopicSettingsFile } from "./types.ts";
+
+/** Migration-only topic-settings file shape carrying legacy fields (e.g. pendingProjectNotice). */
+type LegacyTopicSettingsFileInput = { version: 1; surfaces: Record<string, LegacyTopicSettingsValue> };
 
 const SESSION_ID = "abcd1234ef";
 const OTHER_ID = "abcd1234f0";
@@ -37,7 +40,7 @@ function writeBindings(home: string, bindings: BindingsFile): void {
   writeFileSync(configPath(home), JSON.stringify(bindings), "utf-8");
 }
 
-function writeTopicSettings(home: string, settings: TopicSettingsFile): void {
+function writeTopicSettings(home: string, settings: TopicSettingsFile | LegacyTopicSettingsFileInput): void {
   mkdirSync(join(home, "state"), { recursive: true });
   writeFileSync(topicSettingsPath(home), JSON.stringify(settings), "utf-8");
 }
@@ -142,7 +145,7 @@ describe("environment-migration", () => {
     const surface = settings.surfaces[surfaceId(dmSurface(1))]!;
     expect(surface.projectRoot).toBe(projectDir);
     expect(surface.projectDir).toBeUndefined();
-    expect(surface.pendingProjectNotice).toBeUndefined();
+    expect((surface as LegacyTopicSettingsValue).pendingProjectNotice).toBeUndefined();
     expect(surface.modelName).toBe("custom-model");
     expect(surface.thinkingLevel).toBe("high");
   });

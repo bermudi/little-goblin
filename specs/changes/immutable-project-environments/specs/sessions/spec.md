@@ -284,6 +284,14 @@ The migration runner SHALL write version 2 only after the complete step succeeds
 - **THEN** it SHALL refuse to begin polling with the required version and migration remedy
 - **AND** SHALL NOT move workdir entries, rewrite settings, Conversation state, or pi history
 
+#### Scenario: Startup does not recreate the legacy personal workdir
+
+- **GIVEN** migration has promoted legacy `scratch/workdir` contents into `workspace` and advanced `stateVersion` to 2
+- **WHEN** Goblin starts normally
+- **THEN** startup directory creation SHALL NOT recreate `scratch/workdir`
+- **AND** the personal environment working directory SHALL remain `$GOBLIN_HOME/workspace`
+- **AND** personal delegated subagent fallback and preflight SHALL use `$GOBLIN_HOME/workspace`
+
 ## MODIFIED Requirements
 
 ### Requirement: Resolve sessions from complete Surface values

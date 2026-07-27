@@ -4,7 +4,6 @@ import { topicSettingsPath } from "./paths.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 import { log } from "../log.ts";
 import { surfaceId } from "../surface.ts";
-import { resolveProjectRoot } from "./environment.ts";
 
 const ALL_THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
@@ -80,7 +79,7 @@ export function loadLegacyTopicSettings(home: string): LegacyTopicSettingsFile {
 }
 
 function isEmptySettings(s: TopicSettings): boolean {
-  return !s.projectRoot && !s.projectDir && !s.pendingProjectNotice && !s.modelName && !s.thinkingLevel;
+  return !s.projectRoot && !s.modelName && !s.thinkingLevel;
 }
 
 function settingsForSurface(settings: TopicSettingsFile, surface: Surface): TopicSettings | undefined {
@@ -90,6 +89,10 @@ function settingsForSurface(settings: TopicSettingsFile, surface: Surface): Topi
 function updateSurface(settings: TopicSettingsFile, surface: Surface, updater: (s: TopicSettings) => TopicSettings): void {
   const key = surfaceId(surface);
   const next = updater(settings.surfaces[key] ?? {});
+  // Runtime settings never write the legacy projectDir field.
+  // pendingProjectNotice is migration-only and not on the runtime type;
+  // environment migration strips it via LegacyTopicSettingsValue.
+  delete next.projectDir;
   if (isEmptySettings(next)) {
     delete settings.surfaces[key];
   } else {
@@ -97,60 +100,33 @@ function updateSurface(settings: TopicSettingsFile, surface: Surface, updater: (
   }
 }
 
-/** Read the canonical project root for a complete Surface. */
+/** Read the canonical project root for a complete Surface. Runtime reads only projectRoot. */
 export function getProjectRoot(home: string, surface: Surface): string | undefined {
   const settings = loadTopicSettings(home);
-  const s = settingsForSurface(settings, surface);
-  return s?.projectRoot ?? s?.projectDir;
+  return settingsForSurface(settings, surface)?.projectRoot;
 }
 
 /**
- * Read the project root for a complete Surface using the legacy field name.
- * @deprecated Use `getProjectRoot`.
+ * Persist an immutable, set-once canonical project assignment for a Surface.
+ * Re-assigning the same root is a no-op; assigning a different root throws.
+ * Callers must canonicalize the path before calling.
  */
-export function getProjectDir(home: string, surface: Surface): string | undefined {
-  return getProjectRoot(home, surface);
-}
-
-/**
- * Bind (or clear) the canonical project root for a complete Surface.
- * This is the assignment primitive: it persists the canonical root and clears
- * any legacy projectDir/pendingProjectNotice for the Surface.
- */
-export function bindProjectRoot(home: string, surface: Surface, projectRoot: string | undefined): void {
+export function bindProjectRoot(home: string, surface: Surface, projectRoot: string): void {
+  if (!projectRoot) {
+    throw new Error("projectRoot is required; assignment clearing is not supported");
+  }
   const settings = loadTopicSettings(home);
-  updateSurface(settings, surface, (s) => ({
-    ...s,
-    projectRoot,
-    projectDir: undefined,
-    pendingProjectNotice: undefined,
-  }));
-  saveTopicSettings(home, settings);
-  log.info("bound projectRoot", { surfaceId: surfaceId(surface), projectRoot });
-}
-
-/**
- * Bind (or clear) the project directory for a complete Surface. Input is
- * canonicalized before storage. This legacy helper also sets `projectDir` and
- * a pending notice for backwards compatibility with mutable-project callers.
- * @deprecated Use `bindProjectRoot` for canonical assignment or
- * `SessionManager.assignProject` for immutable first assignment.
- */
-export function bindProjectDir(home: string, surface: Surface, projectDir: string | undefined): void {
-  if (projectDir === undefined) {
-    bindProjectRoot(home, surface, undefined);
+  const existing = settingsForSurface(settings, surface)?.projectRoot;
+  if (existing === projectRoot) {
+    log.info("project assignment already present", { surfaceId: surfaceId(surface), projectRoot });
     return;
   }
-  const canonical = resolveProjectRoot(projectDir);
-  const settings = loadTopicSettings(home);
-  updateSurface(settings, surface, (s) => ({
-    ...s,
-    projectRoot: canonical,
-    projectDir: canonical,
-    pendingProjectNotice: `Project directory changed to \`${canonical}\`.`,
-  }));
+  if (existing) {
+    throw new Error(`surface ${surfaceId(surface)} is already assigned to ${existing}; cannot reassign to ${projectRoot}`);
+  }
+  updateSurface(settings, surface, (s) => ({ ...s, projectRoot }));
   saveTopicSettings(home, settings);
-  log.info("bound projectDir (deprecated)", { surfaceId: surfaceId(surface), projectDir: canonical });
+  log.info("bound projectRoot", { surfaceId: surfaceId(surface), projectRoot });
 }
 
 /** Read the model override for a complete Surface, or undefined if using the config default. */
@@ -185,19 +161,4 @@ export function setThinkingLevel(home: string, surface: Surface, thinkingLevel: 
   updateSurface(settings, surface, (s) => ({ ...s, thinkingLevel }));
   saveTopicSettings(home, settings);
   log.info("bound thinkingLevel", { surfaceId: surfaceId(surface), thinkingLevel });
-}
-
-/** Read and clear the pending project notice for a complete Surface. */
-export function consumeProjectNotice(home: string, surface: Surface): string | undefined {
-  const settings = loadTopicSettings(home);
-  const existing = settingsForSurface(settings, surface);
-  if (!existing?.pendingProjectNotice) return undefined;
-
-  const notice = existing.pendingProjectNotice;
-  updateSurface(settings, surface, (s) => {
-    const { pendingProjectNotice: _, ...rest } = s;
-    return rest;
-  });
-  saveTopicSettings(home, settings);
-  return notice;
 }

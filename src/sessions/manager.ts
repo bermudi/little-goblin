@@ -6,17 +6,12 @@ import { surfaceId, parseSurfaceId, type Surface } from "../surface.ts";
 import type { SessionState, ConversationState, ConversationId } from "./types.ts";
 import { FileBindingStore } from "./bindings.ts";
 import { loadState, saveState } from "./state.ts";
-import {
-  getProjectRoot,
-  bindProjectDir as bindProjectDirInSettings,
-  consumeProjectNotice as consumeProjectNoticeFromSettings,
-} from "./topic-settings.ts";
+import { getProjectRoot } from "./topic-settings.ts";
 import { sessionsDir, sessionDir, transcriptPath, metricsPath } from "./paths.ts";
 import {
   type ExecutionEnvironment,
   personalEnvironment,
   environmentFromProjectRoot,
-  projectRootOf,
   environmentsEqual,
 } from "./environment.ts";
 import { reconcilePendingProjectAssignment } from "./project-assignment.ts";
@@ -33,7 +28,6 @@ import { isValidConversationId } from "./conversation.ts";
 function ensureSessionFiles(home: string, id: string): void {
   const dir = sessionDir(home, id);
   mkdirSync(dir, { recursive: true });
-  mkdirSync(join(dir, "workdir"), { recursive: true });
 
   const transcriptFile = transcriptPath(home, id);
   try {
@@ -97,29 +91,6 @@ export class SessionManager {
     // Avoid path traversal on the archive check; callers pass conversation ids.
     if (!isValidConversationId(sessionId)) return false;
     return existsSync(join(sessionsDir(this.home), "archive", sessionId));
-  }
-
-  /**
-   * Get the project root for a complete Surface from topic-settings.json.
-   * @deprecated Use `effectiveEnvironment(surface)`.
-   */
-  getProjectDir(surface: Surface): string | undefined {
-    return projectRootOf(this.effectiveEnvironment(surface));
-  }
-
-  /**
-   * Bind (or clear) the project directory for a complete Surface.
-   * @deprecated Use `ConversationLifecycle.assignProject` for first assignment.
-   */
-  bindProjectDir(surface: Surface, projectDir: string | undefined): void {
-    bindProjectDirInSettings(this.home, surface, projectDir);
-  }
-
-  /**
-   * Read and clear the pending project notice for a complete Surface.
-   */
-  consumeProjectNotice(surface: Surface): string | undefined {
-    return consumeProjectNoticeFromSettings(this.home, surface);
   }
 
   /**

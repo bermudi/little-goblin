@@ -12,9 +12,10 @@ import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { replyNoActiveSession, buildBot } from "./bot.ts";
 import { dmSurface, topicSurface } from "./surface.ts";
+import { projectRootOf } from "./sessions/environment.ts";
 import { MemoryStore } from "./memory/store.ts";
 import { metricsPath } from "./sessions/paths.ts";
-import { attachmentsPath, workdirPath, soulMdPath } from "./workspace/paths.ts";
+import { attachmentsPath, workspacePath, soulMdPath } from "./workspace/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
 import { TEXT_SPLIT_THRESHOLD, TEXT_SPLIT_WINDOW_MS } from "./tg/mod.ts";
 
@@ -200,7 +201,7 @@ async function makeBotWithRealRunner(cfgPatch: Partial<Config> = {}) {
   const base = makeConfig();
   const cfg: Config = Object.freeze({ ...base, ...cfgPatch });
   const home = cfg.goblinHome;
-  mkdirSync(workdirPath(home), { recursive: true });
+  mkdirSync(workspacePath(home), { recursive: true });
   mkdirSync(piAgentDir(home), { recursive: true });
   mkdirSync(dirname(soulMdPath(home)), { recursive: true });
   writeFileSync(soulMdPath(home), "test goblin identity\n", "utf-8");
@@ -421,7 +422,7 @@ describe("buildBot integration", () => {
 
     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
 
-    expect(built.manager.getProjectDir(dmSurface(1))).toBe(built.cfg.goblinHome);
+    expect(projectRootOf(built.manager.effectiveEnvironment(dmSurface(1)))).toBe(built.cfg.goblinHome);
     expect(prior.dispose).toHaveBeenCalled();
     expect(built.agentRunners.has(session.id)).toBe(false);
   });

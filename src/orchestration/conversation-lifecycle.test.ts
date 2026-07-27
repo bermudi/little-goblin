@@ -11,8 +11,9 @@ import { validateBindings } from "../sessions/bindings.ts";
 import type { BindingsFile } from "../sessions/types.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import { savePendingProjectAssignment } from "../sessions/project-assignment.ts";
-import { personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
-import { dmSurface, surfaceId } from "../surface.ts";
+import { getProjectRoot } from "../sessions/topic-settings.ts";
+import { environmentFromProjectRoot, personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
+import { dmSurface, surfaceId, supergroupSurface, type Surface } from "../surface.ts";
 
 class InMemoryBindingStore implements BindingStore {
   bindings: BindingsFile = { version: 1, surfaces: {} };
@@ -47,6 +48,10 @@ class FakeRuntimeHost implements ConversationRuntimeHost {
 
 function staticSettings(env: ExecutionEnvironment): SurfaceSettings {
   return { effectiveEnvironment: () => env };
+}
+
+function fileBasedSettings(home: string): SurfaceSettings {
+  return { effectiveEnvironment: (surface: Surface) => environmentFromProjectRoot(getProjectRoot(home, surface)) };
 }
 
 type Deps = {
@@ -387,6 +392,137 @@ describe("ConversationLifecycle", () => {
       store.create(projectEnvironment(projectRoot), "project");
       const list = lifecycle.listResumable(dmSurface(1));
       expect(list.map((c) => c.title)).toEqual(["personal"]);
+    });
+  });
+
+  describe("assignment replay and transition locking", () => {
+    function makeProjectDir(name: string): string {
+      const dir = join(tmpDir, name);
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+
+    it("fences an unbound Surface behind pending assignment replay", async () => {
+      const { store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const projectRoot = makeProjectDir("project");
+      const plannedId = store.allocateId();
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: surfaceId(surface),
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+
+      const lifecycle = new ConversationLifecycleManager(
+        tmpDir,
+        store,
+        bindings,
+        fileBasedSettings(tmpDir),
+        { disposeRuntime: async () => {} },
+      );
+      const result = await lifecycle.resolveOrStart(surface);
+
+      expect(result.id).toBe(plannedId);
+      expect(result.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(plannedId);
+      expect(store.list(personalEnvironment())).toHaveLength(0);
+    });
+
+    it("serializes unbound creation against first project assignment", async () => {
+      const { store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const projectRoot = makeProjectDir("project");
+      const lifecycle = new ConversationLifecycleManager(
+        tmpDir,
+        store,
+        bindings,
+        fileBasedSettings(tmpDir),
+        runtimeHost,
+      );
+
+      const [, assignResult] = await Promise.all([
+        lifecycle.resolveOrStart(surface),
+        lifecycle.assignProject(surface, projectRoot),
+      ]);
+
+      expect(assignResult.kind).toBe("assigned");
+      const finalId = bindings.bindings.surfaces[surfaceId(surface)];
+      expect(finalId).toBeDefined();
+      const bound = store.load(finalId as ConversationId);
+      expect(bound?.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+      // One of the two operations may have created a transient personal
+      // conversation, but the final binding is project and there are no
+      // duplicate Surface bindings.
+      expect(Object.keys(bindings.bindings.surfaces)).toHaveLength(1);
+    });
+
+    it("serializes cross-surface resume against first project assignment", async () => {
+      const { store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surfaceA = dmSurface(1);
+      const surfaceB = dmSurface(2);
+      const projectRoot = makeProjectDir("project");
+
+      const lifecycleA = new ConversationLifecycleManager(
+        tmpDir,
+        store,
+        bindings,
+        fileBasedSettings(tmpDir),
+        runtimeHost,
+      );
+      const personalP = await lifecycleA.resolveOrStart(surfaceA);
+
+      const lifecycleB = new ConversationLifecycleManager(
+        tmpDir,
+        store,
+        bindings,
+        fileBasedSettings(tmpDir),
+        runtimeHost,
+      );
+
+      const [resumeResult, assignResult] = await Promise.all([
+        lifecycleB.resume(surfaceB, personalP.id),
+        lifecycleB.assignProject(surfaceA, projectRoot),
+      ]);
+
+      expect(resumeResult.id).toBe(personalP.id);
+      expect(assignResult.kind).toBe("assigned");
+      const boundA = bindings.bindings.surfaces[surfaceId(surfaceA)];
+      const boundB = bindings.bindings.surfaces[surfaceId(surfaceB)];
+      expect(store.load(boundA as ConversationId)?.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+      expect(store.load(boundB as ConversationId)?.executionEnvironment).toEqual(personalEnvironment());
+    });
+
+    it("keeps separate Surfaces with the same project root isolated", async () => {
+      const { lifecycle, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surfaceA = dmSurface(1);
+      const surfaceB = supergroupSurface(-100);
+      const projectRoot = makeProjectDir("project");
+
+      const resultA = await lifecycle.assignProject(surfaceA, projectRoot);
+      const resultB = await lifecycle.assignProject(surfaceB, projectRoot);
+
+      expect(resultA.kind).toBe("assigned");
+      expect(resultB.kind).toBe("assigned");
+      if (resultA.kind === "assigned" && resultB.kind === "assigned") {
+        expect(resultA.session.id).not.toBe(resultB.session.id);
+        expect(resultA.session.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+        expect(resultB.session.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+      }
+      expect(bindings.bindings.surfaces[surfaceId(surfaceA)]).not.toBe(bindings.bindings.surfaces[surfaceId(surfaceB)]);
+    });
+
+    it("does not mutate the previous conversation environment on assignment", async () => {
+      const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const prior = await lifecycle.resolveOrStart(surface);
+      const projectRoot = makeProjectDir("project");
+
+      await lifecycle.assignProject(surface, projectRoot);
+
+      const reloaded = store.load(prior.id);
+      expect(reloaded?.executionEnvironment).toEqual(personalEnvironment());
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).not.toBe(prior.id);
     });
   });
 });

@@ -15,6 +15,7 @@ The pi `agentDir` and model/auth configuration SHALL remain deployment-owned und
 - **THEN** its `cwd` SHALL be `$GOBLIN_HOME/workspace`
 - **AND** its pi `agentDir` SHALL remain `$GOBLIN_HOME/state/pi`
 - **AND** no project `AGENTS.md`, project skills, external-agent tool, or project file destination SHALL be enabled
+- **AND** it SHALL NOT fall back to a legacy `scratch/workdir`
 
 #### Scenario: Project session initializes
 

@@ -6,7 +6,7 @@ import { ConfigFileSchema, type ExternalAgentsConfig, type McpConfig } from "./s
 import { resolveConfigValue } from "./resolve-value.ts";
 import { sessionsDir } from "./sessions/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
-import { skillsPath, workdirPath } from "./workspace/paths.ts";
+import { skillsPath } from "./workspace/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
 import { namedAgentsRoot, subagentsRoot } from "./subagents/paths.ts";
 import { externalAgentsRoot } from "./external-agents/paths.ts";
@@ -160,9 +160,9 @@ function resolveValue(value: unknown): unknown {
  * Call once at startup before any consumer tries to use the paths.
  *
  * Creates the canonical three-group layout:
- *   workspace/  — user-authored prompt files and skills
+ *   workspace/  — user-authored prompt files, skills, and the personal execution CWD
  *   state/      — machine-managed state
- *   scratch/    — ephemeral subagent workspace
+ *   scratch/    — ephemeral generic subagent instance data (not a personal workdir)
  *
  * Per decision `config-startup-filesystem-mutation` (0007), this function is
  * exempt from the AGENTS.md "Don't touch $GOBLIN_HOME" guardrail for
@@ -181,7 +181,6 @@ export function ensureGoblinHome(cfg: Config): void {
     memoryDir(home),
     piAgentDir(home),
     join(home, "scratch"),
-    workdirPath(home),
     subagentsRoot(home),
     externalAgentsRoot(home),
   ];

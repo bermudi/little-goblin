@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubagentRunner } from "../mod.ts";
-import { workdirPath } from "../../workspace/paths.ts";
+import { workspacePath } from "../../workspace/paths.ts";
 import type { SubagentMeta } from "../types.ts";
 import {
   genericSubagentDir,
@@ -94,7 +94,7 @@ describe("SubagentRunner.revive", () => {
     await flush();
 
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    expect(opts.cwd).toBe(workdirPath(tmp));
+    expect(opts.cwd).toBe(workspacePath(tmp));
     expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
       "memory_search",
       "memory_write",

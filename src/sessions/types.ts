@@ -71,8 +71,6 @@ export interface TopicSettings {
   projectRoot?: string;
   /** @deprecated Legacy field, present only until environment migration rewrites it to `projectRoot`. */
   projectDir?: string;
-  /** Queued notice injected as context on the next user message (e.g. project dir change). Consumed on read. */
-  pendingProjectNotice?: string;
   /** Surface-scoped model override. Falls back to config default when absent. */
   modelName?: string;
   /** Surface-scoped thinking level override. Falls back to model default when absent. */

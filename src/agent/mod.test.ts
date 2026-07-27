@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { heartbeatMdPathForSession, sessionDir, transcriptPath } from "../sessions/paths.ts";
 import { piAgentDir } from "../pi-host.ts";
-import { agentsMdPath, skillsPath, soulMdPath, workdirPath, workspacePath } from "../workspace/paths.ts";
+import { agentsMdPath, skillsPath, soulMdPath, workspacePath } from "../workspace/paths.ts";
 import { personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import { ExternalAgentRunner } from "../external-agents/mod.ts";
@@ -319,7 +319,6 @@ function makeRunner(
   modelName?: string,
   configOverrides: Partial<Config> = {},
   executionEnvironment?: ExecutionEnvironment,
-  pendingProjectNotice?: string,
   thinkingLevel?: string,
   dreamingPipeline?: DreamingPipeline,
 ) {
@@ -330,7 +329,6 @@ function makeRunner(
     customTools: customTools as never,
     getTopicName,
     executionEnvironment: executionEnvironment ?? personalEnvironment(),
-    pendingProjectNotice,
     thinkingLevel: thinkingLevel as never,
     dreamingPipeline,
     backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -347,7 +345,7 @@ beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "goblin-agent-test-"));
   mkdirSync(sessionDir(tmpDir, "abcdef1234"), { recursive: true });
   writeFileSync(transcriptPath(tmpDir, "abcdef1234"), "");
-  mkdirSync(workdirPath(tmpDir), { recursive: true });
+  mkdirSync(workspacePath(tmpDir), { recursive: true });
   mkdirSync(piAgentDir(tmpDir), { recursive: true });
   // SOUL.md lives under workspace/ — ensure the parent exists before writing.
   mkdirSync(dirname(soulMdPath(tmpDir)), { recursive: true });
@@ -703,7 +701,7 @@ describe("AgentRunner", () => {
     });
 
     it("passes thinkingLevel to createAgentSession on init", async () => {
-      const runner = makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, undefined, "high");
+      const runner = makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, "high");
       await runner.prompt("hello", nopCallbacks());
 
       expect(capturedCreateArgs).toHaveLength(1);
@@ -712,7 +710,7 @@ describe("AgentRunner", () => {
     });
 
     it("clears pending thinkingLevel after init so prompt() does not double-apply", async () => {
-      const runner = makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, undefined, "high");
+      const runner = makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, "high");
       await runner.prompt("hello", nopCallbacks());
 
       // setThinkingLevel should NOT have been called on the session because
@@ -788,35 +786,6 @@ describe("AgentRunner", () => {
       // The deferred model is what init resolves; setModel stays uncalled
       // because the session was created directly under the new model.
       expect(sessionHolder.setModel).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("pending project notice", () => {
-    it("injects notice via sendCustomMessage on init and clears it", async () => {
-      const runner = makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, "Project directory changed to `/foo`.");
-      await runner.prompt("hello", nopCallbacks());
-
-      // sendCustomMessage is called twice: once for the notice, once for memory snapshot (if any)
-      const calls = sessionHolder.sendCustomMessage.mock.calls;
-      const noticeCall = calls.find((c: unknown[]) => {
-        const msg = c[0] as Record<string, unknown>;
-        return msg?.customType === "project_notice";
-      });
-      expect(noticeCall).toBeDefined();
-      expect((noticeCall![0] as Record<string, unknown>).content).toBe("Project directory changed to `/foo`.");
-      expect((noticeCall![1] as Record<string, unknown>).deliverAs).toBe("nextTurn");
-    });
-
-    it("does not inject a notice when none is pending", async () => {
-      const runner = makeRunner(tmpDir);
-      await runner.prompt("hello", nopCallbacks());
-
-      const calls = sessionHolder.sendCustomMessage.mock.calls;
-      const noticeCall = calls.find((c: unknown[]) => {
-        const msg = c[0] as Record<string, unknown>;
-        return msg?.customType === "project_notice";
-      });
-      expect(noticeCall).toBeUndefined();
     });
   });
 
@@ -1716,7 +1685,7 @@ describe("AgentRunner", () => {
       dreaming.runLightSleep = runSpy as never;
 
       const runner = makeRunner(
-        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, dreaming,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
       );
       await runner.prompt("hello", nopCallbacks());
 
@@ -1737,7 +1706,7 @@ describe("AgentRunner", () => {
       dreaming.runLightSleep = runSpy as never;
 
       const runner = makeRunner(
-        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, dreaming,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
       );
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
@@ -1752,7 +1721,7 @@ describe("AgentRunner", () => {
       const dreaming = makeDreamingPipeline(tmpDir);
 
       const runner = makeRunner(
-        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, dreaming,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
       );
       await runner.prompt("hello", nopCallbacks());
 

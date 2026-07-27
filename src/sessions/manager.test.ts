@@ -9,9 +9,10 @@ import { savePendingProjectAssignment } from "./project-assignment.ts";
 import type { Config } from "../config.ts";
 import type { BindingsFile } from "./types.ts";
 import { configPath, sessionDir, sessionsDir, statePath } from "./paths.ts";
-import { dmSurface, guestSurface, topicSurface, surfaceId, type Surface } from "../surface.ts";
+import { dmSurface, guestSurface, surfaceId, type Surface } from "../surface.ts";
 import { personalEnvironment, projectEnvironment } from "./environment.ts";
 import { runtimeSessionWithPreferences } from "./conversation.ts";
+import { bindProjectRoot } from "./topic-settings.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -155,33 +156,28 @@ describe("SessionManager", () => {
     });
   });
 
-  describe("project dir", () => {
+  describe("effectiveEnvironment", () => {
     function makeProjectDir(name: string): string {
       const dir = join(tmpDir, name);
       mkdirSync(dir, { recursive: true });
       return dir;
     }
 
-    it("binds and reads projectDir per surface", async () => {
-      const surface = dmSurface(123);
-      const projectDir = makeProjectDir("project");
-      manager.bindProjectDir(surface, projectDir);
-      expect(manager.getProjectDir(surface)).toBe(projectDir);
+    it("returns personal for an unassigned surface", () => {
+      expect(manager.effectiveEnvironment(dmSurface(123))).toEqual(personalEnvironment());
     });
 
-    it("clears projectDir", async () => {
+    it("returns project for an assigned surface", () => {
       const surface = dmSurface(123);
-      manager.bindProjectDir(surface, makeProjectDir("project"));
-      manager.bindProjectDir(surface, undefined);
-      expect(manager.getProjectDir(surface)).toBeUndefined();
+      const projectDir = makeProjectDir("project");
+      bindProjectRoot(tmpDir, surface, projectDir);
+      expect(manager.effectiveEnvironment(surface)).toEqual(projectEnvironment(projectDir));
     });
 
-    it("consumes pending project notice", async () => {
-      const surface = topicSurface("supergroup", 123, 7);
-      const projectDir = makeProjectDir("project");
-      manager.bindProjectDir(surface, projectDir);
-      expect(manager.consumeProjectNotice(surface)).toBe(`Project directory changed to \`${projectDir}\`.`);
-      expect(manager.consumeProjectNotice(surface)).toBeUndefined();
+    it("does not expose legacy bindProjectDir/getProjectDir/consumeProjectNotice", () => {
+      expect("bindProjectDir" in manager).toBe(false);
+      expect("getProjectDir" in manager).toBe(false);
+      expect("consumeProjectNotice" in manager).toBe(false);
     });
   });
 });

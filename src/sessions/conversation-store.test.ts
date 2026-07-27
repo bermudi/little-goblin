@@ -31,7 +31,6 @@ describe("ConversationStore", () => {
       expect(existsSync(transcriptPath(tmpDir, state.id))).toBe(true);
       expect(existsSync(metricsPath(tmpDir, state.id))).toBe(true);
       expect(existsSync(join(sessionDir(tmpDir, state.id), "events.jsonl"))).toBe(true);
-      expect(existsSync(join(sessionDir(tmpDir, state.id), "workdir"))).toBe(true);
     });
 
     it("creates a project conversation", () => {

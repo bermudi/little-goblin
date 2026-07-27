@@ -7,9 +7,26 @@ import type { SurfaceId } from "../surface.ts";
 import {
   clearPendingProjectAssignment,
   loadPendingProjectAssignment,
+  reconcilePendingProjectAssignment,
   savePendingProjectAssignment,
 } from "./project-assignment.ts";
-import { pendingProjectAssignmentPath } from "./paths.ts";
+import { pendingProjectAssignmentPath, topicSettingsPath } from "./paths.ts";
+import { ConversationStore } from "./conversation-store.ts";
+import { personalEnvironment, projectEnvironment } from "./environment.ts";
+import { loadTopicSettings } from "./topic-settings.ts";
+import type { BindingsFile } from "./types.ts";
+
+class InMemoryBindingStore {
+  bindings: BindingsFile = { version: 1, surfaces: {} };
+
+  load(): BindingsFile {
+    return this.bindings;
+  }
+
+  save(b: BindingsFile): void {
+    this.bindings = { version: 1, surfaces: { ...b.surfaces } } as BindingsFile;
+  }
+}
 
 function makeIntent(id: SurfaceId, projectRoot: string, previousSessionId?: string) {
   return {
@@ -23,9 +40,13 @@ function makeIntent(id: SurfaceId, projectRoot: string, previousSessionId?: stri
 
 describe("project-assignment", () => {
   let tmpDir: string;
+  let store: ConversationStore;
+  let bindings: InMemoryBindingStore;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-pa-test-"));
+    store = new ConversationStore(tmpDir);
+    bindings = new InMemoryBindingStore();
   });
 
   afterEach(() => {
@@ -65,6 +86,165 @@ describe("project-assignment", () => {
     it("is a no-op when no intent exists", () => {
       clearPendingProjectAssignment(tmpDir);
       expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+    });
+  });
+
+  describe("reconcilePendingProjectAssignment", () => {
+    function makeProjectDir(name: string): string {
+      const dir = join(tmpDir, name);
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+
+    function writeState(id: string, env: unknown): void {
+      const dir = join(tmpDir, "state", "sessions", id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "state.json"), JSON.stringify({ id, createdAt: new Date().toISOString(), executionEnvironment: env }), "utf-8");
+      writeFileSync(join(dir, "transcript.jsonl"), "", "utf-8");
+      writeFileSync(join(dir, "metrics.jsonl"), "", "utf-8");
+      writeFileSync(join(dir, "events.jsonl"), "", "utf-8");
+    }
+
+    const surface = dmSurface(1);
+    const key = surfaceId(surface);
+    const plannedId = "abc123def0";
+    let projectRoot: string;
+
+    beforeEach(() => {
+      projectRoot = makeProjectDir("project");
+    });
+
+    it("creates Q when Q is absent", () => {
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+
+      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+
+      expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+      expect(store.load(plannedId)?.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+      expect(bindings.bindings.surfaces[key]).toBe(plannedId);
+      expect(loadTopicSettings(tmpDir).surfaces[key]).toEqual({ projectRoot });
+    });
+
+    it("reuses Q when a matching Q exists", () => {
+      writeState(plannedId, projectEnvironment(projectRoot));
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+
+      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+
+      expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+      const list = store.list();
+      expect(list).toHaveLength(1);
+      expect(list[0]?.id).toBe(plannedId);
+      expect(bindings.bindings.surfaces[key]).toBe(plannedId);
+      expect(loadTopicSettings(tmpDir).surfaces[key]).toEqual({ projectRoot });
+    });
+
+    it("binds Q when settings were persisted before binding", () => {
+      writeState(plannedId, projectEnvironment(projectRoot));
+      mkdirSync(join(tmpDir, "state"), { recursive: true });
+      writeFileSync(topicSettingsPath(tmpDir), JSON.stringify({ version: 1, surfaces: { [key]: { projectRoot } } }), "utf-8");
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+
+      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+
+      expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+      expect(bindings.bindings.surfaces[key]).toBe(plannedId);
+    });
+
+    it("binds Q when previous session P was persisted before binding", () => {
+      const previousId = "fed321cba0";
+      writeState(plannedId, projectEnvironment(projectRoot));
+      writeState(previousId, personalEnvironment());
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        previousSessionId: previousId,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+      bindings.bindings = { version: 1, surfaces: { [key]: previousId } } as BindingsFile;
+
+      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+
+      expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+      expect(bindings.bindings.surfaces[key]).toBe(plannedId);
+      expect(store.load(previousId)).not.toBeNull();
+    });
+
+    it("clears the intent when binding already points to Q", () => {
+      writeState(plannedId, projectEnvironment(projectRoot));
+      mkdirSync(join(tmpDir, "state"), { recursive: true });
+      writeFileSync(topicSettingsPath(tmpDir), JSON.stringify({ version: 1, surfaces: { [key]: { projectRoot } } }), "utf-8");
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+      bindings.bindings = { version: 1, surfaces: { [key]: plannedId } } as BindingsFile;
+
+      const beforeList = store.list();
+      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+
+      expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+      expect(store.list()).toEqual(beforeList);
+      expect(bindings.bindings.surfaces[key]).toBe(plannedId);
+    });
+
+    it("fails before settings or binding when the future Conversation ID conflicts", () => {
+      writeState(plannedId, personalEnvironment());
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+
+      expect(() => reconcilePendingProjectAssignment(tmpDir, store, bindings)).toThrow(/different execution environment/);
+      expect(loadPendingProjectAssignment(tmpDir)).not.toBeNull();
+      expect(loadTopicSettings(tmpDir).surfaces[key]).toBeUndefined();
+      expect(bindings.bindings.surfaces[key]).toBeUndefined();
+    });
+
+    it("rejects an invalid surface id in the intent", () => {
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: "not-a-valid-surface-id" as SurfaceId,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+
+      expect(() => reconcilePendingProjectAssignment(tmpDir, store, bindings)).toThrow(/invalid surface id/);
+    });
+
+    it("overwrites an invalid binding when replaying", () => {
+      writeState(plannedId, projectEnvironment(projectRoot));
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+      bindings.bindings = { version: 1, surfaces: { [key]: "not-valid" } } as BindingsFile;
+
+      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+
+      expect(bindings.bindings.surfaces[key]).toBe(plannedId);
     });
   });
 });

@@ -6,9 +6,10 @@ import type { MemoryStore } from "../memory/mod.ts";
 import type { SessionState } from "../sessions/mod.ts";
 import type { Config } from "../config.ts";
 import type { Surface } from "../surface.ts";
-import { personalEnvironment } from "../sessions/environment.ts";
+import { personalEnvironment, projectEnvironment } from "../sessions/environment.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import type { TurnSink, SurfaceSettings } from "./dispatcher.ts";
+import { dmSurface } from "../surface.ts";
 
 class FakeAgentRunner {
   disposeCalled = false;
@@ -86,17 +87,32 @@ class FakeMemoryStore {
   }
 }
 
-function buildDispatcher(opts: { runners?: Map<string, AgentRunner>; subagentRunner?: SubagentRunner } = {}): {
+function buildDispatcher(
+  opts: {
+    runners?: Map<string, AgentRunner>;
+    subagentRunner?: SubagentRunner;
+    surfaceEnv?: ExecutionEnvironment;
+    createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
+  } = {},
+): {
   dispatcher: TurnDispatcher;
   runners: Map<string, AgentRunner>;
   subagentRunner: FakeSubagentRunner;
+  betaSurfaces: Surface[];
+  createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][];
 } {
   const runners = opts.runners ?? new Map<string, AgentRunner>();
   const subagentRunner = (opts.subagentRunner ?? new FakeSubagentRunner()) as unknown as SubagentRunner;
+  const surfaceEnv = opts.surfaceEnv ?? personalEnvironment();
   const surfaceSettings: SurfaceSettings = {
-    effectiveEnvironment: (_surface: Surface): ExecutionEnvironment => personalEnvironment(),
-    consumeProjectNotice: (_surface: Surface): string | undefined => undefined,
+    effectiveEnvironment: (_surface: Surface): ExecutionEnvironment => surfaceEnv,
   };
+  const betaSurfaces: Surface[] = [];
+  const createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][] = [];
+  const createAgentRunner = opts.createAgentRunner ?? ((o) => {
+    createAgentRunnerCalls.push(o);
+    return o as unknown as AgentRunner;
+  });
 
   const dispatcher = new TurnDispatcher({
     cfg: {} as Config,
@@ -113,11 +129,14 @@ function buildDispatcher(opts: { runners?: Map<string, AgentRunner>; subagentRun
       onMessageEnd: () => {},
       onAgentEnd: () => {},
     }),
-    createBetaTools: () => [],
-    createAgentRunner: (opts) => opts as unknown as AgentRunner,
+    createBetaTools: (surface: Surface) => {
+      betaSurfaces.push(surface);
+      return [];
+    },
+    createAgentRunner,
   });
 
-  return { dispatcher, runners, subagentRunner: subagentRunner as unknown as FakeSubagentRunner };
+  return { dispatcher, runners, subagentRunner: subagentRunner as unknown as FakeSubagentRunner, betaSurfaces, createAgentRunnerCalls };
 }
 
 function makeSession(id: string, env: ExecutionEnvironment = personalEnvironment()): SessionState {
@@ -163,5 +182,32 @@ describe("TurnDispatcher runtime host support", () => {
     // Synchronous: the runner is gone before dispose resolves.
     expect(dispatcher.getRunner(session.id)).toBeNull();
     await disposePromise;
+  });
+
+  it("rejects an environment mismatch before creating the runner or beta tools", () => {
+    const projectRoot = "/srv/project-a";
+    const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
+      surfaceEnv: projectEnvironment(projectRoot),
+    });
+    const session = makeSession("abc123def0", personalEnvironment());
+
+    expect(() => dispatcher.createRunner(session, dmSurface(1))).toThrow(/environment mismatch/);
+    expect(betaSurfaces).toHaveLength(0);
+    expect(createAgentRunnerCalls).toHaveLength(0);
+  });
+
+  it("creates an internal runner without Surface comparison", () => {
+    const projectRoot = "/srv/project-a";
+    const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
+      surfaceEnv: projectEnvironment(projectRoot),
+    });
+    const session = makeSession("abc123def0", personalEnvironment());
+    session.chatId = 0;
+
+    dispatcher.createRunner(session, dmSurface(1));
+
+    expect(betaSurfaces).toHaveLength(0);
+    expect(createAgentRunnerCalls).toHaveLength(1);
+    expect(createAgentRunnerCalls[0]?.executionEnvironment).toEqual(personalEnvironment());
   });
 });

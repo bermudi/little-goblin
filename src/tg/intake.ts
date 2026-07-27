@@ -27,7 +27,7 @@ import { createConversationLifecycle } from "../orchestration/conversation-lifec
 import { createTurnDispatcherRuntimeHost } from "../orchestration/conversation-runtime-host.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
-import { getProjectRoot, consumeProjectNotice } from "../sessions/topic-settings.ts";
+import { getProjectRoot } from "../sessions/topic-settings.ts";
 import { environmentFromProjectRoot } from "../sessions/environment.ts";
 import { transcribeWithGroq } from "../asr/mod.ts";
 import { MessageBuffer, createTextToSpeechTool } from "./mod.ts";
@@ -234,7 +234,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   };
   const surfaceSettings: SurfaceSettings = {
     effectiveEnvironment: (surface) => environmentFromProjectRoot(getProjectRoot(cfg.goblinHome, surface)),
-    consumeProjectNotice: (surface) => consumeProjectNotice(cfg.goblinHome, surface),
   };
 
   const dispatcher = new TurnDispatcher({

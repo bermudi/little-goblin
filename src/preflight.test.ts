@@ -29,7 +29,6 @@ function setupHome(): string {
   mkdirSync(join(home, "state", "sessions"), { recursive: true });
   mkdirSync(join(home, "state", "memory"), { recursive: true });
   mkdirSync(join(home, "scratch"), { recursive: true });
-  mkdirSync(join(home, "scratch", "workdir"), { recursive: true });
   writeFileSync(join(home, "workspace", "SOUL.md"), "# Test Goblin\n");
   return home;
 }

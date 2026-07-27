@@ -7,7 +7,7 @@ import { resolveModel } from "./agent/models.ts";
 import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
 import { atomicWrite } from "./fs.ts";
 import { log } from "./log.ts";
-import { skillsPath, workdirPath } from "./workspace/paths.ts";
+import { skillsPath, workspacePath } from "./workspace/paths.ts";
 import { sessionsDir } from "./sessions/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
 import { runExternalAgentsPreflight } from "./external-agents/preflight.ts";
@@ -61,7 +61,7 @@ export async function runPreflight(cfg: Config): Promise<void> {
     await checkDirectoryWritable(join(cfg.goblinHome, "state"));
     await checkDirectoryWritable(sessionsDir(cfg.goblinHome));
     await checkDirectoryWritable(memoryDir(cfg.goblinHome));
-    await checkDirectoryWritable(workdirPath(cfg.goblinHome));
+    await checkDirectoryWritable(workspacePath(cfg.goblinHome));
   });
 
   await ctx.check("atomic write works in state/", async () => {

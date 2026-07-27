@@ -75,9 +75,9 @@ If the Surface is already assigned, the command SHALL compare canonical roots. T
 - **THEN** the command SHALL reply that the path is not an accessible directory
 - **AND** SHALL NOT change the Surface assignment or binding
 
-#### Scenario: Path is unreadable
+#### Scenario: Path is not accessible
 
-- **WHEN** the user sends `/project` with a directory the Goblin process cannot read and search
+- **WHEN** the user sends `/project` with a directory the Goblin process cannot read, write, or search
 - **THEN** the command SHALL reject the path
 - **AND** SHALL NOT change the Surface assignment or binding
 

@@ -228,49 +228,36 @@ The `AgentRunner` SHALL expose an `abort()` method that calls pi's `AgentSession
 
 ### Requirement: AgentRunner injects memory snapshot as per-turn aside
 
-The `AgentRunner` SHALL build a bounded frozen memory summary at session creation and append it to `_baseSystemPrompt`. The frozen summary SHALL include the active scope description, a bounded `user.md` summary, a bounded active scope `memory.md` summary, and a cross-scope index, bounded to 1200 characters total. The frozen summary SHALL NOT be refreshed mid-session.
+The `AgentRunner` SHALL use the frozen summary and frozen deduplication bodies supplied in its captured runtime memory context. It SHALL append the non-null summary to the base system prompt exactly once during lazy pi-session initialization and SHALL not rebuild or refresh it for the runtime lifetime. The accepted 1200-character bound and stale-memory guardrail SHALL remain.
 
-The `AgentRunner` SHALL NOT inject the full `[goblin memory snapshot]` per-turn aside. Instead, before each `prompt()` call it SHALL compute a `## relevant memory` section via hybrid search on the current prompt text and inject it via `sendCustomMessage(..., { deliverAs: "nextTurn" })`. The `## relevant memory` section SHALL be bounded to 3 results by default and clamped to a maximum of 5.
+Before each fresh `prompt()` it SHALL compute the bounded `## relevant memory` aside using the same capture and current prompt text, then inject it as `nextTurn`. It SHALL not inject the removed full snapshot, and `followUp()` SHALL not independently inject memory.
 
-#### Scenario: Session creation injects frozen summary into system prompt
+#### Scenario: Frozen summary uses captured destination context
 
-- **WHEN** `AgentRunner` creates a new `AgentSession`
-- **THEN** `_baseSystemPrompt` SHALL include the frozen memory summary
-- **AND** the frozen summary SHALL remain unchanged for the lifetime of the session
+- **WHEN** a replacement runtime on Surface Y initializes
+- **THEN** its system prompt SHALL include the summary captured for Y at runtime creation
+- **AND** SHALL not rebuild from a later binding
 
-#### Scenario: Per-turn prompt injects relevant memory, not full snapshot
+#### Scenario: Per-turn memory uses the same capture
 
-- **WHEN** a new user turn is dispatched via `prompt()`
-- **THEN** `sendCustomMessage` SHALL be called with a `## relevant memory` section computed from the prompt text
-- **AND** the message SHALL be delivered as `nextTurn`
-- **AND** the full `[goblin memory snapshot]` SHALL NOT be injected
-
-#### Scenario: Mid-turn steer does not advance cursor independently
-
-- **WHEN** `followUp()` steers a running turn
-- **THEN** the cursor SHALL not advance until the combined turn reaches `agent_end`
-- **AND** the completed combined turn SHALL advance the cursor once
+- **WHEN** the runtime handles several fresh prompts
+- **THEN** each relevant-memory search SHALL use the capture's ActiveScope and caller descriptor
+- **AND** frozen-summary deduplication SHALL use the bodies captured with that summary
 
 ### Requirement: AgentRunner registers the memory write tool
 
-The `AgentRunner` SHALL include two memory tool definitions in the `customTools` it passes to `createAgentSession`, in addition to any tools provided by the caller:
+The `AgentRunner` SHALL register `memory_search` and `memory_write` in addition to caller-supplied tools and SHALL keep `memory_read` and `memory_read_index` removed. Both tool factories SHALL receive the runner's captured runtime memory context. `memory_write` MUST NOT expose arbitrary scope input; `memory_search` SHALL preserve the accepted same-chat, corpus, `all_chats`, and persona rules. The runner SHALL not wire either tool from `(chatId, topicId)`, `ChatLocator`, current binding, or Conversation metadata.
 
-1. `memory_search` — hybrid search over memory entries and transcript chunks. Subsumes the former `memory_read` (query omitted + scope provided → return entries) and `memory_read_index` (query omitted + scope omitted → return index).
-2. `memory_write` — mutate the active scope only.
+#### Scenario: Runtime tools share one capture
 
-The `memory_read` and `memory_read_index` tools SHALL be removed. The `memory_write` tool's `target` parameter SHALL be wired to resolve to a `(scope, entry_kind)` pair based on the runner's `(chatId, topicId)` or named-agent identity. The agent MUST NOT be given the ability to supply an arbitrary scope on writes. The `memory_search` tool SHALL use the same active scope and chat boundary as the former `memory_read_index` unless `all_chats` is explicitly requested. Persona scope eligibility for `memory_search` SHALL match the former `memory_read_index` `agents` gating: the main goblin agent searches all persona scopes; a named subagent searches only its own persona scope; anonymous subagents search none.
+- **WHEN** a runner is created for a topic Surface
+- **THEN** both memory tools SHALL receive the same projected ActiveScope and main caller descriptor
+- **AND** writes to `target = "memory"` SHALL resolve to that topic scope
 
-#### Scenario: Runner constructed for a topic
+#### Scenario: Caller tools remain present
 
-- **WHEN** `AgentRunner` is constructed for a session bound to topic `42` in chat `-100123`
-- **THEN** the `customTools` array passed to `createAgentSession` SHALL include `memory_search` and `memory_write`
-- **AND** SHALL NOT include `memory_read` or `memory_read_index`
-- **AND** the `memory_write` tool's invocation handler SHALL resolve `target = "memory"` to `scope = "topics/-100123/42"`, `entry_kind = "memory"`
-
-#### Scenario: Caller-supplied tools preserved
-
-- **WHEN** `AgentRunner` is constructed with `customTools = [t1, t2]`
-- **THEN** the `customTools` array passed to `createAgentSession` SHALL include `t1`, `t2`, plus `memory_search` and `memory_write`
+- **WHEN** the runner receives caller-supplied tools
+- **THEN** those tools plus `memory_search` and `memory_write` SHALL be registered as currently accepted
 
 ### Requirement: Shared event dispatch function in agent/events.ts
 
@@ -620,3 +607,22 @@ The `AgentRunner` SHALL expose a `metrics: MetricsStore` getter (or equivalent) 
 
 - **WHEN** `AgentRunner` is constructed and `metrics` is accessed before `prompt()` is called
 - **THEN** it SHALL return a `MetricsStore` bound to the runner's session
+
+### Requirement: AgentRunner receives one captured runtime memory context
+
+A user-visible `AgentRunner` SHALL receive a complete immutable runtime memory context from the conversation-runtime factory. The capture SHALL already contain the validated source SurfaceId, deterministic ActiveScope projection, main caller descriptor, frozen summary, and frozen-summary deduplication inputs. `AgentRunner` MUST NOT accept `ChatLocator`, current-binding access, Conversation creation routing fields, or raw scope-policy knobs for memory behavior.
+
+Capture SHALL occur when the conversation runtime is created, before lazy pi `AgentSession` initialization. Lazy initialization SHALL consume the existing capture without rereading Surface state. Disposing and replacing a runtime is the only way to change its memory context.
+
+#### Scenario: Lazy initialization does not refresh memory context
+
+- **GIVEN** a runtime has captured memory context from Surface X
+- **WHEN** its pi AgentSession initializes later
+- **THEN** it SHALL use the existing X capture
+- **AND** SHALL not resolve a current binding or rebuild ActiveScope
+
+#### Scenario: Replacement runtime receives destination capture
+
+- **WHEN** orchestration replaces a moved Conversation's runtime on Surface Y
+- **THEN** the new AgentRunner SHALL receive a newly captured Y context
+- **AND** no memory-context field from X SHALL be retained

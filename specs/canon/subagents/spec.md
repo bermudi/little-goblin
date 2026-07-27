@@ -80,21 +80,35 @@ Every subagent spawn SHALL create a persisted pi session. Generic subagents use 
 
 ### Requirement: Subagent revival loads persisted session
 
-The `revive(id, prompt)` method on `SubagentRunner` SHALL load a subagent's conversation from disk and continue it, returning the subagent's response as a string.
+The subagent revival operation SHALL load and continue the persisted pi conversation history and SHALL process the new prompt as currently accepted. Revival SHALL be treated as a new invocation: its caller MUST supply the reviving parent runtime's captured memory context, and the revived invocation SHALL derive its caller descriptor from the persisted role/name. It MUST NOT restore active memory authority from persisted legacy `activeScope`, Conversation creation metadata, or current binding lookup.
+
+`TurnDispatcher` SHALL own the command-facing revival operation. It SHALL execute under a lifecycle-provided current-binding guard and, before `AgentSession` creation, verify that the requested Surface is still bound to the requested Conversation, that the registered parent runner is current for that Surface, and that its captured `sourceSurfaceId` equals that Surface. It SHALL attach the revived invocation before the guard releases. Command handlers MUST NOT independently join a runner/capture to lifecycle binding state. A binding replacement SHALL wait for the guarded operation; an absent, stale, internal, or Surface-mismatched runtime SHALL fail without creating a subagent session.
 
 #### Scenario: Revive after restart
 
-- **WHEN** goblin restarts and calls `revive("abc123", "Check results")`
-- **THEN** subagent "abc123" SHALL be loaded from its `session.jsonl`
-- **AND** conversation history SHALL be intact
-- **AND** the new prompt SHALL be processed
-- **AND** the response SHALL be returned as a string
+- **WHEN** a parent runtime revives a persisted subagent after restart
+- **THEN** the prior subagent conversation history SHALL be loaded
+- **AND** the new invocation SHALL capture the reviving parent runtime's ActiveScope
 
-#### Scenario: Revive with new prompt
+#### Scenario: Conversation moved before revival
 
-- **WHEN** revive is called with a prompt
-- **THEN** the subagent SHALL receive it as a new user message
-- **AND** it SHALL respond based on combined history + new prompt
+- **GIVEN** a subagent was originally spawned from Surface X
+- **AND** its owning Conversation now has a runtime on Surface Y
+- **WHEN** that runtime revives the subagent
+- **THEN** the revival invocation SHALL use Y's captured ActiveScope
+- **AND** SHALL preserve the subagent history without treating X's persisted scope as live authority
+
+#### Scenario: Revival without parent context is rejected
+
+- **WHEN** revival is requested without an invoking runtime memory capture
+- **THEN** it SHALL fail before creating a subagent AgentSession
+
+#### Scenario: Binding rotation races revival
+
+- **GIVEN** a Conversation is bound to Surface X with a current captured runtime
+- **WHEN** revival begins on X while a lifecycle transition requests replacement on Y
+- **THEN** revival SHALL either attach using X before the transition proceeds or fail before creating a subagent AgentSession
+- **AND** it SHALL never create an invocation from X after Y becomes current
 
 ### Requirement: Recursion depth capped at 3
 
@@ -252,71 +266,52 @@ The adapter SHALL be constructed fresh per-event (no retained state). No inline 
 
 ### Requirement: Anonymous subagents inherit parent's active memory scope
 
-When `SubagentRunner` spawns a generic (unnamed) subagent, the subagent SHALL receive `memory_read`, `memory_read_index`, and `memory_write` tool definitions wired to the *parent's* active scope. Both reads and writes resolve as if the subagent were the parent agent itself: `memory_write({target: "memory"})` from the subagent writes to the parent's `state/memory/topics/<chat>/<topic>/memory.md` (or `state/memory/general/memory.md` for DM/supergroup-no-topic parents).
+A generic subagent SHALL receive the parent runtime's captured ActiveScope and an anonymous-subagent caller descriptor. Its `memory_search` and `memory_write` tools SHALL consume that immutable invocation capture. `target = "memory"` SHALL resolve to the captured topic/general scope, while `target = "agent"` SHALL be rejected. The subagent MUST NOT resolve a parent locator or current binding.
 
-Anonymous subagents have no named-agent identity; `memory_write({target: "agent"})` SHALL be rejected for them with the same error path as the main goblin agent.
+#### Scenario: Generic subagent writes captured topic
 
-#### Scenario: Generic subagent in a topic writes to parent's scope
+- **WHEN** a generic subagent captured topic 42 and writes `target = "memory"`
+- **THEN** the entry SHALL be inserted in `topics/<chatId>/42`
+- **AND** a later parent move SHALL not retarget the write
 
-- **WHEN** the main agent in topic `42` spawns a generic subagent
-- **AND** the subagent calls `memory_write({action: "add", target: "memory", content: "..."})`
-- **THEN** the entry SHALL be appended to `state/memory/topics/<chat>/42/memory.md`
-- **AND** the resulting git commit SHALL have subject `memory: add in topics/<chat>/42`
+#### Scenario: Generic persona write is rejected
 
-#### Scenario: Generic subagent target=agent is rejected
-
-- **WHEN** a generic subagent calls `memory_write({action: "add", target: "agent", ...})`
-- **THEN** the tool SHALL return an error stating that `target = "agent"` is only valid for named subagents
-- **AND** no file SHALL be modified
+- **WHEN** a generic subagent writes `target = "agent"`
+- **THEN** the call SHALL fail with the same non-named-caller error as the main agent
 
 ### Requirement: Named subagents have a three-tier memory model
 
-When `SubagentRunner` spawns a named subagent (loaded from `$GOBLIN_HOME/workspace/agents/<name>/`), the subagent's per-turn memory snapshot SHALL include three tiers:
+A named subagent SHALL preserve the accepted three-tier model: global user plus its own persona identity tier, the parent invocation's captured active tier, and caller-authorized progressive discovery. Its named caller descriptor SHALL control persona visibility and `target = "agent"`; its captured ActiveScope SHALL control `target = "memory"` and same-chat discovery. Named identity MUST NOT be added to or resolved through `Surface → ActiveScope`.
 
-1. **Identity tier (always loaded):** the global `user.md` and the named agent's own `state/memory/agents/<name>/memory.md` persona memory.
-2. **Active tier (always loaded):** the parent's active scope `memory.md` (`state/memory/topics/<chat>/<topic>/memory.md` or `state/memory/general/memory.md`).
-3. **Progressive tier (on-demand):** the cross-scope index, fetched via `memory_read_index` and inspected on demand via `memory_read({scope: ...})`.
+All tiers SHALL be frozen/queried through the invocation capture. The subagent SHALL not receive a path-based scope write, parent locator, binding reader, or other persona scopes.
 
-All three tiers are writable by the named subagent through `memory_write`:
-- `target: "user"` → global `user.md`.
-- `target: "memory"` → parent's active scope.
-- `target: "agent"` → named subagent's own `state/memory/agents/<name>/memory.md`.
+#### Scenario: Named context keeps persona separate
 
-The named subagent MUST NOT be given a path-based scope argument on `memory_write`. The active scope is resolved server-side from the parent's session locator (for `target: "memory"`) and from the subagent's named identity (for `target: "agent"`).
+- **WHEN** named subagent `researcher` is spawned from a topic runtime
+- **THEN** its frozen context SHALL include global user memory, the captured topic memory, and `agents/researcher`
+- **AND** SHALL exclude other persona scopes
 
-#### Scenario: Named subagent persona is loaded into snapshot
+#### Scenario: Named writes use separate authorities
 
-- **WHEN** a named subagent `researcher` is spawned from a session in topic `42`
-- **AND** `state/memory/agents/researcher/memory.md` has content
-- **THEN** the subagent's per-turn snapshot SHALL include the persona file under a `## agent persona` section
-- **AND** the snapshot SHALL also include the global `## user.md` and the parent's active `## memory.md`
-
-#### Scenario: Named subagent writes to its own persona
-
-- **WHEN** named subagent `researcher` calls `memory_write({action: "add", target: "agent", content: "PubMed paywall workaround: ..."})`
-- **THEN** the entry SHALL be appended to `state/memory/agents/researcher/memory.md`
-- **AND** the git commit SHALL have subject `memory: add in agents/researcher`
-- **AND** no other scope file SHALL be modified
-
-#### Scenario: Named subagent writes findings to parent's active scope
-
-- **WHEN** named subagent `researcher` spawned from topic `42` calls `memory_write({action: "add", target: "memory", content: "..."})`
-- **THEN** the entry SHALL be appended to `state/memory/topics/<chat>/42/memory.md`
-- **AND** the named subagent's own persona file SHALL NOT be modified
+- **WHEN** `researcher` writes `target = "memory"` and then `target = "agent"`
+- **THEN** the first write SHALL use the captured ActiveScope
+- **AND** the second SHALL use the named caller descriptor
 
 ### Requirement: Subagent memory access uses the same tool surface as the main agent
 
-The three memory tools (`memory_read`, `memory_read_index`, `memory_write`) SHALL have identical schemas regardless of whether they are registered on the main `AgentRunner` or on a `SubagentRunner`. What differs is solely the resolution of the active scope and (for named subagents) the meaning of `target: "agent"`. The agent-facing schema MUST NOT contain runner-type-specific branches.
+Subagents SHALL use the same `memory_search` and `memory_write` schemas as the main agent. The schemas SHALL remain caller-agnostic; behavior SHALL differ only through the validated invocation memory capture. Generic and named subagents MUST NOT receive locator, Surface, arbitrary-scope, or policy-knob inputs. Persona rejection and active-scope write behavior SHALL retain parity with the main memory module.
 
 #### Scenario: Tool schema parity
 
-- **WHEN** the JSON schema for `memory_write` is compared between the main agent's tool registration and a generic subagent's tool registration
-- **THEN** the schemas SHALL be byte-identical
+- **WHEN** main, generic-subagent, and named-subagent memory tool schemas are compared
+- **THEN** they SHALL be identical
+- **AND** none SHALL expose runtime memory authority as model input
 
-#### Scenario: target=agent error parity
+#### Scenario: Runtime capture differs behind the same schema
 
-- **WHEN** `memory_write({target: "agent"})` is called from any caller without a named identity (main agent or generic subagent)
-- **THEN** the returned error message SHALL be the same string in every case
+- **WHEN** callers invoke identical memory tool inputs
+- **THEN** the tool implementation SHALL apply each caller's prevalidated capture
+- **AND** SHALL not branch on a model-supplied runner kind
 
 ### Requirement: Background reflection excludes subagent transcripts
 
@@ -490,3 +485,38 @@ or has already completed/errored from creating new children during the
 - **AND** no subagent in `activeSubagents` has id `"session-xyz"`
 - **THEN** the new subagent SHALL be created
 - **AND** its `spawnedBy` SHALL be `"session-xyz"`
+
+### Requirement: Subagent memory context is captured per invocation
+
+Every subagent spawn or revival invocation SHALL receive a captured memory context from the invoking parent runtime. The invocation capture SHALL contain the parent's already-projected ActiveScope and a caller descriptor derived from the child role; it MUST NOT contain a parent locator or binding reader. It SHALL remain immutable until that invocation terminates.
+
+A generic child SHALL use the inherited ActiveScope with an anonymous-subagent caller descriptor. A named child SHALL use the inherited ActiveScope with its own named-subagent caller descriptor. Recursive children SHALL inherit their immediate parent invocation's ActiveScope unchanged and derive only their own caller descriptor. Invocation metadata MAY persist the capture for audit, but persisted context MUST NOT become live authority for a later revival.
+
+#### Scenario: Parent moves after spawn
+
+- **GIVEN** a parent runtime on Surface X spawns an attached subagent
+- **WHEN** the parent Conversation later moves to Surface Y
+- **THEN** runtime invalidation SHALL cancel the attached subagent before the replacement becomes current
+- **AND** its recorded invocation authority SHALL remain X and SHALL not query or retarget to Y
+
+#### Scenario: Recursive child inherits capture
+
+- **WHEN** a subagent recursively spawns a child
+- **THEN** the child SHALL receive the same captured ActiveScope
+- **AND** a named child SHALL add only its own persona caller identity
+
+#### Scenario: Persisted context is audit-only
+
+- **WHEN** an old subagent invocation's metadata contains a captured ActiveScope
+- **THEN** status and diagnostics MAY display it
+- **AND** a new revival invocation SHALL not use it as current routing authority
+
+### Requirement: Internal extraction does not invent parent memory context
+
+A model invocation used solely for internal dreaming extraction SHALL use the explicit Surface-free internal path. It SHALL not receive ordinary subagent memory tools, synthesize an ActiveScope, or inherit the dreaming compatibility session's `chatId: 0`.
+
+#### Scenario: Dreaming invokes model extraction
+
+- **WHEN** dreaming requests structured candidate extraction
+- **THEN** the model invocation SHALL have no source Surface or active memory write scope
+- **AND** promotion scope SHALL be resolved later from transcript provenance

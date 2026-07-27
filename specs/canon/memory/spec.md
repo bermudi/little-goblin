@@ -53,73 +53,27 @@ When an `add`, `replace`, or `rewrite` operation would push the total over the b
 
 ### Requirement: memory tool exposes add, replace, remove
 
-The system SHALL expose two memory tools:
+The system SHALL expose `memory_search` and `memory_write`; `memory_read` and `memory_read_index` SHALL remain removed. Existing input schemas, result schemas, safety filtering, limits, ranking behavior, description validation, and corpus selection SHALL remain unchanged.
 
-1. `memory_search` — hybrid search over memory entries and transcript chunks. Parameters: `query` (string, required for search; optional for index/list), `limit` (integer, default 10, clamped to [1, 50]), `scope` (optional: `"active"`, `"general"`, `{topic: {chatId, topicId}}`, `{agent: {name}}`), `all_chats` (boolean, default false), `corpus` (`"memory"` | `"transcripts"` | `"all"`, default `"all"`). When `query` is omitted and `scope` is provided, returns all entries in that scope (replaces `memory_read`). When `query` is omitted and no `scope` is provided, returns the scope index (replaces `memory_read_index`).
+The tool factory SHALL receive a validated captured memory context rather than a locator or raw policy knobs. `memory_search` with `scope = "active"`, default same-chat discovery, and `memory_write target = "memory"` SHALL use the capture's `ActiveScope`. Persona eligibility and `target = "agent"` SHALL use the separate caller descriptor. The write schema MUST NOT accept a scope, Surface, SurfaceId, chat ID, or Conversation ID. No invocation may refresh its capture by reading a current binding.
 
-2. `memory_write` — accepts `action` (`"add" | "replace" | "remove" | "rewrite" | "set_description"`), `target` (`"memory" | "user" | "agent"`), `content`, `old_text`, `description`. Same semantics as the existing tool, backed by SQLite.
+#### Scenario: Active write uses captured context
 
-The `memory_read` and `memory_read_index` tools SHALL be removed. Their functionality is subsumed by `memory_search` with appropriate parameters.
+- **WHEN** a main runtime captured topic 42 and calls `memory_write({action: "add", target: "memory", content: "..."})`
+- **THEN** the entry SHALL be inserted in `topics/<chatId>/42`
+- **AND** a later binding move SHALL not retarget that live invocation
 
-**Ranked search result schema** (when `query` is provided): the tool SHALL return a JSON object `{ results: SearchResult[], degraded: boolean, warning?: string }` where `degraded` is `true` when the embedding provider is unavailable and `warning` contains the error message. Each `SearchResult` SHALL have: `entry_id` (string), `scope` (string), `entry_kind` (string: `"memory"` | `"user"` | `"transcript"`), `source` (string: `"memory"` | `"transcript"`), `score` (number: decayed fused score), `vectorScore` (number: cosine similarity, 0 when degraded), `textScore` (number: normalized BM25), `conceptBoost` (number: applied boost), `text` (string: entry body, truncated to 500 chars with `...` suffix if longer), `tags` (string[]: concept tags), `session_id` (string, present only when `source = "transcript"`), `timestamp` (integer, present only when `source = "transcript"`: approximate transcript time).
+#### Scenario: Named persona uses caller identity
 
-**Scope entries schema** (when `query` is omitted and `scope` is provided): the tool SHALL return `{ entries: ScopeEntry[] }` where each `ScopeEntry` has: `entry_id`, `scope`, `entry_kind`, `text` (full, untruncated), `description` (string nullable), `created_at` (integer), `updated_at` (integer), `origin` (string), `tags` (string[]). Entries SHALL be ordered by `created_at` ascending.
+- **WHEN** a named subagent with caller descriptor `researcher` calls `memory_write` with `target = "agent"`
+- **THEN** the write SHALL target `agents/researcher`
+- **AND** the persona name SHALL not be part of `resolveActiveScope(surface)`
 
-**Scope index schema** (when `query` and `scope` are both omitted): the tool SHALL return `{ general: ScopeIndexEntry[], topics: ScopeIndexEntry[], agents: ScopeIndexEntry[] }` where each `ScopeIndexEntry` has: `scope` (string), `description` (string nullable), `entry_count` (integer), `total_chars` (integer). Archived scopes SHALL be excluded.
+#### Scenario: Search schemas remain compatible
 
-All mutation actions that write body text (`add`, `replace`, `rewrite`) MUST pass the shared memory safety filter before SQLite persistence. `set_description` SHALL NOT invoke the safety filter — it SHALL validate only that the description is a single line of at most 200 characters (excluding the trailing newline). Failed safety checks or a description exceeding the length cap SHALL return an error and MUST NOT modify the database.
-
-The tool MUST NOT accept a `scope` argument on writes. The active scope is derived from the calling session's `(chatId, topicId)` and named-agent identity.
-
-#### Scenario: Search with query returns ranked results
-
-- **WHEN** `memory_search({query: "backups", limit: 5})` is called
-- **THEN** the tool SHALL return up to 5 ranked hybrid search results
-- **AND** each result SHALL include scope, entry_kind, source (`memory` or `transcript`), score, and entry text
-
-#### Scenario: Search without query and with scope returns entries
-
-- **WHEN** `memory_search({scope: {topic: {chatId: -100123, topicId: 7}}})` is called without a query
-- **THEN** the tool SHALL return all entries in scope `topics/-100123/7`
-- **AND** results SHALL not be ranked (insertion order by `created_at`)
-
-#### Scenario: Search without query and without scope returns index
-
-- **WHEN** `memory_search({})` is called without a query or scope
-- **THEN** the tool SHALL return the scope index with `general`, `topics`, and `agents` fields
-- **AND** archived scopes SHALL be excluded
-
-#### Scenario: Index omits agents for subagents
-
-- **WHEN** `memory_search({})` is called by a named subagent or an anonymous subagent
-- **THEN** the `agents` field SHALL be absent or empty
-- **AND** the `general` and `topics` fields SHALL be present
-- **AND** only the calling subagent's own persona scope SHALL be searchable (named subagent), or no persona scope (anonymous subagent)
-
-#### Scenario: Add operation in active scope
-
-- **WHEN** the tool is called with `{action: "add", target: "memory", content: "..."}` and content passes the safety filter
-- **THEN** the content SHALL be inserted into `memory_entries` with the active scope
-- **AND** the entry SHALL be embedded
-
-#### Scenario: set_description rejects over-length or multi-line description
-
-- **WHEN** `memory_write({action: "set_description", target: "memory", description: "<251 characters or string containing a newline>"})` is called
-- **THEN** the tool SHALL return a validation error
-- **AND** the description SHALL NOT be persisted to `memory_scopes`
-
-#### Scenario: set_description does not count toward the character budget
-
-- **WHEN** `memory_write({action: "set_description", target: "memory", description: "homelab + dotfiles"})` is called and the memory store is at 49,999 of 50,000 characters
-- **THEN** the description SHALL be persisted as a `memory_scopes` row for the active scope
-- **AND** the write SHALL NOT fail with a budget overflow error
-- **AND** the `memory_scopes.description` column SHALL NOT be counted toward the global character budget (only `memory_entries.text` is counted)
-
-#### Scenario: Corpus restriction to transcripts
-
-- **WHEN** `memory_search({query: "deployment", corpus: "transcripts"})` is called
-- **THEN** only transcript entries SHALL be searched
-- **AND** memory entries SHALL NOT appear in results
+- **WHEN** `memory_search` is called with or without a query
+- **THEN** it SHALL preserve the accepted ranked-result, scope-entry, and scope-index response shapes
+- **AND** transcript results SHALL continue to identify their Conversation/session compatibility ID and timestamp
 
 ### Requirement: Substring match for replace and remove
 
@@ -161,77 +115,40 @@ Markdown export files SHALL use atomic write (write to temp file in `$GOBLIN_HOM
 
 ### Requirement: Snapshot format for prompt injection
 
-The system SHALL inject a bounded memory summary into the system prompt at session creation time. The summary SHALL be frozen for the duration of the session — mid-session memory writes SHALL NOT refresh the system prompt.
+The system SHALL inject the accepted bounded frozen memory summary when a user-visible conversation runtime is created. The summary SHALL be frozen for the duration of that runtime; mid-runtime writes SHALL not refresh it. Conversation creation without a runtime SHALL not capture a summary, and replacement runtime creation after movement SHALL capture a new destination-Surface summary.
 
-The frozen summary SHALL include:
-1. The active scope's description (or `(no description)`).
-2. A bounded summary of `user.md` entries (max 500 chars).
-3. A bounded summary of the active scope's `memory.md` entries (max 500 chars).
+The summary SHALL retain the accepted 1200-character bound, header, stale-memory guardrail, active-scope description, bounded global-user and active-memory bodies, cross-scope index ordering, truncation order, omission for empty memory, and exclusion of transcript entries. The per-turn full snapshot SHALL remain removed; prompt-specific `## relevant memory` SHALL remain the per-turn signal.
 
-The summary SHALL be prefixed with `[goblin memory summary (frozen at session start)]` and SHALL NOT exceed 1200 chars total. The summary SHALL be omitted entirely when all memory sources are empty.
+#### Scenario: Runtime creation freezes summary
 
-The summary is assembled from the following parts in priority order: header, active scope description, `user.md` summary (max 500 chars), active scope `memory.md` summary (max 500 chars), cross-scope index (max 10 entries). The cross-scope index SHALL be ordered by most recently updated scope first (descending `MAX(updated_at)` across entries in that scope), then by scope name ascending for ties. If the assembled summary exceeds 1200 characters, the cross-scope index SHALL be trimmed first by dropping entries from the end (i.e. the least-recently-updated scopes); if still over budget, the active scope `memory.md` summary SHALL be truncated at a word boundary; if still over budget, the `user.md` summary SHALL be truncated at a word boundary. The header and active scope description SHALL NOT be truncated.
+- **WHEN** a conversation runtime is created with non-empty memory
+- **THEN** its captured memory context SHALL contain the bounded frozen summary
+- **AND** the summary SHALL remain unchanged for that runtime lifetime
 
-The per-turn `[goblin memory snapshot]` aside SHALL be removed. The `## relevant memory` section (computed via hybrid search on the current prompt text) SHALL remain as the per-turn memory signal.
+#### Scenario: Move creates a destination summary
 
-#### Scenario: Session start includes frozen summary
+- **WHEN** a Conversation moves from Surface X to Surface Y and a replacement runtime is created
+- **THEN** the replacement SHALL freeze Y's active-scope description, memory, and same-chat index
+- **AND** SHALL not reuse X's frozen summary
 
-- **WHEN** a new session is created and memory is non-empty
-- **THEN** the system prompt SHALL include the frozen summary block
-- **AND** the block SHALL NOT exceed 1200 chars
+#### Scenario: Empty memory omits summary
 
-#### Scenario: Mid-session write does not refresh system prompt
-
-- **WHEN** `memory_write` adds an entry during a session
-- **THEN** the system prompt SHALL NOT be updated
-- **AND** the new entry SHALL be discoverable via `memory_search`
-
-#### Scenario: Empty memory produces no summary
-
-- **WHEN** a new session is created and all memory sources are empty
-- **THEN** the system prompt SHALL NOT include a frozen summary block
-
-#### Scenario: Over-budget frozen summary trims cross-scope index and summaries
-
-- **GIVEN** the active scope description, `user.md` summary, and active scope `memory.md` summary together exceed 1200 characters
-- **WHEN** a new session is created
-- **THEN** the frozen summary SHALL NOT exceed 1200 characters
-- **AND** the cross-scope index SHALL be trimmed or omitted first
-- **AND** if still over budget, the active scope `memory.md` summary SHALL be truncated at a word boundary
-- **AND** the header and active scope description SHALL remain intact
+- **WHEN** all eligible memory sources are empty at runtime creation
+- **THEN** the captured frozen summary SHALL be absent
 
 ### Requirement: Memory scopes by chat surface and named agent
 
-The system SHALL key each memory scope by one of:
-- `general` — DMs and supergroup-no-topic chats. Resolves in the SQLite store to `memory_entries` rows with `scope = "general"` and `entry_kind = "memory"`. Exported to `$GOBLIN_HOME/state/memory/general/memory.md` by `memory export`.
-- A topic scope identified by `(chatId, topicId)`. Resolves to rows with `scope = "topics/<chatId>/<topicId>"` and `entry_kind = "memory"`. Exported to `topics/<chatId>/<topicId>/memory.md`.
-- A named-agent persona scope identified by `<name>` where `<name>` is a sanitized named-agent identifier. Resolves to rows with `scope = "agents/<name>"` and `entry_kind = "memory"`. Exported to `agents/<name>/memory.md`.
+The system SHALL retain the accepted curated scopes: global `user`; singleton `general`; topic `topics/<chatId>/<topicId>`; and named persona `agents/<name>`. DM, topicless supergroup, and guest Surfaces SHALL all resolve to `general`. Every topic Surface SHALL resolve to the numeric topic scope regardless of container kind. Topic display-name changes and container identity MUST NOT alter the MemoryScope key. Named-agent persona scope SHALL derive from caller identity, not from the Surface projection.
 
-Topic-scope keying SHALL use the numeric Telegram topic ID, not the topic's display name. Renaming a forum topic in Telegram MUST NOT change the resolved scope. The `general` scope is shared across every DM and every supergroup-no-topic chat.
+#### Scenario: Guest uses general
 
-`user.md` is global and lives at `scope = "user"`, `entry_kind = "user"`. There is no per-scope `user` scope. Exported to `$GOBLIN_HOME/state/memory/user.md`.
+- **WHEN** a runtime is created for a guest Surface
+- **THEN** its active curated scope SHALL be `general`
 
-#### Scenario: First write in a topic creates its scope entries
+#### Scenario: Topic container does not fork memory
 
-- **WHEN** `memory_write` is called with `target = "memory"` from a session bound to `(chatId=-100123, topicId=42)` and no entries exist for that scope
-- **THEN** a new row SHALL be inserted into `memory_entries` with `scope = "topics/-100123/42"`, `entry_kind = "memory"`
-- **AND** no directory creation is required (SQLite is the canonical store)
-
-#### Scenario: First write in a DM resolves to general scope
-
-- **WHEN** `memory_write` is called with `target = "memory"` from a DM session and no `general` scope entries exist
-- **THEN** a new row SHALL be inserted into `memory_entries` with `scope = "general"`, `entry_kind = "memory"`
-
-#### Scenario: First write to a named agent's persona resolves to that agent's scope
-
-- **WHEN** `memory_write` is called with `target = "agent"` from a named subagent `researcher` and no `agents/researcher` scope entries exist
-- **THEN** a new row SHALL be inserted into `memory_entries` with `scope = "agents/researcher"`, `entry_kind = "memory"`
-
-#### Scenario: Topic rename does not move the scope
-
-- **WHEN** the user renames the forum topic with id `42` in Telegram from `Health` to `Wellness`
-- **THEN** the scope `topics/<chatId>/42` SHALL remain unchanged
-- **AND** subsequent reads and writes SHALL continue to use the same scope
+- **WHEN** a topic's Surface container is private, supergroup, or direct-messages
+- **THEN** its scope SHALL remain `topics/<chatId>/<topicId>`
 
 ### Requirement: Per-turn snapshot includes active scope and cross-scope index
 
@@ -303,51 +220,27 @@ The `general` scope and named-agent persona scopes are NOT subject to orphan han
 
 ### Requirement: Memory writes are restricted to the active scope
 
-The `memory_write` tool SHALL resolve its target's scope from the calling session's `(chatId, topicId)` (or named-agent identity for `target: "agent"`). The tool's input schema MUST NOT accept an arbitrary scope argument on writes. Attempts by the agent to write to any scope other than the active one SHALL be impossible by construction.
+`memory_write` SHALL resolve `target = "memory"` only from the caller's captured `ActiveScope`, `target = "user"` to global user memory, and `target = "agent"` only from a named-subagent caller descriptor. Its input MUST NOT permit arbitrary scope or routing authority. The main agent and anonymous subagents SHALL receive the same rejection for `target = "agent"`. Current bindings, Conversation creation metadata, and persisted legacy subagent scope MUST NOT be consulted during an invocation.
 
-The `target` parameter on `memory_write` accepts only:
-- `"memory"` — the active topic scope, or `general` for DMs/supergroup-no-topic.
-- `"user"` — the global `user` scope.
-- `"agent"` — the calling named subagent's persona memory. Rejected with an error when the caller is the main agent or an anonymous subagent.
+#### Scenario: Captured topic write
 
-#### Scenario: Write from a topic targets that topic's scope
+- **WHEN** a caller captured topic 42 and writes `target = "memory"`
+- **THEN** only `topics/<chatId>/42` SHALL be mutated
 
-- **WHEN** `memory_write({action: "add", target: "memory", content: "..."})` is called from a session bound to topic `42`
-- **THEN** the entry SHALL be inserted into `memory_entries` with `scope = "topics/<chat>/42"`, `entry_kind = "memory"`
-- **AND** no other scope's entries SHALL be modified
+#### Scenario: Main agent persona write rejected
 
-#### Scenario: target=agent rejected for main agent
-
-- **WHEN** `memory_write({action: "add", target: "agent", content: "..."})` is called from the main goblin agent
-- **THEN** the tool SHALL return an error stating that `target = "agent"` is only valid for named subagents
-- **AND** no entry SHALL be inserted
+- **WHEN** the main agent writes `target = "agent"`
+- **THEN** the tool SHALL reject it without mutation
 
 ### Requirement: Cross-scope discovery defaults to the current chat
 
-The `memory_search` tool's index response (query omitted, scope omitted) and the frozen summary's cross-scope index SHALL default to listing only scopes within the calling session's `chatId`. Topic scopes whose `chatId` differs from the caller's chat MUST NOT appear by default in either the index or the frozen summary.
+The scope index and frozen-summary cross-scope index SHALL derive the current chat from captured Surface-derived `ActiveScope`. By default they SHALL include only topic scopes with that `chatId`, plus the accepted global/persona visibility. `all_chats = true` SHALL continue to broaden only tool-driven discovery; it SHALL not broaden the frozen summary. No caller SHALL derive the discovery chat from Conversation state or a later binding.
 
-`memory_search` SHALL accept an optional boolean parameter `all_chats` (default `false`). When `all_chats: true`, the index response SHALL include topic scopes from every `chatId`, with the chat id rendered alongside the topic id in each entry. The frozen summary's cross-scope index is NOT influenced by this parameter — it is always current-chat-only — to keep the system prompt bounded.
+#### Scenario: Destination runtime uses destination chat
 
-The `general` scope and named-agent persona scopes are not chat-scoped and SHALL appear in every index response. In the frozen summary, `general` appears in the cross-scope index only when it is not the active scope. Named-agent persona scopes appear in the cross-scope index when the caller is the main goblin agent.
-
-#### Scenario: Default index from chat A excludes chat B's topics
-
-- **GIVEN** topics exist at `topics/A/1`, `topics/A/2`, and `topics/B/9`
-- **WHEN** `memory_search({})` is called from a session in chat `A`
-- **THEN** the returned `topics` array SHALL contain entries for `A/1` and `A/2`
-- **AND** the array SHALL NOT contain an entry for `B/9`
-- **AND** the response SHALL include a `general` field
-
-#### Scenario: all_chats opt-in surfaces every topic
-
-- **WHEN** `memory_search({all_chats: true})` is called from a session in chat `A`
-- **THEN** the returned `topics` array SHALL include scopes from every `chatId`
-
-#### Scenario: Frozen summary cross-scope index is current-chat only
-
-- **WHEN** the frozen summary is built for a session in chat `A`
-- **THEN** the cross-scope index SHALL list only `A/*` topics plus `general`
-- **AND** SHALL NOT list topic scopes from any other `chatId`
+- **WHEN** a moved Conversation receives a replacement runtime in chat B
+- **THEN** its default cross-scope discovery SHALL include B's topic scopes
+- **AND** SHALL exclude chat A's topic scopes unless `all_chats = true`
 
 ### Requirement: Memory entries carry provenance metadata
 
@@ -480,28 +373,13 @@ When the embedding provider is in degraded state, search SHALL fall back to BM25
 
 ### Requirement: Memory search defaults to current chat scopes
 
-Memory search SHALL default to searching `user` entries, the active scope, the current chat's topic scopes, and eligible named-agent persona scopes. Transcript entries from the current chat SHALL be searched by default when `corpus` is `"all"` (the default), filtered by the `chat_id` column on `memory_entries`. When `corpus` is `"memory"`, transcript entries SHALL be excluded. When `corpus` is `"transcripts"`, only transcript entries from the current chat SHALL be searched unless `all_chats` is `true`.
+Memory search SHALL preserve the accepted caller visibility, corpus selection, and `all_chats` behavior. For Surface-backed callers, the default curated and transcript chat boundary SHALL use the captured `ActiveScope.chatId`; no search invocation may derive that boundary from Conversation state or a later binding. An explicit internal caller with no Surface SHALL preserve the accepted all-transcript behavior without constructing an `ActiveScope` or Surface.
 
-Topic scopes from other chats MUST NOT be searched unless `all_chats = true` is supplied. The search input SHALL NOT accept free-form filesystem paths. When the caller has no `chat_id` (e.g. the dreaming internal session), `corpus = "all"` SHALL include transcript entries from all chats (equivalent to `all_chats = true`); `corpus = "transcripts"` SHALL also include all chats. This avoids excluding all transcripts when the caller has no chat binding.
+#### Scenario: Internal search is explicit
 
-#### Scenario: Same-chat topics searched by default
-
-- **WHEN** `memory_search({query: "deployment"})` is called from chat `-100123` topic `42` by the main goblin agent
-- **THEN** the search SHALL consider `user` entries, `topics/-100123/42` entries, other topic scopes under `topics/-100123/`, general memory, every `agents/<name>` persona scope, and transcript entries from sessions in chat `-100123`
-- **AND** SHALL NOT consider topic scopes under a different chat id
-- **AND** SHALL NOT consider transcript entries from sessions in a different chat id
-
-#### Scenario: Corpus restriction to memory
-
-- **WHEN** `memory_search({query: "deployment", corpus: "memory"})` is called
-- **THEN** transcript entries SHALL NOT be searched
-- **AND** only memory and user entries SHALL be searched
-
-#### Scenario: Cross-chat search opt-in
-
-- **WHEN** `memory_search({query: "deployment", all_chats: true})` is called
-- **THEN** the search SHALL include topic scopes from any chat
-- **AND** transcript entries from sessions in any chat SHALL be searched
+- **WHEN** an internal caller searches transcripts
+- **THEN** all transcript chats SHALL be eligible under the accepted internal rule
+- **AND** no zero-chat Surface SHALL be fabricated
 
 ### Requirement: Snapshot may include relevant memory
 
@@ -548,47 +426,44 @@ The model-driven extractor SHALL NOT infer commitments from vague intent or ordi
 
 ### Requirement: Active-scope-to-memory-scope conversion has one home
 
-The system SHALL provide the `ActiveScope → MemoryScope` conversion in exactly one module: `src/memory/scope.ts`. The conversion SHALL be exported from `scope.ts` and imported by every consumer. No other module SHALL define a private `activeMemoryScopeFor` or `activeMemoryScope` function. The conversion SHALL produce the `(scope, entry_kind)` pair used by `memory_entries`.
+The system SHALL keep `ActiveScope → MemoryScope` conversion in `src/memory/scope.ts` and SHALL additionally make that module the single home of `Surface → ActiveScope` for ordinary runtime-memory, search, and subagent execution. Every such Surface consumer MUST import `resolveActiveScope(surface)` and every such MemoryScope consumer MUST import the active-scope conversion. No private locator-based, binding-based, or session-state-based conversion SHALL remain in those paths.
 
-#### Scenario: Single source for the conversion
+Transcript indexing and dreaming promotion are intentionally excluded: their legacy session-state compatibility path remains until `transcript-surface-provenance` replaces it with per-entry event-time provenance. That path SHALL NOT be reused as authority for ordinary runtime memory, search, or subagent execution.
 
-- **WHEN** any module needs to convert an `ActiveScope` to a SQLite `scope`/`entry_kind` pair
-- **THEN** it SHALL import the conversion from `src/memory/scope.ts`
-- **AND** SHALL NOT define its own copy of the function
+#### Scenario: Surface projection is centralized
+
+- **WHEN** runtime construction needs active memory context
+- **THEN** it SHALL call the shared Surface projection
+- **AND** SHALL not branch on Surface kind elsewhere to derive memory scope
+
+#### Scenario: Database conversion remains centralized
+
+- **WHEN** a consumer needs the SQLite `(scope, entry_kind)` pair
+- **THEN** it SHALL use the existing centralized MemoryScope conversion
 
 ### Requirement: Memory context assembly is caller-typed
 
-The system SHALL provide a memory-context module that builds the memory context for a given caller behind a caller-typed interface, rather than exposing raw policy knobs (`includePersona`, `includeAgents`, `persona`, `promptText`) at every call site.
+The memory-context module SHALL build context from a discriminated captured context rather than raw policy knobs. A Surface-backed capture SHALL contain projected `ActiveScope`, validated source SurfaceId, and caller descriptor. An internal context SHALL be explicitly Surface-free. Main, named-subagent, and anonymous-subagent visibility SHALL remain: main sees all eligible personas; named sees only its own; anonymous sees none. Persona identity MUST remain separate from ActiveScope.
 
-The module SHALL own caller-kind discrimination (main goblin / named subagent / anonymous subagent), active-scope resolution (via the centralized conversion from `Active-scope-to-memory-scope conversion has one home`), persona policy, relevant-memory retrieval, and snapshot formatting. Callers SHALL pass a caller descriptor, not a bag of policy knobs.
+Subagent callers SHALL receive the parent invocation's captured `ActiveScope`; the module SHALL not resolve a parent locator or binding. Frozen summary and relevant-memory formatting SHALL consume the same capture so their scope and chat boundary cannot diverge.
 
-The visibility rules SHALL be preserved exactly as they exist today:
-- The main goblin agent sees `user.md`, the active scope, same-chat topic scopes, and every named-agent persona scope.
-- A named subagent sees `user.md`, the parent active scope, same-chat topic scopes, and its own persona scope only.
-- An anonymous subagent sees `user.md`, the parent active scope, and same-chat topic scopes, and SHALL NOT see any named-agent persona scope.
+#### Scenario: Main runtime context
 
-#### Scenario: Main goblin agent context includes all personas
+- **WHEN** context is assembled for a main runtime
+- **THEN** it SHALL use that runtime's captured ActiveScope and main caller descriptor
+- **AND** SHALL retain the accepted main visibility
 
-- **WHEN** the context is built for the main goblin agent in a topic-bound session
-- **THEN** the assembled context SHALL include `user.md`, the active topic scope, same-chat topic scopes, and every named-agent persona scope
+#### Scenario: Named subagent context
 
-#### Scenario: Named subagent context includes only its own persona
+- **WHEN** context is assembled for named subagent `researcher`
+- **THEN** it SHALL use the parent invocation's captured ActiveScope and caller descriptor `researcher`
+- **AND** SHALL expose only `agents/researcher` among persona scopes
 
-- **WHEN** the context is built for a named subagent `researcher` spawned from a topic-bound parent
-- **THEN** the assembled context SHALL include `user.md`, the parent's active scope, same-chat topic scopes, and `agents/researcher/memory.md`
-- **AND** SHALL NOT include other named-agent persona scopes such as `agents/writer/memory.md`
+#### Scenario: Callers cannot pass policy knobs
 
-#### Scenario: Anonymous subagent context excludes all personas
-
-- **WHEN** the context is built for an anonymous subagent
-- **THEN** the assembled context SHALL include `user.md`, the parent's active scope, and same-chat topic scopes
-- **AND** SHALL NOT include any named-agent persona scope
-
-#### Scenario: Callers pass a descriptor, not policy knobs
-
-- **WHEN** `AgentRunner` or a subagent execution path requests the per-turn memory context
-- **THEN** it SHALL pass a caller descriptor identifying the caller kind and (for named subagents) the agent name
-- **AND** SHALL NOT pass `includeAgents`, `includePersona`, or `persona` knobs directly into `formatSnapshot` or `searchMemoryEntries`
+- **WHEN** a runtime requests memory context
+- **THEN** it SHALL pass a validated capture
+- **AND** SHALL not pass `includeAgents`, `includePersona`, a locator, or a binding reader
 
 ### Requirement: SQLite-backed memory store
 
@@ -1083,3 +958,36 @@ It SHALL record the `reason` in the `scope` field for each quarantine counter (e
 
 - **WHEN** an empty snapshot is built
 - **THEN** no `snapshot_built` event SHALL be written
+
+### Requirement: Surface projection and runtime memory capture have one authority
+
+The memory module SHALL expose a deterministic `resolveActiveScope(surface)` projection and a runtime-memory-context capture operation. `resolveActiveScope` SHALL accept a validated `Surface`, never a `ChatLocator`, binding, Conversation record, or persisted Surface setting. Every topic container SHALL project to `{ chatId, topicScope: { topicId } }`; DM, topicless supergroup, and guest SHALL project to `{ chatId, topicScope: "general" }`.
+
+The projected `ActiveScope` SHALL contain no named-agent identity. Caller kind and optional persona name SHALL remain in the caller descriptor. A user-visible conversation runtime capture SHALL contain the canonical source `SurfaceId`, projected `ActiveScope`, caller descriptor, frozen summary, and frozen-summary deduplication inputs. It SHALL be created once at conversation-runtime creation and remain immutable for that runtime lifetime. Surface persistence MUST NOT contain an active-scope value or cached projection.
+
+Internal callers SHALL use an explicit Surface-free internal context. They MUST NOT call `resolveActiveScope`, invent an internal Surface, or reinterpret `chatId: 0` as a Telegram Surface.
+
+#### Scenario: Topic containers share the accepted memory key
+
+- **WHEN** private, supergroup, and direct-messages topic Surfaces have the same `chatId` and `topicId`
+- **THEN** each SHALL project to the same topic `ActiveScope` and `topics/<chatId>/<topicId>` MemoryScope
+- **AND** their distinct SurfaceIds SHALL still remain available as transcript provenance
+
+#### Scenario: General surfaces retain discovery chat
+
+- **WHEN** a DM, topicless supergroup, or guest Surface is projected
+- **THEN** its curated MemoryScope SHALL be `general`
+- **AND** its Telegram `chatId` SHALL remain in `ActiveScope` for same-chat discovery and transcript filtering
+
+#### Scenario: Moving a Conversation captures destination context
+
+- **GIVEN** a Conversation runtime captured memory context from Surface X
+- **WHEN** the Conversation later receives a replacement runtime on Surface Y
+- **THEN** the replacement SHALL capture a new memory context from Y
+- **AND** the old runtime capture SHALL not be reused or mutated
+
+#### Scenario: Internal extraction is Surface-free
+
+- **WHEN** the dreaming extractor runs through an internal model context
+- **THEN** it SHALL receive explicit internal context with no `SurfaceId` or `ActiveScope`
+- **AND** it SHALL not gain an ordinary active-scope write target

@@ -23,6 +23,11 @@ import {
   applyExecutionEnvironments,
   type ExecutionEnvironmentPlan,
 } from "./sessions/environment-migration.ts";
+import {
+  planTranscriptProvenanceMigration,
+  applyTranscriptProvenanceMigration,
+  type TranscriptProvenanceMigrationPlan,
+} from "./sessions/transcript-provenance-migration.ts";
 
 interface SnapshotManifest {
   roots: Array<{ path: string; exists: boolean }>;
@@ -42,8 +47,16 @@ interface EnvironmentMigrationStep {
   apply(home: string, plan: ExecutionEnvironmentPlan): void;
 }
 
+interface TranscriptMigrationStep {
+  readonly version: number;
+  readonly roots: string[];
+  plan(home: string): TranscriptProvenanceMigrationPlan;
+  apply(home: string, plan: TranscriptProvenanceMigrationPlan): void;
+}
+
 const STEP_1_ROOTS = ["state"];
 const STEP_2_ROOTS = ["state", "workspace", "scratch/workdir"];
+const STEP_3_ROOTS = ["state/sessions"];
 
 function backupDirPath(home: string): string {
   return join(home, `.migration-backup-${Date.now()}`);
@@ -94,6 +107,13 @@ const ENVIRONMENT_STEP: EnvironmentMigrationStep = {
   apply: applyExecutionEnvironments,
 };
 
+const TRANSCRIPT_STEP: TranscriptMigrationStep = {
+  version: 3,
+  roots: STEP_3_ROOTS,
+  plan: planTranscriptProvenanceMigration,
+  apply: applyTranscriptProvenanceMigration,
+};
+
 /**
  * Run every pending migration step for the given goblin home.
  * Exported for tests and for the CLI entry point below.
@@ -110,6 +130,7 @@ export function runMigrations(home: string): void {
   // mutated during planning. Any planning failure aborts before backup.
   const step1Plan = SURFACE_STEP.plan(home);
   const step2Plan = ENVIRONMENT_STEP.plan(home, step1Plan);
+  const step3Plan = TRANSCRIPT_STEP.plan(home);
 
   const rootsToSnapshot = new Set<string>();
   if (current < 1) {
@@ -117,6 +138,9 @@ export function runMigrations(home: string): void {
   }
   if (current < 2) {
     for (const root of ENVIRONMENT_STEP.roots) rootsToSnapshot.add(root);
+  }
+  if (current < 3) {
+    for (const root of TRANSCRIPT_STEP.roots) rootsToSnapshot.add(root);
   }
 
   log.info("starting offline migration", { from: current, to: CURRENT_STATE_VERSION });
@@ -132,6 +156,11 @@ export function runMigrations(home: string): void {
     log.info("running migration step", { step: 2 });
     ENVIRONMENT_STEP.apply(home, step2Plan);
     writeStateVersion(home, 2);
+  }
+  if (current < 3) {
+    log.info("running migration step", { step: 3 });
+    TRANSCRIPT_STEP.apply(home, step3Plan);
+    writeStateVersion(home, 3);
   }
 
   log.info("migration complete", { version: CURRENT_STATE_VERSION });

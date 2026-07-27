@@ -463,6 +463,14 @@ export function readTranscriptAfter(
 }
 
 /**
+ * Migration-only path-based raw-record reader. Returns a lossless document from
+ * an arbitrary transcript file path.
+ */
+export function readTranscriptRawDocumentAtPath(filePath: string): TranscriptRawDocument {
+  return readTranscriptRawDocumentInternal(filePath);
+}
+
+/**
  * Migration-only raw-record reader. Returns a lossless document containing every
  * physical line (blank, whitespace-only, malformed, valid JSON, trailing
  * newlines) with its original text, parsed raw object, and normalized entry.
@@ -472,7 +480,7 @@ export function readTranscriptAfter(
  * dreaming, commands, and intake must not use it.
  */
 export function readTranscriptRawDocument(home: string, sessionId: string): TranscriptRawDocument {
-  return readTranscriptRawDocumentInternal(transcriptPath(home, sessionId));
+  return readTranscriptRawDocumentAtPath(transcriptPath(home, sessionId));
 }
 
 /**

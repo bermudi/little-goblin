@@ -1,10 +1,11 @@
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Surface, SurfaceId } from "../surface.ts";
 import { surfaceId } from "../surface.ts";
 import type { ConversationId, ConversationState, SessionState } from "../sessions/types.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import type { BindingStore } from "../sessions/bindings.ts";
 import { FileBindingStore } from "../sessions/bindings.ts";
-import { getProjectRoot, bindProjectRoot } from "../sessions/topic-settings.ts";
+import { getProjectRoot, bindProjectRoot, getModelName, getThinkingLevelValidated, setModelName, setThinkingLevel } from "../sessions/topic-settings.ts";
 import { environmentFromProjectRoot, environmentsEqual, projectEnvironment, projectRootOf } from "../sessions/environment.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import type { BindingsFile } from "../sessions/types.ts";
@@ -24,11 +25,16 @@ import {
 
 /**
  * Surface-scoped settings adapter used by the lifecycle to determine the
- * effective execution environment for a Surface. In this phase it only needs
- * project-root assignment; model/thinking/skill policy come later.
+ * effective execution environment, model, and thinking preferences for a
+ * Surface. Model and thinking are owned by the Surface and survive conversation
+ * rotation, resume, and archive.
  */
 export interface SurfaceSettings {
   effectiveEnvironment(surface: Surface): ExecutionEnvironment;
+  getModelName(surface: Surface): string | undefined;
+  setModelName(surface: Surface, modelName: string | undefined): void;
+  getThinkingLevel(surface: Surface): ThinkingLevel | undefined;
+  setThinkingLevel(surface: Surface, thinkingLevel: ThinkingLevel | undefined): void;
 }
 
 /**
@@ -36,6 +42,8 @@ export interface SurfaceSettings {
  * changes a binding runs under the lifecycle transition lock internally.
  */
 export interface ConversationLifecycle extends CurrentBindingGuard {
+  /** Surface-scoped settings (project, model, thinking). Exposed so commands can read/write Surface preferences. */
+  readonly settings: SurfaceSettings;
   inspect(surface: Surface): ConversationState | null;
   resolveOrStart(surface: Surface): Promise<ConversationState>;
   rotate(surface: Surface): Promise<ConversationState>;
@@ -62,7 +70,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   private readonly home: string;
   private readonly store: ConversationStore;
   private readonly bindings: BindingStore;
-  private readonly settings: SurfaceSettings;
+  readonly settings: SurfaceSettings;
   private readonly runtimeHost: ConversationRuntimeHost;
 
   constructor(
@@ -384,7 +392,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   }
 }
 
-class FileSurfaceSettings implements SurfaceSettings {
+export class FileSurfaceSettings implements SurfaceSettings {
   private readonly home: string;
 
   constructor(home: string) {
@@ -394,6 +402,22 @@ class FileSurfaceSettings implements SurfaceSettings {
   effectiveEnvironment(surface: Surface): ExecutionEnvironment {
     const root = getProjectRoot(this.home, surface);
     return environmentFromProjectRoot(root);
+  }
+
+  getModelName(surface: Surface): string | undefined {
+    return getModelName(this.home, surface);
+  }
+
+  setModelName(surface: Surface, modelName: string | undefined): void {
+    setModelName(this.home, surface, modelName);
+  }
+
+  getThinkingLevel(surface: Surface): ThinkingLevel | undefined {
+    return getThinkingLevelValidated(this.home, surface);
+  }
+
+  setThinkingLevel(surface: Surface, thinkingLevel: ThinkingLevel | undefined): void {
+    setThinkingLevel(this.home, surface, thinkingLevel);
   }
 }
 
@@ -435,12 +459,13 @@ function createAttachmentSignal(): MutableAttachmentSignal {
 export function createConversationLifecycle(
   home: string,
   runtimeHost: ConversationRuntimeHost,
+  settings?: SurfaceSettings,
 ): ConversationLifecycle {
   return new ConversationLifecycleManager(
     home,
     new ConversationStore(home),
     new FileBindingStore(home),
-    new FileSurfaceSettings(home),
+    settings ?? new FileSurfaceSettings(home),
     runtimeHost,
   );
 }

@@ -136,7 +136,13 @@ function createFixture(): RuntimeFixture {
   const home = createTestHome("goblin-runtime-authority-");
   const cfg = makeConfig(home);
   const memoryStore = new MemoryStore(home);
-  const surfaceSettings = { effectiveEnvironment: () => personalEnvironment() };
+  const surfaceSettings = {
+    effectiveEnvironment: () => personalEnvironment(),
+    getModelName: () => undefined,
+    setModelName: () => {},
+    getThinkingLevel: () => undefined,
+    setThinkingLevel: () => {},
+  };
 
   const subagentRunner = new SubagentRunner(cfg, (subRunner, depth, sessionId, parentCapture, onStatusUpdate) => [
     createSpawnSubagentTool(subRunner, depth, sessionId, parentCapture, onStatusUpdate),

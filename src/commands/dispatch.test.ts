@@ -271,6 +271,20 @@ describe("handleCommand", () => {
     expect(runner.setThinkingLevel).toHaveBeenCalledWith("high");
   });
 
+  it("/model without a session persists the Surface model override", async () => {
+    const harness = makeHarness();
+    const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", harness }));
+    expect(result.reply).toContain("Switched to `poe/GPT-4o`");
+    expect(harness.lifecycle.settings.getModelName(harness.surface)).toBe("poe/GPT-4o");
+  });
+
+  it("/think without a session persists the Surface thinking override", async () => {
+    const harness = makeHarness();
+    const result = expectReplied(await dispatch({ command: "/think", rawText: "/think high", harness }));
+    expect(result.reply).toContain("Thinking level set to `high`");
+    expect(harness.lifecycle.settings.getThinkingLevel(harness.surface)).toBe("high");
+  });
+
   it("/debug reports diagnostics for active conversations", async () => {
     const harness = makeHarness();
     const session = await createSession(harness);

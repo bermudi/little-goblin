@@ -4,14 +4,10 @@ import type { Bot, Context } from "grammy";
 import type { Config } from "../config.ts";
 import { boundedError, log } from "../log.ts";
 import type { Surface, SessionState, ConversationId, ConversationStore } from "../sessions/mod.ts";
+import { surfaceId } from "../surface.ts";
 import { runtimeSession, runtimeSessionWithPreferences } from "../sessions/mod.ts";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
-import {
-  getModelName as getSurfaceModelName,
-  getThinkingLevelValidated as getSurfaceThinkingLevel,
-  setModelName as setSurfaceModelName,
-  setThinkingLevel as setSurfaceThinkingLevel,
-} from "../sessions/topic-settings.ts";
+
 import type { AgentRunner } from "../agent/mod.ts";
 import type { ResolvedModel } from "../agent/models.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
@@ -263,17 +259,17 @@ const projectHandler: CommandHandler = async ({ deps, surface, rawText }) => {
   }
 };
 
-const modelHandler: CommandHandler = async ({ deps, surface, session, existingRunner, rawText }) => {
+const modelHandler: CommandHandler = async ({ deps, surface, existingRunner, rawText }) => {
   const { cfg } = deps;
   const sideEffects: SideEffect[] = [];
   try {
+    const surfaceModelName = deps.lifecycle.settings.getModelName(surface);
+    const surfaceThinkingLevel = deps.lifecycle.settings.getThinkingLevel(surface);
     const currentModelName =
       existingRunner?.modelName ??
-      session?.modelName ??
-      getSurfaceModelName(cfg.goblinHome, surface) ??
+      surfaceModelName ??
       cfg.modelName;
-    const currentThinkingLevel =
-      session?.thinkingLevel ?? getSurfaceThinkingLevel(cfg.goblinHome, surface);
+    const currentThinkingLevel = surfaceThinkingLevel;
     const currentResolvedModel = deps.tryResolveModel(cfg, currentModelName);
     const result = executeModel({
       rawText,
@@ -283,10 +279,10 @@ const modelHandler: CommandHandler = async ({ deps, surface, session, existingRu
       currentThinkingLevel,
       currentResolvedModel,
       setModelName: (name) => {
-        setSurfaceModelName(cfg.goblinHome, surface, name);
+        deps.lifecycle.settings.setModelName(surface, name);
       },
       onThinkingLevelClamped: (newLevel) => {
-        setSurfaceThinkingLevel(cfg.goblinHome, surface, newLevel);
+        deps.lifecycle.settings.setThinkingLevel(surface, newLevel);
       },
     });
     if ((result.kind === "set" || result.kind === "cleared") && existingRunner) {
@@ -305,18 +301,19 @@ const modelHandler: CommandHandler = async ({ deps, surface, session, existingRu
       : "info";
     return replied(result.reply, sideEffects, tag);
   } catch (err) {
-    log.error("model failed", { error: String(err), sessionId: session?.id });
+    log.error("model failed", { error: String(err), surfaceId: surfaceId(surface) });
     return replied("Failed to switch model. Please try again.", [], "error");
   }
 };
 
-const thinkHandler: CommandHandler = async ({ deps, surface, session, existingRunner, rawText }) => {
+const thinkHandler: CommandHandler = async ({ deps, surface, existingRunner, rawText }) => {
   const { cfg } = deps;
   try {
+    const surfaceModelName = deps.lifecycle.settings.getModelName(surface);
+    const surfaceThinkingLevel = deps.lifecycle.settings.getThinkingLevel(surface);
     const currentModelName =
       existingRunner?.modelName ??
-      session?.modelName ??
-      getSurfaceModelName(cfg.goblinHome, surface) ??
+      surfaceModelName ??
       cfg.modelName;
     const currentResolvedModel = deps.tryResolveModel(cfg, currentModelName);
     const supportedLevels = currentResolvedModel
@@ -325,13 +322,12 @@ const thinkHandler: CommandHandler = async ({ deps, surface, session, existingRu
     const result = executeThink({
       rawText,
       currentLevel:
-        session?.thinkingLevel ??
-        getSurfaceThinkingLevel(cfg.goblinHome, surface) ??
+        surfaceThinkingLevel ??
         currentResolvedModel?.thinkingLevel ??
         "medium",
       supportedLevels,
       setThinkingLevel: (level) => {
-        setSurfaceThinkingLevel(cfg.goblinHome, surface, level);
+        deps.lifecycle.settings.setThinkingLevel(surface, level);
         try {
           existingRunner?.setThinkingLevel(level);
         } catch {
@@ -344,21 +340,23 @@ const thinkHandler: CommandHandler = async ({ deps, surface, session, existingRu
       : "info";
     return replied(result.reply, [], thinkTag);
   } catch (err) {
-    log.error("think failed", { error: String(err), sessionId: session?.id });
+    log.error("think failed", { error: String(err), surfaceId: surfaceId(surface) });
     return replied("Failed to set thinking level. Please try again.", [], "error");
   }
 };
 
-const debugHandler: CommandHandler = async ({ deps, session, existingRunner }) => {
+const debugHandler: CommandHandler = async ({ deps, session, existingRunner, surface }) => {
   const { cfg, subagentRunner } = deps;
   if (!session) return replied("No active conversation.", [], "info");
+  const surfaceModelName = deps.lifecycle.settings.getModelName(surface);
+  const surfaceThinkingLevel = deps.lifecycle.settings.getThinkingLevel(surface);
   const diag = generateDiagnostics({
     session,
     runner: existingRunner,
     subagentRunner,
     goblinHome: cfg.goblinHome,
-    modelName: session.modelName ?? cfg.modelName,
-    thinkingLevel: session.thinkingLevel,
+    modelName: surfaceModelName ?? session.modelName ?? cfg.modelName,
+    thinkingLevel: surfaceThinkingLevel ?? session.thinkingLevel,
     projectDir: projectRootOf(session.executionEnvironment) ?? undefined,
   });
   return replied(diag, [], "info");

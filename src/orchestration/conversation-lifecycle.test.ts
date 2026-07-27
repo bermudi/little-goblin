@@ -14,7 +14,7 @@ import { validateBindings } from "../sessions/bindings.ts";
 import type { BindingsFile } from "../sessions/types.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import { savePendingProjectAssignment } from "../sessions/project-assignment.ts";
-import { getProjectRoot } from "../sessions/topic-settings.ts";
+import { getProjectRoot, getModelName, getThinkingLevelValidated, setModelName, setThinkingLevel } from "../sessions/topic-settings.ts";
 import { environmentFromProjectRoot, personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
 import { dmSurface, surfaceId, supergroupSurface, topicSurface, type Surface } from "../surface.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -106,11 +106,23 @@ class FakeAgentRunner {
 }
 
 function staticSettings(env: ExecutionEnvironment): SurfaceSettings {
-  return { effectiveEnvironment: () => env };
+  return {
+    effectiveEnvironment: () => env,
+    getModelName: () => undefined,
+    setModelName: () => {},
+    getThinkingLevel: () => undefined,
+    setThinkingLevel: () => {},
+  };
 }
 
 function fileBasedSettings(home: string): SurfaceSettings {
-  return { effectiveEnvironment: (surface: Surface) => environmentFromProjectRoot(getProjectRoot(home, surface)) };
+  return {
+    effectiveEnvironment: (surface: Surface) => environmentFromProjectRoot(getProjectRoot(home, surface)),
+    getModelName: (surface) => getModelName(home, surface),
+    setModelName: (surface, modelName) => setModelName(home, surface, modelName),
+    getThinkingLevel: (surface) => getThinkingLevelValidated(home, surface),
+    setThinkingLevel: (surface, thinkingLevel) => setThinkingLevel(home, surface, thinkingLevel),
+  };
 }
 
 type Deps = {
@@ -126,6 +138,14 @@ function makeLifecycle(env: ExecutionEnvironment, home: string): Deps {
   const bindings = new InMemoryBindingStore();
   const runtimeHost = new FakeRuntimeHost();
   const lifecycle = new ConversationLifecycleManager(home, store, bindings, staticSettings(env), runtimeHost);
+  return { home, store, bindings, runtimeHost, lifecycle };
+}
+
+function makeFileLifecycle(home: string): Deps {
+  const store = new ConversationStore(home);
+  const bindings = new InMemoryBindingStore();
+  const runtimeHost = new FakeRuntimeHost();
+  const lifecycle = new ConversationLifecycleManager(home, store, bindings, fileBasedSettings(home), runtimeHost);
   return { home, store, bindings, runtimeHost, lifecycle };
 }
 
@@ -477,6 +497,59 @@ describe("ConversationLifecycle", () => {
       store.create(projectEnvironment(projectRoot), "project");
       const list = lifecycle.listResumable(dmSurface(1));
       expect(list.map((c) => c.title)).toEqual(["personal"]);
+    });
+  });
+
+  describe("surface preference ownership", () => {
+    it("exposes model and thinking preferences on the lifecycle settings seam", () => {
+      const { lifecycle } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      lifecycle.settings.setModelName(surface, "poe/SurfaceModel");
+      lifecycle.settings.setThinkingLevel(surface, "high");
+      expect(lifecycle.settings.getModelName(surface)).toBe("poe/SurfaceModel");
+      expect(lifecycle.settings.getThinkingLevel(surface)).toBe("high");
+    });
+
+    it("survives rotation: a fresh conversation keeps the surface model and thinking", async () => {
+      const { lifecycle } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      lifecycle.settings.setModelName(surface, "poe/SurfaceModel");
+      lifecycle.settings.setThinkingLevel(surface, "high");
+
+      const first = await lifecycle.resolveOrStart(surface);
+      const rotated = await lifecycle.rotate(surface);
+      expect(rotated.id).not.toBe(first.id);
+      expect(lifecycle.settings.getModelName(surface)).toBe("poe/SurfaceModel");
+      expect(lifecycle.settings.getThinkingLevel(surface)).toBe("high");
+    });
+
+    it("adopts the destination surface preferences on cross-surface resume", async () => {
+      const { lifecycle } = makeFileLifecycle(tmpDir);
+      const source = dmSurface(1);
+      const destination = dmSurface(2);
+
+      const target = await lifecycle.resolveOrStart(source);
+      lifecycle.settings.setModelName(destination, "poe/DestinationModel");
+      lifecycle.settings.setThinkingLevel(destination, "low");
+
+      const resumed = await lifecycle.resume(destination, target.id);
+      expect(resumed.id).toBe(target.id);
+      expect(lifecycle.settings.getModelName(destination)).toBe("poe/DestinationModel");
+      expect(lifecycle.settings.getThinkingLevel(destination)).toBe("low");
+      expect(lifecycle.inspect(source)).toBeNull();
+    });
+
+    it("preserves preferences after archive", async () => {
+      const { lifecycle } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      lifecycle.settings.setModelName(surface, "poe/SurfaceModel");
+      lifecycle.settings.setThinkingLevel(surface, "high");
+
+      await lifecycle.resolveOrStart(surface);
+      await lifecycle.archive(surface);
+      expect(lifecycle.settings.getModelName(surface)).toBe("poe/SurfaceModel");
+      expect(lifecycle.settings.getThinkingLevel(surface)).toBe("high");
+      expect(lifecycle.inspect(surface)).toBeNull();
     });
   });
 

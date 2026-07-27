@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -116,6 +117,8 @@ function buildDispatcher(
     runners?: Map<string, AgentRunner>;
     subagentRunner?: SubagentRunner;
     surfaceEnv?: ExecutionEnvironment;
+    surfaceModelName?: string;
+    surfaceThinkingLevel?: ThinkingLevel;
     createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
   } = {},
 ): {
@@ -128,8 +131,14 @@ function buildDispatcher(
   const runners = opts.runners ?? new Map<string, AgentRunner>();
   const subagentRunner = (opts.subagentRunner ?? new FakeSubagentRunner()) as unknown as SubagentRunner;
   const surfaceEnv = opts.surfaceEnv ?? personalEnvironment();
+  const surfaceModelName = opts.surfaceModelName;
+  const surfaceThinkingLevel = opts.surfaceThinkingLevel;
   const surfaceSettings: SurfaceSettings = {
     effectiveEnvironment: (_surface: Surface): ExecutionEnvironment => surfaceEnv,
+    getModelName: () => surfaceModelName,
+    setModelName: () => {},
+    getThinkingLevel: () => surfaceThinkingLevel,
+    setThinkingLevel: () => {},
   };
   const betaSurfaces: Surface[] = [];
   const createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][] = [];
@@ -325,6 +334,36 @@ describe("TurnDispatcher runtime host support", () => {
     expect(createAgentRunnerCalls).toHaveLength(1);
     expect(createAgentRunnerCalls[0]?.executionEnvironment).toEqual(personalEnvironment());
   });
+
+  it("reads model and thinking from surface settings, falling back to session compatibility fields", () => {
+    const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
+      surfaceModelName: "poe/SurfaceModel",
+      surfaceThinkingLevel: "high",
+    });
+    const session = makeSession("abc123def0", personalEnvironment());
+    session.modelName = "poe/SessionModel";
+    session.thinkingLevel = "low";
+
+    dispatcher.createRunner(session, dmSurface(1), fakeCapturedContext());
+
+    expect(betaSurfaces).toHaveLength(1);
+    expect(createAgentRunnerCalls).toHaveLength(1);
+    expect(createAgentRunnerCalls[0]?.modelName).toBe("poe/SurfaceModel");
+    expect(createAgentRunnerCalls[0]?.thinkingLevel).toBe("high");
+  });
+
+  it("falls back to session model and thinking when surface settings are absent", () => {
+    const { dispatcher, createAgentRunnerCalls } = buildDispatcher();
+    const session = makeSession("abc123def0", personalEnvironment());
+    session.modelName = "poe/SessionModel";
+    session.thinkingLevel = "low";
+
+    dispatcher.createRunner(session, dmSurface(1), fakeCapturedContext());
+
+    expect(createAgentRunnerCalls).toHaveLength(1);
+    expect(createAgentRunnerCalls[0]?.modelName).toBe("poe/SessionModel");
+    expect(createAgentRunnerCalls[0]?.thinkingLevel).toBe("low");
+  });
 });
 
 describe("TurnDispatcher async runner creation", () => {
@@ -356,6 +395,10 @@ describe("TurnDispatcher async runner creation", () => {
     const subagentRunner = new FakeSubagentRunner();
     const surfaceSettings: SurfaceSettings = {
       effectiveEnvironment: (_surface: Surface): ExecutionEnvironment => personalEnvironment(),
+      getModelName: () => undefined,
+      setModelName: () => {},
+      getThinkingLevel: () => undefined,
+      setThinkingLevel: () => {},
     };
     const createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][] = [];
     const createAgentRunner = opts.createAgentRunner ?? ((o) => {

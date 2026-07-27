@@ -22,13 +22,12 @@ import { surfaceId, type Surface, type GuestSurface } from "../surface.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from "./attachments.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
-import { TurnDispatcher, type PromptContent, type TurnSink, type SurfaceSettings } from "../orchestration/dispatcher.ts";
-import { createConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
+import { TurnDispatcher, type PromptContent, type TurnSink } from "../orchestration/dispatcher.ts";
+import { createConversationLifecycle, FileSurfaceSettings } from "../orchestration/conversation-lifecycle.ts";
 import { createTurnDispatcherRuntimeHost } from "../orchestration/conversation-runtime-host.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
-import { getProjectRoot } from "../sessions/topic-settings.ts";
-import { environmentFromProjectRoot } from "../sessions/environment.ts";
+
 import { transcribeWithGroq } from "../asr/mod.ts";
 import { MessageBuffer, createTextToSpeechTool } from "./mod.ts";
 import { createSendDocumentTool, createSendPhotoTool, createSendVoiceTool } from "./tools.ts";
@@ -232,9 +231,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       createTextToSpeechTool(),
     ].filter((t): t is NonNullable<typeof t> => t !== null);
   };
-  const surfaceSettings: SurfaceSettings = {
-    effectiveEnvironment: (surface) => environmentFromProjectRoot(getProjectRoot(cfg.goblinHome, surface)),
-  };
+  const surfaceSettings = new FileSurfaceSettings(cfg.goblinHome);
 
   const dispatcher = new TurnDispatcher({
     cfg,
@@ -256,7 +253,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   // Build the deep conversation lifecycle around the same dispatcher so all
   // runtime invalidation and quiescence is shared between Telegram intake and
   // the lifecycle operations called by commands / scheduler.
-  const lifecycle = createConversationLifecycle(cfg.goblinHome, createTurnDispatcherRuntimeHost(dispatcher));
+  const lifecycle = createConversationLifecycle(cfg.goblinHome, createTurnDispatcherRuntimeHost(dispatcher), surfaceSettings);
 
   // Wire the binding inspector so the dispatcher can recheck binding authority
   // after memory capture. This catches stale callers whose binding was rotated

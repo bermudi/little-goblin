@@ -17,7 +17,9 @@ import { SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
-import { environmentsEqual, type ExecutionEnvironment } from "../sessions/environment.ts";
+import { environmentsEqual } from "../sessions/environment.ts";
+import type { SurfaceSettings } from "./conversation-lifecycle.ts";
+export type { SurfaceSettings };
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
@@ -46,15 +48,6 @@ function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number
     const { description } = store.read({ topic: { chatId, topicId } });
     return description ?? null;
   };
-}
-
-/**
- * Surface-scoped settings the dispatcher needs to build a runner. This is a
- * narrow subset of `ConversationLifecycle`'s settings seam; the dispatcher
- * does not depend on `SessionManager`.
- */
-export interface SurfaceSettings {
-  effectiveEnvironment(surface: Surface): ExecutionEnvironment;
 }
 
 /**
@@ -273,6 +266,11 @@ export class TurnDispatcher {
     }
 
     const betaTools = session.chatId === 0 ? [] : this.createBetaToolsFn(surface);
+    // Surface-scoped model and thinking preferences take precedence over any
+    // compatibility SessionState fields. This ensures a resumed conversation on
+    // a different surface adopts the destination surface's preferences.
+    const modelName = this.surfaceSettings.getModelName(surface) ?? session.modelName;
+    const thinkingLevel = this.surfaceSettings.getThinkingLevel(surface) ?? session.thinkingLevel;
     const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
       cfg: this.cfg,
       sessionId: session.id,
@@ -282,8 +280,8 @@ export class TurnDispatcher {
       subagentRunner: session.chatId === 0 ? undefined : this.subagentRunner,
       getTopicName: this.getTopicName,
       executionEnvironment: session.executionEnvironment,
-      modelName: session.modelName,
-      thinkingLevel: session.thinkingLevel,
+      modelName,
+      thinkingLevel,
       scheduleStore: this.scheduleStore,
       externalAgentRunner: this.externalAgentRunner,
       mcpRunner: this.mcpRunner,

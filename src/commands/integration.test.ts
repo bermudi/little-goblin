@@ -81,7 +81,13 @@ describe("rapid command spam integration", () => {
   }
 
   function staticSettings(env: import("../sessions/environment.ts").ExecutionEnvironment): SurfaceSettings {
-    return { effectiveEnvironment: () => env };
+    return {
+      effectiveEnvironment: () => env,
+      getModelName: () => undefined,
+      setModelName: () => {},
+      getThinkingLevel: () => undefined,
+      setThinkingLevel: () => {},
+    };
   }
 
   it("/new then /archive leaves session archived and binding cleared (W2)", async () => {

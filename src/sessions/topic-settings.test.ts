@@ -7,6 +7,11 @@ import {
   saveTopicSettings,
   getProjectRoot,
   bindProjectRoot,
+  getModelName,
+  getThinkingLevel,
+  getThinkingLevelValidated,
+  setModelName,
+  setThinkingLevel,
   type TopicSettingsFile,
 } from "./topic-settings.ts";
 import { topicSettingsPath } from "./paths.ts";
@@ -217,6 +222,45 @@ describe("topic-settings", () => {
 
       const loaded = loadTopicSettings(tmpDir);
       expect(loaded.surfaces[topicKey]).toEqual({ projectRoot: projectDir });
+    });
+  });
+
+  describe("model and thinking preferences", () => {
+    it("stores and reads a surface model override", () => {
+      setModelName(tmpDir, topic, "poe/Claude-Sonnet-4.6");
+      expect(getModelName(tmpDir, topic)).toBe("poe/Claude-Sonnet-4.6");
+
+      const loaded = loadTopicSettings(tmpDir);
+      expect(loaded.surfaces[topicKey]).toEqual({ modelName: "poe/Claude-Sonnet-4.6" });
+    });
+
+    it("clears a surface model override", () => {
+      setModelName(tmpDir, topic, "poe/Claude-Sonnet-4.6");
+      setModelName(tmpDir, topic, undefined);
+      expect(getModelName(tmpDir, topic)).toBeUndefined();
+    });
+
+    it("stores and validates a surface thinking override", () => {
+      setThinkingLevel(tmpDir, topic, "high");
+      expect(getThinkingLevel(tmpDir, topic)).toBe("high");
+
+      const loaded = loadTopicSettings(tmpDir);
+      expect(loaded.surfaces[topicKey]).toEqual({ thinkingLevel: "high" });
+    });
+
+    it("rejects an invalid thinking level", () => {
+      setThinkingLevel(tmpDir, topic, "invalid" as never);
+      expect(getThinkingLevelValidated(tmpDir, topic)).toBeUndefined();
+    });
+
+    it("keeps model and thinking isolated per surface", () => {
+      setModelName(tmpDir, topic, "poe/TopicModel");
+      setModelName(tmpDir, dm, "poe/DmModel");
+      setThinkingLevel(tmpDir, topic, "high");
+
+      expect(getModelName(tmpDir, topic)).toBe("poe/TopicModel");
+      expect(getModelName(tmpDir, dm)).toBe("poe/DmModel");
+      expect(getThinkingLevel(tmpDir, dm)).toBeUndefined();
     });
   });
 });

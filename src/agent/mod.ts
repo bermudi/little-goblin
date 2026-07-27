@@ -412,7 +412,7 @@ export class AgentRunner {
         getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
         metrics: this.metricsStore,
       }),
-      createMemoryWriteTool({ store: this.memoryStore, activeScope: this.activeScope }),
+      createMemoryWriteTool({ store: this.memoryStore, activeScope: this.activeScope, caller: { kind: "main" } }),
     ];
 
     if (this.scheduleStore) {

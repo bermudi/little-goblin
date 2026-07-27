@@ -219,9 +219,12 @@ function legacyReflectionCursorPath(home: string, sessionId: string): string {
 
 function resolveScope(target: "user" | "memory" | "agent", activeScope: ActiveScope): MemoryScope | "user" {
   if (target === "user") return "user";
-  if (target === "agent" && activeScope.namedAgent !== null) {
-    return { agent: { name: activeScope.namedAgent.name } };
-  }
+  // Dreaming's compatibility `activeScope` never carries persona identity
+  // (persona is now caller-owned, not ActiveScope-owned). The `target ===
+  // "agent"` branch is unreachable here in practice; fall through to the
+  // active memory scope so a malformed candidate never silently writes to a
+  // persona scope. Internal dreaming promotion scope is resolved later from
+  // transcript provenance, not from this compatibility scope.
   return activeMemoryScopeFor(activeScope);
 }
 
@@ -486,11 +489,10 @@ export class DreamingPipeline {
 
       const activeScope: ActiveScope =
         chosen.scope === "general" || !("topic" in chosen.scope)
-          ? { chatId: 0, topicScope: "general", namedAgent: null }
+          ? { chatId: 0, topicScope: "general" }
           : {
               chatId: chosen.scope.topic.chatId,
               topicScope: { topicId: chosen.scope.topic.topicId },
-              namedAgent: null,
             };
 
       const [firstSessionId] = sessions;

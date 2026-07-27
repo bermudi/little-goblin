@@ -539,7 +539,6 @@ ${formatted}`;
       const activeScope: ActiveScope = {
         chatId: session.chatId,
         topicScope: session.topicId !== undefined ? { topicId: session.topicId } : "general",
-        namedAgent: null,
       };
       try {
         await this.memoryEngine.dreaming.runLightSleep(session.id, activeScope);

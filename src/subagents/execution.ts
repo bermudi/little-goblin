@@ -166,7 +166,7 @@ async function _runInstanceInner(
         activeScope: instance.activeScope,
         caller,
       }),
-      createMemoryWriteTool({ store: memoryStore, activeScope: instance.activeScope }),
+      createMemoryWriteTool({ store: memoryStore, activeScope: instance.activeScope, caller }),
     ],
     ...(resourceLoader ? { resourceLoader } : {}),
   });

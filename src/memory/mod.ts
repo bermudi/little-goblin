@@ -32,10 +32,17 @@ export {
 export type { PersonaPolicy } from "./search.ts";
 export {
   includeAgentsFor,
+  namedCallerPersona,
   personaPolicyForCaller,
   personaSectionFor,
   type MemoryCaller,
 } from "./context.ts";
+export {
+  assertSurfaceBackedAuthorityInput,
+  type CapturedMemoryContext,
+  type InternalMemoryContext,
+  type SurfaceMemoryAuthority,
+} from "./runtime-context.ts";
 export { MemoryDatabase } from "./db.ts";
 export { MEMORY_SCHEMA_VERSION } from "./schema.ts";
 export { EmbeddingProvider } from "./embeddings.ts";

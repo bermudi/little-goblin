@@ -1,44 +1,57 @@
 import { describe, expect, it } from "bun:test";
-import { dmSurface, supergroupSurface, topicSurface } from "../surface.ts";
+import { dmSurface, guestSurface, supergroupSurface, topicSurface } from "../surface.ts";
 import { resolveActiveScope, scopeTag } from "./scope.ts";
 
 describe("memory scope", () => {
   describe("resolveActiveScope", () => {
-    it("resolves a DM or supergroup-without-topic to general", () => {
+    it("resolves a DM to general while retaining chatId for discovery", () => {
       expect(resolveActiveScope(dmSurface(123))).toEqual({
         chatId: 123,
         topicScope: "general",
-        namedAgent: null,
       });
+    });
+
+    it("resolves a topicless supergroup to general while retaining chatId", () => {
       expect(resolveActiveScope(supergroupSurface(-100123))).toEqual({
         chatId: -100123,
         topicScope: "general",
-        namedAgent: null,
       });
     });
 
-    it("resolves a forum topic to its chat/topic pair", () => {
+    it("resolves a guest surface to general while retaining chatId", () => {
+      expect(resolveActiveScope(guestSurface(-100999))).toEqual({
+        chatId: -100999,
+        topicScope: "general",
+      });
+    });
+
+    it("resolves every topic container to the same topic scope shape", () => {
+      // Private, supergroup, and direct-messages topic containers all project
+      // to { chatId, topicScope: { topicId } } — container kind does not fork
+      // the memory key.
+      expect(resolveActiveScope(topicSurface("private", -100123, 42))).toEqual({
+        chatId: -100123,
+        topicScope: { topicId: 42 },
+      });
       expect(resolveActiveScope(topicSurface("supergroup", -100123, 42))).toEqual({
         chatId: -100123,
         topicScope: { topicId: 42 },
-        namedAgent: null,
+      });
+      expect(resolveActiveScope(topicSurface("direct-messages", -100123, 42))).toEqual({
+        chatId: -100123,
+        topicScope: { topicId: 42 },
       });
     });
 
-    it("includes named subagent identity when supplied", () => {
-      expect(resolveActiveScope(topicSurface("supergroup", -100123, 42), "researcher")).toEqual({
+    it("does not carry named-agent identity — persona is caller-owned", () => {
+      // ActiveScope carries only routing facts. Persona identity lives in
+      // MemoryCaller, not in the Surface projection.
+      const scope = resolveActiveScope(topicSurface("supergroup", -100123, 42));
+      expect(scope).toEqual({
         chatId: -100123,
         topicScope: { topicId: 42 },
-        namedAgent: { name: "researcher" },
       });
-    });
-
-    it("treats an empty named subagent identity as absent", () => {
-      expect(resolveActiveScope(topicSurface("supergroup", -100123, 42), "")).toEqual({
-        chatId: -100123,
-        topicScope: { topicId: 42 },
-        namedAgent: null,
-      });
+      expect("namedAgent" in scope).toBe(false);
     });
   });
 

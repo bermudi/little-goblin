@@ -8,7 +8,7 @@ import {
   truncateResultText,
   type PersonaPolicy,
 } from "./search.ts";
-import { includeAgentsFor, personaPolicyForCaller, personaSectionFor, type MemoryCaller } from "./context.ts";
+import { includeAgentsFor, namedCallerPersona, personaPolicyForCaller, personaSectionFor, type MemoryCaller } from "./context.ts";
 import { stripBodyMetadata } from "./entry.ts";
 
 /**
@@ -166,7 +166,11 @@ export async function formatFrozenSummary(
     getTopicName: args.getTopicName,
   });
   const activeTopicId = args.activeScope.topicScope === "general" ? null : args.activeScope.topicScope.topicId;
-  const activeAgentName = args.activeScope.namedAgent?.name;
+  // Persona identity lives in the caller descriptor, not in `ActiveScope`.
+  // The active agent's own persona scope is skipped in the cross-scope index
+  // only for named-subagent callers; main and anonymous callers have no
+  // active persona to skip.
+  const activeAgentName = namedCallerPersona(args.caller);
 
   const indexEntries: { scope: string; description: string | null; updatedAt: number | null }[] = [];
 

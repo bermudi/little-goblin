@@ -14,7 +14,6 @@ import type { ActiveScope } from "./scope.ts";
 const GENERAL_SCOPE: ActiveScope = {
   chatId: 123,
   topicScope: "general",
-  namedAgent: null,
 };
 
 describe("memory context — caller-typed policy", () => {
@@ -93,10 +92,12 @@ describe("memory context — caller-typed policy", () => {
     });
 
     it("named-subagent does NOT see other agents in ## other scopes, but sees its own persona", async () => {
+      // Persona identity lives in the caller descriptor, not in ActiveScope.
+      // The named-subagent caller carries the persona name; the active scope
+      // carries only routing facts.
       const namedScope: ActiveScope = {
         chatId: 123,
         topicScope: "general",
-        namedAgent: { name: "researcher" },
       };
       const snap = await formatSnapshot({
         store,

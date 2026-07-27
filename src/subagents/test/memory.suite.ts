@@ -26,7 +26,6 @@ installStandardPiMock();
 const TOPIC_SCOPE: ActiveScope = {
   chatId: -100123,
   topicScope: { topicId: 42 },
-  namedAgent: null,
 };
 
 type SeedScope = "user" | "memory" | MemoryScope;
@@ -180,6 +179,7 @@ describe("SubagentRunner — scoped memory", () => {
         createMemoryWriteTool({
           store: new MemoryStore(tmp),
           activeScope: TOPIC_SCOPE,
+          caller: { kind: "main" },
         }).parameters,
       ),
     );

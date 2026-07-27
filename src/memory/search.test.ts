@@ -16,7 +16,6 @@ import type { ActiveScope } from "./scope.ts";
 const ACTIVE_TOPIC: ActiveScope = {
   chatId: -100,
   topicScope: { topicId: 42 },
-  namedAgent: null,
 };
 
 const MAIN_PERSONA: PersonaPolicy = { kind: "all" };
@@ -233,7 +232,7 @@ describe("memory search", () => {
 
       const out = await searchMemoryEntries({
         store,
-        activeScope: { chatId: -100, topicScope: { topicId: 42 }, namedAgent: null },
+        activeScope: { chatId: -100, topicScope: { topicId: 42 } },
         persona: MAIN_PERSONA,
         query: "backups",
       });
@@ -249,7 +248,7 @@ describe("memory search", () => {
 
       const out = await searchMemoryEntries({
         store,
-        activeScope: { chatId: -100, topicScope: { topicId: 42 }, namedAgent: null },
+        activeScope: { chatId: -100, topicScope: { topicId: 42 } },
         persona: MAIN_PERSONA,
         query: "backups",
       });
@@ -264,7 +263,7 @@ describe("memory search", () => {
 
       const out = await searchMemoryEntries({
         store,
-        activeScope: { chatId: -100, topicScope: { topicId: 42 }, namedAgent: { name: "researcher" } },
+        activeScope: { chatId: -100, topicScope: { topicId: 42 } },
         persona: RESEARCHER_PERSONA,
         query: "backups",
       });

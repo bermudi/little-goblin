@@ -91,7 +91,7 @@ async function searchCommand(query: string): Promise<void> {
   const store = new MemoryStore(db, undefined, { embeddings });
   try {
     const persona: PersonaPolicy = { kind: "all" };
-    const activeScope = { chatId: 0, topicScope: "general" as const, namedAgent: null };
+    const activeScope = { chatId: 0, topicScope: "general" as const };
     const output = await searchMemoryEntries({
       store,
       activeScope,

@@ -28,7 +28,7 @@ describe("formatSnapshot", () => {
     await expect(
       formatSnapshot({
         store,
-        activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+        activeScope: { chatId: 123, topicScope: "general" },
         caller: { kind: "main" },
       }),
     ).resolves.toBeNull();
@@ -38,7 +38,7 @@ describe("formatSnapshot", () => {
     const metrics = new MetricsStore(tmp, "abcdef1234");
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+      activeScope: { chatId: 123, topicScope: "general" },
       caller: { kind: "main" },
       metrics,
     });
@@ -52,7 +52,7 @@ describe("formatSnapshot", () => {
     await store.add("general", "fact-A");
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+      activeScope: { chatId: 123, topicScope: "general" },
       caller: { kind: "main" },
     });
 
@@ -73,7 +73,7 @@ describe("formatSnapshot", () => {
     const metrics = new MetricsStore(tmp, "abcdef1234");
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+      activeScope: { chatId: 123, topicScope: "general" },
       caller: { kind: "main" },
       metrics,
     });
@@ -102,7 +102,7 @@ describe("formatSnapshot", () => {
 
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 } },
       caller: { kind: "main" },
     });
 
@@ -129,7 +129,7 @@ describe("formatSnapshot", () => {
 
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+      activeScope: { chatId: 123, topicScope: "general" },
       caller: { kind: "main" },
     });
 
@@ -148,7 +148,8 @@ describe("formatSnapshot", () => {
 
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: { name: "researcher" } },
+      // Persona identity lives in the caller descriptor, not in ActiveScope.
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 } },
       caller: { kind: "named-subagent", name: "researcher" },
     });
 
@@ -166,7 +167,7 @@ describe("formatSnapshot", () => {
 
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 } },
       caller: { kind: "main" },
       getTopicName: async (_chatId, topicId) => (topicId === 7 ? "IT" : null),
     });
@@ -180,7 +181,7 @@ describe("formatSnapshot", () => {
 
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 } },
       caller: { kind: "main" },
       getTopicName: async () => "",
     });
@@ -192,7 +193,7 @@ describe("formatSnapshot", () => {
     await store.add("user", "pref-1");
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 } },
       caller: { kind: "main" },
     });
 
@@ -208,7 +209,7 @@ describe("formatSnapshot", () => {
     await store.add("general", "x");
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: 123, topicScope: "general", namedAgent: null },
+      activeScope: { chatId: 123, topicScope: "general" },
       caller: { kind: "main" },
     });
 
@@ -223,7 +224,7 @@ describe("formatSnapshot", () => {
 
     const snap = await formatSnapshot({
       store,
-      activeScope: { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null },
+      activeScope: { chatId: -100123, topicScope: { topicId: 42 } },
       caller: { kind: "main" },
     });
 
@@ -234,7 +235,7 @@ describe("formatSnapshot", () => {
   });
 
   describe("relevant memory (prompt text)", () => {
-    const topicScope: ActiveScope = { chatId: -100123, topicScope: { topicId: 42 }, namedAgent: null };
+    const topicScope: ActiveScope = { chatId: -100123, topicScope: { topicId: 42 } };
 
     it("omits ## relevant memory when no prompt text is supplied", async () => {
       await store.add({ topic: { chatId: -100123, topicId: 7 } }, "peer backups note");

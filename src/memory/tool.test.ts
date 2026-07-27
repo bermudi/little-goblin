@@ -16,13 +16,17 @@ const NULL_CTX = {} as Parameters<ReturnType<typeof createMemoryWriteTool>["exec
 const TOPIC_SCOPE: ActiveScope = {
   chatId: -100,
   topicScope: { topicId: 42 },
-  namedAgent: null,
 };
+// Persona identity lives in the caller descriptor, not in ActiveScope. The
+// named-subagent caller carries the persona name; the active scope carries
+// only routing facts. NAMED_AGENT_SCOPE is kept shape-identical to TOPIC_SCOPE
+// to prove the write schema does not depend on persona identity in the scope.
 const NAMED_AGENT_SCOPE: ActiveScope = {
   chatId: -100,
   topicScope: { topicId: 42 },
-  namedAgent: { name: "researcher" },
 };
+const MAIN_CALLER = { kind: "main" } as const;
+const RESEARCHER_CALLER = { kind: "named-subagent", name: "researcher" } as const;
 
 function textOf(result: Awaited<ReturnType<ReturnType<typeof createMemoryWriteTool>["execute"]>>): string {
   const content = result.content[0];
@@ -44,8 +48,8 @@ describe("memory tool", () => {
     tmp = mkdtempSync(join(tmpdir(), "goblin-memory-tool-"));
     mkdirSync(memoryDir(tmp), { recursive: true });
     store = new MemoryStore(tmp);
-    writeTool = createMemoryWriteTool({ store, activeScope: TOPIC_SCOPE });
-    searchTool = createMemorySearchTool({ store, activeScope: TOPIC_SCOPE, caller: { kind: "main" } });
+    writeTool = createMemoryWriteTool({ store, activeScope: TOPIC_SCOPE, caller: MAIN_CALLER });
+    searchTool = createMemorySearchTool({ store, activeScope: TOPIC_SCOPE, caller: MAIN_CALLER });
   });
 
   afterEach(() => {
@@ -65,7 +69,7 @@ describe("memory tool", () => {
   });
 
   it("uses the same write schema for named and unnamed callers", () => {
-    const namedWriteTool = createMemoryWriteTool({ store, activeScope: NAMED_AGENT_SCOPE });
+    const namedWriteTool = createMemoryWriteTool({ store, activeScope: NAMED_AGENT_SCOPE, caller: RESEARCHER_CALLER });
     expect(namedWriteTool.parameters).toEqual(writeTool.parameters);
   });
 
@@ -82,7 +86,9 @@ describe("memory tool", () => {
     expect(store.readBody("general")).toBe("");
   });
 
-  it("target=agent is rejected for callers without namedAgent", async () => {
+  it("target=agent is rejected for callers without a named-subagent caller descriptor", async () => {
+    // The main-agent caller has no persona identity; `target = "agent"` is
+    // rejected with the same error an anonymous subagent would see.
     await expect(
       writeTool.execute(
         "call-agent",
@@ -96,7 +102,7 @@ describe("memory tool", () => {
   });
 
   it("target=agent writes named-agent persona memory", async () => {
-    const namedWriteTool = createMemoryWriteTool({ store, activeScope: NAMED_AGENT_SCOPE });
+    const namedWriteTool = createMemoryWriteTool({ store, activeScope: NAMED_AGENT_SCOPE, caller: RESEARCHER_CALLER });
     await namedWriteTool.execute(
       "call-named-agent",
       { action: "add", target: "agent", content: "persona fact" },
@@ -437,7 +443,7 @@ describe("memory tool", () => {
       expect(searchJson(r).results).toEqual([]);
     });
 
-    it("main agent (includeAgents=true, no namedAgent) searches all persona scopes", async () => {
+    it("main agent (caller=main, persona policy all) searches all persona scopes", async () => {
       await store.add({ agent: { name: "researcher" } }, "researcher persona backups note");
       await store.add({ agent: { name: "writer" } }, "writer persona backups note");
 

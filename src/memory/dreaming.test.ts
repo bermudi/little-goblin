@@ -129,7 +129,7 @@ describe("DreamingPipeline", () => {
       JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
     );
 
-    const activeScope: ActiveScope = { chatId: 0, topicScope: "general", namedAgent: null };
+    const activeScope: ActiveScope = { chatId: 0, topicScope: "general" };
     await pipeline.runLightSleep(sessionId, activeScope);
 
     expect(store.readBody("user")).toBe("I prefer dark mode");

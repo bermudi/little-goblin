@@ -11,7 +11,6 @@ import { workspacePath } from "../../workspace/paths.ts";
 export const DEFAULT_SCOPE: ActiveScope = {
   chatId: -100123,
   topicScope: "general",
-  namedAgent: null,
 };
 
 type Listener = (event: Record<string, unknown>) => void;

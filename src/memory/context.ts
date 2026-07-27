@@ -10,9 +10,9 @@ import type { PersonaPolicy } from "./search.ts";
  * - `named-subagent` — a named subagent. Sees only its own persona scope.
  * - `anonymous-subagent` — an anonymous subagent. Sees no persona scopes.
  *
- * Today `activeScope.namedAgent` distinguishes main from named-subagent, but
- * CANNOT distinguish main from anonymous-subagent (both have `namedAgent: null`).
- * Only the caller knows which it is — that knowledge is what this union types.
+ * `MemoryCaller` is the sole persona/visibility authority. `ActiveScope` no
+ * longer carries named-agent identity — caller kind and optional persona name
+ * live here, separate from the deterministic `Surface → ActiveScope` projection.
  */
 export type MemoryCaller =
   | { kind: "main" }
@@ -58,4 +58,17 @@ export function personaSectionFor(caller: MemoryCaller): { name: string } | unde
  */
 export function includeAgentsFor(caller: MemoryCaller): boolean {
   return caller.kind === "main";
+}
+
+/**
+ * Resolve the persona name for a named-subagent caller, or `null` for any other
+ * caller. The single home for "what persona name does this caller carry?"
+ *
+ * Used by `memory_write`'s `target = "agent"` path and the snapshot's
+ * active-agent-name skip in the cross-scope index. Replaces the former
+ * `activeScope.namedAgent?.name` reads — persona identity now lives exclusively
+ * in the caller descriptor, not in `ActiveScope`.
+ */
+export function namedCallerPersona(caller: MemoryCaller): string | null {
+  return caller.kind === "named-subagent" ? caller.name : null;
 }

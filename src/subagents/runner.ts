@@ -137,7 +137,7 @@ export class SubagentRunner {
     const id = randomUUID();
     const spawnedAt = new Date().toISOString();
     const spawnedBy = options.spawnedBy ?? null;
-    const activeScope = childActiveScope(options.activeScope, options.name);
+    const activeScope = childActiveScope(options.activeScope);
 
     let role: SubagentRole;
     let dir: string;
@@ -701,24 +701,27 @@ export class SubagentRunner {
   }
 }
 
-function childActiveScope(parentScope: ActiveScope | undefined, name: string | undefined): ActiveScope {
+function childActiveScope(parentScope: ActiveScope | undefined): ActiveScope {
   if (parentScope === undefined) {
     throw new Error("activeScope is required for subagent spawning");
   }
-  const topicScope = parentScope.topicScope;
-  // Empty string is treated as undefined (no named agent)
-  const effectiveName = name && name.length > 0 ? name : undefined;
+  // Persona identity is NOT part of `ActiveScope` — it lives in the caller
+  // descriptor (`MemoryCaller`). The child inherits the parent's routing
+  // facts (chatId + topicScope) unchanged; named identity is derived from
+  // the child role at execution time.
   return {
     chatId: parentScope.chatId,
-    topicScope,
-    namedAgent: effectiveName === undefined ? null : { name: effectiveName },
+    topicScope: parentScope.topicScope,
   };
 }
 
 function reviveActiveScope(meta: SubagentMeta): ActiveScope {
+  // Persisted legacy `activeScope` may carry a `namedAgent` field from before
+  // `surface-derived-memory-context`; that field is audit/migration data only
+  // and is dropped here. Live persona authority comes from the reviving parent
+  // runtime's caller descriptor, not from persisted scope metadata.
   return {
     chatId: meta.activeScope.chatId,
     topicScope: meta.activeScope.topicScope,
-    namedAgent: meta.role === "named" && meta.name !== null ? { name: meta.name } : null,
   };
 }

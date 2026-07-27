@@ -2,12 +2,12 @@
 
 ## Phase 1: Establish Surface-derived memory authority
 
-- [ ] Verify `telegram-surface-identity` provides canonical `Surface`, `SurfaceId`, `surfaceId`, and `parseSurfaceId` APIs before changing memory authority.
-- [ ] Replace the locator-based projection in `src/memory/scope.ts` with exhaustive `resolveActiveScope(surface)` handling for every topic container, DM, topicless supergroup, and guest; keep ActiveScope-to-MemoryScope conversion in the same module.
-- [ ] Remove named-agent identity from `ActiveScope` and make `MemoryCaller` the sole persona/visibility authority.
-- [ ] Add Surface-backed captured authority and explicit Surface-free internal context types in `src/memory/runtime-context.ts`; reject zero-chat compatibility values as Telegram identity.
-- [ ] Update memory fixtures and conversion consumers without changing curated keys or caller visibility, and add exhaustive projection/internal-boundary tests.
-- [ ] Run focused scope/context/runtime-context tests and `bun run typecheck`.
+- [x] Verify `telegram-surface-identity` provides canonical `Surface`, `SurfaceId`, `surfaceId`, and `parseSurfaceId` APIs before changing memory authority.
+- [x] Replace the locator-based projection in `src/memory/scope.ts` with exhaustive `resolveActiveScope(surface)` handling for every topic container, DM, topicless supergroup, and guest; keep ActiveScope-to-MemoryScope conversion in the same module.
+- [x] Remove named-agent identity from `ActiveScope` and make `MemoryCaller` the sole persona/visibility authority.
+- [x] Add Surface-backed captured authority and explicit Surface-free internal context types in `src/memory/runtime-context.ts`; reject zero-chat compatibility values as Telegram identity.
+- [x] Update memory fixtures and conversion consumers without changing curated keys or caller visibility, and add exhaustive projection/internal-boundary tests.
+- [x] Run focused scope/context/runtime-context tests and `bun run typecheck`.
 
 ## Phase 2: Capture memory before runtime registration
 

@@ -7,7 +7,7 @@ import { VALID_NAME_RE } from "../subagents/named-agents.ts";
 import { checkMemorySafety } from "./safety.ts";
 import { searchMemoryEntries, type MemorySearchOutput } from "./search.ts";
 import { stripEntryMetadata } from "./entry.ts";
-import { includeAgentsFor, personaPolicyForCaller, type MemoryCaller } from "./context.ts";
+import { includeAgentsFor, namedCallerPersona, personaPolicyForCaller, type MemoryCaller } from "./context.ts";
 
 const targetSchema = Type.Union([
   Type.Literal("memory"),
@@ -224,6 +224,13 @@ export function createMemorySearchTool(args: {
 export function createMemoryWriteTool(args: {
   store: MemoryStore;
   activeScope: ActiveScope;
+  /**
+   * Who is calling. Persona identity for `target = "agent"` is derived from the
+   * caller descriptor — only named-subagent callers may write to a persona
+   * scope. The main agent and anonymous subagents are rejected with the same
+   * error. Replaces the former `activeScope.namedAgent` read.
+   */
+  caller: MemoryCaller;
 }): ToolDefinition {
   return defineTool({
     name: "memory_write",
@@ -234,7 +241,7 @@ export function createMemoryWriteTool(args: {
     parameters: memoryWriteSchema,
     async execute(_toolCallId, params: MemoryWriteInput) {
       const { action, target } = params;
-      const scope = resolveWriteScope(args.activeScope, target);
+      const scope = resolveWriteScope(args.activeScope, target, args.caller);
       const onReject = () => args.store.recordSafetyReject(scope);
       let result: StoreResult;
       switch (action) {
@@ -303,13 +310,17 @@ function resolveSearchScope(activeScope: ActiveScope, input: Static<typeof scope
   return { topic: { chatId: input.topic.chatId, topicId: input.topic.topicId } };
 }
 
-function resolveWriteScope(activeScope: ActiveScope, target: MemoryTarget): MemoryScope | "user" {
+function resolveWriteScope(activeScope: ActiveScope, target: MemoryTarget, caller: MemoryCaller): MemoryScope | "user" {
   if (target === "user") return "user";
   if (target === "agent") {
-    if (activeScope.namedAgent === null) {
+    // Persona identity lives in the caller descriptor, not in `ActiveScope`.
+    // Only named-subagent callers may write to a persona scope; the main agent
+    // and anonymous subagents are rejected with the same error.
+    const persona = namedCallerPersona(caller);
+    if (persona === null) {
       throw new Error('target = "agent" is only valid for named subagents');
     }
-    return { agent: { name: activeScope.namedAgent.name } };
+    return { agent: { name: persona } };
   }
   return activeMemoryScopeFor(activeScope);
 }

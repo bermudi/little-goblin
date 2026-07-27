@@ -13,7 +13,6 @@ const NULL_CTX = {} as Parameters<ReturnType<typeof createMemorySearchTool>["exe
 const TOPIC_SCOPE: ActiveScope = {
   chatId: -100,
   topicScope: { topicId: 42 },
-  namedAgent: null,
 };
 
 function textOf(result: Awaited<ReturnType<ReturnType<typeof createMemorySearchTool>["execute"]>>): string {

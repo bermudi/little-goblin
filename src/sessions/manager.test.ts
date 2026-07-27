@@ -105,7 +105,6 @@ describe("SessionManager", () => {
   describe("list", () => {
     it("lists bound sessions sorted by creation time", async () => {
       const first = await createSession(dmSurface(1));
-      await new Promise((resolve) => setTimeout(resolve, 15));
       const second = await createSession(dmSurface(2));
       const list = manager.list();
       expect(list.map((s) => s.id)).toEqual([first.id, second.id]);

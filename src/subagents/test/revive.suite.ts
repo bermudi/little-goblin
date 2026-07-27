@@ -274,6 +274,44 @@ describe("SubagentRunner — corrupted meta.json", () => {
 
     await expect(runner.revive(DEFAULT_PARENT_CAPTURE, id, "hello")).rejects.toThrow("Subagent not found");
   });
+
+  it("allows a same-id retry after a corrupted meta.json failure", async () => {
+    const id = "aaaaaaaa-0000-0000-0000-000000000001";
+    const dir = genericSubagentDir(tmp, id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "meta.json"), "NOT VALID JSON");
+
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, id, "first try")).rejects.toThrow("Subagent not found");
+
+    // Repair the directory with a valid meta and a session file.
+    writeFileSync(
+      join(dir, "meta.json"),
+      JSON.stringify({
+        id,
+        role: "generic",
+        name: null,
+        spawnedBy: null,
+        depth: 1,
+        createdAt: new Date().toISOString(),
+        status: "completed",
+      }),
+    );
+    writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
+
+    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, id, "second try");
+    await flush();
+    expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("second try");
+
+    sessionHolder.emit({ type: "agent_start" });
+    sessionHolder.emit({
+      type: "message_update",
+      message: {},
+      assistantMessageEvent: { type: "text_delta", delta: "retry response" },
+    });
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+
+    await expect(resultPromise).resolves.toBe("retry response");
+  });
 });
 
 describe("SubagentRunner — double-revive race guard", () => {

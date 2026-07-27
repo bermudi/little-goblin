@@ -324,11 +324,21 @@ export class SubagentRunner {
     }
 
     // Locate meta.json: could be generic or named. Scan both trees.
-    const { dir, meta } = loadSubagentMeta(this.cfg.goblinHome, id);
+    let dir: string;
+    let meta: SubagentMeta;
+    try {
+      const metaResult = loadSubagentMeta(this.cfg.goblinHome, id);
+      dir = metaResult.dir;
+      meta = metaResult.meta;
+    } catch (err) {
+      this.revivesInProgress.delete(id);
+      throw err;
+    }
 
     // Find the persisted session file inside the subagent's dir.
     const sessionFile = findSessionFile(dir);
     if (sessionFile === null) {
+      this.revivesInProgress.delete(id);
       throw new Error(`Subagent not found`);
     }
 
@@ -361,7 +371,13 @@ export class SubagentRunner {
         : workspacePath(this.cfg.goblinHome);
 
     // Open the existing session so conversation history is preserved.
-    const sessionManager = SessionManager.open(sessionFile, dir, cwd);
+    let sessionManager: SessionManager;
+    try {
+      sessionManager = SessionManager.open(sessionFile, dir, cwd);
+    } catch (err) {
+      this.revivesInProgress.delete(id);
+      throw err;
+    }
 
     // Rebuild the named-agent definition if the subagent is named.
     let definition: NamedAgentDefinition | null = null;

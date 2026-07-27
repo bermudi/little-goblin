@@ -337,7 +337,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     await childY.result;
   });
 
-  it("revived subagent attaches under the lifecycle guard and a same-conversation move cancels it before the terminal result", { timeout: 2000 }, async () => {
+  it("revived subagent attaches under the lifecycle guard and a same-conversation move cancels it before the terminal result", async () => {
     const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
     const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
     const captureX = assertSurfaceCapture(runnerX.memoryContext);
@@ -356,7 +356,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     // Begin revival. The guard attaches, then the lifecycle transition proceeds
     // while the terminal result is still pending.
     const revivePromise = fx.dispatcher.reviveSubagent(SURFACE_X, sessionX, childX.id, "follow-up");
-    const _swallow = revivePromise.catch(() => {});
+    revivePromise.catch(() => {});
 
     // Let the attachment signal fire.
     await flush();

@@ -38,12 +38,15 @@ export class MemoryEngine {
   }
 
   /**
-   * One-shot migration of legacy markdown memory files into SQLite. No-op if
-   * already migrated. Run this once at startup before the bot starts serving
-   * turns.
+   * One-shot migration of legacy markdown memory files into SQLite and
+   * invalidation of any transcript index rows built from the old session-level
+   * chat metadata. No-op if already migrated. Run this once at startup before
+   * the bot starts serving turns.
    */
   async migrate(): Promise<boolean> {
-    return migrateFromMarkdown(this.home, this.readStore);
+    const migrated = migrateFromMarkdown(this.home, this.readStore);
+    this.readStore.migrateTranscriptProvenanceIndex();
+    return migrated;
   }
 
   /**

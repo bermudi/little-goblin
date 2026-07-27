@@ -12,7 +12,7 @@ import { join, relative } from "node:path";
 import { log } from "../log.ts";
 import { sessionsDir } from "../sessions/paths.ts";
 import { loadState } from "../sessions/state.ts";
-import { chunkTranscriptEntry, readTranscriptEntries } from "../sessions/transcript.ts";
+import { chunkTranscriptEntry, readTranscriptEntries, type TranscriptChunk } from "../sessions/transcript.ts";
 import type { MemoryStore } from "./store.ts";
 
 function hashBuffer(data: Uint8Array): string {
@@ -148,34 +148,14 @@ export class TranscriptIndexer {
           continue;
         }
 
-        const chatId = (() => {
-          const state = loadState(this.home, tf.sessionId);
-          return state !== null ? String(state.chatId) : null;
-        })();
-
-        const chunks: Array<{
-          text: string;
-          createdAt: number;
-          updatedAt: number;
-          sourceSession: string;
-          sourceRole: string;
-        }> = [];
+        const chunks: TranscriptChunk[] = [];
         for (const { entry } of readTranscriptEntries(this.home, tf.sessionId)) {
           if (entry === null) continue;
-          const rawChunks = chunkTranscriptEntry(entry, { sessionId: tf.sessionId });
-          for (const chunk of rawChunks) {
-            chunks.push({
-              text: chunk.text,
-              createdAt: chunk.createdAt,
-              updatedAt: chunk.updatedAt,
-              sourceSession: chunk.sessionId,
-              sourceRole: chunk.role,
-            });
-          }
+          chunks.push(...chunkTranscriptEntry(entry, { sessionId: tf.sessionId }));
         }
 
         if (chunks.length > 0) {
-          const ids = await this.store.syncTranscriptChunks(tf.path, tf.sessionId, chatId, chunks, {
+          const ids = await this.store.syncTranscriptChunks(tf.path, tf.sessionId, chunks, {
             hash,
             mtime: stats.mtimeMs,
             size: stats.size,

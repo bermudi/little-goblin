@@ -20,13 +20,13 @@
 
 ## Phase 3: Rebuild mixed-chat transcript indexing
 
-- [ ] Add nullable `memory_entries.source_surface_id` and one transactional SQLite provenance-index version marker through the idempotent memory schema migration; keep curated/user rows null and add no filesystem completion marker.
-- [ ] Change transcript-scope replacement to accept per-chunk SurfaceId/chat-ID values while maintaining entries, FTS, embeddings, tags, and source tracking in one transaction.
-- [ ] Remove session-state/file-level chat resolution from `src/memory/transcript-index.ts`; derive each chunk's `chat_id` only through `parseSurfaceId`.
-- [ ] Support one `transcript/<conversationId>` scope containing multiple chat IDs and null unresolved rows without changing bounded sync or deletion cleanup.
-- [ ] Transactionally purge all old transcript rows and dependent index/source data before setting the provenance-index version; never expose old guessed rows as current.
-- [ ] Preserve captured same-chat defaults, explicit `all_chats = true` access to every/null row, and explicit internal all-transcript search.
-- [ ] Add schema/store/index/search tests for mixed chats, null legacy rows, invalid IDs, complete purge, crash boundaries, bounded rebuild, and deleted transcripts; run focused tests and `bun run typecheck`.
+- [x] Add nullable `memory_entries.source_surface_id` and one transactional SQLite provenance-index version marker through the idempotent memory schema migration; keep curated/user rows null and add no filesystem completion marker.
+- [x] Change transcript-scope replacement to accept per-chunk SurfaceId/chat-ID values while maintaining entries, FTS, embeddings, tags, and source tracking in one transaction.
+- [x] Remove session-state/file-level chat resolution from `src/memory/transcript-index.ts`; derive each chunk's `chat_id` only through `parseSurfaceId`.
+- [x] Support one `transcript/<conversationId>` scope containing multiple chat IDs and null unresolved rows without changing bounded sync or deletion cleanup.
+- [x] Transactionally purge all old transcript rows and dependent index/source data before setting the provenance-index version; never expose old guessed rows as current.
+- [x] Preserve captured same-chat defaults, explicit `all_chats = true` access to every/null row, and explicit internal all-transcript search.
+- [x] Add schema/store/index/search tests for mixed chats, null legacy rows, invalid IDs, complete purge, crash boundaries, bounded rebuild, and deleted transcripts; run focused tests and `bun run typecheck`.
 
 ## Phase 4: Make dreaming provenance-driven
 

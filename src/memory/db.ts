@@ -58,6 +58,15 @@ export class MemoryDatabase {
       log.info("memory database migrated", { addedColumn: "display_order" });
     }
 
+    const hasSourceSurfaceId = this.db
+      .query<{ name: string }, []>("PRAGMA table_info(memory_entries)")
+      .all()
+      .some((col) => col.name === "source_surface_id");
+    if (!hasSourceSurfaceId) {
+      this.db.exec("ALTER TABLE memory_entries ADD COLUMN source_surface_id TEXT");
+      log.info("memory database migrated", { addedColumn: "source_surface_id" });
+    }
+
     if (!Number.isFinite(current) || current < MEMORY_SCHEMA_VERSION) {
       this.db
         .query(

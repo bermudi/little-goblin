@@ -5,7 +5,7 @@
  * WAL mode is enabled by the database lifecycle module.
  */
 
-export const MEMORY_SCHEMA_VERSION = 4;
+export const MEMORY_SCHEMA_VERSION = 5;
 
 export const DDL = `
 -- Schema metadata
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS memory_entries (
   origin TEXT NOT NULL,
   promoted_at INTEGER,
   chat_id TEXT,
+  source_surface_id TEXT,
   recall_count INTEGER NOT NULL DEFAULT 0,
   last_recalled_at INTEGER,
   display_order INTEGER NOT NULL DEFAULT 0

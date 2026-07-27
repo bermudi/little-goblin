@@ -9,6 +9,8 @@ import { MemoryBudget, MemoryOverflowError } from "./budget.ts";
 import { deriveConceptTags } from "./concept-vocabulary.ts";
 import { memoryDbPath, memoryDir } from "./paths.ts";
 import { scopeTag, toMemoryScopePair, type MemoryScope } from "./scope.ts";
+import { parseSurfaceId, type SurfaceId } from "../surface.ts";
+import type { TranscriptChunk } from "../sessions/transcript.ts";
 
 const DESCRIPTION_CAP = 200;
 const DELIMITER = "\n§\n";
@@ -78,6 +80,7 @@ export interface MemoryEntryInput {
   sourceRole?: string;
   promotedAt?: number;
   chatId?: string | null;
+  sourceSurfaceId?: SurfaceId;
   createdAt?: number;
   updatedAt?: number;
   recallCount?: number;
@@ -405,18 +408,14 @@ export class MemoryStore {
   /**
    * Atomically replace all transcript chunks for a session scope and record
    * the synced file metadata. Does not enforce the curated-memory budget.
+   *
+   * Each chunk's `chatId` is derived from its optional `sourceSurfaceId` through
+   * the canonical Surface codec; invalid or missing provenance yields `null`.
    */
   async syncTranscriptChunks(
     filePath: string,
     sessionId: string,
-    chatId: string | null,
-    chunks: Array<{
-      text: string;
-      createdAt: number;
-      updatedAt: number;
-      sourceSession?: string;
-      sourceRole?: string;
-    }>,
+    chunks: TranscriptChunk[],
     fileMeta: { hash: string; mtime: number; size: number },
   ): Promise<string[]> {
     const scope = `transcript/${sessionId}`;
@@ -432,6 +431,15 @@ export class MemoryStore {
       }
 
       for (const chunk of chunks) {
+        const chatId = ((): string | null => {
+          if (chunk.sourceSurfaceId === undefined) return null;
+          try {
+            const surface = parseSurfaceId(chunk.sourceSurfaceId);
+            return String(surface.chatId);
+          } catch {
+            return null;
+          }
+        })();
         const id = this.addEntryInTransaction({
           scope,
           entryKind: "transcript",
@@ -439,8 +447,9 @@ export class MemoryStore {
           origin: "transcript",
           createdAt: chunk.createdAt,
           updatedAt: chunk.updatedAt,
-          sourceSession: chunk.sourceSession,
-          sourceRole: chunk.sourceRole,
+          sourceSession: chunk.sessionId,
+          sourceRole: chunk.role,
+          sourceSurfaceId: chunk.sourceSurfaceId,
           chatId,
         });
         ids.push(id);
@@ -773,6 +782,54 @@ export class MemoryStore {
     }
   }
 
+  /**
+   * One-shot provenance-aware transcript index migration.
+   *
+   * After the offline transcript-file migration has advanced the filesystem
+   * stateVersion, this transaction purges every previously indexed transcript
+   * row (and its FTS, embedding, tag, and source-tracking dependents) and then
+   * records the provenance-index version. A crash before commit leaves the old
+   * rows and version untouched; a crash after commit cannot expose old guessed
+   * rows as current. Subsequent startup runs `syncTranscripts` to rebuild from
+   * per-entry Surface provenance.
+   */
+  migrateTranscriptProvenanceIndex(targetVersion = 1): boolean {
+    const metaKey = "provenance_index_version";
+    const current = this.db.getMeta(metaKey);
+    if (current === String(targetVersion)) return false;
+
+    this.db.database.exec("BEGIN");
+    try {
+      this.db.database.query(
+        `DELETE FROM memory_index_fts
+         WHERE entry_id IN (
+           SELECT id FROM memory_entries WHERE entry_kind = 'transcript'
+         )`,
+      ).run();
+      this.db.database.query(
+        `DELETE FROM memory_embeddings
+         WHERE entry_id IN (
+           SELECT id FROM memory_entries WHERE entry_kind = 'transcript'
+         )`,
+      ).run();
+      this.db.database.query(
+        `DELETE FROM memory_entry_tags
+         WHERE entry_id IN (
+           SELECT id FROM memory_entries WHERE entry_kind = 'transcript'
+         )`,
+      ).run();
+      this.db.database.query("DELETE FROM memory_entries WHERE entry_kind = 'transcript'").run();
+      this.db.database.query("DELETE FROM memory_sources WHERE source = 'transcript'").run();
+      this.db.setMeta(metaKey, String(targetVersion));
+      this.db.database.exec("COMMIT");
+      log.info("transcript provenance index migrated", { targetVersion });
+      return true;
+    } catch (err) {
+      this.db.database.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
   private readDescription(scope: string): string | null {
     const row = this.db.database
       .query<{ description: string | null }, { $scope: string }>("SELECT description FROM memory_scopes WHERE scope = $scope")
@@ -999,8 +1056,8 @@ export class MemoryStore {
     this.db.database
       .query(
         `INSERT INTO memory_entries
-         (id, scope, entry_kind, text, created_at, updated_at, source_session, updated_source_session, source_role, category, confidence, origin, promoted_at, chat_id, recall_count, display_order)
-         VALUES ($id, $scope, $entry_kind, $text, $created_at, $updated_at, $source_session, $updated_source_session, $source_role, $category, $confidence, $origin, $promoted_at, $chat_id, $recall_count, $display_order)`,
+         (id, scope, entry_kind, text, created_at, updated_at, source_session, updated_source_session, source_role, category, confidence, origin, promoted_at, chat_id, source_surface_id, recall_count, display_order)
+         VALUES ($id, $scope, $entry_kind, $text, $created_at, $updated_at, $source_session, $updated_source_session, $source_role, $category, $confidence, $origin, $promoted_at, $chat_id, $source_surface_id, $recall_count, $display_order)`,
       )
       .run({
         $id: id,
@@ -1017,6 +1074,7 @@ export class MemoryStore {
         $origin: input.origin ?? "user",
         $promoted_at: input.promotedAt ?? null,
         $chat_id: input.chatId ?? null,
+        $source_surface_id: input.sourceSurfaceId ?? null,
         $recall_count: input.recallCount ?? 0,
         $display_order: displayOrder,
       });

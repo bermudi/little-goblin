@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
 import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
+import { surfaceId, dmSurface, topicSurface } from "../surface.ts";
+import type { TranscriptChunk } from "../sessions/transcript.ts";
 
 const DELIMITER = "\n§\n";
 
@@ -516,6 +518,184 @@ describe("MemoryStore", () => {
       const summary = readMetricsSummary(tmp, "abcdef1234")!;
       expect(summary.memoryWriteSafetyRejectTotal).toBe(2);
       (ms as unknown as { db: { close: () => void } }).db.close();
+    });
+  });
+
+  describe("syncTranscriptChunks", () => {
+    const makeChunk = (text: string, sourceSurfaceId?: ReturnType<typeof surfaceId>): TranscriptChunk => ({
+      text,
+      ts: new Date().toISOString(),
+      role: "user",
+      sessionId: "test-session",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      sourceSurfaceId,
+    });
+
+    it("derives per-chunk chat_id from sourceSurfaceId and stores source_surface_id", async () => {
+      const sessionId = "mixed-chat-session";
+      const surfaceA = surfaceId(topicSurface("private", -100, 1));
+      const surfaceB = surfaceId(topicSurface("private", -200, 2));
+
+      await store.syncTranscriptChunks(
+        "/tmp/mixed.jsonl",
+        sessionId,
+        [
+          makeChunk("Message from chat A", surfaceA),
+          makeChunk("Message from chat B", surfaceB),
+        ],
+        { hash: "abc", mtime: Date.now(), size: 100 },
+      );
+
+      const rows = store.db.database
+        .query<{ chat_id: string | null; source_surface_id: string | null; text: string }, { $scope: string }>(
+          "SELECT chat_id, source_surface_id, text FROM memory_entries WHERE scope = $scope ORDER BY created_at, id",
+        )
+        .all({ $scope: `transcript/${sessionId}` })
+        .sort((a, b) => (a.chat_id ?? "").localeCompare(b.chat_id ?? ""));
+
+      expect(rows.length).toBe(2);
+      expect(rows[0]!.chat_id).toBe("-100");
+      expect(rows[0]!.source_surface_id).toBe(surfaceA);
+      expect(rows[1]!.chat_id).toBe("-200");
+      expect(rows[1]!.source_surface_id).toBe(surfaceB);
+    });
+
+    it("stores null chat_id and source_surface_id for missing provenance", async () => {
+      const sessionId = "legacy-session";
+      await store.syncTranscriptChunks(
+        "/tmp/legacy.jsonl",
+        sessionId,
+        [makeChunk("Legacy message")],
+        { hash: "def", mtime: Date.now(), size: 50 },
+      );
+
+      const rows = store.db.database
+        .query<{ chat_id: string | null; source_surface_id: string | null }, { $scope: string }>(
+          "SELECT chat_id, source_surface_id FROM memory_entries WHERE scope = $scope",
+        )
+        .all({ $scope: `transcript/${sessionId}` });
+
+      expect(rows.length).toBe(1);
+      expect(rows[0]!.chat_id).toBeNull();
+      expect(rows[0]!.source_surface_id).toBeNull();
+    });
+
+    it("atomically replaces all chunks for a scope on reindex", async () => {
+      const sessionId = "replace-session";
+      const first = surfaceId(dmSurface(111));
+      await store.syncTranscriptChunks(
+        "/tmp/replace.jsonl",
+        sessionId,
+        [makeChunk("First version", first)],
+        { hash: "v1", mtime: Date.now(), size: 10 },
+      );
+
+      const second = surfaceId(dmSurface(222));
+      await store.syncTranscriptChunks(
+        "/tmp/replace.jsonl",
+        sessionId,
+        [makeChunk("Second version", second)],
+        { hash: "v2", mtime: Date.now() + 1, size: 10 },
+      );
+
+      const rows = store.db.database
+        .query<{ chat_id: string | null; text: string }, { $scope: string }>(
+          "SELECT chat_id, text FROM memory_entries WHERE scope = $scope",
+        )
+        .all({ $scope: `transcript/${sessionId}` });
+
+      expect(rows.length).toBe(1);
+      expect(rows[0]!.text).toContain("Second version");
+      expect(rows[0]!.chat_id).toBe("222");
+    });
+  });
+
+  describe("migrateTranscriptProvenanceIndex", () => {
+    it("purges all transcript rows and dependents and records the version", () => {
+      const sessionId = "purge-session";
+      store.db.database
+        .query(
+          "INSERT INTO memory_entries (id, scope, entry_kind, text, created_at, updated_at, origin, chat_id, recall_count, display_order) VALUES ($id, $scope, $entry_kind, $text, $created_at, $updated_at, $origin, $chat_id, $recall_count, $display_order)",
+        )
+        .run({
+          $id: "old-transcript-row",
+          $scope: `transcript/${sessionId}`,
+          $entry_kind: "transcript",
+          $text: "old guessed chat row",
+          $created_at: Date.now(),
+          $updated_at: Date.now(),
+          $origin: "transcript",
+          $chat_id: "123",
+          $recall_count: 0,
+          $display_order: 0,
+        });
+      store.db.database
+        .query("INSERT INTO memory_index_fts (text, entry_id, scope, entry_kind, chat_id) VALUES ($text, $entry_id, $scope, $entry_kind, $chat_id)")
+        .run({
+          $text: "old guessed chat row",
+          $entry_id: "old-transcript-row",
+          $scope: `transcript/${sessionId}`,
+          $entry_kind: "transcript",
+          $chat_id: "123",
+        });
+      store.db.database
+        .query("INSERT INTO memory_sources (path, source, hash, mtime, size, updated_at) VALUES ($path, $source, $hash, $mtime, $size, $updated_at)")
+        .run({
+          $path: "/tmp/purge.jsonl",
+          $source: "transcript",
+          $hash: "abc",
+          $mtime: Date.now(),
+          $size: 100,
+          $updated_at: Date.now(),
+        });
+      store.db.database
+        .query("INSERT INTO memory_scopes (scope, description, updated_at) VALUES ($scope, $description, $updated_at)")
+        .run({ $scope: `transcript/${sessionId}`, $description: "old scope", $updated_at: Date.now() });
+
+      // Add a curated entry that must survive the purge.
+      store.db.database
+        .query(
+          "INSERT INTO memory_entries (id, scope, entry_kind, text, created_at, updated_at, origin, recall_count, display_order) VALUES ($id, $scope, $entry_kind, $text, $created_at, $updated_at, $origin, $recall_count, $display_order)",
+        )
+        .run({
+          $id: "curated-row",
+          $scope: "general",
+          $entry_kind: "memory",
+          $text: "preserved memory",
+          $created_at: Date.now(),
+          $updated_at: Date.now(),
+          $origin: "user",
+          $recall_count: 0,
+          $display_order: 0,
+        });
+
+      expect(store.migrateTranscriptProvenanceIndex()).toBe(true);
+
+      const transcriptRows = store.db.database
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM memory_entries WHERE entry_kind = 'transcript'")
+        .get();
+      expect(transcriptRows?.count).toBe(0);
+
+      const ftsRows = store.db.database
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM memory_index_fts")
+        .get();
+      expect(ftsRows?.count).toBe(0);
+
+      const sources = store.db.database
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM memory_sources WHERE source = 'transcript'")
+        .get();
+      expect(sources?.count).toBe(0);
+
+      const curatedRows = store.db.database
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM memory_entries WHERE entry_kind = 'memory'")
+        .get();
+      expect(curatedRows?.count).toBe(1);
+
+      expect(store.db.getMeta("provenance_index_version")).toBe("1");
+
+      // Idempotent: a second call does nothing.
+      expect(store.migrateTranscriptProvenanceIndex()).toBe(false);
     });
   });
 });

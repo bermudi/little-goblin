@@ -384,6 +384,81 @@ describe("Telegram intake", () => {
     expect(replies).toEqual([]);
   });
 
+  it("lazily creates a conversation for the first unbound media message", async () => {
+    const { intake, manager } = makeHarness();
+    installVoiceFetch({ audio: new Uint8Array([1, 2, 3]) });
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+
+    await intake.handlePhoto(message, fakeApi(), ["small", "big"], "first photo");
+    await waitFor(() => runners[0]?.prompt?.mock?.calls?.length === 1);
+
+    expect(manager.list()).toHaveLength(1);
+    const content = runners[0]!.prompt.mock.calls[0]![0] as { type: string; text?: string; mimeType?: string }[];
+    expect(Array.isArray(content)).toBe(true);
+    expect(content.some((part) => part.type === "text" && part.text === "first photo")).toBe(true);
+    expect(content.some((part) => part.type === "image" && part.mimeType === "image/jpeg")).toBe(true);
+    expect(replies).toEqual([]);
+  });
+
+  it("writes assistant transcript with the destination surface id after a cross-surface resume", async () => {
+    const { cfg, intake, manager } = makeHarness();
+    const replies1: string[] = [];
+    const message1 = makeMessage(replies1, { surface: dmSurface(1) });
+
+    await intake.handleText(message1, "hello");
+    await waitFor(() => runners[0]?.prompt?.mock?.calls?.length === 1);
+
+    const convId = manager.list()[0]!.id;
+    expect(convId).toBeDefined();
+
+    const replies2: string[] = [];
+    const message2 = makeMessage(replies2, { surface: dmSurface(2) });
+    await intake.handleText(message2, `/resume ${convId}`);
+    await flushMicrotasks();
+
+    globalThis.fetch = mock(async () => new Response("", { status: 404 })) as unknown as typeof fetch;
+    await intake.handlePhoto(message2, fakeApi(), ["file-id"], "after resume");
+    await waitFor(() => readTranscriptLines(cfg.goblinHome, convId).length > 0);
+
+    const lines = readTranscriptLines(cfg.goblinHome, convId);
+    const last = lines.at(-1) as Record<string, unknown>;
+    expect(last.role).toBe("assistant");
+    expect(last.sourceSurfaceId).toBe("tg:v1:dm:2");
+  });
+
+  it("does not block unrelated conversations on different surfaces", async () => {
+    const { intake } = makeHarness();
+    const slow = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runners.length === 1 && runners[0]!.prompt.mock.calls.length === 1) {
+        await slow.promise;
+      }
+    };
+
+    const replies1: string[] = [];
+    const message1 = makeMessage(replies1, { surface: dmSurface(1) });
+    const replies2: string[] = [];
+    const message2 = makeMessage(replies2, { surface: dmSurface(2) });
+
+    await intake.handleText(message1, "first");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    await intake.handleText(message2, "second");
+    await waitFor(() => runners[1]?.prompt?.mock?.calls?.length === 1);
+
+    expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
+    expect(runners[0]!.prompt).toHaveBeenCalledWith("[prepared] first", expect.anything());
+    expect(runners[1]!.prompt).toHaveBeenCalledTimes(1);
+    expect(runners[1]!.prompt).toHaveBeenCalledWith("[prepared] second", expect.anything());
+
+    slow.resolve();
+    await waitFor(() => !runners[0]!.isStreaming);
+
+    expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
+    expect(runners[1]!.prompt).toHaveBeenCalledTimes(1);
+  });
+
   it("does not prompt stale photo work after a runner-disposing command", async () => {
     const { cfg, intake } = makeHarness();
     const replies: string[] = [];

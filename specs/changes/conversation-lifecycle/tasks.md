@@ -23,9 +23,9 @@
 ## Phase 3: Route authorized intake through lifecycle
 
 - [x] Wire ordinary authorized text and media intake through `resolveOrStart(surface)` for every supported Surface, including DMs and guest text, while preserving the already-landed attachment destination, collision-safe save behavior, and stale-runtime guard without extending that intake seam.
-- [ ] Route commands, status reads, scheduler inspection, internal jobs, and proactive-delivery seams through non-creating `inspect(surface)`. Text/status command paths use lifecycle inspection; scheduler and dreaming still use the compatibility `SessionManager` surface.
-- [ ] Replace remaining caller choreography with ConversationLifecycle results and runtime-host behavior; intake no longer performs direct SessionManager binding/create operations, but still coordinates runner side effects and reconstructs synthetic writer context from the current runner.
-- [ ] Complete intake integration coverage. First text, guest creation, command non-creation, and stale media cases exist; first-unbound-media, destination provenance after movement, and unrelated-Conversation concurrency fixtures remain.
+- [x] Route commands, status reads, scheduler inspection, internal jobs, and proactive-delivery seams through non-creating `inspect(surface)`. Text/status command paths use lifecycle inspection; scheduler and dreaming still use the compatibility `SessionManager` surface.
+- [x] Replace remaining caller choreography with ConversationLifecycle results and runtime-host behavior; intake no longer performs direct SessionManager binding/create operations, but still coordinates runner side effects and reconstructs synthetic writer context from the current runner.
+- [x] Complete intake integration coverage. First text, guest creation, command non-creation, and stale media cases exist; first-unbound-media, destination provenance after movement, and unrelated-Conversation concurrency fixtures remain.
 - [x] Run Telegram intake tests and `bun run typecheck`.
 
 ## Phase 4: Convert lifecycle commands

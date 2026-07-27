@@ -33,9 +33,15 @@ export type ScheduleTurnInput = Static<typeof scheduleTurnSchema>;
 
 export interface ScheduleTurnToolArgs {
   store: ScheduleStore;
-  sessionId: string;
   surface: Surface;
   now: () => number;
+  /**
+   * Verify the runtime invoking this tool is still the current runtime for its
+   * bound Surface. Every store mutation checks this guard before mutating so a
+   * stale runtime cannot create or alter schedules after the Conversation has
+   * moved.
+   */
+  isCurrent: () => boolean;
 }
 
 function jsonResult(value: unknown): {
@@ -118,35 +124,42 @@ function assertAgentScheduleAuthority(
   }
 }
 
+function assertCurrent(isCurrent: () => boolean): void {
+  if (!isCurrent()) {
+    throw new Error("Runtime is no longer current on this surface.");
+  }
+}
+
 /**
  * Build an agent-facing `schedule_turn` tool.
  *
  * The tool gives the agent the same scheduling capabilities as the `/schedule`
- * command, but scoped to its own session and to schedules whose `source` is
+ * command, but scoped to its bound Surface and to schedules whose `source` is
  * `"agent"`. It creates, lists, mutates, and removes schedules; it also manages
- * the session heartbeat. All agent-originated transitions into `enabled` are
- * bounded by the per-session `MAX_AGENT_SCHEDULES` cap, which is enforced in
+ * the surface heartbeat. All agent-originated transitions into `enabled` are
+ * bounded by the per-surface `MAX_AGENT_SCHEDULES` cap, which is enforced in
  * `ScheduleStore`.
  */
 export function createScheduleTurnTool(args: ScheduleTurnToolArgs): ToolDefinition {
   return defineTool({
     name: "schedule_turn",
     label: "Schedule Turn",
-    description: `Schedule a future autonomous turn for the current session.
+    description: `Schedule a future autonomous turn for the current surface.
 
 Actions:
 - create_once — schedule one prompt. Provide exactly one of \`in\` (duration, e.g. 30m) or \`at\` (ISO-8601) and a \`prompt\`.
 - create_recurring — schedule a recurring prompt. Provide \`every\` (duration) and a \`prompt\`.
-- list — list this session's schedules, with user-owned prompts redacted.
+- list — list this surface's schedules, with user-owned prompts redacted.
 - remove / pause / resume — mutate a schedule by \`id\`. Agent may only touch agent-owned schedules.
 - heartbeat — \`heartbeat_action\`: on [duration] | off | status.`,
-    promptSnippet: "schedule_turn: schedule or manage a future autonomous turn for the current session.",
+    promptSnippet: "schedule_turn: schedule or manage a future autonomous turn for the current surface.",
     parameters: scheduleTurnSchema,
     async execute(_toolCallId, params: ScheduleTurnInput) {
-      const { store, sessionId, surface, now } = args;
+      const { store, surface, now, isCurrent } = args;
 
       switch (params.action) {
         case "create_once": {
+          assertCurrent(isCurrent);
           const prompt = requirePrompt(params.prompt);
           const hasIn = params.in !== undefined && params.in.trim().length > 0;
           const hasAt = params.at !== undefined && params.at.trim().length > 0;
@@ -170,7 +183,6 @@ Actions:
           }
 
           const record = store.create({
-            sessionId,
             surface,
             kind: "once",
             prompt,
@@ -186,13 +198,13 @@ Actions:
         }
 
         case "create_recurring": {
+          assertCurrent(isCurrent);
           const prompt = requirePrompt(params.prompt);
           if (params.every === undefined || params.every.trim().length === 0) {
             throw new Error("create_recurring requires `every` duration.");
           }
           const intervalMs = parseDurationOrThrow(params.every.trim(), "every");
           const record = store.create({
-            sessionId,
             surface,
             kind: "recurring",
             prompt,
@@ -210,14 +222,15 @@ Actions:
         }
 
         case "list": {
-          const records = store.listBySession(sessionId).map(redactedListRecord);
+          const records = store.listBySurface(surface).map(redactedListRecord);
           return jsonResult({ schedules: records });
         }
 
         case "remove": {
+          assertCurrent(isCurrent);
           const id = requireId(params.id);
-          assertAgentScheduleAuthority(store.getForSession(sessionId, id), id);
-          const removed = store.remove(sessionId, id, true);
+          assertAgentScheduleAuthority(store.getForSurface(surface, id), id);
+          const removed = store.remove(surface, id, true);
           if (!removed) {
             throw new Error(`No schedule found with id \`${id}\`.`);
           }
@@ -225,9 +238,10 @@ Actions:
         }
 
         case "pause": {
+          assertCurrent(isCurrent);
           const id = requireId(params.id);
-          assertAgentScheduleAuthority(store.getForSession(sessionId, id), id);
-          const record = store.pause(sessionId, id, true);
+          assertAgentScheduleAuthority(store.getForSurface(surface, id), id);
+          const record = store.pause(surface, id, true);
           if (!record) {
             throw new Error(`No schedule found with id \`${id}\`.`);
           }
@@ -240,9 +254,10 @@ Actions:
         }
 
         case "resume": {
+          assertCurrent(isCurrent);
           const id = requireId(params.id);
-          assertAgentScheduleAuthority(store.getForSession(sessionId, id), id);
-          const record = store.resume(sessionId, id, true);
+          assertAgentScheduleAuthority(store.getForSurface(surface, id), id);
+          const record = store.resume(surface, id, true);
           if (!record) {
             throw new Error(`No schedule found with id \`${id}\`.`);
           }
@@ -258,7 +273,7 @@ Actions:
           const heartbeatAction = requireHeartbeatAction(params.heartbeat_action);
 
           if (heartbeatAction === "status") {
-            const hb = store.getHeartbeat(sessionId);
+            const hb = store.getHeartbeat(surface);
             if (hb === null) {
               return jsonResult({ enabled: false, source: null, id: null });
             }
@@ -273,12 +288,12 @@ Actions:
           }
 
           if (heartbeatAction === "on") {
+            assertCurrent(isCurrent);
             let intervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS;
             if (params.duration !== undefined && params.duration.trim().length > 0) {
               intervalMs = parseDurationOrThrow(params.duration.trim(), "duration");
             }
             const record = store.setHeartbeat({
-              sessionId,
               surface,
               enabled: true,
               intervalMs,
@@ -296,7 +311,8 @@ Actions:
           }
 
           // heartbeat off
-          const existing = store.getHeartbeat(sessionId);
+          assertCurrent(isCurrent);
+          const existing = store.getHeartbeat(surface);
           if (existing !== null && effectiveSource(existing.source) === "user") {
             throw new Error("Cannot turn off a user-owned heartbeat.");
           }
@@ -304,7 +320,6 @@ Actions:
             return jsonResult({ enabled: false, source: null, id: null });
           }
           const record = store.setHeartbeat({
-            sessionId,
             surface,
             enabled: false,
             now: nowIso(now),

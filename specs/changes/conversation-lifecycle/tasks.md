@@ -47,12 +47,12 @@
 
 ## Phase 6: Make schedules Surface-owned
 
-- [ ] Remove durable conversation/session ownership from canonical schedule records and key create/list/mutate/cap/heartbeat operations by SurfaceId.
-- [ ] Update `/schedule` and `schedule_turn` authority to the invoking/current Surface, including a current-binding check before agent mutations.
-- [ ] Change scheduler ordering to inspect binding before claim; leave unbound occurrences due/enabled and emit one de-duplicated pending signal per occurrence.
-- [ ] Dispatch a claimed occurrence through the Surface's current Conversation runtime and preserve stale-runtime dropping if the binding changes before execution.
-- [ ] Add schedule/store/tool/loop tests for rotation survival, unbound pending, overdue one-time dispatch after rebinding, per-Surface caps, source authority, and stale runtime.
-- [ ] Run scheduler/command tests and `bun run typecheck` after Surface-owned schedule behavior is implemented.
+- [x] Remove durable conversation/session ownership from canonical schedule records and key create/list/mutate/cap/heartbeat operations by SurfaceId.
+- [x] Update `/schedule` and `schedule_turn` authority to the invoking/current Surface, including a current-binding check before agent mutations.
+- [x] Change scheduler ordering to inspect binding before claim; leave unbound occurrences due/enabled and emit one de-duplicated pending signal per occurrence.
+- [x] Dispatch a claimed occurrence through the Surface's current Conversation runtime and preserve stale-runtime dropping if the binding changes before execution.
+- [x] Add schedule/store/tool/loop tests for rotation survival, unbound pending, overdue one-time dispatch after rebinding, per-Surface caps, source authority, and stale runtime.
+- [x] Run scheduler/command tests and `bun run typecheck` after Surface-owned schedule behavior is implemented.
 
 ## Phase 7: Move heartbeat prompts to Surface state
 

@@ -502,14 +502,13 @@ const queueHandler: CommandHandler = async ({ session, existingRunner, rawText }
   return replied(ack, sideEffects, tag);
 };
 
-const scheduleHandler: CommandHandler = async ({ deps, session, surface, rawText }) => {
-  // `/schedule` is instant-timing: it only mutates the schedule store and does
-  // not touch the in-flight runner, so it never defers behind a streaming turn.
+const scheduleHandler: CommandHandler = async ({ deps, surface, rawText }) => {
+  // `/schedule` is instant-timing and surface-owned: it mutates the schedule
+  // store for the invoking Surface and does not require a bound conversation.
   if (!deps.scheduleStore) {
     return replied("Scheduling is not available.", [], "warn");
   }
-  if (!session) return replied("No active conversation. Use /new to start one.", [], "info");
-  const depsForSchedule = buildScheduleDeps(deps.scheduleStore, session, surface, Date.now());
+  const depsForSchedule = buildScheduleDeps(deps.scheduleStore, surface, Date.now());
   const result = executeSchedule(depsForSchedule, rawText);
   return replied(result.reply, [], result.tag);
 };

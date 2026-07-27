@@ -6,36 +6,23 @@ import {
   executeSchedule,
   parseScheduleArgs,
   buildScheduleDeps,
-  NO_ACTIVE_SESSION_REPLY,
   SCHEDULE_USAGE_REPLY,
   HEARTBEAT_USAGE_REPLY,
   type ScheduleCommandDeps,
 } from "./schedule.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
-import type { SessionState } from "../sessions/types.ts";
 import { dmSurface, topicSurface, type Surface } from "../surface.ts";
 import type { ScheduledTurn } from "../scheduler/types.ts";
-import { personalEnvironment } from "../sessions/environment.ts";
 
 const NOW = Date.parse("2026-07-04T12:00:00Z");
 const LOC: Surface = topicSurface("supergroup", 100, 5);
 const FUTURE_ISO = "2026-07-05T09:00:00Z";
 
-function makeSession(id = "sess-a"): SessionState {
-  return {
-    id,
-    createdAt: "2026-07-01T00:00:00Z",
-    chatId: 100,
-    topicId: 5,
-    executionEnvironment: personalEnvironment(),
-  };
-}
-
 /**
  * In-memory fake deps for pure `executeSchedule` tests. Records every call so
  * tests can assert behavior without touching the filesystem.
  */
-function makeFakeDeps(session: SessionState | null = makeSession()): ScheduleCommandDeps & {
+function makeFakeDeps(): ScheduleCommandDeps & {
   created: { kind: "once" | "recurring"; prompt: string; nextRunAt: string; intervalMs?: number }[];
   removed: string[];
   paused: string[];
@@ -45,8 +32,6 @@ function makeFakeDeps(session: SessionState | null = makeSession()): ScheduleCom
   heartbeatReturn: ScheduledTurn | null;
 } {
   return {
-    hasSession: session !== null,
-    session,
     surface: LOC,
     now: NOW,
     created: [],
@@ -60,7 +45,6 @@ function makeFakeDeps(session: SessionState | null = makeSession()): ScheduleCom
       this.created.push(params);
       return {
         id: "newid1",
-        sessionId: session?.id ?? "?",
         surface: LOC,
         kind: params.kind,
         prompt: params.prompt,
@@ -90,7 +74,6 @@ function makeFakeDeps(session: SessionState | null = makeSession()): ScheduleCom
       this.heartbeatCalls.push({ enabled: params.enabled, intervalMs: params.intervalMs });
       return {
         id: "hb1",
-        sessionId: session?.id ?? "?",
         surface: LOC,
         kind: "heartbeat" as const,
         prompt: null,
@@ -134,14 +117,7 @@ describe("parseScheduleArgs", () => {
   });
 });
 
-describe("executeSchedule — active conversation requirement", () => {
-  it("replies with no-active-session when there is no session", () => {
-    const deps = makeFakeDeps(null);
-    expect(executeSchedule(deps, "/schedule list").reply).toBe(NO_ACTIVE_SESSION_REPLY);
-    expect(executeSchedule(deps, "/schedule list").tag).toBe("info");
-    expect(executeSchedule(deps, "/schedule every 1h hello").reply).toBe(NO_ACTIVE_SESSION_REPLY);
-  });
-
+describe("executeSchedule — no session required", () => {
   it("returns usage when no subcommand is given", () => {
     const deps = makeFakeDeps();
     expect(executeSchedule(deps, "/schedule").reply).toBe(SCHEDULE_USAGE_REPLY);
@@ -152,7 +128,7 @@ describe("executeSchedule — active conversation requirement", () => {
 describe("executeSchedule — list", () => {
   it("reports no schedules when empty", () => {
     const deps = makeFakeDeps();
-    expect(executeSchedule(deps, "/schedule list").reply).toBe("No schedules for this conversation.");
+    expect(executeSchedule(deps, "/schedule list").reply).toBe("No schedules for this surface.");
   });
 
   it("lists schedules with id, state, recurrence, next run, and preview", () => {
@@ -160,7 +136,6 @@ describe("executeSchedule — list", () => {
     deps.listReturn = [
       {
         id: "abc123",
-        sessionId: "sess-a",
         surface: LOC,
         kind: "recurring",
         prompt: "check backups",
@@ -172,7 +147,6 @@ describe("executeSchedule — list", () => {
       },
       {
         id: "def456",
-        sessionId: "sess-a",
         surface: LOC,
         kind: "once",
         prompt: "one and done",
@@ -198,7 +172,6 @@ describe("executeSchedule — list", () => {
     deps.listReturn = [
       {
         id: "hb1",
-        sessionId: "sess-a",
         surface: LOC,
         kind: "heartbeat",
         prompt: null,
@@ -219,7 +192,6 @@ describe("executeSchedule — list", () => {
     deps.listReturn = [
       {
         id: "user1",
-        sessionId: "sess-a",
         surface: LOC,
         kind: "once",
         prompt: "user prompt",
@@ -230,7 +202,6 @@ describe("executeSchedule — list", () => {
       },
       {
         id: "agent1",
-        sessionId: "sess-a",
         surface: LOC,
         kind: "once",
         prompt: "agent prompt",
@@ -400,7 +371,6 @@ describe("executeSchedule — heartbeat", () => {
     const deps = makeFakeDeps();
     deps.heartbeatReturn = {
       id: "hb1",
-      sessionId: "sess-a",
       surface: LOC,
       kind: "heartbeat",
       prompt: null,
@@ -460,8 +430,7 @@ describe("buildScheduleDeps + ScheduleStore (integration)", () => {
   });
 
   it("creates a one-shot via the real store and lists it", () => {
-    const session = makeSession();
-    const deps = buildScheduleDeps(store, session, LOC, NOW);
+    const deps = buildScheduleDeps(store, LOC, NOW);
     const result = executeSchedule(deps, `/schedule at ${FUTURE_ISO} hello`);
     expect(result.reply).toContain("Scheduled");
     const list = executeSchedule(deps, "/schedule list");
@@ -471,66 +440,58 @@ describe("buildScheduleDeps + ScheduleStore (integration)", () => {
   it("ownership: remove returns no-match for a foreign-owned schedule", () => {
     // Create a schedule owned by session B.
     store.create({
-      sessionId: "sess-b",
       surface: dmSurface(999),
       kind: "once",
       prompt: "foreign",
       nextRunAt: FUTURE_ISO,
     });
-    const sessionA = makeSession("sess-a");
-    const deps = buildScheduleDeps(store, sessionA, LOC, NOW);
-    const id = store.listBySession("sess-b")[0]!.id;
+    const deps = buildScheduleDeps(store, LOC, NOW);
+    const id = store.listBySurface(dmSurface(999))[0]!.id;
     expect(executeSchedule(deps, `/schedule remove ${id}`).reply).toBe(`No matching schedule \`${id}\`.`);
     // The foreign schedule is untouched.
-    expect(store.listBySession("sess-b")).toHaveLength(1);
+    expect(store.listBySurface(dmSurface(999))).toHaveLength(1);
   });
 
   it("ownership: pause returns no-match for a foreign-owned schedule", () => {
     store.create({
-      sessionId: "sess-b",
       surface: dmSurface(999),
       kind: "once",
       prompt: "foreign",
       nextRunAt: FUTURE_ISO,
     });
-    const sessionA = makeSession("sess-a");
-    const deps = buildScheduleDeps(store, sessionA, LOC, NOW);
-    const id = store.listBySession("sess-b")[0]!.id;
+    const deps = buildScheduleDeps(store, LOC, NOW);
+    const id = store.listBySurface(dmSurface(999))[0]!.id;
     expect(executeSchedule(deps, `/schedule pause ${id}`).reply).toBe(`No matching schedule \`${id}\`.`);
   });
 
   it("ownership: resume returns no-match for a foreign-owned schedule", () => {
     store.create({
-      sessionId: "sess-b",
       surface: dmSurface(999),
       kind: "once",
       prompt: "foreign",
       nextRunAt: FUTURE_ISO,
     });
-    const sessionA = makeSession("sess-a");
-    const deps = buildScheduleDeps(store, sessionA, LOC, NOW);
-    const id = store.listBySession("sess-b")[0]!.id;
+    const deps = buildScheduleDeps(store, LOC, NOW);
+    const id = store.listBySurface(dmSurface(999))[0]!.id;
     expect(executeSchedule(deps, `/schedule resume ${id}`).reply).toBe(`No matching schedule \`${id}\`.`);
     // The foreign schedule is untouched.
-    expect(store.listBySession("sess-b")).toHaveLength(1);
+    expect(store.listBySurface(dmSurface(999))).toHaveLength(1);
   });
 
   it("heartbeat on enables a real heartbeat record in the store", () => {
-    const session = makeSession();
-    const deps = buildScheduleDeps(store, session, LOC, NOW);
+    const deps = buildScheduleDeps(store, LOC, NOW);
     executeSchedule(deps, "/schedule heartbeat on");
-    const hb = store.getHeartbeat(session.id);
+    const hb = store.getHeartbeat(LOC);
     expect(hb).not.toBeNull();
     expect(hb!.enabled).toBe(true);
     expect(hb!.intervalMs).toBe(1800000);
   });
 
   it("heartbeat bare on resets a custom interval to the default", () => {
-    const session = makeSession();
-    const deps = buildScheduleDeps(store, session, LOC, NOW);
+    const deps = buildScheduleDeps(store, LOC, NOW);
     executeSchedule(deps, "/schedule heartbeat on 2h");
     executeSchedule(deps, "/schedule heartbeat on");
-    const hb = store.getHeartbeat(session.id);
+    const hb = store.getHeartbeat(LOC);
     expect(hb!.intervalMs).toBe(1800000);
   });
 });

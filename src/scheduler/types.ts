@@ -36,11 +36,12 @@ export const MAX_AGENT_SCHEDULES = 8;
  *
  * `at` is an ISO-8601 timestamp. `outcome` enumerates the scheduler's terminal
  * cases: successful dispatch, a binding mismatch (session rebound), an
- * archived session, or a generic dispatch error. Absent until the first run.
+ * archived session, a generic dispatch error, or a pending signal emitted while
+ * the owning Surface is unbound. Absent until the first run.
  */
 export interface LastRunStatus {
   at: string;
-  outcome: "ok" | "binding-mismatch" | "archived" | "error";
+  outcome: "ok" | "binding-mismatch" | "archived" | "error" | "pending";
   message?: string;
 }
 
@@ -54,7 +55,6 @@ export interface LastRunStatus {
  */
 export interface ScheduledTurn {
   id: string;
-  sessionId: string;
   surface: Surface;
   kind: ScheduleKind;
   prompt: string | null;
@@ -78,7 +78,6 @@ export interface ScheduledTurn {
  */
 export interface PersistedScheduledTurn {
   id: string;
-  sessionId: string;
   surfaceId: string;
   kind: ScheduleKind;
   prompt: string | null;

@@ -5,11 +5,11 @@
  * not touch the in-flight runner, so it never defers behind a streaming turn.
  *
  * Subcommands:
- *   list                              — list schedules for the active conversation
+ *   list                              — list schedules for this surface
  *   at <ISO-8601 datetime> <prompt>   — one-shot at an absolute time
  *   in <duration> <prompt>            — one-shot relative to now
  *   every <duration> <prompt>         — recurring
- *   remove <id>                       — remove a schedule (active conversation only)
+ *   remove <id>                       — remove a schedule on this surface
  *   pause <id>                        — disable a schedule
  *   resume <id>                       — re-enable a schedule
  *   heartbeat on [duration]           — enable heartbeat (30m default)
@@ -19,7 +19,6 @@
  * `executeSchedule` is pure: it takes injectable store operations + parsed
  * inputs and returns a reply string. The registry handler wires real deps.
  */
-import type { SessionState } from "../sessions/mod.ts";
 import type { Surface } from "../surface.ts";
 import type { ScheduledTurn } from "../scheduler/types.ts";
 import { formatDuration, formatRunTime, parseAt, parseDuration, parseIn } from "../scheduler/time.ts";
@@ -34,7 +33,6 @@ export interface ScheduleCommandResult {
   tag: SystemTag;
 }
 
-export const NO_ACTIVE_SESSION_REPLY = "No active conversation. Use /new to start one.";
 export const SCHEDULE_USAGE_REPLY = [
   "Usage:",
   "  /schedule list",
@@ -58,8 +56,6 @@ export const HEARTBEAT_USAGE_REPLY = "Usage: /schedule heartbeat <on [duration] 
  * surface so tests can pass fakes without touching the filesystem.
  */
 export interface ScheduleCommandDeps {
-  hasSession: boolean;
-  session: SessionState | null;
   surface: Surface;
   now: number;
   create: (params: {
@@ -122,7 +118,7 @@ function nextRunLabel(s: ScheduledTurn): string {
 }
 
 function formatScheduleList(schedules: ScheduledTurn[]): string {
-  if (schedules.length === 0) return "No schedules for this conversation.";
+  if (schedules.length === 0) return "No schedules for this surface.";
   const lines = ["Schedules:"];
   for (const s of schedules) {
     const sourceTag = s.source === "agent" ? " [agent]" : "";
@@ -140,7 +136,6 @@ function formatScheduleList(schedules: ScheduledTurn[]): string {
  * with respect to the filesystem and Telegram — the caller sends the reply.
  */
 export function executeSchedule(deps: ScheduleCommandDeps, rawText: string): ScheduleCommandResult {
-  if (!deps.hasSession || !deps.session) return { reply: NO_ACTIVE_SESSION_REPLY, tag: "info" };
   const parsed = parseScheduleArgs(rawText);
   if (!parsed) return { reply: SCHEDULE_USAGE_REPLY, tag: "info" };
   const { sub, rest } = parsed;
@@ -285,54 +280,47 @@ function heartbeatStatusReply(hb: ScheduledTurn, now: number): string {
 
 /**
  * Build the deps object the registry handler uses to call `executeSchedule`.
- * Exported so the handler can construct it from a `ScheduleStore` + session.
+ * Exported so the handler can construct it from a `ScheduleStore` + Surface.
  */
 export function buildScheduleDeps(
   store: {
     create: (params: {
-      sessionId: string;
       surface: Surface;
       kind: "once" | "recurring";
       prompt: string;
       nextRunAt: string;
       intervalMs?: number;
     }) => ScheduledTurn;
-    listBySession: (sessionId: string) => ScheduledTurn[];
-    remove: (sessionId: string, id: string) => boolean;
-    pause: (sessionId: string, id: string) => ScheduledTurn | null;
-    resume: (sessionId: string, id: string) => ScheduledTurn | null;
+    listBySurface: (surface: Surface) => ScheduledTurn[];
+    remove: (surface: Surface, id: string) => boolean;
+    pause: (surface: Surface, id: string) => ScheduledTurn | null;
+    resume: (surface: Surface, id: string) => ScheduledTurn | null;
     setHeartbeat: (params: {
-      sessionId: string;
       surface: Surface;
       enabled: boolean;
       intervalMs?: number;
       now: string;
     }) => ScheduledTurn;
-    getHeartbeat: (sessionId: string) => ScheduledTurn | null;
+    getHeartbeat: (surface: Surface) => ScheduledTurn | null;
   },
-  session: SessionState,
   surface: Surface,
   now: number,
 ): ScheduleCommandDeps {
   return {
-    hasSession: true,
-    session,
     surface,
     now,
-    create: (params) =>
-      store.create({ sessionId: session.id, surface, ...params }),
-    list: () => store.listBySession(session.id),
-    remove: (id) => store.remove(session.id, id),
-    pause: (id) => store.pause(session.id, id),
-    resume: (id) => store.resume(session.id, id),
+    create: (params) => store.create({ surface, ...params }),
+    list: () => store.listBySurface(surface),
+    remove: (id) => store.remove(surface, id),
+    pause: (id) => store.pause(surface, id),
+    resume: (id) => store.resume(surface, id),
     setHeartbeat: (params) =>
       store.setHeartbeat({
-        sessionId: session.id,
         surface,
         enabled: params.enabled,
         intervalMs: params.intervalMs,
         now: new Date(now).toISOString(),
       }),
-    getHeartbeat: () => store.getHeartbeat(session.id),
+    getHeartbeat: () => store.getHeartbeat(surface),
   };
 }

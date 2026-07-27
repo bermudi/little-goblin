@@ -271,6 +271,7 @@ export class TurnDispatcher {
     // a different surface adopts the destination surface's preferences.
     const modelName = this.surfaceSettings.getModelName(surface) ?? session.modelName;
     const thinkingLevel = this.surfaceSettings.getThinkingLevel(surface) ?? session.thinkingLevel;
+    let runner!: AgentRunner;
     const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
       cfg: this.cfg,
       sessionId: session.id,
@@ -287,8 +288,14 @@ export class TurnDispatcher {
       mcpRunner: this.mcpRunner,
       embeddingProvider: this.embeddingProvider,
       dreamingPipeline: this.dreamingPipeline,
+      isCurrent: () => {
+        if (this.runners.get(session.id) !== runner) return false;
+        if (!this.bindingInspector) return true;
+        return this.bindingInspector(surface) === session.id;
+      },
     };
-    return this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
+    runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
+    return runner;
   }
 
   /**

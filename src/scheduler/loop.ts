@@ -3,7 +3,7 @@ import { log } from "../log.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
 import { heartbeatMdPathForSession } from "../sessions/paths.ts";
 import type { SessionState } from "../sessions/mod.ts";
-import type { Surface } from "../surface.ts";
+import { surfaceId, type Surface } from "../surface.ts";
 
 import type { MemoryEngine } from "../memory/engine.ts";
 import { DREAMING_CATEGORIES, type DreamingCategory } from "../memory/dreaming.ts";
@@ -588,17 +588,31 @@ ${formatted}`;
   }
 
   /**
-   * Claim, validate, and dispatch a single due schedule. Claiming happens
-   * before binding validation so that even a mismatching schedule is marked
-   * claimed (one-shot completed / recurring advanced) and cannot tight-loop.
-   * Stale bindings are recorded via `recordRun` with the appropriate outcome.
+   * Validate, claim, and dispatch a single due schedule. Binding is inspected
+   * before claiming so an unbound Surface does not advance, complete, or
+   * disable an occurrence — it remains pending. Once claimed, the turn is
+   * dispatched through the Surface's current Conversation runtime; if the
+   * runtime is displaced before execution, the stale-runner guard drops the
+   * captured work without re-enabling the schedule.
    */
   private async processOne(schedule: ScheduledTurn, nowIso: string): Promise<void> {
-    // The prompt text is decided before claiming: a heartbeat resolves its
-    // body from `$GOBLIN_HOME/state/sessions/<id>/HEARTBEAT.md` (then global,
-    // then constant) at dispatch time; a user schedule uses its captured prompt.
-    const isHeartbeat = schedule.kind === "heartbeat";
-    const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.sessionId) : schedule.prompt ?? "";
+    // Validate the captured binding via the NON-MUTATING peek. Never resolve(),
+    // which auto-creates sessions for topic/supergroup locators.
+    const peeked = await this.sessionSource.peekBinding(schedule.surface);
+
+    if (peeked === null) {
+      // Surface is unbound. Emit a single pending signal per (scheduleId,
+      // nextRunAt) and leave the occurrence due and enabled.
+      if (schedule.lastRun?.outcome !== "pending" || schedule.lastRun.message !== schedule.nextRunAt) {
+        this.store.recordRun(schedule.id, { at: nowIso, outcome: "pending", message: schedule.nextRunAt });
+        log.info("scheduler pending unbound schedule", {
+          id: schedule.id,
+          surfaceId: surfaceId(schedule.surface),
+          nextRunAt: schedule.nextRunAt,
+        });
+      }
+      return;
+    }
 
     // Claim before dispatch. For one-shot this completes/disables; for
     // recurring this advances nextRunAt. If another tick already claimed it,
@@ -606,43 +620,22 @@ ${formatted}`;
     const claimed = this.store.claimDue(schedule.id, nowIso);
     if (!claimed) return;
 
-    // Validate the captured binding via the NON-MUTATING peek. Never resolve(),
-    // which auto-creates sessions for topic/supergroup locators.
-    const peeked = await this.sessionSource.peekBinding(schedule.surface);
+    // The prompt text is decided after binding validation: a heartbeat resolves
+    // its body from `$GOBLIN_HOME/state/sessions/<id>/HEARTBEAT.md` (then
+    // global, then constant) using the current bound conversation id; a user
+    // schedule uses its captured prompt.
+    const isHeartbeat = schedule.kind === "heartbeat";
+    const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, peeked.sessionId) : schedule.prompt ?? "";
 
-    if (peeked === null) {
-      // No binding resolves to a live session. Distinguish archived (the
-      // session dir is gone) from a generic mismatch. Both disable the
-      // schedule; the outcome label differs for diagnostics.
-      const outcome = this.isArchived(schedule.sessionId) ? "archived" : "binding-mismatch";
-      this.store.recordRun(schedule.id, { at: nowIso, outcome });
-      log.info("scheduler disabled stale schedule", {
-        id: schedule.id,
-        outcome,
-        sessionId: schedule.sessionId,
-      });
-      return;
-    }
-
-    if (peeked.sessionId !== schedule.sessionId) {
-      // Locator is bound to a different session now (e.g. /new, /resume).
-      this.store.recordRun(schedule.id, { at: nowIso, outcome: "binding-mismatch" });
-      log.info("scheduler disabled rebound schedule", {
-        id: schedule.id,
-        capturedSessionId: schedule.sessionId,
-        currentSessionId: peeked.sessionId,
-      });
-      return;
-    }
-
-    // Binding is valid: dispatch the prompt as a fresh turn. The dispatcher
-    // serializes through the per-session queue, so a scheduled turn waits
-    // behind any in-flight turn. Async prompt failures are reported via the
-    // onError callback (records outcome: "error"). A synchronous throw from
-    // enqueueScheduledTurn (a dispatcher bug) would otherwise leave the
-    // schedule claimed with no last-run status, so we catch, record "error",
-    // and re-throw — the per-schedule catch in tick() logs it, the remaining
-    // due schedules in this tick still run, and future ticks continue.
+    // Binding is valid: dispatch the prompt as a fresh turn through the current
+    // Conversation runtime. The dispatcher serializes through the per-session
+    // queue, so a scheduled turn waits behind any in-flight turn. Async prompt
+    // failures are reported via the onError callback (records outcome: "error").
+    // A synchronous throw from enqueueScheduledTurn (a dispatcher bug) would
+    // otherwise leave the schedule claimed with no last-run status, so we catch,
+    // record "error", and re-throw — the per-schedule catch in tick() logs it,
+    // the remaining due schedules in this tick still run, and future ticks
+    // continue.
     try {
       this.dispatcher.enqueueScheduledTurn(peeked.state, schedule.surface, prompt, (err) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -664,15 +657,4 @@ ${formatted}`;
     this.store.recordRun(schedule.id, { at: nowIso, outcome: "ok" });
   }
 
-  /**
-   * Precisely check whether the captured session was archived via
-   * `manager.archive()` (binding cleared + dir moved). A manually-deleted
-   * session dir is NOT archived, so the scheduler labels it "binding-mismatch"
-   * — matching the spec's archived-scenario definition. Delegates to
-   * `SessionManager.isArchived`, a single `existsSync` rather than the O(n×m)
-   * `manager.list()` scan the prior heuristic used.
-   */
-  private isArchived(sessionId: string): boolean {
-    return this.sessionSource.isArchived(sessionId);
-  }
 }

@@ -22,7 +22,7 @@ import {
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;
 
 /**
- * Generate a short schedule id from a UUID. Mirrors `makeSessionId()` — 10
+ * Generate a short schedule id from a UUID. Mirrors `makeConversationId()` — 10
  * hex chars (16^10 ≈ 1.1 trillion combos), fs-safe and user-typable.
  */
 export function makeScheduleId(): string {
@@ -79,6 +79,10 @@ function decodeTurn(p: PersistedScheduledTurn): ScheduledTurn {
   return { ...rest, surface: decodeSurface(surfaceId, (p as { surface?: unknown }).surface, p.id) };
 }
 
+function surfaceIdOf(surface: Surface): string {
+  return surfaceId(surface);
+}
+
 /**
  * Load the schedule store. Returns an empty store when the file is missing
  * (ENOENT is expected — first run). Malformed JSON logs a warning and yields
@@ -122,9 +126,9 @@ function effectiveSource(s: ScheduledTurn): "user" | "agent" {
 /**
  * Mutable schedule store. Backed by `schedulesPath(home)` with atomic writes.
  *
- * Operations take the active `sessionId` so that remove/pause/resume enforce
- * active-session ownership: a schedule can only be mutated by the session that
- * owns it. Cross-session mutations return null/false rather than throwing.
+ * Operations take the owning `Surface` so that remove/pause/resume enforce
+ * surface ownership: a schedule can only be mutated from the surface that owns
+ * it. Cross-surface mutations return null/false rather than throwing.
  *
  * Provenance (`source`) is an authority boundary: the agent tool path may only
  * mutate agent-owned schedules, and agent-originated transitions into `enabled`
@@ -154,29 +158,31 @@ export class ScheduleStore {
   }
 
   /**
-   * Count enabled schedules owned by the session whose effective source is
-   * "agent". Used to enforce the per-session agent cap at mutation time.
+   * Count enabled schedules owned by the surface whose effective source is
+   * "agent". Used to enforce the per-surface agent cap at mutation time.
    *
    * When `snapshot` is provided, the count is computed over that already-loaded
    * store so the cap check and the mutation operate on the same in-memory record
    * list (no fresh disk read between count and write). When omitted, a fresh
    * read is performed — used by external callers that are not mid-mutation.
    */
-  countEnabledAgentSchedules(sessionId: string, snapshot?: ScheduledTurn[]): number {
+  countEnabledAgentSchedules(surface: Surface, snapshot?: ScheduledTurn[]): number {
+    const key = surfaceIdOf(surface);
     const schedules = snapshot ?? this.read();
     return schedules.filter(
-      (s) => s.sessionId === sessionId && s.state === "enabled" && effectiveSource(s) === "agent",
+      (s) => surfaceIdOf(s.surface) === key && s.state === "enabled" && effectiveSource(s) === "agent",
     ).length;
   }
 
   /**
-   * List every schedule owned by a session, including enabled, disabled, and
+   * List every schedule owned by a surface, including enabled, disabled, and
    * completed records. Sorted by nextRunAt for stable listing, with completed
    * schedules sorted last.
    */
-  listBySession(sessionId: string): ScheduledTurn[] {
+  listBySurface(surface: Surface): ScheduledTurn[] {
+    const key = surfaceIdOf(surface);
     return this.read()
-      .filter((s) => s.sessionId === sessionId)
+      .filter((s) => surfaceIdOf(s.surface) === key)
       .sort((a, b) => {
         if (a.state === "completed" && b.state !== "completed") return 1;
         if (b.state === "completed" && a.state !== "completed") return -1;
@@ -185,13 +191,14 @@ export class ScheduleStore {
   }
 
   /**
-   * Look up a single schedule by id, only if owned by the given session.
-   * Returns null when missing or owned by another session — callers treat
+   * Look up a single schedule by id, only if owned by the given surface.
+   * Returns null when missing or owned by another surface — callers treat
    * both the same way ("no matching schedule was found").
    */
-  getForSession(sessionId: string, id: string): ScheduledTurn | null {
+  getForSurface(surface: Surface, id: string): ScheduledTurn | null {
+    const key = surfaceIdOf(surface);
     const s = this.read().find((x) => x.id === id);
-    if (!s || s.sessionId !== sessionId) return null;
+    if (!s || surfaceIdOf(s.surface) !== key) return null;
     return s;
   }
 
@@ -200,10 +207,9 @@ export class ScheduleStore {
    * via `setHeartbeat`. Retries id generation on collision.
    *
    * `source` defaults to `"user"` for the `/schedule` command path. The agent
-   * tool passes `"agent"` and is subject to the per-session agent cap.
+   * tool passes `"agent"` and is subject to the per-surface agent cap.
    */
   create(params: {
-    sessionId: string;
     surface: Surface;
     kind: Exclude<ScheduleKind, "heartbeat">;
     prompt: string;
@@ -215,17 +221,16 @@ export class ScheduleStore {
     const store = this.read();
 
     if (source === "agent") {
-      const count = this.countEnabledAgentSchedules(params.sessionId, store);
+      const count = this.countEnabledAgentSchedules(params.surface, store);
       if (count >= MAX_AGENT_SCHEDULES) {
         throw new Error(
-          `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
+          `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this surface. Pause or remove an existing schedule first.`,
         );
       }
     }
 
     const record: ScheduledTurn = {
       id: this.freshId(store),
-      sessionId: params.sessionId,
       surface: params.surface,
       kind: params.kind,
       prompt: params.prompt,
@@ -238,12 +243,12 @@ export class ScheduleStore {
     };
     store.push(record);
     this.write(store);
-    log.info("created schedule", { id: record.id, kind: record.kind, sessionId: record.sessionId, source });
+    log.info("created schedule", { id: record.id, kind: record.kind, surfaceId: surfaceIdOf(record.surface), source });
     return record;
   }
 
   /**
-   * Get, create, or update the session's heartbeat schedule. When `enabled`
+   * Get, create, or update the surface's heartbeat schedule. When `enabled`
    * is true the heartbeat is set to the given interval (defaulting to 30 min)
    * and its next run is computed from `now`. When `enabled` is false the
    * heartbeat is disabled in place (the record is retained so status can
@@ -254,17 +259,17 @@ export class ScheduleStore {
    * heartbeat; agent-path `enabled:true` is also subject to the cap.
    */
   setHeartbeat(params: {
-    sessionId: string;
     surface: Surface;
     enabled: boolean;
     intervalMs?: number;
     now: string;
     agent?: boolean;
   }): ScheduledTurn {
+    const key = surfaceIdOf(params.surface);
     const agent = params.agent ?? false;
     const store = this.read();
     const existing = store.find(
-      (s) => s.kind === "heartbeat" && s.sessionId === params.sessionId,
+      (s) => s.kind === "heartbeat" && surfaceIdOf(s.surface) === key,
     );
 
     const intervalMs = params.enabled
@@ -279,10 +284,10 @@ export class ScheduleStore {
 
       // Cap only applies when the agent is enabling a currently disabled heartbeat.
       if (agent && params.enabled && existing.state !== "enabled") {
-        const count = this.countEnabledAgentSchedules(params.sessionId, store);
+        const count = this.countEnabledAgentSchedules(params.surface, store);
         if (count >= MAX_AGENT_SCHEDULES) {
           throw new Error(
-            `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
+            `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this surface. Pause or remove an existing schedule first.`,
           );
         }
       }
@@ -314,7 +319,6 @@ export class ScheduleStore {
     if (!params.enabled) {
       const record: ScheduledTurn = {
         id: this.freshId(store),
-        sessionId: params.sessionId,
         surface: params.surface,
         kind: "heartbeat",
         prompt: null,
@@ -330,17 +334,16 @@ export class ScheduleStore {
 
     // Enabling a new heartbeat from the agent path counts toward the cap.
     if (agent) {
-      const count = this.countEnabledAgentSchedules(params.sessionId, store);
+      const count = this.countEnabledAgentSchedules(params.surface, store);
       if (count >= MAX_AGENT_SCHEDULES) {
         throw new Error(
-          `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
+          `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this surface. Pause or remove an existing schedule first.`,
         );
       }
     }
 
     const record: ScheduledTurn = {
       id: this.freshId(store),
-      sessionId: params.sessionId,
       surface: params.surface,
       kind: "heartbeat",
       prompt: null,
@@ -353,62 +356,65 @@ export class ScheduleStore {
     };
     store.push(record);
     this.write(store);
-    log.info("enabled heartbeat", { id: record.id, sessionId: record.sessionId, intervalMs, source: record.source });
+    log.info("enabled heartbeat", { id: record.id, surfaceId: key, intervalMs, source: record.source });
     return record;
   }
 
   /**
-   * Read the session's heartbeat schedule, or null if none exists.
+   * Read the surface's heartbeat schedule, or null if none exists.
    */
-  getHeartbeat(sessionId: string): ScheduledTurn | null {
+  getHeartbeat(surface: Surface): ScheduledTurn | null {
+    const key = surfaceIdOf(surface);
     return (
-      this.read().find((s) => s.kind === "heartbeat" && s.sessionId === sessionId) ?? null
+      this.read().find((s) => s.kind === "heartbeat" && surfaceIdOf(s.surface) === key) ?? null
     );
   }
 
   /**
-   * Remove a schedule owned by the active session. Returns true if removed,
-   * false if no matching schedule exists for this session.
+   * Remove a schedule owned by the surface. Returns true if removed,
+   * false if no matching schedule exists for this surface.
    *
    * `agent` callers may only remove agent-owned schedules.
    */
-  remove(sessionId: string, id: string, agent = false): boolean {
+  remove(surface: Surface, id: string, agent = false): boolean {
+    const key = surfaceIdOf(surface);
     const store = this.read();
-    const idx = store.findIndex((s) => s.id === id && s.sessionId === sessionId);
+    const idx = store.findIndex((s) => s.id === id && surfaceIdOf(s.surface) === key);
     if (idx === -1) return false;
     if (agent && effectiveSource(store[idx]!) === "user") return false;
     store.splice(idx, 1);
     this.write(store);
-    log.info("removed schedule", { id, sessionId });
+    log.info("removed schedule", { id, surfaceId: key });
     return true;
   }
 
   /**
-   * Pause (disable) a schedule owned by the active session.
+   * Pause (disable) a schedule owned by the surface.
    *
    * `agent` callers may only pause agent-owned schedules.
    */
-  pause(sessionId: string, id: string, agent = false): ScheduledTurn | null {
-    return this.setState(sessionId, id, "disabled", agent);
+  pause(surface: Surface, id: string, agent = false): ScheduledTurn | null {
+    return this.setState(surface, id, "disabled", agent);
   }
 
   /**
-   * Resume (re-enable) a schedule owned by the active session. Does not touch
+   * Resume (re-enable) a schedule owned by the surface. Does not touch
    * prompt text or interval. A completed one-shot schedule stays completed.
    *
    * `agent` callers may only resume agent-owned schedules, and resuming a
    * disabled schedule is subject to the agent cap.
    */
-  resume(sessionId: string, id: string, agent = false): ScheduledTurn | null {
-    const existing = this.getForSession(sessionId, id);
+  resume(surface: Surface, id: string, agent = false): ScheduledTurn | null {
+    const existing = this.getForSurface(surface, id);
     if (!existing) return null;
     if (existing.state === "completed") return existing;
-    return this.setState(sessionId, id, "enabled", agent);
+    return this.setState(surface, id, "enabled", agent);
   }
 
-  private setState(sessionId: string, id: string, state: ScheduleState, agent = false): ScheduledTurn | null {
+  private setState(surface: Surface, id: string, state: ScheduleState, agent = false): ScheduledTurn | null {
+    const key = surfaceIdOf(surface);
     const store = this.read();
-    const s = store.find((x) => x.id === id && x.sessionId === sessionId);
+    const s = store.find((x) => x.id === id && surfaceIdOf(x.surface) === key);
     if (!s) return null;
 
     // Authority: agent callers cannot mutate user-owned schedules.
@@ -425,10 +431,10 @@ export class ScheduleStore {
       agent &&
       state === "enabled" &&
       s.state !== "enabled" &&
-      this.countEnabledAgentSchedules(sessionId, store) >= MAX_AGENT_SCHEDULES
+      this.countEnabledAgentSchedules(surface, store) >= MAX_AGENT_SCHEDULES
     ) {
       throw new Error(
-        `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this session. Pause or remove an existing schedule first.`,
+        `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this surface. Pause or remove an existing schedule first.`,
       );
     }
 
@@ -463,7 +469,7 @@ export class ScheduleStore {
    * and heartbeat schedules the next run is advanced by the interval before
    * dispatch. Returns the claimed record as it will look after dispatch
    * starts (the prompt to run is recoverable from the pre-claim record via
-   * `getForSession` if needed), or null if the schedule is no longer
+   * `getForSurface` if needed), or null if the schedule is no longer
    * claimable (another tick claimed it, or it was paused/removed).
    *
    * `nextNow` is the timestamp used to advance recurring schedules, so tests

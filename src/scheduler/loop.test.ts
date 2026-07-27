@@ -134,7 +134,6 @@ describe("SchedulerLoop", () => {
       const loc: Surface = dmSurface(100);
       const session = await createSession(loc);
       const created = store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "once",
         prompt: "check backups",
@@ -147,7 +146,7 @@ describe("SchedulerLoop", () => {
       expect(dispatcher.calls[0]!.session.id).toBe(session.id);
       expect(dispatcher.calls[0]!.content).toBe("check backups");
       // One-shot is completed after dispatch.
-      const after = store.getForSession(session.id, created.id);
+      const after = store.getForSurface(loc, created.id);
       expect(after!.state).toBe("completed");
       expect(after!.lastRun!.outcome).toBe("ok");
     });
@@ -157,9 +156,8 @@ describe("SchedulerLoop", () => {
       // route through it rather than any followUp path. Asserting the call
       // went through enqueueScheduledTurn (not a followUp field) is the proof.
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "once",
         prompt: "x",
@@ -182,9 +180,8 @@ describe("SchedulerLoop", () => {
       // dispatcher and does not await prompt completion itself. The fake
       // dispatcher records the call synchronously and returns immediately.
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "recurring",
         prompt: "tick",
@@ -204,9 +201,8 @@ describe("SchedulerLoop", () => {
   describe("overlapping ticks", () => {
     it("does not double-dispatch the same due occurrence", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "once",
         prompt: "once",
@@ -224,9 +220,8 @@ describe("SchedulerLoop", () => {
 
     it("re-entrant tick is a no-op while one is in flight", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "once",
         prompt: "once",
@@ -244,9 +239,8 @@ describe("SchedulerLoop", () => {
   describe("one-shot completion", () => {
     it("marks a one-shot completed before dispatch and does not re-run it", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       const created = store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "once",
         prompt: "once",
@@ -255,7 +249,7 @@ describe("SchedulerLoop", () => {
 
       await makeLoop().tick();
 
-      const after = store.getForSession(session.id, created.id);
+      const after = store.getForSurface(loc, created.id);
       expect(after!.state).toBe("completed");
       expect(after!.enabled).toBe(false);
     });
@@ -264,9 +258,8 @@ describe("SchedulerLoop", () => {
   describe("recurring advancement", () => {
     it("advances nextRunAt by the interval before dispatch", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       const created = store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "recurring",
         prompt: "recur",
@@ -276,7 +269,7 @@ describe("SchedulerLoop", () => {
 
       await makeLoop().tick();
 
-      const after = store.getForSession(session.id, created.id);
+      const after = store.getForSurface(loc, created.id);
       expect(after!.state).toBe("enabled");
       // Advanced by 1h past the due time; not re-due at the same now.
       expect(new Date(after!.nextRunAt).getTime()).toBeGreaterThan(NOW_MS);
@@ -284,9 +277,8 @@ describe("SchedulerLoop", () => {
 
     it("does not dispatch the same occurrence again on a later tick", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "recurring",
         prompt: "recur",
@@ -303,9 +295,8 @@ describe("SchedulerLoop", () => {
 
     it("dispatches a one-shot missed during downtime exactly once after restart", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       const created = store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "once",
         prompt: "missed once",
@@ -321,7 +312,7 @@ describe("SchedulerLoop", () => {
 
       expect(dispatcher.calls).toHaveLength(1);
       expect(dispatcher.calls[0]!.content).toBe("missed once");
-      const after = restartedStore.getForSession(session.id, created.id);
+      const after = restartedStore.getForSurface(loc, created.id);
       expect(after!.state).toBe("completed");
       expect(after!.enabled).toBe(false);
       expect(after!.lastRun!.outcome).toBe("ok");
@@ -329,9 +320,8 @@ describe("SchedulerLoop", () => {
 
     it("catches up a recurring schedule missed during downtime without replaying every missed interval", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       const created = store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "recurring",
         prompt: "missed recurring",
@@ -348,7 +338,7 @@ describe("SchedulerLoop", () => {
 
       expect(dispatcher.calls).toHaveLength(1);
       expect(dispatcher.calls[0]!.content).toBe("missed recurring");
-      const after = restartedStore.getForSession(session.id, created.id);
+      const after = restartedStore.getForSurface(loc, created.id);
       expect(after!.state).toBe("enabled");
       expect(after!.enabled).toBe(true);
       expect(after!.nextRunAt).toBe(new Date(NOW_MS + 3600_000).toISOString());
@@ -356,18 +346,18 @@ describe("SchedulerLoop", () => {
     });
   });
 
-  describe("stale bindings", () => {
-    it("disables a schedule whose surface is now bound to a different session", async () => {
-      // Eligibility test: uses a fake session source (no filesystem).
-      // The surface is now bound to a different session id than captured.
-      const capturedSessionId = "session-original";
+  describe("surface binding", () => {
+    it("dispatches a due schedule to the surface's currently bound session (rotation survival)", async () => {
+      // Eligibility test: uses a fake session source (no filesystem). The
+      // surface is now bound to a different session than when the schedule was
+      // created. Phase 6 owns schedules by Surface, so the schedule survives
+      // rotation and dispatches to the current binding.
       const reboundState: SessionState = {
         id: "session-rebound",
         chatId: 100,
         createdAt: new Date(NOW_MS).toISOString(),
       } as SessionState;
       const created = store.create({
-        sessionId: capturedSessionId,
         surface: dmSurface(100),
         kind: "recurring",
         prompt: "x",
@@ -379,19 +369,20 @@ describe("SchedulerLoop", () => {
       const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
       await loop.tick();
 
-      const after = store.getForSession(capturedSessionId, created.id);
-      expect(after!.enabled).toBe(false);
-      expect(after!.state).toBe("disabled");
-      expect(after!.lastRun!.outcome).toBe("binding-mismatch");
-      expect(dispatcher.calls).toHaveLength(0);
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.session.id).toBe("session-rebound");
+      expect(dispatcher.calls[0]!.content).toBe("x");
+      const after = store.getForSurface(dmSurface(100), created.id);
+      expect(after!.enabled).toBe(true);
+      expect(after!.state).toBe("enabled");
+      expect(after!.lastRun!.outcome).toBe("ok");
     });
 
-    it("disables a schedule whose surface resolves to no session (mismatch)", async () => {
-      // Eligibility test: peekBinding returns null (no live binding).
-      const sessionId = "session-unbound";
+    it("leaves an unbound surface's due schedule pending and does not claim it", async () => {
+      // Eligibility test: peekBinding returns null (no live binding). The
+      // schedule records a pending lastRun but stays enabled/due for retry.
       const created = store.create({
-        sessionId,
-        surface: dmSurface(999), // unbound surface
+        surface: dmSurface(999),
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
@@ -402,69 +393,119 @@ describe("SchedulerLoop", () => {
       const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
       await loop.tick();
 
-      const after = store.getForSession(sessionId, created.id);
-      expect(after!.enabled).toBe(false);
-      expect(after!.lastRun!.outcome).toBe("binding-mismatch");
       expect(dispatcher.calls).toHaveLength(0);
+      const after = store.getForSurface(dmSurface(999), created.id);
+      expect(after!.enabled).toBe(true);
+      expect(after!.state).toBe("enabled");
+      expect(after!.lastRun!.outcome).toBe("pending");
+      expect(after!.lastRun!.message).toBe(after!.nextRunAt);
     });
-  });
 
-  describe("archived session skip", () => {
-    it("disables the schedule with outcome 'archived' and does not recreate the session", async () => {
-      // Eligibility test: uses a fake session source that reports the session
-      // as archived. The scheduler SHALL label it "archived" and not dispatch.
-      const sessionId = "session-archived";
+    it("dispatches an overdue one-shot after the surface is rebound", async () => {
+      // A one-shot goes overdue while the surface is unbound, then the surface
+      // is rebound and a later tick dispatches it exactly once.
+      const loc: Surface = dmSurface(100);
+      await createSession(loc);
       const created = store.create({
-        sessionId,
+        surface: loc,
+        kind: "once",
+        prompt: "missed then rebound",
+        nextRunAt: new Date(NOW_MS - 3600_000).toISOString(),
+      });
+
+      // First tick: surface is unbound (bindings cleared by hand).
+      const bindings = loadBindings(tmpDir);
+      delete bindings.surfaces[surfaceId(loc)];
+      saveBindings(tmpDir, bindings);
+      const unboundSource = makeFakeSessionSource(null);
+      const unboundLoop = new SchedulerLoop({
+        store,
+        sessionSource: unboundSource,
+        dispatcher,
+        clock: clock.clock,
+        home: tmpDir,
+      });
+      await unboundLoop.tick();
+
+      expect(dispatcher.calls).toHaveLength(0);
+      let after = store.getForSurface(loc, created.id);
+      expect(after!.lastRun!.outcome).toBe("pending");
+      expect(after!.enabled).toBe(true);
+
+      // Rebind the surface to a new session and tick again.
+      const reboundState: SessionState = {
+        id: "session-after-rebind",
+        chatId: 100,
+        createdAt: new Date(NOW_MS).toISOString(),
+      } as SessionState;
+      const boundSource = makeFakeSessionSource({ sessionId: reboundState.id, state: reboundState });
+      const boundLoop = new SchedulerLoop({
+        store,
+        sessionSource: boundSource,
+        dispatcher,
+        clock: clock.clock,
+        home: tmpDir,
+      });
+      await boundLoop.tick();
+
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.session.id).toBe("session-after-rebind");
+      expect(dispatcher.calls[0]!.content).toBe("missed then rebound");
+      after = store.getForSurface(loc, created.id);
+      expect(after!.state).toBe("completed");
+      expect(after!.enabled).toBe(false);
+      expect(after!.lastRun!.outcome).toBe("ok");
+    });
+
+    it("does not consult isArchived: an unbound archived surface is pending", async () => {
+      // isArchived is still on SchedulerSessionSource, but the loop only looks
+      // at binding. A null peekBinding (with isArchived true) is pending.
+      const created = store.create({
         surface: dmSurface(100),
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
         intervalMs: 3600_000,
       });
-      // peekBinding returns null (binding cleared by archive) AND isArchived is
-      // true — the two signals the scheduler combines to label "archived".
       const source = makeFakeSessionSource(null, true);
 
       const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
       await loop.tick();
 
-      const after = store.getForSession(sessionId, created.id);
-      expect(after!.enabled).toBe(false);
-      expect(after!.lastRun!.outcome).toBe("archived");
       expect(dispatcher.calls).toHaveLength(0);
+      const after = store.getForSurface(dmSurface(100), created.id);
+      expect(after!.enabled).toBe(true);
+      expect(after!.lastRun!.outcome).toBe("pending");
     });
 
-    it("labels a deleted-but-not-archived session as binding-mismatch, not archived", async () => {
-      // Eligibility test: peekBinding returns null but isArchived is false —
-      // a manually-deleted dir (never archived) is a binding-mismatch.
-      const sessionId = "session-deleted";
+    it("deduplicates pending lastRun records for the same nextRunAt", async () => {
+      // Multiple ticks while unbound should not spam the store with pending
+      // records; the loop records pending only when the lastRun changes.
       const created = store.create({
-        sessionId,
-        surface: dmSurface(100),
+        surface: dmSurface(999),
         kind: "recurring",
         prompt: "x",
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
         intervalMs: 3600_000,
       });
-      const source = makeFakeSessionSource(null, false);
-
+      const source = makeFakeSessionSource(null);
       const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
+
+      await loop.tick();
       await loop.tick();
 
-      const after = store.getForSession(sessionId, created.id);
-      expect(after!.enabled).toBe(false);
-      expect(after!.lastRun!.outcome).toBe("binding-mismatch");
       expect(dispatcher.calls).toHaveLength(0);
+      const after = store.getForSurface(dmSurface(999), created.id);
+      expect(after!.enabled).toBe(true);
+      expect(after!.lastRun!.outcome).toBe("pending");
     });
   });
 
   describe("tick errors", () => {
     it("logs a tick error and continues on the next tick", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "once",
         prompt: "x",
@@ -488,7 +529,6 @@ describe("SchedulerLoop", () => {
       // threw, so nothing is due now. Create a fresh due schedule to prove
       // ticks continue.
       store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "once",
         prompt: "y",
@@ -505,9 +545,8 @@ describe("SchedulerLoop", () => {
       // dispatch; the throw records outcome "error" so the record reflects
       // reality.
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       const created = store.create({
-        sessionId: session.id,
         surface: loc,
         kind: "recurring",
         prompt: "x",
@@ -524,7 +563,7 @@ describe("SchedulerLoop", () => {
 
       await expect(loop.tick()).resolves.toBeUndefined();
 
-      const after = store.getForSession(session.id, created.id);
+      const after = store.getForSurface(loc, created.id);
       expect(after!.lastRun).toBeDefined();
       expect(after!.lastRun!.outcome).toBe("error");
       expect(after!.lastRun!.message).toContain("sync boom");
@@ -536,9 +575,8 @@ describe("SchedulerLoop", () => {
   describe("heartbeat prompt content", () => {
     it("dispatches the heartbeat prompt for a due heartbeat schedule", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      await createSession(loc);
       store.setHeartbeat({
-        sessionId: session.id,
         surface: loc,
         enabled: true,
         now: new Date(NOW_MS - 1800_000).toISOString(), // 30m ago → due now
@@ -645,7 +683,6 @@ describe("SchedulerLoop", () => {
     async function enableHeartbeat(loc: Surface): Promise<string> {
       const session = await createSession(loc);
       store.setHeartbeat({
-        sessionId: session.id,
         surface: loc,
         enabled: true,
         now: new Date(NOW_MS - 1800_000).toISOString(), // 30m ago → due now
@@ -693,7 +730,7 @@ describe("SchedulerLoop", () => {
 
     it("uses updated HEARTBEAT.md content on the next tick after an edit (no restart)", async () => {
       const loc: Surface = dmSurface(100);
-      const sessionId = await enableHeartbeat(loc);
+      await enableHeartbeat(loc);
       writeHeartbeat(tmpDir, "first body");
 
       const loop = makeLoop();
@@ -703,7 +740,6 @@ describe("SchedulerLoop", () => {
       // Edit the file and re-arm the heartbeat so it is due again.
       writeHeartbeat(tmpDir, "second body");
       store.setHeartbeat({
-        sessionId,
         surface: loc,
         enabled: true,
         now: new Date(NOW_MS).toISOString(),
@@ -725,9 +761,8 @@ describe("SchedulerLoop", () => {
       // failure by pointing the loop's `home` at a path where workspace/ resolves
       // under a non-directory, then assert a co-due one-shot still dispatches.
       const heartbeatLoc: Surface = dmSurface(100);
-      const heartbeatSession = await createSession(heartbeatLoc);
-      store.setHeartbeat({
-        sessionId: heartbeatSession.id,
+      await createSession(heartbeatLoc);
+      const heartbeat = store.setHeartbeat({
         surface: heartbeatLoc,
         enabled: true,
         now: new Date(NOW_MS - 1800_000).toISOString(), // due now
@@ -735,9 +770,8 @@ describe("SchedulerLoop", () => {
 
       // A second, unrelated schedule also due in this tick.
       const otherLoc: Surface = dmSurface(200);
-      const otherSession = await createSession(otherLoc);
+      await createSession(otherLoc);
       store.create({
-        sessionId: otherSession.id,
         surface: otherLoc,
         kind: "once",
         prompt: "deploy reminder",
@@ -765,10 +799,12 @@ describe("SchedulerLoop", () => {
       expect(dispatched).not.toContain("[heartbeat]");
       expect(dispatched).toEqual(["deploy reminder"]);
 
-      // The heartbeat was never claimed (resolve throws before claimDue), so it
-      // is still due on the next tick — retrying until the operator fixes it.
-      const heartbeatSchedules = store.listDue(new Date(NOW_MS).toISOString());
-      expect(heartbeatSchedules.some((s) => s.kind === "heartbeat")).toBe(true);
+      // The heartbeat was claimed before the prompt resolution threw, so it was
+      // advanced to its next run and is no longer due at the same timestamp.
+      const afterHeartbeat = store.getForSurface(heartbeatLoc, heartbeat.id)!;
+      expect(afterHeartbeat.kind).toBe("heartbeat");
+      expect(new Date(afterHeartbeat.nextRunAt).getTime()).toBeGreaterThan(NOW_MS);
+      expect(afterHeartbeat.enabled).toBe(true);
     });
 
     it("isolates a synchronous dispatcher throw so later due schedules still run", async () => {
@@ -776,18 +812,16 @@ describe("SchedulerLoop", () => {
       // synchronous-dispatcher-throw path (processOne re-throws after recording
       // an "error" outcome). The throw must stop only its own schedule.
       const firstLoc: Surface = dmSurface(100);
-      const firstSession = await createSession(firstLoc);
+      await createSession(firstLoc);
       store.create({
-        sessionId: firstSession.id,
         surface: firstLoc,
         kind: "once",
         prompt: "first (will throw)",
         nextRunAt: new Date(NOW_MS - 2000).toISOString(),
       });
       const secondLoc: Surface = dmSurface(200);
-      const secondSession = await createSession(secondLoc);
+      await createSession(secondLoc);
       store.create({
-        sessionId: secondSession.id,
         surface: secondLoc,
         kind: "once",
         prompt: "second (should still run)",

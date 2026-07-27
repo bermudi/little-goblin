@@ -11,6 +11,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 const NOW_MS = new Date("2026-07-04T12:00:00.000Z").getTime();
 const FUTURE_ISO = new Date(NOW_MS + 3600_000).toISOString();
 const LOC: Surface = dmSurface(1);
+const OTHER_LOC: Surface = dmSurface(2);
 
 function makeNow() {
   return () => NOW_MS;
@@ -46,9 +47,9 @@ describe("createScheduleTurnTool", () => {
     store = new ScheduleStore(tmpDir);
     tool = createScheduleTurnTool({
       store,
-      sessionId: "abcdef1234",
       surface: LOC,
       now: makeNow(),
+      isCurrent: () => true,
     });
   });
 
@@ -126,7 +127,6 @@ describe("createScheduleTurnTool", () => {
     it("lists agent schedules with full prompts and redacts user schedules", async () => {
       const agent = await run(tool, "create_once", { in: "1h", prompt: "agent prompt" });
       const user = store.create({
-        sessionId: "abcdef1234",
         surface: LOC,
         kind: "once",
         prompt: "user prompt",
@@ -161,7 +161,7 @@ describe("createScheduleTurnTool", () => {
       const result = await run(tool, "remove", { id });
       expect(result.removed).toBe(true);
       expect(result.nextRunAt).toBeNull();
-      expect(store.getForSession("abcdef1234", id)).toBeNull();
+      expect(store.getForSurface(LOC, id)).toBeNull();
     });
 
     it("pause and resume an agent-owned schedule", async () => {
@@ -175,7 +175,6 @@ describe("createScheduleTurnTool", () => {
 
     it("rejects mutating a user-owned schedule", async () => {
       const user = store.create({
-        sessionId: "abcdef1234",
         surface: LOC,
         kind: "once",
         prompt: "user-owned",
@@ -214,7 +213,6 @@ describe("createScheduleTurnTool", () => {
 
     it("rejects turning on or off a user-owned heartbeat", async () => {
       store.setHeartbeat({
-        sessionId: "abcdef1234",
         surface: LOC,
         enabled: true,
         now: new Date(NOW_MS).toISOString(),
@@ -232,7 +230,7 @@ describe("createScheduleTurnTool", () => {
       expect(off.enabled).toBe(false);
       expect(off.source).toBe(null);
       expect(off.id).toBe(null);
-      expect(store.getHeartbeat("abcdef1234")).toBeNull();
+      expect(store.getHeartbeat(LOC)).toBeNull();
     });
 
     it("status without an existing heartbeat returns enabled false and source null", async () => {
@@ -244,7 +242,6 @@ describe("createScheduleTurnTool", () => {
 
     it("status on a user-owned heartbeat returns metadata with source user", async () => {
       store.setHeartbeat({
-        sessionId: "abcdef1234",
         surface: LOC,
         enabled: true,
         now: new Date(NOW_MS).toISOString(),
@@ -287,6 +284,59 @@ describe("createScheduleTurnTool", () => {
       await run(tool, "create_once", { in: "1h", prompt: "headroom" });
       // Now resuming the paused one would exceed the cap.
       await rejectTool(tool, { action: "resume", id: ids[0]! }, /cap/);
+    });
+
+    it("caps are per-surface: a full LOC does not block a different surface", async () => {
+      for (let i = 0; i < MAX_AGENT_SCHEDULES; i++) {
+        await run(tool, "create_once", { in: "1h", prompt: `a${i}` });
+      }
+      const otherTool = createScheduleTurnTool({
+        store,
+        surface: OTHER_LOC,
+        now: makeNow(),
+        isCurrent: () => true,
+      });
+      const result = await run(otherTool, "create_once", { in: "1h", prompt: "other surface" });
+      expect(result.kind).toBe("once");
+    });
+  });
+
+  describe("stale runtime guard", () => {
+    it("rejects mutating actions when the runtime is no longer current", async () => {
+      const staleTool = createScheduleTurnTool({
+        store,
+        surface: LOC,
+        now: makeNow(),
+        isCurrent: () => false,
+      });
+      await rejectTool(staleTool, { action: "create_once", in: "1h", prompt: "x" }, /Runtime is no longer current/);
+      await rejectTool(staleTool, { action: "create_recurring", every: "1h", prompt: "x" }, /Runtime is no longer current/);
+      await rejectTool(staleTool, { action: "heartbeat", heartbeat_action: "on" }, /Runtime is no longer current/);
+
+      const created = store.create({
+        surface: LOC,
+        kind: "once",
+        prompt: "agent-owned",
+        nextRunAt: FUTURE_ISO,
+        source: "agent",
+      });
+      await rejectTool(staleTool, { action: "remove", id: created.id }, /Runtime is no longer current/);
+      await rejectTool(staleTool, { action: "pause", id: created.id }, /Runtime is no longer current/);
+      await rejectTool(staleTool, { action: "resume", id: created.id }, /Runtime is no longer current/);
+    });
+
+    it("list and heartbeat status do not require a current runtime", async () => {
+      const staleTool = createScheduleTurnTool({
+        store,
+        surface: LOC,
+        now: makeNow(),
+        isCurrent: () => false,
+      });
+      const list = await run(staleTool, "list");
+      expect(Array.isArray(list.schedules)).toBe(true);
+
+      const status = await run(staleTool, "heartbeat", { heartbeat_action: "status" });
+      expect(status.enabled).toBe(false);
     });
   });
 });

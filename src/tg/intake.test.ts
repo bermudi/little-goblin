@@ -934,9 +934,7 @@ describe("Telegram intake", () => {
     };
 
     await intake.handleText(message, "/new");
-    const session = manager.list()[0]!;
     const schedule = store.create({
-      sessionId: session.id,
       surface: dmSurface(1),
       kind: "once",
       prompt: "scheduled while busy",
@@ -958,7 +956,7 @@ describe("Telegram intake", () => {
 
     expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
     expect(order).toEqual(["[prepared] active telegram turn"]);
-    expect(store.getForSession(session.id, schedule.id)!.lastRun?.outcome).toBe("ok");
+    expect(store.getForSurface(dmSurface(1), schedule.id)!.lastRun?.outcome).toBe("ok");
 
     pending.resolve();
     await waitFor(() => runners[0]!.prompt.mock.calls.length === 2);

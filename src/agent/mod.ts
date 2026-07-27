@@ -80,6 +80,12 @@ interface AgentRunnerOptionsBase {
   /** Shared MCP runner. When present and configured, the agent gets the `mcp_call` and `mcp_describe` tools. */
   mcpRunner?: McpRunner;
   /**
+   * Optional callback the `schedule_turn` tool uses to verify the runtime is
+   * still current on its Surface before mutating schedules. When absent,
+   * schedule mutations are not guarded against stale runtimes.
+   */
+  isCurrent?: () => boolean;
+  /**
    * Pre-resolved model to use. When present, the runner skips `resolveModel()`
    * and uses this value directly. Useful for tests that drive the SDK with a
    * deterministic fake provider.
@@ -267,6 +273,7 @@ export class AgentRunner {
   private scheduleStore: ScheduleStore | undefined;
   private externalAgentRunner: ExternalAgentRunner | null;
   private mcpRunner: McpRunner | null;
+  private isCurrent: () => boolean;
   private backend: AgentBackend;
   private accumulatedText: string = "";
   private callbacks: TurnCallbacks | null = null;
@@ -358,6 +365,7 @@ export class AgentRunner {
     this.scheduleStore = opts.scheduleStore;
     this.externalAgentRunner = opts.externalAgentRunner ?? null;
     this.mcpRunner = opts.mcpRunner ?? null;
+    this.isCurrent = opts.isCurrent ?? (() => true);
     this.getTopicName = opts.getTopicName;
     this.executionEnvironment = opts.executionEnvironment;
     this._modelName = opts.modelName ?? (opts.resolvedModel ? `${opts.resolvedModel.model.provider}/${opts.resolvedModel.model.id}` : undefined);
@@ -456,9 +464,9 @@ export class AgentRunner {
       tools.push(
         createScheduleTurnTool({
           store: this.scheduleStore,
-          sessionId: this.sessionId,
           surface: this.surface,
           now: () => Date.now(),
+          isCurrent: this.isCurrent,
         }),
       );
     }

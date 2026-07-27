@@ -2,4 +2,5 @@ schema: spec-driven
 created: 2026-07-26T06:17:39Z
 dependsOn:
   - telegram-surface-identity
+  - immutable-project-environments
   - surface-derived-memory-context

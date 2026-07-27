@@ -63,6 +63,8 @@ Each invocation captures its own frozen summary from that authority. A running i
 
 Revival separates history from authority. Pi history is loaded from disk, but the new invocation receives the reviving parent's current capture. Legacy persisted `activeScope` may be parsed for diagnostics or migration only. Missing parent authority is an error before pi-session creation.
 
+`TurnDispatcher` owns the one external `reviveSubagent(surface, conversationId, subagentId, prompt)` operation. Commands only parse/reply and call it; they never join a runner, capture, and Binding themselves. The dispatcher performs the operation through a lifecycle-provided current-binding guard, which holds the relevant transition exclusion while it verifies that the requested Surface is still bound to the Conversation, the registered runner is current for that same Surface, and its captured `sourceSurfaceId` equals that Surface. It starts/attaches the revived invocation before releasing the guard. A lifecycle replacement waits for the guarded operation; a stale or absent runner/capture fails before `AgentSession` creation. The lifecycle exposes only this guard, not runtime state, and the dispatcher remains the owner of runner identity and capture.
+
 Internal dreaming extraction does not enter this ordinary subagent path and receives no memory tools merely to satisfy invocation construction.
 
 ## Decisions

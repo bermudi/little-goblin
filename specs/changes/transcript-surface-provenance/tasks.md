@@ -3,11 +3,11 @@
 ## Phase 1: Stamp event-time transcript provenance
 
 - [ ] Verify dependency APIs provide canonical Surface codecs and immutable runtime `sourceSurfaceId` capture before changing transcript writes.
-- [ ] Extend `src/sessions/transcript.ts` with optional `sourceSurfaceId` and a required Surface/internal writer context; validate canonical Surface IDs at the seam.
-- [ ] Preserve provenance through parsing, display extraction, range reads, logical cursor alignment, and per-entry chunking without dropping other legacy fields or text.
-- [ ] Bind main-agent event writes to the runtime capture and make every internal write select the explicit internal writer path.
-- [ ] Update intake and command-generated synthetic user-visible replies to use the current runtime's captured writer context, never a binding lookup.
-- [ ] Add transcript/agent/intake tests for all entry roles, synthetic replies, X-to-Y movement, internal omission, malformed/absent legacy values, round trips, and chunk propagation; run focused tests and `bun run typecheck`.
+- [ ] Extend `src/sessions/transcript.ts` with optional typed `sourceSurfaceId` and a required Surface/internal writer context; validate canonical Surface IDs at the seam and expose migration-only lossless raw records.
+- [ ] Preserve validated provenance through parsing, display extraction, range reads, logical cursor alignment, and per-entry chunking; keep malformed/unknown raw provenance readable and byte-preserved on rewrite without exposing it as typed authority.
+- [ ] Bind main-agent event writes to the runtime's frozen writer context and make every internal write select the explicit internal writer path.
+- [ ] Update intake and command-generated synthetic user-visible replies to use the current runtime's captured writer context, never a binding lookup; deliver but do not append and emit a bounded signal when no context exists.
+- [ ] Route every transcript JSONL read, including voice-command display lookup, through the transcript module; add transcript/agent/intake tests for all entry roles, synthetic replies, and X-to-Y movement; prove no-context delivery leaves JSONL unchanged, consults neither binding nor runtime creation, and emits bounded `no-transcript-writer-context`; cover internal omission, malformed/absent legacy values, lossless raw round trips, and chunk propagation; run focused tests and `bun run typecheck`.
 
 ## Phase 2: Migrate legacy transcript files conservatively
 
@@ -40,6 +40,6 @@
 ## Phase 5: Gate startup and reject provenance guesses
 
 - [ ] Keep transcript-file migration in the canonical offline runner; at startup, require the current filesystem `stateVersion`, then order transactional SQLite index invalidation → bounded initial sync → scheduler/polling.
-- [ ] Add static boundary tests proving transcript indexing and dreaming do not import session state/current bindings and only the transcript module parses provenance.
+- [ ] Add static boundary tests proving transcript indexing and dreaming do not import session state/current bindings, only the transcript module parses provenance, and only `TranscriptProvenanceMigrator` imports the migration-only lossless-record operation.
 - [ ] Add an end-to-end fixture where one Conversation writes on two Surfaces, indexes each chat correctly, excludes unresolved history by default, and promotes each source to the correct scope.
 - [ ] Verify migration/index/dreaming error paths emit bounded SurfaceId/Conversation/count signals without transcript content; run `bun test`, `bun run typecheck`, and `litespec validate transcript-surface-provenance --strict`.

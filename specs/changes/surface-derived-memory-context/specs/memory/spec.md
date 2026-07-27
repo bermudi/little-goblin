@@ -134,7 +134,9 @@ Memory search SHALL preserve the accepted caller visibility, corpus selection, a
 
 ### Requirement: Active-scope-to-memory-scope conversion has one home
 
-The system SHALL keep `ActiveScope → MemoryScope` conversion in `src/memory/scope.ts` and SHALL additionally make that module the single home of `Surface → ActiveScope`. Every Surface consumer MUST import `resolveActiveScope(surface)` and every MemoryScope consumer MUST import the active-scope conversion. No private locator-based, binding-based, or session-state-based conversion SHALL remain.
+The system SHALL keep `ActiveScope → MemoryScope` conversion in `src/memory/scope.ts` and SHALL additionally make that module the single home of `Surface → ActiveScope` for ordinary runtime-memory, search, and subagent execution. Every such Surface consumer MUST import `resolveActiveScope(surface)` and every such MemoryScope consumer MUST import the active-scope conversion. No private locator-based, binding-based, or session-state-based conversion SHALL remain in those paths.
+
+Transcript indexing and dreaming promotion are intentionally excluded: their legacy session-state compatibility path remains until `transcript-surface-provenance` replaces it with per-entry event-time provenance. That path SHALL NOT be reused as authority for ordinary runtime memory, search, or subagent execution.
 
 #### Scenario: Surface projection is centralized
 

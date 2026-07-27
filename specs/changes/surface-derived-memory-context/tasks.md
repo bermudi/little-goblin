@@ -37,7 +37,7 @@
 
 ## Phase 5: Remove duplicate authority paths
 
-- [ ] Remove locator-based `resolveActiveScope`, duplicate Surface/ActiveScope conversions, live subagent-meta resolution, and raw caller-policy construction paths.
+- [ ] Remove locator-based `resolveActiveScope`, duplicate Surface/ActiveScope conversions, live subagent-meta resolution, and raw caller-policy construction paths from ordinary runtime-memory, search, and subagent execution; make dispatcher-owned revival use a lifecycle current-binding guard rather than command-side runner/binding joins; leave transcript indexing and dreaming's legacy session-state compatibility path to `transcript-surface-provenance`.
 - [ ] Add static boundary tests proving memory scope code depends on Surface identity and subagent execution cannot resolve current bindings.
 - [ ] Add an integration fixture proving one source Surface capture remains frozen across main runtime tools and recursive subagents, while a replacement runtime captures destination context.
 - [ ] Verify capture failures and invalid/internal authority paths emit bounded structured logs; run `bun test`, `bun run typecheck`, and `litespec validate surface-derived-memory-context --strict`.

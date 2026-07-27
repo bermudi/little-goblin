@@ -43,6 +43,8 @@ A model invocation used solely for internal dreaming extraction SHALL use the ex
 
 The subagent revival operation SHALL load and continue the persisted pi conversation history and SHALL process the new prompt as currently accepted. Revival SHALL be treated as a new invocation: its caller MUST supply the reviving parent runtime's captured memory context, and the revived invocation SHALL derive its caller descriptor from the persisted role/name. It MUST NOT restore active memory authority from persisted legacy `activeScope`, Conversation creation metadata, or current binding lookup.
 
+`TurnDispatcher` SHALL own the command-facing revival operation. It SHALL execute under a lifecycle-provided current-binding guard and, before `AgentSession` creation, verify that the requested Surface is still bound to the requested Conversation, that the registered parent runner is current for that Surface, and that its captured `sourceSurfaceId` equals that Surface. It SHALL attach the revived invocation before the guard releases. Command handlers MUST NOT independently join a runner/capture to lifecycle binding state. A binding replacement SHALL wait for the guarded operation; an absent, stale, internal, or Surface-mismatched runtime SHALL fail without creating a subagent session.
+
 #### Scenario: Revive after restart
 
 - **WHEN** a parent runtime revives a persisted subagent after restart
@@ -61,6 +63,13 @@ The subagent revival operation SHALL load and continue the persisted pi conversa
 
 - **WHEN** revival is requested without an invoking runtime memory capture
 - **THEN** it SHALL fail before creating a subagent AgentSession
+
+#### Scenario: Binding rotation races revival
+
+- **GIVEN** a Conversation is bound to Surface X with a current captured runtime
+- **WHEN** revival begins on X while a lifecycle transition requests replacement on Y
+- **THEN** revival SHALL either attach using X before the transition proceeds or fail before creating a subagent AgentSession
+- **AND** it SHALL never create an invocation from X after Y becomes current
 
 ### Requirement: Anonymous subagents inherit parent's active memory scope
 

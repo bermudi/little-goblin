@@ -8,13 +8,13 @@ Decision 0037 requires event-time provenance instead: each user-visible transcri
 
 ## Scope
 
-This change depends on both `telegram-surface-identity` and `surface-derived-memory-context`. It affects three capabilities: `sessions`, `memory`, and `agent`.
+This change depends on `telegram-surface-identity`, archived `immutable-project-environments` (its filesystem migration ordering), and `surface-derived-memory-context`. It affects three capabilities: `sessions`, `memory`, and `agent`.
 
 ### Sessions
 
 - Extend the exclusive transcript seam with optional `sourceSurfaceId` plus an explicit Surface/internal writer context.
-- Require every new user-visible main-runtime and synthetic user-visible entry to carry the runtime capture's canonical SurfaceId. Internal and legacy entries omit it explicitly.
-- Preserve validated provenance through parsing, display extraction, range reads, logical cursors, and chunking. Moving a Conversation never rewrites prior entries.
+- Require every new user-visible main-runtime and synthetic user-visible entry to carry the runtime capture's canonical SurfaceId. Internal writes use an explicit internal context. A delivered synthetic reply without a current runtime context is not appended rather than looking up a binding.
+- Preserve validated provenance through parsing, display extraction, range reads, logical cursors, and chunking. Malformed legacy provenance remains readable and losslessly preserved for migration/rewrite but is unavailable as typed authority. Moving a Conversation never rewrites prior entries.
 - Add a conservative offline step to the canonical versioned migration runner. It precomputes every transcript rewrite and backfills only from persisted historical evidence proving an event source. Current bindings and creation metadata alone are never historical proof.
 
 ### Memory

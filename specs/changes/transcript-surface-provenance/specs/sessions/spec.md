@@ -42,9 +42,9 @@ The step SHALL run only through `bun run migrate` with the service stopped. It S
 
 The system SHALL append final message entries to `transcript.jsonl` when pi emits `message_end` events. All reads and writes SHALL continue to cross the single transcript module, which owns `TranscriptEntry`, normalization, parsing, range reads, display-text extraction, and chunking.
 
-`TranscriptEntry` SHALL add optional `sourceSurfaceId: SurfaceId`. Every new entry produced by a user-visible main conversation runtime—including user, assistant, tool-result, and synthetic assistant entries—MUST carry the canonical SurfaceId captured by that runtime. The writer SHALL require explicit context discriminated as Surface-backed or internal; a Surface-backed write cannot omit provenance, while an internal write SHALL omit it. Legacy parsed entries MAY omit it. Callers MUST NOT construct transcript values directly, query a current binding during event handling, or rewrite old entries when a Conversation moves.
+`TranscriptEntry` SHALL add optional `sourceSurfaceId: SurfaceId`. Every new entry produced by a user-visible main conversation runtime—including user, assistant, tool-result, and synthetic assistant entries—MUST carry the canonical SurfaceId captured by that runtime. The writer SHALL require explicit context discriminated as Surface-backed or internal; a Surface-backed write cannot omit provenance, while an internal write SHALL omit it. `AgentRunner` SHALL freeze that context from its completed runtime capture, and event/synthetic callers SHALL pass the runner or its context rather than a Conversation ID or binding reader. If a synthetic user-visible reply has no current writer context, the caller SHALL deliver it without appending JSONL and emit a bounded `no-transcript-writer-context` signal. Callers MUST NOT construct transcript values directly, create a runtime merely to stamp a reply, query a current binding during event handling, or rewrite old entries when a Conversation moves.
 
-The reader SHALL preserve every existing field plus `sourceSurfaceId`. It SHALL validate canonical SurfaceIds without discarding the entry's text when legacy provenance is absent or invalid. The range reader's `TranscriptLine` and the chunker's output SHALL preserve validated provenance for indexing and dreaming. Existing max-500-character chunking, timestamp/role/Conversation-ID provenance, noise skipping, and round-trip guarantees SHALL remain unchanged.
+The reader SHALL expose normalized typed entries to ordinary consumers and a named migration-only lossless-record operation only to `TranscriptProvenanceMigrator`. Ordinary readers, indexers, dreaming, commands, and intake MUST NOT import or receive raw records; a static boundary test SHALL enforce that restriction. A normalized entry SHALL expose `sourceSurfaceId` only when its raw field is a canonical SurfaceId; absent, non-string, malformed, unknown-version, and non-canonical raw values SHALL leave typed provenance unavailable while preserving readable entry text and fields. An unchanged raw record SHALL be re-emitted byte-for-byte. Any rewrite SHALL preserve every raw field, including an invalid `sourceSurfaceId`; migration MAY add proven provenance only where the field is absent and SHALL NOT replace invalid input with a guess. The range reader's `TranscriptLine` and the chunker's output SHALL preserve validated provenance for indexing and dreaming. Existing max-500-character chunking, timestamp/role/Conversation-ID provenance, noise skipping, and round-trip guarantees SHALL remain unchanged.
 
 #### Scenario: Runtime message carries event-time Surface
 
@@ -64,6 +64,13 @@ The reader SHALL preserve every existing field plus `sourceSurfaceId`. It SHALL 
 - **WHEN** intake or a command appends a synthetic assistant reply for a bound user-visible runtime
 - **THEN** it SHALL supply that runtime's captured SurfaceId
 
+#### Scenario: Synthetic reply has no runtime context
+
+- **WHEN** a user-visible synthetic reply is delivered without a current runtime writer context
+- **THEN** it SHALL not append a transcript entry
+- **AND** it SHALL not consult a binding or create a runtime to obtain provenance
+- **AND** it SHALL emit a bounded `no-transcript-writer-context` signal
+
 #### Scenario: Internal entry has no Surface
 
 - **WHEN** an explicitly internal writer appends an internal model entry
@@ -80,7 +87,8 @@ The reader SHALL preserve every existing field plus `sourceSurfaceId`. It SHALL 
 
 - **WHEN** a transcript line has no `sourceSurfaceId` or carries an invalid legacy value
 - **THEN** its text and other valid fields SHALL remain readable
-- **AND** its provenance SHALL be treated as unavailable for indexing and dreaming
+- **AND** its normalized typed provenance SHALL be unavailable for indexing and dreaming
+- **AND** migration/rewrite code SHALL preserve the original invalid raw field rather than replacing it with a guess
 
 ### Requirement: Transcript module owns the transcript seam
 
@@ -97,6 +105,12 @@ The transcript module SHALL remain the exclusive typed interface to `transcript.
 - **WHEN** indexing or dreaming consumes transcript provenance
 - **THEN** it SHALL use the transcript module's validated entry/line/chunk output
 - **AND** SHALL not parse SurfaceId fields from raw JSON elsewhere
+
+#### Scenario: Lossless records stay in migration
+
+- **WHEN** transcript provenance migration needs a raw record for a potential rewrite
+- **THEN** only `TranscriptProvenanceMigrator` SHALL obtain it through the transcript module's migration-only operation
+- **AND** ordinary readers, indexers, dreaming, commands, and intake SHALL receive only normalized typed entries
 
 #### Scenario: Range reads retain line alignment
 

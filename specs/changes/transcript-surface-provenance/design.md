@@ -17,9 +17,9 @@ interface TranscriptEntry {
 }
 ```
 
-There is no optional writer context. Surface-backed writing requires a canonical validated SurfaceId; internal writing deliberately omits it. Main-agent event callbacks and synthetic user-visible reply paths close over the runtime capture instead of looking up the current binding. A runtime invalidated during movement can therefore only stamp its original Surface on any write still accepted by orchestration.
+There is no optional writer context. Surface-backed writing requires a canonical validated SurfaceId; internal writing deliberately omits it. `AgentRunner` derives and freezes this context from `CapturedMemoryContext.authority.sourceSurfaceId` before registration; an `InternalMemoryContext` selects the separate internal context. Main-agent event callbacks pass that frozen context directly to the transcript module. Intake and command synthetic-reply paths receive the current runner (or its writer context) rather than a Conversation ID or binding reader. If user-visible delivery has no current runner context, it is delivered but not appended to transcript JSONL; it emits a bounded `no-transcript-writer-context` signal. Callers never manufacture provenance by creating a runtime or reading a later binding. A runtime invalidated during movement can therefore only stamp its original Surface on any write still accepted by orchestration.
 
-The transcript module remains the only JSONL parser and producer. It validates `sourceSurfaceId` without discarding otherwise readable legacy entries. Valid provenance stays attached through display extraction, logical range reads, cursor alignment, and per-entry chunking. Earlier entries are never rewritten merely because later entries come from another Surface.
+The transcript module remains the only JSONL parser and producer. It exposes normalized typed entries to ordinary readers and a named migration-only lossless-record operation to `TranscriptProvenanceMigrator`; ordinary readers, indexers, dreaming, commands, and intake cannot import that operation. A static boundary test enforces that restriction. A normalized entry exposes `sourceSurfaceId` only when the raw field is a canonical valid SurfaceId; absent, non-string, malformed, unknown-version, or non-canonical values leave typed provenance unavailable without discarding otherwise readable text or fields. An unchanged raw record is re-emitted byte-for-byte. A rewrite preserves every raw field, including an invalid `sourceSurfaceId`; migration may add proven provenance only when the field was absent, never replace invalid input with a guess. Valid typed provenance stays attached through display extraction, logical range reads, cursor alignment, and per-entry chunking. Earlier entries are never rewritten merely because later entries come from another Surface.
 
 ### Migrate legacy files conservatively offline
 
@@ -104,10 +104,11 @@ The model invocation remains only an extraction vehicle. It uses the dependency'
 
 ### Transcript and agent writing
 
-- **`src/sessions/transcript.ts` / `mod.ts`** — Add provenance-aware writer contexts, parsing status, range propagation, and chunk propagation.
-- **`src/agent/mod.ts`** — Stamp event writes from the runtime capture; select internal writing explicitly.
-- **`src/tg/intake.ts` and synthetic reply paths** — Supply the current runtime writer context rather than querying a binding.
-- **Focused transcript/agent/intake tests** — Cover movement, synthetic replies, internal omission, malformed legacy values, and round trips.
+- **`src/sessions/transcript.ts` / `mod.ts`** — Add provenance-aware writer contexts, normalized typed parsing, migration-only lossless raw records, range propagation, and chunk propagation.
+- **`src/agent/mod.ts`** — Freeze writer context from runtime capture, stamp event writes from it, and select internal writing explicitly.
+- **`src/tg/intake.ts` and synthetic reply paths** — Supply the current runtime writer context rather than querying a binding; deliver but do not append when no context exists.
+- **`src/commands/voice.ts`** — Replace direct transcript JSONL parsing with the transcript module's display-text reader.
+- **Focused transcript/agent/intake tests** — Cover movement, synthetic replies, no-runner non-append signals, internal omission, malformed legacy values, lossless raw round trips, and chunk propagation.
 
 ### Memory index and search
 

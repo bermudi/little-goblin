@@ -175,6 +175,7 @@ describe("DreamingPipeline", () => {
         origin: "transcript",
         sourceSession: sessionId,
         sourceSurfaceId: surfaceA,
+        updatedAt: 1,
       });
       await store.addEntry({
         scope: `transcript/${sessionId}`,
@@ -183,6 +184,7 @@ describe("DreamingPipeline", () => {
         origin: "transcript",
         sourceSession: sessionId,
         sourceSurfaceId: surfaceB,
+        updatedAt: 1,
       });
     }
 

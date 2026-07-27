@@ -39,7 +39,7 @@
 
 ## Phase 5: Gate startup and reject provenance guesses
 
-- [ ] Keep transcript-file migration in the canonical offline runner; at startup, require the current filesystem `stateVersion`, then order transactional SQLite index invalidation → bounded initial sync → scheduler/polling.
-- [ ] Add static boundary tests proving transcript indexing and dreaming do not import session state/current bindings, only the transcript module parses provenance, and only `TranscriptProvenanceMigrator` imports the migration-only lossless-record operation.
-- [ ] Add an end-to-end fixture where one Conversation writes on two Surfaces, indexes each chat correctly, excludes unresolved history by default, and promotes each source to the correct scope.
-- [ ] Verify migration/index/dreaming error paths emit bounded SurfaceId/Conversation/count signals without transcript content; run `bun test`, `bun run typecheck`, and `litespec validate transcript-surface-provenance --strict`.
+- [x] Keep transcript-file migration in the canonical offline runner; at startup, require the current filesystem `stateVersion`, then order transactional SQLite index invalidation → bounded initial sync → scheduler/polling.
+- [x] Add static boundary tests proving transcript indexing and dreaming do not import session state/current bindings, only the transcript module parses provenance, and only `TranscriptProvenanceMigrator` imports the migration-only lossless-record operation.
+- [x] Add an end-to-end fixture where one Conversation writes on two Surfaces, indexes each chat correctly, excludes unresolved history by default, and promotes each source to the correct scope.
+- [x] Verify migration/index/dreaming error paths emit bounded SurfaceId/Conversation/count signals without transcript content; run `bun test`, `bun run typecheck`, and `litespec validate transcript-surface-provenance --strict`.

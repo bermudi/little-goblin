@@ -11,7 +11,7 @@ import { readFileSync, statSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { log } from "../log.ts";
 import { sessionsDir } from "../sessions/paths.ts";
-import { loadState } from "../sessions/state.ts";
+import { isValidConversationId } from "../sessions/conversation.ts";
 import { chunkTranscriptEntry, readTranscriptEntries, type TranscriptChunk } from "../sessions/transcript.ts";
 import type { MemoryStore } from "./store.ts";
 
@@ -44,10 +44,10 @@ function discoverTranscripts(home: string): TranscriptFile[] {
       if (!entry.isDirectory()) continue;
       // Archived sessions live under their own subtree; skip like SessionManager.list().
       if (entry.name === "archive") continue;
-      // Skip internal non-chat sessions (e.g. the dreaming extractor) so their
-      // synthetic transcripts are not re-indexed as user conversation data.
-      const state = loadState(home, entry.name);
-      if (state?.chatId === 0) continue;
+      // Skip internal non-conversation directories (e.g. the dreaming extractor)
+      // so their synthetic transcripts are not re-indexed as user conversation
+      // data. Conversation ids are 10-char lowercase hex; internal names are not.
+      if (!isValidConversationId(entry.name)) continue;
       const transcriptFile = join(dir, entry.name, "transcript.jsonl");
       result.push({ sessionId: entry.name, path: transcriptFile });
     }

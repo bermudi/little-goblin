@@ -107,7 +107,12 @@ describe("SessionManager", () => {
       const first = await createSession(dmSurface(1));
       const second = await createSession(dmSurface(2));
       const list = manager.list();
-      expect(list.map((s) => s.id)).toEqual([first.id, second.id]);
+      const expected = [first, second].sort(
+        (a, b) =>
+          a.createdAt.localeCompare(b.createdAt) ||
+          a.id.localeCompare(b.id),
+      );
+      expect(list.map((s) => s.id)).toEqual(expected.map((s) => s.id));
     });
 
     it("skips sessions with missing state.json", async () => {

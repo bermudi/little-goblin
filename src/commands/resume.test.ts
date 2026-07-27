@@ -66,4 +66,47 @@ describe("/resume command", () => {
     });
     expect(result.kind).toBe("ambiguous");
   });
+
+  it("reports an incompatible target without binding", async () => {
+    let bound: string | undefined;
+    const result = await executeResume({
+      rawText: "/resume other",
+      sessions: [],
+      incompatibleSessions: [session("other12345", "other")],
+      bindSession: (id) => {
+        bound = id;
+        return session(id, "other");
+      },
+    });
+    expect(result.kind).toBe("incompatible");
+    expect(bound).toBeUndefined();
+    expect(result.reply).toContain("incompatible");
+  });
+
+  it("treats a target that appears in both compatible and incompatible lists as ambiguous", async () => {
+    let bound: string | undefined;
+    const result = await executeResume({
+      rawText: "/resume shared",
+      sessions: [session("shared1234", "shared")],
+      incompatibleSessions: [session("shared1234", "shared")],
+      bindSession: (id) => {
+        bound = id;
+        return session(id, "shared");
+      },
+    });
+    expect(result.kind).toBe("ambiguous");
+    expect(bound).toBeUndefined();
+  });
+
+  it("lists only compatible named conversations when no target is given", async () => {
+    const result = await executeResume({
+      rawText: "/resume",
+      sessions: [session("abc123def0", "work")],
+      incompatibleSessions: [session("def1234567", "other")],
+      bindSession: () => session("unused"),
+    });
+    expect(result.kind).toBe("list");
+    expect(result.reply).toContain("abc123def0");
+    expect(result.reply).not.toContain("def1234567");
+  });
 });

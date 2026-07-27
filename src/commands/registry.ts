@@ -4,7 +4,7 @@ import type { Bot, Context } from "grammy";
 import type { Config } from "../config.ts";
 import { boundedError, log } from "../log.ts";
 import type { Surface, SessionState, ConversationId, ConversationStore } from "../sessions/mod.ts";
-import { runtimeSessionWithPreferences } from "../sessions/mod.ts";
+import { runtimeSession, runtimeSessionWithPreferences } from "../sessions/mod.ts";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 import {
   getModelName as getSurfaceModelName,
@@ -398,15 +398,21 @@ const nameHandler: CommandHandler = async ({ deps, session, rawText }) => {
 };
 
 const resumeHandler: CommandHandler = async ({ deps, surface, session, rawText }) => {
-  const { lifecycle, cfg } = deps;
+  const { lifecycle, cfg, conversationStore } = deps;
   const sideEffects: SideEffect[] = [];
   try {
-    const sessions = lifecycle.listResumable(surface).map((c) => runtimeSessionWithPreferences(c, surface, cfg.goblinHome));
+    const compatible = lifecycle.listResumable(surface);
+    const allResumable = conversationStore.list();
+    const compatibleIds = new Set(compatible.map((c) => c.id));
+    const incompatible = allResumable.filter((c) => !compatibleIds.has(c.id));
+
+    const sessions = compatible.map((c) => runtimeSessionWithPreferences(c, surface, cfg.goblinHome));
+    const incompatibleSessions = incompatible.map((c) => runtimeSession(c, surface));
     const bindSession = async (sessionId: string): Promise<SessionState> => {
       const conversation = await lifecycle.resume(surface, sessionId as ConversationId);
       return runtimeSessionWithPreferences(conversation, surface, cfg.goblinHome);
     };
-    const result = await executeResume({ rawText, sessions, bindSession });
+    const result = await executeResume({ rawText, sessions, incompatibleSessions, bindSession });
     if (result.kind === "resumed" && result.session.id !== session?.id) {
       // Displace the destination's prior runtime (if any) and invalidate any
       // stale runner keyed by the resumed conversation before creating a fresh
@@ -416,7 +422,7 @@ const resumeHandler: CommandHandler = async ({ deps, surface, session, rawText }
       sideEffects.push({ kind: "runner-created", session: result.session, surface });
     }
     const tag: SystemTag = result.kind === "resumed" ? "ok"
-      : result.kind === "not-found" || result.kind === "ambiguous" ? "warn"
+      : result.kind === "not-found" || result.kind === "ambiguous" || result.kind === "incompatible" ? "warn"
       : "info";
     return replied(result.reply, sideEffects, tag);
   } catch (err) {

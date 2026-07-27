@@ -9,10 +9,13 @@ import type { AgentRunner } from "../agent/mod.ts";
 import { log } from "../log.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager } from "../sessions/mod.ts";
+import { ConversationStore } from "../sessions/conversation-store.ts";
+import { personalEnvironment } from "../sessions/environment.ts";
 import { dmSurface, guestSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
 import { metricsPath, transcriptPath } from "../sessions/paths.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
+import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 import { SchedulerLoop, type SchedulerClock } from "../scheduler/loop.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import {
@@ -117,7 +120,7 @@ interface IntakeHarness {
   cfg: Config;
   manager: SessionManager;
   agentRunners: Map<string, AgentRunner>;
-  intake: ReturnType<typeof createTelegramIntake>;
+  intake: ReturnType<typeof createTelegramIntake> & { lifecycle: ConversationLifecycle };
   bot: Bot;
   bufferLocators: Surface[];
   editForumTopic: ReturnType<typeof mock>;
@@ -1495,5 +1498,33 @@ describe("createMessageBuffer factory", () => {
     const surface = dmSurface(1);
     const buffer = intake.dispatcher.createMessageBuffer(surface, undefined) as unknown as MessageBuffer;
     expect(buffer._state().metrics).toBeUndefined();
+  });
+
+  it("queues /resume behind a streaming turn and moves the binding after", async () => {
+    const { cfg, intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const slow = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
+    };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    const store = new ConversationStore(cfg.goblinHome);
+    const target = store.create(personalEnvironment());
+
+    await intake.handleText(message, `/resume ${target.id}`);
+    await flushMicrotasks();
+
+    expect(replies.at(-1)).toBe("`[queued]` Queued\\. Will run after this turn\\.");
+
+    slow.resolve();
+    await waitFor(() => replies.at(-1)!.includes("Resumed conversation"));
+
+    expect(intake.lifecycle.inspect(dmSurface(1))?.id).toBe(target.id);
+    expect(existsSync(join(cfg.goblinHome, "state/sessions", target.id))).toBe(true);
   });
 });

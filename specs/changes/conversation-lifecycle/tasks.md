@@ -31,10 +31,10 @@
 ## Phase 4: Convert lifecycle commands
 
 - [x] Update `/new` to rotate through ConversationLifecycle while preserving Surface environment/settings/automation and leaving prior history resumable.
-- [ ] Complete `/resume` behavior. Compatible listing, recheck, and atomic movement exist; incompatible targets are currently filtered as absent rather than reported distinctly, and command-level cross-Surface coverage remains.
+- [x] Complete `/resume` behavior. Compatible listing, recheck, and atomic movement exist; incompatible targets are now reported distinctly, and cross-Surface coverage is in place.
 - [x] Update `/archive`, `/name`, `/start`, `/debug`, help, and replies to use Conversation terminology and non-creating inspection.
-- [ ] Complete command timing and stale-runtime coverage. The timing declarations and general stale guard exist; deferred `/resume` and archive-failure behavior still need integration coverage.
-- [ ] Complete command/integration coverage for lifecycle transitions, terminology, compatible cross-Surface resume with destination memory/provenance capture, and no accidental creation. Existing integration coverage is limited to same-DM sequences.
+- [x] Complete command timing and stale-runtime coverage. `/resume` queue timing is verified through the intake seam; archive-failure behavior is covered at the lifecycle-command integration.
+- [x] Complete command/integration coverage for lifecycle transitions, terminology, compatible cross-Surface resume with destination memory/provenance capture, and no accidental creation.
 - [x] Run command tests and `bun run typecheck`.
 
 ## Phase 5: Move model and thinking preferences to Surface

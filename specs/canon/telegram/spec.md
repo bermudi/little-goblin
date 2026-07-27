@@ -272,23 +272,79 @@ The intake module SHALL download media via the Telegram file API under a 20 MiB 
 
 ### Requirement: Intake saves documents, voice, and audio into the project directory
 
-For document, voice, and audio updates on a session with a bound `projectDir`, the intake module SHALL download the file, normalize its name, and write it into the project directory. Names SHALL be reduced with `basename`; document and audio names that normalize to `.` or `..` SHALL be rejected with a reply. Voice files SHALL be named `voice-<timestamp>.<ext>` derived from the mime type (`audio/ogg` → `oga`, else `bin`). After saving, intake SHALL reply with the saved name. Documents and audio SHALL prompt the runner with the caption or saved-file description as before. Voice SHALL prompt the runner with a Groq ASR transcript plus a saved-file note when transcription succeeds. On a session without a `projectDir`, document and audio behavior is unchanged; voice SHALL use Groq ASR when configured and SHALL only reply with a setup/failure message when transcription cannot run.
+For document, voice, and audio updates on an active Telegram turn, intake SHALL download and save the file under a destination derived exclusively from the Conversation's persisted `ExecutionEnvironment`. A personal environment SHALL use `$GOBLIN_HOME/workspace/attachments/`, created lazily through the sanctioned path helper. A project environment SHALL preserve the existing destination at the canonical project root. Although the personal Conversation's CWD is the workspace root, intake MUST confine raw uploads to its `attachments/` child and MUST NOT write an upload directly over root prompt files or the `skills/` tree.
 
-> **Note:** The document and audio scenarios below are restated canon (existing implemented behavior) and are not modified by this change. Only the voice-specific scenarios are new.
+Intake SHALL reduce supplied names with `basename`, trim them, and reject names that normalize to empty, `.` or `..`. Voice files SHALL retain the generated `voice-<timestamp>.<ext>` convention (`audio/ogg` → `oga`, unknown → `bin`). Saving MUST NOT overwrite an existing file: intake SHALL reserve the original name atomically when available and otherwise append a numeric suffix before the extension until it reserves a free name. The actual reserved path is authoritative for replies and prompts.
 
-#### Scenario: Voice saved with transcript
+After saving, intake SHALL reply with the saved relative name and SHALL prompt the current runner with both any caption/transcript and an explicit saved-file note. A caption MUST NOT be forwarded alone when download, validation, directory creation, or saving fails. Such failure SHALL be user-visible and logged without prompting the runner as though it had received the attachment. Existing 20 MiB download limits, voice ASR behavior, per-Conversation queueing, and stale-runtime checks remain in force; intake MUST recheck runtime currency before filesystem writes, replies, and runner prompts.
 
-- **WHEN** a voice update arrives on a session with a `projectDir`
-- **AND** Groq transcription succeeds
-- **THEN** intake SHALL write the file as `voice-<timestamp>.oga` for `audio/ogg`
-- **AND** SHALL prompt the runner with `[Voice message transcript]`, the transcript, and a note that the file was saved
+#### Scenario: Captioned document in a personal environment
 
-#### Scenario: Voice without projectDir uses ASR
+- **GIVEN** a Conversation with the personal execution environment
+- **WHEN** the user uploads `notes.md` with caption `please review the ending`
+- **THEN** intake SHALL download and save it under `$GOBLIN_HOME/workspace/attachments/notes.md`
+- **AND** SHALL prompt the runner with the caption and a note identifying `attachments/notes.md`
+- **AND** the runner SHALL be able to read that path relative to its personal CWD
 
-- **WHEN** a voice update arrives on a session without a `projectDir`
-- **AND** Groq transcription succeeds
-- **THEN** intake SHALL prompt the runner with `[Voice message transcript]` and the transcript
-- **AND** SHALL NOT require project-file saving
+#### Scenario: Uncaptioned document in a personal environment
+
+- **WHEN** the user uploads a valid document without a caption in a personal environment
+- **THEN** intake SHALL save it under the personal attachments directory
+- **AND** SHALL prompt the runner that the user uploaded the actual reserved path
+- **AND** SHALL NOT reply that `/project` is required
+
+#### Scenario: Project document preserves its destination
+
+- **GIVEN** a Conversation whose project execution environment is `/srv/project-a`
+- **WHEN** the user uploads `notes.md`
+- **THEN** intake SHALL save it as `/srv/project-a/notes.md` when that name is free
+- **AND** SHALL identify `notes.md` in the prompt relative to the runner's project CWD
+
+#### Scenario: Existing file is not overwritten
+
+- **GIVEN** `attachments/notes.md` already exists in the personal workdir
+- **WHEN** another `notes.md` is uploaded
+- **THEN** intake SHALL atomically reserve a collision-free name such as `attachments/notes-2.md`
+- **AND** SHALL leave the existing file unchanged
+- **AND** the reply and prompt SHALL identify the reserved name rather than the requested name
+
+#### Scenario: Captioned download failure is not disguised as success
+
+- **WHEN** a captioned document is oversized or cannot be downloaded or saved
+- **THEN** intake SHALL tell the user that the attachment could not be retained
+- **AND** SHALL log the failure with non-secret file and destination context
+- **AND** SHALL NOT prompt the runner with the caption alone
+
+#### Scenario: Unsafe filename is rejected
+
+- **WHEN** a document or audio filename normalizes to empty, `.` or `..`
+- **THEN** intake SHALL reply that the filename is unsafe
+- **AND** SHALL NOT write a file or prompt the runner with an attachment note
+
+#### Scenario: Voice in a personal environment is saved and transcribed
+
+- **GIVEN** Groq ASR is configured
+- **WHEN** a voice update arrives for a personal Conversation and transcription succeeds
+- **THEN** intake SHALL save the original under the personal attachments directory
+- **AND** SHALL prompt the runner with `[Voice message transcript]`, the transcript, and the saved relative path
+
+#### Scenario: Audio in a personal environment is saved
+
+- **WHEN** an audio update with a valid filename arrives for a personal Conversation
+- **THEN** intake SHALL save it under the personal attachments directory
+- **AND** SHALL prompt the runner with any caption/metadata and the saved relative path
+
+#### Scenario: Workspace prompt files cannot be replaced by uploads
+
+- **WHEN** a personal user uploads a file named `SOUL.md`, `AGENTS.md`, or any other name
+- **THEN** intake SHALL confine it to `$GOBLIN_HOME/workspace/attachments/`
+- **AND** SHALL NOT replace `$GOBLIN_HOME/workspace/SOUL.md`, `$GOBLIN_HOME/workspace/AGENTS.md`, or anything under `$GOBLIN_HOME/workspace/.agents/skills/`
+
+#### Scenario: Stale attachment work has no effects
+
+- **GIVEN** attachment processing remains pending
+- **WHEN** the Conversation runtime is invalidated before its filesystem write
+- **THEN** intake SHALL NOT save, reply, or prompt from the stale work
 
 ### Requirement: Intake applies command side effects to the runner cache
 
@@ -810,3 +866,21 @@ Telegram send/edit/media/draft adapters SHALL derive normal delivery options fro
 - **WHEN** intake completes a guest turn
 - **THEN** it SHALL reply once through the guest surface's one-shot reply callback
 - **AND** it SHALL NOT call a normal Telegram send method for the foreign chat ID
+
+### Requirement: MessageBuffer delivers out-of-band notices
+
+`MessageBuffer` SHALL expose `sendNotice(text: string): Promise<void>` for bounded, non-blocking informational notices such as a prompt-file write summary. It SHALL deliver the text by reusing `sendSystemReply` with the `"info"` tag and silent delivery (`disable_notification: true`), sharing formatting and plain-text fallback with other system replies. It SHALL record a `telegram` metrics event in the `system` channel, reusing the existing `classifyTelegramError` path so success and Telegram-side failures are reported consistently with other sends. A Telegram-side failure SHALL propagate to the caller, which treats notice delivery as best-effort.
+
+#### Scenario: Notice is sent as a silent info-tagged reply
+
+- **WHEN** `MessageBuffer.sendNotice("Modified prompt file `SOUL.md`: wrote 12 lines (340 chars)")` is called
+- **THEN** `sendSystemReply` SHALL be invoked with the text and tag `"info"`
+- **AND** the message SHALL be sent with `disable_notification: true`
+- **AND** a `telegram` metrics event with `channel: "system"` and `outcome: "success"` SHALL be recorded
+
+#### Scenario: Telegram-side failure is classified and rethrown
+
+- **WHEN** `bot.api.sendMessage` rejects during a notice
+- **THEN** the error SHALL be classified via `classifyTelegramError`
+- **AND** a `telegram` metrics event with `channel: "system"` and the classified outcome SHALL be recorded
+- **AND** the error SHALL propagate to the caller

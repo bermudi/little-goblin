@@ -373,13 +373,18 @@ When the embedding provider is in degraded state, search SHALL fall back to BM25
 
 ### Requirement: Memory search defaults to current chat scopes
 
-Memory search SHALL preserve the accepted caller visibility, corpus selection, and `all_chats` behavior. For Surface-backed callers, the default curated and transcript chat boundary SHALL use the captured `ActiveScope.chatId`; no search invocation may derive that boundary from Conversation state or a later binding. An explicit internal caller with no Surface SHALL preserve the accepted all-transcript behavior without constructing an `ActiveScope` or Surface.
+Memory search SHALL preserve the captured-context caller visibility, corpus selection, and `all_chats` behavior established by `surface-derived-memory-context`. For Surface-backed callers, transcript filtering SHALL compare the capture's `ActiveScope.chatId` against each chunk's provenance-derived `chat_id`. Provenance-null chunks and chunks from other chats SHALL be excluded by default. `all_chats = true` SHALL include every transcript chat plus provenance-null legacy chunks. Explicit internal transcript search SHALL continue to include all chats without constructing a Surface.
 
-#### Scenario: Internal search is explicit
+#### Scenario: Same-chat provenance is included
 
-- **WHEN** an internal caller searches transcripts
-- **THEN** all transcript chats SHALL be eligible under the accepted internal rule
-- **AND** no zero-chat Surface SHALL be fabricated
+- **WHEN** a caller in chat A searches the default corpus
+- **THEN** transcript chunks whose source Surface decoded to chat A SHALL be eligible
+- **AND** chunks from chat B or with `chat_id = null` SHALL be excluded
+
+#### Scenario: Cross-chat opt-in includes unresolved legacy chunks
+
+- **WHEN** `all_chats = true` is supplied
+- **THEN** transcript chunks from every chat and provenance-null legacy chunks SHALL be eligible
 
 ### Requirement: Snapshot may include relevant memory
 
@@ -665,146 +670,42 @@ Tags SHALL be computed on write and stored in a `memory_entry_tags` table (entry
 
 ### Requirement: Session transcript indexing with delta sync
 
-The system SHALL index session transcript files (`transcript.jsonl`) into the SQLite memory database for semantic search over conversation history. Transcript chunks SHALL be stored in the same `memory_entries` table with `scope = "transcript/<sessionId>"` and `entry_kind = "transcript"`. The `chat_id` column SHALL be populated with the session's Telegram chat id during indexing, enabling chat-scoped search filtering. The chat id SHALL be resolved by reading `state/sessions/<sessionId>/state.json` and extracting the `chatId` from the persisted `ChatLocator` binding. If the binding cannot be resolved, the transcript SHALL be indexed with `chat_id = null` and excluded from chat-scoped search.
+The system SHALL continue delta-syncing non-internal Conversation transcript files into `memory_entries` with `scope = "transcript/<conversationId>"` and `entry_kind = "transcript"`, preserving file hash/mtime/size tracking, bounded chunking, embedding, FTS/tag maintenance, deleted-file cleanup, result provenance, and frozen-summary exclusion.
 
-Indexing SHALL be delta-based:
-- The `memory_sources` table tracks each transcript file's path, hash, mtime, and size.
-- On sync, the system SHALL scan `$GOBLIN_HOME/state/sessions/*/transcript.jsonl`, compare path, mtime, size, and hash against `memory_sources`, and reindex only files whose mtime, size, or hash has changed.
-- Changed files SHALL be re-parsed: each `TranscriptEntry` is chunked into bounded snippets (max 500 chars, message-level granularity). Each snippet is embedded and inserted as a transcript-scope entry with `chat_id` set from the session's binding.
-- Deleted session directories SHALL have their transcript entries removed from `memory_entries`, `memory_embeddings`, `memory_index_fts`, `memory_entry_tags`, and `memory_sources`.
-- Sync SHALL run on startup and on a configurable interval (default 5 minutes) via the scheduler.
+For each parsed entry, chunking SHALL preserve its optional source Surface provenance and the indexer SHALL derive `chat_id` from that entry only. Changed files SHALL be replaced atomically at the transcript-scope index seam even when entries have mixed chats. Invalid/absent provenance SHALL yield null chat ID. Internal transcripts SHALL remain excluded from user transcript indexing by explicit internal identity, not by treating zero as a Telegram Surface.
 
-Search results SHALL distinguish `source: memory` from `source: transcript` in the response. Transcript results SHALL include the session ID and approximate timestamp. Transcript entries SHALL NOT appear in the frozen summary or `## relevant memory` aside.
+#### Scenario: Changed mixed-Surface transcript syncs
 
-#### Scenario: New transcript file indexed on sync
+- **WHEN** a changed transcript contains valid entries from two source Surfaces
+- **THEN** all chunks SHALL replace the prior transcript-scope rows atomically
+- **AND** each row SHALL carry its own provenance-derived chat ID
 
-- **WHEN** a session completes a turn and `transcript.jsonl` grows
-- **AND** the next sync tick runs
-- **THEN** the new transcript entries SHALL be chunked and inserted into `memory_entries` with `scope = "transcript/<sessionId>"` and `entry_kind = "transcript"`
-- **AND** each chunk SHALL be embedded and stored in `memory_embeddings`
+#### Scenario: Deleted Conversation removes indexed transcript
 
-#### Scenario: First sync after migration indexes all existing transcripts
-
-- **GIVEN** the migration has completed and `memory_sources` is empty
-- **AND** multiple `transcript.jsonl` files exist from before migration
-- **WHEN** the first transcript sync tick runs
-- **THEN** every existing `transcript.jsonl` file SHALL be treated as "changed" (no `memory_sources` row to compare against)
-- **AND** every file SHALL be parsed, chunked, embedded, and inserted into `memory_entries`
-- **AND** `memory_sources` SHALL be populated with a row for each file
-- **AND** subsequent sync ticks SHALL skip unchanged files
-
-#### Scenario: Unchanged transcript skipped on sync
-
-- **WHEN** a transcript file's mtime and size match `memory_sources`
-- **THEN** the file SHALL NOT be re-parsed or re-indexed
-
-#### Scenario: Deleted session removes transcript entries
-
-- **WHEN** a session directory is removed from `$GOBLIN_HOME/state/sessions/`
-- **AND** the next sync tick runs
-- **THEN** all `memory_entries` with `scope = "transcript/<sessionId>"` SHALL be deleted
-- **AND** corresponding `memory_embeddings` rows SHALL be deleted
-- **AND** the corresponding `memory_sources` row for that transcript file SHALL be deleted
-
-#### Scenario: Search returns transcript results
-
-- **WHEN** `memory_search({query: "backup config", corpus: "all"})` matches a past conversation snippet
-- **THEN** the result SHALL include `source: "transcript"`, the session ID, and the snippet text
-- **AND** transcript results SHALL be ranked alongside memory entries by the same hybrid scoring
-
-#### Scenario: Corpus restriction to memory only
-
-- **WHEN** `memory_search({query: "backups", corpus: "memory"})` is called
-- **THEN** transcript entries SHALL NOT appear in results
-- **AND** only `memory_entries` with `entry_kind = "memory"` or `entry_kind = "user"` SHALL be searched
+- **WHEN** a previously indexed Conversation transcript is removed
+- **THEN** its transcript rows, embeddings, FTS rows, tags, and source record SHALL be removed as currently accepted
 
 ### Requirement: Dreaming consolidates memory on a schedule
 
-The system SHALL run scheduled memory consolidation ("dreaming") via the existing scheduler loop. Dreaming SHALL have three phases, each on an independent configurable schedule:
+The scheduled light, REM, and deep phases SHALL preserve the accepted extraction, confidence, quarantine, deduplication, consolidation, diary, budget, and serialization behavior. Promotion scope SHALL be selected from transcript-entry source Surface provenance rather than a session-level scope.
 
-- **Light sleep** (default: every 4 hours): scan transcript entries within a lookback window (default 24 hours). Extract snippets worth remembering via a model-driven extraction pass (using the configured chat model with a focused prompt). Dedupe against existing memory entries using cosine similarity (threshold configurable via `GOBLIN_MEMORY_DEDUP_SIMILARITY_THRESHOLD`, default 0.85). Write a dream diary entry to `$GOBLIN_HOME/state/memory/dreams/<date>.md`. Promote high-confidence snippets (confidence ≥ `GOBLIN_MEMORY_DREAM_CONFIDENCE_THRESHOLD`, default 0.7) to `memory_entries` with `origin = "dreaming"`.
+Light sleep SHALL partition candidate source line ranges by their projected source MemoryScope and SHALL quarantine every candidate that spans conflicting proven scopes as `ambiguous_source_scope`; no aggregation winner is selected during light sleep. REM SHALL count provenance-derived origin scopes and apply the accepted highest-origin-count, most-recent-update, then scope-name ordering. Deep sleep SHALL preserve the scope already selected for each short-term row. Missing or invalid legacy provenance SHALL contribute no invented topic scope and SHALL use decision 0025's deterministic `general` fallback when no proven scope exists. The internal extractor context SHALL remain Surface-free and SHALL not itself become a promotion target.
 
-- **REM sleep** (default: daily at 03:00 local): aggregate concept tags across all transcript entries in the lookback window. Detect recurring themes (tags appearing in 3+ distinct sessions). Promote cross-session patterns into durable memory entries with `origin = "dreaming"` and `category = "theme"`.
+#### Scenario: Light sleep promotes moved history correctly
 
-- **Deep sleep** (default: daily at 04:00 local): promote short-term recall entries (entries with `category = "short_term"` from light sleep) into durable memory. Run budget compaction. Update the dream diary with a summary of promotions.
+- **WHEN** light sleep processes a candidate sourced only from entries produced on topic Surface X
+- **THEN** it SHALL promote to X's projected topic MemoryScope
+- **AND** SHALL ignore the Conversation's current binding
 
-Dreaming SHALL use the existing subagent spawning mechanism for model-driven extraction. The subagent SHALL receive a focused prompt with the transcript snippets and return structured candidates as a JSON array. Each candidate SHALL have the following fields:
+#### Scenario: Ambiguous legacy promotion falls back
 
-- `text` (string, required) — the durable memory text, written in third person.
-- `category` (string, required) — one of `fact`, `short_term`, `theme`, `commitment`, `standing_order`, `skip`.
-- `confidence` (number, required) — a value in the range `[0, 1]`.
-- `target` (string, optional) — one of `memory`, `user`, `agent`; defaults to `memory`.
-- `rationale` (string, optional) — a one-sentence explanation.
+- **WHEN** a candidate's source entries have no provable Surface provenance
+- **THEN** its memory target SHALL be `general` under decision 0025
 
-Candidates with `category = "skip"` or `confidence` below `GOBLIN_MEMORY_DREAM_CONFIDENCE_THRESHOLD` (default 0.7) SHALL be recorded in `quarantine.jsonl` and SHALL NOT be persisted to `memory_entries`. Malformed subagent output (non-JSON, missing required fields, or invalid enum values) SHALL be appended to `quarantine.jsonl` with reason `malformed` and SHALL NOT crash the dreaming pass.
+#### Scenario: REM tie-breaking remains deterministic
 
-Dreaming schedule intervals SHALL be expressed as a non-negative integer number of minutes or the literal `off` (case-insensitive). `0` SHALL be equivalent to `off`. The default light sleep interval SHALL be 240 minutes. The default REM and deep sleep intervals SHALL be 1440 minutes. The scheduler SHALL align the first daily phase run to the configured local time (03:00 for REM, 04:00 for deep) by computing the next occurrence after startup; subsequent runs SHALL be spaced by the interval.
-
-Dreaming SHALL NOT block the main event loop — it SHALL run in the scheduler's turn queue.
-
-The dream diary at `$GOBLIN_HOME/state/memory/dreams/<date>.md` SHALL be human-readable markdown for inspection. Narrative-style diary entries (first-person voice) SHALL be off by default and enabled via `GOBLIN_MEMORY_DREAM_NARRATIVE=true`.
-
-#### Scenario: Light sleep extracts and promotes a snippet
-
-- **GIVEN** a transcript contains a conversation where the user explains a homelab convention
-- **WHEN** light sleep runs within the lookback window
-- **THEN** a subagent SHALL extract the convention as a candidate
-- **AND** the candidate SHALL be deduped against existing memory via cosine similarity
-- **AND** if novel, the candidate SHALL be inserted into `memory_entries` with `origin = "dreaming"`, `category = "short_term"`, and `promoted_at` set to current time
-
-#### Scenario: REM sleep detects a recurring theme
-
-- **GIVEN** the user discussed "backup failures" across 4 separate sessions in the lookback window
-- **WHEN** REM sleep runs
-- **THEN** the concept tag "backup" SHALL be detected as recurring (3+ sessions)
-- **AND** a theme entry SHALL be promoted to `memory_entries` with `origin = "dreaming"`, `category = "theme"`
-
-#### Scenario: REM sleep counts distinct sessions, not chunks
-
-- **GIVEN** the transcript of session `s1` contains 5 chunks mentioning "backup" and the transcript of session `s2` contains 2 chunks mentioning "backup"
-- **WHEN** REM sleep runs
-- **THEN** the tag "backup" SHALL be counted as appearing in 2 distinct sessions
-- **AND** SHALL NOT be counted as appearing in 7 distinct sessions
-
-#### Scenario: Deep sleep promotes and compacts
-
-- **GIVEN** light sleep created 5 `short_term` entries over the past day
-- **WHEN** deep sleep runs
-- **THEN** the 5 entries SHALL be promoted to durable status (category changed from `short_term` to `fact`)
-- **AND** each promoted entry's `promoted_at` SHALL be set to the current time
-- **AND** each promoted entry's `updated_at` SHALL be refreshed
-- **AND** budget compaction SHALL run to ensure the total memory size is within budget
-- **AND** the dream diary SHALL be updated with a summary of promotions
-
-#### Scenario: Dreaming does not block user turns
-
-- **WHEN** a dreaming phase is running and the user sends a message
-- **THEN** the user's turn SHALL be processed without waiting for dreaming to complete
-- **AND** dreaming SHALL continue in the background
-
-#### Scenario: Dreaming dedupes against existing memory
-
-- **GIVEN** `memory_entries` already contains "user prefers concise summaries" with high confidence
-- **WHEN** light sleep extracts a similar snippet from a transcript of session `s2`
-- **THEN** the cosine similarity between the snippet embedding and the existing entry SHALL exceed `GOBLIN_MEMORY_DEDUP_SIMILARITY_THRESHOLD` (default 0.85)
-- **AND** the snippet SHALL NOT be inserted as a new entry
-- **AND** the existing entry's `updated_at` SHALL be refreshed
-- **AND** the existing entry's `source_session` SHALL remain unchanged
-- **AND** the existing entry's `updated_source_session` SHALL be set to `s2`
-
-#### Scenario: Standing order candidate is extracted
-
-- **WHEN** a transcript entry contains an explicit durable instruction such as `standing order: remind me to check backups weekly`
-- **THEN** the model-driven extractor SHALL produce a `standing_order` memory candidate
-- **AND** the candidate SHALL include a confidence score
-
-#### Scenario: Malformed or low-confidence subagent output is quarantined
-
-- **GIVEN** a light sleep subagent returns `[{"text": "..."}]` missing `category` and `confidence`
-- **WHEN** the dreaming pipeline processes the output
-- **THEN** the malformed output SHALL be appended to `quarantine.jsonl` with reason `malformed`
-- **AND** no entry SHALL be inserted into `memory_entries`
-- **AND** the dreaming pass SHALL continue with the next transcript range
+- **WHEN** a recurring theme has several provenance-derived origin scopes
+- **THEN** the existing highest-origin-count, most-recent-update, then scope-name ordering SHALL select its target
 
 ### Requirement: Budget management with recall-aware auto-compaction
 
@@ -991,3 +892,57 @@ Internal callers SHALL use an explicit Surface-free internal context. They MUST 
 - **WHEN** the dreaming extractor runs through an internal model context
 - **THEN** it SHALL receive explicit internal context with no `SurfaceId` or `ActiveScope`
 - **AND** it SHALL not gain an ordinary active-scope write target
+
+### Requirement: Transcript provenance drives chat indexing
+
+The transcript indexer SHALL derive each transcript chunk's `chat_id` from the validated `sourceSurfaceId` carried by that chunk's source entry. It SHALL parse the SurfaceId through the canonical Surface codec and use the decoded Surface's `chatId`. It MUST NOT read Conversation/session state, current bindings, creation metadata, or one file-level chat value as indexing authority.
+
+A single `transcript/<conversationId>` scope MAY contain chunks with different `chat_id` values. An absent, malformed, non-canonical, or migration-ambiguous source Surface SHALL produce `chat_id = null` for that entry's chunks. Those chunks SHALL be excluded from default chat-scoped transcript search but remain eligible when `all_chats = true` or an explicit Surface-free internal search requests all transcripts.
+
+#### Scenario: Moved Conversation indexes both source chats
+
+- **GIVEN** one transcript contains an entry from Surface X in chat A and a later entry from Surface Y in chat B
+- **WHEN** transcript sync indexes the file
+- **THEN** X's chunks SHALL carry `chat_id = A`
+- **AND** Y's chunks SHALL carry `chat_id = B`
+- **AND** both SHALL retain `scope = "transcript/<conversationId>"`
+
+#### Scenario: Legacy provenance is absent
+
+- **WHEN** a legacy transcript entry has no provable `sourceSurfaceId`
+- **THEN** its chunks SHALL be indexed with `chat_id = null`
+- **AND** the indexer SHALL not substitute the Conversation's current binding
+
+### Requirement: Indexed transcript rows retain source Surface provenance
+
+The memory database SHALL add nullable `source_surface_id` to `memory_entries`. Transcript chunks with valid event-time provenance SHALL store the canonical SurfaceId in that column; curated memory/user rows and legacy, invalid, or internal transcript chunks SHALL store null. The existing `chat_id` SHALL remain the indexed chat-filter column and SHALL be derived from `source_surface_id`, never treated as the richer authority. FTS rows need not duplicate `source_surface_id` because ranked results join back to `memory_entries`.
+
+Dreaming and provenance diagnostics SHALL read the stored SurfaceId through the canonical codec. Search results need not expose it in the public tool schema in this change.
+
+#### Scenario: Provenance-bearing chunk is persisted
+
+- **WHEN** an entry from topic Surface X is chunked and indexed
+- **THEN** each chunk row SHALL store X's canonical ID in `source_surface_id`
+- **AND** SHALL store X's decoded chat ID in `chat_id`
+
+#### Scenario: Curated rows remain Surface-free
+
+- **WHEN** a curated memory or user entry is inserted
+- **THEN** `source_surface_id` SHALL be null
+
+### Requirement: Provenance rollout invalidates guessed transcript rows
+
+Before provenance-aware transcript search is enabled, startup SHALL first pass the filesystem `stateVersion` gate proving the offline transcript migration completed, then atomically invalidate every previously indexed transcript row whose `chat_id` came from session-level metadata. The SQLite invalidation transaction SHALL remove transcript rows and their FTS, embedding, tag, and source-tracking rows and SHALL update the provenance-index version as its final statement, becoming visible atomically when the transaction commits. Normal bounded transcript sync SHALL then rebuild rows from per-entry provenance. Search MUST NOT expose old guessed `chat_id` rows during the transactional database upgrade or rebuild.
+
+#### Scenario: Existing index is upgraded
+
+- **GIVEN** the database contains transcript rows indexed under the old session-level chat rule
+- **WHEN** the provenance migration completes
+- **THEN** one SQLite transaction SHALL remove those transcript rows and dependent index data and mark the new index version
+- **AND** subsequent sync SHALL rebuild them from entry provenance
+
+#### Scenario: Process stops during index invalidation
+
+- **WHEN** the process stops before the SQLite invalidation transaction commits
+- **THEN** the transaction SHALL roll back without recording the provenance-index version
+- **AND** the next startup SHALL repeat the database upgrade before search, scheduler, or polling begins

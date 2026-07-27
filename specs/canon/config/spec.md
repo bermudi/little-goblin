@@ -56,30 +56,42 @@ The system SHALL apply defaults for optional fields not present in the config fi
 
 ### Requirement: Ensure GOBLIN_HOME directory structure
 
-The system SHALL create required subdirectories under `GOBLIN_HOME` at startup, organized into three top-level groups: `workspace/` (user-authored prompt files and skills), `state/` (machine-managed state), and `scratch/` (ephemeral subagent workspace).
+The system SHALL create required subdirectories under `GOBLIN_HOME` at startup, organized into three top-level groups: `workspace/` (the persistent personal execution CWD plus user-authored prompt files and skills), `state/` (machine-managed state), and `scratch/` (ephemeral runtime data — not a personal workdir).
+
+`workspace/` is the persistent personal execution CWD: the single root Goblin operates in when no project Execution Environment is bound. `scratch/` holds ephemeral runtime data only; it MUST NOT be created or used as a personal working directory, and the legacy `scratch/workdir/` path SHALL NOT be created by startup.
 
 The following directories SHALL exist after startup completes:
 
-- `workspace/` — prompt files and skills
+- `workspace/` — persistent personal execution CWD, prompt files, and skills
 - `workspace/skills/` — goblin's pi skills
 - `workspace/agents/` — named agent definitions
 - `state/` — machine-managed state
 - `state/sessions/` — session directories
 - `state/memory/` — agent-curated memory tree
 - `state/pi/` — pi auth and model registry
-- `scratch/` — ephemeral workspace
-- `scratch/workdir/` — shared subagent cwd
+- `scratch/` — ephemeral runtime data
 - `scratch/subagents/` — subagent instance directories
+
+The legacy `scratch/workdir/` directory SHALL NOT be created. Pre-existing `scratch/workdir/` contents from a prior deployment are outside this requirement's authority; their relocation is governed by the canonical offline migration (`immutable-project-environments`, step 2), not by startup directory creation.
 
 #### Scenario: First run with empty GOBLIN_HOME
 
 - **WHEN** `ensureGoblinHome()` is called with a fresh directory
-- **THEN** it SHALL create `workspace/`, `workspace/skills/`, `workspace/agents/`, `state/`, `state/sessions/`, `state/memory/`, `state/pi/`, `scratch/`, `scratch/workdir/`, and `scratch/subagents/` directories
+- **THEN** it SHALL create `workspace/`, `workspace/skills/`, `workspace/agents/`, `state/`, `state/sessions/`, `state/memory/`, `state/pi/`, `scratch/`, and `scratch/subagents/` directories
+- **AND** it SHALL NOT create `scratch/workdir/`
 
 #### Scenario: Directories already exist
 
-- **WHEN** `ensureGoblinHome()` is called and directories already exist
+- **WHEN** `ensureGoblinHome()` is called and the required directories already exist
 - **THEN** it SHALL complete without error (idempotent)
+- **AND** it SHALL NOT create `scratch/workdir/` even if that legacy path is absent
+
+#### Scenario: Legacy scratch/workdir is not recreated
+
+- **GIVEN** a prior deployment left `scratch/workdir/` absent after offline migration step 2 promoted its contents into `workspace/`
+- **WHEN** `ensureGoblinHome()` runs at startup
+- **THEN** it SHALL leave `scratch/workdir/` absent
+- **AND** startup SHALL NOT treat the missing path as a directory-creation failure
 
 ### Requirement: Expose typed Config interface
 

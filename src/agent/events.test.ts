@@ -10,6 +10,11 @@ import {
   type TurnCallbacks,
 } from "./events.ts";
 import { sessionDir, transcriptPath } from "../sessions/paths.ts";
+import { dmSurface, surfaceId } from "../surface.ts";
+import type { TranscriptWriterContext } from "../sessions/transcript.ts";
+
+const internalCtx: TranscriptWriterContext = { kind: "internal" };
+const surfaceCtx: TranscriptWriterContext = { kind: "surface", sourceSurfaceId: surfaceId(dmSurface(42)) };
 
 describe("appendTranscriptEntry", () => {
   let tmpDir: string;
@@ -26,7 +31,7 @@ describe("appendTranscriptEntry", () => {
   });
 
   it("ignores events that are not message_end", () => {
-    appendTranscriptEntry(sessionId, tmpDir, { type: "message_start", message: { role: "user" } });
+    appendTranscriptEntry(sessionId, tmpDir, { type: "message_start", message: { role: "user" } }, internalCtx);
 
     // File shouldn't be created since nothing was written
     expect(existsSync(transcriptPath(tmpDir, sessionId))).toBe(false);
@@ -37,7 +42,7 @@ describe("appendTranscriptEntry", () => {
       type: "message_end",
       ts: "2026-05-07T20:00:00.000Z",
       message: { role: "user", content: "hello goblin", timestamp: 123 },
-    });
+    }, internalCtx);
 
     const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
     const parsed = JSON.parse(content.trim());
@@ -47,6 +52,18 @@ describe("appendTranscriptEntry", () => {
       timestamp: 123,
       content: "hello goblin",
     });
+  });
+
+  it("stamps sourceSurfaceId for surface-backed writes", () => {
+    appendTranscriptEntry(sessionId, tmpDir, {
+      type: "message_end",
+      ts: "2026-05-07T20:00:00.000Z",
+      message: { role: "assistant", content: "hi", timestamp: 123 },
+    }, surfaceCtx);
+
+    const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
+    const parsed = JSON.parse(content.trim());
+    expect(parsed.sourceSurfaceId).toBe("tg:v1:dm:42");
   });
 
   it("appends assistant messages without provider signatures or image data", () => {
@@ -76,7 +93,7 @@ describe("appendTranscriptEntry", () => {
         stopReason: "toolUse",
         timestamp: 456,
       },
-    });
+    }, internalCtx);
 
     const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
     const parsed = JSON.parse(content.trim());
@@ -116,7 +133,7 @@ describe("appendTranscriptEntry", () => {
         stopReason: "stop",
         timestamp: 100,
       },
-    });
+    }, internalCtx);
 
     const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
     const parsed = JSON.parse(content.trim());
@@ -138,7 +155,7 @@ describe("appendTranscriptEntry", () => {
         isError: false,
         timestamp: 789,
       },
-    });
+    }, internalCtx);
 
     const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
     const parsed = JSON.parse(content.trim());
@@ -404,7 +421,7 @@ describe("appendAssistantTranscriptEntry", () => {
   });
 
   it("appends a synthetic assistant entry with a system marker", () => {
-    appendAssistantTranscriptEntry(sessionId, tmpDir, "Sorry, I couldn't transcribe that voice message.");
+    appendAssistantTranscriptEntry(sessionId, tmpDir, "Sorry, I couldn't transcribe that voice message.", internalCtx);
 
     const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
     const parsed = JSON.parse(content.trim());
@@ -413,9 +430,17 @@ describe("appendAssistantTranscriptEntry", () => {
     expect(typeof parsed.ts).toBe("string");
   });
 
+  it("stamps sourceSurfaceId for surface-backed synthetic assistant entries", () => {
+    appendAssistantTranscriptEntry(sessionId, tmpDir, "surface reply", surfaceCtx);
+
+    const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
+    const parsed = JSON.parse(content.trim());
+    expect(parsed.sourceSurfaceId).toBe("tg:v1:dm:42");
+  });
+
   it("appends multiple synthetic entries", () => {
-    appendAssistantTranscriptEntry(sessionId, tmpDir, "first");
-    appendAssistantTranscriptEntry(sessionId, tmpDir, "second");
+    appendAssistantTranscriptEntry(sessionId, tmpDir, "first", internalCtx);
+    appendAssistantTranscriptEntry(sessionId, tmpDir, "second", internalCtx);
 
     const content = readFileSync(transcriptPath(tmpDir, sessionId), "utf-8");
     const lines = content.trim().split("\n");

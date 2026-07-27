@@ -8,13 +8,21 @@ import {
   chunkTranscriptEntry,
   extractEntryText,
   readTranscriptAfter,
+  readTranscriptRawLines,
+  writeTranscriptRawLines,
   type TranscriptEntry,
+  type TranscriptWriterContext,
 } from "./transcript.ts";
 import { sessionDir, transcriptPath } from "./paths.ts";
+import { dmSurface, surfaceId, type SurfaceId } from "../surface.ts";
 
 describe("transcript module", () => {
   let tmpDir: string;
   const sessionId = "abcdef1234";
+
+  const surfaceIdValue: SurfaceId = surfaceId(dmSurface(42));
+  const surfaceCtx: TranscriptWriterContext = { kind: "surface", sourceSurfaceId: surfaceIdValue };
+  const internalCtx: TranscriptWriterContext = { kind: "internal" };
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-transcript-"));
@@ -58,7 +66,7 @@ describe("transcript module", () => {
             cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.02, total: 0.33 },
           },
         },
-      });
+      }, surfaceCtx);
 
       const entries = readRawEntries();
       expect(entries).toHaveLength(1);
@@ -72,6 +80,7 @@ describe("transcript module", () => {
       expect(e.stopReason).toBe("end_turn");
       expect(e.usage?.totalTokens).toBe(135);
       expect(e.usage?.cost.total).toBe(0.33);
+      expect(e.sourceSurfaceId).toBe(surfaceIdValue);
     });
 
     it("preserves a tool-result entry's toolCallId/toolName/isError", () => {
@@ -85,13 +94,25 @@ describe("transcript module", () => {
           toolName: "memory_search",
           isError: true,
         },
-      });
+      }, surfaceCtx);
 
       const entries = readRawEntries();
       expect(entries[0]!.role).toBe("toolResult");
       expect(entries[0]!.toolCallId).toBe("call_42");
       expect(entries[0]!.toolName).toBe("memory_search");
       expect(entries[0]!.isError).toBe(true);
+      expect(entries[0]!.sourceSurfaceId).toBe(surfaceIdValue);
+    });
+
+    it("internal writes omit sourceSurfaceId", () => {
+      appendTranscriptEntry(sessionId, tmpDir, {
+        type: "message_end",
+        ts: "2026-07-07T10:00:00.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: "internal" }] },
+      }, internalCtx);
+
+      const entries = readRawEntries();
+      expect(entries[0]!.sourceSurfaceId).toBeUndefined();
     });
 
     it("round-trips through readTranscriptAfter", () => {
@@ -99,21 +120,23 @@ describe("transcript module", () => {
         type: "message_end",
         ts: "2026-07-07T10:00:00.000Z",
         message: { role: "user", content: "hi there" },
-      });
+      }, surfaceCtx);
       appendTranscriptEntry(sessionId, tmpDir, {
         type: "message_end",
         ts: "2026-07-07T10:00:01.000Z",
         message: { role: "assistant", content: [{ type: "text", text: "hello back" }] },
-      });
+      }, surfaceCtx);
 
       const lines = readTranscriptAfter(tmpDir, sessionId, 0);
       expect(lines).toHaveLength(2);
       expect(lines[0]!.index).toBe(0);
       expect(lines[0]!.role).toBe("user");
       expect(lines[0]!.text).toBe("hi there");
+      expect(lines[0]!.sourceSurfaceId).toBe(surfaceIdValue);
       expect(lines[1]!.index).toBe(1);
       expect(lines[1]!.role).toBe("assistant");
       expect(lines[1]!.text).toBe("hello back");
+      expect(lines[1]!.sourceSurfaceId).toBe(surfaceIdValue);
     });
   });
 
@@ -151,11 +174,12 @@ describe("transcript module", () => {
     });
 
     it("handles the assistant synthetic entry's prefixed string", () => {
-      appendAssistantTranscriptEntry(sessionId, tmpDir, "sorry, can't do that");
+      appendAssistantTranscriptEntry(sessionId, tmpDir, "sorry, can't do that", surfaceCtx);
       const lines = readTranscriptAfter(tmpDir, sessionId, 0);
       expect(lines).toHaveLength(1);
       expect(lines[0]!.role).toBe("assistant");
       expect(lines[0]!.text).toBe("[system] sorry, can't do that");
+      expect(lines[0]!.sourceSurfaceId).toBe(surfaceIdValue);
     });
   });
 
@@ -242,6 +266,74 @@ describe("transcript module", () => {
     });
   });
 
+  describe("provenance", () => {
+    it("surface-backed write stamps the entry with a canonical SurfaceId", () => {
+      appendTranscriptEntry(sessionId, tmpDir, {
+        type: "message_end",
+        ts: "2026-07-07T10:00:00.000Z",
+        message: { role: "user", content: "hello" },
+      }, surfaceCtx);
+
+      const entry = readRawEntries()[0]!;
+      expect(entry.sourceSurfaceId).toBe(surfaceIdValue);
+      expect(readTranscriptAfter(tmpDir, sessionId, 0)[0]!.sourceSurfaceId).toBe(surfaceIdValue);
+    });
+
+    it("rejects a non-canonical SurfaceId at the writer seam", () => {
+      expect(() =>
+        appendTranscriptEntry(sessionId, tmpDir, {
+          type: "message_end",
+          ts: "2026-07-07T10:00:00.000Z",
+          message: { role: "user", content: "hello" },
+        }, { kind: "surface", sourceSurfaceId: "tg:v1:dm:042" as SurfaceId })
+      ).toThrow(/non-canonical chatId/);
+    });
+
+    it("leaves invalid or unknown provenance unavailable as typed authority", () => {
+      const path = transcriptPath(tmpDir, sessionId);
+      const invalid = JSON.stringify({ ts: "2026-07-07T10:00:00.000Z", role: "user", content: "x", sourceSurfaceId: "not-a-surface-id" });
+      const unknown = JSON.stringify({ ts: "2026-07-07T10:00:01.000Z", role: "assistant", content: [{ type: "text", text: "y" }], sourceSurfaceId: "tg:v2:dm:1" });
+      writeFileSync(path, `${invalid}\n${unknown}\n`, "utf-8");
+
+      const lines = readTranscriptAfter(tmpDir, sessionId, 0);
+      expect(lines).toHaveLength(2);
+      expect(lines[0]!.sourceSurfaceId).toBeUndefined();
+      expect(lines[1]!.sourceSurfaceId).toBeUndefined();
+    });
+  });
+
+  describe("raw records", () => {
+    it("preserves every raw field including invalid provenance on read", () => {
+      const path = transcriptPath(tmpDir, sessionId);
+      const raw = { ts: "2026-07-07T10:00:00.000Z", role: "user", content: "x", sourceSurfaceId: "not-a-surface-id", extra: [1, 2] };
+      writeFileSync(path, `${JSON.stringify(raw)}\n`, "utf-8");
+
+      const rawLines = readTranscriptRawLines(tmpDir, sessionId);
+      expect(rawLines).toHaveLength(1);
+      expect(rawLines[0]!.line).toBe(JSON.stringify(raw));
+      expect(rawLines[0]!.raw).toEqual(raw);
+      expect(rawLines[0]!.entry).not.toBeNull();
+      expect(rawLines[0]!.entry!.role).toBe("user");
+      expect(rawLines[0]!.entry!.content).toBe("x");
+      expect(rawLines[0]!.entry!.sourceSurfaceId).toBeUndefined();
+      expect(rawLines[0]!.lineIndex).toBe(0);
+    });
+
+    it("round-trips raw lines losslessly", () => {
+      const path = transcriptPath(tmpDir, sessionId);
+      const good = JSON.stringify({ ts: "2026-07-07T10:00:00.000Z", role: "user", content: "a" });
+      const malformed = "this is not json";
+      const invalidProv = JSON.stringify({ ts: "2026-07-07T10:00:01.000Z", role: "assistant", content: [{ type: "text", text: "b" }], sourceSurfaceId: "oops" });
+      writeFileSync(path, `${good}\n${malformed}\n${invalidProv}\n`, "utf-8");
+
+      const rawLines = readTranscriptRawLines(tmpDir, sessionId);
+      writeTranscriptRawLines(tmpDir, sessionId, rawLines);
+
+      const written = readFileSync(path, "utf-8");
+      expect(written).toBe(`${good}\n${malformed}\n${invalidProv}\n`);
+    });
+  });
+
   describe("chunkTranscriptEntry", () => {
     it("returns empty for text with fewer than 8 non-whitespace characters", () => {
       const entry: TranscriptEntry = { ts: "2026-07-04T12:00:00.000Z", role: "user", content: "hi" };
@@ -257,6 +349,18 @@ describe("transcript module", () => {
       const chunks = chunkTranscriptEntry(entry, { sessionId: "s1", maxChars: 500 });
       expect(chunks).toHaveLength(1);
       expect(chunks[0]!.text).toContain("[2026-07-04T12:00:00.000Z] [user] [s1] Hello world.");
+    });
+
+    it("propagates sourceSurfaceId onto every chunk", () => {
+      const entry: TranscriptEntry = {
+        ts: "2026-07-04T12:00:00.000Z",
+        role: "user",
+        content: "This is sentence one. Here is sentence two, which is longer.",
+        sourceSurfaceId: surfaceIdValue,
+      };
+      const chunks = chunkTranscriptEntry(entry, { sessionId: "s1", maxChars: 60 });
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((c) => c.sourceSurfaceId === surfaceIdValue)).toBe(true);
     });
 
     it("splits by sentences and respects maxChars", () => {

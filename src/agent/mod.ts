@@ -30,7 +30,7 @@ import {
 import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
-import type { Surface } from "../surface.ts";
+import type { Surface, SurfaceId } from "../surface.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
 import { AgentBackend, AgentBackendOptions, PiAgentBackend } from "./backend.ts";
@@ -505,8 +505,14 @@ export class AgentRunner {
    * Handle AgentSession events, dispatch to callbacks and log to transcript.
    */
   private handleEvent(event: AgentSessionEvent): void {
-    // Append to transcript (compact message-level log)
-    appendTranscriptEntry(this.sessionId, this.cfg.goblinHome, event);
+    // Append to transcript (compact message-level log). The runtime's
+    // captured memory context is the source of truth for event-time provenance;
+    // the transcript module validates and stamps it.
+    const writerCtx: { kind: "surface"; sourceSurfaceId: SurfaceId } | { kind: "internal" } =
+      this.memoryContext.kind === "surface"
+        ? { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId }
+        : { kind: "internal" };
+    appendTranscriptEntry(this.sessionId, this.cfg.goblinHome, event, writerCtx);
 
     // Update session metrics from backend events. This runs before the
     // callback guard so turn and tool counters are recorded even when no

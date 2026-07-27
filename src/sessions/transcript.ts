@@ -1,4 +1,5 @@
-import { openSync, closeSync, writeSync, readFileSync } from "node:fs";
+import { openSync, closeSync, writeSync, readFileSync, writeFileSync } from "node:fs";
+import { parseSurfaceId, surfaceId, type SurfaceId } from "../surface.ts";
 import { transcriptPath } from "./paths.ts";
 
 // ---------------------------------------------------------------------------
@@ -42,7 +43,18 @@ export interface TranscriptEntry {
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
+  /** Canonical SurfaceId for user-visible entries produced by a Surface-backed runtime. */
+  sourceSurfaceId?: SurfaceId;
 }
+
+/**
+ * Explicit writer context for every transcript append. Surface-backed writes
+ * carry the runtime capture's canonical SurfaceId; internal writes explicitly
+ * omit it. The context is required so omission is deliberate, not accidental.
+ */
+export type TranscriptWriterContext =
+  | { kind: "surface"; sourceSurfaceId: SurfaceId }
+  | { kind: "internal" };
 
 /**
  * A simplified transcript line extracted for the reflection pipeline.
@@ -59,6 +71,8 @@ export interface TranscriptLine {
   text: string;
   /** ISO timestamp from the transcript entry. */
   ts: string;
+  /** Validated source Surface provenance when available. */
+  sourceSurfaceId?: SurfaceId;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +141,23 @@ function normalizeTranscriptContent(content: unknown): string | TranscriptConten
   });
 }
 
+function validateSurfaceId(id: SurfaceId): void {
+  // parseSurfaceId throws for non-canonical, unknown-version, or malformed
+  // SurfaceIds. This is the only place the transcript module validates the
+  // canonical codec; all other code receives already-validated SurfaceIds.
+  parseSurfaceId(id);
+}
+
+function readNormalizedSourceSurfaceId(raw: unknown): SurfaceId | undefined {
+  if (typeof raw !== "string") return undefined;
+  try {
+    const surface = parseSurfaceId(raw);
+    return surfaceId(surface);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Translate a pi AgentSessionEvent into a transcript entry, or return null
  * when the event is not a `message_end` worth persisting. This is the
@@ -180,10 +211,22 @@ function transcriptEntryFromEvent(event: object): TranscriptEntry | null {
 /**
  * Append a transcript entry derived from a pi AgentSessionEvent to the
  * session's `transcript.jsonl`. No-ops on non-`message_end` events.
+ *
+ * The writer context is required: Surface-backed appends stamp the entry with
+ * the runtime capture's canonical `sourceSurfaceId`; internal appends omit it.
  */
-export function appendTranscriptEntry(sessionId: string, home: string, event: object): void {
+export function appendTranscriptEntry(
+  sessionId: string,
+  home: string,
+  event: object,
+  ctx: TranscriptWriterContext,
+): void {
   const entry = transcriptEntryFromEvent(event);
   if (entry === null) return;
+  if (ctx.kind === "surface") {
+    validateSurfaceId(ctx.sourceSurfaceId);
+    entry.sourceSurfaceId = ctx.sourceSurfaceId;
+  }
   appendJsonl(transcriptPath(home, sessionId), entry);
 }
 
@@ -200,12 +243,17 @@ export function appendAssistantTranscriptEntry(
   sessionId: string,
   home: string,
   text: string,
+  ctx: TranscriptWriterContext,
 ): void {
   const entry: TranscriptEntry = {
     ts: new Date().toISOString(),
     role: "assistant",
     content: `[system] ${text}`,
   };
+  if (ctx.kind === "surface") {
+    validateSurfaceId(ctx.sourceSurfaceId);
+    entry.sourceSurfaceId = ctx.sourceSurfaceId;
+  }
   appendJsonl(transcriptPath(home, sessionId), entry);
 }
 
@@ -255,8 +303,9 @@ function parseTranscriptEntry(value: unknown): TranscriptEntry | null {
   const ts = readString(m, "ts") ?? new Date().toISOString();
   const timestamp = readNumber(m, "timestamp");
   const content = normalizeTranscriptContent(m.content);
+  const sourceSurfaceId = readNormalizedSourceSurfaceId(m.sourceSurfaceId);
 
-  const entry: TranscriptEntry = { ts, role, timestamp, content };
+  const entry: TranscriptEntry = { ts, role, timestamp, content, sourceSurfaceId };
   if (role === "assistant") {
     entry.api = readString(m, "api");
     entry.provider = readString(m, "provider");
@@ -291,13 +340,23 @@ export interface IndexedTranscriptEntry {
 }
 
 /**
- * Read all transcript entries, pairing each non-blank line with its logical
- * line index. Malformed lines are counted toward the logical index but return
- * a null entry so callers can match the reflection cursor. This is the single
- * typing authority for parsing transcript JSONL.
+ * A lossless raw transcript line plus its normalized entry, exposed only for
+ * the offline provenance migrator. Ordinary readers must use the normalized
+ * typed interfaces; this shape preserves the original JSON text so rewrites
+ * can leave unchanged records byte-for-byte.
  */
-export function readTranscriptEntries(home: string, sessionId: string): IndexedTranscriptEntry[] {
-  const path = transcriptPath(home, sessionId);
+export interface TranscriptRawLine {
+  /** Zero-based logical line index (non-blank lines only). */
+  lineIndex: number;
+  /** Original JSONL text for this line, used for byte-preserving rewrites. */
+  line: string;
+  /** Parsed raw object when the line is valid JSON; otherwise null. */
+  raw: Record<string, unknown> | null;
+  /** Normalized typed entry when the raw object is a recognized transcript entry. */
+  entry: TranscriptEntry | null;
+}
+
+function readTranscriptRawLinesInternal(path: string): TranscriptRawLine[] {
   let raw: string;
   try {
     raw = readFileSync(path, "utf-8");
@@ -307,22 +366,40 @@ export function readTranscriptEntries(home: string, sessionId: string): IndexedT
   }
 
   const lines = raw.split("\n");
-  const result: IndexedTranscriptEntry[] = [];
+  const result: TranscriptRawLine[] = [];
   let lineIndex = 0;
   for (const line of lines) {
     if (line.trim().length === 0) continue;
     const index = lineIndex;
     lineIndex++;
-    let entry: TranscriptEntry | null = null;
     try {
       const parsed = JSON.parse(line) as unknown;
-      entry = parseTranscriptEntry(parsed);
+      if (typeof parsed === "object" && parsed !== null) {
+        const rawObj = parsed as Record<string, unknown>;
+        const entry = parseTranscriptEntry(rawObj);
+        result.push({ lineIndex: index, line, raw: rawObj, entry });
+        continue;
+      }
     } catch {
       // malformed line — counted but null
     }
-    result.push({ lineIndex: index, entry });
+    result.push({ lineIndex: index, line, raw: null, entry: null });
   }
   return result;
+}
+
+/**
+ * Read all transcript entries, pairing each non-blank line with its logical
+ * line index. Malformed lines are counted toward the logical index but return
+ * a null entry so callers can match the reflection cursor. This is the single
+ * typing authority for parsing transcript JSONL.
+ */
+export function readTranscriptEntries(home: string, sessionId: string): IndexedTranscriptEntry[] {
+  const path = transcriptPath(home, sessionId);
+  return readTranscriptRawLinesInternal(path).map(({ lineIndex, entry }) => ({
+    lineIndex,
+    entry,
+  }));
 }
 
 export function countTranscriptLines(home: string, sessionId: string): number {
@@ -350,7 +427,12 @@ export function readTranscriptAfter(
   for (const { lineIndex, entry } of readTranscriptEntries(home, sessionId)) {
     if (lineIndex < processedLines) continue;
     if (entry === null) {
-      result.push({ index: lineIndex, role: "unknown", text: "", ts: new Date().toISOString() });
+      result.push({
+        index: lineIndex,
+        role: "unknown",
+        text: "",
+        ts: new Date().toISOString(),
+      });
       continue;
     }
     const role = entry.role === "user" || entry.role === "assistant" || entry.role === "toolResult"
@@ -361,9 +443,32 @@ export function readTranscriptAfter(
       role,
       text: extractEntryText(entry.content),
       ts: entry.ts ?? new Date().toISOString(),
+      sourceSurfaceId: entry.sourceSurfaceId,
     });
   }
   return result;
+}
+
+/**
+ * Migration-only raw-record reader. Returns every non-blank JSONL line with
+ * its original text, parsed raw object, and normalized entry. The `line`
+ * field preserves the original bytes so rewrites can leave unchanged records
+ * untouched. This operation is exported only for `TranscriptProvenanceMigrator`;
+ * ordinary readers, indexers, dreaming, commands, and intake must not use it.
+ */
+export function readTranscriptRawLines(home: string, sessionId: string): TranscriptRawLine[] {
+  return readTranscriptRawLinesInternal(transcriptPath(home, sessionId));
+}
+
+/**
+ * Migration-only raw-record writer. Replaces the transcript file with the
+ * supplied lines. Callers (the offline migrator) are responsible for atomic
+ * tmp/rename replacement and precomputing all candidate rewrites.
+ */
+export function writeTranscriptRawLines(home: string, sessionId: string, lines: TranscriptRawLine[]): void {
+  const path = transcriptPath(home, sessionId);
+  const text = lines.map((l) => l.line).join("\n") + (lines.length > 0 ? "\n" : "");
+  writeFileSync(path, text, "utf-8");
 }
 
 const DEFAULT_MAX_CHUNK_CHARS = 500;
@@ -375,6 +480,8 @@ export interface TranscriptChunk {
   sessionId: string;
   createdAt: number;
   updatedAt: number;
+  /** Validated source Surface provenance when the source entry carried one. */
+  sourceSurfaceId?: SurfaceId;
 }
 
 function chunkText(text: string, maxChars: number): string[] {
@@ -454,5 +561,6 @@ export function chunkTranscriptEntry(
     sessionId: opts.sessionId,
     createdAt: baseTime,
     updatedAt: baseTime,
+    sourceSurfaceId: entry.sourceSurfaceId,
   }));
 }

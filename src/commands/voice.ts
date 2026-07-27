@@ -1,7 +1,7 @@
-import { readFile, unlink } from "node:fs/promises";
+import { unlink } from "node:fs/promises";
 import { InputFile } from "grammy";
 import type { Bot } from "grammy";
-import { transcriptPath } from "../sessions/paths.ts";
+import { extractEntryText, readTranscriptEntries } from "../sessions/transcript.ts";
 import { edgeTts, resolveVoiceName, voiceTmpPath } from "../voice.ts";
 import { deliveryOpts } from "../tg/delivery.ts";
 import type { Surface } from "../surface.ts";
@@ -18,45 +18,13 @@ export type VoiceResult =
   | { kind: "no-messages" }
   | { kind: "tts-failed"; error: string };
 
-function extractTextFromAssistantContent(content: unknown): string | null {
-  if (typeof content === "string") {
-    return content.length > 0 ? content : null;
-  }
-  if (!Array.isArray(content)) return null;
-  let text = "";
-  for (const item of content) {
-    if (typeof item !== "object" || item === null) continue;
-    const block = item as Record<string, unknown>;
-    if (block.type === "text" && typeof block.text === "string") {
-      text += block.text;
-    }
-  }
-  return text.length > 0 ? text : null;
-}
-
 export async function readLastAssistantMessage(home: string, sessionId: string): Promise<string | null> {
-  let raw: string;
-  try {
-    raw = await readFile(transcriptPath(home, sessionId), "utf-8");
-  } catch (err) {
-    if (isNodeError(err) && err.code === "ENOENT") return null;
-    throw err;
-  }
-
-  const lines = raw.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]!.trim();
-    if (line.length === 0) continue;
-    let entry: unknown;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as Record<string, unknown>;
-    if (record.role !== "assistant") continue;
-    return extractTextFromAssistantContent(record.content);
+  const entries = readTranscriptEntries(home, sessionId);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const { entry } = entries[i]!;
+    if (entry === null || entry.role !== "assistant") continue;
+    const text = extractEntryText(entry.content);
+    if (text.length > 0) return text;
   }
   return null;
 }

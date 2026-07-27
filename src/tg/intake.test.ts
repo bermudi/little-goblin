@@ -8,9 +8,10 @@ import type { Config } from "../config.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { SessionManager } from "../sessions/mod.ts";
-import { dmSurface, guestSurface, topicSurface, type Surface } from "../surface.ts";
+import { dmSurface, guestSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
 import { metricsPath, transcriptPath } from "../sessions/paths.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
+import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
 import { SchedulerLoop, type SchedulerClock } from "../scheduler/loop.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import {
@@ -28,6 +29,7 @@ class MockAgentRunner {
   static nextPrompt?: (content: unknown, buffer: unknown) => Promise<void>;
 
   readonly sessionId: string;
+  readonly memoryContext: CapturedMemoryContext | InternalMemoryContext;
   streaming = false;
   abortTimedOut = false;
   abortBeforeInit = false;
@@ -62,9 +64,21 @@ class MockAgentRunner {
   });
   readonly modelName?: string;
 
-  constructor(opts: { sessionId: string; modelName?: string }) {
+  constructor(opts: { sessionId: string; modelName?: string; memoryContext?: CapturedMemoryContext | InternalMemoryContext }) {
     this.sessionId = opts.sessionId;
     this.modelName = opts.modelName;
+    this.memoryContext = opts.memoryContext ?? {
+      kind: "surface",
+      authority: {
+        kind: "surface",
+        sourceSurfaceId: surfaceId(dmSurface(1)),
+        activeScope: { chatId: 1, topicScope: "general" },
+      },
+      caller: { kind: "main" },
+      frozenSummary: null,
+      frozenUserBody: "",
+      frozenActiveMemoryBody: "",
+    };
   }
 
   get isStreaming(): boolean {
@@ -438,6 +452,7 @@ describe("Telegram intake", () => {
       ts: expect.any(String),
       role: "assistant",
       content: "[system] Sorry, I couldn't download that image.",
+      sourceSurfaceId: "tg:v1:dm:1",
     });
   });
 
@@ -995,6 +1010,7 @@ describe("Telegram intake", () => {
       ts: expect.any(String),
       role: "assistant",
       content: "[system] Sorry, I couldn't transcribe that voice message.",
+      sourceSurfaceId: "tg:v1:dm:1",
     });
   });
 

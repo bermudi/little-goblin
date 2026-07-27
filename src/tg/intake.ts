@@ -269,8 +269,16 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   // attach to a Surface whose Conversation has already moved.
   dispatcher.setCurrentBindingGuard(lifecycle);
 
-  function recordAssistantReply(sessionId: string, text: string): void {
-    appendAssistantTranscriptEntry(sessionId, cfg.goblinHome, text);
+  function recordAssistantReply(sessionId: string, runner: AgentRunner | null | undefined, text: string): void {
+    const ctx: import("../sessions/transcript.ts").TranscriptWriterContext | undefined =
+      runner && runner.memoryContext.kind === "surface"
+        ? { kind: "surface", sourceSurfaceId: runner.memoryContext.authority.sourceSurfaceId }
+        : undefined;
+    if (!ctx) {
+      log.warn("no-transcript-writer-context", { sessionId, text: text.slice(0, 120) });
+      return;
+    }
+    appendAssistantTranscriptEntry(sessionId, cfg.goblinHome, text, ctx);
   }
 
   const WEDGED_RUNNER_REPLY =
@@ -380,7 +388,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         log.error("deferred command failed", { error: msg, command, sessionId: session.id });
         const replyText = `/${command} failed after the turn: ${msg}`;
         await sendSystemReply(message, replyText, "error").catch(() => {});
-        recordAssistantReply(session.id, replyText);
+        const currentRunner = dispatcher.getRunner(session.id);
+        recordAssistantReply(session.id, currentRunner, replyText);
       },
       { isPrompt: false },
     );
@@ -445,7 +454,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           async (err) => {
             if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
               await sendSystemReply(message, err.message, "error");
-              recordAssistantReply(session.id, err.message);
+              recordAssistantReply(session.id, runner, err.message);
               return;
             }
             const msg = err instanceof Error ? err.message : String(err);
@@ -537,7 +546,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       } catch (err) {
         log.error("command dispatch failed", { error: String(err), command, sessionId: session?.id });
         await sendSystemReply(message, "Something went wrong. Please try again.", "error");
-        if (session) recordAssistantReply(session.id, "Something went wrong. Please try again.");
+        if (session) recordAssistantReply(session.id, existingRunner, "Something went wrong. Please try again.");
         return;
       }
     }
@@ -574,7 +583,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         if (!photo) {
           const replyText = "Sorry, I couldn't download that image.";
           await sendSystemReply(message, replyText, "error");
-          recordAssistantReply(turn.session.id, replyText);
+          recordAssistantReply(turn.session.id, runner, replyText);
           return;
         }
 
@@ -603,7 +612,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         if (!raw) {
           const replyText = "Sorry, I couldn't download that file.";
           await sendSystemReply(message, replyText, "error");
-          recordAssistantReply(turn.session.id, replyText);
+          recordAssistantReply(turn.session.id, runner, replyText);
           return;
         }
 
@@ -617,7 +626,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             const replyText = "Rejected: unsafe filename.";
             if (isCurrent()) {
               await sendSystemReply(message, replyText, "warn");
-              recordAssistantReply(turn.session.id, replyText);
+              recordAssistantReply(turn.session.id, runner, replyText);
             }
             return;
           }
@@ -629,7 +638,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           if (isCurrent()) {
             const replyText = `Failed to save ${desiredName}.`;
             await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, replyText);
+            recordAssistantReply(turn.session.id, runner, replyText);
           }
           return;
         }
@@ -662,7 +671,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           if (!isCurrent()) return;
           const replyText = "Groq ASR is not configured. Add a Groq API key to transcribe voice messages.";
           await sendSystemReply(message, replyText, "warn");
-          recordAssistantReply(turn.session.id, replyText);
+          recordAssistantReply(turn.session.id, runner, replyText);
           return;
         }
 
@@ -674,7 +683,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           if (isCurrent()) {
             const replyText = "Sorry, I couldn't download that voice message.";
             await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, replyText);
+            recordAssistantReply(turn.session.id, runner, replyText);
           }
           return;
         }
@@ -696,7 +705,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           if (isCurrent()) {
             const replyText = "Sorry, I couldn't transcribe that voice message.";
             await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, replyText);
+            recordAssistantReply(turn.session.id, runner, replyText);
           }
           return;
         }
@@ -707,7 +716,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           if (isCurrent()) {
             const replyText = "No speech was detected in that voice message.";
             await sendSystemReply(message, replyText, "info");
-            recordAssistantReply(turn.session.id, replyText);
+            recordAssistantReply(turn.session.id, runner, replyText);
           }
           return;
         }
@@ -730,7 +739,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           if (isCurrent()) {
             const replyText = `Failed to save ${desiredName}.`;
             await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, replyText);
+            recordAssistantReply(turn.session.id, runner, replyText);
           }
           return;
         }
@@ -759,7 +768,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         if (!raw) {
           const replyText = "Sorry, I couldn't download that audio file.";
           await sendSystemReply(message, replyText, "error");
-          recordAssistantReply(turn.session.id, replyText);
+          recordAssistantReply(turn.session.id, runner, replyText);
           return;
         }
 
@@ -778,7 +787,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             const replyText = "Rejected: unsafe filename.";
             if (isCurrent()) {
               await sendSystemReply(message, replyText, "warn");
-              recordAssistantReply(turn.session.id, replyText);
+              recordAssistantReply(turn.session.id, runner, replyText);
             }
             return;
           }
@@ -790,7 +799,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           if (isCurrent()) {
             const replyText = `Failed to save ${desiredName}.`;
             await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, replyText);
+            recordAssistantReply(turn.session.id, runner, replyText);
           }
           return;
         }

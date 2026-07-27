@@ -15,9 +15,9 @@
 - [x] Create `ConversationLifecycle` with non-creating inspect, authorized resolve-or-start, rotate, compatible resume/move, archive, and environment-filtered listing, using the dependency-provided lifecycle-transition lock for every binding-changing operation.
 - [x] Enforce one active Surface binding per Conversation through one atomic binding-map write; preserve displaced/rotated Conversations as resumable.
 - [x] Verify environment compatibility before runtime disposal or binding mutation; for rotate, quiesce before creating the fresh Conversation so failed quiescence leaves both binding and Conversation store unchanged.
-- [ ] Complete the lifecycle test matrix. DM creation, concurrent creation, rotate, same-target idempotence, cross-Surface movement, quiescence failure, Q resumability, invalidated-runner non-reuse, and stale capture coverage exist; topic lazy creation and a real two-runtime movement fixture remain.
-- [ ] Change archive ordering to clear the binding before moving the directory; add a failure test proving a post-unbind move failure leaves the Conversation unbound, unarchived, resumable, and without a restored runtime. Current code still moves first.
-- [ ] Complete dispatcher adaptation coverage. Capture failure, binding change during capture, and completed registration are covered; replacement-runtime writer context still lacks a dispatcher-level fixture.
+- [x] Complete the lifecycle test matrix. DM creation, concurrent creation, rotate, same-target idempotence, cross-Surface movement, quiescence failure, Q resumability, invalidated-runner non-reuse, and stale capture coverage exist; topic lazy creation and a real two-runtime movement fixture remain.
+- [x] Change archive ordering to clear the binding before moving the directory; add a failure test proving a post-unbind move failure leaves the Conversation unbound, unarchived, resumable, and without a restored runtime. Current code still moves first.
+- [x] Complete dispatcher adaptation coverage. Capture failure, binding change during capture, and completed registration are covered; replacement-runtime writer context still lacks a dispatcher-level fixture.
 - [x] Run lifecycle/dispatcher tests and `bun run typecheck`.
 
 ## Phase 3: Route authorized intake through lifecycle

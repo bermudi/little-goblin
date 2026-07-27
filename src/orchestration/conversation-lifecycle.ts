@@ -239,10 +239,10 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       }
 
       await this.runtimeHost.disposeRuntime(current.id);
-      this.store.archive(current.id);
       const next = cloneBindings(bindings);
       delete (next.surfaces as Record<string, string>)[key];
       this.bindings.save(next);
+      this.store.archive(current.id);
       log.info("conversation archived", { surface: key, conversation: current.id });
     });
   }

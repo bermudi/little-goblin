@@ -15,6 +15,7 @@ import { personalEnvironment, projectEnvironment } from "../sessions/environment
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import type { TurnSink, SurfaceSettings } from "./dispatcher.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
+import type { TranscriptWriterContext } from "../sessions/transcript.ts";
 
 class FakeAgentRunner {
   disposeCalled = false;
@@ -24,6 +25,7 @@ class FakeAgentRunner {
   _isAbortTimedOut = false;
   _modelName = "";
   memoryContext: CapturedMemoryContext | InternalMemoryContext | undefined = undefined;
+  transcriptWriterContext: TranscriptWriterContext | undefined = undefined;
 
   get isStreaming(): boolean {
     return this._isStreaming;
@@ -361,6 +363,10 @@ describe("TurnDispatcher async runner creation", () => {
       const runner = new FakeAgentRunner();
       runner.disposeCalled = false;
       runner.memoryContext = o.memoryContext;
+      runner.transcriptWriterContext =
+        o.memoryContext.kind === "surface"
+          ? { kind: "surface", sourceSurfaceId: o.memoryContext.authority.sourceSurfaceId }
+          : { kind: "internal" };
       return runner as unknown as AgentRunner;
     });
 
@@ -434,6 +440,23 @@ describe("TurnDispatcher async runner creation", () => {
     const r2 = await dispatcher.getOrCreateRunner(session, dmSurface(2));
     expect(r1).not.toBe(r2);
     expect(createAgentRunnerCalls).toHaveLength(2);
+  });
+
+  it("replacement derives the transcript writer context from the destination Surface capture", async () => {
+    const { dispatcher } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+
+    const r1 = await dispatcher.getOrCreateRunner(session, dmSurface(1));
+    const r2 = await dispatcher.getOrCreateRunner(session, dmSurface(2));
+
+    expect((r1 as unknown as FakeAgentRunner).transcriptWriterContext).toEqual({
+      kind: "surface",
+      sourceSurfaceId: surfaceId(dmSurface(1)),
+    });
+    expect((r2 as unknown as FakeAgentRunner).transcriptWriterContext).toEqual({
+      kind: "surface",
+      sourceSurfaceId: surfaceId(dmSurface(2)),
+    });
   });
 
   it("stale-guard: a capture disposed during capture is discarded", async () => {

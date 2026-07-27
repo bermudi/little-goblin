@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { ConversationLifecycleManager } from "./conversation-lifecycle.ts";
 import type { SurfaceSettings, ConversationLifecycle } from "./conversation-lifecycle.ts";
 import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
+import { createTurnDispatcherRuntimeHost } from "./conversation-runtime-host.ts";
+import { TurnDispatcher, type TurnSink } from "./dispatcher.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
+import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
 import type { BindingStore } from "../sessions/bindings.ts";
 import { validateBindings } from "../sessions/bindings.ts";
 import type { BindingsFile } from "../sessions/types.ts";
@@ -13,7 +16,13 @@ import type { ConversationId } from "../sessions/types.ts";
 import { savePendingProjectAssignment } from "../sessions/project-assignment.ts";
 import { getProjectRoot } from "../sessions/topic-settings.ts";
 import { environmentFromProjectRoot, personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
-import { dmSurface, surfaceId, supergroupSurface, type Surface } from "../surface.ts";
+import { dmSurface, surfaceId, supergroupSurface, topicSurface, type Surface } from "../surface.ts";
+import { SubagentRunner } from "../subagents/mod.ts";
+import { MemoryStore } from "../memory/mod.ts";
+import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
+import type { AgentRunner } from "../agent/mod.ts";
+import type { Config } from "../config.ts";
+import type { TranscriptWriterContext } from "../sessions/transcript.ts";
 
 class InMemoryBindingStore implements BindingStore {
   bindings: BindingsFile = { version: 1, surfaces: {} };
@@ -43,6 +52,56 @@ class FakeRuntimeHost implements ConversationRuntimeHost {
       throw new Error(`dispose failed for ${id}`);
     }
     this.disposed.push(id);
+  }
+}
+
+class ThrowingArchiveStore extends ConversationStore {
+  throwOn: ConversationId | null = null;
+
+  archive(id: ConversationId): void {
+    if (this.throwOn === id) {
+      throw new Error("archive move failed");
+    }
+    super.archive(id);
+  }
+}
+
+class FakeAgentRunner {
+  disposeCalled = false;
+  memoryContext: CapturedMemoryContext | InternalMemoryContext;
+  transcriptWriterContext: TranscriptWriterContext;
+
+  constructor(opts: ConstructorParameters<typeof AgentRunner>[0]) {
+    this.memoryContext = opts.memoryContext;
+    this.transcriptWriterContext =
+      this.memoryContext.kind === "surface"
+        ? { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId }
+        : { kind: "internal" };
+  }
+
+  get isStreaming() {
+    return false;
+  }
+  get isPrompting() {
+    return false;
+  }
+  get isAbortTimedOut() {
+    return false;
+  }
+  get modelName() {
+    return "poe/test-model";
+  }
+
+  async prompt() {}
+  async abort() {}
+  async followUp() {}
+  async compact() {
+    return {};
+  }
+  async setModel() {}
+  setThinkingLevel() {}
+  async dispose() {
+    this.disposeCalled = true;
   }
 }
 
@@ -113,6 +172,15 @@ describe("ConversationLifecycle", () => {
       expect(conv.executionEnvironment).toEqual(personalEnvironment());
       expect(store.load(conv.id)?.id).toBe(conv.id);
       expect(bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBe(conv.id);
+    });
+
+    it("creates and binds a conversation for an unbound topic surface", async () => {
+      const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = topicSurface("supergroup", -100123, 5);
+      const conv = await lifecycle.resolveOrStart(surface);
+      expect(conv.executionEnvironment).toEqual(personalEnvironment());
+      expect(store.load(conv.id)?.id).toBe(conv.id);
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(conv.id);
     });
 
     it("returns an existing bound compatible conversation", async () => {
@@ -208,6 +276,23 @@ describe("ConversationLifecycle", () => {
       expect(bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBeUndefined();
       expect(store.load(conv.id)).toBeNull();
       expect(store.list()).toEqual([]);
+    });
+
+    it("leaves the conversation unbound, unarchived, and resumable when the directory move fails after the binding is cleared", async () => {
+      const store = new ThrowingArchiveStore(tmpDir);
+      const bindings = new InMemoryBindingStore();
+      const runtimeHost = new FakeRuntimeHost();
+      const lifecycle = new ConversationLifecycleManager(tmpDir, store, bindings, staticSettings(personalEnvironment()), runtimeHost);
+      const surface = dmSurface(1);
+      const conv = await lifecycle.resolveOrStart(surface);
+      store.throwOn = conv.id;
+
+      await expect(lifecycle.archive(surface)).rejects.toThrow(/archive move failed/);
+
+      expect(runtimeHost.disposed).toContain(conv.id);
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBeUndefined();
+      expect(store.load(conv.id)).not.toBeNull();
+      expect(store.list()).toHaveLength(1);
     });
 
     it("throws when no conversation is bound", async () => {
@@ -523,6 +608,106 @@ describe("ConversationLifecycle", () => {
       const reloaded = store.load(prior.id);
       expect(reloaded?.executionEnvironment).toEqual(personalEnvironment());
       expect(bindings.bindings.surfaces[surfaceId(surface)]).not.toBe(prior.id);
+    });
+  });
+
+  describe("real runtime movement", () => {
+    let runtimeHome: string;
+    let memoryStore: MemoryStore;
+
+    beforeEach(() => {
+      runtimeHome = mkdtempSync(join(tmpdir(), "goblin-lifecycle-runtime-"));
+      memoryStore = new MemoryStore(runtimeHome);
+    });
+
+    afterEach(() => {
+      memoryStore.close();
+      rmSync(runtimeHome, { recursive: true, force: true });
+    });
+
+    function makeRuntimeFixture(): {
+      lifecycle: ConversationLifecycle;
+      dispatcher: TurnDispatcher;
+    } {
+      const cfg = { goblinHome: runtimeHome } as Config;
+      const subagentRunner = new SubagentRunner(cfg);
+      const surfaceSettings = staticSettings(personalEnvironment());
+      const dispatcher = new TurnDispatcher({
+        cfg,
+        surfaceSettings,
+        subagentRunner,
+        memoryStore,
+        agentRunners: new Map(),
+        createMessageBuffer: (): TurnSink => ({
+          onTextDelta: () => {},
+          onToolStart: () => {},
+          onToolEnd: () => {},
+          onStatusUpdate: () => {},
+          onMessageStart: () => {},
+          onMessageEnd: () => {},
+          onAgentEnd: () => {},
+        }),
+        createBetaTools: () => [],
+        createAgentRunner: (opts) => new FakeAgentRunner(opts) as unknown as AgentRunner,
+      });
+      const store = new ConversationStore(runtimeHome);
+      const bindings = new InMemoryBindingStore();
+      const lifecycle = new ConversationLifecycleManager(
+        runtimeHome,
+        store,
+        bindings,
+        surfaceSettings,
+        createTurnDispatcherRuntimeHost(dispatcher),
+      );
+      dispatcher.setBindingInspector((s) => lifecycle.inspect(s)?.id ?? undefined);
+      return { lifecycle, dispatcher };
+    }
+
+    it("disposes both source and destination runtimes during cross-surface resume and recreates with destination authority", async () => {
+      const { lifecycle, dispatcher } = makeRuntimeFixture();
+      const source = dmSurface(1);
+      const destination = dmSurface(2);
+
+      const target = await lifecycle.resolveOrStart(source);
+      const displaced = await lifecycle.resolveOrStart(destination);
+
+      const r1 = await dispatcher.getOrCreateRunner(
+        runtimeSessionWithPreferences(target, source, runtimeHome),
+        source,
+      );
+      const r2 = await dispatcher.getOrCreateRunner(
+        runtimeSessionWithPreferences(displaced, destination, runtimeHome),
+        destination,
+      );
+
+      expect(dispatcher.getRunner(target.id)).toBe(r1);
+      expect(dispatcher.getRunner(displaced.id)).toBe(r2);
+      expect((r1 as unknown as FakeAgentRunner).transcriptWriterContext).toEqual({
+        kind: "surface",
+        sourceSurfaceId: surfaceId(source),
+      });
+      expect((r2 as unknown as FakeAgentRunner).transcriptWriterContext).toEqual({
+        kind: "surface",
+        sourceSurfaceId: surfaceId(destination),
+      });
+
+      await lifecycle.resume(destination, target.id);
+
+      expect((r1 as unknown as FakeAgentRunner).disposeCalled).toBe(true);
+      expect((r2 as unknown as FakeAgentRunner).disposeCalled).toBe(true);
+      expect(dispatcher.getRunner(target.id)).toBeNull();
+      expect(dispatcher.getRunner(displaced.id)).toBeNull();
+
+      const r3 = await dispatcher.getOrCreateRunner(
+        runtimeSessionWithPreferences(target, destination, runtimeHome),
+        destination,
+      );
+
+      expect(r3).not.toBe(r1);
+      expect((r3 as unknown as FakeAgentRunner).transcriptWriterContext).toEqual({
+        kind: "surface",
+        sourceSurfaceId: surfaceId(destination),
+      });
     });
   });
 });

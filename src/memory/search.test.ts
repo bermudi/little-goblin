@@ -287,6 +287,77 @@ describe("memory search", () => {
     });
   });
 
+  describe("searchMemoryEntries — Surface-derived chat boundaries", () => {
+    it("destination runtime discovers only the destination chat's topic scopes by default", async () => {
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, "source chat note");
+      await setBody(store, { topic: { chatId: -200, topicId: 9 } }, "destination chat note");
+      await setBody(store, { topic: { chatId: -200, topicId: 10 } }, "another destination note");
+
+      const out = await searchMemoryEntries({
+        store,
+        activeScope: { chatId: -200, topicScope: { topicId: 9 } },
+        persona: MAIN_PERSONA,
+        query: "note",
+      });
+
+      const scopes = out.results.map((r) => r.scope).sort();
+      expect(scopes).toEqual(["topics/-200/10", "topics/-200/9"]);
+      expect(scopes).not.toContain("topics/-100/42");
+    });
+
+    it("a general-scope surface still restricts discovery to its chat", async () => {
+      await setBody(store, { topic: { chatId: -100999, topicId: 1 } }, "guest chat note");
+      await setBody(store, { topic: { chatId: -100, topicId: 42 } }, "other chat note");
+
+      const out = await searchMemoryEntries({
+        store,
+        activeScope: { chatId: -100999, topicScope: "general" },
+        persona: MAIN_PERSONA,
+        query: "note",
+      });
+
+      const scopes = out.results.map((r) => r.scope);
+      expect(scopes).toContain("topics/-100999/1");
+      expect(scopes).not.toContain("topics/-100/42");
+    });
+
+    it("internal transcript search spans all chats without a Surface", async () => {
+      const sourceSession = "transcript-source";
+      const destSession = "transcript-dest";
+      await store.addEntries([
+        {
+          scope: `transcript/${sourceSession}`,
+          entryKind: "transcript",
+          text: "source chat transcript note",
+          origin: "user",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          chatId: String(-100),
+        },
+        {
+          scope: `transcript/${destSession}`,
+          entryKind: "transcript",
+          text: "destination chat transcript note",
+          origin: "user",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          chatId: String(-200),
+        },
+      ]);
+
+      const out = await searchMemoryEntries({
+        store,
+        activeScope: { chatId: 0, topicScope: "general" },
+        persona: MAIN_PERSONA,
+        query: "transcript note",
+        corpus: "transcripts",
+      });
+
+      const sessionIds = out.results.map((r) => r.sessionId).sort();
+      expect(sessionIds).toEqual([destSession, sourceSession]);
+    });
+  });
+
   describe("searchMemoryEntries — deterministic ordering", () => {
     it("orders results deterministically across calls (stable tie-break)", async () => {
       await setBody(

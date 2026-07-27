@@ -20,11 +20,11 @@
 
 ## Phase 3: Enforce captured search and tool boundaries
 
-- [ ] Make frozen cross-scope discovery, scope index, relevant-memory assembly, and Surface-backed transcript filtering derive chat only from captured ActiveScope.
-- [ ] Preserve explicit `all_chats`, existing caller visibility, ranking/result schemas, summary/relevant-memory bounds, and explicit internal all-transcript search without constructing a Surface.
-- [ ] Make `memory_write target = memory` consume captured ActiveScope and `target = agent` consume caller identity; reject model-supplied scope, Surface, chat, Conversation, and policy fields.
-- [ ] Keep main, generic-subagent, and named-subagent memory tool schemas identical and preserve caller-supplied AgentRunner tools.
-- [ ] Add moved-destination discovery, general/guest, persona parity, internal search, schema parity, and frozen-summary tests; run focused memory tool/search/snapshot tests and `bun run typecheck`.
+- [x] Make frozen cross-scope discovery, scope index, relevant-memory assembly, and Surface-backed transcript filtering derive chat only from captured ActiveScope.
+- [x] Preserve explicit `all_chats`, existing caller visibility, ranking/result schemas, summary/relevant-memory bounds, and explicit internal all-transcript search without constructing a Surface.
+- [x] Make `memory_write target = memory` consume captured ActiveScope and `target = agent` consume caller identity; reject model-supplied scope, Surface, chat, Conversation, and policy fields.
+- [x] Keep main, generic-subagent, and named-subagent memory tool schemas identical and preserve caller-supplied AgentRunner tools.
+- [x] Add moved-destination discovery, general/guest, persona parity, internal search, schema parity, and frozen-summary tests; run focused memory tool/search/snapshot tests and `bun run typecheck`.
 
 ## Phase 4: Capture subagent invocation context
 

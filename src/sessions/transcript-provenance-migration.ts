@@ -115,11 +115,16 @@ function findHistoricalEvidence(
   return null;
 }
 
-function attributeLine(line: TranscriptRawLine, home: string, sessionId: string): TranscriptRawLine {
+export function attributeLine(
+  line: TranscriptRawLine,
+  home: string,
+  sessionId: string,
+  evidenceSource: (line: TranscriptRawLine, home: string, sessionId: string) => SurfaceId | null = findHistoricalEvidence,
+): TranscriptRawLine {
   if (line.raw === null || line.entry === null) return line;
-  if (line.entry.sourceSurfaceId !== undefined) return line;
+  if ("sourceSurfaceId" in line.raw) return line;
 
-  const evidence = findHistoricalEvidence(line, home, sessionId);
+  const evidence = evidenceSource(line, home, sessionId);
   if (evidence === null) return line;
 
   const surface = parseSurfaceId(evidence);

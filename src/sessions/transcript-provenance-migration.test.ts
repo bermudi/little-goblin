@@ -6,9 +6,10 @@ import {
   migrateTranscriptProvenance,
   planTranscriptProvenanceMigration,
   applyTranscriptProvenanceMigration,
+  attributeLine,
   type TranscriptProvenanceMigrationPlan,
 } from "./transcript-provenance-migration.ts";
-import { readTranscriptRawDocumentAtPath, type TranscriptRawDocument } from "./transcript.ts";
+import { readTranscriptRawDocumentAtPath, type TranscriptRawDocument, type TranscriptRawLine } from "./transcript.ts";
 import { runMigrations } from "../migrate.ts";
 import { readStateVersion, stateVersionPath } from "../state-version.ts";
 import { sessionsDir, sessionDir } from "./paths.ts";
@@ -115,6 +116,24 @@ describe("transcript provenance migration", () => {
     expect(plan.files[0]!.invalidProvenanceCount).toBe(1);
     expect(plan.files[0]!.preservedCount).toBe(0);
     expect(plan.files[0]!.unknownProvenanceCount).toBe(0);
+  });
+
+  it("does not overwrite invalid raw sourceSurfaceId even when evidence is available", () => {
+    writeState(home, SESSION_ID, makeState());
+    const raw = { ts: "2026-07-07T10:00:00.000Z", role: "user", content: "hi", sourceSurfaceId: "not-valid" };
+    const entry = { ts: raw.ts, role: raw.role as "user", content: raw.content };
+    const line: TranscriptRawLine = { lineIndex: 0, line: JSON.stringify(raw), raw, entry };
+
+    let called = false;
+    const result = attributeLine(line, home, SESSION_ID, () => {
+      called = true;
+      return SURFACE_ID;
+    });
+
+    expect(called).toBe(false);
+    expect(result.line).toBe(line.line);
+    expect(result.raw).toEqual(raw);
+    expect(result.entry).toEqual(entry);
   });
 
   it("leaves absent provenance null and counts it as unknown", () => {

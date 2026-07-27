@@ -5,6 +5,7 @@
  * WAL mode is enabled by the database lifecycle module.
  */
 
+// source_surface_id is added lazily; its rollout/purge is gated by memory_meta.provenance_index_version, not this number.
 export const MEMORY_SCHEMA_VERSION = 5;
 
 export const DDL = `

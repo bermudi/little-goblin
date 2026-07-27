@@ -30,7 +30,7 @@ import {
 import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
-import type { Surface } from "../surface.ts";
+import { surfaceId, type Surface } from "../surface.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
 import { AgentBackend, AgentBackendOptions, PiAgentBackend } from "./backend.ts";
@@ -40,7 +40,7 @@ import { createExternalAgentTool } from "../external-agents/tool.ts";
 import { McpRunner, createMcpTools } from "../mcp/mod.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { environmentCwd, projectRootOf } from "../sessions/environment.ts";
-import { heartbeatMdPathForSession } from "../sessions/paths.ts";
+import { surfaceHeartbeatPath } from "../sessions/paths.ts";
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import { agentsMdPath, heartbeatMdPath, soulMdPath } from "../workspace/paths.ts";
@@ -702,8 +702,10 @@ export class AgentRunner {
       resolve(soulMdPath(home)),
       resolve(agentsMdPath(home)),
       resolve(heartbeatMdPath(home)),
-      resolve(heartbeatMdPathForSession(home, this.sessionId)),
     ]);
+    if (this.surface !== undefined) {
+      reserved.add(resolve(surfaceHeartbeatPath(home, surfaceId(this.surface))));
+    }
     return reserved.has(resolve(resolvedPath));
   }
 

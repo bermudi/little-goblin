@@ -648,7 +648,7 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
   {
     name: "schedule",
     argsHint: "<list|at|in|every|remove|pause|resume|heartbeat ...>",
-    description: "manage scheduled turns and heartbeat for this conversation",
+    description: "manage scheduled turns and heartbeat for this surface",
     timing: "instant",
     handler: scheduleHandler,
   },

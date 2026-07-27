@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { heartbeatMdPathForSession, sessionDir, transcriptPath } from "../sessions/paths.ts";
+import { surfaceHeartbeatPath, sessionDir, transcriptPath } from "../sessions/paths.ts";
 import { readTranscriptEntries } from "../sessions/transcript.ts";
 import { piAgentDir } from "../pi-host.ts";
 import { agentsMdPath, skillsPath, soulMdPath, workspacePath } from "../workspace/paths.ts";
@@ -1227,17 +1227,18 @@ describe("AgentRunner", () => {
       expect(cb.sendNotice).not.toHaveBeenCalled();
     });
 
-    it("posts a sendNotice for a session-scoped HEARTBEAT.md write", async () => {
+    it("posts a sendNotice for a surface-scoped HEARTBEAT.md write", async () => {
       const cb = nopCallbacks();
-      const runner = await makeRunner(tmpDir);
+      const surface = dmSurface(123);
+      const runner = await makeRunner(tmpDir, [], surface);
       await runner.prompt("hi", cb);
 
-      const sessionHeartbeat = heartbeatMdPathForSession(tmpDir, "abcdef1234");
+      const surfaceHeartbeat = surfaceHeartbeatPath(tmpDir, surfaceId(surface));
       sessionHolder.emit({
         type: "tool_execution_start",
         toolCallId: "tc-session-hb",
         toolName: "write",
-        args: { path: sessionHeartbeat, content: "session pulse" },
+        args: { path: surfaceHeartbeat, content: "surface pulse" },
       });
       sessionHolder.emit({
         type: "tool_execution_end",

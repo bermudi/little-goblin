@@ -10,9 +10,12 @@ import {
   topicSettingsPath,
   schedulesPath,
   heartbeatMdPathForSession,
+  surfaceHeartbeatPath,
 } from "./paths.ts";
+import type { SurfaceId } from "../surface.ts";
 
 const VALID_HEX_ID = "abc123def0";
+const VALID_DM_SURFACE_ID = "tg:v1:dm:123" as SurfaceId;
 
 describe("sessions paths", () => {
   const home = "/tmp/goblin";
@@ -67,6 +70,19 @@ describe("sessions paths", () => {
     expect(() => heartbeatMdPathForSession(home, "../escape")).toThrow();
     expect(() => heartbeatMdPathForSession(home, "abc/123")).toThrow();
     expect(() => heartbeatMdPathForSession(home, "abc\\123")).toThrow();
+  });
+
+  it("resolves a surface-owned HEARTBEAT.md by canonical SurfaceId", () => {
+    expect(surfaceHeartbeatPath(home, VALID_DM_SURFACE_ID)).toBe(
+      join(home, "state", "surfaces", VALID_DM_SURFACE_ID, "HEARTBEAT.md"),
+    );
+  });
+
+  it("rejects invalid or non-canonical SurfaceIds for heartbeat path", () => {
+    expect(() => surfaceHeartbeatPath(home, "../escape" as SurfaceId)).toThrow();
+    expect(() => surfaceHeartbeatPath(home, "tg:v1:dm:abc" as SurfaceId)).toThrow();
+    expect(() => surfaceHeartbeatPath(home, "tg:v1:dm:0123" as SurfaceId)).toThrow();
+    expect(() => surfaceHeartbeatPath(home, "not:a:surface" as SurfaceId)).toThrow();
   });
 
   it("rejects unsafe session id characters", () => {

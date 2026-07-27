@@ -7,16 +7,16 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
-import { dmSurface } from "../surface.ts";
+import { dmSurface, surfaceId } from "../surface.ts";
 import { executeNew } from "./new.ts";
 import { executeArchive } from "./archive.ts";
 import { executeName } from "./name.ts";
 import { executeResume } from "./resume.ts";
-import { sessionDir, sessionsDir } from "../sessions/paths.ts";
+import { sessionDir, sessionsDir, surfaceHeartbeatPath } from "../sessions/paths.ts";
 import { createConversationLifecycle, ConversationLifecycleManager, type ConversationLifecycle, type SurfaceSettings } from "../orchestration/conversation-lifecycle.ts";
 import type { ConversationRuntimeHost } from "../orchestration/conversation-runtime-host.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
@@ -25,6 +25,7 @@ import { FileBindingStore } from "../sessions/bindings.ts";
 import { setModelName } from "../sessions/topic-settings.ts";
 import { personalEnvironment, projectEnvironment } from "../sessions/environment.ts";
 import type { ConversationId } from "../sessions/types.ts";
+import { ScheduleStore } from "../scheduler/store.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -286,5 +287,43 @@ describe("rapid command spam integration", () => {
     expect(existsSync(sessionDir(tmpDir, conv.id))).toBe(true);
     expect(existsSync(join(sessionsDir(tmpDir), "archive", conv.id))).toBe(false);
     expect(runtimeHost.disposed).toContain(conv.id);
+  });
+
+  it("surface heartbeat schedule and prompt survive /new and /archive", async () => {
+    const surface = dmSurface(123456);
+    const scheduleStore = new ScheduleStore(tmpDir);
+
+    // Enable the surface-owned heartbeat and write a surface-scoped prompt.
+    const heartbeat = scheduleStore.setHeartbeat({
+      surface,
+      enabled: true,
+      now: new Date().toISOString(),
+    });
+    const heartbeatPath = surfaceHeartbeatPath(tmpDir, surfaceId(surface));
+    mkdirSync(dirname(heartbeatPath), { recursive: true });
+    writeFileSync(heartbeatPath, "custom surface pulse", "utf-8");
+
+    // /new rotates to a fresh conversation.
+    const newResult = await executeNew({
+      createSession: async () => runtimeSessionFor(await lifecycle.rotate(surface)),
+    });
+    expect(newResult.kind).toBe("created");
+    expect(scheduleStore.getHeartbeat(surface)?.id).toBe(heartbeat.id);
+    expect(scheduleStore.getHeartbeat(surface)?.enabled).toBe(true);
+    expect(existsSync(heartbeatPath)).toBe(true);
+
+    // /archive clears the binding and moves the conversation directory.
+    const conv = lifecycle.inspect(surface);
+    const archiveResult = await executeArchive({
+      hasSession: conv !== null,
+      sessionExists: conv !== null && conversationStore.load(conv.id) !== null,
+      archive: async () => {
+        await lifecycle.archive(surface);
+      },
+    });
+    expect(archiveResult.kind).toBe("archived");
+    expect(scheduleStore.getHeartbeat(surface)?.enabled).toBe(true);
+    expect(existsSync(heartbeatPath)).toBe(true);
+    expect(lifecycle.inspect(surface)).toBeNull();
   });
 });

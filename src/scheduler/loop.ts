@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { log } from "../log.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
-import { heartbeatMdPathForSession } from "../sessions/paths.ts";
+import { surfaceHeartbeatPath } from "../sessions/paths.ts";
 import type { SessionState } from "../sessions/mod.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 
@@ -83,10 +83,10 @@ function readCandidate(path: string): string | null {
 }
 
 /**
- * Resolve the heartbeat prompt body for a given session.
+ * Resolve the heartbeat prompt body for a given Surface.
  *
  * Checks candidates in first-non-empty-wins order:
- * 1. `$GOBLIN_HOME/state/sessions/<sessionId>/HEARTBEAT.md`
+ * 1. `$GOBLIN_HOME/state/surfaces/<SurfaceId>/HEARTBEAT.md`
  * 2. `$GOBLIN_HOME/workspace/HEARTBEAT.md`
  * 3. The system-owned `HEARTBEAT_PROMPT` constant
  *
@@ -106,9 +106,9 @@ function stripLeadingHeartbeat(body: string): string {
   return body.replace(/^\[heartbeat\]\s*/, "");
 }
 
-export function resolveHeartbeatPrompt(home: string, sessionId: string): string {
-  const sessionBody = readCandidate(heartbeatMdPathForSession(home, sessionId));
-  if (sessionBody !== null) return `[heartbeat] ${stripLeadingHeartbeat(sessionBody)}`;
+export function resolveHeartbeatPrompt(home: string, surface: Surface): string {
+  const surfaceBody = readCandidate(surfaceHeartbeatPath(home, surfaceId(surface)));
+  if (surfaceBody !== null) return `[heartbeat] ${stripLeadingHeartbeat(surfaceBody)}`;
   const globalBody = readCandidate(heartbeatMdPath(home));
   if (globalBody !== null) return `[heartbeat] ${stripLeadingHeartbeat(globalBody)}`;
   return HEARTBEAT_PROMPT;
@@ -621,11 +621,11 @@ ${formatted}`;
     if (!claimed) return;
 
     // The prompt text is decided after binding validation: a heartbeat resolves
-    // its body from `$GOBLIN_HOME/state/sessions/<id>/HEARTBEAT.md` (then
-    // global, then constant) using the current bound conversation id; a user
-    // schedule uses its captured prompt.
+    // its body from `$GOBLIN_HOME/state/surfaces/<SurfaceId>/HEARTBEAT.md`
+    // (then global, then constant) using the owning Surface; a user schedule
+    // uses its captured prompt.
     const isHeartbeat = schedule.kind === "heartbeat";
-    const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, peeked.sessionId) : schedule.prompt ?? "";
+    const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.surface) : schedule.prompt ?? "";
 
     // Binding is valid: dispatch the prompt as a fresh turn through the current
     // Conversation runtime. The dispatcher serializes through the per-session

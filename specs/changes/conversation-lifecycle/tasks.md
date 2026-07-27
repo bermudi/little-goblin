@@ -56,11 +56,11 @@
 
 ## Phase 7: Move heartbeat prompts to Surface state
 
-- [ ] Add validated `surfaceHeartbeatPath(home, SurfaceId)` under `state/surfaces/<SurfaceId>/HEARTBEAT.md` and traversal tests.
-- [ ] Resolve Surface-specific, global, then constant heartbeat prompts at dispatch while preserving whitespace, marker, and fail-loud behavior.
-- [ ] Ensure `/new`, `/resume`, `/archive`, and unbinding leave heartbeat record/prompt untouched; unbound due heartbeat remains pending.
-- [ ] Add heartbeat path/loop/command tests for lifecycle survival, fallback, updated file reads, and non-ENOENT errors.
-- [ ] Run heartbeat/session path tests and `bun run typecheck` after Surface-owned heartbeat behavior is implemented.
+- [x] Add validated `surfaceHeartbeatPath(home, SurfaceId)` under `state/surfaces/<SurfaceId>/HEARTBEAT.md` and traversal tests.
+- [x] Resolve Surface-specific, global, then constant heartbeat prompts at dispatch while preserving whitespace, marker, and fail-loud behavior.
+- [x] Ensure `/new`, `/resume`, `/archive`, and unbinding leave heartbeat record/prompt untouched; unbound due heartbeat remains pending.
+- [x] Add heartbeat path/loop/command tests for lifecycle survival, fallback, updated file reads, and non-ENOENT errors.
+- [x] Run heartbeat/session path tests and `bun run typecheck` after Surface-owned heartbeat behavior is implemented.
 
 ## Phase 8: Migrate split ownership
 

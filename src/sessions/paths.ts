@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { parseSurfaceId, surfaceId, type SurfaceId } from "../surface.ts";
 
 /**
  * Pure path utilities for the goblin filesystem layout.
@@ -65,8 +66,21 @@ export function schedulesPath(home: string): string {
 }
 
 /**
+ * Path to a Surface-owned `HEARTBEAT.md` prompt file. The SurfaceId is
+ * validated and canonicalized before it is used as a directory name, so a
+ * non-canonical or traversal-bearing id throws instead of escaping
+ * `$GOBLIN_HOME/state/surfaces/`.
+ */
+export function surfaceHeartbeatPath(home: string, surfaceIdValue: SurfaceId): string {
+  const canonical = surfaceId(parseSurfaceId(surfaceIdValue));
+  return join(home, "state", "surfaces", canonical, "HEARTBEAT.md");
+}
+
+/**
  * Path to a session-scoped `HEARTBEAT.md` prompt file. The id is validated as
  * a safe directory name by the shared `validateSessionId`.
+ * @deprecated Retained for migration reads only; runtime heartbeat resolution
+ * uses `surfaceHeartbeatPath`.
  */
 export function heartbeatMdPathForSession(home: string, id: string): string {
   validateSessionId(id);

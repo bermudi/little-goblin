@@ -10,7 +10,7 @@ import { loadBindings, saveBindings } from "../sessions/bindings.ts";
 import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
-import { heartbeatMdPathForSession } from "../sessions/paths.ts";
+import { surfaceHeartbeatPath } from "../sessions/paths.ts";
 import type { Config } from "../config.ts";
 import type { SessionState } from "../sessions/mod.ts";
 import type { SchedulerClock, SchedulerDispatcher, SchedulerSessionSource } from "./loop.ts";
@@ -591,7 +591,7 @@ describe("SchedulerLoop", () => {
   });
 
   describe("resolveHeartbeatPrompt (HEARTBEAT.md sourcing)", () => {
-    const SESSION_ID = "abc123def0";
+    const SURFACE = dmSurface(100);
 
     function writeGlobalHeartbeat(home: string, content: string): void {
       const path = heartbeatMdPath(home);
@@ -599,49 +599,49 @@ describe("SchedulerLoop", () => {
       writeFileSync(path, content, "utf-8");
     }
 
-    function writeSessionHeartbeat(home: string, sessionId: string, content: string): void {
-      const path = heartbeatMdPathForSession(home, sessionId);
+    function writeSurfaceHeartbeat(home: string, surface: Surface, content: string): void {
+      const path = surfaceHeartbeatPath(home, surfaceId(surface));
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, content, "utf-8");
     }
 
-    it("uses session-scoped HEARTBEAT.md with [heartbeat] prefix when present", () => {
-      writeSessionHeartbeat(tmpDir, SESSION_ID, "Session-scoped check.");
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(
-        "[heartbeat] Session-scoped check.",
+    it("uses surface-scoped HEARTBEAT.md with [heartbeat] prefix when present", () => {
+      writeSurfaceHeartbeat(tmpDir, SURFACE, "Surface-scoped check.");
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE)).toBe(
+        "[heartbeat] Surface-scoped check.",
       );
     });
 
-    it("session-scoped takes precedence over global", () => {
-      writeSessionHeartbeat(tmpDir, SESSION_ID, "session body");
+    it("surface-scoped takes precedence over global", () => {
+      writeSurfaceHeartbeat(tmpDir, SURFACE, "surface body");
       writeGlobalHeartbeat(tmpDir, "global body");
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe("[heartbeat] session body");
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE)).toBe("[heartbeat] surface body");
     });
 
-    it("falls back to global when session-scoped is absent", () => {
+    it("falls back to global when surface-scoped is absent", () => {
       writeGlobalHeartbeat(tmpDir, "Global fallback body.");
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe("[heartbeat] Global fallback body.");
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE)).toBe("[heartbeat] Global fallback body.");
     });
 
-    it("falls back to global when session-scoped is whitespace-only", () => {
-      writeSessionHeartbeat(tmpDir, SESSION_ID, "   \n\t \n");
+    it("falls back to global when surface-scoped is whitespace-only", () => {
+      writeSurfaceHeartbeat(tmpDir, SURFACE, "   \n\t \n");
       writeGlobalHeartbeat(tmpDir, "Global fallback body.");
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe("[heartbeat] Global fallback body.");
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE)).toBe("[heartbeat] Global fallback body.");
     });
 
     it("falls back to the constant when both files are absent", () => {
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(HEARTBEAT_PROMPT);
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID).match(/\[heartbeat\]/g)).toHaveLength(1);
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE)).toBe(HEARTBEAT_PROMPT);
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE).match(/\[heartbeat\]/g)).toHaveLength(1);
     });
 
     it("falls back to the constant when global is empty/whitespace-only", () => {
       writeGlobalHeartbeat(tmpDir, "   \n\t \n");
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(HEARTBEAT_PROMPT);
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE)).toBe(HEARTBEAT_PROMPT);
     });
 
     it("trims trailing whitespace from the file content", () => {
-      writeSessionHeartbeat(tmpDir, SESSION_ID, "Check the build; if red, ping me.\n\n  \n");
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(
+      writeSurfaceHeartbeat(tmpDir, SURFACE, "Check the build; if red, ping me.\n\n  \n");
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE)).toBe(
         "[heartbeat] Check the build; if red, ping me.",
       );
     });
@@ -649,33 +649,39 @@ describe("SchedulerLoop", () => {
     it("preserves leading whitespace in the file content", () => {
       // The user may intend an indented first line; only trailing whitespace
       // is stripped. Spec: "Heartbeat due turn with HEARTBEAT.md present".
-      writeSessionHeartbeat(tmpDir, SESSION_ID, "  \tCheck the build; if red, ping me.  \n");
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(
+      writeSurfaceHeartbeat(tmpDir, SURFACE, "  \tCheck the build; if red, ping me.  \n");
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE)).toBe(
         "[heartbeat]   \tCheck the build; if red, ping me.",
       );
     });
 
     it("strips a leading [heartbeat] marker from file content before prepending its own", () => {
-      writeSessionHeartbeat(tmpDir, SESSION_ID, "[heartbeat] Session-scoped check.");
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID)).toBe(
-        "[heartbeat] Session-scoped check.",
+      writeSurfaceHeartbeat(tmpDir, SURFACE, "[heartbeat] Surface-scoped check.");
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE)).toBe(
+        "[heartbeat] Surface-scoped check.",
       );
-      expect(resolveHeartbeatPrompt(tmpDir, SESSION_ID).match(/\[heartbeat\]/g)).toHaveLength(1);
+      expect(resolveHeartbeatPrompt(tmpDir, SURFACE).match(/\[heartbeat\]/g)).toHaveLength(1);
     });
 
     it("propagates non-ENOENT read errors (does not fall back silently)", () => {
-      // Point the home at a path where state/sessions/<id>/HEARTBEAT.md resolves
-      // under a non-directory ancestor, so readFileSync throws ENOTDIR rather
-      // than ENOENT.
+      // Point the home at a path where state/surfaces/<SurfaceId>/HEARTBEAT.md
+      // resolves under a non-directory ancestor, so readFileSync throws ENOTDIR
+      // rather than ENOENT.
       const blockingFile = join(tmpDir, "blocking");
       writeFileSync(blockingFile, "x", "utf-8");
-      expect(() => resolveHeartbeatPrompt(blockingFile, SESSION_ID)).toThrow();
+      expect(() => resolveHeartbeatPrompt(blockingFile, SURFACE)).toThrow();
     });
   });
 
   describe("heartbeat dispatch sourcing HEARTBEAT.md", () => {
-    function writeHeartbeat(home: string, content: string): void {
+    function writeGlobalHeartbeat(home: string, content: string): void {
       const path = heartbeatMdPath(home);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content, "utf-8");
+    }
+
+    function writeSurfaceHeartbeat(home: string, surface: Surface, content: string): void {
+      const path = surfaceHeartbeatPath(home, surfaceId(surface));
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, content, "utf-8");
     }
@@ -690,10 +696,21 @@ describe("SchedulerLoop", () => {
       return session.id;
     }
 
-    it("dispatches HEARTBEAT.md content with exactly one [heartbeat] marker when the file exists", async () => {
+    it("dispatches surface-scoped HEARTBEAT.md content when present", async () => {
       const loc: Surface = dmSurface(100);
       await enableHeartbeat(loc);
-      writeHeartbeat(tmpDir, "Check the build; if red, ping me.");
+      writeSurfaceHeartbeat(tmpDir, loc, "Surface-specific pulse.");
+
+      await makeLoop().tick();
+
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.content).toBe("[heartbeat] Surface-specific pulse.");
+    });
+
+    it("dispatches global HEARTBEAT.md content with exactly one [heartbeat] marker when surface-scoped is absent", async () => {
+      const loc: Surface = dmSurface(100);
+      await enableHeartbeat(loc);
+      writeGlobalHeartbeat(tmpDir, "Check the build; if red, ping me.");
 
       await makeLoop().tick();
 
@@ -705,10 +722,10 @@ describe("SchedulerLoop", () => {
       expect(dispatcher.calls[0]!.content.match(/\[heartbeat\]/g)).toHaveLength(1);
     });
 
-    it("dispatches the constant fallback when HEARTBEAT.md is absent", async () => {
+    it("dispatches the constant fallback when no HEARTBEAT.md exists", async () => {
       const loc: Surface = dmSurface(100);
       await enableHeartbeat(loc);
-      // No workspace/HEARTBEAT.md in tmpDir.
+      // No workspace or surface HEARTBEAT.md in tmpDir.
 
       await makeLoop().tick();
 
@@ -717,10 +734,10 @@ describe("SchedulerLoop", () => {
       expect(dispatcher.calls[0]!.content.match(/\[heartbeat\]/g)).toHaveLength(1);
     });
 
-    it("dispatches the constant fallback when HEARTBEAT.md is empty/whitespace-only", async () => {
+    it("dispatches the constant fallback when surface-scoped HEARTBEAT.md is empty/whitespace-only", async () => {
       const loc: Surface = dmSurface(100);
       await enableHeartbeat(loc);
-      writeHeartbeat(tmpDir, "   \n\t \n");
+      writeSurfaceHeartbeat(tmpDir, loc, "   \n\t \n");
 
       await makeLoop().tick();
 
@@ -728,17 +745,17 @@ describe("SchedulerLoop", () => {
       expect(dispatcher.calls[0]!.content).toBe(HEARTBEAT_PROMPT);
     });
 
-    it("uses updated HEARTBEAT.md content on the next tick after an edit (no restart)", async () => {
+    it("uses updated surface-scoped HEARTBEAT.md content on the next tick after an edit (no restart)", async () => {
       const loc: Surface = dmSurface(100);
       await enableHeartbeat(loc);
-      writeHeartbeat(tmpDir, "first body");
+      writeSurfaceHeartbeat(tmpDir, loc, "first body");
 
       const loop = makeLoop();
       await loop.tick();
       expect(dispatcher.calls[0]!.content).toBe("[heartbeat] first body");
 
       // Edit the file and re-arm the heartbeat so it is due again.
-      writeHeartbeat(tmpDir, "second body");
+      writeSurfaceHeartbeat(tmpDir, loc, "second body");
       store.setHeartbeat({
         surface: loc,
         enabled: true,
@@ -750,16 +767,48 @@ describe("SchedulerLoop", () => {
       expect(dispatcher.calls).toHaveLength(2);
       expect(dispatcher.calls[1]!.content).toBe("[heartbeat] second body");
     });
+
+    it("surface heartbeat prompt survives a conversation rotation", async () => {
+      const loc: Surface = dmSurface(100);
+      const firstSessionId = await enableHeartbeat(loc);
+      writeSurfaceHeartbeat(tmpDir, loc, "survived rotation");
+
+      await makeLoop().tick();
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.content).toBe("[heartbeat] survived rotation");
+
+      // Rotate the surface to a fresh conversation. The heartbeat schedule is
+      // surface-owned, so the next due occurrence still uses the same prompt.
+      const secondConv = conversationStore.create(personalEnvironment());
+      const bindings = loadBindings(tmpDir);
+      bindings.surfaces[surfaceId(loc)] = secondConv.id;
+      saveBindings(tmpDir, bindings);
+
+      dispatcher.calls.length = 0;
+      store.setHeartbeat({
+        surface: loc,
+        enabled: true,
+        now: new Date(NOW_MS).toISOString(),
+      });
+      clock.advance(31 * 60_000);
+      await makeLoop().tick();
+
+      expect(dispatcher.calls).toHaveLength(1);
+      expect(dispatcher.calls[0]!.content).toBe("[heartbeat] survived rotation");
+      expect(dispatcher.calls[0]!.session.id).toBe(secondConv.id);
+      expect(dispatcher.calls[0]!.session.id).not.toBe(firstSessionId);
+    });
   });
 
   describe("heartbeat read failure isolation", () => {
     it("does not starve other due schedules when HEARTBEAT.md read throws non-ENOENT", async () => {
       // Spec: "Failing schedule does not starve other due schedules". A
       // heartbeat whose HEARTBEAT.md cannot be read (non-ENOENT) throws inside
-      // processOne before claimDue; without per-schedule isolation that throw
-      // would abort the tick and skip every later due schedule. We force the
-      // failure by pointing the loop's `home` at a path where workspace/ resolves
-      // under a non-directory, then assert a co-due one-shot still dispatches.
+      // processOne during prompt resolution; without per-schedule isolation that
+      // throw would abort the tick and skip every later due schedule. We force
+      // the failure by pointing the loop's `home` at a path where
+      // `state/surfaces/<SurfaceId>/HEARTBEAT.md` resolves under a non-directory,
+      // then assert a co-due one-shot still dispatches.
       const heartbeatLoc: Surface = dmSurface(100);
       await createSession(heartbeatLoc);
       const heartbeat = store.setHeartbeat({
@@ -778,8 +827,8 @@ describe("SchedulerLoop", () => {
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
       });
 
-      // Break heartbeatMdPath(home): make `home/workspace/HEARTBEAT.md` resolve
-      // under a non-directory so readFileSync throws ENOTDIR (not ENOENT).
+      // Break surfaceHeartbeatPath(home): make `home/state/surfaces/.../HEARTBEAT.md`
+      // resolve under a non-directory so readFileSync throws ENOTDIR (not ENOENT).
       const blockingFile = join(tmpDir, "blocking");
       writeFileSync(blockingFile, "x", "utf-8");
       const loop = new SchedulerLoop({

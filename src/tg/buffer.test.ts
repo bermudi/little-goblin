@@ -49,6 +49,7 @@ interface MockBot {
   drafts: DraftCall[];
   documents: DocumentCall[];
   chatActions: ChatActionCall[];
+  chatActionOpts: Record<string, unknown>[];
   /** Set to throw the next sendMessage / sendRichMessage / editMessageText / sendDocument. */
   failNext: {
     send?: unknown;
@@ -68,6 +69,7 @@ function makeBot(): MockBot {
   const drafts: DraftCall[] = [];
   const documents: DocumentCall[] = [];
   const chatActions: ChatActionCall[] = [];
+  const chatActionOpts: Record<string, unknown>[] = [];
   const state: MockBot = {
     bot: undefined as unknown as Bot,
     send,
@@ -75,6 +77,7 @@ function makeBot(): MockBot {
     drafts,
     documents,
     chatActions,
+    chatActionOpts,
     failNext: {},
     nextMessageId: 100,
   };
@@ -140,13 +143,14 @@ function makeBot(): MockBot {
         documents.push({ chatId, filename: document.filename, document });
         return { message_id: ++state.nextMessageId };
       },
-      sendChatAction: async (chatId: number | string, action: string) => {
+      sendChatAction: async (chatId: number | string, action: string, opts?: Record<string, unknown>) => {
         if (state.failNext.chatAction !== undefined) {
           const err = state.failNext.chatAction;
           state.failNext.chatAction = undefined;
           throw err;
         }
         chatActions.push({ chatId, action });
+        chatActionOpts.push(opts ?? {});
         return true;
       },
     },
@@ -2597,6 +2601,25 @@ describe("MessageBuffer", () => {
       expect(() => buffer.onTextDelta("hi")).not.toThrow();
       await tick();
       expect(buffer._state().chatActionHandle).toBeDefined();
+    });
+
+    it("sends chat actions to the General topic with message_thread_id 1 while response sends omit it", async () => {
+      const m = makeBot();
+      const sched = fakeScheduler();
+      const buffer = new MessageBuffer(m.bot, topicSurface("supergroup", -1003958530002, 1), {
+        responseThrottleMs: 0,
+        statusThrottleMs: Number.MAX_SAFE_INTEGER,
+        setIntervalFn: sched.setIntervalFn,
+        clearIntervalFn: sched.clearIntervalFn,
+      });
+      buffer.onTextDelta("hello");
+      await tick();
+      expect(m.chatActions.length).toBe(1);
+      expect(m.chatActions[0]!.action).toBe("typing");
+      expect(m.chatActionOpts[0]).toEqual({ message_thread_id: 1 });
+      expect(m.send.length).toBe(1);
+      expect(m.send[0]!.chatId).toBe(-1003958530002);
+      expect(m.send[0]!.opts).toEqual({});
     });
   });
 

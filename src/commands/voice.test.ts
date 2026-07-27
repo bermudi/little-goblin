@@ -160,6 +160,22 @@ describe("executeVoice", () => {
     expect(opts).toEqual({ direct_messages_topic_id: topicId });
   }, 60_000);
 
+  it("omits message_thread_id for a supergroup General topic", async () => {
+    writeTranscript([{ role: "assistant", content: "Hello from goblin." }]);
+    const sendVoice = mock(async () => ({ message_id: 99 }));
+    const result = await executeVoice({
+      home,
+      sessionId,
+      bot: makeBot(sendVoice),
+      surface: topicSurface("supergroup", chatId, 1),
+    });
+    expect(result).toEqual({ kind: "sent" });
+    const call = sendVoice.mock.calls[0];
+    expect(call).toBeDefined();
+    const [, , opts] = call as unknown as [number, InputFile, Record<string, unknown>];
+    expect(opts).toEqual({});
+  }, 60_000);
+
   it("cleans up the temp mp3 after sending", async () => {
     writeTranscript([{ role: "assistant", content: "Short line." }]);
     let capturedPath: string | undefined;

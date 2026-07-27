@@ -130,6 +130,25 @@ describe("surfaceFromCtx", () => {
     });
   });
 
+  it("rejects forum General-topic metadata with a non-General thread id", () => {
+    expect(
+      surfaceFromCtx(
+        makeCtx({
+          chat: { id: -1003958530002, type: "supergroup", is_forum: true },
+          msg: { is_topic_message: false, message_thread_id: 42 },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      surfaceFromCtx(
+        makeCtx({
+          chat: { id: -1003958530002, type: "supergroup", is_forum: true },
+          msg: { message_thread_id: 42 },
+        }),
+      ),
+    ).toBeNull();
+  });
+
   it("does not treat a non-forum supergroup message_thread_id as a topic", () => {
     expect(
       surfaceFromCtx(

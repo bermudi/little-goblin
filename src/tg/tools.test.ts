@@ -431,4 +431,34 @@ describe("tool surface routing", () => {
       expect(mock.document[0]!.other).toEqual({ direct_messages_topic_id: 3 });
     });
   });
+
+  it("omits message_thread_id for a supergroup General topic voice send", async () => {
+    const mock = makeBot();
+    const tool = createSendVoiceTool(mock.bot, topicSurface("supergroup", 123, 1));
+    await withTempFile("voice.ogg", "fake", async (path) => {
+      await tool.execute("call-1", { voiceFile: path, caption: "hi" }, undefined, undefined, {} as never);
+      expect(mock.voice[0]!.chatId).toBe(123);
+      expect(mock.voice[0]!.other).toEqual({ caption: "hi" });
+    });
+  });
+
+  it("omits message_thread_id for a supergroup General topic photo send", async () => {
+    const mock = makeBot();
+    const tool = createSendPhotoTool(mock.bot, topicSurface("supergroup", 456, 1));
+    await withTempFile("img.jpg", "x", async (path) => {
+      await tool.execute("call-1", { photoFile: path, caption: "pic" }, undefined, undefined, {} as never);
+      expect(mock.photo[0]!.chatId).toBe(456);
+      expect(mock.photo[0]!.other).toEqual({ caption: "pic" });
+    });
+  });
+
+  it("omits message_thread_id for a supergroup General topic document send", async () => {
+    const mock = makeBot();
+    const tool = createSendDocumentTool(mock.bot, topicSurface("supergroup", 789, 1));
+    await withTempFile("data.json", "{}", async (path) => {
+      await tool.execute("call-1", { documentFile: path }, undefined, undefined, {} as never);
+      expect(mock.document[0]!.chatId).toBe(789);
+      expect(mock.document[0]!.other).toEqual({});
+    });
+  });
 });

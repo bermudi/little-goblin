@@ -75,6 +75,12 @@ export function surfaceFromCtx(ctx: Context): Surface | null {
     }
     if (chat.type === "supergroup") {
       if (chat.is_direct_messages === true) return null;
+      if (isForumSupergroup && msg?.is_topic_message !== true) {
+        if (topicId === 1) {
+          return trySurface(() => topicSurface("supergroup", chatId, topicId));
+        }
+        return null;
+      }
       return trySurface(() => topicSurface("supergroup", chatId, topicId));
     }
     return null;

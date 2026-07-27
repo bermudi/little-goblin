@@ -1,4 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   dmSurface,
   guestSurface,
@@ -11,10 +14,12 @@ import {
 import { resolveActiveScope, type ActiveScope } from "./scope.ts";
 import {
   assertSurfaceBackedAuthorityInput,
+  captureRuntimeMemoryContext,
   type CapturedMemoryContext,
   type InternalMemoryContext,
   type SurfaceMemoryAuthority,
 } from "./runtime-context.ts";
+import { MemoryStore } from "./store.ts";
 
 /**
  * Build a `SurfaceMemoryAuthority` from a Surface, exercising the same
@@ -162,6 +167,7 @@ describe("runtime memory context — Surface-derived authority", () => {
       // Phase 2. This test pins the structural contract so Phase 2 cannot
       // accidentally drop a field.
       const captured: CapturedMemoryContext = {
+        kind: "surface",
         authority: surfaceAuthority(topicSurface("supergroup", -100123, 42)),
         caller: { kind: "main" },
         frozenSummary: "[goblin memory summary (frozen at session start)] ...",
@@ -184,6 +190,7 @@ describe("runtime memory context — Surface-derived authority", () => {
 
     it("allows a null frozen summary when all eligible sources are empty", () => {
       const captured: CapturedMemoryContext = {
+        kind: "surface",
         authority: surfaceAuthority(dmSurface(123)),
         caller: { kind: "main" },
         frozenSummary: null,
@@ -198,6 +205,7 @@ describe("runtime memory context — Surface-derived authority", () => {
       // A named-subagent capture carries the persona name on `caller`, while
       // `authority.activeScope` carries only routing facts.
       const captured: CapturedMemoryContext = {
+        kind: "surface",
         authority: surfaceAuthority(topicSurface("supergroup", -100123, 42)),
         caller: { kind: "named-subagent", name: "researcher" },
         frozenSummary: null,
@@ -206,6 +214,112 @@ describe("runtime memory context — Surface-derived authority", () => {
       };
       expect(captured.caller).toEqual({ kind: "named-subagent", name: "researcher" });
       expect("namedAgent" in captured.authority.activeScope).toBe(false);
+    });
+  });
+
+  describe("captureRuntimeMemoryContext", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), "goblin-rt-ctx-"));
+    });
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("captures a complete immutable context from a DM Surface", async () => {
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add("general", "goblin lives in telegram");
+        await store.add("user", "user prefers concise replies");
+        const captured = await captureRuntimeMemoryContext({
+          surface: dmSurface(123),
+          caller: { kind: "main" },
+          store,
+        });
+        expect(captured.kind).toBe("surface");
+        expect(captured.authority.kind).toBe("surface");
+        expect(captured.authority.sourceSurfaceId).toBe(surfaceId(dmSurface(123)));
+        expect(captured.authority.activeScope).toEqual({ chatId: 123, topicScope: "general" });
+        expect(captured.caller).toEqual({ kind: "main" });
+        expect(captured.frozenSummary).not.toBeNull();
+        expect(captured.frozenSummary).toContain("goblin lives in telegram");
+        expect(captured.frozenUserBody).toContain("user prefers concise replies");
+        expect(captured.frozenActiveMemoryBody).toContain("goblin lives in telegram");
+      } finally {
+        store.close();
+      }
+    });
+
+    it("freezes the summary and dedup bodies — post-capture writes do not alter the capture", async () => {
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add("general", "original fact");
+        const captured = await captureRuntimeMemoryContext({
+          surface: dmSurface(123),
+          caller: { kind: "main" },
+          store,
+        });
+        // Write after capture — the frozen summary and dedup bodies must not
+        // change.
+        await store.add("general", "post-capture fact");
+        expect(captured.frozenSummary).toContain("original fact");
+        expect(captured.frozenSummary).not.toContain("post-capture fact");
+        expect(captured.frozenActiveMemoryBody).toContain("original fact");
+        expect(captured.frozenActiveMemoryBody).not.toContain("post-capture fact");
+      } finally {
+        store.close();
+      }
+    });
+
+    it("returns a null frozen summary when all eligible sources are empty", async () => {
+      const store = new MemoryStore(tmpDir);
+      try {
+        const captured = await captureRuntimeMemoryContext({
+          surface: dmSurface(123),
+          caller: { kind: "main" },
+          store,
+        });
+        expect(captured.frozenSummary).toBeNull();
+        expect(captured.frozenUserBody).toBe("");
+        expect(captured.frozenActiveMemoryBody).toBe("");
+      } finally {
+        store.close();
+      }
+    });
+
+    it("rejects a zero-chat Surface as Telegram identity", async () => {
+      const store = new MemoryStore(tmpDir);
+      try {
+        await expect(
+          captureRuntimeMemoryContext({
+            surface: { kind: "dm", chatId: 0 } as Surface,
+            caller: { kind: "main" },
+            store,
+          }),
+        ).rejects.toThrow(/zero-chat Surface/);
+      } finally {
+        store.close();
+      }
+    });
+
+    it("captures a topic-bound surface with the correct active scope", async () => {
+      const store = new MemoryStore(tmpDir);
+      try {
+        await store.add({ topic: { chatId: -100, topicId: 42 } }, "topic fact");
+        const captured = await captureRuntimeMemoryContext({
+          surface: topicSurface("supergroup", -100, 42),
+          caller: { kind: "main" },
+          store,
+        });
+        expect(captured.authority.activeScope).toEqual({
+          chatId: -100,
+          topicScope: { topicId: 42 },
+        });
+        expect(captured.frozenActiveMemoryBody).toContain("topic fact");
+      } finally {
+        store.close();
+      }
     });
   });
 });

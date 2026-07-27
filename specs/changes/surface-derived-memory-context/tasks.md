@@ -11,12 +11,12 @@
 
 ## Phase 2: Capture memory before runtime registration
 
-- [ ] Implement `captureRuntimeMemoryContext` so source SurfaceId, ActiveScope, caller, frozen summary, and deduplication bodies are complete before it resolves.
-- [ ] Refactor snapshot formatting to consume immutable capture inputs and prove post-capture memory writes cannot alter frozen summary text or deduplication bodies.
-- [ ] Require `CapturedMemoryContext` in `AgentRunnerOptions`; remove locator, binding, and raw memory-policy inputs from summary, relevant-memory, and tool construction.
-- [ ] Make dispatcher runtime creation await capture, deduplicate concurrent creation with one in-flight promise per compatibility runtime identity, and register only completed runners.
-- [ ] Recheck the current runtime/binding generation after capture so stale or failed captures cannot become current; update all affected callers to await creation.
-- [ ] Add capture-timing, lazy-init, concurrent-create, failure, stale-guard, and replacement-runtime tests; run focused snapshot/agent/dispatcher tests and `bun run typecheck`.
+- [x] Implement `captureRuntimeMemoryContext` so source SurfaceId, ActiveScope, caller, frozen summary, and deduplication bodies are complete before it resolves.
+- [x] Refactor snapshot formatting to consume immutable capture inputs and prove post-capture memory writes cannot alter frozen summary text or deduplication bodies.
+- [x] Require `CapturedMemoryContext` in `AgentRunnerOptions`; remove locator, binding, and raw memory-policy inputs from summary, relevant-memory, and tool construction.
+- [x] Make dispatcher runtime creation await capture, deduplicate concurrent creation with one in-flight promise per compatibility runtime identity, and register only completed runners.
+- [x] Recheck the current runtime/binding generation after capture so stale or failed captures cannot become current; update all affected callers to await creation.
+- [x] Add capture-timing, lazy-init, concurrent-create, failure, stale-guard, and replacement-runtime tests; run focused snapshot/agent/dispatcher tests and `bun run typecheck`.
 
 ## Phase 3: Enforce captured search and tool boundaries
 

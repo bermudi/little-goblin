@@ -39,9 +39,12 @@ export {
 } from "./context.ts";
 export {
   assertSurfaceBackedAuthorityInput,
+  captureRuntimeMemoryContext,
+  type CaptureRuntimeMemoryContextArgs,
   type CapturedMemoryContext,
   type InternalMemoryContext,
   type SurfaceMemoryAuthority,
+  type SurfaceMemoryCaller,
 } from "./runtime-context.ts";
 export { MemoryDatabase } from "./db.ts";
 export { MEMORY_SCHEMA_VERSION } from "./schema.ts";

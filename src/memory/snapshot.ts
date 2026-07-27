@@ -1,5 +1,6 @@
 import { MemoryStore } from "./store.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
+import type { ParsedMemory } from "./store.ts";
 import { activeMemoryScopeFor, scopeTag } from "./scope.ts";
 import type { ActiveScope } from "./scope.ts";
 import {
@@ -76,6 +77,20 @@ export interface FormatSnapshotArgs {
    * relevant memory dedups against this body instead of the current store state.
    */
   frozenActiveMemoryBody?: string;
+  /**
+   * Pre-captured active-scope entry (body + description). When supplied to
+   * `formatFrozenSummary`, the formatter uses this entry instead of rereading
+   * the store for the active body and description. This ensures the frozen
+   * summary text and the deduplication bodies come from the same store read —
+   * post-capture writes cannot alter the summary.
+   */
+  frozenActiveEntry?: ParsedMemory;
+  /**
+   * Pre-captured user entry (body + description). When supplied to
+   * `formatFrozenSummary`, the formatter uses this entry instead of rereading
+   * the store for the user body.
+   */
+  frozenUserEntry?: ParsedMemory;
 }
 
 /**
@@ -150,8 +165,11 @@ export async function formatFrozenSummary(
   args: Omit<FormatSnapshotArgs, "promptText" | "relevantLimit">,
 ): Promise<string | null> {
   const activeMemoryScope = activeMemoryScopeFor(args.activeScope);
-  const active = args.store.read(activeMemoryScope);
-  const user = args.store.read("user");
+  // Use pre-captured entries when supplied so the frozen summary text and the
+  // deduplication bodies come from the same store read. Post-capture writes
+  // cannot alter the summary.
+  const active = args.frozenActiveEntry ?? args.store.read(activeMemoryScope);
+  const user = args.frozenUserEntry ?? args.store.read("user");
 
   const activeBodyRaw = stripBodyMetadata(active.body);
   const userBodyRaw = stripBodyMetadata(user.body);

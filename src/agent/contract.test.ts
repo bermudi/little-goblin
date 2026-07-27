@@ -16,6 +16,8 @@ import { soulMdPath, workspacePath } from "../workspace/paths.ts";
 import { piAgentDir } from "../pi-host.ts";
 import { IncompatiblePiHistoryError, MalformedPiHistoryError } from "../pi-host.ts";
 import { personalEnvironment, projectEnvironment } from "../sessions/environment.ts";
+import { MemoryStore } from "../memory/store.ts";
+import { captureRuntimeMemoryContext } from "../memory/mod.ts";
 
 function makeConfig(home: string): Config {
   return {
@@ -33,6 +35,20 @@ function makeConfig(home: string): Config {
     voiceName: "en-US-AriaNeural",
     favorites: [],
   };
+}
+
+/** Build a captured memory context for the contract tests. */
+async function makeMemoryContext(home: string, surface = dmSurface(1)) {
+  const store = new MemoryStore(home);
+  try {
+    return await captureRuntimeMemoryContext({
+      surface,
+      caller: { kind: "main" },
+      store,
+    });
+  } finally {
+    store.close();
+  }
 }
 
 describe("AgentRunner pi-ai contract", () => {
@@ -71,10 +87,12 @@ describe("AgentRunner pi-ai contract", () => {
 
   it("streams a response through the real SDK using the faux provider", async () => {
     const model = faux.getModel() as Model<Api>;
+    const memoryContext = await makeMemoryContext(tmpDir);
     const runner = new AgentRunner({
       cfg: makeConfig(tmpDir),
       sessionId: "abcdef1234",
       surface: dmSurface(1),
+      memoryContext,
       customTools: [],
       executionEnvironment: personalEnvironment(),
       resolvedModel: { model, apiKey: "fake-key", thinkingLevel: "medium" },
@@ -120,10 +138,12 @@ describe("AgentRunner pi-ai contract", () => {
       "utf-8",
     );
 
+    const memoryContext = await makeMemoryContext(tmpDir);
     const runner = new AgentRunner({
       cfg: makeConfig(tmpDir),
       sessionId,
       surface: dmSurface(1),
+      memoryContext,
       customTools: [],
       executionEnvironment: personalEnvironment(),
       resolvedModel: { model, apiKey: "fake-key", thinkingLevel: "medium" },
@@ -170,10 +190,12 @@ describe("AgentRunner pi-ai contract", () => {
       "utf-8",
     );
 
+    const memoryContext = await makeMemoryContext(tmpDir);
     const runner = new AgentRunner({
       cfg: makeConfig(tmpDir),
       sessionId,
       surface: dmSurface(1),
+      memoryContext,
       customTools: [],
       executionEnvironment: projectEnvironment(projectRoot),
       resolvedModel: { model, apiKey: "fake-key", thinkingLevel: "medium" },
@@ -205,10 +227,12 @@ describe("AgentRunner pi-ai contract", () => {
     const historyFile = join(piDir, "2026-01-01T00-00-00-000Z_bad.jsonl");
     writeFileSync(historyFile, "not valid json\n", "utf-8");
 
+    const memoryContext = await makeMemoryContext(tmpDir);
     const runner = new AgentRunner({
       cfg: makeConfig(tmpDir),
       sessionId,
       surface: dmSurface(1),
+      memoryContext,
       customTools: [],
       executionEnvironment: personalEnvironment(),
       resolvedModel: { model, apiKey: "fake-key", thinkingLevel: "medium" },

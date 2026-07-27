@@ -271,6 +271,7 @@ import type { Config } from "../config.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { dmSurface, topicSurface, type Surface } from "../surface.ts";
 import { MemoryStore } from "../memory/store.ts";
+import { captureRuntimeMemoryContext } from "../memory/mod.ts";
 import {
   DreamingPipeline,
   type CandidateExtractor,
@@ -311,7 +312,7 @@ function nopCallbacks(): TurnCallbacks {
   };
 }
 
-function makeRunner(
+async function makeRunner(
   home: string,
   customTools: unknown[] = [],
   surface: Surface = dmSurface(123),
@@ -322,10 +323,19 @@ function makeRunner(
   thinkingLevel?: string,
   dreamingPipeline?: DreamingPipeline,
 ) {
+  const store = new MemoryStore(home);
+  const memoryContext = await captureRuntimeMemoryContext({
+    surface,
+    caller: { kind: "main" },
+    store,
+    getTopicName,
+  });
+  store.close();
   return new AgentRunner({
     cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }), ...configOverrides },
     sessionId: "abcdef1234",
     surface,
+    memoryContext,
     customTools: customTools as never,
     getTopicName,
     executionEnvironment: executionEnvironment ?? personalEnvironment(),
@@ -333,6 +343,20 @@ function makeRunner(
     dreamingPipeline,
     backendFactory: (opts) => new FakeAgentBackend(opts),
   });
+}
+
+/** Build a captured memory context for tests that construct AgentRunner directly. */
+async function makeMemoryContext(home: string, surface: Surface = dmSurface(123)) {
+  const store = new MemoryStore(home);
+  try {
+    return await captureRuntimeMemoryContext({
+      surface,
+      caller: { kind: "main" },
+      store,
+    });
+  } finally {
+    store.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +392,7 @@ afterEach(() => {
 describe("AgentRunner", () => {
   describe("pi session persistence", () => {
     it("uses a persisted pi session directory scoped to the goblin session", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -379,7 +403,7 @@ describe("AgentRunner", () => {
     });
 
     it("creates a fresh session when no prior pi session file exists", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
       const methods = sessionManagerCalls.map((c) => c.method);
@@ -398,7 +422,7 @@ describe("AgentRunner", () => {
         "utf-8",
       );
 
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, {}, projectEnvironment(projectRoot));
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, {}, projectEnvironment(projectRoot));
       await runner.prompt("hello", nopCallbacks());
 
       const methods = sessionManagerCalls.map((c) => c.method);
@@ -413,7 +437,7 @@ describe("AgentRunner", () => {
 
   describe("memory tool registration", () => {
     it("appends the two memory tools to customTools when none are supplied", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -427,7 +451,7 @@ describe("AgentRunner", () => {
     it("preserves caller-supplied tools and appends memory after them", async () => {
       const t1 = { name: "t1" };
       const t2 = { name: "t2" };
-      const runner = makeRunner(tmpDir, [t1, t2]);
+      const runner = await makeRunner(tmpDir, [t1, t2]);
       await runner.prompt("hello", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -437,7 +461,7 @@ describe("AgentRunner", () => {
     });
 
     it("registers memory_search before memory_write", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -450,7 +474,7 @@ describe("AgentRunner", () => {
     });
 
     it("topic-bound memory_write targets the runner's active topic scope", async () => {
-      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
+      const runner = await makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("hello", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -482,7 +506,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
+      const runner = await makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("hello", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -514,7 +538,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
+      const runner = await makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("hello", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -537,7 +561,7 @@ describe("AgentRunner", () => {
 
   describe("per-turn memory aside", () => {
     it("does NOT call sendCustomMessage when no relevant memory matches", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
       expect(sessionHolder.sendCustomMessage).not.toHaveBeenCalled();
     });
@@ -553,7 +577,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
+      const runner = await makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("tell me about backups", nopCallbacks());
 
       expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
@@ -574,7 +598,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello world", nopCallbacks());
 
       expect(sessionHolder.sendCustomMessage).not.toHaveBeenCalled();
@@ -588,7 +612,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
+      const runner = await makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("backups", nopCallbacks());
 
       expect(sessionHolder.callOrder).toEqual([
@@ -605,7 +629,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
+      const runner = await makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       // Start a turn while idle — this injects the relevant-memory aside.
       await runner.prompt("backups", nopCallbacks());
       const snapshotCallsBefore = sessionHolder.sendCustomMessage.mock.calls.length;
@@ -626,7 +650,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
+      const runner = await makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42));
       await runner.prompt("backups", nopCallbacks());
       const callsBefore = sessionHolder.sendCustomMessage.mock.calls.length;
 
@@ -640,18 +664,18 @@ describe("AgentRunner", () => {
 
   describe("lazy pi creation", () => {
     it("does not call createAgentSession before prompt()", async () => {
-      makeRunner(tmpDir);
+      await makeRunner(tmpDir);
       expect(capturedCreateArgs).toHaveLength(0);
     });
 
     it("calls createAgentSession on first prompt()", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
       expect(capturedCreateArgs).toHaveLength(1);
     });
 
     it("does not call createAgentSession again on second prompt()", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
       await runner.prompt("second", nopCallbacks());
       expect(capturedCreateArgs).toHaveLength(1);
@@ -667,7 +691,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
       expect(capturedCreateArgs).toHaveLength(1);
 
@@ -701,7 +725,7 @@ describe("AgentRunner", () => {
     });
 
     it("passes thinkingLevel to createAgentSession on init", async () => {
-      const runner = makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, "high");
+      const runner = await makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, "high");
       await runner.prompt("hello", nopCallbacks());
 
       expect(capturedCreateArgs).toHaveLength(1);
@@ -710,7 +734,7 @@ describe("AgentRunner", () => {
     });
 
     it("clears pending thinkingLevel after init so prompt() does not double-apply", async () => {
-      const runner = makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, "high");
+      const runner = await makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, "high");
       await runner.prompt("hello", nopCallbacks());
 
       // setThinkingLevel should NOT have been called on the session because
@@ -719,7 +743,7 @@ describe("AgentRunner", () => {
     });
 
     it("applies setThinkingLevel immediately when session is live", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
 
       runner.setThinkingLevel("low");
@@ -727,7 +751,7 @@ describe("AgentRunner", () => {
     });
 
     it("stores a pending override when setThinkingLevel is called before init", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       runner.setThinkingLevel("xhigh");
 
       await runner.prompt("hello", nopCallbacks());
@@ -741,7 +765,7 @@ describe("AgentRunner", () => {
     });
 
     it("clearing thinkingLevel resets to model default on a live session", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
       runner.setThinkingLevel(undefined);
@@ -757,7 +781,7 @@ describe("AgentRunner", () => {
     });
 
     it("delegates to session.setModel() on an initialized runner", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
 
       await runner.setModel("poe/GPT-4o");
@@ -766,7 +790,7 @@ describe("AgentRunner", () => {
     });
 
     it("does not recreate the session when switching models", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
       expect(capturedCreateArgs).toHaveLength(1);
 
@@ -776,7 +800,7 @@ describe("AgentRunner", () => {
     });
 
     it("records the override and defers to init when called before first prompt", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.setModel("poe/GPT-4o");
       // Not initialized yet → setModel should NOT have been called on a session.
       expect(sessionHolder.setModel).not.toHaveBeenCalled();
@@ -791,7 +815,7 @@ describe("AgentRunner", () => {
 
   describe("cwd and piAgentDir paths passed to pi", () => {
     it("passes workspacePath as cwd for a personal environment", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -799,7 +823,7 @@ describe("AgentRunner", () => {
     });
 
     it("passes piAgentDir as agentDir", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -809,7 +833,7 @@ describe("AgentRunner", () => {
 
   describe("skillSources resource loader modes", () => {
     it("goblin-only passes noSkills true to the resource loader", async () => {
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, { skillSources: "goblin-only" });
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, { skillSources: "goblin-only" });
       await runner.prompt("hi", nopCallbacks());
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
@@ -820,7 +844,7 @@ describe("AgentRunner", () => {
     });
 
     it("user omits noSkills from the resource loader constructor", async () => {
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, { skillSources: "user" });
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, { skillSources: "user" });
       await runner.prompt("hi", nopCallbacks());
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
@@ -834,7 +858,7 @@ describe("AgentRunner", () => {
   describe("Goblin system prompt resource loader", () => {
     it("passes the constructed system prompt through the resource loader", async () => {
       writeFileSync(agentsMdPath(tmpDir), "deployment operating rules\n", "utf-8");
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
@@ -849,7 +873,7 @@ describe("AgentRunner", () => {
       mkdirSync(projectDir);
       writeFileSync(join(projectDir, "AGENTS.md"), "exact project guidance\n", "utf-8");
 
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, {}, projectEnvironment(projectDir));
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, {}, projectEnvironment(projectDir));
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -868,7 +892,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
@@ -882,14 +906,14 @@ describe("AgentRunner", () => {
 
   describe("followUp when isStreaming", () => {
     it("calls sendUserMessage when not streaming", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hello", nopCallbacks());
       expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("hello");
       expect(sessionHolder.followUp).not.toHaveBeenCalled();
     });
 
     it("calls followUp when isStreaming is true", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
       await runner.followUp("interrupt");
@@ -903,7 +927,7 @@ describe("AgentRunner", () => {
 
     it("steers while streaming without resetting callbacks or injecting a snapshot", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("first", cb);
       sessionHolder.streaming = true;
 
@@ -916,7 +940,7 @@ describe("AgentRunner", () => {
     });
 
     it("throws when not streaming", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
 
       await expect(runner.followUp("redirect")).rejects.toThrow("Cannot steer: session is not streaming.");
@@ -924,14 +948,14 @@ describe("AgentRunner", () => {
     });
 
     it("throws when session not yet initialized", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
 
       await expect(runner.followUp("redirect")).rejects.toThrow("session not initialized");
       expect(sessionHolder.followUp).not.toHaveBeenCalled();
     });
 
     it("throws ModelNotCapableError for image content on an image-incapable model", async () => {
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "zai/glm-4.5", { zaiApiKey: "test-key" });
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "zai/glm-4.5", { zaiApiKey: "test-key" });
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
 
@@ -940,7 +964,7 @@ describe("AgentRunner", () => {
     });
 
     it("unpacks multimodal content into session.followUp(text, images) on an image-capable model", async () => {
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
 
@@ -955,7 +979,7 @@ describe("AgentRunner", () => {
 
     it("prompt() throws while streaming instead of clobbering in-flight state", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("first", cb);
       sessionHolder.streaming = true;
 
@@ -970,7 +994,7 @@ describe("AgentRunner", () => {
     // start a new turn on the broken session. The user-facing reply
     // happens at the intake layer; the runner just throws.
     it("prompt() rejects after markAbortTimedOut even though pi is still streaming", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
       // pi is still mid-stream, but the abort cascade timed out.
       sessionHolder.streaming = true;
@@ -987,7 +1011,7 @@ describe("AgentRunner", () => {
     });
 
     it("followUp() rejects after markAbortTimedOut even though pi is still streaming", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
       runner.markAbortTimedOut();
@@ -1003,7 +1027,7 @@ describe("AgentRunner", () => {
     const image: ImageContent = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
 
     it("adds default text before image-only messages for Poe chat completions", async () => {
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
       await runner.prompt([image], nopCallbacks());
 
       expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith([
@@ -1014,7 +1038,7 @@ describe("AgentRunner", () => {
 
     it("does not rewrite captioned Poe chat completion image messages", async () => {
       const content: (TextContent | ImageContent)[] = [{ type: "text", text: "caption" }, image];
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
       await runner.prompt(content, nopCallbacks());
 
       expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith(content);
@@ -1022,14 +1046,14 @@ describe("AgentRunner", () => {
 
     it("does not rewrite image-only messages for non-Poe models", async () => {
       const content: ImageContent[] = [image];
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "openai/gpt-5.4");
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "openai/gpt-5.4");
       await runner.prompt(content, nopCallbacks());
 
       expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith(content);
     });
 
     it("uses the default text for Poe chat completion image follow-ups", async () => {
-      const runner = makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
       await runner.prompt("hi", nopCallbacks());
       sessionHolder.streaming = true;
       await runner.followUp([image]);
@@ -1041,7 +1065,7 @@ describe("AgentRunner", () => {
   describe("event → callback dispatch", () => {
     it("fires onStatusUpdate(\"thinking...\") on agent_start", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({ type: "agent_start" });
@@ -1050,7 +1074,7 @@ describe("AgentRunner", () => {
 
     it("fires onAgentEnd on agent_end", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({ type: "agent_end", messages: [] });
@@ -1059,7 +1083,7 @@ describe("AgentRunner", () => {
 
     it("fires onTextDelta for message_update text_delta", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({
@@ -1079,7 +1103,7 @@ describe("AgentRunner", () => {
 
     it("fires onToolStart on tool_execution_start", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({
@@ -1094,7 +1118,7 @@ describe("AgentRunner", () => {
 
     it("fires onToolEnd on tool_execution_end", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({
@@ -1110,7 +1134,7 @@ describe("AgentRunner", () => {
 
     it("posts a bounded sendNotice when a write tool modifies a reserved prompt file", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({
@@ -1135,7 +1159,7 @@ describe("AgentRunner", () => {
 
     it("posts a sendNotice for an edit tool on a reserved prompt file", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({
@@ -1160,7 +1184,7 @@ describe("AgentRunner", () => {
 
     it("does not post a notice for writes outside the reserved prompt files", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({
@@ -1182,7 +1206,7 @@ describe("AgentRunner", () => {
 
     it("does not post a notice when a reserved prompt-file write errors", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({
@@ -1204,7 +1228,7 @@ describe("AgentRunner", () => {
 
     it("posts a sendNotice for a session-scoped HEARTBEAT.md write", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       const sessionHeartbeat = heartbeatMdPathForSession(tmpDir, "abcdef1234");
@@ -1232,7 +1256,7 @@ describe("AgentRunner", () => {
   describe("message_end reconciliation", () => {
     it("emits correcting delta when streamed text is a truncated prefix of final text", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       // Stream a truncated prefix — the last delta was lost upstream.
@@ -1260,7 +1284,7 @@ describe("AgentRunner", () => {
 
     it("does not emit correcting delta when streamed text matches final text", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({
@@ -1284,7 +1308,7 @@ describe("AgentRunner", () => {
 
     it("does not emit correcting delta when deltas diverged from final text (corruption)", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       // Deltas delivered different text than the final message — not truncation.
@@ -1309,7 +1333,7 @@ describe("AgentRunner", () => {
 
     it("resets accumulated text after each assistant message_end (multi-message turn)", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       // First assistant message: complete text, no truncation.
@@ -1357,7 +1381,7 @@ describe("AgentRunner", () => {
 
     it("ignores message_end on non-assistant messages", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({
@@ -1383,7 +1407,7 @@ describe("AgentRunner", () => {
 
     it("handles multiple text blocks in final message content", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({
@@ -1414,7 +1438,7 @@ describe("AgentRunner", () => {
   describe("transcript.jsonl", () => {
     it("appends final message entries for message_end events only", async () => {
       const cb = nopCallbacks();
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
 
       sessionHolder.emit({ type: "agent_start" });
@@ -1455,12 +1479,12 @@ describe("AgentRunner", () => {
 
   describe("abort()", () => {
     it("resolves after idle (no session yet)", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await expect(runner.abort()).resolves.toBeUndefined();
     });
 
     it("calls session.abort() after session is created", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
       await runner.abort();
       expect(sessionHolder.abort).toHaveBeenCalled();
@@ -1469,7 +1493,7 @@ describe("AgentRunner", () => {
 
   describe("compact()", () => {
     it("initializes lazily and delegates to session.compact()", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       const result = await runner.compact("focus on schema decisions");
 
       expect(capturedCreateArgs).toHaveLength(1);
@@ -1482,7 +1506,7 @@ describe("AgentRunner", () => {
     });
 
     it("rejects when the prior abort timed out", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
       runner.markAbortTimedOut();
 
@@ -1491,7 +1515,7 @@ describe("AgentRunner", () => {
     });
 
     it("rejects while the session is streaming", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
       sessionHolder.streaming = true;
 
@@ -1519,7 +1543,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42), getTopicName);
+      const runner = await makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42), getTopicName);
 
       // First prompt - should call getTopicName for peer topics
       await runner.prompt("first", nopCallbacks());
@@ -1548,7 +1572,7 @@ describe("AgentRunner", () => {
         store.close();
       }
 
-      const runner = makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42), getTopicName);
+      const runner = await makeRunner(tmpDir, [], topicSurface("supergroup", -100, 42), getTopicName);
 
       await runner.prompt("first", nopCallbacks());
       const callsAfterFirst = callCount;
@@ -1562,10 +1586,18 @@ describe("AgentRunner", () => {
   describe("spawn_subagent tool registration", () => {
     it("includes spawn_subagent tool when subagentRunner is provided", async () => {
       const subRunner = new SubagentRunner(makeConfig(tmpDir));
+      const store = new MemoryStore(tmpDir);
+      const memoryContext = await captureRuntimeMemoryContext({
+        surface: dmSurface(123),
+        caller: { kind: "main" },
+        store,
+      });
+      store.close();
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
         surface: dmSurface(123),
+        memoryContext,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         subagentRunner: subRunner,
@@ -1582,7 +1614,7 @@ describe("AgentRunner", () => {
     });
 
     it("does not include spawn_subagent tool when subagentRunner is absent", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -1595,10 +1627,18 @@ describe("AgentRunner", () => {
 
     it("wires onStatusUpdate through to the tool so subagent events reach the turn callbacks", async () => {
       const subRunner = new SubagentRunner(makeConfig(tmpDir));
+      const store = new MemoryStore(tmpDir);
+      const memoryContext = await captureRuntimeMemoryContext({
+        surface: dmSurface(123),
+        caller: { kind: "main" },
+        store,
+      });
+      store.close();
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
         surface: dmSurface(123),
+        memoryContext,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         subagentRunner: subRunner,
@@ -1626,10 +1666,18 @@ describe("AgentRunner", () => {
   describe("schedule_turn tool registration", () => {
     it("registers schedule_turn when scheduleStore is provided", async () => {
       const scheduleStore = new ScheduleStore(tmpDir);
+      const store = new MemoryStore(tmpDir);
+      const memoryContext = await captureRuntimeMemoryContext({
+        surface: dmSurface(123),
+        caller: { kind: "main" },
+        store,
+      });
+      store.close();
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
         surface: dmSurface(123),
+        memoryContext,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         scheduleStore,
@@ -1644,7 +1692,7 @@ describe("AgentRunner", () => {
     });
 
     it("does not register schedule_turn when scheduleStore is absent", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const opts = capturedCreateArgs[0] as Record<string, unknown>;
@@ -1684,7 +1732,7 @@ describe("AgentRunner", () => {
       dreaming.advanceCursor = advanceSpy as never;
       dreaming.runLightSleep = runSpy as never;
 
-      const runner = makeRunner(
+      const runner = await makeRunner(
         tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
       );
       await runner.prompt("hello", nopCallbacks());
@@ -1705,7 +1753,7 @@ describe("AgentRunner", () => {
       dreaming.advanceCursor = advanceSpy as never;
       dreaming.runLightSleep = runSpy as never;
 
-      const runner = makeRunner(
+      const runner = await makeRunner(
         tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
       );
       await runner.prompt("first", nopCallbacks());
@@ -1720,7 +1768,7 @@ describe("AgentRunner", () => {
     it("does not persist a dreaming cursor file on agent_end (cursor owned by light sleep)", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
 
-      const runner = makeRunner(
+      const runner = await makeRunner(
         tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
       );
       await runner.prompt("hello", nopCallbacks());
@@ -1757,10 +1805,12 @@ describe("AgentRunner", () => {
         },
       };
       const externalAgentRunner = new ExternalAgentRunner(extCfg);
+      const memoryContext = await makeMemoryContext(tmpDir);
       const runner = new AgentRunner({
         cfg: extCfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
+        memoryContext,
         customTools: [],
         executionEnvironment: projectEnvironment(tmpDir),
         externalAgentRunner,
@@ -1786,10 +1836,12 @@ describe("AgentRunner", () => {
         },
       };
       const externalAgentRunner = new ExternalAgentRunner(extCfg);
+      const memoryContext = await makeMemoryContext(tmpDir);
       const runner = new AgentRunner({
         cfg: extCfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
+        memoryContext,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         externalAgentRunner,
@@ -1814,10 +1866,12 @@ describe("AgentRunner", () => {
           ptyFallback: false,
         },
       };
+      const memoryContext = await makeMemoryContext(tmpDir);
       const runner = new AgentRunner({
         cfg: extCfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
+        memoryContext,
         customTools: [],
         executionEnvironment: projectEnvironment(tmpDir),
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -1852,10 +1906,12 @@ describe("AgentRunner", () => {
           maxResultChars: 16_000,
         },
       };
+      const memoryContext = await makeMemoryContext(tmpDir);
       const runner = new AgentRunner({
         cfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
+        memoryContext,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),
@@ -1880,10 +1936,12 @@ describe("AgentRunner", () => {
           maxResultChars: 16_000,
         },
       };
+      const memoryContext = await makeMemoryContext(tmpDir);
       const runner = new AgentRunner({
         cfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
+        memoryContext,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):"),
@@ -1911,10 +1969,12 @@ describe("AgentRunner", () => {
           maxResultChars: 16_000,
         },
       };
+      const memoryContext = await makeMemoryContext(tmpDir);
       const runner = new AgentRunner({
         cfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
+        memoryContext,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -1929,10 +1989,12 @@ describe("AgentRunner", () => {
     });
 
     it("does not register mcp_call or mcp_describe when cfg.mcp is undefined", async () => {
+      const memoryContext = await makeMemoryContext(tmpDir);
       const runner = new AgentRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
         surface: dmSurface(123),
+        memoryContext,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),
@@ -1950,7 +2012,7 @@ describe("AgentRunner", () => {
 
   describe("metrics", () => {
     it("records a turn event with tool counts on assistant turn_end", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const assistantMessage = {
@@ -1991,7 +2053,7 @@ describe("AgentRunner", () => {
     });
 
     it("increments toolErrorCount when tool_execution_end reports isError: true", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const assistantMessage = {
@@ -2022,8 +2084,8 @@ describe("AgentRunner", () => {
       expect(summary.lastTurn!.toolErrorCount).toBe(1);
     });
 
-    it("exposes the metrics store before the first prompt", () => {
-      const runner = makeRunner(tmpDir);
+    it("exposes the metrics store before the first prompt", async () => {
+      const runner = await makeRunner(tmpDir);
       expect(runner.metrics).toBeDefined();
       runner.metrics.incrementCounter("manual", "session");
       const summary = readMetricsSummary(tmpDir, "abcdef1234")!;
@@ -2031,7 +2093,7 @@ describe("AgentRunner", () => {
     });
 
     it("does not record a turn event when the turn aborts before turn_end", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       sessionHolder.emit({ type: "agent_start" });
@@ -2046,7 +2108,7 @@ describe("AgentRunner", () => {
     });
 
     it("uses the message timestamp for turnEnd when present", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const assistantMessage = {
@@ -2067,7 +2129,7 @@ describe("AgentRunner", () => {
     });
 
     it("uses the agent_start/turn_start event ts for turnStart when present", async () => {
-      const runner = makeRunner(tmpDir);
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const assistantMessage = {

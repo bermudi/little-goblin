@@ -1,88 +1,62 @@
 import type { Surface, SurfaceId } from "../surface.ts";
 import { surfaceId } from "../surface.ts";
+import { activeMemoryScopeFor, resolveActiveScope } from "./scope.ts";
 import type { ActiveScope } from "./scope.ts";
-import { resolveActiveScope } from "./scope.ts";
 import type { MemoryCaller } from "./context.ts";
+import type { MemoryStore, ParsedMemory } from "./store.ts";
+import type { MetricsStore } from "../metrics/mod.ts";
+import { formatFrozenSummary } from "./snapshot.ts";
 
 /**
  * Surface-derived memory authority: the immutable routing authority captured
- * from a validated Telegram {@link Surface} at conversation-runtime creation.
- *
- * A `SurfaceMemoryAuthority` is the only Surface-backed input to memory
- * behavior. It carries the canonical source {@link SurfaceId} (so transcript
- * provenance and logs can identify the originating lane even after a
- * Conversation moves) and the deterministically projected {@link ActiveScope}.
- * Persona identity is NOT part of this authority — it lives in the paired
- * {@link MemoryCaller}.
- *
- * Subagent invocations inherit their parent invocation's `SurfaceMemoryAuthority`
- * while deriving their own caller descriptor. A revived invocation captures the
- * reviving parent runtime's authority, not the persisted legacy scope.
+ * from a validated Telegram {@link Surface}. Carries the source
+ * {@link SurfaceId} (for transcript provenance and logs) and the projected
+ * {@link ActiveScope}. Persona identity lives in the paired {@link MemoryCaller},
+ * not here.
  */
 export interface SurfaceMemoryAuthority {
-  kind: "surface";
+  readonly kind: "surface";
   /** Canonical, reversible identity of the originating Telegram Surface. */
-  sourceSurfaceId: SurfaceId;
+  readonly sourceSurfaceId: SurfaceId;
   /** Deterministic `Surface → ActiveScope` projection. */
-  activeScope: ActiveScope;
+  readonly activeScope: ActiveScope;
 }
 
 /**
- * Caller descriptor for internal model work that has no Telegram Surface.
- *
- * Internal callers (e.g. the dreaming extractor) MUST use this explicit
- * Surface-free context. They MUST NOT call {@link resolveActiveScope}, invent
- * an internal Surface, or reinterpret `chatId: 0` as a Telegram Surface. An
- * internal context has no ordinary active-memory write target; promotion scope
- * is resolved later from transcript provenance, not from this context.
- *
- * The compatibility dreaming session may continue to exist until the
- * `inner-life`/`visible-dreaming` migration; it remains outside this type
- * boundary.
+ * Caller descriptor for internal model work with no Telegram Surface. Internal
+ * callers MUST NOT call {@link resolveActiveScope} or reinterpret `chatId: 0`
+ * as a Surface. An internal context has no ordinary active-memory write target.
  */
 export interface InternalMemoryContext {
-  kind: "internal";
-  caller: { kind: "internal" };
+  readonly kind: "internal";
+  readonly caller: { kind: "internal" };
 }
 
 /**
  * A complete immutable runtime memory context captured once at
- * conversation-runtime creation.
- *
- * The capture contains the validated source {@link SurfaceId}, the projected
- * {@link ActiveScope}, the caller descriptor, the frozen summary, and the
- * frozen-summary deduplication inputs. `AgentRunner` and subagent execution
- * receive this capture rather than its individual policy fields, so summary,
- * deduplication, search boundary, and writes cannot disagree.
- *
- * The capture is created before the conversation runtime registers an
- * `AgentRunner` and remains immutable for that runtime lifetime. Disposing and
+ * conversation-runtime creation. `AgentRunner` and subagent execution receive
+ * this capture rather than its individual policy fields, so summary,
+ * deduplication, search boundary, and writes cannot disagree. Disposing and
  * replacing the runtime is the only way to change its memory context.
  */
 export interface CapturedMemoryContext {
-  authority: SurfaceMemoryAuthority;
-  caller: MemoryCaller;
+  /** Discriminator: distinguishes from {@link InternalMemoryContext}. */
+  readonly kind: "surface";
+  readonly authority: SurfaceMemoryAuthority;
+  readonly caller: MemoryCaller;
   /** Bounded frozen summary, or `null` when all eligible sources are empty. */
-  frozenSummary: string | null;
+  readonly frozenSummary: string | null;
   /** Frozen `user.md` body captured alongside the summary — deduplication input. */
-  frozenUserBody: string;
+  readonly frozenUserBody: string;
   /** Frozen active `memory.md` body captured alongside the summary — deduplication input. */
-  frozenActiveMemoryBody: string;
+  readonly frozenActiveMemoryBody: string;
 }
 
 /**
- * Reject zero-chat compatibility values as Telegram identity.
- *
- * A Telegram `Surface` always carries a non-zero `chatId` (see
- * `src/surface.ts`'s `assertNonZeroSafeInteger`). The dreaming compatibility
- * session historically used `chatId: 0` as a sentinel; that value MUST NOT be
- * reinterpreted as a Telegram Surface or used to construct a
- * {@link SurfaceMemoryAuthority}. Internal callers use
- * {@link InternalMemoryContext} instead.
- *
- * This guard exists as a belt-and-suspenders boundary: any attempt to build
- * Surface-backed authority from a zero-chat (or otherwise invalid) Surface
- * fails loudly rather than silently producing a fake Telegram identity.
+ * Reject zero-chat compatibility values as Telegram identity. A Telegram
+ * `Surface` always carries a non-zero `chatId`; the dreaming compatibility
+ * session's `chatId: 0` sentinel MUST NOT be reinterpreted as a Surface.
+ * Internal callers use {@link InternalMemoryContext} instead.
  */
 export function assertSurfaceBackedAuthorityInput(surface: Surface): void {
   if (surface.chatId === 0) {
@@ -90,7 +64,78 @@ export function assertSurfaceBackedAuthorityInput(surface: Surface): void {
       "SurfaceMemoryAuthority cannot be derived from a zero-chat Surface; internal callers must use InternalMemoryContext",
     );
   }
-  // `surfaceId` re-validates the Surface and round-trips the encoding; an
-  // invalid Surface throws here before authority is constructed.
   surfaceId(surface);
+}
+
+/**
+ * Surface-backed caller descriptor: the subset of {@link MemoryCaller} that
+ * has a Telegram Surface. Internal callers (`{ kind: "internal" }`) MUST NOT
+ * use {@link captureRuntimeMemoryContext} — they use
+ * {@link InternalMemoryContext} directly.
+ */
+export type SurfaceMemoryCaller = Exclude<MemoryCaller, { kind: "internal" }>;
+
+/**
+ * Arguments for {@link captureRuntimeMemoryContext}.
+ */
+export interface CaptureRuntimeMemoryContextArgs {
+  /** The validated Telegram Surface to project authority from. */
+  surface: Surface;
+  /** The caller descriptor — main, named-subagent, or anonymous-subagent. */
+  caller: SurfaceMemoryCaller;
+  /** The live memory store. Read only at capture time; never reread by the runtime. */
+  store: MemoryStore;
+  /** Optional topic-name resolver for the frozen summary's cross-scope index. */
+  getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
+  /** Optional metrics store to record snapshot events during capture. */
+  metrics?: MetricsStore;
+}
+
+/**
+ * Capture a complete immutable runtime memory context from a validated Surface.
+ *
+ * Validates the Surface, encodes the source {@link SurfaceId}, projects
+ * {@link ActiveScope}, reads the active-scope and user entries, and formats
+ * the frozen summary — all before resolving. The active/user entries are read
+ * once and passed to the formatter so the summary text and deduplication
+ * bodies cannot diverge.
+ *
+ * The conversation-runtime factory awaits this capture before registering an
+ * `AgentRunner`; a failed capture leaves no half-created runtime.
+ */
+export async function captureRuntimeMemoryContext(
+  args: CaptureRuntimeMemoryContextArgs,
+): Promise<CapturedMemoryContext> {
+  const { surface, caller, store, getTopicName, metrics } = args;
+
+  assertSurfaceBackedAuthorityInput(surface);
+  const sourceSurfaceId = surfaceId(surface);
+  const activeScope = resolveActiveScope(surface);
+
+  const activeMemoryScope = activeMemoryScopeFor(activeScope);
+  const activeEntry: ParsedMemory = store.read(activeMemoryScope);
+  const userEntry: ParsedMemory = store.read("user");
+
+  const frozenSummary = await formatFrozenSummary({
+    store,
+    activeScope,
+    caller,
+    getTopicName,
+    metrics,
+    frozenActiveEntry: activeEntry,
+    frozenUserEntry: userEntry,
+  });
+
+  return {
+    kind: "surface",
+    authority: {
+      kind: "surface",
+      sourceSurfaceId,
+      activeScope,
+    },
+    caller,
+    frozenSummary,
+    frozenUserBody: userEntry.body,
+    frozenActiveMemoryBody: activeEntry.body,
+  };
 }

@@ -1,7 +1,7 @@
 import type { PersonaPolicy } from "./search.ts";
 
 /**
- * Who is asking for memory context. The three-way distinction is the single
+ * Who is asking for memory context. The four-way distinction is the single
  * input that determines memory visibility — which persona scopes are searched,
  * whether the `## agent persona` section renders, and whether `## other scopes`
  * lists other agents.
@@ -9,6 +9,10 @@ import type { PersonaPolicy } from "./search.ts";
  * - `main` — the goblin agent. Sees all personas, all scopes.
  * - `named-subagent` — a named subagent. Sees only its own persona scope.
  * - `anonymous-subagent` — an anonymous subagent. Sees no persona scopes.
+ * - `internal` — internal model work with no Telegram Surface (e.g. the
+ *   dreaming extractor). Receives no ordinary memory tools, no frozen summary,
+ *   and no per-turn relevant-memory aside. Promotion scope is resolved later
+ *   from transcript provenance, not from this caller.
  *
  * `MemoryCaller` is the sole persona/visibility authority. `ActiveScope` no
  * longer carries named-agent identity — caller kind and optional persona name
@@ -17,7 +21,8 @@ import type { PersonaPolicy } from "./search.ts";
 export type MemoryCaller =
   | { kind: "main" }
   | { kind: "named-subagent"; name: string }
-  | { kind: "anonymous-subagent" };
+  | { kind: "anonymous-subagent" }
+  | { kind: "internal" };
 
 /**
  * Derive the persona-eligibility policy for a caller. The single home for the
@@ -29,6 +34,8 @@ export type MemoryCaller =
  * - `main` → `{ kind: "all" }` (search every persona scope).
  * - `named-subagent` → `{ kind: "own", name }` (search only this persona).
  * - `anonymous-subagent` → `{ kind: "none" }` (search no persona scopes).
+ * - `internal` → `{ kind: "none" }` (no persona scopes; internal callers
+ *   receive no ordinary memory tools or snapshot).
  * This caller-typed resolver is the single source of truth for both search
  * tools and the snapshot's `## relevant memory` section.
  */
@@ -39,6 +46,8 @@ export function personaPolicyForCaller(caller: MemoryCaller): PersonaPolicy {
     case "named-subagent":
       return { kind: "own", name: caller.name };
     case "anonymous-subagent":
+      return { kind: "none" };
+    case "internal":
       return { kind: "none" };
   }
 }

@@ -23,16 +23,14 @@ import {
   EmbeddingProvider,
   createMemorySearchTool,
   createMemoryWriteTool,
-  formatFrozenSummary,
   formatRelevantMemory,
-  resolveActiveScope,
+  type CapturedMemoryContext,
+  type InternalMemoryContext,
 } from "../memory/mod.ts";
-import { activeMemoryScopeFor } from "../memory/scope.ts";
 import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
 import { type SubagentRunner } from "../subagents/mod.ts";
 import type { Surface } from "../surface.ts";
-import type { ActiveScope } from "../memory/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
 import { AgentBackend, AgentBackendOptions, PiAgentBackend } from "./backend.ts";
@@ -46,11 +44,12 @@ import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import { agentsMdPath, heartbeatMdPath, soulMdPath } from "../workspace/paths.ts";
 
-/** Options for constructing an AgentRunner. */
-export interface AgentRunnerOptions {
+/**
+ * Shared fields for all `AgentRunner` construction variants.
+ */
+interface AgentRunnerOptionsBase {
   cfg: Config;
   sessionId: string;
-  surface: Surface;
   customTools: ToolDefinition[];
   subagentRunner?: SubagentRunner;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
@@ -91,6 +90,33 @@ export interface AgentRunnerOptions {
    */
   backendFactory?: (opts: AgentBackendOptions) => AgentBackend;
 }
+
+/**
+ * Options for constructing a Surface-backed `AgentRunner`. The memory context
+ * is a {@link CapturedMemoryContext} and the Telegram {@link Surface} is
+ * required — schedule, subagent, and external-agent tools need it for delivery.
+ */
+export interface SurfaceAgentRunnerOptions extends AgentRunnerOptionsBase {
+  memoryContext: CapturedMemoryContext;
+  surface: Surface;
+}
+
+/**
+ * Options for constructing an internal `AgentRunner` (e.g. the dreaming
+ * extractor). The memory context is an {@link InternalMemoryContext} and no
+ * Telegram Surface is permitted — internal work has no ordinary active-memory
+ * write target and no delivery surface.
+ */
+export interface InternalAgentRunnerOptions extends AgentRunnerOptionsBase {
+  memoryContext: InternalMemoryContext;
+  surface?: never;
+}
+
+/**
+ * Discriminated union: a `CapturedMemoryContext` requires a `Surface`, and an
+ * `InternalMemoryContext` forbids one. Invalid combinations are unconstructible.
+ */
+export type AgentRunnerOptions = SurfaceAgentRunnerOptions | InternalAgentRunnerOptions;
 
 /** Thrown when the resolved model does not support the content types present in a prompt. */
 export class ModelNotCapableError extends Error {
@@ -234,7 +260,7 @@ function summarizeToolChange(toolName: string, args: Record<string, unknown>): s
 export class AgentRunner {
   private cfg: Config;
   private sessionId: string;
-  private surface: Surface;
+  private surface: Surface | undefined;
   private customTools: ToolDefinition[];
   private subagentRunner: SubagentRunner | null;
   private scheduleStore: ScheduleStore | undefined;
@@ -246,7 +272,18 @@ export class AgentRunner {
   private memoryStore: MemoryStore;
   private ownsMemoryStore: boolean;
   private dreamingPipeline: DreamingPipeline;
-  private activeScope: ActiveScope;
+  /**
+   * The captured runtime memory context. For Surface-backed runners this is a
+   * `CapturedMemoryContext` carrying the projected ActiveScope, caller, frozen
+   * summary, and deduplication bodies. For internal runners (dreaming
+   * extraction) this is an `InternalMemoryContext` with no Surface and no
+   * memory tools.
+   *
+   * Lazy pi `AgentSession` initialization consumes this capture without
+   * rereading the store or resolving routing. Disposing and replacing the
+   * runner is the only way to change its memory context.
+   */
+  private memoryContext: CapturedMemoryContext | InternalMemoryContext;
   private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
   private topicNameCache = new Map<string, string | null>();
   private executionEnvironment: ExecutionEnvironment;
@@ -259,10 +296,6 @@ export class AgentRunner {
   private turnToolErrorCount = 0;
   /** The goblin system prompt value (text + provenance of loaded prompt files). */
   private goblinSystemPrompt: GoblinSystemPrompt | null = null;
-  /** Frozen user.md body captured at session init for per-turn relevant-memory dedup. */
-  private frozenUserBody: string = "";
-  /** Frozen active memory body captured at session init for per-turn relevant-memory dedup. */
-  private frozenActiveMemoryBody: string = "";
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
    * resolve within the cascade timeout. Once set, `isStreaming` reports
@@ -313,7 +346,7 @@ export class AgentRunner {
     this.cfg = opts.cfg;
     this.sessionId = opts.sessionId;
     this.surface = opts.surface;
-    this.activeScope = resolveActiveScope(opts.surface);
+    this.memoryContext = opts.memoryContext;
     this.customTools = opts.customTools;
     this.subagentRunner = opts.subagentRunner ?? null;
     this.scheduleStore = opts.scheduleStore;
@@ -367,22 +400,15 @@ export class AgentRunner {
       const tools = await this.buildCustomTools();
 
       let systemPrompt = goblinSystemPrompt.prompt;
-      const frozenSummary = await formatFrozenSummary({
-        store: this.memoryStore,
-        activeScope: this.activeScope,
-        caller: { kind: "main" },
-        getTopicName: this.getTopicName,
-      });
-      if (frozenSummary !== null) {
-        systemPrompt = `${systemPrompt}\n\n${frozenSummary}`;
+      // Consume the completed capture — do not reread the store for the frozen
+      // summary or deduplication bodies. The capture was completed before
+      // runner registration; post-capture writes cannot alter it.
+      if (this.memoryContext.kind === "surface") {
+        const frozenSummary = this.memoryContext.frozenSummary;
+        if (frozenSummary !== null) {
+          systemPrompt = `${systemPrompt}\n\n${frozenSummary}`;
+        }
       }
-
-      // Capture the frozen user.md and active memory bodies for per-turn
-      // relevant-memory dedup. The system prompt is immutable after init, so
-      // entries present at session start should not be repeated as relevant
-      // memory. New entries written after init can still surface per-turn.
-      this.frozenUserBody = this.memoryStore.read("user").body;
-      this.frozenActiveMemoryBody = this.memoryStore.read(activeMemoryScopeFor(this.activeScope)).body;
 
       this.throwIfAbortedBeforeInit();
       await this.backend.init({
@@ -403,19 +429,26 @@ export class AgentRunner {
   }
 
   private async buildCustomTools(): Promise<ToolDefinition[]> {
-    const tools: ToolDefinition[] = [
-      ...this.customTools,
-      createMemorySearchTool({
-        store: this.memoryStore,
-        activeScope: this.activeScope,
-        caller: { kind: "main" },
-        getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
-        metrics: this.metricsStore,
-      }),
-      createMemoryWriteTool({ store: this.memoryStore, activeScope: this.activeScope, caller: { kind: "main" } }),
-    ];
+    const tools: ToolDefinition[] = [...this.customTools];
 
-    if (this.scheduleStore) {
+    // Memory tools are registered only for Surface-backed runners. Internal
+    // runners (dreaming extraction) use the explicit Surface-free path and
+    // receive no ordinary memory tools.
+    if (this.memoryContext.kind === "surface") {
+      const { authority, caller } = this.memoryContext;
+      tools.push(
+        createMemorySearchTool({
+          store: this.memoryStore,
+          activeScope: authority.activeScope,
+          caller,
+          getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
+          metrics: this.metricsStore,
+        }),
+        createMemoryWriteTool({ store: this.memoryStore, activeScope: authority.activeScope, caller }),
+      );
+    }
+
+    if (this.scheduleStore && this.surface !== undefined) {
       tools.push(
         createScheduleTurnTool({
           store: this.scheduleStore,
@@ -426,7 +459,7 @@ export class AgentRunner {
       );
     }
 
-    if (this.subagentRunner) {
+    if (this.subagentRunner && this.memoryContext.kind === "surface") {
       const { createSpawnSubagentTool, createReviveSubagentTool } = await import("../subagents/tool.ts");
       // Use delegating wrappers so the tools always forward to the current
       // turn's MessageBuffer — callbacks change per-prompt().
@@ -435,7 +468,7 @@ export class AgentRunner {
           this.subagentRunner,
           0,
           this.sessionId,
-          this.activeScope,
+          this.memoryContext.authority.activeScope,
           (msg) => this.callbacks?.onStatusUpdate(msg),
           undefined,
         ),
@@ -712,19 +745,23 @@ export class AgentRunner {
       // prompt text. Pi queues it and flushes alongside the next user message;
       // the system prompt stays frozen, preserving the provider prefix cache.
       // Steers do not pass prompt text and so never inject a relevant-memory
-      // section.
+      // section. Internal runners (dreaming extraction) skip the aside — they
+      // have no Surface-backed memory context.
       const promptText = extractPromptText(content);
-      const aside = await formatRelevantMemory({
-        store: this.memoryStore,
-        activeScope: this.activeScope,
-        caller: { kind: "main" },
-        promptText,
-        metrics: this.metricsStore,
-        frozenUserBody: this.frozenUserBody,
-        frozenActiveMemoryBody: this.frozenActiveMemoryBody,
-      });
-      if (aside !== null) {
-        await this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" });
+      if (this.memoryContext.kind === "surface") {
+        const { authority, caller, frozenUserBody, frozenActiveMemoryBody } = this.memoryContext;
+        const aside = await formatRelevantMemory({
+          store: this.memoryStore,
+          activeScope: authority.activeScope,
+          caller,
+          promptText,
+          metrics: this.metricsStore,
+          frozenUserBody,
+          frozenActiveMemoryBody,
+        });
+        if (aside !== null) {
+          await this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" });
+        }
       }
 
       const contentForModel = this.normalizeContentForModel(content);

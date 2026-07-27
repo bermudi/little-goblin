@@ -110,7 +110,7 @@ type ActiveTurn = {
     run: (runner: AgentRunner, isCurrent: () => boolean) => Promise<void>,
     failureLog: string,
     opts?: { replyModelNotCapable?: boolean },
-  ) => void;
+  ) => Promise<void>;
 };
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -258,6 +258,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   // the lifecycle operations called by commands / scheduler.
   const lifecycle = createConversationLifecycle(cfg.goblinHome, createTurnDispatcherRuntimeHost(dispatcher));
 
+  // Wire the binding inspector so the dispatcher can recheck binding authority
+  // after memory capture. This catches stale callers whose binding was rotated
+  // (e.g. by /new) before their creation started — a case the dispatcher's
+  // in-flight identity check alone cannot detect.
+  dispatcher.setBindingInspector((surface) => lifecycle.inspect(surface)?.id);
+
   function recordAssistantReply(sessionId: string, text: string): void {
     appendAssistantTranscriptEntry(sessionId, cfg.goblinHome, text);
   }
@@ -310,11 +316,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   async function applySideEffects(sideEffects: SideEffect[], message: TelegramIntakeMessage, surface: Surface): Promise<void> {
     for (const effect of sideEffects) {
       if (effect.kind === "runner-created") {
-        dispatcher.getOrCreateRunner(effect.session, effect.surface);
+        await dispatcher.getOrCreateRunner(effect.session, effect.surface);
       } else if (effect.kind === "runner-disposed") {
         await dispatcher.disposeRunner(effect.sessionId);
       } else if (effect.kind === "queue-prompt") {
-        const queueRunner = dispatcher.getOrCreateRunner(effect.session, surface);
+        const queueRunner = await dispatcher.getOrCreateRunner(effect.session, surface);
         scheduleFreshTurn(message, surface, effect.session, queueRunner, effect.text, "queued prompt failed");
       }
     }
@@ -414,8 +420,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       surface,
       session,
       environment: conversation.executionEnvironment,
-      schedule: (run, failureLog, opts) => {
-        const runner = dispatcher.getOrCreateRunner(session, surface);
+      schedule: async (run, failureLog, opts) => {
+        const runner = await dispatcher.getOrCreateRunner(session, surface);
         if (runner.isAbortTimedOut) {
           sendSystemReply(message, WEDGED_RUNNER_REPLY, "error").catch((err: unknown) => {
             log.error("failed to send wedged runner reply", {
@@ -501,7 +507,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         (session ? dispatcher.isCommandPending(session.id) : false);
       if (timing === "queue" && session && busy) {
         await sendSystemReply(message, "Queued. Will run after this turn.", "queued");
-        const queueRunner = existingRunner ?? dispatcher.getOrCreateRunner(session, surface);
+        const queueRunner = existingRunner ?? await dispatcher.getOrCreateRunner(session, surface);
         scheduleDeferredCommand(message, surface, session, queueRunner, rawText ?? "", command);
         return;
       }
@@ -536,7 +542,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const conversation = await lifecycle.resolveOrStart(surface);
     const session = runtimeSessionWithPreferences(conversation, surface, cfg.goblinHome);
 
-    const runner = dispatcher.getOrCreateRunner(session, surface);
+    const runner = await dispatcher.getOrCreateRunner(session, surface);
     if (!rawText) return;
 
     if (runner.isAbortTimedOut) {
@@ -556,7 +562,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const turn = await resolveActiveTurn(message, "photo");
     if (!turn) return;
 
-    turn.schedule(
+    await turn.schedule(
       async (runner, isCurrent) => {
         const photo = await downloadPhoto(api, fileIds, cfg.botToken);
         if (!isCurrent()) return;
@@ -585,7 +591,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const turn = await resolveActiveTurn(message, "document");
     if (!turn) return;
 
-    turn.schedule(
+    await turn.schedule(
       async (runner, isCurrent) => {
         const raw = await downloadFileBytes(api, doc.fileId, cfg.botToken);
         if (!isCurrent()) return;
@@ -642,7 +648,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const turn = await resolveActiveTurn(message, "voice");
     if (!turn) return;
 
-    turn.schedule(
+    await turn.schedule(
       async (runner, isCurrent) => {
         // Groq ASR setup gate: missing key fails at use time with a clear
         // message rather than at startup. Checked inside the scheduled task so
@@ -741,7 +747,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const turn = await resolveActiveTurn(message, "audio");
     if (!turn) return;
 
-    turn.schedule(
+    await turn.schedule(
       async (runner, isCurrent) => {
         const raw = await downloadFileBytes(api, audio.fileId, cfg.botToken);
         if (!isCurrent()) return;
@@ -845,7 +851,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       return;
     }
     const session = runtimeSessionWithPreferences(conversation, surface, cfg.goblinHome);
-    const runner = dispatcher.getOrCreateRunner(session, surface);
+    const runner = await dispatcher.getOrCreateRunner(session, surface);
 
     // Busy path: never queue. guest_query_id would expire before a queued turn
     // runs, so reply immediately with a busy fallback to consume the id.

@@ -3,7 +3,14 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { AgentRunner, type TurnCallbacks } from "../agent/mod.ts";
-import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
+import {
+  MemoryStore,
+  EmbeddingProvider,
+  DreamingPipeline,
+  captureRuntimeMemoryContext,
+  type CapturedMemoryContext,
+  type InternalMemoryContext,
+} from "../memory/mod.ts";
 import type { SessionState } from "../sessions/types.ts";
 import { dmSurface, surfaceId, type Surface, type SurfaceId } from "../surface.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -92,6 +99,15 @@ export interface TurnDispatcherOptions {
   externalAgentRunner?: ExternalAgentRunner;
   /** Shared MCP runner. When present and configured, it is wired into every new `AgentRunner`. */
   mcpRunner?: McpRunner;
+  /**
+   * Optional binding authority inspector: returns the conversation id currently
+   * bound to the given Surface, or `undefined` if no conversation is bound.
+   * Used as the binding-generation recheck after memory capture: if the
+   * binding changes between the start and end of capture, the stale creation
+   * is discarded rather than registered. Wired by the caller (intake) after
+   * the conversation lifecycle is constructed.
+   */
+  bindingInspector?: (surface: Surface) => string | undefined;
 }
 
 /**
@@ -114,6 +130,13 @@ export class TurnDispatcher {
   private readonly runners: Map<string, AgentRunner>;
   /** Surface a runner was created for, keyed by session/conversation id. */
   private readonly runnerSurfaceIds: Map<string, SurfaceId>;
+  /**
+   * In-flight runner creation, keyed by session id. Stores the promise AND
+   * the destination surface id. Deduplicates concurrent creation only for
+   * the same (session, surface) — a request for a different surface overwrites
+   * the entry, causing the prior creation's post-capture recheck to fail.
+   */
+  private readonly inFlightCreations: Map<string, { promise: Promise<AgentRunner>; surfaceId: SurfaceId }>;
   private readonly promptQueues: Map<string, Promise<void>>;
   private readonly cfg: Config;
   private readonly surfaceSettings: SurfaceSettings;
@@ -129,6 +152,7 @@ export class TurnDispatcher {
   private readonly scheduleStore: ScheduleStore | undefined;
   private readonly externalAgentRunner: ExternalAgentRunner | undefined;
   private readonly mcpRunner: McpRunner | undefined;
+  private bindingInspector: ((surface: Surface) => string | undefined) | undefined;
 
   constructor(options: TurnDispatcherOptions) {
     this.cfg = options.cfg;
@@ -139,6 +163,7 @@ export class TurnDispatcher {
     this.dreamingPipeline = options.dreamingPipeline;
     this.runners = options.agentRunners;
     this.runnerSurfaceIds = new Map<string, SurfaceId>();
+    this.inFlightCreations = new Map<string, { promise: Promise<AgentRunner>; surfaceId: SurfaceId }>();
     this.promptQueues = options.promptQueues ?? new Map<string, Promise<void>>();
     this.promptQueueMeta = options.promptQueueMeta ?? new Map<string, PromptQueueEntry>();
     this.createAgentRunner = options.createAgentRunner;
@@ -148,6 +173,16 @@ export class TurnDispatcher {
     this.scheduleStore = options.scheduleStore;
     this.externalAgentRunner = options.externalAgentRunner;
     this.mcpRunner = options.mcpRunner;
+    this.bindingInspector = options.bindingInspector;
+  }
+
+  /**
+   * Set or replace the binding authority inspector. The caller (intake) wires
+   * this after the conversation lifecycle is constructed, since the lifecycle
+   * is created after the dispatcher and owns binding state.
+   */
+  setBindingInspector(inspector: (surface: Surface) => string | undefined): void {
+    this.bindingInspector = inspector;
   }
 
   /**
@@ -167,10 +202,17 @@ export class TurnDispatcher {
   }
 
   /**
-   * Construct a new `AgentRunner` for a session. Telegram delivery parameters
-   * are derived entirely from the provided `surface`.
+   * Construct a new Surface-backed `AgentRunner` from a completed memory
+   * context capture. The caller is responsible for capturing the memory
+   * context before calling this — the runner does not reread the store for
+   * frozen summary or routing authority. Telegram delivery parameters are
+   * derived from the provided `surface`.
    */
-  createRunner(session: SessionState, surface: Surface): AgentRunner {
+  createRunner(
+    session: SessionState,
+    surface: Surface,
+    memoryContext: CapturedMemoryContext,
+  ): AgentRunner {
     const surfaceEnv = this.surfaceSettings.effectiveEnvironment(surface);
     if (session.chatId !== 0 && !environmentsEqual(session.executionEnvironment, surfaceEnv)) {
       const sessionEnv = session.executionEnvironment;
@@ -184,6 +226,7 @@ export class TurnDispatcher {
       cfg: this.cfg,
       sessionId: session.id,
       surface,
+      memoryContext,
       customTools: betaTools,
       subagentRunner: session.chatId === 0 ? undefined : this.subagentRunner,
       getTopicName: this.getTopicName,
@@ -204,8 +247,26 @@ export class TurnDispatcher {
    * A runner is only reused when it was created for the same surface; if the
    * conversation has moved, the stale runner is disposed and a new one built
    * for the destination surface.
+   *
+   * Creation is asynchronous: the memory context capture (frozen summary,
+   * ActiveScope projection, deduplication bodies) must complete before the
+   * runner is registered. Concurrent creation requests for the same
+   * (session, surface) are deduplicated via an in-flight promise — both
+   * callers share one capture and one runner. A concurrent request for a
+   * different surface on the same session overwrites the in-flight entry,
+   * causing the prior creation's post-capture recheck to fail.
+   *
+   * After capture resolves, two rechecks guard registration:
+   * 1. In-flight identity: if the in-flight entry no longer holds this
+   *    creation's promise, a disposal or newer creation invalidated it.
+   * 2. Binding authority: if a `bindingInspector` is wired, the binding for
+   *    the surface must still point to the requested session. This catches
+   *    stale callers whose binding was rotated (e.g. by `/new`) before the
+   *    creation started — a case the in-flight identity check alone cannot
+   *    detect because the entry was already cleared by the time the stale
+   *    creation registers its own promise.
    */
-  getOrCreateRunner(session: SessionState, surface: Surface): AgentRunner {
+  async getOrCreateRunner(session: SessionState, surface: Surface): Promise<AgentRunner> {
     const expectedSurfaceId = surfaceId(surface);
     const existing = this.runners.get(session.id);
     const existingSurfaceId = this.runnerSurfaceIds.get(session.id);
@@ -213,18 +274,85 @@ export class TurnDispatcher {
       return existing;
     }
 
-    if (existing) {
-      // The conversation moved or the runner is from a stale binding: dispose
-      // synchronously (the cleanup promise is fire-and-forget) and recreate.
-      void this.disposeRunner(session.id).catch((err) => {
-        log.error("failed to dispose stale runner", {
-          error: err instanceof Error ? err.message : String(err),
-          sessionId: session.id,
-        });
-      });
+    // Deduplicate concurrent creation for the same (session, surface) only.
+    // A different-surface request overwrites the entry, causing the prior
+    // creation's recheck to fail.
+    const inFlight = this.inFlightCreations.get(session.id);
+    if (inFlight && inFlight.surfaceId === expectedSurfaceId) {
+      return inFlight.promise;
     }
 
-    const runner = this.createRunner(session, surface);
+    let resolveCreation!: (runner: AgentRunner) => void;
+    let rejectCreation!: (err: unknown) => void;
+    const creationPromise = new Promise<AgentRunner>((resolve, reject) => {
+      resolveCreation = resolve;
+      rejectCreation = reject;
+    });
+    this.inFlightCreations.set(session.id, { promise: creationPromise, surfaceId: expectedSurfaceId });
+
+    this.doCreateAndRegisterRunner(session, surface, expectedSurfaceId, creationPromise)
+      .then(resolveCreation, rejectCreation)
+      .finally(() => {
+        const current = this.inFlightCreations.get(session.id);
+        if (current?.promise === creationPromise) {
+          this.inFlightCreations.delete(session.id);
+        }
+      });
+
+    return creationPromise;
+  }
+
+  /**
+   * Internal: capture memory context, recheck authority, create the runner,
+   * and register it. Called by {@link getOrCreateRunner} after the in-flight
+   * entry is registered.
+   */
+  private async doCreateAndRegisterRunner(
+    session: SessionState,
+    surface: Surface,
+    expectedSurfaceId: SurfaceId,
+    creationPromise: Promise<AgentRunner>,
+  ): Promise<AgentRunner> {
+    // Dispose existing runner through the single cleanup seam. The
+    // `preserveInFlight` parameter keeps THIS creation's in-flight entry so
+    // the post-capture recheck doesn't discard it. This awaits quiescence
+    // (runner.dispose, subagent cancel, external-agent cancel) before
+    // creating the replacement, so old and new runners never overlap.
+    if (this.runners.has(session.id)) {
+      await this.disposeRunner(session.id, creationPromise);
+    }
+
+    const memoryContext = await captureRuntimeMemoryContext({
+      surface,
+      caller: { kind: "main" },
+      store: this.memoryStore,
+      getTopicName: this.getTopicName,
+    });
+
+    // Recheck 1 — in-flight identity: if the in-flight entry no longer holds
+    // this creation's promise, a disposal or newer (different-surface)
+    // creation invalidated it.
+    const currentInFlight = this.inFlightCreations.get(session.id);
+    if (currentInFlight?.promise !== creationPromise) {
+      throw new Error(
+        `stale runtime creation for session ${session.id}: invalidated during capture`,
+      );
+    }
+
+    // Recheck 2 — binding authority: if a binding inspector is wired, verify
+    // the surface still points to the requested session. This catches stale
+    // callers whose binding was rotated before the creation started — a case
+    // the in-flight identity check alone cannot detect.
+    if (this.bindingInspector) {
+      const boundId = this.bindingInspector(surface);
+      if (boundId !== session.id) {
+        throw new Error(
+          `stale runtime creation for session ${session.id}: binding for ${expectedSurfaceId} is ${boundId ?? "unbound"}`,
+        );
+      }
+    }
+
+    const runner = this.createRunner(session, surface, memoryContext);
     this.runners.set(session.id, runner);
     this.runnerSurfaceIds.set(session.id, expectedSurfaceId);
     log.debug("created runner for session", { sessionId: session.id, surfaceId: expectedSurfaceId });
@@ -331,16 +459,27 @@ export class TurnDispatcher {
    * when no runner exists (no-op).
    *
    * Disposes the runner and clears the queue first, then cancels any subagents
-   * spawned by this session so orphaned work does not outlive the runner.
+   * and external agents spawned by this session so orphaned work does not
+   * outlive the runner.
+   *
+   * @param preserveInFlight When called from `doCreateAndRegisterRunner` to
+   *   dispose an old runner before creating a replacement, pass the new
+   *   creation's promise so the in-flight entry for it is preserved. Without
+   *   this, the in-flight entry would be cleared and the new creation's
+   *   post-capture recheck would discard it.
    */
-  async disposeRunner(sessionId: string): Promise<void> {
-    // Remove the runner and sever the prompt-queue chain synchronously, before
-    // any asynchronous cleanup. This is the stale-runner guard: any queued
-    // work that captured `runner` will see `isCurrent()` become false and
-    // abort before producing side effects.
+  async disposeRunner(sessionId: string, preserveInFlight?: Promise<AgentRunner>): Promise<void> {
     const prior = this.runners.get(sessionId);
     this.runners.delete(sessionId);
     this.runnerSurfaceIds.delete(sessionId);
+    // Clear the in-flight creation entry unless it matches the creation to
+    // preserve (a replacement disposal). This is the stale-runner guard: a
+    // capture in flight when the runner is disposed fails its post-capture
+    // recheck and is discarded rather than registered.
+    const currentInFlight = this.inFlightCreations.get(sessionId);
+    if (!preserveInFlight || currentInFlight?.promise !== preserveInFlight) {
+      this.inFlightCreations.delete(sessionId);
+    }
     this.promptQueues.delete(sessionId);
     this.promptQueueMeta.delete(sessionId);
 
@@ -407,13 +546,19 @@ export class TurnDispatcher {
   ): void {
     let runner = this.runners.get(session.id);
     if (!runner) {
+      // Internal sessions (dreaming extraction) use the explicit Surface-free
+      // internal memory context. They receive no memory tools, no frozen
+      // summary, and no per-turn relevant-memory aside. The compatibility
+      // dreaming session's chatId:0 is NOT reinterpreted as a Telegram
+      // Surface.
+      const internalContext: InternalMemoryContext = {
+        kind: "internal",
+        caller: { kind: "internal" },
+      };
       const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
         cfg: this.cfg,
         sessionId: session.id,
-        // Internal sessions have no Telegram chat; a placeholder DM surface is
-        // used because the runner needs a complete Surface. chatId is not used
-        // for memory scoping because the active scope is "general".
-        surface: dmSurface(1),
+        memoryContext: internalContext,
         customTools: [],
         memoryStore: this.memoryStore,
         embeddingProvider: this.embeddingProvider,
@@ -423,6 +568,9 @@ export class TurnDispatcher {
       };
       runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
       this.runners.set(session.id, runner);
+      // Internal runners have no Telegram Surface; record a sentinel so
+      // hasRunner/getRunner continue to work. The surfaceId is not used for
+      // memory scoping — the internal context has no ActiveScope.
       this.runnerSurfaceIds.set(session.id, surfaceId(dmSurface(1)));
     }
 
@@ -455,6 +603,12 @@ export class TurnDispatcher {
    * involved — scheduled prompts are synthetic and bypass Telegram
    * user-context preparation. The stale-runner guard applies: if the runner is
    * swapped before the queued turn starts, it aborts without side effects.
+   *
+   * If a runner already exists at enqueue time, its reference is captured and
+   * the stale-runner guard checks it at execution time. If no runner exists at
+   * enqueue time, the callback creates one via the async `getOrCreateRunner`
+   * (memory context capture must complete before registration). This keeps the
+   * method sync and fire-and-forget — the scheduler does not need to await it.
    */
   enqueueScheduledTurn(
     session: SessionState,
@@ -462,13 +616,28 @@ export class TurnDispatcher {
     content: PromptContent,
     onError?: (err: unknown) => void,
   ): void {
-    const runner = this.getOrCreateRunner(session, surface);
     const buffer = this.createMessageBuffer(surface, session);
-    this.schedulePrompt(
-      session,
-      runner,
-      async (isCurrent) => {
-        if (!isCurrent()) return;
+    // Capture the runner reference at enqueue time if one exists. This is the
+    // stale-runner guard: if the runner is disposed (e.g. by /new) before the
+    // queued scheduled turn starts, the guard aborts the turn without creating
+    // a new runner. If no runner exists at enqueue time, the callback creates
+    // one via getOrCreateRunner (async capture).
+    const existingRunner = this.runners.get(session.id);
+
+    const execute = async (): Promise<void> => {
+      try {
+        let runner: AgentRunner;
+        if (existingRunner) {
+          // Stale-runner guard: if the runner was swapped after enqueue, abort
+          // before producing user-visible side effects.
+          if (this.runners.get(session.id) !== existingRunner) return;
+          runner = existingRunner;
+        } else {
+          runner = await this.getOrCreateRunner(session, surface);
+          // Recheck after async creation: if the runner was swapped during
+          // capture, abort.
+          if (this.runners.get(session.id) !== runner) return;
+        }
         if (runner.isAbortTimedOut) {
           log.warn("scheduled turn dropped: runner is wedged after abort timed out", {
             sessionId: session.id,
@@ -476,12 +645,23 @@ export class TurnDispatcher {
           return;
         }
         await runner.prompt(content, buffer);
-      },
-      async (err) => {
+      } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.error("scheduled turn failed", { error: msg, sessionId: session.id });
         onError?.(err);
-      },
-    );
+      }
+    };
+
+    // Chain onto the per-session prompt queue so scheduled turns serialize
+    // with user turns and deferred commands.
+    const prior = this.promptQueues.get(session.id);
+    const current = prior ? prior.then(execute, execute) : execute();
+    const meta: PromptQueueEntry = { isPrompt: true };
+    this.promptQueues.set(session.id, current);
+    this.promptQueueMeta.set(session.id, meta);
+    void current.finally(() => {
+      if (this.promptQueues.get(session.id) === current) this.promptQueues.delete(session.id);
+      if (this.promptQueueMeta.get(session.id) === meta) this.promptQueueMeta.delete(session.id);
+    });
   }
 }

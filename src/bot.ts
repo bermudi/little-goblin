@@ -33,11 +33,11 @@ const subagentToolFactory: SubagentToolFactory = (
   runner,
   depth,
   sessionId,
-  activeScope,
+  parentCapture,
   onStatusUpdate,
 ) => [
-  createSpawnSubagentTool(runner, depth, sessionId, activeScope, onStatusUpdate, undefined),
-  createReviveSubagentTool(runner, onStatusUpdate),
+  createSpawnSubagentTool(runner, depth, sessionId, parentCapture, onStatusUpdate, undefined),
+  createReviveSubagentTool(runner, parentCapture, onStatusUpdate),
 ];
 
 function safeRecordTelegramEvent(metrics: MetricsStore | undefined, event: TelegramMetricsEvent): void {

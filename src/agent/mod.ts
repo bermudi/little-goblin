@@ -283,7 +283,7 @@ export class AgentRunner {
    * rereading the store or resolving routing. Disposing and replacing the
    * runner is the only way to change its memory context.
    */
-  private memoryContext: CapturedMemoryContext | InternalMemoryContext;
+  public readonly memoryContext: CapturedMemoryContext | InternalMemoryContext;
   private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
   private topicNameCache = new Map<string, string | null>();
   private executionEnvironment: ExecutionEnvironment;
@@ -468,7 +468,7 @@ export class AgentRunner {
           this.subagentRunner,
           0,
           this.sessionId,
-          this.memoryContext.authority.activeScope,
+          this.memoryContext,
           (msg) => this.callbacks?.onStatusUpdate(msg),
           undefined,
         ),
@@ -476,6 +476,7 @@ export class AgentRunner {
       tools.push(
         createReviveSubagentTool(
           this.subagentRunner,
+          this.memoryContext,
           (msg) => this.callbacks?.onStatusUpdate(msg),
         ),
       );

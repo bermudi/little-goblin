@@ -665,16 +665,16 @@ describe("buildBot integration", () => {
     expect(prompt).toBe("[From: Daniel (@bermudi)]\nlisten\n\n[Audio file `song.mp3` saved.]");
   });
 
-  it("/resume of the already-bound session disposes the old runner before replacing it", async () => {
+  it("/resume of the already-bound session is a no-op", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
     const session = built.manager.list()[0]!;
-    const oldRunner = built.agentRunners.get(session.id)! as unknown as MockAgentRunner;
+    const oldRunner = built.agentRunners.get(session.id)!;
 
     await built.bot.handleUpdate(textUpdate(`/resume ${session.id}`));
 
-    expect(oldRunner.dispose).toHaveBeenCalled();
-    expect(built.agentRunners.get(session.id)).not.toBe(oldRunner);
+    expect((oldRunner as unknown as MockAgentRunner).dispose).not.toHaveBeenCalled();
+    expect(built.agentRunners.get(session.id)).toBe(oldRunner);
   });
 
   it("archives orphaned topic memory when Telegram reports topic not found", async () => {

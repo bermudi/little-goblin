@@ -5,6 +5,7 @@
  */
 
 import type { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import type { SurfaceMemoryAuthority, CapturedMemoryContext, SurfaceMemoryCaller } from "../memory/mod.ts";
 import type { ActiveScope } from "../memory/scope.ts";
 
 /** Status of a subagent instance. */
@@ -19,8 +20,12 @@ export type SubagentRole = "generic" | "named";
 export interface SpawnOptions {
   /** The user-message-style prompt sent to the subagent on its first turn. */
   prompt: string;
-  /** Active memory scope inherited from the spawning agent. */
-  activeScope: ActiveScope;
+  /**
+   * Surface memory authority inherited from the spawning agent. Contains the
+   * canonical source SurfaceId and projected ActiveScope; persona identity is
+   * derived separately from the child role.
+   */
+  authority: SurfaceMemoryAuthority;
   /**
    * Optional named-agent identifier. When set, the runner loads
    * `~/goblin/agents/<name>/AGENTS.md` and isolates skills.
@@ -101,8 +106,15 @@ export interface SubagentInstance {
   name: string | null;
   role: SubagentRole;
   status: SubagentStatus;
-  /** Active memory scope inherited from the spawning agent. */
-  activeScope: ActiveScope;
+  /**
+   * Surface memory authority inherited from the spawning agent. The source
+   * SurfaceId and projected ActiveScope are frozen for this invocation.
+   */
+  authority: SurfaceMemoryAuthority;
+  /** Caller descriptor derived from the child role (anonymous or named). */
+  caller: SurfaceMemoryCaller;
+  /** Completed invocation capture, set once execution starts. */
+  capture?: CapturedMemoryContext;
   /** Depth of *this* subagent (spawner.depth + 1). */
   depth: number;
   spawnedAt: string;

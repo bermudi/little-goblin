@@ -76,11 +76,11 @@ export function assertSurfaceBackedAuthorityInput(surface: Surface): void {
 export type SurfaceMemoryCaller = Exclude<MemoryCaller, { kind: "internal" }>;
 
 /**
- * Arguments for {@link captureRuntimeMemoryContext}.
+ * Arguments for {@link captureInvocationMemoryContext}.
  */
-export interface CaptureRuntimeMemoryContextArgs {
-  /** The validated Telegram Surface to project authority from. */
-  surface: Surface;
+export interface CaptureInvocationMemoryContextArgs {
+  /** The inherited Surface memory authority (source SurfaceId + ActiveScope). */
+  authority: SurfaceMemoryAuthority;
   /** The caller descriptor — main, named-subagent, or anonymous-subagent. */
   caller: SurfaceMemoryCaller;
   /** The live memory store. Read only at capture time; never reread by the runtime. */
@@ -89,6 +89,55 @@ export interface CaptureRuntimeMemoryContextArgs {
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
   /** Optional metrics store to record snapshot events during capture. */
   metrics?: MetricsStore;
+}
+
+/**
+ * Capture a complete immutable invocation memory context from an already
+ * projected {@link SurfaceMemoryAuthority}.
+ *
+ * Reads the active-scope and user entries once and formats the frozen summary
+ * before resolving. The active/user entries are passed to the formatter so the
+ * summary text and deduplication bodies cannot diverge. This is the subagent
+ * path: the Surface has already been validated and projected by the parent
+ * runtime, so the child only derives its caller descriptor and captures from
+ * the inherited authority.
+ */
+export async function captureInvocationMemoryContext(
+  args: CaptureInvocationMemoryContextArgs,
+): Promise<CapturedMemoryContext> {
+  const { authority, caller, store, getTopicName, metrics } = args;
+  const activeScope = authority.activeScope;
+
+  const activeMemoryScope = activeMemoryScopeFor(activeScope);
+  const activeEntry: ParsedMemory = store.read(activeMemoryScope);
+  const userEntry: ParsedMemory = store.read("user");
+
+  const frozenSummary = await formatFrozenSummary({
+    store,
+    activeScope,
+    caller,
+    getTopicName,
+    metrics,
+    frozenActiveEntry: activeEntry,
+    frozenUserEntry: userEntry,
+  });
+
+  return {
+    kind: "surface",
+    authority,
+    caller,
+    frozenSummary,
+    frozenUserBody: userEntry.body,
+    frozenActiveMemoryBody: activeEntry.body,
+  };
+}
+
+/**
+ * Arguments for {@link captureRuntimeMemoryContext}.
+ */
+export interface CaptureRuntimeMemoryContextArgs extends Omit<CaptureInvocationMemoryContextArgs, "authority"> {
+  /** The validated Telegram Surface to project authority from. */
+  surface: Surface;
 }
 
 /**
@@ -109,33 +158,11 @@ export async function captureRuntimeMemoryContext(
   const { surface, caller, store, getTopicName, metrics } = args;
 
   assertSurfaceBackedAuthorityInput(surface);
-  const sourceSurfaceId = surfaceId(surface);
-  const activeScope = resolveActiveScope(surface);
-
-  const activeMemoryScope = activeMemoryScopeFor(activeScope);
-  const activeEntry: ParsedMemory = store.read(activeMemoryScope);
-  const userEntry: ParsedMemory = store.read("user");
-
-  const frozenSummary = await formatFrozenSummary({
-    store,
-    activeScope,
-    caller,
-    getTopicName,
-    metrics,
-    frozenActiveEntry: activeEntry,
-    frozenUserEntry: userEntry,
-  });
-
-  return {
+  const authority: SurfaceMemoryAuthority = {
     kind: "surface",
-    authority: {
-      kind: "surface",
-      sourceSurfaceId,
-      activeScope,
-    },
-    caller,
-    frozenSummary,
-    frozenUserBody: userEntry.body,
-    frozenActiveMemoryBody: activeEntry.body,
+    sourceSurfaceId: surfaceId(surface),
+    activeScope: resolveActiveScope(surface),
   };
+
+  return captureInvocationMemoryContext({ authority, caller, store, getTopicName, metrics });
 }

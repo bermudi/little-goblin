@@ -14,6 +14,8 @@ import {
 } from "../sessions/topic-settings.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { ResolvedModel } from "../agent/models.ts";
+import { captureRuntimeMemoryContext, MemoryStore } from "../memory/mod.ts";
+import type { CapturedMemoryContext } from "../memory/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import type { TurnDispatcher } from "../orchestration/dispatcher.ts";
 import { projectRootOf } from "../sessions/environment.ts";
@@ -442,11 +444,28 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText }) => {
   }
 };
 
-const reviveHandler: CommandHandler = async ({ deps, rawText }) => {
+const reviveHandler: CommandHandler = async ({ deps, rawText, surface, existingRunner }) => {
   const args = parseReviveSubagentArgs(rawText);
   if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY, [], "info");
+
+  let parentCapture: CapturedMemoryContext;
+  if (existingRunner !== null && existingRunner.memoryContext.kind === "surface") {
+    parentCapture = existingRunner.memoryContext;
+  } else {
+    const store = new MemoryStore(deps.cfg.goblinHome);
+    try {
+      parentCapture = await captureRuntimeMemoryContext({
+        surface,
+        caller: { kind: "main" },
+        store,
+      });
+    } finally {
+      store.close();
+    }
+  }
+
   try {
-    const result = await deps.subagentRunner.revive(args.id, args.prompt);
+    const result = await deps.subagentRunner.revive(parentCapture, args.id, args.prompt);
     return replied(result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`, [], "ok");
   } catch (err) {
     const message = errorMessage(err);

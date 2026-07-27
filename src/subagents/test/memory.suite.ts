@@ -6,10 +6,12 @@ import {
   createMemoryWriteTool,
   type ActiveScope,
   type MemoryScope,
+  type SurfaceMemoryAuthority,
 } from "../../memory/mod.ts";
 import { memoryDir } from "../../memory/paths.ts";
 import { SubagentRunner } from "../mod.ts";
 import { namedAgentAgentsMdPath, namedAgentDir } from "../paths.ts";
+import { topicSurface, surfaceId, type Surface } from "../../surface.ts";
 import {
   createTestHome,
   flush,
@@ -26,6 +28,14 @@ installStandardPiMock();
 const TOPIC_SCOPE: ActiveScope = {
   chatId: -100123,
   topicScope: { topicId: 42 },
+};
+
+const TOPIC_SURFACE: Surface = topicSurface("supergroup", -100123, 42);
+
+const TOPIC_AUTHORITY: SurfaceMemoryAuthority = {
+  kind: "surface",
+  sourceSurfaceId: surfaceId(TOPIC_SURFACE),
+  activeScope: TOPIC_SCOPE,
 };
 
 type SeedScope = "user" | "memory" | MemoryScope;
@@ -59,7 +69,7 @@ describe("SubagentRunner — scoped memory", () => {
   it("anonymous subagent in a topic writes to the parent's topic scope", async () => {
     const handle = await runner.spawn({
       prompt: "work",
-      activeScope: TOPIC_SCOPE,
+      authority: TOPIC_AUTHORITY,
     });
     await flush();
 
@@ -97,7 +107,7 @@ describe("SubagentRunner — scoped memory", () => {
     const handle = await runner.spawn({
       prompt: "work",
       name: "researcher",
-      activeScope: TOPIC_SCOPE,
+      authority: TOPIC_AUTHORITY,
     });
     await flush();
 
@@ -136,7 +146,7 @@ describe("SubagentRunner — scoped memory", () => {
   it("rejects target=agent for anonymous subagents", async () => {
     const handle = await runner.spawn({
       prompt: "work",
-      activeScope: TOPIC_SCOPE,
+      authority: TOPIC_AUTHORITY,
     });
     await flush();
 
@@ -163,7 +173,7 @@ describe("SubagentRunner — scoped memory", () => {
   it("registers byte-identical memory tool schemas to the main agent factories", async () => {
     const handle = await runner.spawn({
       prompt: "work",
-      activeScope: TOPIC_SCOPE,
+      authority: TOPIC_AUTHORITY,
     });
     await flush();
 
@@ -201,7 +211,7 @@ describe("SubagentRunner — scoped memory", () => {
     const handle = await runner.spawn({
       prompt: "work",
       name: "researcher",
-      activeScope: TOPIC_SCOPE,
+      authority: TOPIC_AUTHORITY,
     });
     await flush();
 
@@ -238,7 +248,7 @@ describe("SubagentRunner — scoped memory", () => {
     const namedHandle = await runner.spawn({
       prompt: "persona",
       name: "researcher",
-      activeScope: TOPIC_SCOPE,
+      authority: TOPIC_AUTHORITY,
     });
     await flush();
 
@@ -263,7 +273,7 @@ describe("SubagentRunner — scoped memory", () => {
     resetPiMockState();
     const anonHandle = await runner.spawn({
       prompt: "persona",
-      activeScope: TOPIC_SCOPE,
+      authority: TOPIC_AUTHORITY,
     });
     await flush();
 
@@ -305,7 +315,7 @@ describe("SubagentRunner — scoped memory", () => {
 
     const handle = await runner.spawn({
       prompt: "remember, I prefer concise summaries with test output",
-      activeScope: TOPIC_SCOPE,
+      authority: TOPIC_AUTHORITY,
     });
     await flush();
 
@@ -339,7 +349,7 @@ describe("SubagentRunner — scoped memory", () => {
     const handle = await runner.spawn({
       prompt: "remember, I prefer concise summaries with test output",
       name: "researcher",
-      activeScope: TOPIC_SCOPE,
+      authority: TOPIC_AUTHORITY,
     });
     await flush();
 
@@ -383,7 +393,7 @@ describe("SubagentRunner — scoped memory", () => {
   }
 
   it("registers memory_search on the subagent tool list", async () => {
-    const handle = await runner.spawn({ prompt: "work", activeScope: TOPIC_SCOPE });
+    const handle = await runner.spawn({ prompt: "work", authority: TOPIC_AUTHORITY });
     await flush();
 
     expect(captureTools().some((t) => t.name === "memory_search")).toBe(true);
@@ -410,7 +420,7 @@ describe("SubagentRunner — scoped memory", () => {
     const handle = await runner.spawn({
       prompt: "work",
       name: "researcher",
-      activeScope: TOPIC_SCOPE,
+      authority: TOPIC_AUTHORITY,
     });
     await flush();
 
@@ -443,7 +453,7 @@ describe("SubagentRunner — scoped memory", () => {
       { scope: { topic: { chatId: -100123, topicId: 7 } }, content: "topic deployment notes" },
     ]);
 
-    const handle = await runner.spawn({ prompt: "work", activeScope: TOPIC_SCOPE });
+    const handle = await runner.spawn({ prompt: "work", authority: TOPIC_AUTHORITY });
     await flush();
 
     const search = captureTools().find((t) => t.name === "memory_search")!;

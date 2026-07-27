@@ -3,14 +3,59 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../../config.ts";
-import type { ActiveScope } from "../../memory/mod.ts";
+import type { ActiveScope, CapturedMemoryContext, SurfaceMemoryAuthority } from "../../memory/mod.ts";
 import { piAgentDir } from "../../pi-host.ts";
 import { workspacePath } from "../../workspace/paths.ts";
+import { dmSurface, supergroupSurface, surfaceId, type Surface } from "../../surface.ts";
 
 /** Default active scope for tests that don't need a specific topic/agent scope. */
 export const DEFAULT_SCOPE: ActiveScope = {
   chatId: -100123,
   topicScope: "general",
+};
+
+/** Default Telegram Surface backing the default active scope. */
+export const DEFAULT_SURFACE: Surface = supergroupSurface(-100123);
+
+/** Default Surface memory authority for tests. */
+export const DEFAULT_AUTHORITY: SurfaceMemoryAuthority = {
+  kind: "surface",
+  sourceSurfaceId: surfaceId(DEFAULT_SURFACE),
+  activeScope: DEFAULT_SCOPE,
+};
+
+/** Default parent capture for revive tests (empty bodies are ignored; the child re-captures). */
+export const DEFAULT_PARENT_CAPTURE: CapturedMemoryContext = {
+  kind: "surface",
+  authority: DEFAULT_AUTHORITY,
+  caller: { kind: "anonymous-subagent" },
+  frozenSummary: null,
+  frozenUserBody: "",
+  frozenActiveMemoryBody: "",
+};
+
+/** A second active scope used to simulate the parent moving to a different Surface. */
+export const OTHER_SCOPE: ActiveScope = {
+  chatId: 456,
+  topicScope: "general",
+};
+
+/** A second Surface and authority representing the moved parent. */
+export const OTHER_SURFACE: Surface = dmSurface(456);
+
+export const OTHER_AUTHORITY: SurfaceMemoryAuthority = {
+  kind: "surface",
+  sourceSurfaceId: surfaceId(OTHER_SURFACE),
+  activeScope: OTHER_SCOPE,
+};
+
+export const OTHER_PARENT_CAPTURE: CapturedMemoryContext = {
+  kind: "surface",
+  authority: OTHER_AUTHORITY,
+  caller: { kind: "main" },
+  frozenSummary: null,
+  frozenUserBody: "",
+  frozenActiveMemoryBody: "",
 };
 
 type Listener = (event: Record<string, unknown>) => void;

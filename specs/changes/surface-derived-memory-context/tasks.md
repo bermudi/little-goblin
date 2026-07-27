@@ -28,12 +28,12 @@
 
 ## Phase 4: Capture subagent invocation context
 
-- [ ] Replace subagent locator/live-`activeScope` inputs with parent `SurfaceMemoryAuthority`, deriving generic or named caller descriptors separately.
-- [ ] Capture a fresh invocation-lifetime frozen summary at spawn and recursively pass the same inherited Surface authority to children.
-- [ ] Close spawn and nested tool factories over the invocation capture; remove binding access from subagent execution and memory tools.
-- [ ] Require revival callers to provide the reviving parent's capture, preserve pi history, and treat persisted legacy `activeScope` as audit/migration metadata only.
-- [ ] Keep internal dreaming extraction outside ordinary subagent memory capture and tool registration.
-- [ ] Add single-harness subagent suites for movement after spawn, recursive inheritance, named persona separation, revival after movement/restart, missing parent context, legacy metadata, and internal exclusion; run `bun test src/subagents/mod.test.ts` and `bun run typecheck`.
+- [x] Replace subagent locator/live-`activeScope` inputs with parent `SurfaceMemoryAuthority`, deriving generic or named caller descriptors separately.
+- [x] Capture a fresh invocation-lifetime frozen summary at spawn and recursively pass the same inherited Surface authority to children.
+- [x] Close spawn and nested tool factories over the invocation capture; remove binding access from subagent execution and memory tools.
+- [x] Require revival callers to provide the reviving parent's capture, preserve pi history, and treat persisted legacy `activeScope` as audit/migration metadata only.
+- [x] Keep internal dreaming extraction outside ordinary subagent memory capture and tool registration.
+- [x] Add single-harness subagent suites for movement after spawn, recursive inheritance, named persona separation, revival after movement/restart, missing parent context, legacy metadata, and internal exclusion; run `bun test src/subagents/mod.test.ts` and `bun run typecheck`.
 
 ## Phase 5: Remove duplicate authority paths
 

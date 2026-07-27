@@ -11,7 +11,7 @@
 
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { ActiveScope } from "../memory/mod.ts";
+import type { CapturedMemoryContext } from "../memory/mod.ts";
 import type { SubagentRunner } from "./mod.ts";
 import { listNamedAgents } from "./paths.ts";
 
@@ -84,7 +84,7 @@ export function createSpawnSubagentTool(
   runner: SubagentRunner,
   depth: number,
   sessionId: string,
-  activeScope: ActiveScope,
+  parentCapture: CapturedMemoryContext,
   onStatusUpdate?: (message: string) => void,
   timeoutMs?: number,
 ): ToolDefinition {
@@ -101,7 +101,7 @@ export function createSpawnSubagentTool(
     ) {
       const handle = await runner.spawn({
         prompt: params.prompt,
-        activeScope,
+        authority: parentCapture.authority,
         name: params.name,
         depth,
         spawnedBy: sessionId,
@@ -158,6 +158,7 @@ const REVIVE_PROMPT_GUIDELINES = [
  */
 export function createReviveSubagentTool(
   runner: SubagentRunner,
+  parentCapture: CapturedMemoryContext,
   onStatusUpdate?: (message: string) => void,
   timeoutMs?: number,
 ): ToolDefinition {
@@ -174,7 +175,7 @@ export function createReviveSubagentTool(
     ) {
       const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const result = await Promise.race([
-        runner.revive(params.id, params.prompt, onStatusUpdate),
+        runner.revive(parentCapture, params.id, params.prompt, onStatusUpdate),
         timeoutReject(effectiveTimeout, params.id, runner),
       ]);
       return {

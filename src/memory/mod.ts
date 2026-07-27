@@ -39,7 +39,9 @@ export {
 } from "./context.ts";
 export {
   assertSurfaceBackedAuthorityInput,
+  captureInvocationMemoryContext,
   captureRuntimeMemoryContext,
+  type CaptureInvocationMemoryContextArgs,
   type CaptureRuntimeMemoryContextArgs,
   type CapturedMemoryContext,
   type InternalMemoryContext,

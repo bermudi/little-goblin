@@ -379,7 +379,11 @@ describe("handleCommand", () => {
 
     const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive abc inspect again", harness }));
     expect(result.reply).toBe("Revived subagent `abc`:\ndone");
-    expect(revive).toHaveBeenCalledWith("abc", "inspect again");
+    const calls = revive.mock.calls as unknown as unknown[][];
+    expect(calls.length).toBe(1);
+    expect(calls[0]![1]).toBe("abc");
+    expect(calls[0]![2]).toBe("inspect again");
+    expect((calls[0]![0] as { kind: string }).kind).toBe("surface");
   });
 
   it("rejects /revive without a prompt", async () => {

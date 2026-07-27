@@ -16,3 +16,4 @@ await import("./test/lifecycle.suite.ts");
 await import("./test/guards.suite.ts");
 await import("./test/tools.suite.ts");
 await import("./test/memory.suite.ts");
+await import("./test/surface-authority.suite.ts");

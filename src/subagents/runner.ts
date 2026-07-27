@@ -23,7 +23,13 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import { memoryDir, MemoryStore, EmbeddingProvider, type ActiveScope } from "../memory/mod.ts";
+import {
+  memoryDir,
+  MemoryStore,
+  EmbeddingProvider,
+  type CapturedMemoryContext,
+  type SurfaceMemoryCaller,
+} from "../memory/mod.ts";
 import { createPiServices, type PiServices } from "../pi-host.ts";
 import { workspacePath } from "../workspace/paths.ts";
 import {
@@ -58,7 +64,7 @@ export type SubagentToolFactory = (
   runner: SubagentRunner,
   depth: number,
   sessionId: string,
-  activeScope: ActiveScope,
+  parentCapture: CapturedMemoryContext,
   onStatusUpdate?: (message: string) => void,
 ) => ToolDefinition[];
 
@@ -137,7 +143,18 @@ export class SubagentRunner {
     const id = randomUUID();
     const spawnedAt = new Date().toISOString();
     const spawnedBy = options.spawnedBy ?? null;
-    const activeScope = childActiveScope(options.activeScope);
+    const authority = options.authority;
+    if (
+      authority.kind !== "surface" ||
+      typeof authority.sourceSurfaceId !== "string" ||
+      authority.activeScope === undefined
+    ) {
+      throw new Error("Subagent spawn requires a SurfaceMemoryAuthority");
+    }
+    const caller: SurfaceMemoryCaller =
+      options.name !== undefined
+        ? { kind: "named-subagent", name: options.name }
+        : { kind: "anonymous-subagent" };
 
     let role: SubagentRole;
     let dir: string;
@@ -168,7 +185,7 @@ export class SubagentRunner {
       role,
       name: displayName,
       spawnedBy,
-      activeScope,
+      activeScope: authority.activeScope,
       depth: newDepth,
       createdAt: spawnedAt,
       status: "running",
@@ -199,7 +216,8 @@ export class SubagentRunner {
       name: displayName,
       role,
       status: "running",
-      activeScope,
+      authority,
+      caller,
       depth: newDepth,
       spawnedAt,
       spawnedBy,
@@ -262,7 +280,12 @@ export class SubagentRunner {
    *
    * Throws "Subagent not found" if no `meta.json` exists for the given id.
    */
-  async revive(id: string, prompt: string, onStatusUpdate?: (message: string) => void): Promise<string> {
+  async revive(
+    parentCapture: CapturedMemoryContext,
+    id: string,
+    prompt: string,
+    onStatusUpdate?: (message: string) => void,
+  ): Promise<string> {
     if (this.disposed) {
       throw new Error("SubagentRunner is disposed");
     }
@@ -280,6 +303,15 @@ export class SubagentRunner {
 
     this.revivesInProgress.add(id);
 
+    if (
+      parentCapture.kind !== "surface" ||
+      parentCapture.authority.kind !== "surface" ||
+      typeof parentCapture.authority.sourceSurfaceId !== "string"
+    ) {
+      this.revivesInProgress.delete(id);
+      throw new Error("Revival requires a Surface-backed parent memory context");
+    }
+
     // Locate meta.json: could be generic or named. Scan both trees.
     const { dir, meta } = loadSubagentMeta(this.cfg.goblinHome, id);
 
@@ -289,11 +321,19 @@ export class SubagentRunner {
       throw new Error(`Subagent not found`);
     }
 
+    // Revival is a new invocation: it inherits the reviving parent runtime's
+    // captured Surface authority. The persisted legacy activeScope is audit-only.
+    const authority = parentCapture.authority;
+    const caller: SurfaceMemoryCaller =
+      meta.role === "named" && meta.name !== null
+        ? { kind: "named-subagent", name: meta.name }
+        : { kind: "anonymous-subagent" };
+
     // Validate that the topic directory exists if the subagent has a topic scope.
     // This catches cases where the topic was archived since the subagent was last run.
-    if (meta.activeScope?.topicScope !== undefined && meta.activeScope.topicScope !== "general") {
-      const chatId = meta.activeScope.chatId;
-      const topicId = meta.activeScope.topicScope.topicId;
+    if (authority.activeScope.topicScope !== "general") {
+      const chatId = authority.activeScope.chatId;
+      const topicId = authority.activeScope.topicScope.topicId;
       const topicDir = join(memoryDir(this.cfg.goblinHome), "topics", String(chatId), String(topicId));
       if (!existsSync(topicDir)) {
         this.revivesInProgress.delete(id);
@@ -336,7 +376,8 @@ export class SubagentRunner {
       name: meta.name ?? null,
       role: meta.role,
       status: "running",
-      activeScope: reviveActiveScope(meta),
+      authority,
+      caller,
       depth: meta.depth,
       spawnedAt: meta.createdAt,
       spawnedBy: meta.spawnedBy ?? null,
@@ -694,34 +735,10 @@ export class SubagentRunner {
     return {
       cfg: this.cfg,
       services,
-      buildTools: (depth, sessionId, activeScope, onStatusUpdate) =>
-        this.toolFactory ? this.toolFactory(this, depth, sessionId, activeScope, onStatusUpdate) : [],
+      buildTools: (depth, sessionId, parentCapture, onStatusUpdate) =>
+        this.toolFactory ? this.toolFactory(this, depth, sessionId, parentCapture, onStatusUpdate) : [],
       memoryStore,
     };
   }
 }
 
-function childActiveScope(parentScope: ActiveScope | undefined): ActiveScope {
-  if (parentScope === undefined) {
-    throw new Error("activeScope is required for subagent spawning");
-  }
-  // Persona identity is NOT part of `ActiveScope` — it lives in the caller
-  // descriptor (`MemoryCaller`). The child inherits the parent's routing
-  // facts (chatId + topicScope) unchanged; named identity is derived from
-  // the child role at execution time.
-  return {
-    chatId: parentScope.chatId,
-    topicScope: parentScope.topicScope,
-  };
-}
-
-function reviveActiveScope(meta: SubagentMeta): ActiveScope {
-  // Persisted legacy `activeScope` may carry a `namedAgent` field from before
-  // `surface-derived-memory-context`; that field is audit/migration data only
-  // and is dropped here. Live persona authority comes from the reviving parent
-  // runtime's caller descriptor, not from persisted scope metadata.
-  return {
-    chatId: meta.activeScope.chatId,
-    topicScope: meta.activeScope.topicScope,
-  };
-}

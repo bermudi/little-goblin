@@ -424,7 +424,7 @@ describe("MetricsStore", () => {
     });
 
     it("rejects an invalid session id when reading a summary", () => {
-      expect(() => readMetricsSummary(tmp, "abc")).toThrow(/Invalid session id/);
+      expect(() => readMetricsSummary(tmp, "../etc/passwd")).toThrow(/Invalid session id/);
     });
   });
 });

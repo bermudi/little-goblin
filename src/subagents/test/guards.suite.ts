@@ -6,7 +6,7 @@ import { markCompleted } from "../execution.ts";
 import type { SubagentInstance, SubagentMeta } from "../types.ts";
 import {
   createTestHome,
-  DEFAULT_SCOPE,
+  DEFAULT_AUTHORITY,
   flush,
   installStandardPiMock,
   makeConfig,
@@ -63,7 +63,7 @@ describe("SubagentRunner — cancel guards", () => {
       },
     }));
 
-    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
     await flush();
 
     await runner.cancel(handle.id);
@@ -77,7 +77,7 @@ describe("SubagentRunner — cancel guards", () => {
   });
 
   it("cancel on completed subagent is a no-op (doesn't overwrite status)", async () => {
-    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
     await flush();
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
@@ -93,7 +93,7 @@ describe("SubagentRunner — cancel guards", () => {
     sessionHolder.sendUserMessage = mock(async () => {
       throw new Error("boom");
     });
-    const handle = await runner.spawn({ prompt: "trigger", activeScope: DEFAULT_SCOPE });
+    const handle = await runner.spawn({ prompt: "trigger", authority: DEFAULT_AUTHORITY });
     await flush();
     await flush();
     await expect(handle.result).rejects.toThrow("boom");
@@ -145,7 +145,7 @@ describe("SubagentRunner — startup error handling", () => {
       },
     }));
 
-    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
     await flush();
     await flush();
 
@@ -174,7 +174,7 @@ describe("SubagentRunner — double-cancel race guard", () => {
   });
 
   it("second cancel is a no-op when first cancels synchronously", async () => {
-    const handle = await runner.spawn({ prompt: "work", activeScope: DEFAULT_SCOPE });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
     await flush();
 
     await Promise.all([runner.cancel(handle.id), runner.cancel(handle.id)]);
@@ -199,7 +199,7 @@ describe("SubagentRunner — cancel vs agent_end race", () => {
   });
 
   it("agent_end arriving during cancel() does not overwrite cancelled status", async () => {
-    const handle = await runner.spawn({ prompt: "test", activeScope: DEFAULT_SCOPE });
+    const handle = await runner.spawn({ prompt: "test", authority: DEFAULT_AUTHORITY });
     await flush();
 
     sessionHolder.abort = mock(async () => {
@@ -216,7 +216,7 @@ describe("SubagentRunner — cancel vs agent_end race", () => {
   });
 
   it("error event arriving during cancel() does not overwrite cancelled status", async () => {
-    const handle = await runner.spawn({ prompt: "test", activeScope: DEFAULT_SCOPE });
+    const handle = await runner.spawn({ prompt: "test", authority: DEFAULT_AUTHORITY });
     await flush();
 
     sessionHolder.abort = mock(async () => {
@@ -245,14 +245,14 @@ describe("SubagentRunner — parent status guard", () => {
   it("allows child spawn when parent is running", async () => {
     const parent = await runner.spawn({
       prompt: "parent",
-      activeScope: DEFAULT_SCOPE,
+      authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
     });
     await flush();
 
     const child = await runner.spawn({
       prompt: "child",
-      activeScope: DEFAULT_SCOPE,
+      authority: DEFAULT_AUTHORITY,
       spawnedBy: parent.id,
       depth: 1,
     });
@@ -264,7 +264,7 @@ describe("SubagentRunner — parent status guard", () => {
   it("rejects child spawn when parent is completed", async () => {
     const parent = await runner.spawn({
       prompt: "parent",
-      activeScope: DEFAULT_SCOPE,
+      authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
     });
     await flush();
@@ -278,7 +278,7 @@ describe("SubagentRunner — parent status guard", () => {
     await expect(
       runner.spawn({
         prompt: "child",
-        activeScope: DEFAULT_SCOPE,
+        authority: DEFAULT_AUTHORITY,
         spawnedBy: parent.id,
         depth: 1,
       }),
@@ -288,7 +288,7 @@ describe("SubagentRunner — parent status guard", () => {
   it("rejects child spawn when parent is cancelled", async () => {
     const parent = await runner.spawn({
       prompt: "parent",
-      activeScope: DEFAULT_SCOPE,
+      authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
     });
     await flush();
@@ -297,7 +297,7 @@ describe("SubagentRunner — parent status guard", () => {
     await expect(
       runner.spawn({
         prompt: "child",
-        activeScope: DEFAULT_SCOPE,
+        authority: DEFAULT_AUTHORITY,
         spawnedBy: parent.id,
         depth: 1,
       }),
@@ -307,7 +307,7 @@ describe("SubagentRunner — parent status guard", () => {
   it("allows top-level spawn with a session id that is not an active subagent", async () => {
     const handle = await runner.spawn({
       prompt: "top",
-      activeScope: DEFAULT_SCOPE,
+      authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-xyz",
     });
     await flush();

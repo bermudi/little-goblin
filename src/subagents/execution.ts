@@ -26,14 +26,13 @@ import {
   MemoryStore,
   createMemorySearchTool,
   createMemoryWriteTool,
-  formatFrozenSummary,
+  captureInvocationMemoryContext,
   formatRelevantMemory,
-  type MemoryCaller,
+  type CapturedMemoryContext,
 } from "../memory/mod.ts";
 import { resolveModel } from "../agent/models.ts";
 import { log } from "../log.ts";
 import { piAgentDir, type PiServices } from "../pi-host.ts";
-import type { ActiveScope } from "../memory/mod.ts";
 import { persistMetaPatch } from "./meta.ts";
 import { buildResourceLoader } from "./named-agents.ts";
 import type { SubagentInstance, SubagentStatus } from "./types.ts";
@@ -51,7 +50,7 @@ export interface ExecutionDeps {
   buildTools: (
     depth: number,
     sessionId: string,
-    activeScope: ActiveScope,
+    parentCapture: CapturedMemoryContext,
     onStatusUpdate?: (msg: string) => void,
   ) => ToolDefinition[];
 }
@@ -119,22 +118,20 @@ async function _runInstanceInner(
     return "";
   }
 
-  // The caller descriptor is constant across this run: a named subagent
-  // sees only its own persona; an anonymous subagent sees none. Compute
-  // once and reuse for the memory tools and the per-turn snapshot.
-  const caller: MemoryCaller =
-    instance.role === "named" && instance.name !== null
-      ? { kind: "named-subagent", name: instance.name }
-      : { kind: "anonymous-subagent" };
+  // Capture a fresh invocation-lifetime memory context from the inherited
+  // Surface authority and the child caller descriptor. The summary, search
+  // boundary, and write scope are frozen for this run.
+  const capture = await captureInvocationMemoryContext({
+    authority: instance.authority,
+    caller: instance.caller,
+    store: memoryStore,
+  });
+  instance.capture = capture;
 
   // Frozen memory summary is injected into the subagent's system prompt at
   // session creation (mirrors the main AgentRunner init path). The bounded
   // per-turn relevant-memory aside is sent as a next-turn custom message.
-  const frozenSummary = await formatFrozenSummary({
-    store: memoryStore,
-    activeScope: instance.activeScope,
-    caller,
-  });
+  const frozenSummary = capture.frozenSummary;
 
   const resourceLoader = await buildResourceLoader({
     home: cfg.goblinHome,
@@ -157,16 +154,16 @@ async function _runInstanceInner(
     // callback. See specs/canon/subagents/spec.md "No beta tools for subagents".
     // Pass rawStatusCallback to nested subagent to prevent prefix stacking.
     customTools: [
-      ...buildTools(instance.depth, instance.id, instance.activeScope, instance.rawStatusCallback),
+      ...buildTools(instance.depth, instance.id, capture, instance.rawStatusCallback),
       // memory_search subsumes the old memory_read and memory_read_index tools.
       // Persona gating: a named subagent searches its own persona scope; an
       // anonymous subagent searches none.
       createMemorySearchTool({
         store: memoryStore,
-        activeScope: instance.activeScope,
-        caller,
+        activeScope: capture.authority.activeScope,
+        caller: capture.caller,
       }),
-      createMemoryWriteTool({ store: memoryStore, activeScope: instance.activeScope, caller }),
+      createMemoryWriteTool({ store: memoryStore, activeScope: capture.authority.activeScope, caller: capture.caller }),
     ],
     ...(resourceLoader ? { resourceLoader } : {}),
   });
@@ -232,9 +229,11 @@ async function _runInstanceInner(
   try {
     const relevantAside = await formatRelevantMemory({
       store: memoryStore,
-      activeScope: instance.activeScope,
-      caller,
+      activeScope: capture.authority.activeScope,
+      caller: capture.caller,
       promptText: instance.initialPrompt,
+      frozenUserBody: capture.frozenUserBody,
+      frozenActiveMemoryBody: capture.frozenActiveMemoryBody,
     });
     if (relevantAside !== null) {
       await session.sendCustomMessage(relevantAside, { deliverAs: "nextTurn" });

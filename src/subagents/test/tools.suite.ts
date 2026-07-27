@@ -9,7 +9,8 @@ import {
 } from "../paths.ts";
 import {
   createTestHome,
-  DEFAULT_SCOPE,
+  DEFAULT_AUTHORITY,
+  DEFAULT_PARENT_CAPTURE,
   flush,
   installStandardPiMock,
   makeConfig,
@@ -36,7 +37,7 @@ describe("spawn_subagent tool", () => {
 
   it("has the correct name and description", async () => {
     const { createSpawnSubagentTool } = await import("../tool.ts");
-    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_SCOPE);
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_PARENT_CAPTURE);
 
     expect(tool.name).toBe("spawn_subagent");
     expect(tool.label).toBe("Spawn Subagent");
@@ -45,7 +46,7 @@ describe("spawn_subagent tool", () => {
 
   it("execute returns the subagent response text", async () => {
     const { createSpawnSubagentTool } = await import("../tool.ts");
-    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_SCOPE);
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_PARENT_CAPTURE);
 
     const execPromise = tool.execute(
       "tc-1",
@@ -74,7 +75,7 @@ describe("spawn_subagent tool", () => {
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# R");
 
     const { createSpawnSubagentTool } = await import("../tool.ts");
-    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_SCOPE);
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_PARENT_CAPTURE);
 
     const execPromise = tool.execute(
       "tc-1",
@@ -95,7 +96,7 @@ describe("spawn_subagent tool", () => {
 
   it("propagates spawn errors as tool errors", async () => {
     const { createSpawnSubagentTool } = await import("../tool.ts");
-    const tool = createSpawnSubagentTool(runner, 3, "sess-1", DEFAULT_SCOPE);
+    const tool = createSpawnSubagentTool(runner, 3, "sess-1", DEFAULT_PARENT_CAPTURE);
 
     await expect(tool.execute("tc-1", { prompt: "deep" }, undefined, undefined, {} as never)).rejects.toThrow(
       /Maximum subagent depth reached/,
@@ -119,7 +120,7 @@ describe("revive_subagent tool", () => {
 
   it("has the correct name and description", async () => {
     const { createReviveSubagentTool } = await import("../tool.ts");
-    const tool = createReviveSubagentTool(runner);
+    const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE);
 
     expect(tool.name).toBe("revive_subagent");
     expect(tool.label).toBe("Revive Subagent");
@@ -128,9 +129,9 @@ describe("revive_subagent tool", () => {
 
   it("execute revives a completed subagent with a new prompt", async () => {
     const { createReviveSubagentTool } = await import("../tool.ts");
-    const tool = createReviveSubagentTool(runner);
+    const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE);
 
-    const handle = await runner.spawn({ prompt: "first", activeScope: DEFAULT_SCOPE });
+    const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -154,7 +155,7 @@ describe("revive_subagent tool", () => {
 
   it("propagates revive errors as tool errors", async () => {
     const { createReviveSubagentTool } = await import("../tool.ts");
-    const tool = createReviveSubagentTool(runner);
+    const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE);
 
     await expect(
       tool.execute("tc-rev-1", { id: "nonexistent", prompt: "hi" }, undefined, undefined, {} as never),
@@ -178,7 +179,7 @@ describe("spawn_subagent tool — timeout", () => {
 
   it("times out and cancels the subagent after timeoutMs", async () => {
     const { createSpawnSubagentTool } = await import("../tool.ts");
-    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_SCOPE, undefined, 50);
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_PARENT_CAPTURE, undefined, 50);
 
     const execPromise = tool.execute(
       "tc-1",
@@ -199,7 +200,7 @@ describe("spawn_subagent tool — timeout", () => {
 
   it("completes normally if subagent finishes before timeout", async () => {
     const { createSpawnSubagentTool } = await import("../tool.ts");
-    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_SCOPE, undefined, 10000);
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_PARENT_CAPTURE, undefined, 10000);
 
     const execPromise = tool.execute(
       "tc-1",
@@ -238,7 +239,7 @@ describe("revive_subagent tool — timeout", () => {
   });
 
   async function spawnAndComplete(): Promise<string> {
-    const handle = await runner.spawn({ prompt: "first", activeScope: DEFAULT_SCOPE });
+    const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -256,7 +257,7 @@ describe("revive_subagent tool — timeout", () => {
     resetPiMockState();
 
     const { createReviveSubagentTool } = await import("../tool.ts");
-    const tool = createReviveSubagentTool(runner, undefined, 50);
+    const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE, undefined, 50);
 
     const execPromise = tool.execute(
       "tc-1",
@@ -280,7 +281,7 @@ describe("revive_subagent tool — timeout", () => {
     resetPiMockState();
 
     const { createReviveSubagentTool } = await import("../tool.ts");
-    const tool = createReviveSubagentTool(runner, undefined, 10000);
+    const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE, undefined, 10000);
 
     const execPromise = tool.execute(
       "tc-1",

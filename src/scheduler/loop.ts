@@ -4,7 +4,7 @@ import { heartbeatMdPath } from "../workspace/paths.ts";
 import { heartbeatMdPathForSession } from "../sessions/paths.ts";
 import type { SessionState } from "../sessions/mod.ts";
 import type { Surface } from "../surface.ts";
-import type { ActiveScope } from "../memory/scope.ts";
+
 import type { MemoryEngine } from "../memory/engine.ts";
 import { DREAMING_CATEGORIES, type DreamingCategory } from "../memory/dreaming.ts";
 import type { Candidate, CandidateExtractor } from "../memory/dreaming.ts";
@@ -536,12 +536,8 @@ ${formatted}`;
     const sessions = this.sessionSource.list?.() ?? [];
     for (const session of sessions) {
       if (session.chatId === 0) continue;
-      const activeScope: ActiveScope = {
-        chatId: session.chatId,
-        topicScope: session.topicId !== undefined ? { topicId: session.topicId } : "general",
-      };
       try {
-        await this.memoryEngine.dreaming.runLightSleep(session.id, activeScope);
+        await this.memoryEngine.dreaming.runLightSleep(session.id);
       } catch (err) {
         log.warn("scheduled dreaming light sleep failed", {
           sessionId: session.id,

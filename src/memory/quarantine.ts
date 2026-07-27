@@ -22,7 +22,9 @@ export type QuarantineReason =
   | "procedural_noise"
   | "skip"
   | "review"
-  | "malformed";
+  | "malformed"
+  | "ambiguous_source_scope"
+  | "no_agent_authority";
 
 export interface QuarantineRecord {
   /** ISO timestamp of the rejection. */

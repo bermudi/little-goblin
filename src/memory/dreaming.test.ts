@@ -5,11 +5,28 @@ import { join } from "node:path";
 import { DreamingPipeline, type CandidateExtractor } from "./dreaming.ts";
 import { MemoryStore } from "./store.ts";
 import { sessionDir, transcriptPath } from "../sessions/paths.ts";
-import type { ActiveScope } from "./scope.ts";
+import { surfaceId, topicSurface } from "../surface.ts";
 
 // Keep the global budget high so overflow/compaction behaviour does not
 // interfere with the deterministic assertions in this file.
 process.env.GOBLIN_MEMORY_BUDGET_CHARS = "1000000";
+
+function writeTranscriptLine(
+  home: string,
+  sessionId: string,
+  line: { text: string; sourceSurfaceId?: string; role?: "user" | "assistant" },
+): void {
+  const entry: Record<string, unknown> = {
+    ts: new Date().toISOString(),
+    role: line.role ?? "user",
+    content: [{ type: "text", text: line.text }],
+  };
+  if (line.sourceSurfaceId !== undefined) {
+    entry.sourceSurfaceId = line.sourceSurfaceId;
+  }
+  mkdirSync(sessionDir(home, sessionId), { recursive: true });
+  writeFileSync(transcriptPath(home, sessionId), JSON.stringify(entry) + "\n", { flag: "a", encoding: "utf-8" });
+}
 
 describe("DreamingPipeline", () => {
   let tmp: string;
@@ -73,21 +90,53 @@ describe("DreamingPipeline", () => {
 
     const rows = store.db.database
       .query<
-        { id: string; category: string | null; entry_kind: string; promoted_at: number | null },
+        { id: string; category: string | null; entry_kind: string; promoted_at: number | null; scope: string },
         Record<string, never>
-      >("SELECT id, category, entry_kind, promoted_at FROM memory_entries WHERE entry_kind IN ('memory', 'user')")
+      >("SELECT id, category, entry_kind, promoted_at, scope FROM memory_entries WHERE entry_kind IN ('memory', 'user')")
       .all({});
     const byId = new Map(rows.map((r) => [r.id, r]));
 
     expect(byId.get(id1)?.category).toBe("fact");
     expect(byId.get(id1)?.promoted_at).not.toBeNull();
+    expect(byId.get(id1)?.scope).toBe("general");
     expect(byId.get(id2)?.category).toBe("fact");
     expect(byId.get(id2)?.promoted_at).not.toBeNull();
+    expect(byId.get(id2)?.scope).toBe("user");
     expect(byId.get(id3)?.category).toBe("fact");
     expect(rows.filter((r) => r.category === "short_term")).toHaveLength(0);
   });
 
-  it("runRemSleep promotes recurring tags to theme entries", async () => {
+  it("runRemSleep promotes recurring tags to the proven topic scope", async () => {
+    const topicSurfaceId = surfaceId(topicSurface("private", 12345, 7));
+    const sessions = ["abcdef1000", "abcdef1001", "abcdef1002"];
+    for (const sessionId of sessions) {
+      await store.addEntry({
+        scope: `transcript/${sessionId}`,
+        entryKind: "transcript",
+        text: "backup",
+        origin: "transcript",
+        sourceSession: sessionId,
+        sourceSurfaceId: topicSurfaceId,
+      });
+    }
+
+    await pipeline.runRemSleep();
+
+    const rows = store.db.database
+      .query<
+        { text: string; category: string | null; source_session: string | null; scope: string },
+        Record<string, never>
+      >("SELECT text, category, source_session, scope FROM memory_entries WHERE entry_kind = 'memory'")
+      .all({});
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.category).toBe("theme");
+    expect(rows[0]?.text).toContain("backup");
+    expect(rows[0]?.text).toContain("3 sessions");
+    expect(rows[0]?.scope).toBe("topics/12345/7");
+  });
+
+  it("runRemSleep falls back to general when no provenance exists", async () => {
     const sessions = ["abcdef1000", "abcdef1001", "abcdef1002"];
     for (const sessionId of sessions) {
       await store.addEntry({
@@ -103,35 +152,209 @@ describe("DreamingPipeline", () => {
 
     const rows = store.db.database
       .query<
-        { text: string; category: string | null; source_session: string | null },
+        { text: string; category: string | null; scope: string },
         Record<string, never>
-      >("SELECT text, category, source_session FROM memory_entries WHERE entry_kind = 'memory' AND scope = 'general'")
+      >("SELECT text, category, scope FROM memory_entries WHERE entry_kind = 'memory'")
       .all({});
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.category).toBe("theme");
-    expect(rows[0]?.text).toContain("backup");
-    expect(rows[0]?.text).toContain("3 sessions");
+    expect(rows[0]?.scope).toBe("general");
+  });
+
+  it("runRemSleep tie-breaks proven scopes deterministically", async () => {
+    const surfaceA = surfaceId(topicSurface("private", 100, 1));
+    const surfaceB = surfaceId(topicSurface("private", 100, 2));
+    const sessions = ["s1", "s2", "s3"];
+    // Three sessions, each contributes one chunk to scope A and one to scope B, with identical updates.
+    for (const sessionId of sessions) {
+      await store.addEntry({
+        scope: `transcript/${sessionId}`,
+        entryKind: "transcript",
+        text: "backup",
+        origin: "transcript",
+        sourceSession: sessionId,
+        sourceSurfaceId: surfaceA,
+      });
+      await store.addEntry({
+        scope: `transcript/${sessionId}`,
+        entryKind: "transcript",
+        text: "backup",
+        origin: "transcript",
+        sourceSession: sessionId,
+        sourceSurfaceId: surfaceB,
+      });
+    }
+
+    await pipeline.runRemSleep();
+
+    const rows = store.db.database
+      .query<
+        { scope: string; category: string | null },
+        Record<string, never>
+      >("SELECT scope, category FROM memory_entries WHERE entry_kind = 'memory'")
+      .all({});
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.category).toBe("theme");
+    // Same count, same update; scope name ascending picks topics/100/1.
+    expect(rows[0]?.scope).toBe("topics/100/1");
   });
 
   it("runLightSleep extracts and persists durable candidates", async () => {
     const sessionId = "abcdef1234";
-    const entry = {
-      ts: new Date().toISOString(),
-      role: "user",
-      content: [{ type: "text" as const, text: "I prefer dark mode" }],
-    };
-    mkdirSync(sessionDir(tmp, sessionId), { recursive: true });
-    writeFileSync(transcriptPath(tmp, sessionId), JSON.stringify(entry) + "\n", "utf-8");
+    writeTranscriptLine(tmp, sessionId, { text: "I prefer dark mode" });
 
     store.db.setMeta(
       `dreaming_cursor:${sessionId}`,
       JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
     );
 
-    const activeScope: ActiveScope = { chatId: 0, topicScope: "general" };
-    await pipeline.runLightSleep(sessionId, activeScope);
+    await pipeline.runLightSleep(sessionId);
 
     expect(store.readBody("user")).toBe("I prefer dark mode");
+  });
+
+  it("runLightSleep promotes moved history to the source topic scope", async () => {
+    const sessionId = "abcdef1234";
+    const topicA = surfaceId(topicSurface("private", 12345, 1));
+    const topicB = surfaceId(topicSurface("private", 12345, 2));
+    writeTranscriptLine(tmp, sessionId, { text: "plan A from topic one", sourceSurfaceId: topicA });
+    writeTranscriptLine(tmp, sessionId, { text: "plan B from topic two", sourceSurfaceId: topicB });
+
+    pipeline.setExtractor((lines) =>
+      lines.map((line) => ({
+        target: "memory" as const,
+        category: "fact" as const,
+        confidence: 0.9,
+        text: line.text,
+        source: {
+          sessionId,
+          lineRange: [line.index, line.index] as [number, number],
+          sourceRole: line.role === "user" ? "user" : "assistant",
+        },
+      })),
+    );
+
+    store.db.setMeta(
+      `dreaming_cursor:${sessionId}`,
+      JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
+    );
+
+    await pipeline.runLightSleep(sessionId);
+
+    const rows = store.db.database
+      .query<
+        { text: string; scope: string },
+        Record<string, never>
+      >("SELECT text, scope FROM memory_entries WHERE entry_kind = 'memory'")
+      .all({});
+
+    expect(rows).toHaveLength(2);
+    const byText = new Map(rows.map((r) => [r.text, r.scope]));
+    expect(byText.get("plan A from topic one")).toBe("topics/12345/1");
+    expect(byText.get("plan B from topic two")).toBe("topics/12345/2");
+  });
+
+  it("runLightSleep quarantines candidates spanning conflicting proven scopes", async () => {
+    const sessionId = "abcdef1234";
+    const topicA = surfaceId(topicSurface("private", 12345, 1));
+    const topicB = surfaceId(topicSurface("private", 12345, 2));
+    writeTranscriptLine(tmp, sessionId, { text: "first", sourceSurfaceId: topicA });
+    writeTranscriptLine(tmp, sessionId, { text: "second", sourceSurfaceId: topicB });
+
+    pipeline.setExtractor((lines) => [
+      {
+        target: "memory" as const,
+        category: "fact" as const,
+        confidence: 0.9,
+        text: "cross topic idea",
+        source: {
+          sessionId,
+          lineRange: [lines[0]!.index, lines[lines.length - 1]!.index] as [number, number],
+          sourceRole: "user",
+        },
+      },
+    ]);
+
+    store.db.setMeta(
+      `dreaming_cursor:${sessionId}`,
+      JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
+    );
+
+    await pipeline.runLightSleep(sessionId);
+
+    const memoryRows = store.db.database
+      .query<{ count: number }, Record<string, never>>("SELECT COUNT(*) AS count FROM memory_entries WHERE entry_kind = 'memory'")
+      .all({});
+    expect(memoryRows[0]?.count).toBe(0);
+  });
+
+  it("runLightSleep falls back to general for legacy unprovenanced candidates", async () => {
+    const sessionId = "abcdef1234";
+    writeTranscriptLine(tmp, sessionId, { text: "legacy note without provenance" });
+
+    pipeline.setExtractor((lines) =>
+      lines.map((line) => ({
+        target: "memory" as const,
+        category: "fact" as const,
+        confidence: 0.9,
+        text: line.text,
+        source: {
+          sessionId,
+          lineRange: [line.index, line.index] as [number, number],
+          sourceRole: "user",
+        },
+      })),
+    );
+
+    store.db.setMeta(
+      `dreaming_cursor:${sessionId}`,
+      JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
+    );
+
+    await pipeline.runLightSleep(sessionId);
+
+    const rows = store.db.database
+      .query<
+        { text: string; scope: string },
+        Record<string, never>
+      >("SELECT text, scope FROM memory_entries WHERE entry_kind = 'memory'")
+      .all({});
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.text).toBe("legacy note without provenance");
+    expect(rows[0]?.scope).toBe("general");
+  });
+
+  it("runLightSleep rejects agent targets from the extractor", async () => {
+    const sessionId = "abcdef1234";
+    writeTranscriptLine(tmp, sessionId, { text: "I want a researcher persona" });
+
+    pipeline.setExtractor((lines) =>
+      lines.map((line) => ({
+        target: "agent" as const,
+        category: "fact" as const,
+        confidence: 0.9,
+        text: line.text,
+        source: {
+          sessionId,
+          lineRange: [line.index, line.index] as [number, number],
+          sourceRole: "user",
+        },
+      })),
+    );
+
+    store.db.setMeta(
+      `dreaming_cursor:${sessionId}`,
+      JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
+    );
+
+    await pipeline.runLightSleep(sessionId);
+
+    const memoryRows = store.db.database
+      .query<{ count: number }, Record<string, never>>("SELECT COUNT(*) AS count FROM memory_entries WHERE entry_kind = 'memory'")
+      .all({});
+    expect(memoryRows[0]?.count).toBe(0);
   });
 });

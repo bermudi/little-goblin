@@ -1815,7 +1815,7 @@ describe("AgentRunner", () => {
     it("does not advance the dreaming cursor on agent_end (light sleep owns the cursor)", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
       const advanceSpy = mock((_sessionId: string) => undefined);
-      const runSpy = mock((_sessionId: string, _scope: unknown) => Promise.resolve());
+      const runSpy = mock((_sessionId: string) => Promise.resolve());
       dreaming.advanceCursor = advanceSpy as never;
       dreaming.runLightSleep = runSpy as never;
 
@@ -1836,7 +1836,7 @@ describe("AgentRunner", () => {
     it("does not advance the cursor or run light sleep for followUp (steer)", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
       const advanceSpy = mock((_sessionId: string) => undefined);
-      const runSpy = mock((_sessionId: string, _scope: unknown) => Promise.resolve());
+      const runSpy = mock((_sessionId: string) => Promise.resolve());
       dreaming.advanceCursor = advanceSpy as never;
       dreaming.runLightSleep = runSpy as never;
 

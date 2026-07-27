@@ -18,17 +18,17 @@ import { join, resolve } from "node:path";
 import { log } from "../log.ts";
 import { atomicWrite } from "../fs.ts";
 import { sessionDir } from "../sessions/paths.ts";
-import { loadState } from "../sessions/state.ts";
 import { countTranscriptLines, readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
+import { parseSurfaceId } from "../surface.ts";
 import { MemoryStore } from "./store.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
 import { checkMemorySafety } from "./safety.ts";
-import { appendQuarantine } from "./quarantine.ts";
+import { appendQuarantine, type QuarantineReason } from "./quarantine.ts";
 import {
   stripEntryMetadata,
   type EntrySourceRole,
 } from "./entry.ts";
-import { activeMemoryScopeFor, scopeTag, toMemoryScopePair, type ActiveScope, type MemoryScope } from "./scope.ts";
+import { activeMemoryScopeFor, resolveActiveScope, scopeTag, toMemoryScopePair, type MemoryScope } from "./scope.ts";
 import { memoryDir } from "./paths.ts";
 import { cosineSimilarity } from "./search.ts";
 
@@ -217,31 +217,66 @@ function legacyReflectionCursorPath(home: string, sessionId: string): string {
 // Scope resolution
 // ---------------------------------------------------------------------------
 
-function resolveScope(target: "user" | "memory" | "agent", activeScope: ActiveScope): MemoryScope | "user" {
-  if (target === "user") return "user";
-  // Dreaming's compatibility `activeScope` never carries persona identity
-  // (persona is now caller-owned, not ActiveScope-owned). The `target ===
-  // "agent"` branch is unreachable here in practice; fall through to the
-  // active memory scope so a malformed candidate never silently writes to a
-  // persona scope. Internal dreaming promotion scope is resolved later from
-  // transcript provenance, not from this compatibility scope.
-  return activeMemoryScopeFor(activeScope);
+function surfaceProvenanceScope(sourceSurfaceId: string): MemoryScope | null {
+  try {
+    const surface = parseSurfaceId(sourceSurfaceId);
+    return activeMemoryScopeFor(resolveActiveScope(surface));
+  } catch {
+    return null;
+  }
 }
 
-/**
- * Resolve the curated memory scope a session belongs to by reading its
- * persisted `state.json`. DMs and sessions without topic bindings map to
- * `"general"`; topic sessions map to the corresponding topic scope.
- */
-function resolveSessionScope(home: string, sessionId: string): MemoryScope | "general" {
-  const state = loadState(home, sessionId);
-  if (state !== null && typeof state.topicId === "number") {
-    return { topic: { chatId: state.chatId ?? 0, topicId: state.topicId } };
-  }
-  return "general";
+interface ProvenanceScopeResolution {
+  kind: "scope";
+  scope: MemoryScope | "user";
 }
+
+interface ProvenanceScopeQuarantine {
+  kind: "quarantine";
+  reason: QuarantineReason;
+  targetScopeTag: string;
+}
+
+type ScopeResolution = ProvenanceScopeResolution | ProvenanceScopeQuarantine;
 
 const REM_THEME_SESSION_THRESHOLD = 3;
+
+function getOrCreateSet<K>(map: Map<K, Set<string>>, key: K): Set<string> {
+  let set = map.get(key);
+  if (set === undefined) {
+    set = new Set();
+    map.set(key, set);
+  }
+  return set;
+}
+
+function getOrCreateMap<V>(map: Map<string, Map<string, V>>, key: string): Map<string, V> {
+  let inner = map.get(key);
+  if (inner === undefined) {
+    inner = new Map();
+    map.set(key, inner);
+  }
+  return inner;
+}
+
+interface ScopeScore {
+  scope: MemoryScope | "general";
+  sessions: Set<string>;
+  sessionUpdates: Map<string, number>;
+}
+
+function getOrCreateScopeScore(
+  map: Map<string, ScopeScore>,
+  key: string,
+  scope: MemoryScope | "general",
+): ScopeScore {
+  let score = map.get(key);
+  if (score === undefined) {
+    score = { scope, sessions: new Set(), sessionUpdates: new Map() };
+    map.set(key, score);
+  }
+  return score;
+}
 
 interface SessionState {
   running: Promise<void> | null;
@@ -352,8 +387,10 @@ export class DreamingPipeline {
   /**
    * Run light sleep for a session: read new transcript lines, extract
    * candidates, and promote durable ones. Coalesces overlapping calls.
+   * Promotion scope is derived from the transcript source Surface provenance
+   * carried by each candidate's line range, not from a session-level binding.
    */
-  async runLightSleep(sessionId: string, activeScope: ActiveScope): Promise<void> {
+  async runLightSleep(sessionId: string): Promise<void> {
     let state = this.sessions.get(sessionId);
     if (state === undefined) {
       state = { running: null, pending: false, pendingAdvance: false };
@@ -368,13 +405,13 @@ export class DreamingPipeline {
       return;
     }
     state.pending = false;
-    const p = this.lightSleepInner(sessionId, activeScope).finally(() => {
+    const p = this.lightSleepInner(sessionId).finally(() => {
       const s = this.sessions.get(sessionId);
       if (s === undefined) return;
       s.running = null;
       if (s.pending) {
         s.pending = false;
-        void this.runLightSleep(sessionId, activeScope);
+        void this.runLightSleep(sessionId);
       } else if (s.pendingAdvance) {
         s.pendingAdvance = false;
         try {
@@ -425,90 +462,96 @@ export class DreamingPipeline {
 
     const rows = this.store.db.database
       .query<
-        { tag: string; source_session: string; updated_at: number },
+        { tag: string; source_session: string; source_surface_id: string | null; updated_at: number },
         { $cutoff: number }
       >(
-        `SELECT t.tag, e.source_session, e.updated_at
+        `SELECT t.tag, e.source_session, e.source_surface_id, e.updated_at
          FROM memory_entry_tags t
          JOIN memory_entries e ON t.entry_id = e.id
          WHERE e.entry_kind = 'transcript' AND e.created_at >= $cutoff`,
       )
       .all({ $cutoff: cutoff });
 
-    const tagSessions = new Map<string, Set<string>>();
-    const tagSessionUpdated = new Map<string, Map<string, number>>();
-    for (const row of rows) {
-      let sessions = tagSessions.get(row.tag);
-      if (sessions === undefined) {
-        sessions = new Set();
-        tagSessions.set(row.tag, sessions);
-      }
-      sessions.add(row.source_session);
+    const tagAllSessions = new Map<string, Set<string>>();
+    const tagProvenanceScopes = new Map<
+      string,
+      Map<string, { scope: MemoryScope | "general"; sessions: Set<string>; sessionUpdates: Map<string, number> }>
+    >();
 
-      let updatedMap = tagSessionUpdated.get(row.tag);
-      if (updatedMap === undefined) {
-        updatedMap = new Map();
-        tagSessionUpdated.set(row.tag, updatedMap);
-      }
-      const prev = updatedMap.get(row.source_session) ?? 0;
+    for (const row of rows) {
+      const allSessions = getOrCreateSet(tagAllSessions, row.tag);
+      allSessions.add(row.source_session);
+
+      if (row.source_surface_id === null) continue;
+      const scope = surfaceProvenanceScope(row.source_surface_id);
+      if (scope === null) continue;
+
+      const scopeTagStr = scopeTag(scope);
+      const tagScopes = getOrCreateMap(tagProvenanceScopes, row.tag);
+      const scopeData = getOrCreateScopeScore(tagScopes, scopeTagStr, scope);
+      scopeData.sessions.add(row.source_session);
+      const prev = scopeData.sessionUpdates.get(row.source_session) ?? 0;
       if (row.updated_at > prev) {
-        updatedMap.set(row.source_session, row.updated_at);
+        scopeData.sessionUpdates.set(row.source_session, row.updated_at);
       }
     }
 
     let promoted = 0;
-    for (const [tag, sessions] of tagSessions) {
-      if (sessions.size < REM_THEME_SESSION_THRESHOLD) continue;
+    for (const [tag, allSessions] of tagAllSessions) {
+      if (allSessions.size < REM_THEME_SESSION_THRESHOLD) continue;
 
-      const updatedMap = tagSessionUpdated.get(tag)!;
-      const scopeScores = new Map<
-        string,
-        { scope: MemoryScope | "general"; scopeTag: string; count: number; maxUpdated: number }
-      >();
+      const provenanceScopes = tagProvenanceScopes.get(tag);
+      let chosenScope: MemoryScope | "general" | null = null;
+      let chosenSessionId = "";
 
-      for (const sessionId of sessions) {
-        const scope = resolveSessionScope(this.home, sessionId);
-        const tagStr = scopeTag(scope);
-        const existing = scopeScores.get(tagStr);
-        const updated = updatedMap.get(sessionId) ?? 0;
-        if (existing !== undefined) {
-          existing.count++;
-          if (updated > existing.maxUpdated) existing.maxUpdated = updated;
-        } else {
-          scopeScores.set(tagStr, { scope, scopeTag: tagStr, count: 1, maxUpdated: updated });
+      if (provenanceScopes !== undefined && provenanceScopes.size > 0) {
+        const scored = Array.from(provenanceScopes.values())
+          .map((v) => {
+            let maxUpdated = 0;
+            for (const updated of v.sessionUpdates.values()) {
+              if (updated > maxUpdated) maxUpdated = updated;
+            }
+            return { scope: v.scope, scopeTag: scopeTag(v.scope), count: v.sessions.size, maxUpdated };
+          })
+          .sort((a, b) => {
+            if (b.count !== a.count) return b.count - a.count;
+            if (b.maxUpdated !== a.maxUpdated) return b.maxUpdated - a.maxUpdated;
+            return a.scopeTag.localeCompare(b.scopeTag);
+          });
+        const chosen = scored[0];
+        if (chosen !== undefined) {
+          chosenScope = chosen.scope;
+          // Use the session with the most recent update in the winning scope as the source.
+          let bestSessionId = "";
+          let bestUpdated = 0;
+          for (const [sessionId, updated] of provenanceScopes.get(chosen.scopeTag)!.sessionUpdates) {
+            if (updated > bestUpdated) {
+              bestUpdated = updated;
+              bestSessionId = sessionId;
+            }
+          }
+          chosenSessionId = bestSessionId;
         }
       }
 
-      const scored = Array.from(scopeScores.values()).sort((a, b) => {
-        if (b.count !== a.count) return b.count - a.count;
-        if (b.maxUpdated !== a.maxUpdated) return b.maxUpdated - a.maxUpdated;
-        return a.scopeTag.localeCompare(b.scopeTag);
-      });
-      const chosen = scored[0];
-      if (chosen === undefined) continue;
+      if (chosenScope === null) {
+        chosenScope = "general";
+        chosenSessionId = allSessions.values().next().value ?? "";
+      }
 
-      const activeScope: ActiveScope =
-        chosen.scope === "general" || !("topic" in chosen.scope)
-          ? { chatId: 0, topicScope: "general" }
-          : {
-              chatId: chosen.scope.topic.chatId,
-              topicScope: { topicId: chosen.scope.topic.topicId },
-            };
-
-      const [firstSessionId] = sessions;
       const candidate: Candidate = {
         target: "memory",
         category: "theme",
         confidence: 0.8,
-        text: `Recurring theme: ${tag} (seen across ${sessions.size} sessions)`,
+        text: `Recurring theme: ${tag} (seen across ${allSessions.size} sessions)`,
         source: {
-          sessionId: firstSessionId!,
+          sessionId: chosenSessionId,
           lineRange: [0, 0],
           sourceRole: "system",
         },
       };
 
-      await this.processCandidate(candidate, activeScope);
+      await this.processCandidate(candidate, chosenScope);
       promoted++;
     }
 
@@ -542,9 +585,9 @@ export class DreamingPipeline {
     log.info("dreaming deep sleep completed", { promoted: promoted.changes, freed, stillOver });
   }
 
-  private async lightSleepInner(sessionId: string, activeScope: ActiveScope): Promise<void> {
+  private async lightSleepInner(sessionId: string): Promise<void> {
     try {
-      await this.runGlobalPhase(() => this.processSession(sessionId, activeScope));
+      await this.runGlobalPhase(() => this.processSession(sessionId));
     } catch (err) {
       log.warn("dreaming light sleep failed", {
         sessionId,
@@ -636,7 +679,7 @@ export class DreamingPipeline {
     return filtered;
   }
 
-  private async processSession(sessionId: string, activeScope: ActiveScope): Promise<void> {
+  private async processSession(sessionId: string): Promise<void> {
     if (this.extractor === null) return;
 
     const cursor = this.readCursor(sessionId);
@@ -667,7 +710,7 @@ export class DreamingPipeline {
     const newCandidates = candidates.filter((c) => !isProcessedCandidate(home, sessionId, c));
 
     for (const candidate of newCandidates) {
-      await this.processCandidate(candidate, activeScope);
+      await this.processCandidate(candidate);
       markCandidateProcessed(home, sessionId, candidate);
       this.metrics?.incrementCounter("memory_dreaming_candidate_total", null, 1);
     }
@@ -683,13 +726,79 @@ export class DreamingPipeline {
     pruneProcessedCandidates(home, sessionId);
   }
 
-  private async processCandidate(candidate: Candidate, activeScope: ActiveScope): Promise<void> {
+  private readTranscriptLinesInRange(sessionId: string, start: number, end: number): TranscriptLine[] {
+    const lines = readTranscriptAfter(this.home, sessionId, start);
+    return lines.filter((line) => line.index >= start && line.index <= end);
+  }
+
+  private resolveLineRangeScope(sessionId: string, lineRange: [number, number]): ScopeResolution {
+    const [start, end] = lineRange;
+    const lines = this.readTranscriptLinesInRange(sessionId, start, end);
+    const provenScopes = new Map<string, MemoryScope | "general">();
+    for (const line of lines) {
+      if (line.sourceSurfaceId === undefined) continue;
+      const scope = surfaceProvenanceScope(line.sourceSurfaceId);
+      if (scope !== null) {
+        provenScopes.set(scopeTag(scope), scope);
+      }
+    }
+
+    if (provenScopes.size === 0) {
+      return { kind: "scope", scope: "general" };
+    }
+    if (provenScopes.size === 1) {
+      const scope = provenScopes.values().next().value as MemoryScope | "general";
+      return { kind: "scope", scope };
+    }
+    return {
+      kind: "quarantine",
+      reason: "ambiguous_source_scope",
+      targetScopeTag: `transcript/${sessionId}`,
+    };
+  }
+
+  private resolveCandidateScope(
+    candidate: Candidate,
+    forcedScope?: MemoryScope | "user",
+  ): ScopeResolution {
+    if (forcedScope !== undefined) {
+      return { kind: "scope", scope: forcedScope };
+    }
+    if (candidate.target === "user") {
+      return { kind: "scope", scope: "user" };
+    }
+    if (candidate.target === "agent") {
+      return {
+        kind: "quarantine",
+        reason: "no_agent_authority",
+        targetScopeTag: `transcript/${candidate.source.sessionId}`,
+      };
+    }
+    return this.resolveLineRangeScope(candidate.source.sessionId, candidate.source.lineRange);
+  }
+
+  private async processCandidate(candidate: Candidate, forcedScope?: MemoryScope | "user"): Promise<void> {
     if (isProceduralNoise(candidate.text)) {
       this.metrics?.incrementCounter("memory_dreaming_quarantine_total", "procedural_noise", 1);
       return;
     }
 
-    const scope = resolveScope(candidate.target, activeScope);
+    const scopeResolution = this.resolveCandidateScope(candidate, forcedScope);
+    if (scopeResolution.kind === "quarantine") {
+      this.metrics?.incrementCounter("memory_dreaming_quarantine_total", scopeResolution.reason, 1);
+      appendQuarantine({
+        goblinHome: this.home,
+        sourceSession: candidate.source.sessionId,
+        targetScope: scopeResolution.targetScopeTag,
+        category: candidate.category,
+        reason: scopeResolution.reason,
+        content: candidate.text,
+      });
+      this.appendDreamDiary(`quarantine:${scopeResolution.reason}`, candidate, scopeResolution.targetScopeTag);
+      return;
+    }
+
+    const scope = scopeResolution.scope;
     const targetScopeTag = scopeTag(scope);
 
     if (candidate.category === "skip") {

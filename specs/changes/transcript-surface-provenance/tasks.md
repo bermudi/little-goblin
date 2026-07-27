@@ -30,12 +30,12 @@
 
 ## Phase 4: Make dreaming provenance-driven
 
-- [ ] Remove session-level ActiveScope and binding/state resolution from light-sleep and scheduler entry points; pass only the Conversation/session compatibility ID.
-- [ ] Resolve light-sleep memory targets from candidate line ranges: one proven scope promotes there, no proven scope falls back to `general`, and conflicting proven scopes quarantine as `ambiguous_source_scope`.
-- [ ] Keep user-memory targets global and reject/quarantine internal extractor `target = agent` proposals without named caller authority.
-- [ ] Make REM read canonical stored Surface provenance, count each Conversation at most once per projected scope, and preserve highest-count/latest-update/scope-name ordering.
-- [ ] Preserve already-selected short-term scope through deep sleep and keep model extraction on the explicit Surface-free internal context.
-- [ ] Add moved-topic, mixed-range, legacy fallback, deterministic REM, deep-preservation, and zero-chat internal tests; run dreaming/scheduler/quarantine tests and `bun run typecheck`.
+- [x] Remove session-level ActiveScope and binding/state resolution from light-sleep and scheduler entry points; pass only the Conversation/session compatibility ID.
+- [x] Resolve light-sleep memory targets from candidate line ranges: one proven scope promotes there, no proven scope falls back to `general`, and conflicting proven scopes quarantine as `ambiguous_source_scope`.
+- [x] Keep user-memory targets global and reject/quarantine internal extractor `target = agent` proposals without named caller authority.
+- [x] Make REM read canonical stored Surface provenance, count each Conversation at most once per projected scope, and preserve highest-count/latest-update/scope-name ordering.
+- [x] Preserve already-selected short-term scope through deep sleep and keep model extraction on the explicit Surface-free internal context.
+- [x] Add moved-topic, mixed-range, legacy fallback, deterministic REM, deep-preservation, and zero-chat internal tests; run dreaming/scheduler/quarantine tests and `bun run typecheck`.
 
 ## Phase 5: Gate startup and reject provenance guesses
 

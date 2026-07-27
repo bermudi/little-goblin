@@ -59,7 +59,7 @@ Subagent spawn receives the parent's `SurfaceMemoryAuthority`, never a locator o
 - named child → named-subagent caller;
 - recursive child → immediate parent's unchanged Surface authority plus its own caller.
 
-Each invocation captures its own frozen summary from that authority. A running invocation remains immutable if the parent Conversation later moves.
+Each invocation captures its own frozen summary from that authority. Attached invocations are cancelled when parent runtime invalidation replaces a Conversation; their recorded authority remains immutable until cancellation and is never retargeted to the destination Surface.
 
 Revival separates history from authority. Pi history is loaded from disk, but the new invocation receives the reviving parent's current capture. Legacy persisted `activeScope` may be parsed for diagnostics or migration only. Missing parent authority is an error before pi-session creation.
 

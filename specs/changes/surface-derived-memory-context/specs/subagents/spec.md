@@ -10,10 +10,10 @@ A generic child SHALL use the inherited ActiveScope with an anonymous-subagent c
 
 #### Scenario: Parent moves after spawn
 
-- **GIVEN** a parent runtime on Surface X spawns a subagent
+- **GIVEN** a parent runtime on Surface X spawns an attached subagent
 - **WHEN** the parent Conversation later moves to Surface Y
-- **THEN** the running subagent SHALL continue using the ActiveScope captured from X
-- **AND** SHALL not query the new binding
+- **THEN** runtime invalidation SHALL cancel the attached subagent before the replacement becomes current
+- **AND** its recorded invocation authority SHALL remain X and SHALL not query or retarget to Y
 
 #### Scenario: Recursive child inherits capture
 

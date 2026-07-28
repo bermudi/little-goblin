@@ -28,6 +28,11 @@ import {
   applyTranscriptProvenanceMigration,
   type TranscriptProvenanceMigrationPlan,
 } from "./sessions/transcript-provenance-migration.ts";
+import {
+  planConversationMigration,
+  applyConversationMigration,
+  type ConversationMigrationPlan,
+} from "./sessions/conversation-migration.ts";
 
 interface SnapshotManifest {
   roots: Array<{ path: string; exists: boolean }>;
@@ -54,9 +59,23 @@ interface TranscriptMigrationStep {
   apply(home: string, plan: TranscriptProvenanceMigrationPlan): void;
 }
 
+interface ConversationMigrationStep {
+  readonly version: number;
+  readonly roots: string[];
+  plan(
+    home: string,
+    bindings: SurfaceMigrationPlan["bindings"],
+    settings: SurfaceMigrationPlan["settings"],
+    environments: ExecutionEnvironmentPlan,
+    schedules: SurfaceMigrationPlan["schedules"],
+  ): ConversationMigrationPlan;
+  apply(home: string, plan: ConversationMigrationPlan): void;
+}
+
 const STEP_1_ROOTS = ["state"];
 const STEP_2_ROOTS = ["state", "workspace", "scratch/workdir"];
 const STEP_3_ROOTS = ["state/sessions"];
+const STEP_4_ROOTS = ["state"];
 
 function backupDirPath(home: string): string {
   return join(home, `.migration-backup-${Date.now()}`);
@@ -114,6 +133,20 @@ const TRANSCRIPT_STEP: TranscriptMigrationStep = {
   apply: applyTranscriptProvenanceMigration,
 };
 
+const CONVERSATION_STEP: ConversationMigrationStep = {
+  version: 4,
+  roots: STEP_4_ROOTS,
+  plan: (home, bindings, settings, environments, schedules) =>
+    planConversationMigration(
+      home,
+      bindings,
+      environments.topicSettings ?? settings,
+      environments,
+      schedules ?? undefined,
+    ),
+  apply: applyConversationMigration,
+};
+
 /**
  * Run every pending migration step for the given goblin home.
  * Exported for tests and for the CLI entry point below.
@@ -131,6 +164,13 @@ export function runMigrations(home: string): void {
   const step1Plan = SURFACE_STEP.plan(home);
   const step2Plan = ENVIRONMENT_STEP.plan(home, step1Plan);
   const step3Plan = TRANSCRIPT_STEP.plan(home);
+  const step4Plan = CONVERSATION_STEP.plan(
+    home,
+    step1Plan.bindings,
+    step1Plan.settings,
+    step2Plan,
+    step1Plan.schedules,
+  );
 
   const rootsToSnapshot = new Set<string>();
   if (current < 1) {
@@ -141,6 +181,9 @@ export function runMigrations(home: string): void {
   }
   if (current < 3) {
     for (const root of TRANSCRIPT_STEP.roots) rootsToSnapshot.add(root);
+  }
+  if (current < 4) {
+    for (const root of CONVERSATION_STEP.roots) rootsToSnapshot.add(root);
   }
 
   log.info("starting offline migration", { from: current, to: CURRENT_STATE_VERSION });
@@ -161,6 +204,11 @@ export function runMigrations(home: string): void {
     log.info("running migration step", { step: 3 });
     TRANSCRIPT_STEP.apply(home, step3Plan);
     writeStateVersion(home, 3);
+  }
+  if (current < 4) {
+    log.info("running migration step", { step: 4 });
+    CONVERSATION_STEP.apply(home, step4Plan);
+    writeStateVersion(home, 4);
   }
 
   log.info("migration complete", { version: CURRENT_STATE_VERSION });

@@ -49,6 +49,11 @@ function ensureSessionFiles(home: string, id: string): void {
   }
 }
 
+/**
+ * @deprecated Transitional compatibility facade. New binding and lifecycle
+ * mutations must use ConversationLifecycle; this class remains only for
+ * scheduler inspection, internal sessions, and legacy runtime callers.
+ */
 export class SessionManager {
   private readonly home: string;
   private readonly store: ConversationStore;

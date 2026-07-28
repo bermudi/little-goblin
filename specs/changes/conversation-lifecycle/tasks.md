@@ -64,10 +64,10 @@
 
 ## Phase 8: Migrate split ownership
 
-- [ ] Create `conversation-migration.ts` as canonical offline filesystem step 4; canonicalize Conversation records, copy bound legacy model/thinking preferences to Surface, convert schedule ownership, and move heartbeat prompts. No step-4 migrator exists yet.
-- [ ] Detect legacy multi-bound Conversations during precomputation and fail before writes with the ConversationId and all candidate SurfaceIds; require explicit operator repair rather than selecting by lexical or map order.
-- [ ] Fail loudly on duplicate heartbeat conflicts or differing source/destination prompt files; preserve all Conversation directories and non-owner schedule fields.
-- [ ] Precompute and validate every lifecycle transformation before the first lifecycle-step write, use atomic replacement per target file, register step 4 after transcript-provenance step 3 in `src/migrate.ts`, and set `CURRENT_STATE_VERSION = 4`; do not wire migration into startup or add mixed-generation/restart recovery. The generic migration backup/step infrastructure exists; lifecycle step 4 is not registered.
-- [ ] Add migration fixtures for filesystem version 3-to-4 exactly-once execution, every ownership field, successful complete output, ambiguous multi-binding refusal, prompt conflicts, malformed state, and non-ENOENT failures.
-- [ ] Remove obsolete public partial-binding APIs and update compatibility aliases/JSDoc without renaming filesystem paths. The old rebinding methods are gone, but `SessionManager`, `SessionState`, and scheduler compatibility surfaces remain intentionally active.
-- [ ] Run the full migration/lifecycle verification after step 4 is implemented. Focused migration/state tests and typecheck pass; the lifecycle migration fixture and final full-suite gate remain.
+- [x] Create `conversation-migration.ts` as canonical offline filesystem step 4; canonicalize Conversation records, copy bound legacy model/thinking preferences to Surface, convert schedule ownership, and move heartbeat prompts. No step-4 migrator exists yet.
+- [x] Detect legacy multi-bound Conversations during precomputation and fail before writes with the ConversationId and all candidate SurfaceIds; require explicit operator repair rather than selecting by lexical or map order.
+- [x] Fail loudly on duplicate heartbeat conflicts or differing source/destination prompt files; preserve all Conversation directories and non-owner schedule fields.
+- [x] Precompute and validate every lifecycle transformation before the first lifecycle-step write, use atomic replacement per target file, register step 4 after transcript-provenance step 3 in `src/migrate.ts`, and set `CURRENT_STATE_VERSION = 4`; do not wire migration into startup or add mixed-generation/restart recovery. The generic migration backup/step infrastructure exists; lifecycle step 4 is not registered.
+- [x] Add migration fixtures for filesystem version 3-to-4 exactly-once execution, every ownership field, successful complete output, ambiguous multi-binding refusal, prompt conflicts, malformed state, and non-ENOENT failures.
+- [x] Remove obsolete public partial-binding APIs and update compatibility aliases/JSDoc without renaming filesystem paths. The old rebinding methods are gone, but `SessionManager`, `SessionState`, and scheduler compatibility surfaces remain intentionally active.
+- [x] Run the full migration/lifecycle verification after step 4 is implemented. Focused migration/state tests and typecheck pass; the lifecycle migration fixture and final full-suite gate remain.

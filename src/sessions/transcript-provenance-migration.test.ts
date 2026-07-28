@@ -221,20 +221,20 @@ describe("transcript provenance migration", () => {
     expect(readStateVersion(home)).toBe(2);
   });
 
-  it("advances state version from 2 to 3 and is idempotent", () => {
+  it("advances state version from 2 through 4 and is idempotent", () => {
     writeFileSync(stateVersionPath(home), JSON.stringify({ version: 2 }), "utf-8");
     writeState(home, SESSION_ID, makeState());
     const entry = { ts: "2026-07-07T10:00:00.000Z", role: "user", content: "hi", sourceSurfaceId: SURFACE_ID };
     writeTranscript(home, SESSION_ID, `${JSON.stringify(entry)}\n`);
 
     runMigrations(home);
-    expect(readStateVersion(home)).toBe(3);
+    expect(readStateVersion(home)).toBe(4);
 
     const backups = readdirSync(home).filter((n) => n.startsWith(".migration-backup-"));
     expect(backups.length).toBe(1);
 
     runMigrations(home);
-    expect(readStateVersion(home)).toBe(3);
+    expect(readStateVersion(home)).toBe(4);
     expect(readdirSync(home).filter((n) => n.startsWith(".migration-backup-")).length).toBe(1);
   });
 

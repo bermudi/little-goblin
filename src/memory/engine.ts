@@ -44,7 +44,7 @@ export class MemoryEngine {
    * the bot starts serving turns.
    */
   async migrate(): Promise<boolean> {
-    const migrated = migrateFromMarkdown(this.home, this.readStore);
+    const migrated = await migrateFromMarkdown(this.home, this.readStore);
     this.readStore.migrateTranscriptProvenanceIndex();
     return migrated;
   }

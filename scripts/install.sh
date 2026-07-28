@@ -99,8 +99,19 @@ fi
 echo "Validating configuration..."
 su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run validate-config"
 
+service_was_active=0
+if [[ "${repo_existed}" -eq 1 ]] && systemctl is-active --quiet goblin; then
+  echo "Stopping goblin service before offline migration..."
+  systemctl stop goblin
+  service_was_active=1
+fi
+
 echo "Running offline state migration..."
-su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run migrate"
+if ! su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run migrate"; then
+  echo "Error: offline migration failed; goblin was not restarted." >&2
+  echo "Restore the migration backup reported above before retrying." >&2
+  exit 1
+fi
 
 echo "Installing systemd service..."
 "${repo_dir}/scripts/install-service.sh"
@@ -110,9 +121,13 @@ if [[ "${repo_existed}" -eq 0 ]]; then
   systemctl start goblin
   echo "Goblin installed and started."
 elif [[ "${old_head}" != "${new_head}" ]]; then
-  echo "Code changed; restarting goblin service..."
-  systemctl restart goblin
-  echo "Goblin updated and restarted."
+  echo "Code changed; starting goblin service..."
+  systemctl start goblin
+  echo "Goblin updated and started."
+elif [[ "${service_was_active}" -eq 1 ]]; then
+  echo "Code unchanged; resuming goblin service after migration..."
+  systemctl start goblin
+  echo "Goblin resumed."
 else
-  echo "Code unchanged; goblin service left running."
+  echo "Code unchanged; goblin service left stopped."
 fi

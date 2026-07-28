@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryEngine } from "./engine.ts";
@@ -35,6 +35,37 @@ describe("MemoryEngine", () => {
     const result = await engine.migrate();
     expect(result).toBe(false);
     expect(engine.readStore.db.getMeta("migrated_at")).toBeDefined();
+  });
+
+  it("waits for markdown import before purging the legacy transcript index", async () => {
+    const generalDir = join(memoryDir(tmp), "general");
+    mkdirSync(generalDir, { recursive: true });
+    writeFileSync(join(generalDir, "memory.md"), "legacy memory", "utf-8");
+
+    let releaseEmbeddings: ((result: Map<string, Float32Array | null>) => void) | undefined;
+    const embeddings = spyOn(engine.embeddingProvider, "embedEntries").mockImplementation(
+      () =>
+        new Promise<Map<string, Float32Array | null>>((resolve) => {
+          releaseEmbeddings = resolve;
+        }),
+    );
+    const purge = spyOn(engine.readStore, "migrateTranscriptProvenanceIndex");
+
+    try {
+      const migration = engine.migrate();
+      await Promise.resolve();
+
+      expect(embeddings).toHaveBeenCalledTimes(1);
+      expect(purge).not.toHaveBeenCalled();
+      if (releaseEmbeddings === undefined) throw new Error("embedding migration did not begin");
+
+      releaseEmbeddings(new Map());
+      await expect(migration).resolves.toBe(true);
+      expect(purge).toHaveBeenCalledTimes(1);
+    } finally {
+      embeddings.mockRestore();
+      purge.mockRestore();
+    }
   });
 
   it("syncTranscripts returns zeros when no sessions exist", async () => {

@@ -60,23 +60,26 @@ su -s /bin/bash "${user}" -c "cd ${repo_dir} && git pull"
 new_head="$(su -s /bin/bash "${user}" -c "git -C ${repo_dir} rev-parse HEAD")"
 
 if [[ "${old_head}" == "${new_head}" ]]; then
-  echo "No code changes; update complete."
-  exit 0
+  echo "No code changes; verifying state migration and service health."
+else
+  echo "Installing dependencies..."
+  su -s /bin/bash "${user}" -c "cd ${repo_dir} && bun install"
+
+  echo "Running validate-config..."
+  su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run validate-config"
 fi
-
-echo "Installing dependencies..."
-su -s /bin/bash "${user}" -c "cd ${repo_dir} && bun install"
-
-echo "Running validate-config..."
-su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run validate-config"
 
 echo "Stopping goblin service before offline migration..."
 systemctl stop goblin
 
 echo "Running offline migration (the migration command owns the recovery backup)..."
-su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run migrate"
+if ! su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run migrate"; then
+  echo "Error: offline migration failed; goblin service remains stopped." >&2
+  echo "Restore the migration backup reported above before retrying." >&2
+  exit 1
+fi
 
-echo "Restarting goblin service..."
-systemctl restart goblin
+echo "Starting goblin service..."
+systemctl start goblin
 
 echo "Update complete."

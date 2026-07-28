@@ -133,91 +133,18 @@ Onboarding SHALL create `$GOBLIN_HOME/workspace/SOUL.md` and `$GOBLIN_HOME/works
 
 ### Requirement: Agent turns do not block unrelated updates
 
-The system SHALL dispatch agent turns through a shared turn dispatcher so that long-running turns do not block unrelated Telegram updates. The dispatcher SHALL live in the orchestration layer and SHALL accept an injected buffer factory from the Telegram layer. Turn serialization, runner lifecycle, and the stale-runner guard SHALL be owned by the dispatcher; Telegram rendering SHALL be owned by the buffer factory the Telegram layer injects.
+The system SHALL dispatch agent turns through the shared turn dispatcher without blocking unrelated Telegram updates. Serialization, runtime lifecycle, and stale-runtime guards SHALL be per conversation; rendering remains supplied by the surface adapter.
 
-#### Scenario: Long-running turn does not block another session
+#### Scenario: Long turn does not block another conversation
 
-- **WHEN** session A is running a long turn
-- **AND** session B receives a Telegram update
-- **THEN** session B's update SHALL be processed without waiting for session A's turn to complete
-- **AND** the dispatcher SHALL serialize turns per-session, not globally
+- **WHEN** conversation A runs a long turn
+- **AND** conversation B receives an update
+- **THEN** B SHALL be processed without waiting for A
 
-#### Scenario: Dispatcher is transport-agnostic
+#### Scenario: Same conversation serializes
 
-- **WHEN** the dispatcher serializes a turn
-- **THEN** it SHALL NOT depend on a Telegram-specific module
-- **AND** both the live-transport (Telegram intake) and the scheduled-transport (scheduler) SHALL dispatch through the same dispatcher interface
-
-### Requirement: Scheduler dispatches due turns through the per-session queue
-
-The system SHALL run a single-process scheduler loop after session manager initialization and before or alongside Telegram long-polling. The scheduler SHALL poll the schedule store for due enabled schedules at a 60-second default interval, claim each due schedule one at a time within a tick before dispatch, and enqueue the scheduled prompt as a fresh turn through the same per-session queue used by `/queue` and media prompts.
-
-The scheduler loop SHALL depend on sessions through a `SchedulerSessionSource` seam — a narrow interface exposing only `peekBinding(locator)` and `isArchived(sessionId)` — and SHALL NOT depend on the concrete `SessionManager` type. Production SHALL wire `SessionManager` as the adapter (it satisfies the seam structurally). Tests MAY inject a fake session source that returns canned bindings and archival states without instantiating a filesystem-backed session tree. This completes the scheduler's adapter set alongside the existing `SchedulerDispatcher` seam; the loop is then fakeable on all its external dependencies (clock, dispatcher, session source).
-
-#### Scenario: Due schedule queues fresh turn
-
-- **GIVEN** an enabled schedule whose `nextRunAt` is in the past
-- **AND** its captured session remains bound to its captured locator
-- **WHEN** the scheduler ticks
-- **THEN** it SHALL enqueue the schedule's prompt as a fresh turn for that session
-- **AND** SHALL NOT call `AgentRunner.followUp()`
-
-#### Scenario: Busy session waits behind current turn
-
-- **GIVEN** a due schedule for a session whose runner is currently streaming
-- **WHEN** the scheduler ticks
-- **THEN** the scheduled prompt SHALL wait behind the in-flight turn via the per-session prompt queue
-- **AND** SHALL run as a fresh turn after prior queued work settles
-
-#### Scenario: Overlapping ticks do not double-dispatch
-
-- **GIVEN** a schedule is due
-- **WHEN** two scheduler ticks overlap
-- **THEN** at most one tick SHALL claim and dispatch that due occurrence
-
-#### Scenario: One-shot schedule disables after run
-
-- **WHEN** a one-shot schedule is successfully claimed for dispatch
-- **THEN** it SHALL be disabled or marked complete before the prompt runs
-- **AND** SHALL NOT run again on the next tick
-
-#### Scenario: Recurring schedule advances before dispatch
-
-- **WHEN** a recurring schedule is successfully claimed for dispatch
-- **THEN** its `nextRunAt` SHALL advance by its interval before the prompt runs
-- **AND** a later tick SHALL not dispatch the same occurrence again
-
-#### Scenario: Stale runner guard aborts scheduled turn
-
-- **GIVEN** a scheduled prompt is enqueued for a session via the shared turn dispatcher
-- **AND** the runner for that session is replaced (e.g. by `/new` or `/resume`) before the queued turn starts
-- **WHEN** the queued turn begins
-- **THEN** the dispatcher SHALL detect the stale runner and abort before producing user-visible side effects
-- **AND** SHALL NOT send the scheduled prompt to the old runner
-
-#### Scenario: Scheduler depends on the session source seam, not the concrete manager
-
-- **WHEN** the scheduler loop validates a captured binding
-- **THEN** it SHALL call `peekBinding` and `isArchived` through the `SchedulerSessionSource` interface
-- **AND** SHALL NOT reference the concrete `SessionManager` type
-
-#### Scenario: SessionManager satisfies the session source seam structurally
-
-- **WHEN** the production composition root constructs the scheduler
-- **THEN** it SHALL pass the real `SessionManager` as the `SchedulerSessionSource`
-- **AND** no adapter wrapper SHALL be required (`SessionManager` already implements both methods)
-
-#### Scenario: Eligibility tests inject a fake session source
-
-- **WHEN** a scheduler test exercises due-turn eligibility for a session that is bound, archived, or mismatched
-- **THEN** the test SHALL inject a fake `SchedulerSessionSource` returning the canned binding/archival state
-- **AND** SHALL NOT create a real `SessionManager`, call `manager.init()`, or touch the filesystem for session state
-
-#### Scenario: Archived schedule detected via the seam
-
-- **WHEN** the scheduler ticks a schedule whose captured session directory no longer exists
-- **THEN** the session source's `isArchived(sessionId)` SHALL return true
-- **AND** the scheduler SHALL disable the schedule with an archived last-run status
+- **WHEN** two fresh turns target the same current conversation runtime
+- **THEN** they SHALL serialize through that conversation's queue
 
 ### Requirement: Scheduler lifecycle follows bot lifecycle
 
@@ -242,158 +169,55 @@ The scheduler SHALL start during main startup after `SessionManager.init()` and 
 
 ### Requirement: Turn serialization lives in the orchestration layer
 
-The system SHALL locate turn serialization (the `TurnDispatcher`) in the orchestration layer, not in the Telegram layer. The dispatcher's job is runner lifecycle, per-session prompt queues, and the stale-runner guard — none of which is Telegram rendering. The dispatcher SHALL NOT reference the `MessageBuffer` type; the buffer (or a factory that produces one) SHALL be injected at dispatcher construction by the composition root, and the dispatcher SHALL treat it as an opaque turn sink.
+The `TurnDispatcher` SHALL continue to own conversation runtime creation, per-conversation prompt queues, and stale-runtime checks without importing Telegram modules. A surface adapter SHALL inject opaque sink and Telegram-tool factories, and the dispatcher SHALL receive a narrow read interface for current binding, surface settings, and conversation environment rather than the broad lifecycle implementation.
 
-Because the scheduler dispatches scheduled turns via `enqueueScheduledTurn` without passing a buffer, the dispatcher SHALL obtain the buffer through its injected factory when it needs one (e.g. inside `enqueueScheduledTurn`). The factory is wired once at construction by `src/index.ts`; the dispatcher itself SHALL NOT import from `src/tg/`.
+#### Scenario: Runtime is created
 
-The scheduler (`SchedulerLoop`) SHALL import the dispatcher from the orchestration layer and SHALL NOT import any module under `src/tg/`. The seam between the scheduler and the dispatcher is "turn → agent", not "turn → agent + Telegram rendering".
+- **WHEN** the dispatcher creates a runtime for a bound conversation
+- **THEN** it SHALL obtain current surface context through the injected read seam
+- **AND** SHALL reject a stale conversation/surface pair
 
-The Telegram layer (`src/tg/intake.ts`) SHALL be the only module that constructs `MessageBuffer` instances; it injects the factory into the dispatcher at the composition root.
+#### Scenario: Scheduler remains transport-agnostic
 
-#### Scenario: Scheduler does not import from the Telegram layer
-
-- **WHEN** the scheduler module is compiled
-- **THEN** it SHALL NOT import any module under `src/tg/`
-- **AND** the dispatcher it depends on SHALL live under `src/orchestration/`
-
-#### Scenario: Dispatcher does not reference the MessageBuffer type
-
-- **WHEN** the dispatcher module is compiled
-- **THEN** it SHALL NOT import `MessageBuffer` from `src/tg/mod.ts`
-- **AND** the factory it holds SHALL be typed against an opaque sink interface, not against `MessageBuffer`
-
-#### Scenario: Dispatcher obtains the buffer through its injected factory
-
-- **WHEN** the dispatcher enqueues a scheduled turn (which requires a buffer to render the turn)
-- **THEN** it SHALL obtain the buffer by calling the factory injected at construction
-- **AND** SHALL NOT call `new MessageBuffer(...)` directly
-
-#### Scenario: Telegram intake injects the buffer factory
-
-- **WHEN** the composition root constructs the dispatcher
-- **THEN** Telegram intake SHALL pass a `createMessageBuffer` factory that constructs `MessageBuffer` for a given locator
-- **AND** the dispatcher SHALL hold that factory as an opaque value
+- **WHEN** a scheduled turn needs an output sink
+- **THEN** the dispatcher SHALL obtain it from the injected surface sink factory
+- **AND** the scheduler and dispatcher SHALL NOT import from `src/tg/`
 
 ### Requirement: Turn dispatcher runners map is encapsulated
 
-The system SHALL encapsulate the dispatcher's runner map. The `runners` field SHALL be private; external modules SHALL NOT read `dispatcher.runners` directly. The dispatcher SHALL expose behavior-oriented methods for the queries intake currently performs by reading the map — at minimum, a method to fetch the current runner for a session id (returning `null` when none exists) and a method to test whether a runner exists for a session.
+The dispatcher SHALL keep its conversation-runtime map and prompt queues private and SHALL expose behavior-oriented methods keyed by conversation ID. Runtime disposal SHALL synchronously invalidate map/queue identity before awaiting runner and delegated-work cleanup so the stale-runtime guard takes effect immediately.
 
-The stale-runner guard (`isCurrent()` / runner replacement detection) SHALL continue to work through the dispatcher's own methods; the encapsulation SHALL NOT weaken the guard.
+#### Scenario: Lifecycle invalidates a runtime
 
-#### Scenario: Intake gets the current runner via a method
-
-- **WHEN** Telegram intake needs the current runner for a session (for stale-runner checks or deferred-command queueing)
-- **THEN** it SHALL call a dispatcher method (e.g. `getRunner(sessionId)`)
-- **AND** SHALL NOT read `dispatcher.runners.get(...)` directly
-
-#### Scenario: No runner for a session returns null
-
-- **WHEN** `getRunner(sessionId)` is called for a session with no current runner
-- **THEN** it SHALL return `null`
-- **AND** SHALL NOT throw
-
-#### Scenario: Stale-runner guard remains after encapsulation
-
-- **WHEN** a runner is replaced (by `/new` or `/resume`) before a queued turn starts
-- **THEN** the dispatcher's stale-runner detection SHALL still abort the queued turn before side effects
-- **AND** the guard SHALL be implemented via the dispatcher's own methods, not via external map reads
+- **WHEN** the lifecycle module asks orchestration to dispose a conversation runtime
+- **THEN** the runtime SHALL no longer be returned as current before asynchronous cleanup begins
+- **AND** queued captures SHALL fail their current-runtime check
 
 ### Requirement: Agent self-scheduling tool has parity with /schedule
 
-The system SHALL provide a `schedule_turn` tool, built in `src/scheduler/tool.ts` and registered in `AgentRunner.init()` for the main agent only. The tool SHALL NOT be registered for subagents. The tool SHALL support the following actions, backed by the existing `ScheduleStore` methods and the existing bounded time grammar (`parseDuration`, `parseAt`, `parseIn` from `src/scheduler/time.ts`):
+The main-agent `schedule_turn` tool SHALL manage schedules for the runtime's currently bound surface through the same store and time parsers as `/schedule`. It SHALL stamp provenance, enforce source authority, and return machine-readable schedule identifiers as before, but durable ownership and caps SHALL use `SurfaceId` rather than conversation ID. Subagents SHALL remain excluded.
 
-- `create_once` — create a one-shot schedule. Exactly one of `in` (duration `30m`/`2h`/`1d`) or `at` (ISO-8601) SHALL be provided; providing both or neither SHALL fail the call with a schema error.
-- `create_recurring` — create a recurring schedule using an `every` (duration) form and a `prompt` string.
-- `list` — return this session's schedules (see *Agent tool list redacts user-owned prompts*).
-- `remove` / `pause` / `resume` — mutate a schedule by id (see *Agent tool authority is scoped to agent-owned schedules*).
-- `heartbeat` — `on [duration]`, `off`, or `status` (see *Agent tool authority is scoped to agent-owned schedules*).
+#### Scenario: Agent creates a schedule
 
-The tool SHALL address schedules for its own session only, using the `sessionId` and `ChatLocator` of the `AgentRunner` it is bound to. `now` SHALL be taken from an injected clock provider passed to the tool factory (not `Date.now()` called directly), so tests are deterministic — mirroring how the `/schedule` command path receives `deps.now`. Duration and `at` validation SHALL reuse the exact `parseDuration` / `parseAt` / `parseIn` functions used by `/schedule`; no new time grammar is introduced.
+- **WHEN** a main conversation runtime on surface X calls `schedule_turn`
+- **THEN** the schedule SHALL be owned by X
+- **AND** later conversation rotation on X SHALL not alter or duplicate it
 
-Every schedule created via the tool SHALL be persisted to the same `ScheduleStore` used by `/schedule` and dispatched through the same scheduler loop and per-session turn queue, so an agent-originated scheduled turn is indistinguishable from a user-originated one at dispatch. Schedules created via the tool SHALL stamp `source: "agent"`. The tool SHALL return a machine-readable result shape including the affected schedule's `id`, `source`, and `nextRunAt` (ISO-8601), so the agent can reference it in later calls.
+#### Scenario: Runtime is stale
 
-#### Scenario: Agent creates a one-shot schedule
-
-- **WHEN** the agent calls `schedule_turn` with action `create_once`, `in: "30m"`, and a prompt
-- **THEN** a schedule with `kind = "once"`, `source = "agent"`, and the session's id and locator SHALL be persisted
-- **AND** the tool SHALL return the schedule's id and a `nextRunAt` ISO-8601 timestamp ~30 minutes in the future
-
-#### Scenario: create_once with both in and at fails
-
-- **WHEN** the agent calls `schedule_turn` with `create_once` and both `in` and `at`
-- **THEN** the call SHALL fail with a schema error
-- **AND** no schedule SHALL be created
-
-#### Scenario: create_once with neither in nor at fails
-
-- **WHEN** the agent calls `schedule_turn` with `create_once` and neither `in` nor `at`
-- **THEN** the call SHALL fail with a schema error
-- **AND** no schedule SHALL be created
-
-#### Scenario: Invalid duration rejected by shared parser
-
-- **WHEN** the agent calls `schedule_turn` with `create_recurring` and `every: "7w"`
-- **THEN** the call SHALL fail because `parseDuration` rejects the token
-- **AND** no schedule SHALL be created
-
-#### Scenario: Agent-managed schedule dispatches as a fresh turn
-
-- **GIVEN** an agent-created schedule whose `nextRunAt` is in the past and whose session remains bound
-- **WHEN** the scheduler ticks
-- **THEN** the schedule's prompt SHALL be enqueued as a fresh turn through the per-session queue
-- **AND** SHALL serialize behind any in-flight turn identically to a user-originated schedule
-
-#### Scenario: Tool is main-agent only
-
-- **WHEN** a subagent session is initialized (`src/subagents/execution.ts`)
-- **THEN** the `schedule_turn` tool SHALL NOT be present in that subagent's toolset
-
-#### Scenario: Tool absent when scheduleStore not wired
-
-- **WHEN** an `AgentRunner` is constructed without a `scheduleStore`
-- **THEN** the `schedule_turn` tool SHALL NOT be registered
-- **AND** the runner SHALL function normally otherwise
+- **WHEN** a runtime has been displaced from its surface before `schedule_turn` mutates the store
+- **THEN** the tool call SHALL fail the current-binding check
+- **AND** SHALL NOT create or mutate a schedule
 
 ### Requirement: Agent tool authority is scoped to agent-owned schedules
 
-The agent tool's mutating actions (`remove`, `pause`, `resume`) and heartbeat mutation SHALL operate only on schedules whose `source` is `"agent"`. The tool SHALL NOT remove, pause, resume, disable, or overwrite a schedule whose `source` is `"user"` (or absent, which reads as `"user"`). Heartbeat mutation from the agent tool SHALL NOT turn off or overwrite a heartbeat that is currently user-owned; if the existing heartbeat's `source` is `"user"` and the agent requests `heartbeat off` or `heartbeat on`, the call SHALL fail with an authority error and SHALL NOT modify the store.
+Agent schedule mutations SHALL remain limited to agent-owned records on the runtime's current surface. User schedule authority and redaction rules SHALL remain unchanged, and surface ownership SHALL be an additional required match.
 
-The `/schedule` human command path SHALL retain authority over all schedules regardless of `source`: it may create, list, remove, pause, resume, and manage heartbeats for both user- and agent-owned schedules.
+#### Scenario: Cross-surface mutation is rejected
 
-This holds regardless of session: even within the same session, an agent turn cannot touch the user's schedules. Authority is enforced by `source`, and session ownership (already enforced by `ScheduleStore`) is a separate, additional check.
-
-#### Scenario: Agent removes its own schedule
-
-- **GIVEN** a schedule owned by the session with `source = "agent"`
-- **WHEN** the agent calls `schedule_turn` with action `remove` and that schedule's id
-- **THEN** the schedule SHALL be removed from the store
-
-#### Scenario: Agent cannot remove a user schedule
-
-- **GIVEN** a schedule owned by the session with `source = "user"`
-- **WHEN** the agent calls `schedule_turn` with action `remove` and that schedule's id
-- **THEN** the call SHALL fail with an authority error
-- **AND** the store SHALL be unchanged
-
-#### Scenario: Agent cannot pause a user schedule
-
-- **GIVEN** a schedule owned by the session with `source = "user"`
-- **WHEN** the agent calls `schedule_turn` with action `pause` and that schedule's id
-- **THEN** the call SHALL fail with an authority error
-- **AND** the schedule SHALL remain enabled
-
-#### Scenario: Agent cannot turn off a user-owned heartbeat
-
-- **GIVEN** a session with an enabled heartbeat whose `source = "user"`
-- **WHEN** the agent calls `schedule_turn` with action `heartbeat` and `off`
-- **THEN** the call SHALL fail with an authority error
-- **AND** the heartbeat SHALL remain enabled
-
-#### Scenario: User command manages agent schedules
-
-- **GIVEN** a schedule owned by the session with `source = "agent"`
-- **WHEN** the user runs `/schedule remove <id>`
-- **THEN** the schedule SHALL be removed (the human command has authority over all sources)
+- **WHEN** an agent runtime on surface X attempts to mutate a schedule owned by Y
+- **THEN** the store SHALL report no authorized match
+- **AND** SHALL remain unchanged
 
 ### Requirement: Agent tool list redacts user-owned prompts
 
@@ -407,153 +231,16 @@ The agent tool's `list` action SHALL NOT return the `prompt` body of any schedul
 - **AND** the user-created schedule SHALL NOT include its prompt body
 - **AND** the user-created schedule SHALL appear with id, kind, state, nextRunAt, and a user-owned marker
 
-### Requirement: Agent-originated schedules are bounded by a per-session cap
-
-The system SHALL enforce a per-session cap on enabled agent-source schedules, defined by the constant `MAX_AGENT_SCHEDULES` (default **8**). The invariant SHALL be: after any `ScheduleStore` mutation triggered via the agent tool, the count of records owned by that session with `source === "agent"` and `state === "enabled"` SHALL NOT exceed `MAX_AGENT_SCHEDULES`. User-originated schedules and disabled/completed schedules SHALL NOT count toward the cap.
-
-The cap SHALL be enforced at the store mutation boundary for every transition into the `enabled` state originating from the agent tool, specifically: `create_once`, `create_recurring`, `resume` (disabled→enabled), and `heartbeat on`. When such a mutation would exceed the cap, the mutation SHALL be refused and the store SHALL be unchanged, and the agent tool SHALL receive a cap-exceeded error reporting the cap and directing it to remove or pause an existing schedule first.
-
-The cap SHALL NOT apply to schedules created or resumed via the `/schedule` command path, regardless of count. Enforcing at the store mutation boundary (rather than a tool-level count→create sequence) keeps the invariant atomic: the full record list is known at the point of mutation, so there is no count/create race window.
-
-#### Scenario: Create under cap succeeds
-
-- **GIVEN** a session with 3 enabled agent-source schedules
-- **WHEN** the agent creates a fourth via `schedule_turn`
-- **THEN** the schedule SHALL be created and persisted
-
-#### Scenario: Create at cap fails
-
-- **GIVEN** a session with `MAX_AGENT_SCHEDULES` enabled agent-source schedules
-- **WHEN** the agent calls `schedule_turn` to create another
-- **THEN** the mutation SHALL be refused with a cap-exceeded error
-- **AND** the store SHALL be unchanged
-
-#### Scenario: Resume at cap fails
-
-- **GIVEN** a session at the cap where one agent-source schedule is disabled (so the cap is met by other enabled agent schedules)
-- **WHEN** the agent calls `schedule_turn` to `resume` the disabled schedule (disabled→enabled)
-- **THEN** the mutation SHALL be refused with a cap-exceeded error
-- **AND** the schedule SHALL remain disabled
-
-#### Scenario: Pausing frees cap headroom
-
-- **GIVEN** a session at the cap with an enabled agent-source schedule `X`
-- **WHEN** the agent pauses `X` via `schedule_turn`
-- **AND** then creates a new schedule
-- **THEN** the new schedule SHALL be created, because paused schedules do not count
-
-#### Scenario: User schedules are not capped
-
-- **GIVEN** a session already at `MAX_AGENT_SCHEDULES` enabled agent-source schedules
-- **WHEN** the user runs `/schedule every 1h <prompt>`
-- **THEN** the user's schedule SHALL be created regardless of the agent cap
-
 ### Requirement: Schedule records carry provenance
 
-Each `ScheduledTurn` SHALL carry an optional `source` field of type `"user" | "agent"`. The `/schedule` command path SHALL stamp `source: "user"`; the `schedule_turn` agent tool SHALL stamp `source: "agent"`. When `source` is absent (e.g. a record created before this change), it SHALL be treated as `"user"` for the purposes of cap counting, authority checks, list redaction, and display. The `/schedule list` command SHALL annotate agent-originated schedules with an `[agent]` tag so the user can see, in Telegram, which schedules the goblin created itself.
+Each surface-owned schedule SHALL retain optional `source: "user" | "agent"` provenance, with absent values treated as user-owned. Existing last-writer authority, user display annotation, and prompt-redaction behavior SHALL remain, independent of which conversation is currently bound.
 
-Any `/schedule`-path mutation of an existing record (`pause`, `resume`, `heartbeat on`, `heartbeat off`) SHALL re-stamp `source` to `"user"`. This "last writer owns" principle ensures that once the user touches a schedule, the agent cannot subsequently undo the user's action: the agent cannot re-enable a heartbeat the user disabled, resume a schedule the user paused, or disable a heartbeat the user re-enabled. The agent path SHALL NOT re-stamp `source` (it can only touch agent-owned records, so re-stamping would be a no-op). The only way for the agent to regain control of a user-claimed schedule is for the user to `remove` it so the agent can create a fresh one.
+#### Scenario: User claims an agent schedule after rotation
 
-Provenance is structural and SHALL be retained even if the cap policy is later relaxed: it drives authority (see *Agent tool authority is scoped to agent-owned schedules*), list redaction, display annotation, and audit/debugging.
-
-#### Scenario: User schedule stamped user
-
-- **WHEN** the user creates a schedule via `/schedule`
-- **THEN** the persisted record SHALL have `source = "user"`
-
-#### Scenario: Agent schedule stamped agent
-
-- **WHEN** the agent creates a schedule via `schedule_turn`
-- **THEN** the persisted record SHALL have `source = "agent"`
-
-#### Scenario: Legacy record treated as user
-
-- **GIVEN** a schedule record on disk with no `source` field (created before this change)
-- **WHEN** it is loaded
-- **THEN** it SHALL be treated as `source = "user"` for cap counting, authority checks, list redaction, and display
-
-#### Scenario: List annotates agent schedules
-
-- **WHEN** the user runs `/schedule list`
-- **AND** the session owns both user- and agent-originated schedules
-- **THEN** agent-originated rows SHALL be annotated with `[agent]`
-- **AND** user-originated rows SHALL carry no such tag
-
-#### Scenario: User re-enabling an agent heartbeat claims ownership
-
-- **GIVEN** a session with a heartbeat whose `source = "agent"` and `state = "disabled"`
-- **WHEN** the user runs `/schedule heartbeat on`
-- **THEN** the persisted record SHALL have `source = "user"`
-- **AND** the agent SHALL NOT be able to disable it via `schedule_turn heartbeat off`
-
-#### Scenario: User disabling an agent heartbeat claims ownership
-
-- **GIVEN** a session with an enabled heartbeat whose `source = "agent"`
-- **WHEN** the user runs `/schedule heartbeat off`
-- **THEN** the persisted record SHALL have `source = "user"`
-- **AND** the agent SHALL NOT be able to re-enable it via `schedule_turn heartbeat on`
-
-#### Scenario: User pausing an agent schedule claims ownership
-
-- **GIVEN** a session with an enabled schedule whose `source = "agent"`
-- **WHEN** the user runs `/schedule pause <id>`
-- **THEN** the persisted record SHALL have `source = "user"`
-- **AND** the agent SHALL NOT be able to resume it via `schedule_turn resume`
-
-### Requirement: Disposing a session runner cancels its subagents
-
-When `TurnDispatcher.disposeRunner(sessionId)` is called, the dispatcher SHALL
-first dispose the `AgentRunner` for the session, remove it from the runner cache,
-and clear the session's prompt queue. It SHALL then call
-`SubagentRunner.cancelBySession(sessionId)` to cancel all subagents spawned by
-that session, and SHALL await the cascade. `disposeRunner` SHALL be
-async (`Promise<void>`) so callers can await the full cleanup.
-
-`cancelPending(sessionId)` SHALL NOT cascade to subagents. It aborts a queued
-prompt but the session remains alive — its subagents may still be doing useful
-work. A code-level comment or JSDoc on `cancelPending` SHALL document this
-non-cascading behavior so future maintainers do not add it by mistake.
-
-#### Scenario: disposeRunner disposes the runner before canceling subagents
-
-- **WHEN** `disposeRunner("session-abc")` is called
-- **AND** subagent A has `spawnedBy === "session-abc"` and status `running`
-- **THEN** the runner for "session-abc" SHALL be disposed and removed from the
-  cache first
-- **AND** A SHALL be cancelled via `cancelBySession` after the runner is disposed
-
-#### Scenario: disposeRunner with no subagents is a no-op for the cascade
-
-- **WHEN** `disposeRunner("session-xyz")` is called
-- **AND** no active subagent has `spawnedBy === "session-xyz"`
-- **THEN** `cancelBySession` SHALL return without error
-- **AND** the runner SHALL be disposed normally
-
-#### Scenario: cancelPending does not cascade
-
-- **WHEN** `cancelPending("session-abc")` is called
-- **AND** subagent A has `spawnedBy === "session-abc"` and status `running`
-- **THEN** A SHALL NOT be cancelled
-- **AND** A SHALL continue running
-- **AND** only the queued prompt for "session-abc" SHALL be aborted
-
-#### Scenario: `applySideEffects` is async and awaits `disposeRunner`
-
-- **WHEN** `applySideEffects` processes a `runner-disposed` side effect
-- **THEN** `applySideEffects` SHALL be declared `async` and return
-  `Promise<void>`
-- **AND** `applySideEffects` SHALL `await` `disposeRunner(effect.sessionId)`
-- **AND** the `handleText` call sites that invoke `applySideEffects` SHALL also
-  `await` it
-
-#### Scenario: disposeRunner is awaited before the next side effect
-
-- **WHEN** a command returns a `runner-disposed` side effect
-- **THEN** intake SHALL await `disposeRunner` before processing the next side
-  effect
-- **AND** if the next side effect is `runner-created` (e.g. `/new`, `/resume`),
-  the new runner SHALL be created only after the old session's subagents are
-  cancelled
+- **GIVEN** a surface owns an agent schedule and later rotates conversations
+- **WHEN** the user mutates that schedule through `/schedule`
+- **THEN** its source SHALL become `user`
+- **AND** the current agent runtime SHALL not regain mutation authority
 
 ### Requirement: External-agent runs follow Goblin session lifecycle
 
@@ -734,3 +421,137 @@ The composition root (`src/bot.ts`) SHALL construct the `McpRunner` from `cfg.mc
 - **WHEN** `cfg.mcp` is `undefined`
 - **THEN** `buildBot` SHALL NOT construct an `McpRunner`
 - **AND** it SHALL pass `undefined` as the `mcpRunner` option to `createTelegramIntake`
+
+### Requirement: Conversation runtime context comes from the current binding
+
+A conversation runtime SHALL be keyed by conversation ID, but its Telegram tools, output sink, model and thinking preferences, and other surface context MUST be constructed from the conversation's current binding. Before runtime registration, orchestration SHALL obtain the dependency-provided immutable `CapturedMemoryContext` for that Surface and derive the dependency-provided Surface-backed `TranscriptWriterContext` from `CapturedMemoryContext.authority.sourceSurfaceId`. Every user-visible transcript write from the runtime SHALL use that closed-over writer context. Its CWD and pi history SHALL come from the conversation's immutable execution environment. A runtime MUST NOT be reused after its conversation moves to another surface.
+
+#### Scenario: Resumed conversation gets destination context
+
+- **GIVEN** a conversation previously ran on surface X
+- **WHEN** it is resumed on compatible surface Y and next receives work
+- **THEN** the new runtime SHALL use Y's tools, sink, captured memory context, model, and thinking preferences
+- **AND** new user-visible transcript entries SHALL use Y's captured `TranscriptWriterContext`
+- **AND** the runtime SHALL use the conversation's existing pi history and immutable execution environment
+
+#### Scenario: Conversation is unbound
+
+- **WHEN** orchestration is asked to create a user-visible runtime for an unbound conversation
+- **THEN** it SHALL fail rather than invent or reuse surface context
+
+### Requirement: Runtime disposal precedes binding movement
+
+Before rotate, resume, or archive commits a binding change, orchestration SHALL remove and dispose every runtime made stale by the transition and sever its prompt queue. For rotation of a bound Surface, required quiescence SHALL complete before the fresh Conversation record is created. Moving a target from another surface SHALL dispose the target runtime; displacing the destination SHALL dispose the destination's prior runtime. At no time MAY one conversation have active runtimes for two surfaces.
+
+#### Scenario: Resume displaces two runtimes
+
+- **GIVEN** target conversation A has a runtime on X
+- **AND** destination Y has conversation B with a runtime
+- **WHEN** A is resumed on Y
+- **THEN** A's runtime and B's runtime SHALL be removed from the runtime map and disposed before the binding commit
+- **AND** no runtime for A SHALL remain associated with X
+
+#### Scenario: Disposal fails
+
+- **WHEN** required runtime disposal fails before a lifecycle transition commits
+- **THEN** the binding transition SHALL fail
+- **AND** existing bindings SHALL remain unchanged
+- **AND** an invalidated runtime identity SHALL NOT be restored
+- **AND** the failure SHALL be logged
+
+#### Scenario: Rotate disposal fails before creation
+
+- **GIVEN** Surface X is bound to Conversation P
+- **WHEN** rotation cannot quiesce P's runtime
+- **THEN** no fresh Conversation Q SHALL be created
+- **AND** X SHALL remain bound to P
+- **AND** a later dispatch SHALL construct a fresh runtime rather than reuse the invalidated object
+
+### Requirement: Stale-runtime guard covers every lifecycle transition
+
+Every queued prompt, deferred command, and scheduled turn SHALL capture its conversation runtime and verify that it is still current before each effect-producing phase. Rotation, resume, archive, and runtime replacement SHALL invalidate that capture by removing the runtime and severing the queue before binding mutation.
+
+#### Scenario: Queued work loses its binding
+
+- **GIVEN** work is queued behind a conversation runtime
+- **WHEN** a lifecycle transition disposes that runtime before the work begins
+- **THEN** the queued work SHALL stop before prompting pi, mutating lifecycle state, or producing Telegram output
+
+### Requirement: Surface automation dispatches through the current conversation
+
+The scheduler SHALL resolve a due schedule's surface binding at dispatch time and enqueue the prompt through that conversation's runtime and queue. It MUST NOT create a conversation for an unbound surface or use a conversation captured when the schedule was created.
+
+#### Scenario: Conversation changed since schedule creation
+
+- **GIVEN** a schedule was created while conversation A was bound
+- **AND** conversation B is bound when the occurrence is due
+- **WHEN** the scheduler dispatches the occurrence
+- **THEN** it SHALL enqueue the turn through B's runtime
+- **AND** SHALL NOT inspect or reactivate A
+
+#### Scenario: Surface is unbound
+
+- **WHEN** the occurrence is due but the surface has no binding
+- **THEN** orchestration SHALL create no runtime and no conversation
+- **AND** the occurrence SHALL remain pending
+
+### Requirement: Scheduler dispatches due turns through the current Conversation queue
+
+The single-process scheduler SHALL poll surface-owned schedules at the existing 60-second default interval, inspect each due record's current surface binding without creating a conversation, and claim the occurrence only when a bound conversation is eligible for dispatch. It SHALL enqueue through the same per-conversation queue used by Telegram and `/queue`. An unbound occurrence SHALL stay due and enabled. Existing one-at-a-time claiming, recurrence advancement, failure logging, and scheduler lifecycle behavior SHALL remain.
+
+#### Scenario: Due surface dispatches to current conversation
+
+- **GIVEN** a due schedule whose surface is currently bound to conversation B
+- **WHEN** the scheduler ticks
+- **THEN** it SHALL claim the occurrence and enqueue a fresh turn through B's queue
+
+#### Scenario: Unbound occurrence is not claimed
+
+- **GIVEN** a due schedule whose surface is unbound
+- **WHEN** the scheduler ticks
+- **THEN** it SHALL not advance, complete, or disable the occurrence
+- **AND** SHALL emit an observable pending-unbound signal without creating a conversation
+
+#### Scenario: Binding changes before queued work starts
+
+- **GIVEN** a due occurrence was enqueued through conversation B
+- **WHEN** B's runtime is displaced before the turn starts
+- **THEN** the stale-runtime guard SHALL drop the captured work before effects
+
+### Requirement: Agent-originated schedules are bounded by a per-Surface cap
+
+The enabled agent-schedule cap SHALL be enforced per surface at the store mutation seam for create, resume, and heartbeat-enable transitions. `MAX_AGENT_SCHEDULES` SHALL retain its default of 8. User schedules and disabled/completed agent schedules SHALL remain excluded from the count, and human `/schedule` operations SHALL remain uncapped. A mutation that would exceed the cap SHALL fail atomically, leave the store unchanged, and return a cap-exceeded error identifying the limit.
+
+#### Scenario: Create at cap fails atomically
+
+- **GIVEN** a Surface has `MAX_AGENT_SCHEDULES` enabled agent-owned schedules
+- **WHEN** its runtime attempts to create or re-enable another agent-owned schedule
+- **THEN** the mutation SHALL fail with a cap-exceeded error identifying the limit
+- **AND** the schedule store SHALL remain unchanged
+
+#### Scenario: Human schedule remains uncapped
+
+- **GIVEN** a Surface is at the agent schedule cap
+- **WHEN** the user creates or resumes a schedule through `/schedule`
+- **THEN** the human-authorized mutation SHALL not be rejected by `MAX_AGENT_SCHEDULES`
+
+#### Scenario: Conversation rotation does not reset cap
+
+- **GIVEN** a surface is at `MAX_AGENT_SCHEDULES`
+- **WHEN** its conversation rotates
+- **THEN** the next runtime on that surface SHALL still be at the cap
+
+### Requirement: Disposing a Conversation runtime cancels compatibility-owned delegated work
+
+Disposing a conversation runtime SHALL dispose the `AgentRunner`, immediately remove runtime and queue identity, and invoke existing delegated-work cleanup using the conversation ID through compatibility ownership methods. This change SHALL NOT redefine attached/detached work ownership. `cancelPending` SHALL continue not to cascade.
+
+#### Scenario: Runtime disposal uses compatibility ownership
+
+- **WHEN** conversation `abc123def0` is disposed
+- **THEN** orchestration SHALL call existing `cancelBySession("abc123def0")` compatibility methods after invalidating the runtime
+- **AND** SHALL NOT reinterpret or migrate delegated-work ownership
+
+#### Scenario: Pending cancellation remains non-cascading
+
+- **WHEN** only a queued prompt is cancelled while the conversation remains active
+- **THEN** delegated work SHALL continue

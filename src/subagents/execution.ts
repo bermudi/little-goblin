@@ -151,8 +151,8 @@ async function _runInstanceInner(
     sessionManager: instance.sessionManager,
     model: resolved.model,
     thinkingLevel: resolved.thinkingLevel,
-    // Subagents have no β tools — all UI flows through the parent's status
-    // callback. See specs/canon/subagents/spec.md "No beta tools for subagents".
+    // Subagents receive no Telegram β tools; all UI flows through the
+    // parent's status callback.
     // Pass rawStatusCallback to nested subagent to prevent prefix stacking.
     customTools: [
       ...buildTools(instance.depth, instance.id, capture, instance.rawStatusCallback),

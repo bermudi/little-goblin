@@ -4,8 +4,8 @@
  * dispatching to intake.
  *
  * Length-gated (only >= THRESHOLD messages open a buffer), corroborated by
- * adjacent Telegram `message_id`s, trailing-debounced. See
- * `specs/changes/telegram-text-coalescing/` for the full rationale.
+ * adjacent Telegram `message_id`s, trailing-debounced. Historical rationale:
+ * `specs/changes/archive/2026-07-09-telegram-text-coalescing/`.
  */
 import type { TelegramIntakeMessage } from "./intake.ts";
 

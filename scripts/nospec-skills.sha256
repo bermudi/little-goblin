@@ -1,0 +1,14 @@
+34c5c7749ad806e9de2ce280630b6493d5e3015beb2eed3a437a8b633295f401  .agents/skills/nospec-carve/SKILL.md
+8b4a7a5b6ed70ba2745fbf9d2cd74b8ca066a24d36114df3a54f50938cce2365  .agents/skills/nospec-curator/SKILL.md
+29735525036b19f6b9fb009d55928817752a3f44cbb4d99ad04320997c622dd5  .agents/skills/nospec-lexicon/SKILL.md
+2ac48375c9b565345eb57f20f96e09ce22c8d6c4ac867712d25e438cb40691c2  .agents/skills/nospec-mend/SKILL.md
+56cb3f2dd310494ba1dd6125b3bede66928a38abbbb490c8d55ba62b6cbf7060  .agents/skills/nospec/prompts/fixer.md
+0b5cc0ecafa2b8031628c7e85811e1e5cf700a7600a1b450e0bc1d16a33380f7  .agents/skills/nospec/prompts/reviewer.md
+f1b6ce23637bfc1952b981cbf5766fa9da8d94c06d7c49de734974eab565888d  .agents/skills/nospec/prompts/worker.md
+db3e7b896b136b826c648420eab4b16de50c8af9137995ca5a9f0488e408920f  .agents/skills/nospec-rule/SKILL.md
+84957004557721aacd204b8b2c8e58184788a3c512f2356d6b50b9c87f46ec49  .agents/skills/nospec-scout/SKILL.md
+d57b572caa9cecd1c9c8c9e0f36fef04b78f678ef2893efda65b669c5ccd15b2  .agents/skills/nospec/scripts/nospec
+b9fdc921a05f139f2ba4edb43c2d7cd1dc64f38cfe35145bc3ba38f4bc440c11  .agents/skills/nospec/scripts/queue_parser.py
+2b029657f33a4195c4f6dcfda3a1f294577c7338a82c3733aa01fc308e75e4ba  .agents/skills/nospec-shape/SKILL.md
+eb20ff42194b9178e692926c75b9f97c6dc56ef37b28708133188ce2b1b06c23  .agents/skills/nospec/SKILL.md
+760b15d87e65958a0f97b212ca9ca8ac5a6c1b66fd2c41b7bf758448d826396e  .agents/skills/nospec-trial/SKILL.md

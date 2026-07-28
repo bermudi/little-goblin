@@ -5,7 +5,8 @@ import type { Surface } from "../surface.ts";
  *
  * Scheduled turns persist user-authored prompts (or a system-owned heartbeat
  * prompt) to run as fresh agent turns at a future time or on a recurring
- * interval. See specs/changes/scheduled-turns/ for the full design.
+ * interval. Historical design:
+ * `specs/changes/archive/2026-07-05-scheduled-turns/`.
  */
 
 export type ScheduleKind = "once" | "recurring" | "heartbeat";

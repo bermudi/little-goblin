@@ -1,7 +1,7 @@
 /**
  * Type definitions for the subagent runtime.
  *
- * See specs/changes/subagent-runtime/specs/subagents/spec.md for behavior.
+ * Historical design: `specs/changes/archive/2026-04-26-subagent-runtime/`.
  */
 
 import type { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";

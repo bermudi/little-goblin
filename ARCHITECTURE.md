@@ -1,12 +1,18 @@
+---
+nospec: true
+role: record
+owns: system-architecture
+---
+
 # Little Goblin Architecture
 
-> **Status: architecture stabilization.** This document maps the implemented system, accepted target architecture, and unresolved design work. Canonical specs and accepted decisions are the behavioral contracts.
+> **Status: architecture stabilization.** This document maps the implemented system, accepted target architecture, and unresolved design work. Code/tests own current behavior, designated contract records own their assigned promises, and accepted decisions own architectural rulings.
 
 ## How to read this document
 
 Goblin currently has three simultaneous truths:
 
-- **CURRENT** — behavior implemented in `src/` and described by `specs/canon/`.
+- **CURRENT** — behavior implemented in `src/` and exercised by current tests.
 - **TARGET** — behavior established by accepted decisions and the current stabilization plan.
 - **OPEN** — architecture that is known to need work but has not yet been accepted as a contract.
 
@@ -16,12 +22,13 @@ Never silently present TARGET or OPEN behavior as implemented. During stabilizat
 |---|---|
 | `AGENTS.md` | Engineering guardrails and stabilization gate |
 | `ARCHITECTURE.md` | Whole-system ownership, lifetime, authority, and dependency map |
-| `specs/canon/` | Implemented behavioral contracts |
-| `specs/changes/` | Historical target behavior and migration plans |
-| `specs/decisions/` | Why consequential choices were made |
-| `specs/glossary.md` | Canonical domain language |
+| `decisions/` | Accepted architectural rulings and their rationale |
+| `glossary.md` | Canonical domain language |
+| `BACKLOG.md` | Current priority, next cycle, parked scope, and open questions |
+| code, tests, and designated contracts | Current implemented behavior and explicit promises |
+| `specs/` | Frozen Litespec-era history and design input; not active authority |
 
-Detailed behavior belongs in canonical specs and decisions. This file should link concepts and expose contradictions, not copy every requirement.
+Detailed current behavior belongs in code/tests or an explicitly designated contract record; consequential rulings belong in decisions. This file links concepts and exposes contradictions rather than copying every requirement.
 
 ## Product boundary
 
@@ -221,7 +228,7 @@ Pi context-file auto-discovery stays disabled for the main runtime. Project guid
 
 **CURRENT — settled by decision 0039 and implemented by archived `agent-owned-prompt-files`.** Prompt files are **agent-owned**. Goblin MAY rewrite `workspace/SOUL.md`, `AGENTS.md`, and `HEARTBEAT.md` with ordinary file tools during a user-facing turn. Onboarding creates them from templates and never overwrites; `SOUL.md` remains required at startup.
 
-There is no reserved-path write guard. The main runtime already has `bash` active (`src/agent/backend.ts:145-155` passes no tool allowlist; pi's default active set is `[read, bash, edit, write]`), and pi resolves absolute paths, so a guard could prevent accidents but never constitute a boundary. Per decision 0012, real isolation is an OS-level concern.
+There is no reserved-path write guard. The main runtime already has `bash` active (`src/agent/backend.ts:145-155` passes no tool allowlist; pi's default active set is `[read, bash, edit, write]`), and pi resolves absolute paths, so a guard could prevent accidents but never constitute a boundary. The process runs as the operator's Unix user; stronger filesystem isolation requires an OS-level sandbox and is outside this file-tool policy.
 
 Three constraints bound the authority:
 
@@ -231,11 +238,11 @@ Three constraints bound the authority:
 
 Recovery is git in `$GOBLIN_HOME/workspace`, documented for the operator. Goblin builds no snapshot or undo store.
 
-The archived `agent-owned-prompt-files` change amended the canon statements that previously called `SOUL.md` "deployment-owned" (`specs/glossary.md:75`, `specs/canon/agent/spec.md`), implemented the bounded Surface notice, filtered Goblin's agent-owned prompt files out of subagent bootstrap, and documented the `git-in-workspace/` recovery path.
+The archived `agent-owned-prompt-files` change amended the legacy canon statements that previously called `SOUL.md` "deployment-owned" (`glossary.md`, formerly `specs/glossary.md`, and `specs/canon/agent/spec.md`), implemented the bounded Surface notice, filtered Goblin's agent-owned prompt files out of subagent bootstrap, and documented the `git-in-workspace/` recovery path.
 
 ## Skill architecture
 
-**TARGET — accepted by decision 0034 and specified by `pi-native-skill-layout`, `skill-catalog-resolution`, `surface-skill-policy`, and `subagent-skill-inheritance`.** CURRENT Goblin still uses non-native `workspace/skills/`, manually injects it through `additionalSkillPaths`, and conflates ambient discovery behind process-wide `skillSources`; do not extend that seam.
+**TARGET — accepted by decision 0034.** The frozen `pi-native-skill-layout`, `skill-catalog-resolution`, `surface-skill-policy`, and `subagent-skill-inheritance` proposals are historical design input for implementing that ruling, not specifications to execute. CURRENT Goblin still uses non-native `workspace/skills/`, manually injects it through `additionalSkillPaths`, and conflates ambient discovery behind process-wide `skillSources`; do not extend that seam.
 
 | Skill source | Canonical location | Authority |
 |---|---|---|
@@ -272,9 +279,9 @@ Scheduled turns use the same dispatcher and prompt queue as user turns. A captur
 
 ### Inner life
 
-**TARGET — decision 0035 and the validated `inner-life` change.** Inner-life wakes have durable records, code-owned per-wake capability profiles, bounded validated effects, effect-specific delivery guarantees, one explicit home Surface, and layered proactive-contact consent. Model output cannot mint authority or reroute contact. Whether heartbeat becomes a private wake remains unsettled, so current Surface-owned heartbeat behavior stays unchanged.
+**TARGET — accepted by decision 0035.** Inner-life wakes have durable records, code-owned per-wake capability profiles, bounded validated effects, effect-specific delivery guarantees, one explicit home Surface, and layered proactive-contact consent. Model output cannot mint authority or reroute contact. Whether heartbeat becomes a private wake remains unsettled, so current Surface-owned heartbeat behavior stays unchanged.
 
-`inner-life` specifies the wake store, profile/effect state machine, crash recovery, and deny-by-default contact path. `visible-dreaming` remains blocked until that dependency is implemented; it may later supply reflection content but must not create a parallel scheduler, delivery, or consent system.
+The frozen `inner-life` proposal is historical design input, not an implementation specification. Fresh shaping must settle the remaining wake-store, profile/effect state-machine, crash-recovery, and deny-by-default contact details under decision 0035. `visible-dreaming` remains blocked until that implementation exists; it may later supply reflection content but must not create a parallel scheduler, delivery, or consent system.
 
 ## Memory
 
@@ -284,7 +291,7 @@ Memory's canonical store is `$GOBLIN_HOME/state/memory/memory.sqlite`. Markdown 
 
 Each new user-visible transcript entry records event-time `sourceSurfaceId`. Indexing and dreaming use that provenance per entry, so one moved Conversation may contain several source Surfaces without rewriting history. Unknown legacy provenance stays null rather than being guessed from the current binding. Filesystem `stateVersion` is now 4; the transcript migration, mixed-chat index rebuild, provenance-driven dreaming, startup gate, boundary tests, two-Surface end-to-end fixture, and lifecycle migration are implemented.
 
-**CURRENT — archived `conversation-lifecycle`; closure hardening in progress.** Cross-Surface movement is wired into intake and commands; runtime capture/writer authority, archive ordering, Surface-owned preferences and automation, and offline ownership migration step 4 are implemented. The bounded merge-closure slice hardens canonical authority validation, planned-assignment recovery, and mandatory runtime authority; it is follow-up stabilization work, not an unfinished archived lifecycle feature.
+**CURRENT — conversation lifecycle and closure hardening complete.** Cross-Surface movement is wired into intake and commands; runtime capture/writer authority, archive ordering, Surface-owned preferences and automation, offline ownership migration step 4, canonical authority validation, planned-assignment recovery, and mandatory runtime authority are implemented and covered by current tests. The archived `conversation-lifecycle` material is delivery provenance only.
 
 Dreaming currently uses compatibility internal-session machinery. TARGET architecture uses an explicit Surface-free internal memory context and later removes fake Telegram/session identity through `inner-life`/`visible-dreaming`, never by adding an internal Surface variant.
 
@@ -304,9 +311,9 @@ TARGET direction:
 
 ### External agents
 
-CURRENT/active external-agent work is converging on ACP as the protocol and logical session boundary (proposed decision 0030). External agents receive bounded authority from code-owned configuration; model input never supplies executable, environment, credentials, ACP session identity, or permission policy.
+**OPEN — external-agent protocol boundary.** Frozen proposed decision 0030 explored ACP as the protocol and logical-session boundary, but it is not an accepted ruling. Current code retains the legacy external-agent seam; fresh scouting must classify the ACP boundary before implementation. External-agent authority remains code-owned: model input never supplies executable, environment, credentials, protocol session identity, or permission policy.
 
-**TARGET — decision 0036 and validated `delegated-work-ownership`.** Every run captures a controlling owner Conversation, immutable environment, and origin Surface. New ACP runs are code-classified durable across Conversation rotation; explicit owner cancellation remains destructive. Control follows the owner Conversation, but automatic completion delivery never leaves the origin Surface merely because another lane shares a CWD.
+**TARGET — accepted by decision 0036.** Every run captures a controlling owner Conversation, immutable environment, and origin Surface. A future protocol-specific decision must classify which runs can be durable across process or Conversation rotation; explicit owner cancellation remains destructive. Control follows the owner Conversation, but automatic completion delivery never leaves the origin Surface merely because another lane shares a CWD. The frozen `delegated-work-ownership` proposal is design input only.
 
 An unavailable origin retains a bounded pending completion. Background work never creates a Conversation or pushes to a fallback Surface; the next authorized ordinary interaction on the exact origin may claim the result through a tokenized claim/ack/release handoff. Execution outcome and delivery state remain separate.
 
@@ -379,7 +386,7 @@ Migrations compute and validate every transformation before the first write, use
 
 The implemented filesystem sequence is Surface identity (step 1), immutable Execution Environments (step 2), transcript Surface provenance (step 3), then Conversation lifecycle ownership (step 4). The current filesystem gate is state version 4. Environment step 2 includes personal-workdir promotion; each step advances the version only after its complete transformation succeeds.
 
-Two parked changes still specify their own restart-safe startup migration and need a patch stripping that language before they are revived: `pi-native-skill-layout` and `delegated-work-ownership` (both in `specs/parked/`). `immutable-project-environments`, `transcript-surface-provenance`, and `conversation-lifecycle` now specify offline steps in the canonical migration runner.
+Two frozen parked proposals still contain obsolete restart-safe startup-migration language that must not be carried into fresh work: `pi-native-skill-layout` and `delegated-work-ownership` (both in `specs/parked/`). Current offline migration behavior is owned by the migration runner and its tests; the delivered `immutable-project-environments`, `transcript-surface-provenance`, and `conversation-lifecycle` archives are provenance only.
 
 ## Current-to-target repair map
 
@@ -403,7 +410,7 @@ Two parked changes still specify their own restart-safe startup migration and ne
 
 ## Stabilization dependency graph
 
-Dependencies in the stabilization train are explicit only when a phase consumes a type, persisted format, or module interface from an earlier phase. Shared vocabulary, deferred scope, and correctness sequencing are recorded here or in `specs/backlog.md`; they do not create phantom work. Keep each phase narrow enough to verify and deliver along the train below.
+Dependencies in the stabilization train are explicit only when a phase consumes a type, persisted format, or module interface from an earlier phase. Shared vocabulary, deferred scope, and correctness sequencing are recorded here or in `BACKLOG.md`; they do not create phantom work. Keep each phase narrow enough to verify and deliver along the train below.
 
 ### Historical dependency map
 
@@ -422,20 +429,20 @@ conversation-lifecycle ─┬─► inner-life ─► visible-dreaming rewrite
                         └─► delegated-work-ownership ◄─ immutable-project-environments, ACP boundary
 ```
 
-`conversation-lifecycle` and its four hard prerequisites are implemented and archived as canonical contracts. Runtime assembly consumes the captured-memory interface from `surface-derived-memory-context`, and user-visible transcript writes consume the writer-context and event-time provenance interfaces from `transcript-surface-provenance`. Compatibility cleanup and review-discovered hardening now proceed as follow-up stabilization work; attachment intake remains a soft edge. Skill policy is handled by its later train and is not a lifecycle contract.
+`conversation-lifecycle` and its four hard prerequisites are implemented; current code and tests own that behavior, while the archived change material preserves delivery provenance. Runtime assembly consumes the captured-memory interface, and user-visible transcript writes consume writer context and event-time provenance. The persistence/runtime-authority hardening slice is also complete. Skill policy remains a later train and is not a lifecycle contract.
 
 A temporary "same-Surface resume" mode was rejected because canonical unbound Conversations intentionally persist no previous-Surface authority. Enforcing it would require a second historical-binding store that the target model does not otherwise need. Memory capture and transcript provenance were therefore prerequisites, not runtime feature flags.
 
 ## Implementation train
 
-One ordered sequence, walked end to end. Historical change names remain useful labels, but the unit of delivery is a plainly tracked implementation phase.
+One ordered sequence, walked end to end. Historical change names and task counts are provenance only; accepted decisions and this architecture record define direction, while fresh work is shaped from current code.
 
 | # | Change | Tasks | Status | Value delivered |
 |--:|---|--:|---|---|
 | 1 | `telegram-surface-identity` | 33 | **archived** | None user-visible. Unblocks everything; removes chat-ID-sign inference |
 | 2 | `immutable-project-environments` | 24 | **archived** | `/project` becomes set-once; personal CWD moves to `workspace/`; `scratch/workdir` dies |
 | 3 | `personal-attachment-intake` | patch | **archived** | **First user-visible fix**: captioned uploads stop being silently discarded |
-| 3b | `agent-owned-prompt-files` | 12 | **archived** | Decision 0039: canon amendment, prompt-file write notice, subagent bootstrap filter |
+| 3b | `agent-owned-prompt-files` | 12 | **archived** | Decision 0039: legacy-doc amendment, prompt-file write notice, subagent bootstrap filter |
 | 4 | `surface-derived-memory-context` | 27 | **archived** | Memory scope derives from Surface, not session metadata |
 | 5 | `transcript-surface-provenance` | 29 | **archived** | Event-time provenance for history that may move; state version 3; provenance-aware indexing and dreaming |
 | 6 | `conversation-lifecycle` | 48 | **archived** | Surface/Binding/Conversation split; compatible movement; Surface-owned preferences and automation; filesystem state version 4 |
@@ -448,7 +455,7 @@ One ordered sequence, walked end to end. Historical change names remain useful l
 | 12 | `delegated-work-ownership` | 36 | **parked** | Attached vs durable work; origin-Surface delivery |
 | 13 | `visible-dreaming` | — | **deferred; prior placeholder deleted** | Rewrite against `inner-life`; recover historical notes from Git only if needed |
 
-Steps 1–6a, including attachment intake, agent-owned prompt files, and the persistence/runtime-authority closure, are complete. Steps 7–12 remain parked under `specs/parked/`; step 13 has no live parked artifact (see `specs/backlog.md`).
+Steps 1–6a, including attachment intake, agent-owned prompt files, and the persistence/runtime-authority closure, are complete. Steps 7–12 remain frozen historical inputs under `specs/parked/`; step 13 has no live parked artifact (see `BACKLOG.md`).
 
 **WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The next candidate is a fresh re-evaluation of the parked `pi-native-skill-layout` train; all other parked scope remains deferred until deliberately resumed.
 

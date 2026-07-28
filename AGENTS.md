@@ -1,3 +1,9 @@
+---
+nospec: true
+role: record
+owns: operational-context
+---
+
 # little-goblin
 
 Telegram-native personal AI agent. Single user (bermudi), single process, homelab.
@@ -10,7 +16,7 @@ Goblin lives in Telegram. You message it, it thinks, it responds. It can spawn s
 
 Before proposing or implementing feature work:
 
-- Read the relevant canon, the current stabilization phase plan, and accepted decisions. Canon describes implemented behavior; phase work may deliberately replace it.
+- Read the current code and tests, [`ARCHITECTURE.md`](ARCHITECTURE.md), relevant accepted decisions and designated contract records, and the current priorities in [`BACKLOG.md`](BACKLOG.md). Frozen legacy material may supply historical context, but it does not override those authorities.
 - Name the owner and lifetime of every new piece of state: Surface, Conversation, conversation runtime, Execution Environment, delegated run, or deployment.
 - Name its authority source and persistence location. Do not infer authority from convenience fields or duplicate it across callers.
 - Put cross-cutting behavior behind a deep module with one interface; do not add orchestration choreography to commands, Telegram intake, or other callers.
@@ -21,9 +27,11 @@ New feature work resumes when its architectural dependencies are explicit and th
 
 ### Planning discipline
 
-- **WIP limit: one implementation phase in progress, one plainly described next.** Follow the delivery order in [`ARCHITECTURE.md`](ARCHITECTURE.md); keep everything further out in `specs/backlog.md`.
-- Track live work in the current stabilization phase section of `specs/backlog.md`. Do not create new litespec changes or use the litespec CLI.
-- Existing `specs/canon/`, `specs/decisions/`, archived changes, and parked plans are historical/design references. Update canon or decisions when a shipped behavioral contract changes; do not archive implementation work through a spec tool.
+- **WIP limit: one implementation cycle in progress, one plainly described next.** Follow the delivery order in [`ARCHITECTURE.md`](ARCHITECTURE.md); keep everything further out in [`BACKLOG.md`](BACKLOG.md).
+- **Nospec is the active work process.** The project-local skills under `.agents/skills/nospec*` are vendored from `bermudi/nospec` at exact commit `df7382341836647f10aba32e9bea877300443fef` (audited locally at `/home/daniel/build/nospec`). To update: check out an exact candidate commit, run its upstream tests, replace all nine skill directories, regenerate `scripts/nospec-skills.sha256`, update the pin, and run `bash scripts/nospec-authority.test.sh`. Never update from a moving branch.
+- Work interactively by default. A clear bounded change needs no queue. Use `.loop/<cycle>/` only when cross-session coordination or AFK execution adds value; `QUEUE.md`, `HANDOFF.md`, `REVIEW.md`, and scratch work specs are disposable, while runner-produced `EVIDENCE.md` is the retained ledger.
+- Authority is role-based: code and tests own current implemented behavior; explicitly designated contract records own their promises; root `decisions/` owns accepted architectural rulings; `ARCHITECTURE.md` owns the system map; `glossary.md` owns domain language; this file owns repository practice; `BACKLOG.md` owns work priority.
+- `specs/` is a frozen Litespec-era reference tree. Do not create, update, archive, or mechanically translate its canon, changes, parked plans, or status-ambiguous decisions. Before retiring historical material, extract still-valid behavior into code/tests or an explicitly designated contract record. Git is the archive.
 - A bug fix may land during stabilization, but it must move toward the target architecture or explicitly document why it is a containment patch.
 
 ## Run
@@ -39,7 +47,7 @@ bun run src/index.ts   # or: bun run dev
 
 Entry is `src/index.ts`; `src/bot.ts` is the Telegram composition root. The implemented system is currently migrating from an overloaded Telegram/session/agent shape to explicit Surface, Binding, Conversation, ConversationRuntime, and Execution Environment lifetimes.
 
-Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before structural work. It distinguishes implemented **CURRENT** behavior, accepted **TARGET** architecture, and unresolved **OPEN** questions. Canonical specs and accepted decisions are authoritative for detailed behavioral contracts; this file remains guardrails.
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before structural work. It distinguishes implemented **CURRENT** behavior, accepted **TARGET** architecture, and unresolved **OPEN** questions. Code/tests and explicitly designated contract records own current behavior; accepted decisions own architectural rulings; this file remains the operational guardrail.
 
 ## Guardrails
 
@@ -71,6 +79,7 @@ This file (`AGENTS.md`) is **not** auto-injected into the system prompt today; t
 - **Colocated.** `foo.ts` ↔ `foo.test.ts` in the same directory. `bun test` discovers them automatically.
 - **One exception: `src/subagents/`.** Its tests live in `src/subagents/test/*.suite.ts`, bootstrapped from `mod.test.ts`. The reason: `bun:test` `mock.module()` is process-global, so the suites must run under a single mock install. The `.suite.ts` extension prevents bun from auto-discovering them (which would race the mock). If bun ever gets per-file mock scoping, collapse this back to colocated `.test.ts` files.
 - Add `"test": "bun test"` to package.json if it's still missing.
+- Run `bash scripts/nospec-authority.test.sh` after changing planning authority, durable-record metadata, accepted ADR inventory, or vendored workflow skills. This project-owned gate prevents a vacuous upstream `nospec check` pass.
 - Run `bun run typecheck` (`tsc --noEmit`) before committing.
 
 ## Things not to do

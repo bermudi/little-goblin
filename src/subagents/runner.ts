@@ -13,7 +13,8 @@
  *   - named-agent loading + ResourceLoader construction → `named-agents.ts`
  *   - the run-to-completion engine → `execution.ts`
  *
- * See specs/canon/subagents/spec.md for behavioural requirements.
+ * Current behavior is exercised by `mod.test.ts` and `test/*.suite.ts`.
+ * Historical design: `specs/changes/archive/2026-04-26-subagent-runtime/`.
  */
 
 import { existsSync, mkdirSync } from "node:fs";

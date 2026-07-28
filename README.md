@@ -1,3 +1,8 @@
+---
+nospec: true
+role: view
+---
+
 # Little Goblin
 
 > Telegram-native personal AI agent. Single user, single process, homelab.
@@ -130,6 +135,7 @@ bun run test         # run all tests
 bun run typecheck    # TypeScript check
 bun run onboard      # first-time setup wizard
 bash scripts/deployment-order.test.sh  # isolated fake-command deployment ordering checks
+bash scripts/nospec-authority.test.sh  # non-vacuous planning-authority and skill-pin checks
 ```
 
 Tests are colocated with source files (`foo.ts` ↔ `foo.test.ts`). `src/subagents/` is the one exception: its suites live under `src/subagents/test/*.suite.ts` and are bootstrapped from `src/subagents/mod.test.ts` because `bun:test` `mock.module()` is process-global.
@@ -142,7 +148,7 @@ The core ownership boundary is `Surface → Binding → Conversation → Convers
 2. **Lifecycle/orchestration** (`src/orchestration/`) owns binding transitions, pending-assignment recovery, runtime authority, and queue invalidation.
 3. **Persistence** (`src/sessions/`) owns Conversations, bindings, and Surface settings; **agent** (`src/agent/`) owns pi runtime construction.
 
-Read `ARCHITECTURE.md` for current/target boundaries. Canonical behavioral contracts live in `specs/canon/`; accepted decisions live in `specs/decisions/`. Internal guardrails are in <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" />.
+Read `ARCHITECTURE.md` for current/target boundaries. Code/tests and explicitly designated contract records own current behavior; accepted architectural rulings live in `decisions/`. Internal guardrails are in <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" />.
 
 ## Documentation map
 
@@ -151,9 +157,12 @@ Read `ARCHITECTURE.md` for current/target boundaries. Canonical behavioral contr
 | <ref_file file="/home/daniel/build/little-goblin/README.md" /> | This file — quick start, overview, command cheat-sheet. |
 | <ref_file file="/home/daniel/build/little-goblin/features.md" /> | Full user guide: Surfaces, Conversations, tools, memory, subagents, media, config, security. |
 | <ref_file file="/home/daniel/build/little-goblin/goblin.json5.example" /> | Annotated configuration example. |
-| <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" /> | Project guardrails for contributors. |
-| `specs/canon/` | Architecture and behavior specs. |
-| `specs/changes/archive/` | Past litespec changes and design docs. |
+| <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" /> | Project guardrails and planning discipline. |
+| `ARCHITECTURE.md` | Current/target/open system map and delivery order. |
+| `BACKLOG.md` | Current priority, next cycle, parked scope, and open questions. |
+| `decisions/` | Accepted architectural rulings. |
+| `glossary.md` | Canonical domain language. |
+| `specs/` | Frozen Litespec-era contracts, plans, decisions, and archives retained as historical input. |
 
 ---
 

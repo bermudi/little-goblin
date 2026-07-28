@@ -1,7 +1,7 @@
 /**
  * Scheduler module. Owns the schedule store, scheduler loop, and time parsing
- * for scheduled turns and opt-in session heartbeat. See
- * specs/changes/scheduled-turns/ for the design.
+ * for scheduled turns and opt-in session heartbeat. Historical design:
+ * `specs/changes/archive/2026-07-05-scheduled-turns/`.
  */
 
 export { ScheduleStore, DEFAULT_HEARTBEAT_INTERVAL_MS, makeScheduleId, loadStore, saveStore } from "./store.ts";

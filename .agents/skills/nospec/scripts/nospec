@@ -1,0 +1,1494 @@
+#!/usr/bin/env bash
+# nospec — the batch runner and derivation/lint CLI, shipped as a skill.
+#
+# Derives artifact metadata, lints structural drift, inspects loop state, and
+# optionally runs the batch loop behind a verify gate. It does not scaffold,
+# package, or version — those are skills.sh's job (ADR-0011).
+#
+# See ADR-0017 for the derivation/lint surface, ADR-0018 for the fold of
+# loop.sh into this binary, and ADR-0019 for the bundle-as-skill ruling.
+
+set -euo pipefail
+
+# SCRIPT_DIR is the real .../nospec/scripts/ directory even when this entry
+# point is invoked through the symlink created by `nospec install`. Prompts and
+# the canonical queue parser ship beside it and are resolved from that path:
+#   - Installed: $SCRIPT_DIR/..        = .agents/skills/  (or ~/.agents/skills/)
+#   - Dev:        $SCRIPT_DIR/../..    = skills/          (nospec's own repo)
+# REPO_ROOT is the repo to operate on (derive, lint, inspect); it defaults to
+# the current working directory and can be overridden by a leading `--repo DIR`.
+SOURCE_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE_PATH" ]]; do
+    SOURCE_DIR="$(cd -P "$(dirname "$SOURCE_PATH")" && pwd)"
+    SOURCE_PATH="$(readlink "$SOURCE_PATH")"
+    [[ "$SOURCE_PATH" == /* ]] || SOURCE_PATH="$SOURCE_DIR/$SOURCE_PATH"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE_PATH")" && pwd)"
+QUEUE_PARSER="$SCRIPT_DIR/queue_parser.py"
+REPO_ROOT="$(pwd)"
+
+PYTHON_BIN=""
+for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+        && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
+        PYTHON_BIN="$candidate"
+        break
+    fi
+done
+if [[ -z "$PYTHON_BIN" ]]; then
+    echo "nospec: Python 3.10 or newer is required" >&2
+    exit 1
+fi
+
+# Allow --repo DIR to override the repo root (for testing and external use)
+while [[ "${1:-}" == --repo ]]; do
+    REPO_ROOT="$2"
+    shift 2
+done
+
+# ───────────────────────── Frontmatter parsing ─────────────────────────
+
+# Extract a scalar field from YAML frontmatter.
+# Usage: fm_get <file> <field>
+fm_get() {
+    local file="$1" field="$2"
+    awk -v field="$field" '
+        { sub(/\r$/, "") }
+        NR == 1 { if ($0 != "---") exit; in_fm = 1; next }
+        in_fm && /^---$/ { exit }
+        in_fm && $0 ~ "^" field ":" {
+            sub("^" field ":[[:space:]]*", "")
+            gsub(/^"|"$/, "")
+            print
+            exit
+        }
+    ' "$file"
+}
+
+# Extract the H1 title from a markdown file (skipping frontmatter).
+# Usage: fm_title <file>
+fm_title() {
+    local file="$1"
+    awk '
+        { sub(/\r$/, "") }
+        NR == 1 && $0 == "---" { in_fm = 1; next }
+        in_fm && /^---$/ { in_fm = 0; next }
+        !in_fm && /^# / {
+            sub(/^# [0-9]+:[[:space:]]*/, "")
+            sub(/^# /, "")
+            print
+            exit
+        }
+    ' "$file"
+}
+
+# ─────────────────────────── Shared helpers ────────────────────────────
+
+die() {
+    echo "nospec: $*" >&2
+    exit 1
+}
+
+abs_path() {
+    "$PYTHON_BIN" -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$1"
+}
+
+# ──────────────────────────── Subcommands ────────────────────────────
+
+# nospec spine — print the spine ADRs derived from frontmatter.
+cmd_spine() {
+    local f id title
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        local spine
+        spine=$(fm_get "$f" "spine")
+        if [[ "$spine" == "true" ]]; then
+            id=$(fm_get "$f" "id")
+            title=$(fm_title "$f")
+            printf "ADR-%s — %s\n" "$id" "$title"
+        fi
+    done < <(list_adrs)
+}
+
+# nospec adrs — print all adopted ADRs with id, status, title.
+cmd_adrs() {
+    local f id status title
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        id=$(fm_get "$f" "id")
+        status=$(fm_get "$f" "status")
+        title=$(fm_title "$f")
+        printf "ADR-%s [%s] %s\n" "$id" "$status" "$title"
+    done < <(list_adrs)
+}
+
+# nospec check — fail on structural drift.
+cmd_check() {
+    local failures=0
+
+    # ── Check 1: No doc outside decisions/ may re-enumerate the spine ──
+    #
+    # The drift pattern: a doc lists ADR numbers with synopses, duplicating
+    # what `nospec spine` already derives from frontmatter. Four shapes:
+    #   Pattern A — 2+ markdown links to decision files on a single line
+    #               (e.g. "[0009](decisions/...) (synopsis), [0010](...) ...")
+    #   Pattern B — 3+ lines matching "ADR-NNNN — synopsis" or "**ADR-NNNN**"
+    #               (the bulleted spine-list entry shape with separators)
+    #   Pattern C — 3+ bare ADR-NNNN references on a single line
+    #               (e.g. "The spine is ADR-0009, ADR-0010, ... ADR-0016.")
+    #   Pattern D — 3+ bulleted lines starting with ADR-NNNN (no separator)
+    #               (e.g. "- ADR-0009 synopsis" / "- ADR-0010 ...")
+    #
+    # Individual ADR references ("see ADR-0010", "in skills (ADR-0010), not
+    # gates (ADR-0011)") are fine — two ADRs cited as evidence in a prose
+    # sentence is not a re-enumeration. The thresholds (3+ for C and D) are
+    # set above the prose-reference level to avoid false positives.
+    local docs
+    docs=$(list_durable_docs)
+    while IFS= read -r doc; do
+        [[ -z "$doc" ]] && continue
+        local body
+        body=$(awk '{ sub(/\r$/, "") } NR == 1 && $0 == "---" { in_fm=1; next } in_fm && /^---$/ { in_fm=0; next } !in_fm' "$doc")
+
+        # Pattern A: 2+ markdown links to decision files on a single line
+        if echo "$body" | grep -qE '\[00[0-9]{2}\]\(decisions/.*\[00[0-9]{2}\]\(decisions/'; then
+            echo "FAIL: $doc — multiple decision-file links on a single line (spine re-enumeration)"
+            echo "$body" | grep -nE '\[00[0-9]{2}\]\(decisions/.*\[00[0-9]{2}\]\(decisions/' | head -3 | sed 's/^/  /'
+            failures=$((failures + 1))
+        fi
+
+        # Pattern B: 3+ lines matching the spine-entry shape with separators
+        #   "ADR-NNNN — ..." or "**ADR-NNNN**" (bold ADR as list header)
+        local spine_entries
+        spine_entries=$(echo "$body" | grep -cE '(ADR-00[0-9]{2}[[:space:]]*[—–-]|\*\*ADR-00[0-9]{2}\*\*)' || true)
+        if [[ "$spine_entries" -ge 3 ]]; then
+            echo "FAIL: $doc — $spine_entries spine-list entries with separators (spine re-enumeration)"
+            echo "$body" | grep -nE '(ADR-00[0-9]{2}[[:space:]]*[—–-]|\*\*ADR-00[0-9]{2}\*\*)' | head -5 | sed 's/^/  /'
+            failures=$((failures + 1))
+        fi
+
+        # Pattern C: 3+ ADR-NNNN references on a single line, with at least
+        #   one comma-separated ADR pair. The comma-separated shape
+        #   ("ADR-0009, ADR-0010, ADR-0011, ...") is the signature of an
+        #   enumerated list; prose references embed ADR refs in sentences
+        #   ("ADR-0015 says X; ADR-0016's pin-check...") and don't have
+        #   comma-separated ADR pairs. The 3+ threshold plus the comma-pair
+        #   requirement avoids false positives on prose that cites 2-3 ADRs
+        #   as evidence.
+        local adr_lines
+        adr_lines=$(echo "$body" | grep 'ADR-00' || true)
+        if [[ -n "$adr_lines" ]]; then
+            while IFS= read -r line; do
+                local count comma_pairs
+                count=$(echo "$line" | grep -oE 'ADR-00[0-9]{2}' | wc -l || true)
+                comma_pairs=$(echo "$line" | grep -oE 'ADR-00[0-9]{2}[[:space:]]*,[[:space:]]*(and[[:space:]]+)?ADR-00[0-9]{2}' | wc -l || true)
+                if [[ "$count" -ge 3 && "$comma_pairs" -ge 1 ]]; then
+                    echo "FAIL: $doc — $count ADR references in comma-separated list on a single line (spine re-enumeration)"
+                    echo "  $line" | head -c 200
+                    echo ""
+                    failures=$((failures + 1))
+                    break  # one failure per doc is enough
+                fi
+            done <<< "$adr_lines"
+        fi
+
+        # Pattern D: 3+ bulleted lines starting with ADR-NNNN (no separator)
+        #   Catches "- ADR-0009 synopsis" / "- ADR-0010 ..." without em-dash
+        local bullet_adr_lines
+        bullet_adr_lines=$(echo "$body" | grep -cE '^[[:space:]]*[-*][[:space:]]+ADR-00[0-9]{2}' || true)
+        if [[ "$bullet_adr_lines" -ge 3 ]]; then
+            echo "FAIL: $doc — $bullet_adr_lines bulleted ADR entries without separator (spine re-enumeration)"
+            echo "$body" | grep -nE '^[[:space:]]*[-*][[:space:]]+ADR-00[0-9]{2}' | head -5 | sed 's/^/  /'
+            failures=$((failures + 1))
+        fi
+    done <<< "$docs"
+
+    # ── Check 2: No two records declare the same owns claim-class ──
+    local owns_map=""
+    local doc owns_value
+    while IFS= read -r doc; do
+        [[ -z "$doc" ]] && continue
+        owns_value=$(fm_get "$doc" "owns")
+        [[ -z "$owns_value" ]] && continue
+        if printf '%s' "$owns_map" | grep -Fqx -- "$owns_value"; then
+            echo "FAIL: duplicate ownership — '$owns_value' claimed by multiple records"
+            failures=$((failures + 1))
+        fi
+        owns_map="$owns_map$owns_value"$'\n'
+    done < <(list_records)
+
+    # ── Check 3: Opted-in artifacts must satisfy their declared schema ──
+    # Ordinary Markdown is not implicitly owned by nospec. An artifact opts in
+    # only through the namespaced `nospec: true` frontmatter marker.
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        check_adopted_doc "$f" || failures=$((failures + 1))
+    done < <(list_durable_docs)
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        check_adr "$f" || failures=$((failures + 1))
+    done < <(list_adrs)
+
+    if [[ "$failures" -gt 0 ]]; then
+        echo ""
+        echo "nospec check: $failures failure(s)"
+        return 1
+    fi
+    echo "nospec check: all checks passed"
+    return 0
+}
+
+# ──────────────────────────── Helpers ────────────────────────────
+
+list_durable_docs() {
+    # Markdown documents explicitly adopted through the nospec marker.
+    local f adopted
+    while IFS= read -r f; do
+        adopted=$(fm_get "$f" "nospec")
+        [[ "$adopted" == "true" ]] && echo "$f"
+    done < <(find "$REPO_ROOT" -type f -name '*.md' \
+        ! -path '*/.git/*' ! -path '*/.loop/*' ! -path '*/node_modules/*' \
+        ! -path '*/decisions/*' | sort)
+    return 0
+}
+
+list_records() {
+    local f role
+    while IFS= read -r f; do
+        role=$(fm_get "$f" "role")
+        [[ "$role" == "record" ]] && echo "$f"
+    done < <(list_durable_docs)
+    return 0
+}
+
+list_adrs() {
+    local f adopted
+    for f in "$REPO_ROOT"/decisions/*.md; do
+        [[ -f "$f" ]] || continue
+        adopted=$(fm_get "$f" "nospec")
+        [[ "$adopted" == "true" ]] && echo "$f"
+    done
+    return 0
+}
+
+# check_frontmatter <file> <field1> [field2] ...
+check_frontmatter() {
+    local file="$1"
+    shift
+    [[ -f "$file" ]] || return 0  # skip non-existent files
+    local field value missing=""
+    for field in "$@"; do
+        value=$(fm_get "$file" "$field")
+        if [[ -z "$value" ]]; then
+            missing="$missing $field"
+        fi
+    done
+    if [[ -n "$missing" ]]; then
+        echo "FAIL: $file — missing frontmatter field(s):$missing"
+        return 1
+    fi
+    return 0
+}
+
+check_adopted_doc() {
+    local file=$1 role
+    check_frontmatter "$file" "nospec" "role" || return 1
+    role=$(fm_get "$file" "role")
+    case "$role" in
+        record) check_frontmatter "$file" "owns" || return 1 ;;
+        view|ledger) ;;
+        *) echo "FAIL: $file — invalid role '$role' (expected record, view, or ledger)"; return 1 ;;
+    esac
+}
+
+check_adr() {
+    local file=$1 status spine
+    check_frontmatter "$file" "nospec" "id" "date" "status" "spine" || return 1
+    status=$(fm_get "$file" "status")
+    spine=$(fm_get "$file" "spine")
+    if [[ "$status" != "accepted" && "$status" != "superseded" ]]; then
+        echo "FAIL: $file — invalid status '$status' (expected accepted or superseded)"
+        return 1
+    fi
+    if [[ "$spine" != "true" && "$spine" != "false" ]]; then
+        echo "FAIL: $file — invalid spine '$spine' (expected true or false)"
+        return 1
+    fi
+}
+
+# ──────────────────────────── Loop: view ────────────────────────────
+
+# nospec view — read-only dashboard of cycles, work units, and decisions.
+cmd_view() {
+    local repo_dir
+    repo_dir=$(pwd)
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --repo)
+                [[ $# -ge 2 ]] || die "--repo needs a value"
+                repo_dir=$(abs_path "$2")
+                shift 2
+                ;;
+            *) die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -d "$repo_dir" ]] || die "repo not found: $repo_dir"
+    PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" - "$repo_dir" "$QUEUE_PARSER" <<'PY'
+import sys, re, time
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+sys.path.insert(0, str(Path(sys.argv[2]).parent))
+from queue_parser import parse_queue as parse_queue_file
+W = "=" * 60
+D = "-" * 60
+
+def parse_queue(path):
+    units, diagnostics = parse_queue_file(path, validate_shell=False)
+    if diagnostics:
+        details = "; ".join(f"line {item.line}: {item.message}" for item in diagnostics)
+        raise SystemExit(f"nospec view: malformed queue {path}: {details}")
+    return [{"title": unit.title, "status": unit.status} for unit in units]
+
+def parse_review_actionable(path):
+    if not path.is_file():
+        return 0
+    match = re.search(
+        r'^\s*-\s*actionable:\s*(\d+)\s*$',
+        path.read_text(),
+        re.MULTILINE,
+    )
+    return int(match.group(1)) if match else 0
+
+def progress_bar(done, total, width=20):
+    filled = 0 if total == 0 else int(round(done / total * width))
+    bar = "#" * filled + "." * (width - filled)
+    pct = 0 if total == 0 else int(round(done / total * 100))
+    return f"[{bar}] {pct:3d}%"
+
+def time_ago(mtime):
+    delta = time.time() - mtime
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
+
+# --- Cycles ---
+cycles = []
+loop_dir = repo / ".loop"
+if loop_dir.is_dir():
+    for entry in sorted(loop_dir.iterdir()):
+        if entry.is_dir() and (entry / "QUEUE.md").is_file():
+            cycles.append(entry)
+
+cycle_data = []
+t_pending = t_inprog = t_done = 0
+t_review_actionable = review_blocked_cycles = 0
+for cycle in cycles:
+    units = parse_queue(cycle / "QUEUE.md")
+    done = sum(1 for u in units if u["status"] == "done")
+    pending = sum(1 for u in units if u["status"] == "pending")
+    in_prog = len(units) - done - pending
+    review_actionable = parse_review_actionable(cycle / "REVIEW.md")
+    mtime = max(
+        (cycle / "QUEUE.md").stat().st_mtime,
+        (cycle / "REVIEW.md").stat().st_mtime if (cycle / "REVIEW.md").is_file() else 0,
+    )
+    cycle_data.append((cycle.name, done, pending, in_prog, len(units), review_actionable, mtime))
+    t_done += done
+    t_pending += pending
+    t_inprog += in_prog
+    t_review_actionable += review_actionable
+    review_blocked_cycles += int(review_actionable > 0)
+
+# --- Decisions ---
+def frontmatter(text):
+    lines = text.splitlines()
+    if not lines or lines[0] != "---":
+        return {}
+    metadata = {}
+    for line in lines[1:]:
+        if line == "---":
+            return metadata
+        if ":" in line:
+            key, value = line.split(":", 1)
+            metadata[key.strip()] = value.strip().strip('"')
+    return {}
+
+decisions = []
+dec_dir = repo / "decisions"
+if dec_dir.is_dir():
+    for f in sorted(dec_dir.glob("*.md")):
+        metadata = frontmatter(f.read_text())
+        if metadata.get("nospec") != "true":
+            continue
+        num = metadata.get("id", "?")
+        status = metadata.get("status", "unknown")
+        m = re.match(r'\d+-(.+)', f.stem)
+        slug = m.group(1) if m else f.stem
+        decisions.append((num, slug, status))
+
+# --- Glossary ---
+glossary_terms = 0
+glossary = repo / "glossary.md"
+if glossary.is_file() and frontmatter(glossary.read_text()).get("nospec") == "true":
+    for line in glossary.read_text().splitlines():
+        if re.match(r'^##\s+', line) and not re.match(r'^###', line):
+            glossary_terms += 1
+
+# --- Render ---
+print()
+print("Nospec Dashboard")
+print()
+print(W)
+print("Summary:")
+print(f"  * Active Cycles: {len(cycles)}")
+if cycles:
+    print(f"  * Work Units: {t_pending} pending, {t_inprog} in progress, {t_done} done")
+if t_review_actionable:
+    label = "cycle" if review_blocked_cycles == 1 else "cycles"
+    print(f"  ! Review: {t_review_actionable} actionable across {review_blocked_cycles} {label}")
+if decisions:
+    accepted = sum(1 for d in decisions if d[2] == "accepted")
+    superseded = sum(1 for d in decisions if d[2] == "superseded")
+    other = len(decisions) - accepted - superseded
+    parts = [f"{accepted} accepted"]
+    if superseded:
+        parts.append(f"{superseded} superseded")
+    if other:
+        parts.append(f"{other} other")
+    print(f"  * Decisions: {len(decisions)} total ({', '.join(parts)})")
+if glossary_terms:
+    print(f"  * Glossary: {glossary_terms} terms")
+
+if cycle_data:
+    print()
+    print("Active Cycles")
+    print(D)
+    for name, done, pending, inprog, total, review_actionable, mtime in cycle_data:
+        bar = progress_bar(done, total)
+        review_state = f"  REVIEW BLOCKED: {review_actionable} actionable" if review_actionable else ""
+        print(f"  o {name:<30} {bar}  {done}/{total} done{review_state}  (touched {time_ago(mtime)})")
+
+if decisions:
+    print()
+    print("Decisions")
+    print(D)
+    for num, slug, status in decisions:
+        label = slug if len(slug) <= 45 else slug[:42] + "..."
+        print(f"  {num:>4}  {label:<45} {status}")
+
+print()
+print(W)
+print()
+PY
+}
+
+# ──────────────────────────── Install ────────────────────────────
+
+# nospec install — symlink this runner onto PATH so `nospec` works from anywhere.
+#
+# Skills.sh installs skill files but does not touch PATH. The runner ships as
+# scripts/nospec inside the nospec skill; without this step it's only callable
+# by its full path. The agent invokes this once (the user doesn't type the
+# long path) — see ADR-0019.
+#
+# Picks the first writable directory from a candidate list that's already on
+# PATH. Falls back to ~/.local/bin (creating it if needed) and prints the
+# PATH-export line if it's not on PATH.
+cmd_install() {
+    local target="${1:-}"
+    local self="$SCRIPT_DIR/nospec"
+
+    [[ -f "$self" ]] || die "could not locate self: $self"
+    chmod +x "$self" 2>/dev/null || true
+
+    # Candidate directories: explicit arg > dirs on PATH that are writable.
+    local candidates=()
+    if [[ -n "$target" ]]; then
+        candidates+=("$target")
+    else
+        local dir
+        while IFS= read -r dir; do
+            [[ -z "$dir" ]] && continue
+            [[ -w "$dir" ]] && candidates+=("$dir")
+        done < <(echo "$PATH" | tr ':' '\n' | grep -v '^$')
+        # Common user-local fallbacks if nothing on PATH is writable.
+        candidates+=("$HOME/.local/bin" "$HOME/bin")
+    fi
+
+    local chosen=""
+    for dir in "${candidates[@]}"; do
+        if [[ -d "$dir" ]] || mkdir -p "$dir" 2>/dev/null; then
+            if [[ -w "$dir" ]]; then
+                chosen="$dir"
+                break
+            fi
+        fi
+    done
+
+    [[ -n "$chosen" ]] || die "no writable directory on PATH found; specify one: nospec install <dir>"
+
+    local link="$chosen/nospec"
+    ln -sf "$self" "$link"
+    echo "symlinked: $link -> $self"
+
+    # If the chosen dir isn't on PATH, tell the user how to add it.
+    if ! echo "$PATH" | tr ':' '\n' | grep -qx "$chosen"; then
+        echo ""
+        echo "note: $chosen is not on your PATH. Add it:"
+        echo "  export PATH=\"$chosen:\$PATH\""
+    fi
+
+    # Verify it resolves.
+    if command -v nospec >/dev/null 2>&1; then
+        echo "nospec is now on PATH: $(command -v nospec)"
+    else
+        echo "run a new shell or re-source your profile, then: nospec --help"
+    fi
+}
+
+# ──────────────────────────── Loop: run ────────────────────────────
+
+preflight_queue() {
+    "$PYTHON_BIN" "$QUEUE_PARSER" validate "$1" || die "queue preflight failed"
+}
+
+first_pending_unit() {
+    "$PYTHON_BIN" "$QUEUE_PARSER" first-pending "$1"
+}
+
+first_pending_title() {
+    "$PYTHON_BIN" "$QUEUE_PARSER" first-pending-title "$1"
+}
+
+first_unresolved_unit() {
+    "$PYTHON_BIN" "$QUEUE_PARSER" first-unresolved "$1"
+}
+
+first_unresolved_title() {
+    "$PYTHON_BIN" "$QUEUE_PARSER" first-unresolved-title "$1"
+}
+
+first_unresolved_status() {
+    "$PYTHON_BIN" "$QUEUE_PARSER" first-unresolved-status "$1"
+}
+
+parsed_unit_verify() {
+    "$PYTHON_BIN" "$QUEUE_PARSER" unit-verify "$1" "$2"
+}
+
+parsed_unit_agent() {
+    "$PYTHON_BIN" "$QUEUE_PARSER" unit-agent "$1" "$2"
+}
+
+set_status() {
+    "$PYTHON_BIN" "$QUEUE_PARSER" set-status "$1" "$2" "$3"
+}
+
+write_handoff() {
+    PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" - "$1" "$2" "$3" "$QUEUE_PARSER" <<'PY'
+import sys, re
+from pathlib import Path
+from datetime import datetime
+
+queue, evidence, handoff, parser = sys.argv[1:]
+queue_path = Path(queue)
+sys.path.insert(0, str(Path(parser).parent))
+from queue_parser import parse_queue
+review_path = queue_path.with_name("REVIEW.md")
+lines = queue_path.read_text().splitlines()
+
+review_actionable = 0
+if review_path.is_file():
+    match = re.search(
+        r'^\s*-\s*actionable:\s*(\d+)\s*$',
+        review_path.read_text(),
+        re.MULTILINE,
+    )
+    if match:
+        review_actionable = int(match.group(1))
+
+parsed_units, diagnostics = parse_queue(queue_path, validate_shell=False)
+if diagnostics:
+    sys.exit(0)  # preflight owns diagnostics; do not replace them from EXIT trap
+units = [{"title": unit.title, "status": unit.status} for unit in parsed_units]
+
+pending = [u for u in units if u["status"] != "done"]
+if not pending and review_actionable == 0:
+    # A prior failed run may have left a handoff behind. Once both build and
+    # review drain, that coordination state is false and must not survive.
+    Path(handoff).unlink(missing_ok=True)
+    sys.exit(0)
+
+completed = [u for u in units if u["status"] == "done"]
+in_progress = [u for u in units if u["status"] in ("in_progress", "verify_failed", "no_progress", "blocked")]
+remaining = [u for u in units if u["status"] == "pending"]
+
+out = [
+    f"# Handoff: {Path(queue).stem}",
+    f"Generated: {datetime.now().isoformat()}",
+    "",
+    "## Completed",
+]
+out += [f"- {u['title']}" for u in completed] or ["- (none)"]
+out += ["", "## In progress"]
+out += [f"- {u['title']} (status: {u['status']})" for u in in_progress] or ["- (none)"]
+out += ["", "## Remaining"]
+out += [f"- {u['title']}" for u in remaining] or ["- (none)"]
+if review_actionable:
+    out += [
+        "",
+        "## Review findings",
+        f"- {review_actionable} actionable finding(s) remain in REVIEW.md.",
+    ]
+out += ["", "## Next action"]
+if in_progress:
+    out.append(f"Re-run loop after addressing the {in_progress[0]['status']} state of: {in_progress[0]['title']}.")
+elif remaining:
+    out.append(f"Re-run loop to continue with: {remaining[0]['title']}.")
+elif review_actionable:
+    out.append("Resolve the actionable findings in REVIEW.md, then rerun review.")
+else:
+    out.append("Queue is complete.")
+
+Path(handoff).write_text("\n".join(out) + "\n")
+PY
+}
+
+inspect_cycle_baseline() {
+    local repo_dir=$1 report=$2
+    "$PYTHON_BIN" - "$repo_dir" "$report" <<'PY'
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+
+repo_dir, report_path = sys.argv[1:]
+
+
+def git(*args: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", "-C", repo_dir, *args],
+        capture_output=True,
+        check=False,
+    )
+
+
+def display_path(raw: bytes) -> str:
+    return json.dumps(raw.decode("utf-8", "backslashreplace"), ensure_ascii=False)
+
+
+def is_loop_path(raw: bytes) -> bool:
+    path = raw.decode("utf-8", "surrogateescape")
+    return bool(PurePosixPath(path).parts and PurePosixPath(path).parts[0] == ".loop")
+
+
+def write_report(lines: list[str]) -> None:
+    Path(report_path).write_text("\n".join(lines) + "\n")
+
+
+try:
+    root_result = git("rev-parse", "--show-toplevel")
+except FileNotFoundError:
+    write_report([
+        "Git root: unavailable",
+        "Git HEAD: unavailable",
+        "Starting worktree:",
+        "- safety unavailable: Git is not installed",
+    ])
+    raise SystemExit(11)
+
+if root_result.returncode != 0:
+    write_report([
+        "Git root: unavailable",
+        "Git HEAD: unavailable",
+        "Starting worktree:",
+        "- safety unavailable: target is not a Git worktree",
+    ])
+    raise SystemExit(11)
+
+root = os.fsdecode(root_result.stdout.strip())
+head_result = subprocess.run(
+    ["git", "-C", root, "rev-parse", "--verify", "HEAD"],
+    capture_output=True,
+    check=False,
+)
+head = os.fsdecode(head_result.stdout.strip()) if head_result.returncode == 0 else "unborn"
+status_result = subprocess.run(
+    ["git", "-C", root, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    capture_output=True,
+    check=False,
+)
+if status_result.returncode != 0:
+    detail = status_result.stderr.decode("utf-8", "backslashreplace").strip()
+    write_report([
+        f"Git root: {json.dumps(root, ensure_ascii=False)}",
+        f"Git HEAD: {head}",
+        "Starting worktree:",
+        f"- safety unavailable: git status failed: {detail or 'unknown error'}",
+    ])
+    raise SystemExit(11)
+
+changes: list[str] = []
+records = status_result.stdout.split(b"\0")
+i = 0
+while i < len(records):
+    record = records[i]
+    i += 1
+    if not record:
+        continue
+    status = record[:2].decode("ascii", "replace")
+    path = record[3:]
+    original: bytes | None = None
+    if "R" in status or "C" in status:
+        if i < len(records):
+            original = records[i]
+            i += 1
+    relevant = not is_loop_path(path) or (original is not None and not is_loop_path(original))
+    if not relevant:
+        continue
+    rendered = f"{status} {display_path(path)}"
+    if original is not None:
+        rendered += f" <- {display_path(original)}"
+    changes.append(rendered)
+
+lines = [
+    f"Git root: {json.dumps(root, ensure_ascii=False)}",
+    f"Git HEAD: {head}",
+    "Starting worktree:",
+]
+if changes:
+    lines.extend(f"- {change}" for change in changes)
+    write_report(lines)
+    raise SystemExit(10)
+
+lines.append("- clean outside `.loop/`")
+write_report(lines)
+PY
+}
+
+ensure_cycle_baseline() {
+    local repo_dir=$1 evidence=$2 dry_run=$3 accept_dirty=$4
+    local marker='<!-- nospec-cycle-baseline:v1 -->'
+    if [[ -f "$evidence" ]] && grep -Fq "$marker" "$evidence"; then
+        [[ "$dry_run" == 0 ]] || echo "Baseline: already recorded for this cycle"
+        return 0
+    fi
+
+    local report result
+    report=$(mktemp)
+    set +e
+    inspect_cycle_baseline "$repo_dir" "$report"
+    result=$?
+    set -e
+
+    if [[ $result -ne 0 && $result -ne 10 && $result -ne 11 ]]; then
+        [[ ! -s "$report" ]] || cat "$report" >&2
+        die "baseline inspection failed unexpectedly (exit $result)"
+    fi
+
+    if [[ "$dry_run" == 1 ]]; then
+        if [[ $result -eq 0 ]]; then
+            echo "Baseline: clean"
+        else
+            echo "Baseline: unsafe — a mutating run would refuse without --accept-dirty-baseline"
+        fi
+        cat "$report"
+        return 0
+    fi
+
+    if [[ $result -ne 0 && "$accept_dirty" == 0 ]]; then
+        cat "$report" >&2
+        echo "nospec: commit or stash the starting changes, use --repo with a clean worktree," >&2
+        die "or rerun with --accept-dirty-baseline to record and accept this risk"
+    fi
+
+    local disposition="clean"
+    if [[ $result -ne 0 ]]; then
+        disposition="accepted unsafe baseline"
+        echo "nospec: accepting an unsafe starting baseline" >&2
+    fi
+
+    mkdir -p "$(dirname "$evidence")"
+    {
+        echo
+        local timestamp
+        timestamp=$("$PYTHON_BIN" -c 'from datetime import datetime; print(datetime.now().astimezone().isoformat(timespec="seconds"))')
+        echo "## $timestamp — cycle baseline"
+        echo
+        echo "$marker"
+        echo
+        echo "Status: $disposition"
+        echo
+        cat "$report"
+    } >> "$evidence"
+}
+
+work_snapshot() {
+    local repo_dir=$1
+    if git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        {
+            git -C "$repo_dir" diff -- . ':(exclude).loop' || true
+            git -C "$repo_dir" status --short --untracked-files=all | awk '$2 !~ /^\.loop\// { print }'
+        } | "$PYTHON_BIN" -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+    else
+        echo "__no_git__"
+    fi
+}
+
+record_pin_state() {
+    local evidence=$1 repo_dir=$2
+    "$PYTHON_BIN" - "$evidence" "$repo_dir" <<'PY'
+import re, sys, subprocess, os
+from pathlib import Path
+
+evidence_path, repo_dir = sys.argv[1], sys.argv[2]
+
+def is_adopted(path):
+    full = os.path.join(repo_dir, path)
+    if not os.path.isfile(full) or not path.endswith('.md'):
+        return False
+    try:
+        lines = Path(full).read_text().splitlines()
+    except (OSError, UnicodeError):
+        return False
+    if not lines or lines[0] != '---':
+        return False
+    for line in lines[1:]:
+        if line == '---':
+            return False
+        if ':' in line:
+            key, value = line.split(':', 1)
+            if key.strip() == 'nospec' and value.strip().strip('"') == 'true':
+                return True
+    return False
+
+def file_sha(repo_dir, path):
+    full = os.path.join(repo_dir, path)
+    if not os.path.isfile(full):
+        return None
+    try:
+        result = subprocess.run(
+            ['git', '-C', repo_dir, 'hash-object', full],
+            capture_output=True, text=True
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode == 0:
+        return result.stdout.strip()[:12]
+    return None
+
+# Get changed files from git status, filter for durable docs
+changed_durable = []
+try:
+    result = subprocess.run(
+        ['git', '-C', repo_dir, 'status', '--short', '--untracked-files=all'],
+        capture_output=True, text=True
+    )
+except FileNotFoundError:
+    result = None
+if result is not None and result.returncode == 0:
+    for line in result.stdout.strip().split('\n'):
+        if not line.strip():
+            continue
+        # Format: XY path (2-char status, space, path)
+        path = line[3:].strip()
+        if path.startswith('.loop/'):
+            continue
+        if is_adopted(path):
+            changed_durable.append(path)
+
+# Scan prior evidence entries for pins on the same paths
+prior_pins = {}
+if os.path.isfile(evidence_path):
+    content = Path(evidence_path).read_text()
+    current_ts = None
+    for line in content.split('\n'):
+        # Only match evidence entry headers (timestamp starts with a date)
+        m = re.match(r'^## (\d{4}-\d{2}-\d{2}T\S+)', line)
+        if m:
+            current_ts = m.group(1)
+            continue
+        m = re.match(r'^- Pinned:\s+(\S+)\s+@\s+(\S+)', line)
+        if m and current_ts:
+            path, sha = m.group(1), m.group(2)
+            prior_pins.setdefault(path, []).append((current_ts, sha))
+
+# Compute current pins (SHA of each durable doc touched this cycle)
+current_pins = {}
+for path in sorted(set(changed_durable)):
+    sha = file_sha(repo_dir, path)
+    if sha:
+        current_pins[path] = sha
+
+# Compute alerts: a prior pin on the same path with a different SHA
+alerts = []
+for path, sha in current_pins.items():
+    if path in prior_pins:
+        last_ts, last_sha = prior_pins[path][-1]
+        if last_sha != sha:
+            alerts.append(
+                f'- Pin alert: {path} moved since {last_ts} (was {last_sha}, now {sha})'
+            )
+
+# Output
+print('Pinned durable docs:')
+if current_pins:
+    for path, sha in sorted(current_pins.items()):
+        print(f'- Pinned: {path} @ {sha}')
+else:
+    print('- (none)')
+
+if alerts:
+    print()
+    print('Pin alerts:')
+    for a in alerts:
+        print(a)
+PY
+}
+
+worktree_state() {
+    local repo_dir=$1
+    if git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git -C "$repo_dir" status --short --untracked-files=all || true
+    else
+        echo "git status unavailable: not inside a git repo"
+    fi
+}
+
+append_evidence() {
+    local evidence=$1 title=$2 status=$3 verify=$4 verify_out=$5 agent_out=$6 repo_dir=$7 unit_file=$8 verify_result=$9
+    mkdir -p "$(dirname "$evidence")"
+    {
+        echo
+        local timestamp
+        timestamp=$("$PYTHON_BIN" -c 'from datetime import datetime; print(datetime.now().astimezone().isoformat(timespec="seconds"))')
+        echo "## $timestamp — $title"
+        echo
+        echo "Status: $status"
+        echo
+        echo "Unit:"
+        echo '````markdown'
+        cat "$unit_file"
+        echo '````'
+        echo
+        echo "Worktree state after tick:"
+        echo '```text'
+        worktree_state "$repo_dir"
+        echo '```'
+        echo
+        echo "Verify command:"
+        echo '```bash'
+        echo "$verify"
+        echo '```'
+        echo
+        echo "Verify result: $verify_result"
+        echo
+        echo "Verify output:"
+        echo '```text'
+        cat "$verify_out"
+        echo '```'
+        echo
+        echo "Worker output:"
+        echo '````text'
+        cat "$agent_out"
+        echo '````'
+        echo
+        echo "Proof boundary:"
+        if [[ "$verify_result" == "exit 0" ]]; then
+            echo "- The recorded Verify command exited 0 in this repository state. No broader behavior is inferred."
+        else
+            echo "- No successful external verification is recorded for this work unit."
+        fi
+        echo
+        record_pin_state "$evidence" "$repo_dir"
+    } >> "$evidence"
+}
+
+extract_actionable_count() {
+    awk '
+        /^[[:space:]]*-[[:space:]]*actionable:[[:space:]]*[0-9]+[[:space:]]*$/ {
+            sub(/^[[:space:]]*-[[:space:]]*actionable:[[:space:]]*/, "")
+            sub(/[[:space:]]*$/, "")
+            print
+            found = 1
+            exit
+        }
+        END { if (!found) exit 1 }
+    ' "$1"
+}
+
+write_review_prompt() {
+    local out=$1
+    local template="$SCRIPT_DIR/../prompts/reviewer.md"
+    if [[ -f "$template" ]]; then
+        cat "$template" > "$out"
+    else
+        cat > "$out" <<'EOF'
+# Nospec Reviewer
+
+Load and follow the **nospec-trial** skill.
+Review the completed queue against the current repository state. Write the structured review artifact at the path provided below.
+EOF
+    fi
+    cat >> "$out" <<EOF
+
+Queue: $queue_abs
+Evidence: $evidence
+Review output: $review_file
+EOF
+    if [[ -f "$design_file" ]]; then
+        echo "Design: $design_file" >> "$out"
+    fi
+}
+
+write_fix_prompt() {
+    local out=$1
+    local template="$SCRIPT_DIR/../prompts/fixer.md"
+    if [[ -f "$template" ]]; then
+        cat "$template" > "$out"
+    else
+        cat > "$out" <<'EOF'
+# Nospec Fixer
+
+Load and follow the **nospec-mend** skill.
+Read the structured review artifact and append any actionable fix work units to the existing queue. Stop after updating the queue.
+EOF
+    fi
+    cat >> "$out" <<EOF
+
+Queue: $queue_abs
+Evidence: $evidence
+Review input: $review_file
+EOF
+    if [[ -f "$design_file" ]]; then
+        echo "Design: $design_file" >> "$out"
+    fi
+}
+
+run_phase_agent() {
+    local phase=$1 prompt=$2 output=$3 cmd=${4:-} result_file=${5:-}
+    if [[ -n "$cmd" ]]; then
+        (
+            cd "$repo_dir"
+            LOOP_PHASE="$phase" \
+                LOOP_PROMPT_FILE="$prompt" \
+                LOOP_QUEUE_FILE="$queue_abs" \
+                LOOP_EVIDENCE_FILE="$evidence" \
+                LOOP_REVIEW_FILE="$review_file" \
+                LOOP_RESULT_FILE="$result_file" \
+                bash -lc "$cmd"
+        ) > "$output" 2>&1
+    else
+        (
+            cd "$repo_dir"
+            LOOP_PHASE="$phase" \
+                LOOP_PROMPT_FILE="$prompt" \
+                LOOP_QUEUE_FILE="$queue_abs" \
+                LOOP_EVIDENCE_FILE="$evidence" \
+                LOOP_REVIEW_FILE="$review_file" \
+                LOOP_RESULT_FILE="$result_file" \
+                pi -p --no-session --approve "$(cat "$prompt")"
+        ) > "$output" 2>&1
+    fi
+}
+
+# nospec run <queue> — the optional batch runner behind a verify gate.
+#
+# cmd_run sets up state (locals) and orchestrates two phases in a loop:
+#   build → review-fix → (if fix produced units) build → ...
+# The phase functions read/write cmd_run's locals via bash dynamic scoping.
+# Both phases terminate the process on terminal conditions (exit 0 / die);
+# the outer loop only continues when fix appends new pending units.
+
+# Process one pending work unit. Returns 0 to continue the build loop,
+# 1 if no pending unit remains. Terminates the process on blocked / verify
+# failure / no-progress / dry-run.
+run_one_unit() {
+    local unit
+    unit=$(first_pending_unit "$queue_abs")
+    [[ -n "$unit" ]] || return 1
+
+    local unit_file verify_file agent_out verify_out result_file
+    unit_file=$(mktemp); verify_file=$(mktemp); agent_out=$(mktemp); verify_out=$(mktemp); result_file=$(mktemp)
+    printf '%s' "$unit" > "$unit_file"
+
+    local title verify
+    title=$(first_pending_title "$queue_abs")
+    [[ -n "$title" ]] || die "pending work unit has no outcome"
+    verify=$(parsed_unit_verify "$queue_abs" "$title")
+    [[ -n "$verify" ]] || die "work unit has no Verify fenced block: $title"
+    printf '%s\n' "$verify" > "$verify_file"
+
+    if [[ "$dry_run" == 1 ]]; then
+        echo "Unit: $title"
+        echo "Repo: $repo_dir"
+        echo "Verify:"
+        cat "$verify_file"
+        exit 0
+    fi
+
+    echo "nospec: tick $tick/$max_ticks — $title"
+    set_status "$queue_abs" "$title" "in_progress"
+    local before
+    before=$(work_snapshot "$repo_dir")
+
+    local run_prompt
+    run_prompt=$(mktemp)
+    cat "$prompt_file" > "$run_prompt"
+    cat >> "$run_prompt" <<EOF
+
+Current work unit from $queue_abs:
+
+$(cat "$unit_file")
+EOF
+
+    local agent_cmd unit_agent
+    agent_cmd="${LOOP_AGENT_CMD:-}"
+    unit_agent=$(parsed_unit_agent "$queue_abs" "$title")
+    if [[ -n "$unit_agent" ]]; then
+        agent_cmd="$unit_agent"
+    fi
+
+    local agent_code
+    set +e
+    run_phase_agent "build" "$run_prompt" "$agent_out" "$agent_cmd" "$result_file"
+    agent_code=$?
+    set -e
+
+    if [[ $agent_code -ne 0 ]]; then
+        set_status "$queue_abs" "$title" "blocked"
+        : > "$verify_out"
+        append_evidence "$evidence" "$title" "blocked" "$verify" "$verify_out" "$agent_out" "$repo_dir" "$unit_file" "not run"
+        cat "$agent_out"
+        die "worker exited nonzero for $title"
+    fi
+
+    if [[ -s "$result_file" ]]; then
+        local worker_result
+        worker_result=$(head -1 "$result_file")
+        if [[ "$worker_result" != "blocked" ]]; then
+            printf '\nInvalid worker result signal:\n' >> "$agent_out"
+            cat "$result_file" >> "$agent_out"
+            set_status "$queue_abs" "$title" "blocked"
+            : > "$verify_out"
+            append_evidence "$evidence" "$title" "blocked" "$verify" "$verify_out" "$agent_out" "$repo_dir" "$unit_file" "not run"
+            cat "$agent_out"
+            die "invalid worker result signal for $title"
+        fi
+        printf '\nWorker blocker signal:\n' >> "$agent_out"
+        tail -n +2 "$result_file" >> "$agent_out"
+        set_status "$queue_abs" "$title" "blocked"
+        : > "$verify_out"
+        append_evidence "$evidence" "$title" "blocked" "$verify" "$verify_out" "$agent_out" "$repo_dir" "$unit_file" "not run"
+        cat "$agent_out"
+        die "worker reported blocker for $title"
+    fi
+
+    local after
+    after=$(work_snapshot "$repo_dir")
+
+    local verify_code
+    set +e
+    (cd "$repo_dir" && bash -lc "$verify") > "$verify_out" 2>&1
+    verify_code=$?
+    set -e
+
+    if [[ $verify_code -eq 0 ]]; then
+        set_status "$queue_abs" "$title" "done"
+        append_evidence "$evidence" "$title" "done" "$verify" "$verify_out" "$agent_out" "$repo_dir" "$unit_file" "exit $verify_code"
+        echo "nospec: verified — $title"
+        tick=$((tick + 1))
+        return 0
+    fi
+
+    if [[ "$before" == "$after" ]]; then
+        no_progress_strikes=$((no_progress_strikes + 1))
+        if [[ $no_progress_strikes -ge 2 ]]; then
+            set_status "$queue_abs" "$title" "no_progress"
+            append_evidence "$evidence" "$title" "no_progress" "$verify" "$verify_out" "$agent_out" "$repo_dir" "$unit_file" "exit $verify_code"
+            die "no progress after $no_progress_strikes attempts on $title"
+        fi
+        set_status "$queue_abs" "$title" "pending"
+        append_evidence "$evidence" "$title" "verify_failed" "$verify" "$verify_out" "$agent_out" "$repo_dir" "$unit_file" "exit $verify_code"
+        echo "nospec: verify failed with no progress; retrying once"
+        tick=$((tick + 1))
+        return 0
+    fi
+
+    set_status "$queue_abs" "$title" "verify_failed"
+    append_evidence "$evidence" "$title" "verify_failed" "$verify" "$verify_out" "$agent_out" "$repo_dir" "$unit_file" "exit $verify_code"
+    cat "$verify_out"
+    die "verify failed for $title"
+}
+
+# Build phase: process pending units until the queue drains or max ticks hit.
+# Terminates the process if max ticks is reached with pending work remaining.
+run_build_phase() {
+    preflight_queue "$queue_abs"
+
+    local unresolved_title unresolved_status
+    while (( tick <= max_ticks )); do
+        unresolved_title=$(first_unresolved_title "$queue_abs")
+        [[ -n "$unresolved_title" ]] || break
+        unresolved_status=$(first_unresolved_status "$queue_abs")
+        if [[ "$unresolved_status" != "pending" ]]; then
+            if [[ "$resume_enabled" == 0 ]]; then
+                die "first unresolved unit is $unresolved_status: $unresolved_title (address it, then rerun with --resume)"
+            fi
+            echo "nospec: resuming $unresolved_title from $unresolved_status"
+            set_status "$queue_abs" "$unresolved_title" "pending"
+        fi
+        run_one_unit || break
+    done
+
+    if [[ -n "$(first_pending_unit "$queue_abs")" ]]; then
+        die "reached max ticks ($max_ticks) with pending work"
+    fi
+    local unresolved
+    unresolved=$(first_unresolved_unit "$queue_abs")
+    [[ -z "$unresolved" ]] || die "queue has unresolved work but no pending unit: $unresolved"
+}
+
+# Review-fix phase: run review, then fix if actionable findings.
+# Terminates the process on terminal conditions (clean review, no new units,
+# max rounds, worker failure). Returns only if fix produced new pending units
+# and the outer loop should run another build pass.
+run_review_fix_phase() {
+    if [[ "$review_enabled" == 0 ]]; then
+        if [[ -f "$review_file" ]]; then
+            local existing_actionable
+            existing_actionable=$(extract_actionable_count "$review_file") \
+                || die "review file has no actionable summary: $review_file"
+            if (( existing_actionable > 0 )); then
+                die "queue drained but review still has $existing_actionable actionable issue(s)"
+            fi
+        fi
+        if (( tick > max_ticks )); then
+            echo "nospec: reached max ticks ($max_ticks)"
+            exit 0
+        fi
+        echo "nospec: no pending work units"
+        exit 0
+    fi
+
+    if (( review_round >= max_review_rounds )); then
+        die "reached max review rounds ($max_review_rounds)"
+    fi
+
+    review_round=$((review_round + 1))
+    local review_prompt review_out
+    review_prompt=$(mktemp)
+    review_out=$(mktemp)
+    write_review_prompt "$review_prompt"
+    local review_cmd
+    review_cmd="${LOOP_REVIEW_CMD:-${LOOP_AGENT_CMD:-}}"
+
+    echo "nospec: review round $review_round/$max_review_rounds"
+    local review_code
+    set +e
+    run_phase_agent "review" "$review_prompt" "$review_out" "$review_cmd"
+    review_code=$?
+    set -e
+    if [[ $review_code -ne 0 ]]; then
+        cat "$review_out"
+        die "review worker exited nonzero"
+    fi
+    [[ -f "$review_file" ]] || die "review worker did not write $review_file"
+    local actionable
+    actionable=$(extract_actionable_count "$review_file") || die "review file has no actionable summary: $review_file"
+
+    if [[ "$actionable" == 0 ]]; then
+        echo "nospec: review clean"
+        exit 0
+    fi
+
+    if (( review_round >= max_review_rounds )); then
+        die "review found $actionable actionable issue(s) at max review rounds ($max_review_rounds)"
+    fi
+
+    local fix_prompt fix_out
+    fix_prompt=$(mktemp)
+    fix_out=$(mktemp)
+    write_fix_prompt "$fix_prompt"
+    local fix_cmd
+    fix_cmd="${LOOP_FIX_CMD:-${LOOP_AGENT_CMD:-}}"
+
+    echo "nospec: fix round $review_round/$max_review_rounds — actionable: $actionable"
+    local fix_code
+    set +e
+    run_phase_agent "fix" "$fix_prompt" "$fix_out" "$fix_cmd"
+    fix_code=$?
+    set -e
+    if [[ $fix_code -ne 0 ]]; then
+        cat "$fix_out"
+        die "fix worker exited nonzero"
+    fi
+
+    preflight_queue "$queue_abs"
+    if [[ -z "$(first_pending_unit "$queue_abs")" ]]; then
+        cat "$fix_out"
+        die "fix produced no new units while review still has $actionable actionable issue(s)"
+    fi
+}
+
+cmd_lint() {
+    [[ $# -eq 1 ]] || die "usage: nospec lint <queue>"
+    local queue_abs
+    queue_abs=$(abs_path "$1")
+    [[ -f "$queue_abs" ]] || die "queue not found: $queue_abs"
+    [[ -f "$QUEUE_PARSER" ]] || die "queue parser not found: $QUEUE_PARSER"
+    "$PYTHON_BIN" "$QUEUE_PARSER" validate "$queue_abs" || die "queue preflight failed"
+    echo "nospec lint: queue valid"
+}
+
+cmd_run() {
+    [[ $# -ge 1 ]] || die "missing queue path"
+    [[ "$1" == "-h" || "$1" == "--help" ]] && { usage; exit 0; }
+    local queue_abs
+    queue_abs=$(abs_path "$1")
+    shift
+    [[ -f "$queue_abs" ]] || die "queue not found: $queue_abs"
+    [[ -f "$QUEUE_PARSER" ]] || die "queue parser not found: $QUEUE_PARSER"
+
+    local max_ticks=3 max_review_rounds=2 review_enabled=0 dry_run=0 resume_enabled=0 accept_dirty_baseline=0 repo_override=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --repo)
+                [[ $# -ge 2 ]] || die "--repo needs a value"
+                repo_override=$(abs_path "$2")
+                shift 2
+                ;;
+            --max-ticks)
+                [[ $# -ge 2 ]] || die "--max-ticks needs a value"
+                max_ticks=$2
+                shift 2
+                ;;
+            --review)
+                review_enabled=1
+                shift
+                ;;
+            --max-review-rounds)
+                [[ $# -ge 2 ]] || die "--max-review-rounds needs a value"
+                max_review_rounds=$2
+                shift 2
+                ;;
+            --dry-run)
+                dry_run=1
+                shift
+                ;;
+            --resume)
+                resume_enabled=1
+                shift
+                ;;
+            --accept-dirty-baseline)
+                accept_dirty_baseline=1
+                shift
+                ;;
+            *) die "unknown argument: $1" ;;
+        esac
+    done
+    [[ "$dry_run" == 0 || "$resume_enabled" == 0 ]] || die "--dry-run and --resume cannot be combined"
+
+    local prompt_file="$SCRIPT_DIR/../prompts/worker.md"
+    [[ -f "$prompt_file" ]] || die "worker prompt not found: $prompt_file"
+
+    local queue_dir
+    queue_dir=$(dirname "$queue_abs")
+    local repo_dir
+    if [[ -n "$repo_override" ]]; then
+        [[ -d "$repo_override" ]] || die "repo not found: $repo_override"
+        repo_dir="$repo_override"
+    elif [[ $(basename "$queue_dir") == ".loop" ]]; then
+        repo_dir=$(dirname "$queue_dir")
+    elif [[ $(basename "$(dirname "$queue_dir")") == ".loop" ]]; then
+        repo_dir=$(dirname "$(dirname "$queue_dir")")
+    else
+        repo_dir=$(pwd)
+    fi
+    local evidence="$queue_dir/EVIDENCE.md"
+    local handoff="$queue_dir/HANDOFF.md"
+    local review_file="$queue_dir/REVIEW.md"
+    local design_file="$queue_dir/DESIGN.md"
+    local no_progress_strikes=0
+
+    preflight_queue "$queue_abs"
+    ensure_cycle_baseline "$repo_dir" "$evidence" "$dry_run" "$accept_dirty_baseline"
+
+    write_handoff_on_exit() {
+        local rc=$?
+        [[ "${dry_run:-0}" == 0 ]] || return $rc
+        [[ -f "${queue_abs:-}" ]] || return $rc
+        write_handoff "$queue_abs" "$evidence" "$handoff" 2>/dev/null || true
+        return $rc
+    }
+    trap write_handoff_on_exit EXIT
+
+    local tick=1
+    local review_round=0
+
+    while true; do
+        run_build_phase
+        run_review_fix_phase
+    done
+}
+
+# ──────────────────────────── Usage ────────────────────────────
+
+usage() {
+    cat <<'EOF'
+nospec — derivation, linting, inspection, and the optional batch loop
+
+Inspection:
+  nospec spine    Print the spine ADRs (derived from frontmatter)
+  nospec adrs     Print all ADRs with id, status, title
+  nospec view     Read-only dashboard of cycles, work units, and decisions
+  nospec check    Check opted-in artifact metadata and structural drift
+  nospec lint <queue>  Validate every queue unit and Verify shell command
+
+Setup:
+  nospec install [dir]  Symlink this runner onto PATH (run once after npx skills add).
+                       Picks a writable dir on PATH, or ~/.local/bin as fallback.
+                       Optional dir arg overrides the choice.
+
+Batch (optional, AFK):
+  nospec run <queue> [--repo DIR] [--max-ticks N] [--review] [--max-review-rounds N] [--dry-run] [--resume] [--accept-dirty-baseline]
+                 Run work units behind a verify gate. The queue is usually
+                 .loop/<name>/QUEUE.md. Use --repo when the queue lives outside
+                 the repository it should operate on. A first mutating run
+                 refuses dirty or unversioned targets unless the operator passes
+                 --accept-dirty-baseline; --dry-run reports baseline safety.
+
+The spine list is derived from decisions/*.md where spine: true.
+Views must not re-enumerate ADR numbers; they point to `nospec spine` or decisions/.
+
+See ADR-0017 (derivation/lint), ADR-0018 (loop folded into nospec),
+and ADR-0019 (runner bundled as a skill).
+EOF
+}
+
+# ──────────────────────────── Main ────────────────────────────
+
+main() {
+    local cmd="${1:-}"
+    shift || true
+    case "$cmd" in
+        spine)  cmd_spine "$@" ;;
+        adrs)   cmd_adrs "$@" ;;
+        check)  cmd_check "$@" ;;
+        lint)   cmd_lint "$@" ;;
+        view)   cmd_view "$@" ;;
+        install) cmd_install "$@" ;;
+        run)    cmd_run "$@" ;;
+        -h|--help|help) usage ;;
+        "") usage; exit 1 ;;
+        *) echo "nospec: unknown command '$cmd'" >&2; usage >&2; exit 1 ;;
+    esac
+}
+
+main "$@"

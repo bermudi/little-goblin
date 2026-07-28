@@ -10,8 +10,8 @@
  *   - `paths.ts`         — `~/goblin/...` path helpers
  *   - `types.ts`         — shared type definitions
  *
- * See specs/canon/subagents/spec.md for behavioural requirements and
- * specs/changes/subagent-runtime/ for the original design.
+ * Current behavior is exercised by `mod.test.ts` and `test/*.suite.ts`.
+ * Historical design: `specs/changes/archive/2026-04-26-subagent-runtime/`.
  */
 
 export { SubagentRunner, type SubagentToolFactory } from "./runner.ts";

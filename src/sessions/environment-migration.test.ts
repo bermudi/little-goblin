@@ -331,23 +331,14 @@ describe("environment-migration", () => {
     expect(state.executionEnvironment).toEqual({ kind: "personal" });
   });
 
-  it("throws when a session is bound to both a project surface and a personal surface", () => {
+  it("rejects a conversation bound to more than one surface before environment inference", () => {
     mkdirSync(sessionsDir(tmpDir), { recursive: true });
-    const projectDir = join(tmpDir, "project");
-    mkdirSync(projectDir, { recursive: true });
     const dm = dmSurface(1);
     const topic = topicSurface("supergroup", 2, 7);
-    writeTopicSettings(tmpDir, {
-      version: 1,
-      surfaces: {
-        [surfaceId(dm)]: { projectRoot: projectDir },
-        [surfaceId(topic)]: {},
-      },
-    });
     writeBindings(tmpDir, { version: 1, surfaces: { [surfaceId(dm)]: SESSION_ID, [surfaceId(topic)]: SESSION_ID } });
     writeState(tmpDir, SESSION_ID, makeLegacyState());
 
-    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/conflicting environments/);
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/already bound/);
   });
 
   it("throws when a session has an incompatible pi history header", () => {
@@ -421,7 +412,7 @@ describe("environment-migration", () => {
     expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/state file id mismatch/);
   });
 
-  it("throws when a binding has an invalid SurfaceId", () => {
+  it("rejects an invalid SurfaceId at the bindings load boundary", () => {
     mkdirSync(sessionsDir(tmpDir), { recursive: true });
     writeBindings(tmpDir, {
       version: 1,
@@ -429,6 +420,6 @@ describe("environment-migration", () => {
     });
     writeState(tmpDir, SESSION_ID, makeLegacyState());
 
-    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/invalid SurfaceId/);
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/SurfaceId/);
   });
 });

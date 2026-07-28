@@ -46,6 +46,18 @@ describe("state-version", () => {
     expect(() => readStateVersion(home)).toThrow(/safe integer/);
   });
 
+  for (const [label, version] of [
+    ["null", null],
+    ["boolean", true],
+    ["string", "3"],
+    ["array", [3]],
+  ] as const) {
+    it(`rejects a non-number version: ${label}`, () => {
+      writeFileSync(stateVersionPath(home), JSON.stringify({ version }));
+      expect(() => readStateVersion(home)).toThrow(/safe integer/);
+    });
+  }
+
   it("rejects a version newer than the running code", () => {
     writeFileSync(stateVersionPath(home), JSON.stringify({ version: CURRENT_STATE_VERSION + 10 }));
     expect(() => readStateVersion(home)).toThrow(/newer than supported/);

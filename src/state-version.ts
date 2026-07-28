@@ -46,10 +46,10 @@ export function readStateVersion(home: string): number {
   }
 
   const versionValue = (parsed as Record<string, unknown>).version;
-  const version = Number(versionValue);
-  if (!Number.isSafeInteger(version)) {
-    throw new Error(`invalid state version in ${path}: ${versionValue} is not a safe integer`);
+  if (typeof versionValue !== "number" || !Number.isSafeInteger(versionValue)) {
+    throw new Error(`invalid state version in ${path}: ${String(versionValue)} is not a safe integer`);
   }
+  const version = versionValue;
   if (version < 0) {
     throw new Error(`invalid state version in ${path}: ${version} is negative`);
   }

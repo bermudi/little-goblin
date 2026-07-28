@@ -20,26 +20,30 @@ function pathFor(home: string): string {
   return configPath(home);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function isCanonicalBindings(value: unknown): value is BindingsFile {
-  if (value === null || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  return v.version === 1 && typeof v.surfaces === "object" && v.surfaces !== null;
+  if (!isRecord(value)) return false;
+  return value.version === 1 && isRecord(value.surfaces);
 }
 
 function isLegacyBindings(value: unknown): value is LegacyBindingsFile {
-  if (value === null || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  return !("version" in v) && (
-    typeof v.dm === "object" ||
-    typeof v.topics === "object" ||
-    typeof v.supergroups === "object" ||
-    typeof v.guest === "object"
+  if (!isRecord(value)) return false;
+  return !("version" in value) && (
+    isRecord(value.dm) ||
+    isRecord(value.topics) ||
+    isRecord(value.supergroups) ||
+    isRecord(value.guest)
   );
 }
 
 /**
  * Load the canonical bindings file (state/bindings.json). Returns the default
- * empty canonical shape when the file is missing or malformed.
+ * empty canonical shape when the file is missing or structurally malformed.
+ * A canonical-shaped file that violates a binding invariant throws rather than
+ * becoming an empty map that a later write could overwrite.
  *
  * A legacy file (no `version: 1`) is treated as missing; the migration path
  * must read it via `loadLegacyBindings` and convert it before the manager
@@ -48,6 +52,7 @@ function isLegacyBindings(value: unknown): value is LegacyBindingsFile {
 export function loadBindings(home: string): BindingsFile {
   const raw = loadJsonFile<BindingsFile | LegacyBindingsFile>(pathFor(home), structuredClone(DEFAULT_BINDINGS));
   if (isCanonicalBindings(raw)) {
+    validateBindings(raw);
     return raw;
   }
   return structuredClone(DEFAULT_BINDINGS);

@@ -18,8 +18,8 @@ import { readFileSync } from "node:fs";
 import { surfaceId, parseSurfaceId, topicSurface, dmSurface, supergroupSurface, guestSurface, type Surface, type SurfaceId } from "../surface.ts";
 import { saveStore } from "../scheduler/store.ts";
 import type { ScheduleStoreFile, PersistedScheduledTurn } from "../scheduler/types.ts";
-import { loadBindings, saveBindings, loadLegacyBindings } from "./bindings.ts";
-import { loadTopicSettings, saveTopicSettings, loadLegacyTopicSettings } from "./topic-settings.ts";
+import { loadBindings, saveBindings, loadLegacyBindings, validateBindings } from "./bindings.ts";
+import { loadCanonicalTopicSettingsForMigration, saveTopicSettings, loadLegacyTopicSettings } from "./topic-settings.ts";
 import { schedulesPath } from "./paths.ts";
 import { surfaceFromLocatorCompat } from "./surface-compat.ts";
 
@@ -46,22 +46,33 @@ function topicKey(ref: TopicRef): string {
 }
 
 /**
- * Load schedules.json directly for evidence gathering. Reading is best-effort:
- * missing or malformed files are treated as empty. This avoids coupling the
- * session migration to the scheduler's canonical in-memory model, which is
- * migrated in a later phase.
+ * Load schedules.json directly for evidence gathering. A missing or malformed
+ * file is treated as empty, but filesystem failures propagate. This avoids
+ * coupling the session migration to the scheduler's canonical in-memory model,
+ * which is migrated in a later phase.
  */
 function loadSchedulesForEvidence(home: string): { locator: ChatLocator }[] {
+  let raw: string;
   try {
-    const raw = readFileSync(schedulesPath(home), "utf-8");
-    const parsed = JSON.parse(raw) as { schedules?: { locator?: ChatLocator }[] };
-    if (!Array.isArray(parsed?.schedules)) return [];
-    return parsed.schedules.filter((s) => s?.locator !== undefined && s.locator !== null) as { locator: ChatLocator }[];
+    raw = readFileSync(schedulesPath(home), "utf-8");
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
-    // Malformed schedules should not block bindings/settings migration.
+    throw e;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    if (e instanceof SyntaxError) return [];
+    throw e;
+  }
+
+  if (parsed === null || typeof parsed !== "object" || !Array.isArray((parsed as { schedules?: unknown }).schedules)) {
     return [];
   }
+  return (parsed as { schedules: { locator?: ChatLocator }[] }).schedules
+    .filter((schedule) => schedule?.locator !== undefined && schedule.locator !== null) as { locator: ChatLocator }[];
 }
 
 function collectTopicEvidence(
@@ -434,7 +445,7 @@ function planScheduleMigration(
 export function planSurfaceMigration(home: string): SurfaceMigrationPlan {
   const canonicalBindings = loadBindings(home);
   const legacyBindings = loadLegacyBindings(home);
-  const canonicalSettings = loadTopicSettings(home);
+  const canonicalSettings = loadCanonicalTopicSettingsForMigration(home);
   const legacySettings = loadLegacyTopicSettings(home);
   const schedules = loadSchedulesForEvidence(home);
 
@@ -447,6 +458,7 @@ export function planSurfaceMigration(home: string): SurfaceMigrationPlan {
   );
 
   const newBindings = migrateBindings(canonicalBindings, legacyBindings, evidence);
+  validateBindings(newBindings);
   const newSettings = migrateSettings(canonicalSettings, legacySettings, evidence);
   const newSchedules = planScheduleMigration(home, newBindings, evidence);
 

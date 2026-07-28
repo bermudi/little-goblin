@@ -70,7 +70,7 @@ export class ConversationStore {
    */
   createWithId(env: ExecutionEnvironment, id: ConversationId, title?: string): ConversationState {
     validateConversationId(id);
-    if (existsSync(sessionDir(this.home, id)) || existsSync(join(sessionsDir(this.home), "archive", id))) {
+    if (this.load(id) !== null || existsSync(join(sessionsDir(this.home), "archive", id))) {
       throw new Error(`conversation ${id} already exists`);
     }
     ensureConversationFiles(this.home, id);

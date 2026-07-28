@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ScheduleStore, makeScheduleId, loadStore } from "./store.ts";
 import { schedulesPath } from "../sessions/paths.ts";
 import { dmSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
+import { log } from "../log.ts";
 import type { ScheduledTurn } from "./types.ts";
 
 const LOC: Surface = topicSurface("supergroup", 100, 5);
@@ -37,6 +38,20 @@ describe("ScheduleStore", () => {
       writeFileSync(schedulesPath(tmpDir), "{not json");
       const loaded = loadStore(tmpDir);
       expect(loaded.schedules).toEqual([]);
+    });
+
+    it("warns and loads empty on valid JSON with an unexpected shape", () => {
+      mkdirSync(dirname(schedulesPath(tmpDir)), { recursive: true });
+      writeFileSync(schedulesPath(tmpDir), JSON.stringify({ schedules: "not-an-array" }));
+      const warn = spyOn(log, "warn");
+      try {
+        expect(loadStore(tmpDir).schedules).toEqual([]);
+        expect(warn).toHaveBeenCalledWith("schedules.json has unexpected shape, treating as empty", {
+          path: schedulesPath(tmpDir),
+        });
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 

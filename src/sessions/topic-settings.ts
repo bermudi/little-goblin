@@ -46,14 +46,31 @@ function isLegacySettings(value: unknown): value is LegacyTopicSettingsFile {
 
 /**
  * Load the canonical topic-settings file (state/topic-settings.json). Returns
- * the default empty canonical shape when the file is missing or malformed.
+ * the default empty canonical shape when the file is missing or malformed. A
+ * legacy-shaped file requires the offline migration and is never treated as an
+ * empty canonical file, which would lose its other Surface settings on write.
  */
 export function loadTopicSettings(home: string): TopicSettingsFile {
   const raw = loadJsonFile<TopicSettingsFile | LegacyTopicSettingsFile>(pathFor(home), structuredClone(DEFAULT_SETTINGS));
   if (isCanonicalSettings(raw)) {
     return raw;
   }
+  if (isLegacySettings(raw)) {
+    throw new Error(`legacy topic-settings file at ${pathFor(home)} requires offline migration`);
+  }
   return structuredClone(DEFAULT_SETTINGS);
+}
+
+/**
+ * Read only canonical settings while planning the offline Surface migration.
+ * A legacy file is intentionally treated as absent here: its entries are read
+ * separately through {@link loadLegacyTopicSettings} and migrated into the
+ * plan. Runtime callers must use {@link loadTopicSettings}, which refuses a
+ * legacy file rather than overwriting it.
+ */
+export function loadCanonicalTopicSettingsForMigration(home: string): TopicSettingsFile {
+  const raw = loadJsonFile<TopicSettingsFile | LegacyTopicSettingsFile>(pathFor(home), structuredClone(DEFAULT_SETTINGS));
+  return isCanonicalSettings(raw) ? raw : structuredClone(DEFAULT_SETTINGS);
 }
 
 /**

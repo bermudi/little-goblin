@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   loadTopicSettings,
+  loadCanonicalTopicSettingsForMigration,
   saveTopicSettings,
   getProjectRoot,
   bindProjectRoot,
@@ -66,6 +67,20 @@ describe("topic-settings", () => {
 
       const settings = loadTopicSettings(tmpDir);
       expect(settings).toEqual({ version: 1, surfaces: {} });
+    });
+
+    it("rejects a legacy file until the offline migration runs", () => {
+      mkdirSync(dirname(topicSettingsPath(tmpDir)), { recursive: true });
+      writeFileSync(topicSettingsPath(tmpDir), JSON.stringify({ dm: { "7": { modelName: "legacy" } } }), "utf-8");
+
+      expect(() => loadTopicSettings(tmpDir)).toThrow(/requires offline migration/);
+    });
+
+    it("lets the offline migration read a legacy file as absent canonical state", () => {
+      mkdirSync(dirname(topicSettingsPath(tmpDir)), { recursive: true });
+      writeFileSync(topicSettingsPath(tmpDir), JSON.stringify({ dm: { "7": { modelName: "legacy" } } }), "utf-8");
+
+      expect(loadCanonicalTopicSettingsForMigration(tmpDir)).toEqual({ version: 1, surfaces: {} });
     });
   });
 

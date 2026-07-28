@@ -95,6 +95,7 @@ export function loadStore(home: string): ScheduleStoreFile {
     if (parsed !== null && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).schedules)) {
       return parsed as ScheduleStoreFile;
     }
+    log.warn("schedules.json has unexpected shape, treating as empty", { path: pathFor(home) });
     return structuredClone(EMPTY_STORE);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {

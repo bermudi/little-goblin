@@ -53,6 +53,19 @@ describe("ConversationStore", () => {
       expect(raw).not.toHaveProperty("modelName");
       expect(raw).not.toHaveProperty("thinkingLevel");
     });
+
+    it("completes a partial conversation directory for a planned-id recovery", () => {
+      const id = "abc123def0";
+      mkdirSync(sessionDir(tmpDir, id), { recursive: true });
+      writeFileSync(transcriptPath(tmpDir, id), "");
+      writeFileSync(metricsPath(tmpDir, id), "");
+      writeFileSync(join(sessionDir(tmpDir, id), "events.jsonl"), "");
+
+      const created = store.createWithId(personalEnvironment(), id);
+
+      expect(created.id).toBe(id);
+      expect(store.load(id)).toEqual(created);
+    });
   });
 
   describe("load", () => {

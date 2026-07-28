@@ -305,5 +305,27 @@ describe("migrateSurfaceState", () => {
       expect(() => planSurfaceMigration(tmpDir)).toThrow(/missing container evidence/);
       expect(readFileSync(configPath(tmpDir), "utf-8")).toBe(before);
     });
+
+    it("fails duplicate conversation bindings during preflight, before writing", () => {
+      writeLegacyBindings({
+        dm: { [CHAT_ID]: SESSION_ID },
+        supergroups: { [SG_ID]: SESSION_ID },
+        topics: {},
+        guest: {},
+      });
+      writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
+      const before = readFileSync(configPath(tmpDir), "utf-8");
+
+      expect(() => planSurfaceMigration(tmpDir)).toThrow(/already bound/);
+      expect(readFileSync(configPath(tmpDir), "utf-8")).toBe(before);
+    });
+
+    it("propagates schedule filesystem errors instead of treating them as missing", () => {
+      writeLegacyBindings({ dm: { [CHAT_ID]: SESSION_ID }, supergroups: {}, topics: {}, guest: {} });
+      writeLegacyTopicSettings({ dm: {}, supergroups: {}, topics: {} });
+      mkdirSync(schedulesPath(tmpDir));
+
+      expect(() => planSurfaceMigration(tmpDir)).toThrow();
+    });
   });
 });

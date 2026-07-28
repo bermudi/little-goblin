@@ -4,7 +4,7 @@ Parked scope and open questions. Items graduate to litespec changes when impleme
 
 ## Parked changes
 
-Specced-but-unstarted changes live in `specs/parked/` (out of the active `specs/changes/` scan) to honor the one-change WIP rule. Each retains its proposal/design/specs/tasks; graduate by `git mv specs/parked/<name> specs/changes/<name>` when its turn in the implementation train arrives. Do not archive these — they are not implemented.
+Historical unstarted plans live in `specs/parked/`; they are references, not active work. Do not create or archive litespec changes for them. Resume one only after the stabilization phase above is complete.
 
 - **`acp-external-agents`** — external ACP runner. Deferred until the core train (transcript provenance → lifecycle) lands; research/build only after.
 - **`delegated-work-ownership`** — deferred; depends on `conversation-lifecycle` and `acp-external-agents`. Patch migration-vs-reconciliation wording when revisited.

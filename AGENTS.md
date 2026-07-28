@@ -10,7 +10,7 @@ Goblin lives in Telegram. You message it, it thinks, it responds. It can spawn s
 
 Before proposing or implementing feature work:
 
-- Read the relevant canon, active litespec changes, and accepted decisions. Canon describes implemented behavior; active changes may deliberately replace it.
+- Read the relevant canon, the current stabilization phase plan, and accepted decisions. Canon describes implemented behavior; phase work may deliberately replace it.
 - Name the owner and lifetime of every new piece of state: Surface, Conversation, conversation runtime, Execution Environment, delegated run, or deployment.
 - Name its authority source and persistence location. Do not infer authority from convenience fields or duplicate it across callers.
 - Put cross-cutting behavior behind a deep module with one interface; do not add orchestration choreography to commands, Telegram intake, or other callers.
@@ -21,10 +21,10 @@ New feature work resumes when its architectural dependencies are explicit and th
 
 ### Planning discipline
 
-- **WIP limit: one change in progress, one fully specced next.** Follow the implementation train in [`ARCHITECTURE.md`](ARCHITECTURE.md). Everything further out stays a paragraph in `specs/backlog.md`. Writing specs feels like progress and costs nothing to start; that is exactly why the pile grows.
-- **`dependsOn` holds hard edges only** — the change's own tasks consume a type, persisted format, or module interface the dependency introduces. Vocabulary sharing, Non-Goals deferral, and correctness sequencing are soft edges and belong in `ARCHITECTURE.md`, not in the DAG.
-- **The litespec ≤3-capability guardrail is spec hygiene, not a delivery plan.** Splitting a change to satisfy it does not mean the pieces ship separately.
-- **Do not `litespec archive` an unimplemented change.** Archive merges deltas into canon and asserts the behavior exists. Delete it and record the reasoning in `specs/backlog.md`; git keeps the artifacts.
+- **WIP limit: one implementation phase in progress, one plainly described next.** Follow the delivery order in [`ARCHITECTURE.md`](ARCHITECTURE.md); keep everything further out in `specs/backlog.md`.
+- Track live work in the current stabilization phase section of `specs/backlog.md`. Do not create new litespec changes or use the litespec CLI.
+- Existing `specs/canon/`, `specs/decisions/`, archived changes, and parked plans are historical/design references. Update canon or decisions when a shipped behavioral contract changes; do not archive implementation work through a spec tool.
+- A bug fix may land during stabilization, but it must move toward the target architecture or explicitly document why it is a containment patch.
 
 ## Run
 
@@ -39,7 +39,7 @@ bun run src/index.ts   # or: bun run dev
 
 Entry is `src/index.ts`; `src/bot.ts` is the Telegram composition root. The implemented system is currently migrating from an overloaded Telegram/session/agent shape to explicit Surface, Binding, Conversation, ConversationRuntime, and Execution Environment lifetimes.
 
-Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before structural work. It distinguishes implemented **CURRENT** behavior, accepted **TARGET** architecture, and unresolved **OPEN** questions. Litespec remains authoritative for detailed behavioral contracts; this file remains guardrails.
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before structural work. It distinguishes implemented **CURRENT** behavior, accepted **TARGET** architecture, and unresolved **OPEN** questions. Canonical specs and accepted decisions are authoritative for detailed behavioral contracts; this file remains guardrails.
 
 ## Guardrails
 

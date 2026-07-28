@@ -1,13 +1,13 @@
 # Little Goblin Architecture
 
-> **Status: architecture stabilization.** This document maps the implemented system, accepted target architecture, and unresolved design work. It is not a substitute for litespec requirements.
+> **Status: architecture stabilization.** This document maps the implemented system, accepted target architecture, and unresolved design work. Canonical specs and accepted decisions are the behavioral contracts.
 
 ## How to read this document
 
 Goblin currently has three simultaneous truths:
 
 - **CURRENT** — behavior implemented in `src/` and described by `specs/canon/`.
-- **TARGET** — behavior established by accepted decisions and active, validated litespec changes.
+- **TARGET** — behavior established by accepted decisions and the current stabilization plan.
 - **OPEN** — architecture that is known to need work but has not yet been accepted as a contract.
 
 Never silently present TARGET or OPEN behavior as implemented. During stabilization, check all of:
@@ -17,11 +17,11 @@ Never silently present TARGET or OPEN behavior as implemented. During stabilizat
 | `AGENTS.md` | Engineering guardrails and stabilization gate |
 | `ARCHITECTURE.md` | Whole-system ownership, lifetime, authority, and dependency map |
 | `specs/canon/` | Implemented behavioral contracts |
-| `specs/changes/` | Proposed target behavior and migration plans |
+| `specs/changes/` | Historical target behavior and migration plans |
 | `specs/decisions/` | Why consequential choices were made |
 | `specs/glossary.md` | Canonical domain language |
 
-Detailed behavior belongs in litespec. This file should link concepts and expose contradictions, not copy every requirement.
+Detailed behavior belongs in canonical specs and decisions. This file should link concepts and expose contradictions, not copy every requirement.
 
 ## Product boundary
 
@@ -266,9 +266,9 @@ Native model document ingestion remains unavailable in the current pi-ai content
 
 ### Scheduled automation
 
-**CURRENT partial / TARGET — conversation-lifecycle.** The target owner for schedules and heartbeat configuration is Surface, not Conversation. At dispatch, automation resolves the Surface's current Conversation. An unbound Surface remains pending and does not auto-create history.
+**CURRENT — archived `conversation-lifecycle`.** Schedules and heartbeat configuration are Surface-owned. At dispatch, automation resolves the Surface's current Conversation; an unbound Surface remains pending and does not auto-create history. Schedule records, late binding inspection, pending-unbound occurrences, and heartbeat prompt paths all use Surface authority. The scheduler still reaches that authority through the compatibility `SessionManager.peekBinding` seam; replacing the compatibility name is cleanup, not missing lifecycle behavior.
 
-The current scheduler still uses the compatibility `SessionManager`/session-owned schedule seam and session-scoped heartbeat files. Surface-owned schedule records, late binding inspection, pending unbound occurrences, and Surface heartbeat paths remain lifecycle phases 6–7. The intended execution model uses the same dispatcher and prompt queue as user turns; a captured occurrence becomes stale if its runtime is invalidated before execution.
+Scheduled turns use the same dispatcher and prompt queue as user turns. A captured occurrence becomes stale if its runtime is invalidated before execution.
 
 ### Inner life
 
@@ -282,9 +282,9 @@ Memory's canonical store is `$GOBLIN_HOME/state/memory/memory.sqlite`. Markdown 
 
 **CURRENT — decision 0037, `surface-derived-memory-context`, and `transcript-surface-provenance`.** The current Surface is the sole input to `Surface → ActiveScope`; the projection is not persisted as a mutable setting. A conversation runtime captures that context and frozen summary at runtime creation. Subagents capture the parent runtime's context per invocation rather than resolving a later binding. Equal project roots do not merge memory context.
 
-Each new user-visible transcript entry records event-time `sourceSurfaceId`. Indexing and dreaming use that provenance per entry, so one moved Conversation may contain several source Surfaces without rewriting history. Unknown legacy provenance stays null rather than being guessed from the current binding. Filesystem `stateVersion` is now 3; the transcript migration, mixed-chat index rebuild, provenance-driven dreaming, startup gate, boundary tests, and two-Surface end-to-end fixture are implemented in `transcript-surface-provenance`.
+Each new user-visible transcript entry records event-time `sourceSurfaceId`. Indexing and dreaming use that provenance per entry, so one moved Conversation may contain several source Surfaces without rewriting history. Unknown legacy provenance stays null rather than being guessed from the current binding. Filesystem `stateVersion` is now 4; the transcript migration, mixed-chat index rebuild, provenance-driven dreaming, startup gate, boundary tests, two-Surface end-to-end fixture, and lifecycle migration are implemented.
 
-**CURRENT partial — conversation-lifecycle.** Cross-Surface movement is wired into intake and commands, and runtime capture/writer authority is current. The remaining lifecycle work is canonical state validation, archive failure ordering, complete command/intake coverage, Surface-owned preferences/schedules/heartbeat, and offline ownership migration step 4. The branch is no longer blocked by transcript provenance, but lifecycle movement should not be called complete until those ownership and migration seams land.
+**CURRENT — archived `conversation-lifecycle`.** Cross-Surface movement is wired into intake and commands; runtime capture/writer authority, archive ordering, Surface-owned preferences and automation, and offline ownership migration step 4 are implemented. Review-discovered persistence validation gaps are follow-up stabilization work, not unfinished tasks in the archived lifecycle change.
 
 Dreaming currently uses compatibility internal-session machinery. TARGET architecture uses an explicit Surface-free internal memory context and later removes fake Telegram/session identity through `inner-life`/`visible-dreaming`, never by adding an internal Surface variant.
 
@@ -377,7 +377,7 @@ Target startup is fail-before-polling:
 
 Migrations compute and validate every transformation before the first write, use atomic replacement per file, and fail loudly on ambiguity without selecting a winner. They are *not* required to be idempotent, restart-safe, or mixed-generation tolerant; recovery from a failed migration is restoration from backup. The command's backup boundary covers every persisted root a pending step may mutate, not merely `state/` when a step also moves `workspace/` or legacy `scratch/` data.
 
-The accepted filesystem sequence is Surface identity (step 1), immutable Execution Environments (step 2), transcript Surface provenance (step 3), then Conversation lifecycle ownership (step 4). The current filesystem gate is state version 3; lifecycle migration step 4 will advance it to version 4 only after the complete ownership transformation succeeds. Environment step 2 includes personal-workdir promotion and advances the version only after the complete transformation succeeds.
+The implemented filesystem sequence is Surface identity (step 1), immutable Execution Environments (step 2), transcript Surface provenance (step 3), then Conversation lifecycle ownership (step 4). The current filesystem gate is state version 4. Environment step 2 includes personal-workdir promotion; each step advances the version only after its complete transformation succeeds.
 
 Two parked changes still specify their own restart-safe startup migration and need a patch stripping that language before they are revived: `pi-native-skill-layout` and `delegated-work-ownership` (both in `specs/parked/`). `immutable-project-environments`, `transcript-surface-provenance`, and `conversation-lifecycle` now specify offline steps in the canonical migration runner.
 
@@ -403,14 +403,11 @@ Two parked changes still specify their own restart-safe startup migration and ne
 
 ## Stabilization dependency graph
 
-Two kinds of edge exist, and conflating them produced a chain far deeper than the domain requires.
+Dependencies in the stabilization train are explicit only when a phase consumes a type, persisted format, or module interface from an earlier phase. Shared vocabulary, deferred scope, and correctness sequencing are recorded here or in `specs/backlog.md`; they do not create phantom work. Keep each phase narrow enough to verify and deliver along the train below.
 
-- **Hard edge** — the dependent change's own tasks consume a type, persisted format, or module interface the dependency introduces. Implementing out of order means writing throwaway code. Hard edges live in `dependsOn` in each change's `.litespec.yaml`.
-- **Soft edge** — shared vocabulary, a Non-Goals deferral, or a correctness-sequencing concern. Recorded here and in `.litespec.yaml` comments, never in `dependsOn`.
+### Historical dependency map
 
-The litespec planning guardrail (*"if your proposal touches more than 3 capabilities, pause and ask whether this should be split"*) is a **spec-hygiene** rule. It keeps a delta spec reviewable. It is not a delivery-planning rule, and treating it as one is what produced a six-deep chain in front of `conversation-lifecycle`. Keep specs narrow; deliver along the train below.
-
-### Hard edges only
+The following graph records why the archived architectural phases were delivered in this order. It is reference material, not an active change queue.
 
 ```text
 telegram-surface-identity ─┬─► immutable-project-environments ─────────────┬─► conversation-lifecycle
@@ -425,20 +422,13 @@ conversation-lifecycle ─┬─► inner-life ─► visible-dreaming rewrite
                         └─► delegated-work-ownership ◄─ immutable-project-environments, ACP boundary
 ```
 
-`conversation-lifecycle` has four hard prerequisites, and all four are now implemented or complete as canonical contracts. Runtime assembly consumes the captured-memory interface from `surface-derived-memory-context`, and user-visible transcript writes consume the writer-context and event-time provenance interfaces from `transcript-surface-provenance`. The remaining lifecycle work is its own ownership split, automation migration, and compatibility cleanup; attachment intake remains a soft edge. Skill policy is handled by its later train and is not a lifecycle contract.
+`conversation-lifecycle` and its four hard prerequisites are implemented and archived as canonical contracts. Runtime assembly consumes the captured-memory interface from `surface-derived-memory-context`, and user-visible transcript writes consume the writer-context and event-time provenance interfaces from `transcript-surface-provenance`. Compatibility cleanup and review-discovered hardening now proceed as follow-up stabilization work; attachment intake remains a soft edge. Skill policy is handled by its later train and is not a lifecycle contract.
 
-### Soft edges (sequencing, not blocking)
-
-| Edge | Why it is soft | Consequence of ignoring it |
-|---|---|---|
-| `immutable-project-environments` → `pi-native-skill-layout` | Referenced as a path string only; no task consumes its helpers | None; `skill-catalog-resolution` owns the real coupling |
-| `conversation-lifecycle` → `personal-attachment-intake` | Non-Goals deferral; lifecycle only preserves the stale-runtime guard | None |
-
-A temporary "same-Surface resume" mode was rejected because canonical unbound Conversations intentionally persist no previous-Surface authority. Enforcing it would require a second historical-binding store that the target model does not otherwise need. Memory capture and transcript provenance are therefore prerequisites, not runtime feature flags.
+A temporary "same-Surface resume" mode was rejected because canonical unbound Conversations intentionally persist no previous-Surface authority. Enforcing it would require a second historical-binding store that the target model does not otherwise need. Memory capture and transcript provenance were therefore prerequisites, not runtime feature flags.
 
 ## Implementation train
 
-One ordered sequence, walked end to end. The unit of specification is a litespec change; the unit of delivery is this train.
+One ordered sequence, walked end to end. Historical change names remain useful labels, but the unit of delivery is a plainly tracked implementation phase.
 
 | # | Change | Tasks | Status | Value delivered |
 |--:|---|--:|---|---|
@@ -448,7 +438,8 @@ One ordered sequence, walked end to end. The unit of specification is a litespec
 | 3b | `agent-owned-prompt-files` | 12 | **archived** | Decision 0039: canon amendment, prompt-file write notice, subagent bootstrap filter |
 | 4 | `surface-derived-memory-context` | 27 | **archived** | Memory scope derives from Surface, not session metadata |
 | 5 | `transcript-surface-provenance` | 29 | **archived** | Event-time provenance for history that may move; state version 3; provenance-aware indexing and dreaming |
-| 6 | `conversation-lifecycle` | 48 | **active WIP** (16/48 reconciled) | Surface/Binding/Conversation split; stale-runner and multi-binding bugs fixed; compatible cross-Surface `/resume`; Surface-owned automation and migration remain |
+| 6 | `conversation-lifecycle` | 48 | **archived** | Surface/Binding/Conversation split; compatible movement; Surface-owned preferences and automation; filesystem state version 4 |
+| 6a | Session persistence hardening | 3 findings | **ready to start** | Validate persisted bindings/settings and make planned Conversation creation recoverable |
 | 7 | `pi-native-skill-layout` | 9 | **parked** (`specs/parked/`) | `workspace/skills/` → `.agents/skills/` |
 | 8 | `skill-catalog-resolution` | 16 | **parked** | Explicit catalog roots; `skillSources` switch dies |
 | 9 | `surface-skill-policy` | 16 | **parked** | Per-Surface `/skills` selection |
@@ -457,9 +448,9 @@ One ordered sequence, walked end to end. The unit of specification is a litespec
 | 12 | `delegated-work-ownership` | 36 | **parked** | Attached vs durable work; origin-Surface delivery |
 | 13 | `visible-dreaming` | — | **parked (placeholder)** | Rewrite against `inner-life`; must not be built from its placeholder |
 
-Steps 1–5, including attachment intake and agent-owned prompt files, are archived. Step 6 is now the active WIP: its persistence, runtime host, movement, intake, and command foundation exists, while validation hardening, Surface-owned preferences/automation, and migration step 4 remain. Steps 7–13 are parked under `specs/parked/` (see `specs/backlog.md`); they graduate back into `specs/changes/` only when their predecessor in the train lands.
+Steps 1–6, including attachment intake and agent-owned prompt files, are archived. Session persistence hardening is the current implementation phase; it must close the confirmed persistence and recovery gaps before a parked feature resumes. Steps 7–13 remain parked under `specs/parked/` (see `specs/backlog.md`).
 
-**WIP limit: one change in progress, one fully specced next.** Everything beyond position 6 in the train stays a paragraph in `specs/backlog.md` (or a parked change) until its predecessor lands. Discovery has outpaced closure since 2026-07-22; the only thing that closes the gap is building.
+**WIP limit: one implementation phase in progress, one plainly described next.** Session persistence hardening is the sole current WIP. Parked features remain parked until this stabilization slice lands and the implementation train is deliberately resumed.
 
 Storage-layout cleanup and workspace write authority cross this chain and must declare dependencies before implementation.
 
@@ -473,7 +464,7 @@ A feature is ready to propose only when it can answer:
 4. Where is canonical persistence, and how does crash recovery work?
 5. How does runtime invalidation prevent stale effects?
 6. What happens when the Surface is unbound or unreachable?
-7. Which active architecture changes does it depend on?
+7. Which earlier implementation phases does it depend on?
 8. Does it extend a known-bad compatibility seam?
 9. What boundary validation, logs, and tests prove the contract?
 
@@ -489,4 +480,4 @@ These decisions or implementation plans block a stable baseline:
 4. **Surface lifecycle:** Telegram topic deletion/reachability, schedule suspension, pending outputs, and project recovery.
 5. **Inner-life implementation:** wake/effect schemas, per-effect guarantees, consent persistence, and observability under decision 0035; heartbeat conversion remains undecided.
 
-Each unsettled answer should become an ADR; each accepted direction should have a focused litespec change. Once the repair map is implemented and remaining questions are either accepted or explicitly deferred, this document can lose the stabilization banner and become the compact permanent architecture map.
+Each unsettled answer should become an ADR; each accepted direction should have a focused implementation phase. Once the repair map is implemented and remaining questions are either accepted or explicitly deferred, this document can lose the stabilization banner and become the compact permanent architecture map.

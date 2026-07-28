@@ -21,8 +21,11 @@ export interface ConversationRuntimeHost {
  * dispatcher's per-session runner/queue maps can be keyed by conversation id
  * during the migration.
  */
-export function createTurnDispatcherRuntimeHost(dispatcher: TurnDispatcher): ConversationRuntimeHost {
+export function createTurnDispatcherRuntimeHost(
+  dispatcher: TurnDispatcher | (() => TurnDispatcher),
+): ConversationRuntimeHost {
+  const getDispatcher = typeof dispatcher === "function" ? dispatcher : () => dispatcher;
   return {
-    disposeRuntime: (conversationId) => dispatcher.disposeRunner(conversationId),
+    disposeRuntime: (conversationId) => getDispatcher().disposeRunner(conversationId),
   };
 }

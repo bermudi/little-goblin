@@ -202,7 +202,7 @@ Deployment
   └── model credentials/catalog
 ```
 
-The dispatcher verifies the current Binding and environment agreement before constructing any side-effectful adapter. Resuming a Conversation on another compatible Surface creates a fresh runtime using destination Surface settings.
+The dispatcher receives mandatory lifecycle-owned Surface runtime authority at construction. That authority reconciles a pending project assignment before every Surface-backed runtime acquisition and verifies the current Binding/environment both before and after memory capture. Its synchronous check is closed over by the runner, so queued work fails closed after a binding change. Resuming a Conversation on another compatible Surface creates a fresh runtime using destination Surface settings.
 
 ## Prompt architecture
 
@@ -284,7 +284,7 @@ Memory's canonical store is `$GOBLIN_HOME/state/memory/memory.sqlite`. Markdown 
 
 Each new user-visible transcript entry records event-time `sourceSurfaceId`. Indexing and dreaming use that provenance per entry, so one moved Conversation may contain several source Surfaces without rewriting history. Unknown legacy provenance stays null rather than being guessed from the current binding. Filesystem `stateVersion` is now 4; the transcript migration, mixed-chat index rebuild, provenance-driven dreaming, startup gate, boundary tests, two-Surface end-to-end fixture, and lifecycle migration are implemented.
 
-**CURRENT — archived `conversation-lifecycle`.** Cross-Surface movement is wired into intake and commands; runtime capture/writer authority, archive ordering, Surface-owned preferences and automation, and offline ownership migration step 4 are implemented. Review-discovered persistence validation gaps are follow-up stabilization work, not unfinished tasks in the archived lifecycle change.
+**CURRENT — archived `conversation-lifecycle`; closure hardening in progress.** Cross-Surface movement is wired into intake and commands; runtime capture/writer authority, archive ordering, Surface-owned preferences and automation, and offline ownership migration step 4 are implemented. The bounded merge-closure slice hardens canonical authority validation, planned-assignment recovery, and mandatory runtime authority; it is follow-up stabilization work, not an unfinished archived lifecycle feature.
 
 Dreaming currently uses compatibility internal-session machinery. TARGET architecture uses an explicit Surface-free internal memory context and later removes fake Telegram/session identity through `inner-life`/`visible-dreaming`, never by adding an internal Surface variant.
 
@@ -439,7 +439,7 @@ One ordered sequence, walked end to end. Historical change names remain useful l
 | 4 | `surface-derived-memory-context` | 27 | **archived** | Memory scope derives from Surface, not session metadata |
 | 5 | `transcript-surface-provenance` | 29 | **archived** | Event-time provenance for history that may move; state version 3; provenance-aware indexing and dreaming |
 | 6 | `conversation-lifecycle` | 48 | **archived** | Surface/Binding/Conversation split; compatible movement; Surface-owned preferences and automation; filesystem state version 4 |
-| 6a | Session persistence hardening | 3 findings | **ready to start** | Validate persisted bindings/settings and make planned Conversation creation recoverable |
+| 6a | Persistence and runtime-authority closure | authority corruption + pending-assignment fence | **in progress** | Fail closed on canonical authority corruption; recover only intent-owned planned directories; require lifecycle authority for every Surface runtime |
 | 7 | `pi-native-skill-layout` | 9 | **parked** (`specs/parked/`) | `workspace/skills/` → `.agents/skills/` |
 | 8 | `skill-catalog-resolution` | 16 | **parked** | Explicit catalog roots; `skillSources` switch dies |
 | 9 | `surface-skill-policy` | 16 | **parked** | Per-Surface `/skills` selection |
@@ -448,9 +448,9 @@ One ordered sequence, walked end to end. Historical change names remain useful l
 | 12 | `delegated-work-ownership` | 36 | **parked** | Attached vs durable work; origin-Surface delivery |
 | 13 | `visible-dreaming` | — | **parked (placeholder)** | Rewrite against `inner-life`; must not be built from its placeholder |
 
-Steps 1–6, including attachment intake and agent-owned prompt files, are archived. Session persistence hardening is the current implementation phase; it must close the confirmed persistence and recovery gaps before a parked feature resumes. Steps 7–13 remain parked under `specs/parked/` (see `specs/backlog.md`).
+Steps 1–6, including attachment intake and agent-owned prompt files, are archived. The persistence and runtime-authority closure is the sole merge-gate implementation slice: it closes corruption/recovery and runtime-fencing gaps without extending parked feature seams. Steps 7–13 remain parked under `specs/parked/` (see `specs/backlog.md`).
 
-**WIP limit: one implementation phase in progress, one plainly described next.** Session persistence hardening is the sole current WIP. Parked features remain parked until this stabilization slice lands and the implementation train is deliberately resumed.
+**WIP limit: one implementation phase in progress, one plainly described next.** Persistence and runtime-authority closure is the sole current WIP. After its merge gate passes, the next candidate is the parked `pi-native-skill-layout` train; all other parked scope remains deferred until deliberately resumed.
 
 Storage-layout cleanup and workspace write authority cross this chain and must declare dependencies before implementation.
 

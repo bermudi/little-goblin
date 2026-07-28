@@ -136,19 +136,27 @@ The `AgentRunner` MUST NOT filter tool callbacks by name, visibility, or source.
 - **WHEN** a custom tool (e.g., `send_voice`) is invoked
 - **THEN** `onToolStart`/`onToolEnd` SHALL fire the same as built-in tools
 
-### Requirement: AgentRunner accepts session-bound custom tools
+### Requirement: AgentRunner fences session-bound custom and default pi tools
 
-The `AgentRunner` constructor SHALL accept `customTools: ToolDefinition[]` and pass them through to `createAgentSession({ customTools })` unchanged. The runner MUST NOT inspect, wrap, or modify those definitions.
+The `AgentRunner` constructor SHALL accept `customTools: ToolDefinition[]`. For a Surface-backed runtime it SHALL wrap every supplied and runner-assembled tool with the runtime's mandatory current-binding guard before passing it to `createAgentSession({ customTools })`. It SHALL also fence pi's default `read`, `bash`, `edit`, and `write` tools before they are registered: the concrete pi backend SHALL construct each through pi's exported `create*ToolDefinition(cwd)` factory, wrap that supported `ToolDefinition` through the same guard, disable only pi's unguarded built-in defaults (`noTools: "builtin"`), and register the same-named guarded definitions through `customTools`. It SHALL NOT clone SDK-private tool or session internals. The wrapper SHALL reject before a stale tool starts and after an awaited tool result, while preserving the tool's name, schema, description, arguments, renderer, prompt metadata, and result semantics when current. Explicit internal runners use the Surface-free always-current path.
 
-#### Scenario: Tools passed through
+#### Scenario: Stale tool is fenced
 
-- **WHEN** `AgentRunner` is constructed with `customTools = [t1, t2]`
-- **THEN** pi's `AgentSession` SHALL be created with those exact `ToolDefinition` references
+- **WHEN** a Surface runtime becomes stale before a custom or default pi tool executes
+- **THEN** the tool implementation SHALL NOT be invoked
+- **AND** in particular, stale `write` and `bash` calls SHALL make no filesystem or process side effect
+- **AND** pi SHALL receive a stale-runtime tool error rather than a result
+
+#### Scenario: Current tools retain their contract
+
+- **WHEN** `AgentRunner` is constructed with `customTools = [t1, t2]` and its runtime is current
+- **THEN** pi's `AgentSession` SHALL receive tools with the same names and behavior as `t1` and `t2`
 
 #### Scenario: Empty custom tools
 
 - **WHEN** `AgentRunner` is constructed with `customTools = []`
-- **THEN** pi SHALL run with only its built-in `codingTools`
+- **THEN** pi SHALL expose its standard `read`, `bash`, `edit`, and `write` behavior through the guarded SDK-factory definitions
+- **AND** no unguarded default coding tool SHALL remain active
 
 ### Requirement: AgentRunner never imports telegram libraries
 
@@ -625,7 +633,7 @@ The `AgentRunner` SHALL expose a `metrics: MetricsStore` getter (or equivalent) 
 
 ### Requirement: AgentRunner receives one captured runtime memory context
 
-A user-visible `AgentRunner` SHALL receive a complete immutable runtime memory context from the conversation-runtime factory. The capture SHALL already contain the validated source SurfaceId, deterministic ActiveScope projection, main caller descriptor, frozen summary, and frozen-summary deduplication inputs. `AgentRunner` MUST NOT accept `ChatLocator`, current-binding access, Conversation creation routing fields, or raw scope-policy knobs for memory behavior.
+A user-visible `AgentRunner` SHALL receive a complete immutable runtime memory context from the conversation-runtime factory. The capture SHALL already contain the validated source SurfaceId, deterministic ActiveScope projection, main caller descriptor, frozen summary, and frozen-summary deduplication inputs. `AgentRunner` MUST NOT accept `ChatLocator`, Conversation creation routing fields, or raw scope-policy knobs for memory behavior. Its separate mandatory runtime-current guard is lifecycle authority, not a memory-routing input.
 
 Capture SHALL occur when the conversation runtime is created, before lazy pi `AgentSession` initialization. Lazy initialization SHALL consume the existing capture without rereading Surface state. Disposing and replacing a runtime is the only way to change its memory context.
 
@@ -648,9 +656,19 @@ Every user-visible main-agent transcript write SHALL use the source SurfaceId in
 
 #### Scenario: Binding changes during an event
 
-- **WHEN** a runtime on Surface X emits a final message event while lifecycle invalidation is occurring
-- **THEN** any accepted transcript write from that runtime SHALL carry X
-- **AND** SHALL not be attributed to a replacement Surface Y
+- **WHEN** a runtime on Surface X emits an event after lifecycle invalidation makes it stale
+- **THEN** it SHALL not write transcript or metrics, invoke Telegram callbacks, track tool effects, or send a prompt-file notice
+- **AND** it SHALL not be attributed to a replacement Surface Y
+
+### Requirement: Surface runtime authority fences every AgentRunner effect
+
+A Surface-backed `AgentRunner` SHALL require a lifecycle-owned current-binding guard at construction. It SHALL check that guard before model initialization/prompt/follow-up/compaction and every tool execution, after every awaited effect boundary, and before handling a backend event or emitting a callback/notice/transcript/metric effect. A stale check SHALL fail closed; lifecycle disposal remains permitted to abort and quiesce the stale runner. Internal runners SHALL have a separate explicit Surface-free construction path with no binding guard and no Telegram delivery or Surface-backed memory tools.
+
+#### Scenario: Binding rotates during model work
+
+- **WHEN** a Surface binding rotates while its model call or tool is awaiting
+- **THEN** the runner SHALL reject at the next authority boundary
+- **AND** SHALL drop subsequent event, transcript, callback, metric, and tool-result effects
 
 ### Requirement: Prompt-file writes surface a bounded Surface notice
 
@@ -661,9 +679,9 @@ The reserved prompt-file set SHALL be exactly:
 - `$GOBLIN_HOME/workspace/SOUL.md`
 - `$GOBLIN_HOME/workspace/AGENTS.md`
 - `$GOBLIN_HOME/workspace/HEARTBEAT.md`
-- `$GOBLIN_HOME/state/sessions/<sessionId>/HEARTBEAT.md` (the session-scoped heartbeat)
+- `$GOBLIN_HOME/state/surfaces/<SurfaceId>/HEARTBEAT.md` (the Surface-owned heartbeat for the runner's captured Surface)
 
-The tool argument path SHALL be resolved with `~` expansion matching pi's own path handling and then resolved against the runtime CWD before comparison. The notice text SHALL be of the form `` Modified prompt file `<filename>`: <summary> ``. For `write`, the summary SHALL be `wrote N lines (C chars)` or `wrote empty file`. For `edit`, the summary SHALL be `N edit(s)`. The notice SHALL NOT include any file content.
+The tool argument path SHALL be resolved with pi's write/edit path handling before comparison: normalize pi's Unicode spaces, strip one leading `@`, expand `~`, decode a `file://` URL, then resolve relative paths against the runtime CWD. The notice matcher SHALL use this normalization only for comparison and SHALL NOT alter tool execution or filesystem authority. The notice text SHALL be of the form `` Modified prompt file `<filename>`: <summary> ``. For `write`, the summary SHALL be `wrote N lines (C chars)` or `wrote empty file`. For `edit`, the summary SHALL be `N edit(s)`. The notice SHALL NOT include any file content.
 
 Notice delivery SHALL be best-effort and non-blocking. A missing or throwing `sendNotice` callback MUST NOT fail the tool call or alter the tool result.
 
@@ -679,10 +697,15 @@ Notice delivery SHALL be best-effort and non-blocking. A missing or throwing `se
 - **THEN** `callbacks.sendNotice` SHALL be invoked once with a summary naming `AGENTS.md` and an edit count
 - **AND** no file content SHALL be included
 
-#### Scenario: Session-scoped HEARTBEAT is covered
+#### Scenario: Surface-owned HEARTBEAT is covered
 
-- **WHEN** the runner observes a successful write to `$GOBLIN_HOME/state/sessions/<sessionId>/HEARTBEAT.md`
+- **WHEN** the runner observes a successful write to `$GOBLIN_HOME/state/surfaces/<SurfaceId>/HEARTBEAT.md` for its captured Surface
 - **THEN** `callbacks.sendNotice` SHALL be invoked with a summary naming `HEARTBEAT.md`
+
+#### Scenario: Pi path shorthand is covered
+
+- **WHEN** a successful reserved-prompt `write` uses a leading `@` path or an `edit` uses a `file://` URL
+- **THEN** `callbacks.sendNotice` SHALL be invoked for the same canonical prompt file as the ordinary relative or absolute spelling
 
 #### Scenario: Non-prompt-file write posts no notice
 

@@ -1,6 +1,19 @@
 # Goblin Backlog
 
-Parked scope and open questions. Items graduate to litespec changes when implementation begins.
+Parked scope and open questions. Items graduate only when a deliberate implementation phase begins; parked artifacts remain historical design input, not active work.
+
+## Current stabilization closure
+
+**Persistence and runtime-authority closure — in progress.** This bounded merge-gate slice owns only:
+
+- fail-closed validation for canonical bindings, Surface settings, Conversation state, and pending project-assignment intent;
+- intent-owned planned-Conversation recovery with no overwrite of malformed, internal, conflicting, or incompatible state;
+- mandatory lifecycle-owned authority for every Surface-backed runtime, including `/queue` acquisition after a failed `/project` write;
+- regression coverage, operator/documentation repair, migration rehearsal, and live Telegram smoke-test gates before merge.
+
+It does not revive a parked feature or adopt a new planning tool.
+
+**Next when this closure is accepted:** re-evaluate `pi-native-skill-layout` from current code and accepted decisions. Do not copy its obsolete startup-migration design.
 
 ## Parked changes
 
@@ -74,7 +87,7 @@ Historical unstarted plans live in `specs/parked/`; they are references, not act
   - **`durable-external-agent-runs`** (53 tasks). Already self-marked *"Superseded: `acp-external-agents` replaces PTY process adoption with ACP session continuation. This artifact is retained as historical fallback analysis and should not be built."* Retained only as fallback analysis if ACP is ever abandoned; its `agent-pty` adoption/reconcile design and the systemd service-separation requirement are the parts worth re-reading. **Do not reopen unless ACP is abandoned.**
   - **`visible-dreaming`** (placeholder). Blocked on `inner-life` and explicitly marked as provisional / not to be built. It contained only a `proposal.md` and `.litespec.yaml` with no delta specs, so it was deleted rather than archived because `litespec archive` would merge a non-existent delta into canon and falsely claim the behavior is implemented. Recover from git history at the last commit that contains `specs/changes/visible-dreaming`.
 
-- **`agent-owned-prompt-files` — in progress, specced and implemented.** Materializes decision 0039. Three pieces: (1) amend `specs/glossary.md:75` and `specs/canon/agent/spec.md` to call `SOUL.md` "agent-owned"; (2) post a bounded Telegram notice to the Surface whose runtime wrote a reserved prompt file (`SOUL.md`, `AGENTS.md`, `HEARTBEAT.md`) — informational, non-blocking, no file contents; (3) filter deployment prompt files out of subagent bootstrap, mirroring OpenClaw's `src/agents/workspace.ts:1106-1114`, which restricts subagents to `AGENTS.md` + `TOOLS.md`. Depends on `telegram-surface-identity` for Surface-addressed delivery; responds to the exposure `immutable-project-environments` introduces. Also documents git-in-`workspace/` as the operator recovery path. Artifacts live in `specs/changes/agent-owned-prompt-files/`.
+- **`agent-owned-prompt-files` — implemented.** Materializes decision 0039. Three pieces: (1) amend `specs/glossary.md:75` and `specs/canon/agent/spec.md` to call `SOUL.md` "agent-owned"; (2) post a bounded Telegram notice to the Surface whose runtime wrote a reserved prompt file (`SOUL.md`, `AGENTS.md`, `HEARTBEAT.md`) — informational, non-blocking, no file contents; (3) filter deployment prompt files out of subagent bootstrap, mirroring OpenClaw's `src/agents/workspace.ts:1106-1114`, which restricts subagents to `AGENTS.md` + `TOOLS.md`. Depends on `telegram-surface-identity` for Surface-addressed delivery; responds to the exposure `immutable-project-environments` introduces. Also documents git-in-`workspace/` as the operator recovery path. Artifacts live in `specs/changes/agent-owned-prompt-files/`.
 - **`IDENTITY.md` split — declined 2026-07-26.** OpenClaw separates `SOUL.md` (voice, stance, style) from `IDENTITY.md` (name, vibe, emoji) (`docs/concepts/agent-workspace.md:66-74`). Goblin keeps one file: onboarding already writes the agent name into the `SOUL.md` template, and a second file is scope the stabilization train does not need. Reopen only if the agent is observed clobbering its own name while adjusting tone.
 
 ## Open Questions

@@ -17,6 +17,23 @@ export interface PreflightContext {
 }
 
 /**
+ * Optional external boundaries checked during startup. Production supplies the
+ * real network/process probes below; callers can substitute deterministic
+ * probes when exercising preflight's policy in tests.
+ */
+export interface OptionalPreflightChecks {
+  readonly checkTelegramToken: (token: string) => Promise<void>;
+  readonly checkEdgeTtsAvailable: () => Promise<void>;
+  readonly checkGroqAsrAvailable: (apiKey: string) => Promise<void>;
+}
+
+const productionOptionalChecks: OptionalPreflightChecks = {
+  checkTelegramToken,
+  checkEdgeTtsAvailable,
+  checkGroqAsrAvailable,
+};
+
+/**
  * Run startup preflight checks before connecting to Telegram or starting the
  * scheduler. Throws on the first critical failure so the process exits with a
  * clear error instead of failing later in a turn.
@@ -24,7 +41,10 @@ export interface PreflightContext {
  * Optional checks (Telegram reachability, Edge TTS) log warnings but do not
  * block startup.
  */
-export async function runPreflight(cfg: Config): Promise<void> {
+export async function runPreflight(
+  cfg: Config,
+  optionalChecks: OptionalPreflightChecks = productionOptionalChecks,
+): Promise<void> {
   const ctx: PreflightContext = {
     check: async (name, fn) => {
       try {
@@ -68,20 +88,20 @@ export async function runPreflight(cfg: Config): Promise<void> {
   });
 
   // Optional: best-effort checks that should not block startup on flakes.
-  await checkTelegramToken(cfg.botToken).catch((err) => {
+  await optionalChecks.checkTelegramToken(cfg.botToken).catch((err) => {
     log.warn("preflight: could not verify Telegram token", {
       error: err instanceof Error ? err.message : String(err),
     });
   });
 
-  await checkEdgeTtsAvailable().catch((err) => {
+  await optionalChecks.checkEdgeTtsAvailable().catch((err) => {
     log.warn("preflight: Edge TTS not available", {
       error: err instanceof Error ? err.message : String(err),
     });
   });
 
   if (cfg.groqApiKey) {
-    await checkGroqAsrAvailable(cfg.groqApiKey).catch((err) => {
+    await optionalChecks.checkGroqAsrAvailable(cfg.groqApiKey).catch((err) => {
       log.warn("preflight: Groq ASR not reachable", {
         error: err instanceof Error ? err.message : String(err),
       });

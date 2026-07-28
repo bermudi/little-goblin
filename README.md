@@ -4,7 +4,7 @@
 
 Little Goblin is an autonomous agent that lives in Telegram. You message it, it thinks, it responds. It can read and edit files, run shell commands, spawn focused subagents, curate persistent memory, and send media back to you — all from a chat window.
 
-No web UI. No database. No webhooks. Just a Bun process, Telegram long-polling, and the filesystem.
+No web UI. No external database. No webhooks. Just a Bun process, Telegram long-polling, filesystem state, and one local SQLite memory store.
 
 ---
 
@@ -39,7 +39,7 @@ bun run onboard
 bun run src/index.ts
 ```
 
-Then open Telegram and send `/start` in a DM, or start typing in a forum topic where the bot is a member.
+Then open Telegram and send `/start` to inspect the current Conversation in a DM or forum topic. Send ordinary text (or `/new`) to create a Conversation on an unbound Surface.
 
 See <ref_file file="/home/daniel/build/little-goblin/goblin.json5.example" /> for a complete annotated config.
 
@@ -66,21 +66,21 @@ Backups and updates are also scripted:
 
 ```sh
 sudo bash scripts/backup.sh   # archive $GOBLIN_HOME to $GOBLIN_HOME/backups/
-sudo bash scripts/update.sh   # pull latest code, run checks, then restart goblin
+sudo bash scripts/update.sh   # pull latest code, validate config, migrate state, then restart goblin
 ```
 
-`scripts/update.sh` only restarts the service if the typecheck and `bun run validate-config` pass, so a bad deploy cannot leave the bot down.
+`scripts/update.sh` validates configuration before stopping Goblin, then runs the offline migration with the service stopped. It restarts only after migration succeeds; on migration failure it deliberately leaves the service stopped so the operator can restore the migration backup. Run CI/typecheck before invoking it—it does not run them.
 
 `scripts/backup.sh` is safe to run while the service is running: it archives `workspace/`, `state/`, and `goblin.json5`, excluding `scratch/`, `node_modules/`, `.git/`, `*.tmp`, and `state/*.jsonl` append-only logs (transcript, quarantine, and pi session files).
 
 ## Core ideas
 
 - **Telegram is the UI.** Every feature is designed around chat, topics, replies, and file sharing.
-- **One session per topic.** DMs and forum topics are isolated contexts. A supergroup without topics shares one session.
-- **Project directory binding.** Point a session at a directory on disk; the agent works there, and uploaded files land there.
-- **Curated memory.** The agent decides what to remember. Memory is scoped by chat/topic, global user identity, and named subagent persona.
+- **Surfaces and conversations are separate.** A Surface is a DM, topic, or group routing lane. Its Binding points to one current Conversation; `/resume` moves compatible history rather than sharing a live runtime.
+- **Immutable project environments.** `/project <dir>` assigns an unassigned Surface once and starts fresh project history. Existing history remains resumable; switch projects by using another Surface.
+- **Curated memory.** The agent decides what to remember. The canonical store is local SQLite and its active scope is derived from the current Surface.
 - **Subagents.** Delegate work to headless workers that can recursively spawn up to depth 3, then revive them later.
-- **No database.** State is JSON files and JSONL logs. Writes are atomic (tmp + rename).
+- **Local durable state.** Bindings and Conversation metadata are atomic JSON/JSONL files; memory is the one local SQLite store.
 
 ## Commands
 
@@ -88,22 +88,22 @@ Send any of these in Telegram:
 
 | Command | What it does |
 |---------|--------------|
-| `/start` | Start or resume a session in a DM. In a topic, confirms it is already active. |
-| `/new` | Archive the current session and start fresh. |
-| `/resume <id>` | Switch this chat/topic to another existing session. |
-| `/archive` | Archive the active session. |
-| `/name <name>` | Name the active session. |
-| `/project <dir>` | Bind the session to a project directory. |
+| `/start` | Report the active Conversation on this Surface; if none is bound, explain how to start one. |
+| `/new` | Start a fresh Conversation on this Surface; prior history remains resumable. |
+| `/resume <id>` | Move a compatible Conversation to this Surface. |
+| `/archive` | Archive the active Conversation. |
+| `/name <name>` | Name the active Conversation. |
+| `/project <dir>` | Assign this unassigned Surface to one project environment and start fresh project history. |
 | `/model [index]` | List or switch favorite models. |
 | `/think [level]` | Show or set thinking level (`off` to `xhigh`). |
-| `/compact` | Manually compact the session context. |
+| `/compact` | Manually compact the active Conversation runtime's context. |
 | `/queue <text>` | Enqueue a follow-up turn. |
 | `/subagents` | List running/persisted subagents. |
 | `/cancel_subagent <id>` | Cancel a subagent. |
 | `/revive <id> <prompt>` | Revive a subagent with a follow-up. |
 | `/cancel` | Abort the current turn (cascades to subagents). |
 | `/voice` | Convert the last assistant message to a voice note. |
-| `/debug` | Dump session diagnostics. |
+| `/debug` | Dump Conversation and runtime diagnostics. |
 | `/ping` | Smoke test. |
 | `/help` | Show the command list. |
 
@@ -129,26 +129,27 @@ bun run dev          # watch mode
 bun run test         # run all tests
 bun run typecheck    # TypeScript check
 bun run onboard      # first-time setup wizard
+bash scripts/deployment-order.test.sh  # isolated fake-command deployment ordering checks
 ```
 
 Tests are colocated with source files (`foo.ts` ↔ `foo.test.ts`). `src/subagents/` is the one exception: its suites live under `src/subagents/test/*.suite.ts` and are bootstrapped from `src/subagents/mod.test.ts` because `bun:test` `mock.module()` is process-global.
 
 ## Architecture
 
-The code is organized in three layers:
+The core ownership boundary is `Surface → Binding → Conversation → ConversationRuntime`:
 
-1. **Telegram layer** (`src/tg/`) — grammy client, message normalization, allowlist middleware, β-tools, and the message buffer.
-2. **Session layer** (`src/sessions/`) — maps `(chat, topic)` to persistent session state, bindings, and project directories.
-3. **Agent layer** (`src/agent/`) — wraps `pi-coding-agent`, manages model resolution, context, and tool registration.
+1. **Telegram layer** (`src/tg/`) normalizes and delivers complete Surfaces.
+2. **Lifecycle/orchestration** (`src/orchestration/`) owns binding transitions, pending-assignment recovery, runtime authority, and queue invalidation.
+3. **Persistence** (`src/sessions/`) owns Conversations, bindings, and Surface settings; **agent** (`src/agent/`) owns pi runtime construction.
 
-Detailed specs live in `specs/canon/`. Historical design decisions and phased changes are archived under `specs/changes/archive/`. Internal guardrails are in <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" />.
+Read `ARCHITECTURE.md` for current/target boundaries. Canonical behavioral contracts live in `specs/canon/`; accepted decisions live in `specs/decisions/`. Internal guardrails are in <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" />.
 
 ## Documentation map
 
 | File | What it covers |
 |------|----------------|
 | <ref_file file="/home/daniel/build/little-goblin/README.md" /> | This file — quick start, overview, command cheat-sheet. |
-| <ref_file file="/home/daniel/build/little-goblin/features.md" /> | Full user guide: sessions, tools, memory, subagents, media, config, security. |
+| <ref_file file="/home/daniel/build/little-goblin/features.md" /> | Full user guide: Surfaces, Conversations, tools, memory, subagents, media, config, security. |
 | <ref_file file="/home/daniel/build/little-goblin/goblin.json5.example" /> | Annotated configuration example. |
 | <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" /> | Project guardrails for contributors. |
 | `specs/canon/` | Architecture and behavior specs. |

@@ -4,12 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TurnDispatcher } from "./dispatcher.ts";
-import type { AttachmentSignal, AttachedWork, CurrentBindingGuard } from "./dispatcher.ts";
+import type { AttachmentSignal, AttachedWork, SurfaceRuntimeAuthority } from "./dispatcher.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
 import type { SessionState } from "../sessions/mod.ts";
+import type { InternalSessionState } from "../sessions/internal-session.ts";
 import type { Config } from "../config.ts";
 import type { Surface } from "../surface.ts";
 import { personalEnvironment, projectEnvironment } from "../sessions/environment.ts";
@@ -102,6 +103,40 @@ class FakeSubagentRunner {
   }
 }
 
+function permissiveRuntimeAuthority(): SurfaceRuntimeAuthority {
+  return {
+    assertCurrentBinding: async () => {},
+    isCurrentBinding: () => true,
+    withCurrentBinding: async <T>(
+      _surface: Surface,
+      _conversationId: string,
+      fn: (signal: AttachmentSignal) => Promise<AttachedWork<T>>,
+    ) => {
+      let settled = false;
+      const signal: AttachmentSignal = {
+        get settled() { return settled; },
+        attached: () => { settled = true; },
+        failed: () => { settled = true; },
+      };
+      return await fn(signal);
+    },
+  };
+}
+
+function mappedRuntimeAuthority(bindings: Map<string, string>): SurfaceRuntimeAuthority {
+  const permissive = permissiveRuntimeAuthority();
+  return {
+    ...permissive,
+    assertCurrentBinding: async (surface, conversationId) => {
+      const bound = bindings.get(surfaceId(surface));
+      if (bound !== conversationId) {
+        throw new Error(`binding rotated: ${bound ?? "unbound"} !== ${conversationId}`);
+      }
+    },
+    isCurrentBinding: (surface, conversationId) => bindings.get(surfaceId(surface)) === conversationId,
+  };
+}
+
 class FakeMemoryStore {
   read(_scope: unknown): { body: string; description: string | null } {
     return { body: "", description: null };
@@ -120,6 +155,7 @@ function buildDispatcher(
     surfaceModelName?: string;
     surfaceThinkingLevel?: ThinkingLevel;
     createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
+    surfaceRuntimeAuthority?: SurfaceRuntimeAuthority;
   } = {},
 ): {
   dispatcher: TurnDispatcher;
@@ -167,6 +203,7 @@ function buildDispatcher(
       return [];
     },
     createAgentRunner,
+    surfaceRuntimeAuthority: opts.surfaceRuntimeAuthority ?? permissiveRuntimeAuthority(),
   });
 
   return { dispatcher, runners, subagentRunner: subagentRunner as unknown as FakeSubagentRunner, betaSurfaces, createAgentRunnerCalls };
@@ -176,13 +213,24 @@ function makeSession(id: string, env: ExecutionEnvironment = personalEnvironment
   return { id, createdAt: new Date().toISOString(), chatId: 1, executionEnvironment: env } as SessionState;
 }
 
-class FakeBindingGuard implements CurrentBindingGuard {
+class FakeBindingGuard implements SurfaceRuntimeAuthority {
   private readonly bindings = new Map<string, string>();
   private tail: Promise<unknown> = Promise.resolve();
   lockReleases = 0;
 
   bind(surface: Surface, conversationId: string): void {
     this.bindings.set(surfaceId(surface), conversationId);
+  }
+
+  async assertCurrentBinding(surface: Surface, conversationId: string): Promise<void> {
+    const bound = this.bindings.get(surfaceId(surface));
+    if (bound !== conversationId) {
+      throw new Error(`binding rotated: ${bound ?? "unbound"} !== ${conversationId}`);
+    }
+  }
+
+  isCurrentBinding(surface: Surface, conversationId: string): boolean {
+    return this.bindings.get(surfaceId(surface)) === conversationId;
   }
 
   withCurrentBinding<T>(
@@ -299,6 +347,18 @@ describe("TurnDispatcher runtime host support", () => {
     await disposePromise;
   });
 
+  it("rejects a stale binding before constructing adapters", () => {
+    const bindings = new Map<string, string>();
+    const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
+      surfaceRuntimeAuthority: mappedRuntimeAuthority(bindings),
+    });
+    const session = makeSession("abc123def0");
+
+    expect(() => dispatcher.createRunner(session, dmSurface(1), fakeCapturedContext())).toThrow(/stale binding/);
+    expect(betaSurfaces).toHaveLength(0);
+    expect(createAgentRunnerCalls).toHaveLength(0);
+  });
+
   it("rejects an environment mismatch before creating the runner or beta tools", () => {
     const projectRoot = "/srv/project-a";
     const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
@@ -316,8 +376,12 @@ describe("TurnDispatcher runtime host support", () => {
     const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
       surfaceEnv: projectEnvironment(projectRoot),
     });
-    const session = makeSession("abc123def0", personalEnvironment());
-    session.chatId = 0;
+    const session: InternalSessionState = {
+      id: "__internal_test__",
+      createdAt: new Date().toISOString(),
+      chatId: 0,
+      executionEnvironment: personalEnvironment(),
+    };
 
     // Internal runners are constructed via enqueueInternalTurn, which builds
     // AgentRunnerOptions directly with an InternalMemoryContext and no Surface.
@@ -333,6 +397,32 @@ describe("TurnDispatcher runtime host support", () => {
     expect(betaSurfaces).toHaveLength(0);
     expect(createAgentRunnerCalls).toHaveLength(1);
     expect(createAgentRunnerCalls[0]?.executionEnvironment).toEqual(personalEnvironment());
+  });
+
+  it("rejects a Surface-backed session at the internal dispatch boundary", () => {
+    const { dispatcher } = buildDispatcher();
+    const surfaceSession = makeSession("abc123def0", personalEnvironment());
+
+    expect(() => dispatcher.enqueueInternalTurn(
+      surfaceSession as unknown as InternalSessionState,
+      "test prompt",
+      () => {},
+      () => {},
+    )).toThrow(/reserved __…__ identity/);
+  });
+
+  it("rejects reuse of a Surface-backed runner for an internal identity collision", () => {
+    const { dispatcher, runners } = buildDispatcher();
+    const internal: InternalSessionState = {
+      id: "__internal_test__",
+      createdAt: new Date().toISOString(),
+      chatId: 0,
+      executionEnvironment: personalEnvironment(),
+    };
+    runners.set(internal.id, new FakeAgentRunner() as unknown as AgentRunner);
+
+    expect(() => dispatcher.enqueueInternalTurn(internal, "test prompt", () => {}, () => {}))
+      .toThrow(/Surface-backed runtime/);
   });
 
   it("reads model and thinking from surface settings, falling back to session compatibility fields", () => {
@@ -383,7 +473,7 @@ describe("TurnDispatcher async runner creation", () => {
   function buildAsyncDispatcher(
     opts: {
       createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
-      bindingInspector?: (surface: Surface) => string | undefined;
+      surfaceRuntimeAuthority?: SurfaceRuntimeAuthority;
     } = {},
   ): {
     dispatcher: TurnDispatcher;
@@ -430,7 +520,7 @@ describe("TurnDispatcher async runner creation", () => {
       }),
       createBetaTools: (_surface: Surface) => [],
       createAgentRunner,
-      bindingInspector: opts.bindingInspector,
+      surfaceRuntimeAuthority: opts.surfaceRuntimeAuthority ?? permissiveRuntimeAuthority(),
     });
 
     return { dispatcher, runners, subagentRunner, createAgentRunnerCalls };
@@ -542,11 +632,11 @@ describe("TurnDispatcher async runner creation", () => {
   it("binding authority recheck: a stale caller whose binding rotated is discarded", async () => {
     // Simulate: intake resolves X → session A, then /new rotates X to B and
     // disposes A, then the stale intake starts A's creation. The binding
-    // inspector returns B's id (not A), so the creation is discarded.
+    // lifecycle authority returns B's id (not A), so the creation is discarded.
     const bindingMap = new Map<string, string>();
     bindingMap.set(surfaceId(dmSurface(1)), "abc123def0");
     const { dispatcher, createAgentRunnerCalls } = buildAsyncDispatcher({
-      bindingInspector: (surface) => bindingMap.get(surfaceId(surface)),
+      surfaceRuntimeAuthority: mappedRuntimeAuthority(bindingMap),
     });
     const session = makeSession("abc123def0");
 
@@ -628,13 +718,11 @@ describe("TurnDispatcher async runner creation", () => {
 
   it("reviveSubagent delegates to subagentRunner.revive with the runner's captured Surface authority", async () => {
     await memoryStore.add("general", "test fact");
-    const { dispatcher, subagentRunner } = buildAsyncDispatcher();
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
-
     const guard = new FakeBindingGuard();
     guard.bind(surface, session.id);
-    dispatcher.setCurrentBindingGuard(guard);
+    const { dispatcher, subagentRunner } = buildAsyncDispatcher({ surfaceRuntimeAuthority: guard });
 
     await dispatcher.getOrCreateRunner(session, surface);
     const result = await dispatcher.reviveSubagent(surface, session, "sub-1", "follow-up");
@@ -650,13 +738,11 @@ describe("TurnDispatcher async runner creation", () => {
   });
 
   it("reviveSubagent rejects when no runner exists for the session", async () => {
-    const { dispatcher } = buildAsyncDispatcher();
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
-
     const guard = new FakeBindingGuard();
     guard.bind(surface, session.id);
-    dispatcher.setCurrentBindingGuard(guard);
+    const { dispatcher } = buildAsyncDispatcher({ surfaceRuntimeAuthority: guard });
 
     await expect(dispatcher.reviveSubagent(surface, session, "sub-1", "go")).rejects.toThrow(
       /no current runner/,
@@ -665,15 +751,14 @@ describe("TurnDispatcher async runner creation", () => {
 
   it("reviveSubagent rejects when the binding has rotated", async () => {
     await memoryStore.add("general", "test fact");
-    const { dispatcher } = buildAsyncDispatcher();
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
-
     const guard = new FakeBindingGuard();
-    guard.bind(surface, "other-session-id");
-    dispatcher.setCurrentBindingGuard(guard);
+    guard.bind(surface, session.id);
+    const { dispatcher } = buildAsyncDispatcher({ surfaceRuntimeAuthority: guard });
 
     await dispatcher.getOrCreateRunner(session, surface);
+    guard.bind(surface, "other-session-id");
     await expect(dispatcher.reviveSubagent(surface, session, "sub-1", "go")).rejects.toThrow(
       /binding rotated/,
     );
@@ -681,12 +766,10 @@ describe("TurnDispatcher async runner creation", () => {
 
   it("reviveSubagent rejects when the runner's captured Surface does not match the requested surface", async () => {
     await memoryStore.add("general", "test fact");
-    const { dispatcher } = buildAsyncDispatcher();
     const session = makeSession("abc123def0");
-
     const guard = new FakeBindingGuard();
     guard.bind(dmSurface(1), session.id);
-    dispatcher.setCurrentBindingGuard(guard);
+    const { dispatcher } = buildAsyncDispatcher({ surfaceRuntimeAuthority: guard });
 
     await dispatcher.getOrCreateRunner(session, dmSurface(1));
 
@@ -701,13 +784,11 @@ describe("TurnDispatcher async runner creation", () => {
 
   it("reviveSubagent releases the binding guard at attachment, not at terminal result", async () => {
     await memoryStore.add("general", "test fact");
-    const { dispatcher, subagentRunner } = buildAsyncDispatcher();
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
-
     const guard = new FakeBindingGuard();
     guard.bind(surface, session.id);
-    dispatcher.setCurrentBindingGuard(guard);
+    const { dispatcher, subagentRunner } = buildAsyncDispatcher({ surfaceRuntimeAuthority: guard });
     await dispatcher.getOrCreateRunner(session, surface);
 
     let finishRevive!: () => void;
@@ -749,13 +830,11 @@ describe("TurnDispatcher async runner creation", () => {
 
   it("reviveSubagent releases the binding guard when subagentRunner.revive fails before attachment", async () => {
     await memoryStore.add("general", "test fact");
-    const { dispatcher, subagentRunner } = buildAsyncDispatcher();
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
-
     const guard = new FakeBindingGuard();
     guard.bind(surface, session.id);
-    dispatcher.setCurrentBindingGuard(guard);
+    const { dispatcher, subagentRunner } = buildAsyncDispatcher({ surfaceRuntimeAuthority: guard });
     await dispatcher.getOrCreateRunner(session, surface);
 
     subagentRunner.revive = async () => {

@@ -18,8 +18,8 @@ import { readFileSync } from "node:fs";
 import { surfaceId, parseSurfaceId, topicSurface, dmSurface, supergroupSurface, guestSurface, type Surface, type SurfaceId } from "../surface.ts";
 import { saveStore } from "../scheduler/store.ts";
 import type { ScheduleStoreFile, PersistedScheduledTurn } from "../scheduler/types.ts";
-import { loadBindings, saveBindings, loadLegacyBindings, validateBindings } from "./bindings.ts";
-import { loadCanonicalTopicSettingsForMigration, saveTopicSettings, loadLegacyTopicSettings } from "./topic-settings.ts";
+import { loadCanonicalBindingsForMigration, saveBindings, loadLegacyBindings, validateBindings } from "./bindings.ts";
+import { loadCanonicalTopicSettingsForMigration, saveTopicSettingsForEnvironmentMigration, loadLegacyTopicSettings } from "./topic-settings.ts";
 import { schedulesPath } from "./paths.ts";
 import { surfaceFromLocatorCompat } from "./surface-compat.ts";
 
@@ -443,7 +443,7 @@ function planScheduleMigration(
  * is a read-only plan: no persisted input is mutated.
  */
 export function planSurfaceMigration(home: string): SurfaceMigrationPlan {
-  const canonicalBindings = loadBindings(home);
+  const canonicalBindings = loadCanonicalBindingsForMigration(home);
   const legacyBindings = loadLegacyBindings(home);
   const canonicalSettings = loadCanonicalTopicSettingsForMigration(home);
   const legacySettings = loadLegacyTopicSettings(home);
@@ -471,7 +471,7 @@ export function planSurfaceMigration(home: string): SurfaceMigrationPlan {
  */
 export function applySurfaceMigration(home: string, plan: SurfaceMigrationPlan): void {
   saveBindings(home, plan.bindings);
-  saveTopicSettings(home, plan.settings);
+  saveTopicSettingsForEnvironmentMigration(home, plan.settings);
   if (plan.schedules !== null) {
     saveStore(home, plan.schedules);
   }

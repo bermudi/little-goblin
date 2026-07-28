@@ -8,6 +8,7 @@ import { isValidConversationId } from "./conversation.ts";
 import type { ExecutionEnvironment } from "./environment.ts";
 import { heartbeatMdPathForSession, schedulesPath, sessionsDir, statePath, surfaceHeartbeatPath } from "./paths.ts";
 import { isValidExecutionEnvironment } from "./state.ts";
+import { validateTopicSettings } from "./topic-settings.ts";
 import { saveJsonFile } from "./state-file.ts";
 import { saveTopicSettings } from "./topic-settings.ts";
 import type { BindingsFile, ConversationId, ConversationState, TopicSettings, TopicSettingsFile } from "./types.ts";
@@ -142,7 +143,9 @@ function readTopicSettings(home: string, supplied?: TopicSettingsFile): TopicSet
   for (const [surfaceId, value] of Object.entries(raw.surfaces)) {
     surfaces[surfaceId as SurfaceId] = validateTopicSettingsValue(surfaceId, value);
   }
-  return { version: 1, surfaces };
+  const settings: TopicSettingsFile = { version: 1, surfaces };
+  validateTopicSettings(settings);
+  return settings;
 }
 
 function planEnvironmentOverrides(plan?: ExecutionEnvironmentPlan): Map<string, ExecutionEnvironment> {

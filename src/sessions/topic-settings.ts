@@ -1,9 +1,10 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile, Surface } from "./types.ts";
+import { assertCanonicalProjectRoot, isCanonicalProjectRoot } from "./environment.ts";
 import { topicSettingsPath } from "./paths.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 import { log } from "../log.ts";
-import { surfaceId } from "../surface.ts";
+import { parseSurfaceId, surfaceId } from "../surface.ts";
 
 const ALL_THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
@@ -28,71 +29,151 @@ function pathFor(home: string): string {
   return topicSettingsPath(home);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function isCanonicalSettings(value: unknown): value is TopicSettingsFile {
-  if (value === null || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  return v.version === 1 && typeof v.surfaces === "object" && v.surfaces !== null;
+  if (!isRecord(value) || value.version !== 1 || !isRecord(value.surfaces)) return false;
+  return Object.keys(value).every((key) => key === "version" || key === "surfaces");
 }
 
 function isLegacySettings(value: unknown): value is LegacyTopicSettingsFile {
-  if (value === null || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  return !("version" in v) && (
-    typeof v.topics === "object" ||
-    typeof v.dm === "object" ||
-    typeof v.supergroups === "object"
-  );
+  if (!isRecord(value) || "version" in value) return false;
+  return isRecord(value.topics) || isRecord(value.dm) || isRecord(value.supergroups);
+}
+
+function assertCanonicalSettings(value: unknown, path: string): asserts value is TopicSettingsFile {
+  if (!isCanonicalSettings(value)) {
+    throw new Error(`invalid canonical topic-settings file at ${path}`);
+  }
+}
+
+function validateSurfaceSettings(surfaceKey: string, value: unknown): asserts value is TopicSettings {
+  parseSurfaceId(surfaceKey);
+  if (!isRecord(value)) {
+    throw new Error(`invalid settings for surface ${surfaceKey}`);
+  }
+  const validKeys = new Set(["projectRoot", "modelName", "thinkingLevel"]);
+  for (const key of Object.keys(value)) {
+    if (!validKeys.has(key)) {
+      throw new Error(`invalid settings field ${key} for surface ${surfaceKey}`);
+    }
+  }
+  if (value.projectRoot !== undefined && !isCanonicalProjectRoot(value.projectRoot)) {
+    throw new Error(`invalid projectRoot for surface ${surfaceKey}: expected existing canonical directory`);
+  }
+  if (value.modelName !== undefined && (typeof value.modelName !== "string" || value.modelName.length === 0)) {
+    throw new Error(`invalid modelName for surface ${surfaceKey}`);
+  }
+  if (value.thinkingLevel !== undefined && !isValidThinkingLevel(
+    typeof value.thinkingLevel === "string" ? value.thinkingLevel : undefined,
+  )) {
+    throw new Error(`invalid thinkingLevel for surface ${surfaceKey}`);
+  }
+}
+
+/** Validate exact current-version Surface settings authority. */
+export function validateTopicSettings(settings: TopicSettingsFile): void {
+  assertCanonicalSettings(settings, "topic-settings");
+  for (const [surfaceKey, value] of Object.entries(settings.surfaces)) {
+    validateSurfaceSettings(surfaceKey, value);
+  }
 }
 
 /**
- * Load the canonical topic-settings file (state/topic-settings.json). Returns
- * the default empty canonical shape when the file is missing or malformed. A
- * legacy-shaped file requires the offline migration and is never treated as an
- * empty canonical file, which would lose its other Surface settings on write.
+ * Load canonical Surface settings. Missing state is an empty file; malformed,
+ * legacy, or structurally invalid authority fails before a runtime write can
+ * erase it.
  */
 export function loadTopicSettings(home: string): TopicSettingsFile {
-  const raw = loadJsonFile<TopicSettingsFile | LegacyTopicSettingsFile>(pathFor(home), structuredClone(DEFAULT_SETTINGS));
-  if (isCanonicalSettings(raw)) {
-    return raw;
-  }
+  const path = pathFor(home);
+  const raw = loadJsonFile<unknown>(path, structuredClone(DEFAULT_SETTINGS));
   if (isLegacySettings(raw)) {
-    throw new Error(`legacy topic-settings file at ${pathFor(home)} requires offline migration`);
+    throw new Error(`legacy topic-settings file at ${path} requires offline migration`);
   }
-  return structuredClone(DEFAULT_SETTINGS);
+  assertCanonicalSettings(raw, path);
+  validateTopicSettings(raw);
+  return raw;
 }
 
 /**
  * Read only canonical settings while planning the offline Surface migration.
- * A legacy file is intentionally treated as absent here: its entries are read
- * separately through {@link loadLegacyTopicSettings} and migrated into the
- * plan. Runtime callers must use {@link loadTopicSettings}, which refuses a
- * legacy file rather than overwriting it.
+ * A valid legacy file is absent canonical input and is read separately by the
+ * legacy loader; malformed input still fails the migration plan.
  */
 export function loadCanonicalTopicSettingsForMigration(home: string): TopicSettingsFile {
-  const raw = loadJsonFile<TopicSettingsFile | LegacyTopicSettingsFile>(pathFor(home), structuredClone(DEFAULT_SETTINGS));
-  return isCanonicalSettings(raw) ? raw : structuredClone(DEFAULT_SETTINGS);
+  const path = pathFor(home);
+  const raw = loadJsonFile<unknown>(path, structuredClone(DEFAULT_SETTINGS));
+  if (isLegacySettings(raw)) return structuredClone(DEFAULT_SETTINGS);
+  // This loader participates in the offline step that normalizes historical
+  // `projectRoot` spellings. Runtime callers use the strict loader above.
+  validateEnvironmentMigrationSettings(raw, path);
+  return raw;
 }
 
 /**
- * Save topic settings atomically (write to unique tmp, then rename).
+ * Read the version-1 Surface-keyed settings accepted by offline execution-
+ * environment migration. That one historical step may see `projectDir` and
+ * `pendingProjectNotice`; runtime code must use `loadTopicSettings` instead.
  */
-export function saveTopicSettings(home: string, settings: TopicSettingsFile): void {
+function validateEnvironmentMigrationSettings(settings: unknown, path: string): asserts settings is TopicSettingsFile {
+  assertCanonicalSettings(settings, path);
+  const allowedKeys = new Set(["projectRoot", "projectDir", "pendingProjectNotice", "modelName", "thinkingLevel"]);
+  for (const [surfaceKey, value] of Object.entries(settings.surfaces)) {
+    parseSurfaceId(surfaceKey);
+    if (!isRecord(value)) {
+      throw new Error(`invalid settings for surface ${surfaceKey}`);
+    }
+    for (const key of Object.keys(value)) {
+      if (!allowedKeys.has(key)) {
+        throw new Error(`invalid settings field ${key} for surface ${surfaceKey}`);
+      }
+    }
+    for (const key of allowedKeys) {
+      if (value[key] !== undefined && typeof value[key] !== "string") {
+        throw new Error(`invalid settings field ${key} for surface ${surfaceKey}`);
+      }
+    }
+  }
+}
+
+export function loadTopicSettingsForEnvironmentMigration(home: string): TopicSettingsFile {
+  const path = pathFor(home);
+  const raw = loadJsonFile<unknown>(path, structuredClone(DEFAULT_SETTINGS));
+  validateEnvironmentMigrationSettings(raw, path);
+  return raw;
+}
+
+/**
+ * Write Surface-keyed settings while offline environment migration is still
+ * carrying its explicitly allowed legacy fields. Runtime code must use
+ * `saveTopicSettings`, which accepts only the current schema.
+ */
+export function saveTopicSettingsForEnvironmentMigration(home: string, settings: TopicSettingsFile): void {
+  validateEnvironmentMigrationSettings(settings, pathFor(home));
   saveJsonFile(pathFor(home), settings);
 }
 
-/**
- * Load the legacy pre-Surface topic-settings shape. Used only by migration.
- */
+/** Save validated topic settings atomically (write to unique tmp, then rename). */
+export function saveTopicSettings(home: string, settings: TopicSettingsFile): void {
+  validateTopicSettings(settings);
+  saveJsonFile(pathFor(home), settings);
+}
+
+/** Load legacy pre-Surface settings only for the offline migration. */
 export function loadLegacyTopicSettings(home: string): LegacyTopicSettingsFile {
-  const raw = loadJsonFile<TopicSettingsFile | LegacyTopicSettingsFile>(pathFor(home), structuredClone(DEFAULT_LEGACY_SETTINGS));
-  if (isLegacySettings(raw)) {
-    return {
-      topics: raw.topics ?? {},
-      dm: raw.dm ?? {},
-      supergroups: raw.supergroups ?? {},
-    };
+  const path = pathFor(home);
+  const raw = loadJsonFile<unknown | undefined>(path, undefined);
+  if (raw === undefined || isCanonicalSettings(raw)) return structuredClone(DEFAULT_LEGACY_SETTINGS);
+  if (!isLegacySettings(raw)) {
+    throw new Error(`invalid legacy topic-settings file at ${path}`);
   }
-  return structuredClone(DEFAULT_LEGACY_SETTINGS);
+  return {
+    topics: raw.topics ?? {},
+    dm: raw.dm ?? {},
+    supergroups: raw.supergroups ?? {},
+  };
 }
 
 function isEmptySettings(s: TopicSettings): boolean {
@@ -132,6 +213,7 @@ export function bindProjectRoot(home: string, surface: Surface, projectRoot: str
   if (!projectRoot) {
     throw new Error("projectRoot is required; assignment clearing is not supported");
   }
+  assertCanonicalProjectRoot(projectRoot, "projectRoot");
   const settings = loadTopicSettings(home);
   const existing = settingsForSurface(settings, surface)?.projectRoot;
   if (existing === projectRoot) {

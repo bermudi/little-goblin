@@ -61,10 +61,41 @@ describe("ConversationStore", () => {
       writeFileSync(metricsPath(tmpDir, id), "");
       writeFileSync(join(sessionDir(tmpDir, id), "events.jsonl"), "");
 
-      const created = store.createWithId(personalEnvironment(), id);
+      const created = store.createPlannedWithId(personalEnvironment(), id);
 
       expect(created.id).toBe(id);
       expect(store.load(id)).toEqual(created);
+    });
+
+    it("refuses a planned recovery directory with unexpected artifacts", () => {
+      const id = "abc123def0";
+      mkdirSync(sessionDir(tmpDir, id), { recursive: true });
+      writeFileSync(join(sessionDir(tmpDir, id), "unowned.txt"), "do not adopt");
+
+      expect(() => store.createPlannedWithId(personalEnvironment(), id)).toThrow(/unexpected partial artifact/);
+      expect(existsSync(statePath(tmpDir, id))).toBe(false);
+    });
+
+    it("does not overwrite malformed or internal state during planned recovery", () => {
+      const malformedId = "abc123def0";
+      mkdirSync(sessionDir(tmpDir, malformedId), { recursive: true });
+      writeFileSync(statePath(tmpDir, malformedId), "{ bad json");
+      const malformedBefore = readFileSync(statePath(tmpDir, malformedId), "utf-8");
+
+      expect(() => store.createPlannedWithId(personalEnvironment(), malformedId)).toThrow(/already has state.json/);
+      expect(readFileSync(statePath(tmpDir, malformedId), "utf-8")).toBe(malformedBefore);
+
+      const internalId = "fed321cba0";
+      mkdirSync(sessionDir(tmpDir, internalId), { recursive: true });
+      writeFileSync(statePath(tmpDir, internalId), JSON.stringify({
+        id: internalId,
+        createdAt: new Date().toISOString(),
+        chatId: 0,
+        executionEnvironment: personalEnvironment(),
+      }));
+
+      expect(() => store.createPlannedWithId(personalEnvironment(), internalId)).toThrow(/already has state.json/);
+      expect(() => store.load(internalId)).toThrow(/unexpected state field: chatId/);
     });
   });
 
@@ -79,8 +110,8 @@ describe("ConversationStore", () => {
       expect(store.load("0000000000")).toBeNull();
     });
 
-    it("returns null for an internal session", () => {
-      const internal: SessionState = {
+    it("rejects a chatId:0 record at a canonical Conversation ID", () => {
+      const corrupt: SessionState = {
         id: "abc123def0",
         createdAt: new Date().toISOString(),
         chatId: 0,
@@ -88,8 +119,8 @@ describe("ConversationStore", () => {
         executionEnvironment: personalEnvironment(),
       };
       mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
-      writeFileSync(statePath(tmpDir, "abc123def0"), JSON.stringify(internal));
-      expect(store.load("abc123def0")).toBeNull();
+      writeFileSync(statePath(tmpDir, "abc123def0"), JSON.stringify(corrupt));
+      expect(() => store.load("abc123def0")).toThrow(/unexpected state field: chatId/);
     });
 
     it("throws for a conversation with an invalid executionEnvironment", () => {
@@ -101,9 +132,9 @@ describe("ConversationStore", () => {
       expect(() => store.load("abc123def0")).toThrow(/invalid executionEnvironment/);
     });
 
-    it("drops legacy fields when loading a legacy record", () => {
+    it("rejects legacy routing fields in current-version Conversation state", () => {
       const legacy: SessionState = {
-        id: "abc123def0" ,
+        id: "abc123def0",
         createdAt: "2024-01-01T00:00:00.000Z",
         chatId: 123,
         topicId: 7,
@@ -115,12 +146,7 @@ describe("ConversationStore", () => {
       mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
       writeFileSync(statePath(tmpDir, "abc123def0"), JSON.stringify(legacy));
 
-      const loaded = store.load("abc123def0");
-      expect(loaded?.id).toBe("abc123def0");
-      expect(loaded?.title).toBe("legacy");
-      expect(loaded).not.toHaveProperty("chatId");
-      expect(loaded).not.toHaveProperty("modelName");
-      expect(loaded).not.toHaveProperty("thinkingLevel");
+      expect(() => store.load("abc123def0")).toThrow(/unexpected state field: chatId/);
     });
 
     it("throws when state.json id field points to a different conversation", () => {
@@ -165,17 +191,17 @@ describe("ConversationStore", () => {
       expect(store.list()).toEqual([]);
     });
 
-    it("excludes internal conversations with chatId 0", () => {
-      const internal: SessionState = {
-        id: "abc123def0" ,
+    it("fails closed for a chatId:0 record at a canonical Conversation ID", () => {
+      const corrupt: SessionState = {
+        id: "abc123def0",
         createdAt: new Date().toISOString(),
         chatId: 0,
         title: "dreaming",
         executionEnvironment: personalEnvironment(),
       };
       mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
-      writeFileSync(statePath(tmpDir, "abc123def0"), JSON.stringify(internal));
-      expect(store.list().find((c) => c.id === "abc123def0")).toBeUndefined();
+      writeFileSync(statePath(tmpDir, "abc123def0"), JSON.stringify(corrupt));
+      expect(() => store.list()).toThrow(/unexpected state field: chatId/);
     });
 
     it("ignores entries without state.json", () => {
@@ -183,14 +209,13 @@ describe("ConversationStore", () => {
       expect(store.list()).toEqual([]);
     });
 
-    it("uses the directory name as the conversation id when state.json omits id", () => {
+    it("rejects state.json that omits its canonical Conversation id", () => {
       const a = store.create(personalEnvironment(), "A");
       const raw = JSON.parse(readFileSync(statePath(tmpDir, a.id), "utf-8"));
       delete raw.id;
       writeFileSync(statePath(tmpDir, a.id), JSON.stringify(raw));
 
-      const list = store.list();
-      expect(list.map((c) => c.id)).toEqual([a.id]);
+      expect(() => store.list()).toThrow(/state file id mismatch/);
     });
 
     it("throws when a state.json id field points to a different conversation", () => {
@@ -212,7 +237,7 @@ describe("ConversationStore", () => {
     });
 
     it("throws for a missing conversation", () => {
-      expect(() => store.setTitle("0000000000" , "x")).toThrow(/conversation not found/);
+      expect(() => store.setTitle("0000000000", "x")).toThrow(/conversation not found/);
     });
 
     it("rewrites only canonical fields", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "./manager.ts";
@@ -158,6 +158,77 @@ describe("SessionManager", () => {
       const first = manager.ensureInternal("__internal_test__");
       const second = manager.ensureInternal("__internal_test__");
       expect(second.id).toBe(first.id);
+    });
+
+    it("rejects a Surface-backed record at a reserved internal identity", () => {
+      const id = "__internal_test__";
+      mkdirSync(sessionDir(tmpDir, id), { recursive: true });
+      writeFileSync(statePath(tmpDir, id), JSON.stringify({
+        id,
+        createdAt: new Date().toISOString(),
+        chatId: 123,
+        executionEnvironment: personalEnvironment(),
+      }));
+
+      expect(() => manager.ensureInternal(id)).toThrow(/chatId: 0/);
+    });
+
+    it("rejects a non-reserved internal identity before touching state paths", () => {
+      expect(() => manager.ensureInternal("abc123def0" as `__${string}__`)).toThrow(/reserved __…__ identity/);
+      expect(existsSync(sessionDir(tmpDir, "abc123def0"))).toBe(false);
+    });
+
+    it("rejects persisted internal records with invalid timestamps or legacy fields", () => {
+      const invalidRecords = [
+        {
+          id: "__invalid_timestamp__",
+          state: {
+            id: "__invalid_timestamp__",
+            createdAt: "not-a-date",
+            chatId: 0,
+            executionEnvironment: personalEnvironment(),
+          },
+          error: /invalid createdAt/,
+        },
+        {
+          id: "__legacy_title__",
+          state: {
+            id: "__legacy_title__",
+            createdAt: new Date().toISOString(),
+            chatId: 0,
+            title: "must not be a Conversation",
+            executionEnvironment: personalEnvironment(),
+          },
+          error: /forbidden field: title/,
+        },
+        {
+          id: "__legacy_topic__",
+          state: {
+            id: "__legacy_topic__",
+            createdAt: new Date().toISOString(),
+            chatId: 0,
+            topicId: 7,
+            executionEnvironment: personalEnvironment(),
+          },
+          error: /forbidden field: topicId/,
+        },
+        {
+          id: "__invalid_environment__",
+          state: {
+            id: "__invalid_environment__",
+            createdAt: new Date().toISOString(),
+            chatId: 0,
+            executionEnvironment: { kind: "personal", legacy: true },
+          },
+          error: /invalid executionEnvironment/,
+        },
+      ];
+
+      for (const invalid of invalidRecords) {
+        mkdirSync(sessionDir(tmpDir, invalid.id), { recursive: true });
+        writeFileSync(statePath(tmpDir, invalid.id), JSON.stringify(invalid.state));
+        expect(() => manager.ensureInternal(invalid.id as `__${string}__`)).toThrow(invalid.error);
+      }
     });
   });
 

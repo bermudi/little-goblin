@@ -43,6 +43,7 @@ import { environmentCwd, projectRootOf } from "../sessions/environment.ts";
 import { surfaceHeartbeatPath } from "../sessions/paths.ts";
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { agentsMdPath, heartbeatMdPath, soulMdPath } from "../workspace/paths.ts";
 
 /**
@@ -80,12 +81,6 @@ interface AgentRunnerOptionsBase {
   /** Shared MCP runner. When present and configured, the agent gets the `mcp_call` and `mcp_describe` tools. */
   mcpRunner?: McpRunner;
   /**
-   * Optional callback the `schedule_turn` tool uses to verify the runtime is
-   * still current on its Surface before mutating schedules. When absent,
-   * schedule mutations are not guarded against stale runtimes.
-   */
-  isCurrent?: () => boolean;
-  /**
    * Pre-resolved model to use. When present, the runner skips `resolveModel()`
    * and uses this value directly. Useful for tests that drive the SDK with a
    * deterministic fake provider.
@@ -106,6 +101,8 @@ interface AgentRunnerOptionsBase {
 export interface SurfaceAgentRunnerOptions extends AgentRunnerOptionsBase {
   memoryContext: CapturedMemoryContext;
   surface: Surface;
+  /** Mandatory lifecycle authority for every Surface-backed effect. */
+  isCurrent: () => boolean;
 }
 
 /**
@@ -117,6 +114,8 @@ export interface SurfaceAgentRunnerOptions extends AgentRunnerOptionsBase {
 export interface InternalAgentRunnerOptions extends AgentRunnerOptionsBase {
   memoryContext: InternalMemoryContext;
   surface?: never;
+  /** Internal runtimes are explicitly Surface-free and need no binding guard. */
+  isCurrent?: never;
 }
 
 /**
@@ -230,13 +229,26 @@ function buildTurnMetricsEvent(args: {
   };
 }
 
+// Matches pi's public coding-tool path behavior. pi does not export its
+// resolveToCwd helper, so keep this intentionally small compatibility seam
+// limited to the normalizations that affect prompt-file notices.
+const PI_UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
 /**
- * Resolve a tool `path` argument the same way pi's `write`/`edit` tools do:
- * expand a leading `~` to the user's home directory, then resolve relative
- * paths against the runtime CWD.
+ * Normalize a write/edit path exactly as pi's `resolveToCwd` does before this
+ * module compares it to a reserved prompt file. This affects notice matching
+ * only; it grants no filesystem authority and does not alter tool execution.
  */
+function normalizePiToolPath(rawPath: string): string {
+  let normalized = rawPath.replace(PI_UNICODE_SPACES, " ");
+  if (normalized.startsWith("@")) normalized = normalized.slice(1);
+  if (/^file:\/\//.test(normalized)) return fileURLToPath(normalized);
+  return normalized;
+}
+
+/** Resolve a tool `path` using pi-compatible @, file URL, ~, and CWD rules. */
 function resolveToolPath(cwd: string, rawPath: string): string {
-  let expanded = rawPath;
+  let expanded = normalizePiToolPath(rawPath);
   if (expanded === "~") {
     expanded = homedir();
   } else if (expanded.startsWith("~/")) {
@@ -351,6 +363,38 @@ export class AgentRunner {
     }
   }
 
+  /**
+   * Single authority fence for every Surface-backed side effect. Internal
+   * runners install the explicit always-current guard in the constructor.
+   */
+  private assertCurrent(): void {
+    if (!this.isCurrent()) {
+      throw new Error("AgentRunner runtime is no longer current on its surface.");
+    }
+  }
+
+  /** Run an async boundary only while this runtime remains authoritative. */
+  private async awaitCurrent<T>(operation: () => Promise<T>): Promise<T> {
+    this.assertCurrent();
+    const result = await operation();
+    this.assertCurrent();
+    return result;
+  }
+
+  /** Wrap every agent-visible tool so stale runtimes cannot start or return tool work. */
+  private guardTool(tool: ToolDefinition): ToolDefinition {
+    const execute = tool.execute;
+    return {
+      ...tool,
+      execute: async (...args: Parameters<typeof execute>) => {
+        this.assertCurrent();
+        const result = await execute(...args);
+        this.assertCurrent();
+        return result;
+      },
+    };
+  }
+
   constructor(opts: AgentRunnerOptions) {
     this.cfg = opts.cfg;
     this.sessionId = opts.sessionId;
@@ -365,7 +409,9 @@ export class AgentRunner {
     this.scheduleStore = opts.scheduleStore;
     this.externalAgentRunner = opts.externalAgentRunner ?? null;
     this.mcpRunner = opts.mcpRunner ?? null;
-    this.isCurrent = opts.isCurrent ?? (() => true);
+    this.isCurrent = opts.memoryContext.kind === "surface"
+      ? (opts as SurfaceAgentRunnerOptions).isCurrent
+      : () => true;
     this.getTopicName = opts.getTopicName;
     this.executionEnvironment = opts.executionEnvironment;
     this._modelName = opts.modelName ?? (opts.resolvedModel ? `${opts.resolvedModel.model.provider}/${opts.resolvedModel.model.id}` : undefined);
@@ -395,6 +441,7 @@ export class AgentRunner {
    * Called on first prompt() or compact().
    */
   private async init(): Promise<void> {
+    this.assertCurrent();
     if (this.backend.isInitialized) return;
     this._initInProgress = true;
     try {
@@ -405,13 +452,13 @@ export class AgentRunner {
       const resolvedModel = this.resolvedModel ?? resolveModel({ ...this.cfg, modelName: this._modelName ?? this.cfg.modelName });
       this.resolvedModel = resolvedModel;
 
-      const goblinSystemPrompt = await buildGoblinSystemPrompt({
+      const goblinSystemPrompt = await this.awaitCurrent(() => buildGoblinSystemPrompt({
         home,
         executionEnvironment: this.executionEnvironment,
-      });
+      }));
       this.goblinSystemPrompt = goblinSystemPrompt;
 
-      const tools = await this.buildCustomTools();
+      const tools = await this.awaitCurrent(() => this.buildCustomTools());
 
       let systemPrompt = goblinSystemPrompt.prompt;
       // Consume the completed capture — do not reread the store for the frozen
@@ -425,13 +472,14 @@ export class AgentRunner {
       }
 
       this.throwIfAbortedBeforeInit();
-      await this.backend.init({
+      await this.awaitCurrent(() => this.backend.init({
         resolvedModel,
         thinkingLevel: this._thinkingLevel ?? resolvedModel.thinkingLevel,
         customTools: tools,
+        guardBuiltInTool: (tool) => this.guardTool(tool),
         systemPrompt,
         cwd,
-      });
+      }));
       this.throwIfAbortedBeforeInit();
       // Consumed — any later setThinkingLevel() calls go through the live backend.
       this._thinkingLevel = undefined;
@@ -481,7 +529,7 @@ export class AgentRunner {
           0,
           this.sessionId,
           this.memoryContext,
-          (msg) => this.callbacks?.onStatusUpdate(msg),
+          (msg) => this.sendStatusUpdate(msg),
           undefined,
         ),
       );
@@ -489,7 +537,7 @@ export class AgentRunner {
         createReviveSubagentTool(
           this.subagentRunner,
           this.memoryContext,
-          (msg) => this.callbacks?.onStatusUpdate(msg),
+          (msg) => this.sendStatusUpdate(msg),
         ),
       );
     }
@@ -502,23 +550,27 @@ export class AgentRunner {
           sessionId: this.sessionId,
           projectDir,
           enabledBackends: this.cfg.externalAgents.backends,
-          onStatusUpdate: (msg) => this.callbacks?.onStatusUpdate(msg),
+          onStatusUpdate: (msg) => this.sendStatusUpdate(msg),
         }),
       );
     }
 
     if (this.mcpRunner && this.cfg.mcp) {
-      await this.mcpRunner.ready;
+      await this.awaitCurrent(() => this.mcpRunner!.ready);
       tools.push(...createMcpTools(this.mcpRunner));
     }
 
-    return tools;
+    return tools.map((tool) => this.guardTool(tool));
   }
 
   /**
    * Handle AgentSession events, dispatch to callbacks and log to transcript.
    */
   private handleEvent(event: AgentSessionEvent): void {
+    // Pi may emit late events after lifecycle disposal. Drop every stale event
+    // before it can write a transcript, metrics, callback, or tool side effect.
+    if (!this.isCurrent()) return;
+
     // Append to transcript (compact message-level log). The writer context was
     // frozen at construction from the completed runtime memory context; the
     // transcript module validates and stamps it.
@@ -709,12 +761,29 @@ export class AgentRunner {
     return reserved.has(resolve(resolvedPath));
   }
 
+  /** Deliver a status only while the captured Surface runtime remains current. */
+  private sendStatusUpdate(text: string): void {
+    if (!this.isCurrent()) return;
+    this.callbacks?.onStatusUpdate(text);
+  }
+
   /** Fire-and-forget delivery of a bounded notice to the turn's surface sink. */
   private sendNotice(text: string): void {
+    if (!this.isCurrent()) return;
     const send = this.callbacks?.sendNotice;
     if (send === undefined) return;
-    send(text).catch((err: unknown) => {
-      log.warn("prompt-file notice failed", { error: String(err), sessionId: this.sessionId });
+    send(text).then(
+      () => {
+        // Delivery has no compensating action, but do not allow callers to
+        // continue a stale notice chain after its asynchronous boundary.
+        this.assertCurrent();
+      },
+      (err: unknown) => {
+        log.warn("prompt-file notice failed", { error: String(err), sessionId: this.sessionId });
+      },
+    ).catch(() => {
+      // `assertCurrent` intentionally rejects a stale post-delivery result;
+      // the lifecycle has already fenced the old runner, so no retry occurs.
     });
   }
 
@@ -732,11 +801,13 @@ export class AgentRunner {
     content: string | (TextContent | ImageContent)[],
     callbacks: TurnCallbacks,
   ): Promise<void> {
+    this.assertCurrent();
     this._prompting = true;
     try {
       this.throwIfAbortedBeforeInit();
-      await this.init();
+      await this.awaitCurrent(() => this.init());
       this.throwIfAbortedBeforeInit();
+      this.assertCurrent();
       if (this.isAbortTimedOut) {
         throw new Error(
           "The previous turn is wedged after a failed abort. Use /new or /archive to recover.",
@@ -765,20 +836,21 @@ export class AgentRunner {
       // section. Internal runners (dreaming extraction) skip the aside — they
       // have no Surface-backed memory context.
       const promptText = extractPromptText(content);
-      if (this.memoryContext.kind === "surface") {
-        const aside = await formatRelevantMemory({
+      const memoryContext = this.memoryContext;
+      if (memoryContext.kind === "surface") {
+        const aside = await this.awaitCurrent(() => formatRelevantMemory({
           store: this.memoryStore,
-          context: this.memoryContext,
+          context: memoryContext,
           promptText,
           metrics: this.metricsStore,
-        });
+        }));
         if (aside !== null) {
-          await this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" });
+          await this.awaitCurrent(() => this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" }));
         }
       }
 
       const contentForModel = this.normalizeContentForModel(content);
-      await this.backend.sendUserMessage(contentForModel);
+      await this.awaitCurrent(() => this.backend.sendUserMessage(contentForModel));
     } finally {
       this._prompting = false;
     }
@@ -795,6 +867,7 @@ export class AgentRunner {
    * steer-vs-queue; the runner only exposes the two primitives.
    */
   async followUp(content: string | (TextContent | ImageContent)[]): Promise<void> {
+    this.assertCurrent();
     if (!this.backend.isInitialized) {
       throw new Error("Cannot steer: session not initialized. Call prompt() first.");
     }
@@ -802,7 +875,7 @@ export class AgentRunner {
       throw new Error("Cannot steer: session is not streaming.");
     }
     const contentForModel = this.normalizeContentForModel(content);
-    await this.backend.followUp(contentForModel);
+    await this.awaitCurrent(() => this.backend.followUp(contentForModel));
   }
 
   private normalizeContentForModel(
@@ -835,7 +908,9 @@ export class AgentRunner {
     if (this.topicNameCache.has(key)) {
       return this.topicNameCache.get(key) ?? null;
     }
-    const name = this.getTopicName === undefined ? null : await this.getTopicName(chatId, topicId);
+    const name = this.getTopicName === undefined
+      ? null
+      : await this.awaitCurrent(() => this.getTopicName!(chatId, topicId));
     this.topicNameCache.set(key, name);
     return name;
   }
@@ -922,11 +997,12 @@ export class AgentRunner {
    * prompt). Either way `_modelName`/`resolvedModel` track the new model.
    */
   async setModel(modelName: string): Promise<void> {
+    this.assertCurrent();
     const resolved = resolveModel({ ...this.cfg, modelName });
     this._modelName = modelName;
     this.resolvedModel = resolved;
     if (this.backend.isInitialized) {
-      await this.backend.setModel(resolved.model, resolved.apiKey);
+      await this.awaitCurrent(() => this.backend.setModel(resolved.model, resolved.apiKey));
     }
   }
 
@@ -936,6 +1012,7 @@ export class AgentRunner {
    * Pass `undefined` to reset to the model's default.
    */
   setThinkingLevel(level: ThinkingLevel | undefined): void {
+    this.assertCurrent();
     if (this.backend.isInitialized) {
       if (level !== undefined) {
         this.backend.setThinkingLevel(level);
@@ -965,7 +1042,7 @@ export class AgentRunner {
   }
 
   async compact(customInstructions?: string): Promise<CompactionResult> {
-    await this.init();
+    await this.awaitCurrent(() => this.init());
     if (!this.backend.isInitialized) {
       throw new Error("Failed to initialize backend");
     }
@@ -975,7 +1052,7 @@ export class AgentRunner {
     if (this.backend.isStreaming) {
       throw new Error("Cannot compact while the agent is still streaming. Try /cancel first.");
     }
-    return this.backend.compact(customInstructions);
+    return await this.awaitCurrent(() => this.backend.compact(customInstructions));
   }
 
   /**

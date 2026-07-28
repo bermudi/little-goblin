@@ -233,6 +233,22 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   };
   const surfaceSettings = new FileSurfaceSettings(cfg.goblinHome);
 
+  // The lifecycle owns runtime authority, while its runtime host delegates to
+  // the dispatcher. Build the lifecycle first through a guarded provider, then
+  // pass that complete authority into the dispatcher constructor. There is no
+  // optional post-construction wiring path: no Surface runtime can exist until
+  // both sides of this composition boundary exist.
+  const dispatcherRef: { current: TurnDispatcher | null } = { current: null };
+  const lifecycle = createConversationLifecycle(
+    cfg.goblinHome,
+    createTurnDispatcherRuntimeHost(() => {
+      if (dispatcherRef.current === null) {
+        throw new Error("conversation runtime host used before dispatcher construction");
+      }
+      return dispatcherRef.current;
+    }),
+    surfaceSettings,
+  );
   const dispatcher = new TurnDispatcher({
     cfg,
     surfaceSettings,
@@ -248,23 +264,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     mcpRunner: options.mcpRunner,
     embeddingProvider,
     dreamingPipeline,
+    surfaceRuntimeAuthority: lifecycle,
   });
-
-  // Build the deep conversation lifecycle around the same dispatcher so all
-  // runtime invalidation and quiescence is shared between Telegram intake and
-  // the lifecycle operations called by commands / scheduler.
-  const lifecycle = createConversationLifecycle(cfg.goblinHome, createTurnDispatcherRuntimeHost(dispatcher), surfaceSettings);
-
-  // Wire the binding inspector so the dispatcher can recheck binding authority
-  // after memory capture. This catches stale callers whose binding was rotated
-  // (e.g. by /new) before their creation started — a case the dispatcher's
-  // in-flight identity check alone cannot detect.
-  dispatcher.setBindingInspector((surface) => lifecycle.inspect(surface)?.id);
-
-  // Wire the lifecycle-provided current-binding guard. The dispatcher uses it to
-  // revive subagents under binding-transition exclusion, so a /revive cannot
-  // attach to a Surface whose Conversation has already moved.
-  dispatcher.setCurrentBindingGuard(lifecycle);
+  dispatcherRef.current = dispatcher;
 
   function recordAssistantReply(
     sessionId: string,

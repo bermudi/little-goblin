@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dmSurface, surfaceId } from "../surface.ts";
@@ -53,34 +53,56 @@ describe("project-assignment", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  function makeProjectDir(name: string): string {
+    const dir = join(tmpDir, name);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
   describe("loadPendingProjectAssignment", () => {
     it("returns null when the file is missing", () => {
       expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
     });
 
     it("returns the intent when present", () => {
-      const intent = makeIntent(surfaceId(dmSurface(1)), "/srv/project");
+      const intent = makeIntent(surfaceId(dmSurface(1)), makeProjectDir("project"));
       savePendingProjectAssignment(tmpDir, intent);
       expect(loadPendingProjectAssignment(tmpDir)).toEqual(intent);
     });
 
-    it("returns null for a malformed file", () => {
+    it("rejects null rather than treating a present pending file as absent", () => {
+      const path = pendingProjectAssignmentPath(tmpDir);
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, "null");
+      expect(() => loadPendingProjectAssignment(tmpDir)).toThrow(/invalid pending project assignment/);
+    });
+
+    it("rejects a malformed file rather than treating pending authority as absent", () => {
       const path = pendingProjectAssignmentPath(tmpDir);
       const parent = join(path, "..");
       // eslint-disable-next-line no-restricted-globals
       mkdirSync(parent, { recursive: true });
       writeFileSync(path, "{ not valid");
-      expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+      expect(() => loadPendingProjectAssignment(tmpDir)).toThrow(SyntaxError);
     });
   });
 
   describe("clearPendingProjectAssignment", () => {
-    it("clears a persisted intent", () => {
-      const intent = makeIntent(surfaceId(dmSurface(1)), "/srv/project");
+    it("deletes a persisted intent", () => {
+      const intent = makeIntent(surfaceId(dmSurface(1)), makeProjectDir("project"));
       savePendingProjectAssignment(tmpDir, intent);
       clearPendingProjectAssignment(tmpDir);
       expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
-      expect(existsSync(pendingProjectAssignmentPath(tmpDir))).toBe(true);
+      expect(existsSync(pendingProjectAssignmentPath(tmpDir))).toBe(false);
+    });
+
+    it("rejects invalid present authority rather than deleting it", () => {
+      const path = pendingProjectAssignmentPath(tmpDir);
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, "null");
+
+      expect(() => clearPendingProjectAssignment(tmpDir)).toThrow(/invalid pending project assignment/);
+      expect(readFileSync(path, "utf-8")).toBe("null");
     });
 
     it("is a no-op when no intent exists", () => {
@@ -221,18 +243,47 @@ describe("project-assignment", () => {
       expect(bindings.bindings.surfaces[key]).toBeUndefined();
     });
 
-    it("rejects an invalid surface id in the intent", () => {
+    it("rejects malformed or chatId:0 planned state without changing other authority", () => {
+      const stateDir = join(tmpDir, "state", "sessions", plannedId);
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(join(stateDir, "state.json"), "{ malformed");
       savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+      const malformedBefore = readFileSync(join(stateDir, "state.json"), "utf-8");
+
+      expect(() => reconcilePendingProjectAssignment(tmpDir, store, bindings)).toThrow(SyntaxError);
+      expect(readFileSync(join(stateDir, "state.json"), "utf-8")).toBe(malformedBefore);
+      expect(loadTopicSettings(tmpDir).surfaces[key]).toBeUndefined();
+      expect(bindings.bindings.surfaces[key]).toBeUndefined();
+
+      rmSync(stateDir, { recursive: true, force: true });
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(join(stateDir, "state.json"), JSON.stringify({
+        id: plannedId,
+        createdAt: new Date().toISOString(),
+        chatId: 0,
+        executionEnvironment: personalEnvironment(),
+      }));
+
+      expect(() => reconcilePendingProjectAssignment(tmpDir, store, bindings)).toThrow(/unexpected state field: chatId/);
+      expect(loadTopicSettings(tmpDir).surfaces[key]).toBeUndefined();
+      expect(bindings.bindings.surfaces[key]).toBeUndefined();
+    });
+
+    it("rejects an invalid surface id before persisting the intent", () => {
+      expect(() => savePendingProjectAssignment(tmpDir, {
         version: 1,
         surfaceId: "not-a-valid-surface-id" as SurfaceId,
         plannedSessionId: plannedId,
         projectRoot,
-      });
-
-      expect(() => reconcilePendingProjectAssignment(tmpDir, store, bindings)).toThrow(/invalid surface id/);
+      })).toThrow(/SurfaceId/);
     });
 
-    it("overwrites an invalid binding when replaying", () => {
+    it("rejects an invalid binding without overwriting it during replay", () => {
       writeState(plannedId, projectEnvironment(projectRoot));
       savePendingProjectAssignment(tmpDir, {
         version: 1,
@@ -242,9 +293,9 @@ describe("project-assignment", () => {
       });
       bindings.bindings = { version: 1, surfaces: { [key]: "not-valid" } } as BindingsFile;
 
-      reconcilePendingProjectAssignment(tmpDir, store, bindings);
-
-      expect(bindings.bindings.surfaces[key]).toBe(plannedId);
+      expect(() => reconcilePendingProjectAssignment(tmpDir, store, bindings)).toThrow(/invalid conversation id/);
+      expect(bindings.bindings.surfaces[key]).toBe("not-valid");
+      expect(loadPendingProjectAssignment(tmpDir)).not.toBeNull();
     });
   });
 });

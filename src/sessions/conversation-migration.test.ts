@@ -57,12 +57,14 @@ describe("conversation migration", () => {
   });
 
   it("canonicalizes conversation records and moves their owned fields", () => {
+    const projectRoot = join(home, "canonical-project");
+    mkdirSync(projectRoot, { recursive: true });
     writeState(home, CONVERSATION_ID, legacyState(CONVERSATION_ID));
     writeState(home, ARCHIVED_ID, legacyState(ARCHIVED_ID), true);
     writeBindings(home, { version: 1, surfaces: { [SURFACE_ID]: CONVERSATION_ID } });
     writeSettings(home, {
       version: 1,
-      surfaces: { [SURFACE_ID]: { projectRoot: "/canonical/project", thinkingLevel: "medium" } },
+      surfaces: { [SURFACE_ID]: { projectRoot, thinkingLevel: "medium" } },
     });
     writeFileSync(
       schedulesPath(home),
@@ -92,7 +94,7 @@ describe("conversation migration", () => {
     expect(readFileSync(statePath(home, CONVERSATION_ID), "utf-8")).toBe(stateBefore);
     expect(plan.conversationRecords).toHaveLength(2);
     expect(plan.topicSettings?.surfaces[SURFACE_ID]).toEqual({
-      projectRoot: "/canonical/project",
+      projectRoot,
       modelName: "legacy-model",
       thinkingLevel: "medium",
     });
@@ -121,7 +123,7 @@ describe("conversation migration", () => {
       version: 1,
       surfaces: {
         [SURFACE_ID]: {
-          projectRoot: "/canonical/project",
+          projectRoot,
           modelName: "legacy-model",
           thinkingLevel: "medium",
         },

@@ -10,10 +10,10 @@ import { getProjectRoot } from "./topic-settings.ts";
 import { sessionsDir, sessionDir, transcriptPath, metricsPath } from "./paths.ts";
 import {
   type ExecutionEnvironment,
-  personalEnvironment,
   environmentFromProjectRoot,
   environmentsEqual,
 } from "./environment.ts";
+import { assertInternalSessionId, assertInternalSessionState, createInternalSessionState, type InternalSessionId, type InternalSessionState } from "./internal-session.ts";
 import { reconcilePendingProjectAssignment } from "./project-assignment.ts";
 import { withLifecycleTransitionLock } from "../orchestration/lifecycle-transition-lock.ts";
 import { ConversationStore } from "./conversation-store.ts";
@@ -136,19 +136,15 @@ export class SessionManager {
    * Ensure an internal non-chat session exists. Internal sessions are used for
    * background work (e.g. the dreaming subagent) and are never bound to a chat.
    */
-  ensureInternal(id: string): SessionState {
-    ensureSessionFiles(this.home, id);
+  ensureInternal(id: InternalSessionId): InternalSessionState {
+    assertInternalSessionId(id);
     const existing = loadState(this.home, id);
     if (existing !== null) {
+      assertInternalSessionState(existing);
       return existing;
     }
-    const state: SessionState = {
-      id,
-      createdAt: new Date().toISOString(),
-      chatId: 0,
-      title: undefined,
-      executionEnvironment: personalEnvironment(),
-    };
+    ensureSessionFiles(this.home, id);
+    const state = createInternalSessionState(id);
     saveState(this.home, state);
     log.debug("ensured internal session", { id });
     return state;

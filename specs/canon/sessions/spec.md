@@ -65,12 +65,22 @@ The reader SHALL expose normalized typed entries to ordinary consumers and a nam
 
 ### Requirement: Topic settings file
 
-The dependency-provided surface-settings store SHALL remain the atomic persistence module for per-surface execution assignment and pending notices, and SHALL additionally hold model and thinking preferences keyed by canonical `SurfaceId`. Missing or malformed JSON SHALL use the established default-and-warning policy; non-`ENOENT`, non-syntax errors MUST propagate.
+The dependency-provided surface-settings store SHALL remain the atomic persistence module for per-surface execution assignment and pending notices, and SHALL additionally hold model and thinking preferences keyed by canonical `SurfaceId`. `ENOENT` SHALL mean an empty settings file; malformed JSON, a legacy shape, an invalid `SurfaceId`, unknown fields, invalid preference values, or invalid project authority MUST fail closed before any write can replace the file. In current-version authority, every `projectRoot` SHALL name an existing readable/writable directory and equal its filesystem `realpath`; a merely absolute, missing, or symlink spelling is invalid. Migration-only readers MAY accept historical spellings only to normalize them before writing current-version authority.
 
 #### Scenario: Surface settings load
 
 - **WHEN** settings are read for a surface
 - **THEN** project assignment, model preference, thinking preference, and pending notices SHALL resolve from the same canonical `SurfaceId` slot
+
+### Requirement: Canonical authority files fail closed
+
+`state/bindings.json`, `state/topic-settings.json`, `pending-project-assignment.json`, and user-visible Conversation `state.json` are canonical authority, not rebuildable cache. `ENOENT` is the only absence case. Every present current-version record SHALL have an exact supported schema: canonical SurfaceIds and unique valid Conversation IDs for bindings; valid Surface-keyed settings; valid complete Conversation identity/timestamp/environment with a canonical existing project root; and a valid assignment intent. `pending-project-assignment.json` SHALL be absent when no intent exists: JSON `null` is a present invalid value, and completing an intent SHALL delete the file. Malformed JSON, legacy/mixed schema at runtime, unknown fields, invalid IDs, invalid environment, internal state in a planned Conversation slot, a `chatId: 0` record at a ten-hex Conversation ID, or conflicting assignment authority SHALL throw before a caller writes any replacement. `chatId: 0` is valid only in an exact reserved internal record under a `__…__` ID; it SHALL never cause a current-version Conversation read to return absence or permit rebinding.
+
+#### Scenario: Corrupt authority is not reset
+
+- **WHEN** a canonical authority file is malformed or structurally invalid
+- **THEN** the read SHALL fail loudly with a bounded path-bearing signal
+- **AND** no caller SHALL substitute an empty authority value or overwrite that file
 
 ### Requirement: Topic settings atomic write
 
@@ -96,7 +106,7 @@ The system SHALL persist scheduled turn definitions outside conversation directo
 
 The system SHALL provide a JSON state-file module that is the exclusive interface for reading and writing the session JSON state files (`state.json`, `bindings.json`, `topic-settings.json`). The module SHALL expose a load function that takes a file path and a caller-supplied default, and a save function that takes a file path and a value. Memory store files (`memory.md`, `user.md`) are Markdown and are NOT consumers of this module.
 
-The load function SHALL implement the read recipe: `readFileSync` → `JSON.parse`; on `ENOENT` SHALL return the caller-supplied default; on `SyntaxError` SHALL log a warning and return the caller-supplied default; all other errors SHALL propagate (fail loud). The save function SHALL serialize the value as pretty-printed JSON with a trailing newline and write it via the existing `atomicWrite` primitive (tmp + rename). The module SHALL NOT own atomic-write itself — it wraps `src/fs.ts`'s `atomicWrite`.
+The load function SHALL implement the read recipe: `readFileSync` → `JSON.parse`; only `ENOENT` SHALL return the caller-supplied default. On `SyntaxError` it SHALL emit a bounded error with the path and rethrow; all other errors SHALL propagate (fail loud). The save function SHALL serialize the value as pretty-printed JSON with a trailing newline and write it via the existing `atomicWrite` primitive (tmp + rename). The module SHALL NOT own atomic-write itself — it wraps `src/fs.ts`'s `atomicWrite`.
 
 Each caller SHALL supply its own default value and its own result type; the module is generic over `T`. The module SHALL NOT hardcode defaults for any specific state file.
 
@@ -112,12 +122,12 @@ Each caller SHALL supply its own default value and its own result type; the modu
 - **THEN** it SHALL return the caller-supplied default
 - **AND** SHALL NOT throw
 
-#### Scenario: Load returns default on malformed JSON and logs
+#### Scenario: Load rejects malformed JSON and logs
 
 - **WHEN** `loadJsonFile(path, DEFAULT)` is called and the file contains invalid JSON
-- **THEN** it SHALL log a warning including the path and error
-- **AND** SHALL return the caller-supplied default
-- **AND** SHALL NOT throw
+- **THEN** it SHALL log a bounded error including the path and parser error
+- **AND** SHALL throw the parse error
+- **AND** SHALL NOT return the caller-supplied default
 
 #### Scenario: Load propagates non-ENOENT, non-Syntax errors
 
@@ -195,26 +205,26 @@ The system SHALL verify that the `workspace/` and `scratch/` directories are wri
 
 ### Requirement: Internal session creation for dreaming
 
-The `SessionManager` SHALL support creating internal sessions that have no Telegram binding, via a new `ensureInternal(id: string): SessionState` method. Internal sessions are used by the dreaming pipeline (session id `__goblin_dreaming__`) and are not user-facing.
+The `SessionManager` SHALL support creating internal sessions that have no Telegram binding, via `ensureInternal(id: InternalSessionId): InternalSessionState`. Internal IDs SHALL use the reserved `__…__` form, disjoint from user-visible Conversation IDs. Internal sessions are used by the dreaming pipeline (session id `__goblin_dreaming__`) and are not user-facing.
 
-`ensureInternal(id)` SHALL be idempotent: if `sessions/<id>/state.json` already exists, it SHALL load and return the existing state. Otherwise, it SHALL create the session directory + files (transcript.jsonl, events.jsonl, metrics.jsonl), write `state.json` with `{ id, createdAt: <now>, chatId: 0 }`, and return the new state. No binding entry SHALL be written to `bindings.json`.
+`ensureInternal(id)` SHALL be idempotent: if `sessions/<id>/state.json` already exists, it SHALL load and validate the exact existing reserved internal state. The record SHALL contain only `{ id, createdAt, chatId, executionEnvironment }`: `id` must be a nonempty reserved `__…__` ID, `createdAt` must be a valid timestamp, `chatId` must be exactly `0`, and `executionEnvironment` must be exactly `{ kind: "personal" }`. Routing, title, model, thinking, archive, project, unknown, and other legacy fields SHALL fail rather than being silently ignored. Otherwise, it SHALL create the session directory + files (transcript.jsonl, events.jsonl, metrics.jsonl), write that exact state shape, and return the new state. A non-internal or project-backed record at that ID SHALL fail rather than being adopted. No binding entry SHALL be written to `bindings.json`.
 
 `chatId: 0` is a sentinel value. Telegram chat IDs are never 0 (user IDs are positive, group/channel IDs are negative). The sentinel is safe and distinguishes internal sessions from Telegram-bound sessions.
 
-Internal sessions SHALL be excluded from `SessionManager.list()`. The `list()` method scans `sessions/` and already skips `archive/`; it SHALL also skip any session whose `state.chatId === 0`.
+Internal sessions SHALL be excluded from `SessionManager.list()`. `list()` resolves canonical Conversation records through current bindings only; reserved internal IDs cannot be bound and therefore cannot appear in its result.
 
 Internal sessions SHALL NOT be archived. `archive()` SHALL NOT be called on an internal session. The session persists for the lifetime of the goblin process.
 
-The `SchedulerSessionSource` seam SHALL gain `ensureInternal(id: string): SessionState` so the scheduler (and dreaming pipeline) can obtain the dreaming session without depending on the full `SessionManager`.
+The `SchedulerSessionSource` seam SHALL gain `ensureInternal(id: InternalSessionId): InternalSessionState` so the scheduler (and dreaming pipeline) can obtain the dreaming session without depending on the full `SessionManager`. `enqueueInternalTurn` SHALL accept only that validated internal state and SHALL reject a collision with a Surface-backed runtime.
 
 #### Scenario: ensureInternal creates session on first call
 
 - **GIVEN** no session directory exists for id `__goblin_dreaming__`
 - **WHEN** `ensureInternal("__goblin_dreaming__")` is called
 - **THEN** a session directory SHALL be created at `sessions/__goblin_dreaming__/`
-- **AND** `state.json` SHALL be written with `{ id: "__goblin_dreaming__", createdAt: <ISO timestamp>, chatId: 0 }`
+- **AND** `state.json` SHALL be written with `{ id: "__goblin_dreaming__", createdAt: <ISO timestamp>, chatId: 0, executionEnvironment: { kind: "personal" } }`
 - **AND** no binding entry SHALL be written to `bindings.json`
-- **AND** the `SessionState` SHALL be returned
+- **AND** the `InternalSessionState` SHALL be returned
 
 #### Scenario: ensureInternal is idempotent
 
@@ -489,7 +499,7 @@ Project assignment SHALL execute under the same process-wide lifecycle-transitio
 
 ### Requirement: Project assignment intent precedes Conversation creation
 
-For a bound Surface, first assignment SHALL synchronously invalidate and quiesce the prior runtime before durable assignment work; failure SHALL leave no pending intent or future Conversation while preserving settings/binding and never restoring the invalidated runtime object. After successful quiescence, or immediately for an unbound Surface, assignment SHALL allocate the future project Conversation ID and atomically persist a pending intent containing the SurfaceId, optional prior Conversation ID, future Conversation ID, and canonical project root before creating the future Conversation directory or writing assignment settings/bindings. Creation and startup replay SHALL use that recorded ID idempotently. While the intent exists, runtime construction and competing binding/environment mutations for its Surface MUST be fenced behind replay. A post-intent crash or write failure MUST NOT leave an untracked Conversation or cause retry to create another one.
+For a bound Surface, first assignment SHALL synchronously invalidate and quiesce the prior runtime before durable assignment work; failure SHALL leave no pending intent or future Conversation while preserving settings/binding and never restoring the invalidated runtime object. After successful quiescence, or immediately for an unbound Surface, assignment SHALL allocate the future project Conversation ID and atomically persist a pending intent containing the SurfaceId, optional prior Conversation ID, future Conversation ID, and canonical project root before creating the future Conversation directory or writing assignment settings/bindings. A pending intent exists only as that valid object; clearing it SHALL atomically remove its file rather than serializing `null`. Creation and startup replay SHALL use that recorded ID idempotently. A replay may complete only the intent-owned partial directory for that ID when `state.json` is absent and the directory contains only the empty pre-state JSONL artifacts; malformed, internal, conflicting, incompatible, or otherwise present state MUST stop replay without mutation. While the intent exists, runtime construction and competing binding/environment mutations for its Surface MUST be fenced behind replay through the lifecycle-owned runtime-authority interface. A post-intent crash or write failure MUST NOT leave an untracked Conversation or cause retry to create another one.
 
 #### Scenario: Prior runtime quiescence fails before durable assignment
 

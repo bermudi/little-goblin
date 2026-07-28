@@ -25,13 +25,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isCanonicalBindings(value: unknown): value is BindingsFile {
-  if (!isRecord(value)) return false;
-  return value.version === 1 && isRecord(value.surfaces);
+  if (!isRecord(value) || value.version !== 1 || !isRecord(value.surfaces)) return false;
+  return Object.keys(value).every((key) => key === "version" || key === "surfaces");
 }
 
 function isLegacyBindings(value: unknown): value is LegacyBindingsFile {
-  if (!isRecord(value)) return false;
-  return !("version" in value) && (
+  if (!isRecord(value) || "version" in value) return false;
+  return (
     isRecord(value.dm) ||
     isRecord(value.topics) ||
     isRecord(value.supergroups) ||
@@ -39,23 +39,37 @@ function isLegacyBindings(value: unknown): value is LegacyBindingsFile {
   );
 }
 
+function assertCanonicalBindings(value: unknown, path: string): asserts value is BindingsFile {
+  if (!isCanonicalBindings(value)) {
+    throw new Error(`invalid canonical bindings file at ${path}`);
+  }
+}
+
 /**
- * Load the canonical bindings file (state/bindings.json). Returns the default
- * empty canonical shape when the file is missing or structurally malformed.
- * A canonical-shaped file that violates a binding invariant throws rather than
- * becoming an empty map that a later write could overwrite.
- *
- * A legacy file (no `version: 1`) is treated as missing; the migration path
- * must read it via `loadLegacyBindings` and convert it before the manager
- * uses this loader.
+ * Load the canonical bindings authority. Missing state is an empty map; every
+ * present file must be current-version, structurally valid authority. Legacy
+ * state belongs to the offline migration command and is never silently
+ * replaced by runtime writes.
  */
 export function loadBindings(home: string): BindingsFile {
-  const raw = loadJsonFile<BindingsFile | LegacyBindingsFile>(pathFor(home), structuredClone(DEFAULT_BINDINGS));
-  if (isCanonicalBindings(raw)) {
-    validateBindings(raw);
-    return raw;
+  const path = pathFor(home);
+  const raw = loadJsonFile<unknown>(path, structuredClone(DEFAULT_BINDINGS));
+  if (isLegacyBindings(raw)) {
+    throw new Error(`legacy bindings file at ${path} requires offline migration`);
   }
-  return structuredClone(DEFAULT_BINDINGS);
+  assertCanonicalBindings(raw, path);
+  validateBindings(raw);
+  return raw;
+}
+
+/** Load only canonical bindings while planning the offline Surface migration. */
+export function loadCanonicalBindingsForMigration(home: string): BindingsFile {
+  const path = pathFor(home);
+  const raw = loadJsonFile<unknown>(path, structuredClone(DEFAULT_BINDINGS));
+  if (isLegacyBindings(raw)) return structuredClone(DEFAULT_BINDINGS);
+  assertCanonicalBindings(raw, path);
+  validateBindings(raw);
+  return raw;
 }
 
 /**
@@ -63,20 +77,22 @@ export function loadBindings(home: string): BindingsFile {
  * Validates the at-most-one-binding-per-Conversation rule before writing.
  */
 export function saveBindings(home: string, bindings: BindingsFile): void {
+  assertCanonicalBindings(bindings, pathFor(home));
   validateBindings(bindings);
   saveJsonFile(pathFor(home), bindings);
 }
 
 /**
- * Validate that a bindings object respects the at-most-one-binding-per-
- * Conversation rule. Throws with the conflicting SurfaceIds when violated.
+ * Validate that a bindings object respects the exact canonical schema and the
+ * at-most-one-binding-per-Conversation invariant.
  */
 export function validateBindings(bindings: BindingsFile): void {
+  assertCanonicalBindings(bindings, "bindings");
   const seen = new Map<string, SurfaceId>();
   for (const [surfaceId, conversationId] of Object.entries(bindings.surfaces)) {
     parseSurfaceId(surfaceId);
     if (!isValidConversationId(conversationId)) {
-      throw new Error(`invalid conversation id bound to ${surfaceId}: ${conversationId}`);
+      throw new Error(`invalid conversation id bound to ${surfaceId}: ${String(conversationId)}`);
     }
     const existing = seen.get(conversationId);
     if (existing !== undefined) {
@@ -118,18 +134,20 @@ export class FileBindingStore implements BindingStore {
 /**
  * Load the legacy pre-Surface bindings shape. Used only by migration.
  *
- * Returns a default empty legacy shape when the file is missing, malformed,
- * or already canonical.
+ * Returns an empty legacy shape only when the file is missing or already
+ * canonical. A malformed legacy file fails the offline migration.
  */
 export function loadLegacyBindings(home: string): LegacyBindingsFile {
-  const raw = loadJsonFile<BindingsFile | LegacyBindingsFile>(pathFor(home), structuredClone(DEFAULT_LEGACY_BINDINGS));
-  if (isLegacyBindings(raw)) {
-    return {
-      dm: raw.dm ?? {},
-      topics: raw.topics ?? {},
-      supergroups: raw.supergroups ?? {},
-      guest: raw.guest ?? {},
-    };
+  const path = pathFor(home);
+  const raw = loadJsonFile<unknown | undefined>(path, undefined);
+  if (raw === undefined || isCanonicalBindings(raw)) return structuredClone(DEFAULT_LEGACY_BINDINGS);
+  if (!isLegacyBindings(raw)) {
+    throw new Error(`invalid legacy bindings file at ${path}`);
   }
-  return structuredClone(DEFAULT_LEGACY_BINDINGS);
+  return {
+    dm: raw.dm ?? {},
+    topics: raw.topics ?? {},
+    supergroups: raw.supergroups ?? {},
+    guest: raw.guest ?? {},
+  };
 }

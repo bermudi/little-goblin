@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConversationState, loadState, saveConversationState, saveState } from "./state.ts";
@@ -51,10 +51,26 @@ describe("state", () => {
     expect(() => loadState(tmpDir, state.id)).toThrow(/invalid executionEnvironment/);
   });
 
-  it("loadState accepts a valid project environment", () => {
-    const state = makeState(projectEnvironment("/srv/project"));
+  it("loadState accepts a canonical existing project environment", () => {
+    const projectRoot = join(tmpDir, "project");
+    mkdirSync(projectRoot, { recursive: true });
+    const state = makeState(projectEnvironment(projectRoot));
     saveState(tmpDir, state);
     expect(loadState(tmpDir, state.id)).toEqual(state);
+  });
+
+  it("rejects missing and noncanonical project roots in persisted state", () => {
+    const missing = makeState({ kind: "project", projectRoot: join(tmpDir, "missing") });
+    saveState(tmpDir, missing);
+    expect(() => loadState(tmpDir, missing.id)).toThrow(/invalid executionEnvironment/);
+
+    const real = join(tmpDir, "real");
+    const alias = join(tmpDir, "alias");
+    mkdirSync(real, { recursive: true });
+    symlinkSync(real, alias);
+    const noncanonical = makeState({ kind: "project", projectRoot: alias });
+    saveState(tmpDir, noncanonical);
+    expect(() => loadState(tmpDir, noncanonical.id)).toThrow(/invalid executionEnvironment/);
   });
 
   it("saveState creates parent directories", () => {
@@ -79,11 +95,11 @@ describe("conversation state", () => {
     expect(loadConversationState(tmpDir, "0000000000")).toBeNull();
   });
 
-  it("loadConversationState drops legacy fields when loading a legacy record", () => {
+  it("rejects legacy routing fields in current-version state, including chatId: 0", () => {
     const legacy = {
       id: "abc123def0",
       createdAt: "2024-01-01T00:00:00.000Z",
-      chatId: 123,
+      chatId: 0,
       topicId: 7,
       title: "legacy",
       modelName: "poe/test",
@@ -93,13 +109,10 @@ describe("conversation state", () => {
     mkdirSync(sessionDir(tmpDir, "abc123def0"), { recursive: true });
     writeFileSync(statePath(tmpDir, "abc123def0"), JSON.stringify(legacy));
 
-    const loaded = loadConversationState(tmpDir, "abc123def0");
-    expect(loaded).toEqual({
-      id: "abc123def0",
-      createdAt: "2024-01-01T00:00:00.000Z",
-      title: "legacy",
-      executionEnvironment: personalEnvironment(),
-    });
+    // A reserved internal record can exist only under a reserved internal ID.
+    // A chatId:0 record at a ten-hex Conversation path is corrupt authority,
+    // never an absent Conversation that lifecycle code may replace.
+    expect(() => loadConversationState(tmpDir, "abc123def0")).toThrow(/unexpected state field: chatId/);
   });
 
   it("loadConversationState throws for a missing createdAt", () => {

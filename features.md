@@ -1,6 +1,6 @@
 # Little Goblin — Feature Guide
 
-Little Goblin is a Telegram-native personal AI agent. It is built for a single operator, runs as one Bun process, and lives wherever you put it — a $5 VPS, a homelab box, or a laptop. There is no web UI, no plugin SDK, and no database. Telegram is the interface; the filesystem is the state.
+Little Goblin is a Telegram-native personal AI agent. It is built for a single operator, runs as one Bun process, and lives wherever you put it — a $5 VPS, a homelab box, or a laptop. There is no web UI, no plugin SDK, and no external database. Telegram is the interface; durable state is filesystem-backed except for the local SQLite memory store.
 
 ## Quick start
 
@@ -11,24 +11,19 @@ bun run onboard        # creates $GOBLIN_HOME/goblin.json5 + workspace/SOUL.md/A
 bun run src/index.ts   # or: bun run dev
 ```
 
-Then open Telegram and send `/start` to your bot in a DM, or start typing in a forum topic where the bot is a member.
+Then open Telegram and send `/start` to inspect the current Conversation in a DM or forum topic. Send ordinary text (or `/new`) to create a Conversation on an unbound Surface.
 
-## Sessions
+## Surfaces and Conversations
 
-Everything happens inside a **session**. A session is identified by `(chat, topic)`:
+A **Surface** is one complete Telegram routing lane: a DM, forum topic, topicless supergroup, or guest lane. A Surface has at most one current **Binding**, and a Binding points to one durable **Conversation**. A Conversation is history plus an immutable execution environment; its live `AgentRunner` and queue are an ephemeral **Conversation runtime**.
 
-- **DM** — one session per private chat. Created with `/start` or automatically on first message.
-- **Forum topic** — every topic is its own isolated session. Auto-created on the first message.
-- **Supergroup without topics** — one shared session for the whole group.
-- **Plain group** — not supported. Use a supergroup with forum topics for group work.
+- Ordinary content on an unbound Surface creates a Conversation lazily.
+- `/new` rotates to fresh history without deleting the prior Conversation.
+- `/resume <id>` moves compatible history to this Surface; it never shares a live runtime across Surfaces.
+- `/archive` unbinds and archives the active Conversation.
+- Model, thinking, schedules, heartbeat, and project assignment belong to the Surface and survive Conversation rotation.
 
-Sessions persist in `$GOBLIN_HOME/state/sessions/<id>/`. Each session has:
-
-- `state.json` — session metadata, model override, thinking level, title, archived flag.
-- `events.jsonl` — append-only log of the conversation and tool events.
-- Atomic file writes (tmp + rename) everywhere.
-
-Commands that affect the session dispose the live `AgentRunner` and start fresh when needed.
+Conversations persist in `$GOBLIN_HOME/state/sessions/<id>/` with atomic JSON state and append-only transcript/event/metric logs. Bindings and Surface settings are separately persisted under `$GOBLIN_HOME/state/`.
 
 ## Commands
 
@@ -36,17 +31,17 @@ All slash commands are available in DMs and in topics where the bot is reachable
 
 | Command | Purpose |
 |---------|---------|
-| `/start` | DM: create a session if none exists, or welcome back to the existing one. Topic: tells you the topic is already its own session. |
-| `/new` | Archive the current session and start a fresh one for this chat/topic. |
-| `/archive` | Mark the active session as archived. It stops appearing in `/resume` and the runner is disposed. |
-| `/resume <id-or-name>` | Bind this chat/topic to an existing session. Useful for switching contexts without losing history. |
-| `/name <name>` | Set a human-readable title for the active session. |
-| `/project <dir>` | Bind the session to a project directory. Uploaded documents, voice, and audio are saved there; the agent uses it as cwd. Pass no argument to clear. |
-| `/model [index]` | List favorite models or switch to one. The override is stored per session. |
-| `/think [level]` | Show or set the thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). Clamped to what the current model supports. |
-| `/compact [instructions]` | Manually compact the session context. Handy before a long task. |
+| `/start` | Inspect the current Conversation. If none is bound, explains that ordinary text or `/new` will create one. |
+| `/new` | Start a fresh Conversation for this Surface; prior history stays resumable. |
+| `/archive` | Archive the active Conversation and dispose its runtime. |
+| `/resume <id-or-name>` | Move a compatible Conversation to this Surface without losing history. |
+| `/name <name>` | Set a human-readable title for the active Conversation. |
+| `/project <dir>` | Assign an unassigned Surface to one project directory and start fresh project history. It cannot be cleared or switched; use another Surface for another environment. |
+| `/model [index]` | List favorite models or switch one for this Surface. |
+| `/think [level]` | Show or set this Surface's thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). |
+| `/compact [instructions]` | Manually compact the active Conversation runtime's context. Handy before a long task. |
 | `/queue <text>` | Enqueue text to run as a fresh turn after the current one finishes. |
-| `/debug` | Dump diagnostics: session id, model, project dir, subagent count, bindings, etc. |
+| `/debug` | Dump diagnostics: Conversation ID, model, project root, subagent count, bindings, etc. |
 | `/subagents` | List tracked subagents. |
 | `/cancel_subagent <id>` | Cancel a running subagent. |
 | `/revive <id> <prompt>` | Revive a persisted subagent with a follow-up prompt. |
@@ -85,9 +80,8 @@ The agent has access to filesystem, shell, memory, subagent, and Telegram tools.
 | `edit` | Modify files. |
 | `write` | Create or overwrite files. |
 | `grep` | Search file contents. |
-| `memory_read` | Read scoped memory (`memory`, `user`, `agent`). |
-| `memory_read_index` | List available memory scopes and descriptions. |
-| `memory_write` | Curate memory: `add`, `replace`, `remove`, `rewrite`, `set_description`. |
+| `memory_search` | Hybrid search across permitted curated memory and transcripts. |
+| `memory_write` | Curate active-scope memory: `add`, `replace`, `remove`, `rewrite`, `set_description`. |
 | `spawn_subagent` | Delegate work to a subagent. |
 | `revive_subagent` | Resume a persisted subagent with a follow-up. |
 | `text_to_speech` | Convert text to speech (Edge TTS). Returns an MP3 path. |
@@ -105,18 +99,9 @@ These are injected per chat surface and can be used by the agent when it wants t
 
 ## Memory
 
-Goblin keeps curated, agent-controlled persistent memory in `$GOBLIN_HOME/state/memory/`:
+Curated memory is canonical in `$GOBLIN_HOME/state/memory/memory.sqlite`. Markdown files in that directory are export-only views, not editable storage. Active memory scope is derived from the current Surface and captured when its runtime is created, so moving a Conversation does not rewrite history or merge two Surfaces' memory context.
 
-| Target | Cap | Purpose |
-|--------|-----|---------|
-| `memory` (active scope) | 4000 chars | Notes about the current chat/topic, projects, conventions, decisions. |
-| `user` | 2000 chars | Global user preferences, communication style, recurring people/places. |
-| `agent` | 2000 chars | Named subagent persona memory. |
-| `general` | 4000 chars | Fallback memory for surfaces without a topic scope. |
-
-Memory is injected as a per-turn aside, so the frozen system prompt stays cacheable. Every successful memory write is committed to a git repo at `$GOBLIN_HOME/state/memory/.git` with subject `memory: <action> in <target>`.
-
-The agent can read memory from other scopes (`general`, another topic, a named agent) via `memory_read` with an explicit scope, and discover them via `memory_read_index`.
+A bounded frozen summary is included at runtime creation; `memory_search` supplies relevant hybrid recall from allowed curated memory and transcripts per turn. `memory_write` is the sole curation path (`add`, `replace`, `remove`, `rewrite`, `set_description`); a global character budget applies. Use `memory status` and `memory export` as the operator inspection/export commands.
 
 ## Subagents
 
@@ -133,13 +118,14 @@ The agent sees `spawn_subagent` and `revive_subagent` tools automatically.
 
 ## Project directory
 
-`/project <dir>` binds a session to a directory on the host:
+`/project <dir>` makes a one-time project assignment for an unassigned Surface:
 
-- Uploaded **documents**, **voice**, and **audio** are saved there.
-- The agent uses it as the working directory for `bash`, `read`, `edit`, `write`.
-- You can put an `AGENTS.md` in that directory for project-specific instructions; it is injected into the system prompt.
+- It starts a fresh project Conversation; prior personal history remains resumable and keeps its personal workspace authority.
+- Future Conversations on that Surface use the assigned directory as CWD. The assignment cannot be cleared or switched through `/project`.
+- Project documents, voice, and audio are saved beneath the project root. Personal-environment uploads are saved under `$GOBLIN_HOME/workspace/attachments/`.
+- A project `AGENTS.md` is supplemental runtime guidance; it does not replace Goblin's deployment identity prompt.
 
-Without a project directory, documents/voice/audio are rejected with a prompt to set one. Photos are always sent to the agent as inline images (no directory needed).
+Photos are passed to the agent as inline images.
 
 ## Files and media
 
@@ -147,9 +133,9 @@ Goblin understands several Telegram message types:
 
 - **Text** — normal chat, including commands.
 - **Photos** — downloaded and sent to the model as an image. Caption is included as text.
-- **Documents** — if a project directory is set, saved there and announced to the agent. If no project dir, the caption is used as a text prompt instead.
-- **Voice messages** — saved to the project directory if set; otherwise rejected with instructions.
-- **Audio/music files** — same as documents/voice.
+- **Documents** — saved in the current Conversation environment (project root or personal `workspace/attachments/`) and announced with the actual relative path.
+- **Voice messages** — transcribed when ASR is configured and saved in the current Conversation environment.
+- **Audio/music files** — saved in the current Conversation environment.
 - **Forum topic creation/edits** — topic names are persisted as memory scope descriptions.
 
 Telegram Bot API limits file downloads to **20 MB**. Anything larger is dropped with a warning.
@@ -211,7 +197,7 @@ You can also put `AGENTS.md` in a project directory for project-specific rules.
 - **Allowlist only.** Only Telegram user IDs in `allowedUsers` can talk to the bot in DMs or invoke commands without an @mention.
 - **Groups.** In groups, anyone can @mention the bot or reply to its messages; only allowed users can send slash commands or plain text.
 - **Small-group exception.** In groups with 2 or fewer members, allowed users can send plain text without @mentioning.
-- **No database, no webhooks.** Long-polling only. No inbound ports.
+- **No external database, no webhooks.** Long-polling only. No inbound ports; memory uses local SQLite under `$GOBLIN_HOME/state/`.
 - **No secrets in source.** API keys and the bot token live in `goblin.json5` (or the env/command it resolves).
 
 ## Commands and concepts at a glance
@@ -229,7 +215,7 @@ You can also put `AGENTS.md` in a project directory for project-specific rules.
 ## Quick test checklist
 
 1. **Basic connectivity:** `/ping`
-2. **Session creation:** `/start` in a DM, or type in a forum topic
+2. **Conversation creation:** send ordinary text or `/new` on an unbound Surface
 3. **Conversation:** Send ordinary text; the agent should reply with a status line
 4. **Memory:** Ask goblin to "remember that I prefer concise responses"
 5. **Subagent:** Ask goblin to "spawn a subagent to list the files in /home"

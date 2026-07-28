@@ -1,15 +1,23 @@
 import { readFileSync } from "node:fs";
 import type { ConversationState, ConversationId, SessionState } from "./types.ts";
 import type { ExecutionEnvironment } from "./environment.ts";
+import { isCanonicalProjectRoot } from "./environment.ts";
 import { validateConversationId } from "./conversation.ts";
 import { statePath } from "./paths.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 export function isValidExecutionEnvironment(value: unknown): value is ExecutionEnvironment {
-  if (value === null || typeof value !== "object") return false;
-  const env = value as Record<string, unknown>;
-  if (env.kind === "personal") return true;
-  if (env.kind === "project") return typeof env.projectRoot === "string" && env.projectRoot.length > 0;
+  if (!isRecord(value)) return false;
+  if (value.kind === "personal") {
+    return Object.keys(value).length === 1;
+  }
+  if (value.kind === "project") {
+    return Object.keys(value).length === 2 && isCanonicalProjectRoot(value.projectRoot);
+  }
   return false;
 }
 
@@ -33,51 +41,60 @@ function validateTitle(value: unknown): string | undefined {
 }
 
 function validateConversationState(id: ConversationId, raw: unknown): ConversationState {
-  if (raw === null || typeof raw !== "object") {
+  if (!isRecord(raw)) {
     throw new Error(`conversation ${id} state is not an object`);
   }
-  const state = raw as Record<string, unknown>;
-  if (!isValidExecutionEnvironment(state.executionEnvironment)) {
+  const validKeys = new Set(["id", "createdAt", "title", "executionEnvironment"]);
+  for (const key of Object.keys(raw)) {
+    if (!validKeys.has(key)) {
+      throw new Error(`conversation ${id} has unexpected state field: ${key}`);
+    }
+  }
+  if (typeof raw.id !== "string" || raw.id !== id) {
+    throw new Error(`conversation ${id} state file id mismatch: ${String(raw.id)}`);
+  }
+  if (!isValidExecutionEnvironment(raw.executionEnvironment)) {
     throw new Error(`conversation ${id} has missing or invalid executionEnvironment`);
   }
-  const createdAt = validateCreatedAt(state.createdAt);
-  const title = validateTitle(state.title);
-  if (state.id !== undefined && (typeof state.id !== "string" || state.id !== id)) {
-    throw new Error(`conversation ${id} state file id mismatch: ${String(state.id)}`);
-  }
+  const createdAt = validateCreatedAt(raw.createdAt);
+  const title = validateTitle(raw.title);
   return {
     id,
     createdAt,
     title,
-    executionEnvironment: state.executionEnvironment,
+    executionEnvironment: raw.executionEnvironment,
   };
 }
 
-function validateState(state: SessionState | null): SessionState | null {
-  if (state === null) return null;
-  if (!isValidExecutionEnvironment(state.executionEnvironment)) {
-    throw new Error(`session ${state.id} has missing or invalid executionEnvironment`);
+function validateState(state: unknown, id: string): SessionState | null {
+  if (state === undefined) return null;
+  if (!isRecord(state)) {
+    throw new Error(`session ${id} state is not an object`);
   }
-  return state;
+  if (state.id !== id) {
+    throw new Error(`session ${id} state file id mismatch: ${String(state.id)}`);
+  }
+  if (!isValidExecutionEnvironment(state.executionEnvironment)) {
+    throw new Error(`session ${id} has missing or invalid executionEnvironment`);
+  }
+  return state as unknown as SessionState;
 }
 
 /**
  * Load canonical conversation state from disk, dropping migration-only legacy
  * fields (chatId, topicId, modelName, thinkingLevel, projectDir) from the
  * returned object.
- * Returns null if the conversation doesn't exist or is an internal session.
- * Throws if state exists but lacks a valid executionEnvironment.
+ * Returns null only when the canonical Conversation state file is absent.
+ * Throws when a present record is malformed, legacy, or otherwise invalid.
  */
 export function loadConversationState(home: string, id: string): ConversationState | null {
   validateConversationId(id);
-  const raw = loadJsonFile<SessionState | null>(statePath(home, id), null);
-  if (raw === null) return null;
-  const state = validateConversationState(id as ConversationId, raw);
-  // Internal sessions (e.g. dreaming) are never bound to a Surface.
-  if (raw.chatId === 0) return null;
-  // The directory name is the source of truth for the conversation identity.
-  // The JSON id field is only validated, never used as a path component.
-  return state;
+  const raw = loadJsonFile<unknown | undefined>(statePath(home, id), undefined);
+  if (raw === undefined) return null;
+  // `id` is already a canonical ten-hex Conversation ID here. Internal
+  // compatibility records use reserved `__…__` IDs; a chatId:0 record at a
+  // Conversation path is corrupt authority, never a missing Conversation.
+  return validateConversationState(id as ConversationId, raw);
 }
 
 /**
@@ -99,13 +116,8 @@ export function saveConversationState(home: string, state: ConversationState): v
  * legacy compatibility shape.
  */
 export function loadState(home: string, id: string): SessionState | null {
-  const state = loadJsonFile<SessionState | null>(statePath(home, id), null);
-  const validated = validateState(state);
-  if (validated === null) return null;
-  if (validated.id !== id) {
-    throw new Error(`session ${id} state file id mismatch: ${String(validated.id)}`);
-  }
-  return validated;
+  const state = loadJsonFile<unknown | undefined>(statePath(home, id), undefined);
+  return validateState(state, id);
 }
 
 /**

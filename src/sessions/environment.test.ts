@@ -6,6 +6,7 @@ import {
   environmentCwd,
   environmentFromProjectRoot,
   environmentsEqual,
+  isCanonicalProjectRoot,
   isProjectEnvironment,
   personalEnvironment,
   projectEnvironment,
@@ -88,6 +89,19 @@ describe("environment", () => {
       } finally {
         chmodSync(dir, 0o755);
       }
+    });
+  });
+
+  describe("canonical project-root authority", () => {
+    it("requires an existing realpath spelling", () => {
+      const real = join(tmpDir, "real");
+      const alias = join(tmpDir, "alias");
+      mkdirSync(real, { recursive: true });
+      symlinkSync(real, alias);
+
+      expect(isCanonicalProjectRoot(real)).toBe(true);
+      expect(isCanonicalProjectRoot(alias)).toBe(false);
+      expect(isCanonicalProjectRoot(join(tmpDir, "missing"))).toBe(false);
     });
   });
 

@@ -6,18 +6,19 @@ import { ConversationStore } from "../sessions/conversation-store.ts";
 import type { BindingStore } from "../sessions/bindings.ts";
 import { FileBindingStore } from "../sessions/bindings.ts";
 import { getProjectRoot, bindProjectRoot, getModelName, getThinkingLevelValidated, setModelName, setThinkingLevel } from "../sessions/topic-settings.ts";
-import { environmentFromProjectRoot, environmentsEqual, projectEnvironment, projectRootOf } from "../sessions/environment.ts";
+import { assertCanonicalProjectRoot, environmentFromProjectRoot, environmentsEqual, projectEnvironment, projectRootOf } from "../sessions/environment.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import type { BindingsFile } from "../sessions/types.ts";
 import { isValidConversationId } from "../sessions/conversation.ts";
 import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
 import { log } from "../log.ts";
 import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
-import type { AttachmentSignal, AttachedWork, CurrentBindingGuard } from "./dispatcher.ts";
+import type { AttachmentSignal, AttachedWork, SurfaceRuntimeAuthority } from "./dispatcher.ts";
 import { withLifecycleTransitionLock } from "./lifecycle-transition-lock.ts";
 import type { ProjectAssignmentIntent } from "../sessions/project-assignment.ts";
 import {
   createOrVerifyProjectSession,
+  loadPendingProjectAssignment,
   reconcilePendingProjectAssignment,
   savePendingProjectAssignment,
   clearPendingProjectAssignment,
@@ -41,9 +42,14 @@ export interface SurfaceSettings {
  * Public seam for callers (intake, commands, scheduler). Every method that
  * changes a binding runs under the lifecycle transition lock internally.
  */
-export interface ConversationLifecycle extends CurrentBindingGuard {
+export interface ConversationLifecycle extends SurfaceRuntimeAuthority {
   /** Surface-scoped settings (project, model, thinking). Exposed so commands can read/write Surface preferences. */
   readonly settings: SurfaceSettings;
+  /**
+   * Non-mutating status lookup. Runtime acquisition MUST use
+   * `assertCurrentBinding`, which reconciles a pending assignment under the
+   * lifecycle transition lock before returning authority.
+   */
   inspect(surface: Surface): ConversationState | null;
   resolveOrStart(surface: Surface): Promise<ConversationState>;
   rotate(surface: Surface): Promise<ConversationState>;
@@ -257,6 +263,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
 
   async assignProject(surface: Surface, requestedRoot: string): Promise<ProjectAssignmentResult> {
     return withLifecycleTransitionLock(async () => {
+      assertCanonicalProjectRoot(requestedRoot, "requested projectRoot");
       const key = surfaceId(surface);
       await this.reconcilePendingAssignment(key);
 
@@ -343,6 +350,32 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     return this.store.list(env);
   }
 
+  async assertCurrentBinding(surface: Surface, conversationId: string): Promise<void> {
+    await withLifecycleTransitionLock(async () => {
+      const key = surfaceId(surface);
+      await this.reconcilePendingAssignment(key);
+      this.assertCurrentBindingLocked(surface, conversationId);
+    });
+  }
+
+  isCurrentBinding(surface: Surface, conversationId: string): boolean {
+    try {
+      // A pending assignment is an unresolved authority transition. The
+      // synchronous stale-runner guard must fail closed; only the async
+      // acquisition path may reconcile it under the lifecycle lock.
+      if (loadPendingProjectAssignment(this.home) !== null) return false;
+      const current = this.inspect(surface);
+      return current?.id === conversationId;
+    } catch (error) {
+      log.error("current binding authority check failed", {
+        surfaceId: surfaceId(surface),
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
   async withCurrentBinding<T>(
     surface: Surface,
     conversationId: string,
@@ -350,13 +383,8 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   ): Promise<AttachedWork<T>> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
-      const bindings = this.bindings.load();
-      const currentId = bindings.surfaces[key];
-      if (currentId !== conversationId) {
-        throw new Error(
-          `binding rotated: surface ${key} is bound to ${currentId ?? "unbound"}, expected ${conversationId}`,
-        );
-      }
+      await this.reconcilePendingAssignment(key);
+      this.assertCurrentBindingLocked(surface, conversationId);
       const signal = createAttachmentSignal();
       const work = fn(signal);
       work.catch((err) => {
@@ -365,6 +393,16 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       await signal.promise;
       return work;
     });
+  }
+
+  private assertCurrentBindingLocked(surface: Surface, conversationId: string): void {
+    const key = surfaceId(surface);
+    const current = this.inspect(surface);
+    if (current?.id !== conversationId) {
+      throw new Error(
+        `binding rotated: surface ${key} is bound to ${current?.id ?? "unbound"}, expected ${conversationId}`,
+      );
+    }
   }
 
   private findBoundSurface(bindings: BindingsFile, conversationId: string): SurfaceId | undefined {

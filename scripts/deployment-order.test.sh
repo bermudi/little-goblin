@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# Exercises update/install ordering with fake binaries and an isolated temp tree.
+# It never invokes a real service, user, repository, or GOBLIN_HOME.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "${tmp}"' EXIT
+fake_bin="${tmp}/bin"
+order="${tmp}/order.log"
+mkdir -p "${fake_bin}"
+: >"${order}"
+
+write_fake() {
+  local name="$1"
+  shift
+  cat >"${fake_bin}/${name}"
+  chmod +x "${fake_bin}/${name}"
+}
+
+write_fake id <<'EOF'
+#!/usr/bin/env bash
+echo 0
+EOF
+write_fake uname <<'EOF'
+#!/usr/bin/env bash
+echo Linux
+EOF
+write_fake awk <<'EOF'
+#!/usr/bin/env bash
+echo 1048576
+EOF
+write_fake git <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+write_fake bun <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+write_fake curl <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+write_fake useradd <<'EOF'
+#!/usr/bin/env bash
+printf 'useradd %s\n' "$*" >>"${FAKE_ORDER}"
+EOF
+write_fake chown <<'EOF'
+#!/usr/bin/env bash
+printf 'chown %s\n' "$*" >>"${FAKE_ORDER}"
+EOF
+write_fake ln <<'EOF'
+#!/usr/bin/env bash
+printf 'ln %s\n' "$*" >>"${FAKE_ORDER}"
+EOF
+write_fake systemctl <<'EOF'
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >>"${FAKE_ORDER}"
+if [[ "$1" == "is-active" ]]; then
+  exit 0
+fi
+EOF
+write_fake su <<'EOF'
+#!/usr/bin/env bash
+cmd="${!#}"
+printf 'su %s\n' "${cmd}" >>"${FAKE_ORDER}"
+case "${cmd}" in
+  *"status --porcelain"*) exit 0 ;;
+  *"rev-parse --git-dir"*) printf '.git\n'; exit 0 ;;
+  *"rev-parse HEAD"*)
+    count_file="${FAKE_ROOT}/head-count"
+    count=0
+    [[ -f "${count_file}" ]] && count="$(cat "${count_file}")"
+    if [[ "${FAKE_HEAD_CHANGES:-0}" == "1" && "${count}" -gt 0 ]]; then
+      printf 'new-head\n'
+    else
+      printf 'old-head\n'
+    fi
+    printf '%s' "$((count + 1))" >"${count_file}"
+    exit 0
+    ;;
+  *"bun run validate-config"*)
+    if [[ "${FAKE_VALIDATE_FAIL:-0}" == "1" ]]; then
+      exit 1
+    fi
+    exit 0
+    ;;
+  *"bun run migrate"*)
+    if [[ "${FAKE_MIGRATE_FAIL:-0}" == "1" ]]; then
+      exit 1
+    fi
+    exit 0
+    ;;
+esac
+EOF
+
+line_number() {
+  local pattern="$1"
+  local line
+  line="$(grep -n -m1 -- "${pattern}" "${order}" | cut -d: -f1)"
+  if [[ -z "${line}" ]]; then
+    echo "missing order event: ${pattern}" >&2
+    cat "${order}" >&2
+    exit 1
+  fi
+  printf '%s' "${line}"
+}
+
+assert_before() {
+  local first="$1"
+  local second="$2"
+  if (( $(line_number "${first}") >= $(line_number "${second}") )); then
+    echo "expected '${first}' before '${second}'" >&2
+    cat "${order}" >&2
+    exit 1
+  fi
+}
+
+assert_absent() {
+  local pattern="$1"
+  if grep -q -- "${pattern}" "${order}"; then
+    echo "unexpected order event: ${pattern}" >&2
+    cat "${order}" >&2
+    exit 1
+  fi
+}
+
+run_with_fakes() {
+  local repo="$1"
+  local home="$2"
+  shift 2
+  PATH="${fake_bin}:${PATH}" \
+    FAKE_ORDER="${order}" \
+    FAKE_ROOT="${tmp}" \
+    GOBLIN_DEPLOY_REPO_DIR="${repo}" \
+    GOBLIN_DEPLOY_HOME="${home}" \
+    GOBLIN_DEPLOY_USER="goblin-test" \
+    GOBLIN_DEPLOY_GROUP="goblin-test" \
+    "$@"
+}
+
+make_existing_repo() {
+  local root="$1"
+  mkdir -p "${root}/.git" "${root}/scripts"
+  cat >"${root}/scripts/install-service.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'install-service\n' >>"${FAKE_ORDER}"
+EOF
+  chmod +x "${root}/scripts/install-service.sh"
+}
+
+# update success: validate happens before stop; stop happens before migration;
+# migration success is required before start.
+update_repo="${tmp}/update-repo"
+update_home="${tmp}/update-home"
+make_existing_repo "${update_repo}"
+mkdir -p "${update_home}"
+: >"${order}"
+run_with_fakes "${update_repo}" "${update_home}" bash "${repo_root}/scripts/update.sh"
+assert_before 'bun run validate-config' 'systemctl stop goblin'
+assert_before 'systemctl stop goblin' 'bun run migrate'
+assert_before 'bun run migrate' 'systemctl start goblin'
+
+# update config failure: validation happens while the prior service is intact.
+: >"${order}"
+if FAKE_VALIDATE_FAIL=1 run_with_fakes "${update_repo}" "${update_home}" bash "${repo_root}/scripts/update.sh"; then
+  echo "update.sh unexpectedly succeeded after fake config validation failure" >&2
+  exit 1
+fi
+assert_absent 'systemctl stop goblin'
+assert_absent 'bun run migrate'
+
+# update migration failure: migration has already stopped the service and no restart runs.
+: >"${order}"
+if FAKE_MIGRATE_FAIL=1 run_with_fakes "${update_repo}" "${update_home}" bash "${repo_root}/scripts/update.sh"; then
+  echo "update.sh unexpectedly succeeded after fake migration failure" >&2
+  exit 1
+fi
+assert_before 'systemctl stop goblin' 'bun run migrate'
+assert_absent 'systemctl start goblin'
+
+# install/update success: an active existing service stops before migration and
+# starts only after migration and service-unit installation succeed.
+install_repo="${tmp}/install-repo"
+install_home="${tmp}/install-home"
+make_existing_repo "${install_repo}"
+mkdir -p "${install_home}"
+touch "${install_home}/goblin.json5"
+: >"${order}"
+FAKE_HEAD_CHANGES=1 run_with_fakes "${install_repo}" "${install_home}" bash "${repo_root}/scripts/install.sh" https://example.invalid/goblin.git
+assert_before 'systemctl stop goblin' 'bun run migrate'
+assert_before 'bun run migrate' 'install-service'
+assert_before 'install-service' 'systemctl start goblin'
+
+# existing-install config failure: validation happens before service stop.
+: >"${order}"
+if FAKE_HEAD_CHANGES=1 FAKE_VALIDATE_FAIL=1 run_with_fakes "${install_repo}" "${install_home}" bash "${repo_root}/scripts/install.sh" https://example.invalid/goblin.git; then
+  echo "install.sh unexpectedly succeeded after fake config validation failure" >&2
+  exit 1
+fi
+assert_absent 'systemctl stop goblin'
+assert_absent 'bun run migrate'
+assert_absent 'install-service'
+assert_absent 'systemctl start goblin'
+
+# install/update migration failure: no unit install or restart is attempted.
+: >"${order}"
+if FAKE_HEAD_CHANGES=1 FAKE_MIGRATE_FAIL=1 run_with_fakes "${install_repo}" "${install_home}" bash "${repo_root}/scripts/install.sh" https://example.invalid/goblin.git; then
+  echo "install.sh unexpectedly succeeded after fake migration failure" >&2
+  exit 1
+fi
+assert_before 'systemctl stop goblin' 'bun run migrate'
+assert_absent 'install-service'
+assert_absent 'systemctl start goblin'
+
+echo "deployment ordering checks passed"

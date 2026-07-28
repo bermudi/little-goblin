@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../log.ts";
 import { environmentsEqual, type ExecutionEnvironment } from "./environment.ts";
 import type { ConversationId, ConversationState } from "./types.ts";
 import { isValidConversationId, makeConversationId, validateConversationId } from "./conversation.ts";
 import { loadConversationState, saveConversationState } from "./state.ts";
-import { metricsPath, sessionDir, sessionsDir, transcriptPath } from "./paths.ts";
+import { metricsPath, sessionDir, sessionsDir, statePath, transcriptPath } from "./paths.ts";
 
 /**
  * Initialize the on-disk artifacts for a new conversation in the legacy
@@ -64,17 +64,38 @@ export class ConversationStore {
   }
 
   /**
-   * Create a conversation with an explicitly supplied id. The caller must own
-   * id allocation and uniqueness (e.g. project-assignment uses a planned id
-   * for crash recovery). Throws if the id is already in use.
+   * Create a conversation with an explicitly supplied fresh id. The directory
+   * must not already exist: only the project-assignment recovery path may
+   * complete a partial planned directory.
    */
   createWithId(env: ExecutionEnvironment, id: ConversationId, title?: string): ConversationState {
     validateConversationId(id);
-    if (this.load(id) !== null || existsSync(join(sessionsDir(this.home), "archive", id))) {
+    if (existsSync(sessionDir(this.home, id)) || existsSync(join(sessionsDir(this.home), "archive", id))) {
       throw new Error(`conversation ${id} already exists`);
     }
-    ensureConversationFiles(this.home, id);
+    return this.writeNewConversation(env, id, title);
+  }
 
+  /**
+   * Complete the directory for an ID recorded in a pending project-assignment
+   * intent. A present state.json is never absence: callers must first load and
+   * verify it. The only recoverable partial directory contains zero or more of
+   * the empty JSONL files written before state.json, with no other artifacts.
+   */
+  createPlannedWithId(env: ExecutionEnvironment, id: ConversationId, title?: string): ConversationState {
+    validateConversationId(id);
+    if (existsSync(join(sessionsDir(this.home), "archive", id))) {
+      throw new Error(`planned conversation ${id} is already archived`);
+    }
+    if (existsSync(statePath(this.home, id))) {
+      throw new Error(`planned conversation ${id} already has state.json`);
+    }
+    this.assertRecoverablePlannedDirectory(id);
+    return this.writeNewConversation(env, id, title);
+  }
+
+  private writeNewConversation(env: ExecutionEnvironment, id: ConversationId, title?: string): ConversationState {
+    ensureConversationFiles(this.home, id);
     const state: ConversationState = {
       id,
       createdAt: new Date().toISOString(),
@@ -86,6 +107,25 @@ export class ConversationStore {
     return state;
   }
 
+  private assertRecoverablePlannedDirectory(id: ConversationId): void {
+    const dir = sessionDir(this.home, id);
+    if (!existsSync(dir)) return;
+    if (!lstatSync(dir).isDirectory()) {
+      throw new Error(`planned conversation ${id} path is not a directory`);
+    }
+    const allowed = new Set(["transcript.jsonl", "metrics.jsonl", "events.jsonl"]);
+    for (const entry of readdirSync(dir)) {
+      if (!allowed.has(entry)) {
+        throw new Error(`planned conversation ${id} has unexpected partial artifact: ${entry}`);
+      }
+      const path = join(dir, entry);
+      const stat = lstatSync(path);
+      if (!stat.isFile() || stat.size !== 0) {
+        throw new Error(`planned conversation ${id} partial artifact is invalid: ${entry}`);
+      }
+    }
+  }
+
   /**
    * Load a canonical conversation. Returns null if missing; throws if the
    * record exists but lacks a valid execution environment.
@@ -95,8 +135,9 @@ export class ConversationStore {
   }
 
   /**
-   * List non-archived, non-internal conversations, optionally filtered to a
-   * compatible execution environment. Sorted by creation time ascending.
+   * List non-archived canonical Conversations, optionally filtered to a
+   * compatible execution environment. Reserved internal IDs are not valid
+   * Conversation directory names and are ignored by the ID scan.
    */
   list(envFilter?: ExecutionEnvironment): ConversationState[] {
     const dir = sessionsDir(this.home);

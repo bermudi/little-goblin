@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { surfaceHeartbeatPath, sessionDir, transcriptPath } from "../sessions/paths.ts";
 import { readTranscriptEntries } from "../sessions/transcript.ts";
 import { piAgentDir } from "../pi-host.ts";
@@ -323,6 +324,7 @@ async function makeRunner(
   executionEnvironment?: ExecutionEnvironment,
   thinkingLevel?: string,
   dreamingPipeline?: DreamingPipeline,
+  isCurrent: () => boolean = () => true,
 ) {
   const store = new MemoryStore(home);
   const memoryContext = await captureRuntimeMemoryContext({
@@ -337,6 +339,7 @@ async function makeRunner(
     sessionId: "abcdef1234",
     surface,
     memoryContext,
+    isCurrent,
     customTools: customTools as never,
     getTopicName,
     executionEnvironment: executionEnvironment ?? personalEnvironment(),
@@ -433,6 +436,92 @@ describe("AgentRunner", () => {
 
       const openCall = sessionManagerCalls.find((c) => c.method === "open")!;
       expect(openCall.args[2]).toBe(projectRoot);
+    });
+  });
+
+  describe("Surface runtime authority", () => {
+    it("rejects a stale prompt before model initialization", async () => {
+      let current = false;
+      const runner = await makeRunner(
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, () => current,
+      );
+
+      await expect(runner.prompt("hello", nopCallbacks())).rejects.toThrow(/no longer current/);
+      expect(capturedCreateArgs).toHaveLength(0);
+      expect(sessionHolder.sendUserMessage).not.toHaveBeenCalled();
+    });
+
+    it("drops stale backend events before transcript, metrics, callbacks, or tool notices", async () => {
+      let current = true;
+      const runner = await makeRunner(
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, () => current,
+      );
+      const callbacks = nopCallbacks();
+      await runner.prompt("hello", callbacks);
+      current = false;
+
+      sessionHolder.emit({ type: "agent_start" });
+      sessionHolder.emit({ type: "tool_execution_start", toolName: "write", args: { path: "SOUL.md", content: "x" } });
+      sessionHolder.emit({ type: "tool_execution_end", toolName: "write", isError: false });
+      sessionHolder.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "stale" } });
+      sessionHolder.emit({ type: "agent_end" });
+
+      expect(callbacks.onStatusUpdate).not.toHaveBeenCalled();
+      expect(callbacks.onToolStart).not.toHaveBeenCalled();
+      expect(callbacks.onTextDelta).not.toHaveBeenCalled();
+      expect(callbacks.onAgentEnd).not.toHaveBeenCalled();
+      expect(callbacks.sendNotice).not.toHaveBeenCalled();
+      expect(readTranscriptEntries(tmpDir, "abcdef1234")).toEqual([]);
+    });
+
+    it("fences custom tool execution before it can start after binding rotation", async () => {
+      let current = true;
+      const sideEffect = mock(async () => ({ content: [{ type: "text" as const, text: "done" }] }));
+      const runner = await makeRunner(
+        tmpDir,
+        [{ name: "mutating_tool", execute: sideEffect }],
+        dmSurface(123),
+        undefined,
+        undefined,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        () => current,
+      );
+      await runner.prompt("hello", nopCallbacks());
+      const tools = (capturedCreateArgs[0] as { customTools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> }).customTools;
+      const tool = tools.find((candidate) => candidate.name === "mutating_tool")!;
+      current = false;
+
+      await expect(tool.execute("call-1", {}, undefined, undefined, {})).rejects.toThrow(/no longer current/);
+      expect(sideEffect).not.toHaveBeenCalled();
+    });
+
+    it("fences follow-ups and compaction after binding rotation", async () => {
+      let current = true;
+      const runner = await makeRunner(
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, () => current,
+      );
+      await runner.prompt("hello", nopCallbacks());
+      current = false;
+      sessionHolder.streaming = true;
+
+      await expect(runner.followUp("stale steer")).rejects.toThrow(/no longer current/);
+      await expect(runner.compact()).rejects.toThrow(/no longer current/);
+      expect(sessionHolder.followUp).not.toHaveBeenCalled();
+      expect(sessionHolder.compact).not.toHaveBeenCalled();
+    });
+
+    it("fails the prompt after a model await loses authority", async () => {
+      let current = true;
+      sessionHolder.sendUserMessage = mock(async () => { current = false; });
+      const runner = await makeRunner(
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, () => current,
+      );
+
+      await expect(runner.prompt("hello", nopCallbacks())).rejects.toThrow(/no longer current/);
+      expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("hello");
     });
   });
 
@@ -1133,7 +1222,7 @@ describe("AgentRunner", () => {
       expect(cb.onToolEnd).toHaveBeenCalledWith("bash", false);
     });
 
-    it("posts a bounded sendNotice when a write tool modifies a reserved prompt file", async () => {
+    it("posts a bounded sendNotice when a write tool modifies a reserved prompt file by relative path", async () => {
       const cb = nopCallbacks();
       const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
@@ -1158,7 +1247,7 @@ describe("AgentRunner", () => {
       expect(notice).toContain("wrote 2 lines (21 chars)");
     });
 
-    it("posts a sendNotice for an edit tool on a reserved prompt file", async () => {
+    it("posts a sendNotice for an edit tool on a reserved prompt file by relative path", async () => {
       const cb = nopCallbacks();
       const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", cb);
@@ -1172,6 +1261,58 @@ describe("AgentRunner", () => {
       sessionHolder.emit({
         type: "tool_execution_end",
         toolCallId: "tc-edit",
+        toolName: "edit",
+        result: { ok: true },
+        isError: false,
+      });
+
+      expect(cb.sendNotice).toHaveBeenCalledTimes(1);
+      const notice = (cb.sendNotice as unknown as { mock: { calls: [string[]] } }).mock.calls[0]![0];
+      expect(notice).toContain("AGENTS.md");
+      expect(notice).toContain("1 edit");
+    });
+
+    it("recognizes pi's leading @ path form for a reserved prompt-file write", async () => {
+      const cb = nopCallbacks();
+      const runner = await makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      sessionHolder.emit({
+        type: "tool_execution_start",
+        toolCallId: "tc-at-path",
+        toolName: "write",
+        args: { path: "@SOUL.md", content: "at-prefixed identity" },
+      });
+      sessionHolder.emit({
+        type: "tool_execution_end",
+        toolCallId: "tc-at-path",
+        toolName: "write",
+        result: { ok: true },
+        isError: false,
+      });
+
+      expect(cb.sendNotice).toHaveBeenCalledTimes(1);
+      const notice = (cb.sendNotice as unknown as { mock: { calls: [string[]] } }).mock.calls[0]![0];
+      expect(notice).toContain("SOUL.md");
+    });
+
+    it("recognizes pi's file:// path form for a reserved prompt-file edit", async () => {
+      const cb = nopCallbacks();
+      const runner = await makeRunner(tmpDir);
+      await runner.prompt("hi", cb);
+
+      sessionHolder.emit({
+        type: "tool_execution_start",
+        toolCallId: "tc-file-url",
+        toolName: "edit",
+        args: {
+          path: pathToFileURL(agentsMdPath(tmpDir)).href,
+          edits: [{ oldText: "x", newText: "y" }],
+        },
+      });
+      sessionHolder.emit({
+        type: "tool_execution_end",
+        toolCallId: "tc-file-url",
         toolName: "edit",
         result: { ok: true },
         isError: false,
@@ -1227,7 +1368,7 @@ describe("AgentRunner", () => {
       expect(cb.sendNotice).not.toHaveBeenCalled();
     });
 
-    it("posts a sendNotice for a surface-scoped HEARTBEAT.md write", async () => {
+    it("posts a sendNotice for an absolute surface-scoped HEARTBEAT.md write", async () => {
       const cb = nopCallbacks();
       const surface = dmSurface(123);
       const runner = await makeRunner(tmpDir, [], surface);
@@ -1686,6 +1827,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         memoryContext,
+        isCurrent: () => true,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         subagentRunner: subRunner,
@@ -1727,6 +1869,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         memoryContext,
+        isCurrent: () => true,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         subagentRunner: subRunner,
@@ -1766,6 +1909,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         memoryContext,
+        isCurrent: () => true,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         scheduleStore,
@@ -1899,6 +2043,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         memoryContext,
+        isCurrent: () => true,
         customTools: [],
         executionEnvironment: projectEnvironment(tmpDir),
         externalAgentRunner,
@@ -1930,6 +2075,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         memoryContext,
+        isCurrent: () => true,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         externalAgentRunner,
@@ -1960,6 +2106,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         memoryContext,
+        isCurrent: () => true,
         customTools: [],
         executionEnvironment: projectEnvironment(tmpDir),
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -2000,6 +2147,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         memoryContext,
+        isCurrent: () => true,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),
@@ -2030,6 +2178,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         memoryContext,
+        isCurrent: () => true,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):"),
@@ -2063,6 +2212,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         memoryContext,
+        isCurrent: () => true,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         backendFactory: (opts) => new FakeAgentBackend(opts),
@@ -2083,6 +2233,7 @@ describe("AgentRunner", () => {
         sessionId: "abcdef1234",
         surface: dmSurface(123),
         memoryContext,
+        isCurrent: () => true,
         customTools: [],
         executionEnvironment: personalEnvironment(),
         mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),

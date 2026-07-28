@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { migrateSurfaceState, planSurfaceMigration, applySurfaceMigration } from "./surface-migration.ts";
 import { configPath, schedulesPath, topicSettingsPath } from "./paths.ts";
 import { loadBindings } from "./bindings.ts";
-import { loadTopicSettings } from "./topic-settings.ts";
+import { loadTopicSettings, loadTopicSettingsForEnvironmentMigration } from "./topic-settings.ts";
 import { dmSurface, guestSurface, supergroupSurface, topicSurface, surfaceId } from "../surface.ts";
 
 const CHAT_ID = 123456;
@@ -124,7 +124,7 @@ describe("migrateSurfaceState", () => {
     migrateSurfaceState(tmpDir);
 
     const bindings = loadBindings(tmpDir);
-    const settings = loadTopicSettings(tmpDir);
+    const settings = loadTopicSettingsForEnvironmentMigration(tmpDir);
     const key = surfaceId(topicSurface("supergroup", CHAT_ID, TOPIC_ID));
     expect(bindings.surfaces[key]).toBe(SESSION_ID);
     expect(settings.surfaces[key]?.projectDir).toBe("/home/daniel/project");
@@ -179,7 +179,7 @@ describe("migrateSurfaceState", () => {
     migrateSurfaceState(tmpDir);
 
     expect(loadBindings(tmpDir)).toEqual(canonicalBindings);
-    const settings = loadTopicSettings(tmpDir);
+    const settings = loadTopicSettingsForEnvironmentMigration(tmpDir);
     expect(settings.surfaces[surfaceId(dmSurface(CHAT_ID))]?.projectDir).toBe("/home/daniel/project");
   });
 

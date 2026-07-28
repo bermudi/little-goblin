@@ -19,10 +19,12 @@ for cmd in git curl systemctl; do
 done
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_dir="/opt/little-goblin"
-goblin_home="/var/lib/goblin"
-user="goblin"
-group="goblin"
+# Defaults are production paths. The explicit deployment overrides keep the
+# ordering contract testable in an isolated temporary tree.
+repo_dir="${GOBLIN_DEPLOY_REPO_DIR:-/opt/little-goblin}"
+goblin_home="${GOBLIN_DEPLOY_HOME:-/var/lib/goblin}"
+user="${GOBLIN_DEPLOY_USER:-goblin}"
+group="${GOBLIN_DEPLOY_GROUP:-goblin}"
 
 repo_url="${1:-}"
 if [[ -z "${repo_url}" ]]; then

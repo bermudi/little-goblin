@@ -12,7 +12,7 @@ import { appendQuarantine } from "../memory/quarantine.ts";
 import type { TranscriptLine } from "../sessions/transcript.ts";
 import type { ScheduledTurn } from "./types.ts";
 import type { ScheduleStore } from "./store.ts";
-import { personalEnvironment } from "../sessions/environment.ts";
+import { createInternalSessionState, type InternalSessionId, type InternalSessionState } from "../sessions/internal-session.ts";
 
 /**
  * Default scheduler tick interval: 60 seconds. Bounds worst-case delivery
@@ -145,7 +145,7 @@ export interface SchedulerDispatcher {
     onError?: (err: unknown) => void,
   ): void;
   enqueueInternalTurn?(
-    session: SessionState,
+    session: InternalSessionState,
     content: string,
     onComplete: (text: string) => void,
     onError: (err: unknown) => void,
@@ -161,7 +161,7 @@ export interface SchedulerSessionSource {
   peekBinding(surface: Surface): { sessionId: string; state: SessionState } | null | Promise<{ sessionId: string; state: SessionState } | null>;
   isArchived(sessionId: string): boolean;
   list?(): SessionState[];
-  ensureInternal?(id: string): SessionState;
+  ensureInternal?(id: InternalSessionId): InternalSessionState;
 }
 
 export interface SchedulerOptions {
@@ -344,13 +344,8 @@ export class SchedulerLoop {
     // The dreaming subagent uses a single fixed internal session. The prompt
     // carries the per-user-session transcript excerpt, so the session id does
     // not need to vary per chat.
-    const id = "__goblin_dreaming__";
-    const session: SessionState = this.sessionSource.ensureInternal?.(id) ?? {
-      id,
-      createdAt: new Date().toISOString(),
-      chatId: 0,
-      executionEnvironment: personalEnvironment(),
-    };
+    const id: InternalSessionId = "__goblin_dreaming__";
+    const session = this.sessionSource.ensureInternal?.(id) ?? createInternalSessionState(id);
     return new Promise((resolve, reject) => {
       this.dispatcher.enqueueInternalTurn!(session, prompt, resolve, reject);
     });

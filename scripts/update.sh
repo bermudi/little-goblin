@@ -13,9 +13,11 @@ for cmd in git systemctl bun awk; do
   fi
 done
 
-repo_dir="/opt/little-goblin"
-goblin_home="/var/lib/goblin"
-user="goblin"
+# Defaults are production paths. The explicit deployment overrides keep the
+# ordering contract testable in an isolated temporary tree.
+repo_dir="${GOBLIN_DEPLOY_REPO_DIR:-/opt/little-goblin}"
+goblin_home="${GOBLIN_DEPLOY_HOME:-/var/lib/goblin}"
+user="${GOBLIN_DEPLOY_USER:-goblin}"
 
 MIN_RAM_MB="${GOBLIN_UPDATE_MIN_RAM_MB:-512}"
 

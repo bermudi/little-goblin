@@ -38,23 +38,19 @@ describe("state-file", () => {
       expect(value).toEqual({ items: [] });
     });
 
-    it("returns the default and logs a warning on malformed JSON", () => {
+    it("throws and logs an error on malformed JSON without returning the default", () => {
       writeFileSync(path, "not json {{{", "utf-8");
       const calls: { msg: string; extra: unknown }[] = [];
-      const originalWarn = log.warn;
-      // bun:test `mock()` spies carry through `.mock.calls`, but swapping the
-      // method on the singleton is the simplest way to observe the warn path
-      // without pulling process-global `mock.module` machinery into a unit test.
-      log.warn = (msg: string, extra?: unknown) => { calls.push({ msg, extra }); };
+      const originalError = log.error;
+      log.error = (msg: string, extra?: unknown) => { calls.push({ msg, extra }); };
 
       try {
-        const value = loadJsonFile<{ ok: boolean } | null>(path, null);
-        expect(value).toBeNull();
+        expect(() => loadJsonFile<{ ok: boolean } | null>(path, null)).toThrow(SyntaxError);
         expect(calls).toHaveLength(1);
-        expect(calls[0]!.msg).toBe("malformed JSON state file, returning default");
+        expect(calls[0]!.msg).toBe("malformed JSON authority file");
         expect(calls[0]!.extra).toMatchObject({ path });
       } finally {
-        log.warn = originalWarn;
+        log.error = originalError;
       }
     });
 

@@ -149,7 +149,12 @@ function createFixture(): RuntimeFixture {
     createReviveSubagentTool(subRunner, parentCapture, onStatusUpdate),
   ]);
 
-  const dispatcher = new TurnDispatcher({
+  let dispatcher: TurnDispatcher | undefined;
+  const lifecycle = createConversationLifecycle(home, createTurnDispatcherRuntimeHost(() => {
+    if (dispatcher === undefined) throw new Error("runtime host used before dispatcher construction");
+    return dispatcher;
+  }), surfaceSettings);
+  dispatcher = new TurnDispatcher({
     cfg,
     surfaceSettings,
     subagentRunner,
@@ -166,10 +171,8 @@ function createFixture(): RuntimeFixture {
     }),
     createBetaTools: () => [],
     createAgentRunner: (opts) => makeFakeAgentRunner(opts),
+    surfaceRuntimeAuthority: lifecycle,
   });
-
-  const lifecycle = createConversationLifecycle(home, createTurnDispatcherRuntimeHost(dispatcher));
-  dispatcher.setCurrentBindingGuard(lifecycle);
 
   return { home, lifecycle, dispatcher, subagentRunner, memoryStore };
 }

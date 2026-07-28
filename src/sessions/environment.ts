@@ -7,7 +7,7 @@
  */
 
 import { existsSync, realpathSync, statSync, accessSync, constants } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { workspacePath } from "../workspace/paths.ts";
 
 export type ExecutionEnvironment =
@@ -42,6 +42,28 @@ export function resolveProjectRoot(input: string): string {
   return canonical;
 }
 
+/**
+ * True only for a current-version persisted project root: an accessible,
+ * existing directory spelled exactly as its filesystem realpath. Historical
+ * migration input deliberately uses `resolveProjectRoot` instead so it can
+ * normalize a legacy spelling before it becomes runtime authority.
+ */
+export function isCanonicalProjectRoot(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || !isAbsolute(value)) return false;
+  try {
+    return resolveProjectRoot(value) === value;
+  } catch {
+    return false;
+  }
+}
+
+/** Throw a bounded authority error when a persisted project root is not canonical. */
+export function assertCanonicalProjectRoot(value: unknown, context: string): asserts value is string {
+  if (!isCanonicalProjectRoot(value)) {
+    throw new Error(`${context} must be an existing accessible canonical project root`);
+  }
+}
+
 function expandTilde(input: string): string {
   if (input.startsWith("~/")) {
     const home = process.env.HOME ?? process.env.USERPROFILE;
@@ -73,7 +95,7 @@ export function environmentsEqual(a: ExecutionEnvironment, b: ExecutionEnvironme
 }
 
 /** Personal environment constant factory. */
-export function personalEnvironment(): ExecutionEnvironment {
+export function personalEnvironment(): Extract<ExecutionEnvironment, { kind: "personal" }> {
   return { kind: "personal" };
 }
 

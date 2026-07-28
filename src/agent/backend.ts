@@ -8,6 +8,11 @@ import {
   type CompactionResult,
   type ModelRuntime,
   type ToolDefinition,
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createReadToolDefinition,
+  createWriteToolDefinition,
+  defineTool,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -38,6 +43,12 @@ export interface AgentBackendInitArgs {
   resolvedModel: ResolvedModel;
   thinkingLevel: ThinkingLevel;
   customTools: ToolDefinition[];
+  /**
+   * Authority wrapper supplied by the owning AgentRunner. Pi's default tools
+   * are constructed inside this backend, so the runner supplies this supported
+   * definition-level seam rather than trying to reach into an AgentSession.
+   */
+  guardBuiltInTool: (tool: ToolDefinition) => ToolDefinition;
   systemPrompt: string;
   cwd: string;
 }
@@ -114,7 +125,7 @@ export class PiAgentBackend implements AgentBackend {
     if (this.session) return;
 
     const home = this.cfg.goblinHome;
-    const { resolvedModel, thinkingLevel, customTools, systemPrompt, cwd } = args;
+    const { resolvedModel, thinkingLevel, customTools, guardBuiltInTool, systemPrompt, cwd } = args;
 
     const { modelRuntime, settingsManager } = await this.deps.createPiServices(home);
     this.modelRuntime = modelRuntime;
@@ -140,6 +151,19 @@ export class PiAgentBackend implements AgentBackend {
     });
     await resourceLoader.reload();
 
+    // Pi exposes factory functions for the default tool definitions. Build
+    // those definitions here and override the SDK defaults through its public
+    // `customTools` seam, preserving each factory's schema, prompt metadata,
+    // renderer, and implementation. `noTools: "builtin"` disables only the
+    // unguarded defaults; same-named custom definitions become the active
+    // standard tools.
+    const guardedBuiltIns = [
+      guardBuiltInTool(defineTool(createReadToolDefinition(cwd))),
+      guardBuiltInTool(defineTool(createBashToolDefinition(cwd))),
+      guardBuiltInTool(defineTool(createEditToolDefinition(cwd))),
+      guardBuiltInTool(defineTool(createWriteToolDefinition(cwd))),
+    ];
+
     const { session } = await this.deps.createAgentSession({
       cwd,
       agentDir,
@@ -148,7 +172,8 @@ export class PiAgentBackend implements AgentBackend {
       sessionManager,
       model: resolvedModel.model,
       thinkingLevel,
-      customTools,
+      noTools: "builtin",
+      customTools: [...guardedBuiltIns, ...customTools],
       resourceLoader,
     });
 

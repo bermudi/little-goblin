@@ -21,7 +21,7 @@ import { log } from "../log.ts";
 import { workdirPath, workspacePath } from "../workspace/paths.ts";
 import { readPiSessionHeader } from "../pi-host.ts";
 import { loadBindings } from "./bindings.ts";
-import { loadTopicSettings, saveTopicSettings } from "./topic-settings.ts";
+import { loadTopicSettingsForEnvironmentMigration, saveTopicSettings } from "./topic-settings.ts";
 import { loadLegacyState, isValidExecutionEnvironment } from "./state.ts";
 import { saveJsonFile } from "./state-file.ts";
 import { sessionsDir, piSessionDir, sessionDir } from "./paths.ts";
@@ -461,7 +461,7 @@ export function planExecutionEnvironments(
   bindings?: BindingsFile,
   settings?: TopicSettingsFile,
 ): ExecutionEnvironmentPlan {
-  const loadedSettings = settings ?? loadTopicSettings(home);
+  const loadedSettings = settings ?? loadTopicSettingsForEnvironmentMigration(home);
   const topicSettings = planTopicSettingsMigration(loadedSettings);
   const canonicalSettings = topicSettings ?? loadedSettings;
 

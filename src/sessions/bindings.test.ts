@@ -33,15 +33,15 @@ describe("bindings", () => {
     expect(() => loadBindings(home)).toThrow(/already bound/);
   });
 
-  it("treats an array surfaces value as structurally malformed", () => {
+  it("rejects an array surfaces value as corrupt canonical authority", () => {
     writeFileSync(configPath(home), JSON.stringify({ version: 1, surfaces: [] }));
 
-    expect(loadBindings(home)).toEqual({ version: 1, surfaces: {} });
+    expect(() => loadBindings(home)).toThrow(/invalid canonical bindings/);
   });
 
-  it("does not treat arrays as legacy binding maps", () => {
+  it("rejects arrays masquerading as legacy binding maps", () => {
     writeFileSync(configPath(home), JSON.stringify({ dm: [] }));
 
-    expect(loadLegacyBindings(home)).toEqual({ dm: {}, topics: {}, supergroups: {}, guest: {} });
+    expect(() => loadLegacyBindings(home)).toThrow(/invalid legacy bindings/);
   });
 });

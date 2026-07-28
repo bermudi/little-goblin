@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConversationLifecycleManager } from "./conversation-lifecycle.ts";
@@ -13,8 +13,9 @@ import type { BindingStore } from "../sessions/bindings.ts";
 import { validateBindings } from "../sessions/bindings.ts";
 import type { BindingsFile } from "../sessions/types.ts";
 import type { ConversationId } from "../sessions/types.ts";
-import { savePendingProjectAssignment } from "../sessions/project-assignment.ts";
+import { loadPendingProjectAssignment, savePendingProjectAssignment } from "../sessions/project-assignment.ts";
 import { getProjectRoot, getModelName, getThinkingLevelValidated, setModelName, setThinkingLevel } from "../sessions/topic-settings.ts";
+import { sessionDir, statePath } from "../sessions/paths.ts";
 import { environmentFromProjectRoot, personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
 import { dmSurface, surfaceId, supergroupSurface, topicSurface, type Surface } from "../surface.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -231,6 +232,24 @@ describe("ConversationLifecycle", () => {
       expect(bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBe(conv.id);
       expect(store.load(conv.id)).not.toBeNull();
       expect(runtimeHost.disposed).toEqual(["0000000000"]);
+    });
+
+    it("fails closed rather than rebinding a chatId:0 record at a Conversation ID", async () => {
+      const { lifecycle, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const corruptId = "abc123def0";
+      mkdirSync(sessionDir(tmpDir, corruptId), { recursive: true });
+      writeFileSync(statePath(tmpDir, corruptId), JSON.stringify({
+        id: corruptId,
+        createdAt: new Date().toISOString(),
+        chatId: 0,
+        executionEnvironment: personalEnvironment(),
+      }));
+      bindings.bindings = { version: 1, surfaces: { [surfaceId(surface)]: corruptId } } as BindingsFile;
+
+      await expect(lifecycle.resolveOrStart(surface)).rejects.toThrow(/unexpected state field: chatId/);
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(corruptId);
+      expect(runtimeHost.disposed).toEqual([]);
     });
 
     it("disposes a bound runtime and rotates when the environment mismatches", async () => {
@@ -705,6 +724,61 @@ describe("ConversationLifecycle", () => {
       const cfg = { goblinHome: runtimeHome } as Config;
       const subagentRunner = new SubagentRunner(cfg);
       const surfaceSettings = staticSettings(personalEnvironment());
+      const store = new ConversationStore(runtimeHome);
+      const bindings = new InMemoryBindingStore();
+      let dispatcher: TurnDispatcher | undefined;
+      const lifecycle = new ConversationLifecycleManager(
+        runtimeHome,
+        store,
+        bindings,
+        surfaceSettings,
+        createTurnDispatcherRuntimeHost(() => {
+          if (dispatcher === undefined) throw new Error("runtime host used before dispatcher construction");
+          return dispatcher;
+        }),
+      );
+      dispatcher = new TurnDispatcher({
+        cfg,
+        surfaceSettings,
+        subagentRunner,
+        memoryStore,
+        agentRunners: new Map(),
+        createMessageBuffer: (): TurnSink => ({
+          onTextDelta: () => {},
+          onToolStart: () => {},
+          onToolEnd: () => {},
+          onStatusUpdate: () => {},
+          onMessageStart: () => {},
+          onMessageEnd: () => {},
+          onAgentEnd: () => {},
+        }),
+        createBetaTools: () => [],
+        createAgentRunner: (opts) => new FakeAgentRunner(opts) as unknown as AgentRunner,
+        surfaceRuntimeAuthority: lifecycle,
+      });
+      return { lifecycle, dispatcher };
+    }
+
+    it("does not let runtime acquisition reopen old authority after a failed project assignment", async () => {
+      const cfg = { goblinHome: runtimeHome } as Config;
+      const surface = dmSurface(1);
+      const projectRoot = join(runtimeHome, "project");
+      mkdirSync(projectRoot, { recursive: true });
+      const store = new ConversationStore(runtimeHome);
+      const bindings = new InMemoryBindingStore();
+      const surfaceSettings = fileBasedSettings(runtimeHome);
+      const subagentRunner = new SubagentRunner(cfg);
+      let dispatcherRef: TurnDispatcher | null = null;
+      const lifecycle = new ConversationLifecycleManager(
+        runtimeHome,
+        store,
+        bindings,
+        surfaceSettings,
+        createTurnDispatcherRuntimeHost(() => {
+          if (dispatcherRef === null) throw new Error("runtime host used before dispatcher construction");
+          return dispatcherRef;
+        }),
+      );
       const dispatcher = new TurnDispatcher({
         cfg,
         surfaceSettings,
@@ -722,19 +796,31 @@ describe("ConversationLifecycle", () => {
         }),
         createBetaTools: () => [],
         createAgentRunner: (opts) => new FakeAgentRunner(opts) as unknown as AgentRunner,
+        surfaceRuntimeAuthority: lifecycle,
       });
-      const store = new ConversationStore(runtimeHome);
-      const bindings = new InMemoryBindingStore();
-      const lifecycle = new ConversationLifecycleManager(
-        runtimeHome,
-        store,
-        bindings,
-        surfaceSettings,
-        createTurnDispatcherRuntimeHost(dispatcher),
-      );
-      dispatcher.setBindingInspector((s) => lifecycle.inspect(s)?.id ?? undefined);
-      return { lifecycle, dispatcher };
-    }
+      dispatcherRef = dispatcher;
+
+      const personal = await lifecycle.resolveOrStart(surface);
+      const personalSession = runtimeSessionWithPreferences(personal, surface, runtimeHome);
+      await dispatcher.getOrCreateRunner(personalSession, surface);
+      bindings.failNextSave = true;
+
+      await expect(lifecycle.assignProject(surface, projectRoot)).rejects.toThrow(/binding save failed/);
+      expect(loadPendingProjectAssignment(runtimeHome)).not.toBeNull();
+      expect(dispatcher.getRunner(personal.id)).toBeNull();
+
+      // This is the same dispatcher acquisition used by /queue. It must replay
+      // Q before it can register anything, then reject stale P rather than
+      // silently reconstructing its personal runtime.
+      await expect(dispatcher.getOrCreateRunner(personalSession, surface)).rejects.toThrow(/binding.*no longer current|binding rotated/);
+      expect(dispatcher.getRunner(personal.id)).toBeNull();
+      expect(loadPendingProjectAssignment(runtimeHome)).toBeNull();
+
+      const current = lifecycle.inspect(surface);
+      expect(current).not.toBeNull();
+      expect(current?.id).not.toBe(personal.id);
+      expect(current?.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+    });
 
     it("disposes both source and destination runtimes during cross-surface resume and recreates with destination authority", async () => {
       const { lifecycle, dispatcher } = makeRuntimeFixture();

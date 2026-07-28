@@ -152,7 +152,7 @@ async function dispatch(args: {
     rawText: args.rawText ?? args.command,
     deps: harness.deps,
     surface: harness.surface,
-    
+
     session: args.session ?? null,
     existingRunner: args.runner ?? null,
   });
@@ -464,7 +464,7 @@ describe("handleCommand", () => {
       rawText: "/voice",
       deps: harness.deps,
       surface: harness.surface,
-      
+
       session,
       existingRunner: null,
       bot,
@@ -489,7 +489,7 @@ describe("handleCommand", () => {
       rawText: "/voice",
       deps: harness.deps,
       surface: harness.surface,
-      
+
       session,
       existingRunner: makeRunner(true),
       bot,
@@ -549,7 +549,7 @@ describe("handleCommand", () => {
       rawText: "/help",
       deps: makeHarness().deps,
       surface: dmSurface(1),
-      
+
       session: null,
       existingRunner: null,
     };

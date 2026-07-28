@@ -137,6 +137,13 @@ export interface CommandDef {
    * `"instant"`. See {@link CommandTiming}.
    */
   timing?: CommandTiming | ((rawText: string) => CommandTiming);
+  /**
+   * This queue-timing command owns a lifecycle transition that invalidates a
+   * broken runtime, so it may run directly after that runtime's abort timed
+   * out. All other queue-timing commands must report the recovery guidance
+   * rather than queue work behind an unrecoverable runtime.
+   */
+  mayRecoverWedgedRuntime?: boolean;
   /** Dispatched from the message:text handler. Mutually exclusive with grammyHandler. */
   handler?: CommandHandler;
   /** Registered via bot.command(). Mutually exclusive with handler. */
@@ -549,12 +556,14 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
     name: "new",
     description: "reset this chat: rotate to a fresh conversation and leave the prior one resumable",
     timing: "queue",
+    mayRecoverWedgedRuntime: true,
     handler: newHandler,
   },
   {
     name: "archive",
     description: "archive the active conversation",
     timing: "queue",
+    mayRecoverWedgedRuntime: true,
     handler: archiveHandler,
   },
   {

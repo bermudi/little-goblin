@@ -2,8 +2,8 @@
  * Offline, precomputed, atomic-per-file migration of legacy session surface
  * state to canonical SurfaceId-keyed files.
  *
- * This runs once at startup, before the SessionManager is initialized or the
- * scheduler begins polling. It reads legacy and/or canonical bindings and
+ * This runs only from the explicit offline migration command while the service
+ * is stopped. It reads legacy and/or canonical bindings and
  * topic-settings files, computes the canonical replacement entirely in memory,
  * validates every produced SurfaceId, and only then writes the files.
  *

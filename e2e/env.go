@@ -12,21 +12,23 @@ import (
 // Env holds all configuration for the e2e smoke harness, read from environment
 // variables. See e2e/README.md and e2e/.env.example for documentation.
 type Env struct {
-	APIID            int
-	APIHash          string
-	Goblin           string // bot username (without @) or numeric id
-	Chat             string // optional: chat for DM tests (defaults to goblin)
-	ForumChat        string // optional: supergroup with forum topics
-	ForumTopicID     string // optional: topic id, or "create"
-	ProjectDir       string // optional: dir for /project file tests
-	MCPProbePrompt   string // optional: prompt for MCP tool-call test
-	MCPProbeExpect   string // optional: substring expected in MCP test reply
-	Voice            bool   // optional: enable /voice test
-	Timeout          time.Duration
-	Settle           time.Duration
-	CommandTimeout   time.Duration
-	Skip             map[string]bool
-	Only             map[string]bool // nil = run all
+	APIID          int
+	APIHash        string
+	Goblin         string // bot username (without @) or numeric id
+	Chat           string // optional: chat for DM tests (defaults to goblin)
+	ForumChat      string // optional: supergroup with forum topics
+	ForumTopicID   string // optional: topic id, or "create"
+	DMTopicID      string // optional: private-chat topic id in the Goblin DM
+	ProjectDir     string // optional: dir for /project file tests
+	MCPProbePrompt string // optional: prompt for MCP tool-call test
+	MCPProbeExpect string // optional: substring expected in MCP test reply
+	Voice          bool   // optional: enable /voice test
+	Timeout        time.Duration
+	Settle         time.Duration
+	CommandTimeout time.Duration
+	Skip           map[string]bool
+	Only           map[string]bool // nil = run all
+	FailFast       bool            // stop after the first failed external interaction
 }
 
 func loadEnv() (*Env, error) {
@@ -50,6 +52,7 @@ func loadEnv() (*Env, error) {
 		Chat:           strings.TrimPrefix(os.Getenv("E2E_CHAT"), "@"),
 		ForumChat:      strings.TrimPrefix(os.Getenv("E2E_FORUM_CHAT"), "@"),
 		ForumTopicID:   os.Getenv("E2E_FORUM_TOPIC_ID"),
+		DMTopicID:      os.Getenv("E2E_DM_TOPIC_ID"),
 		ProjectDir:     os.Getenv("E2E_PROJECT_DIR"),
 		MCPProbePrompt: os.Getenv("E2E_MCP_PROBE_PROMPT"),
 		MCPProbeExpect: os.Getenv("E2E_MCP_PROBE_EXPECT"),
@@ -57,6 +60,7 @@ func loadEnv() (*Env, error) {
 		Timeout:        envDuration("E2E_TIMEOUT_MS", 180*time.Second),
 		Settle:         envDuration("E2E_SETTLE_MS", 2500*time.Millisecond),
 		CommandTimeout: envDuration("E2E_COMMAND_TIMEOUT_MS", 30*time.Second),
+		FailFast:       os.Getenv("E2E_FAIL_FAST") != "0",
 	}
 
 	if v := os.Getenv("E2E_MCP_PROBE"); v != "" {

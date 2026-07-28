@@ -44,9 +44,19 @@ var (
 	statusRe = regexp.MustCompile(`^[🤔🔧✅❌🧠⏳]`)
 )
 
+func messageText(msg *tg.Message) string {
+	if msg.Message != "" {
+		return msg.Message
+	}
+	if rich, ok := msg.GetRichMessage(); ok {
+		return rich.String()
+	}
+	return ""
+}
+
 func classify(msg *tg.Message) (MsgKind, MediaInfo) {
 	media := describeMedia(msg)
-	text := msg.Message
+	text := messageText(msg)
 	if media.Type != "none" {
 		return KindMedia, media
 	}
@@ -127,8 +137,11 @@ func (ib *LiveInbox) onMessage(msg *tg.Message) {
 	if ib.topicID != 0 {
 		inTopic := false
 		if msg.ReplyTo != nil {
-			if hdr, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok && hdr.ReplyToMsgID == ib.topicID {
-				inTopic = true
+			if hdr, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
+				// Replies usually point at the triggering message while ReplyToTopID
+				// carries the forum topic root. Telegram may omit the top id on the
+				// root message itself, where ReplyToMsgID is the topic id.
+				inTopic = hdr.ReplyToTopID == ib.topicID || hdr.ReplyToMsgID == ib.topicID
 			}
 		}
 		if !inTopic {
@@ -138,7 +151,7 @@ func (ib *LiveInbox) onMessage(msg *tg.Message) {
 
 	id := msg.ID
 	kind, media := classify(msg)
-	text := msg.Message
+	text := messageText(msg)
 	now := time.Now()
 
 	ib.mu.Lock()

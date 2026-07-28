@@ -1,8 +1,9 @@
 /**
  * Goblin workspace path helpers.
  *
- * Resolves user-authored prompt files and goblin-curated skills under
- * `$GOBLIN_HOME/workspace/`, plus the ephemeral scratch workdir.
+ * Resolves the persistent personal workspace, attachments, user-authored
+ * prompt files, and goblin-curated skills under `$GOBLIN_HOME/workspace/`.
+ * The retired scratch workdir helper remains only for offline migration.
  */
 
 import { join } from "node:path";
@@ -15,7 +16,7 @@ export function workspacePath(home: string): string {
   return join(home, "workspace");
 }
 
-/** Path to the workdir directory for sandboxed execution. */
+/** Retired personal-workdir location; offline migration compatibility only. */
 export function workdirPath(home: string): string {
   return join(home, "scratch", "workdir");
 }

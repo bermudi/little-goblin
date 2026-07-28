@@ -24,6 +24,11 @@ import (
 )
 
 func main() {
+	if err := loadDotEnv(".env"); err != nil {
+		fmt.Fprintf(os.Stderr, "[err] %s\n", err)
+		os.Exit(1)
+	}
+
 	env, err := loadEnv()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[err] %s\n", err)

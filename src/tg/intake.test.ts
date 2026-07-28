@@ -773,6 +773,45 @@ describe("Telegram intake", () => {
     await flushMicrotasks();
   });
 
+  it("runs /archive directly when a wedged runtime cannot drain its prompt queue", async () => {
+    const { agentRunners, intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
+
+    await intake.handleText(message, "/new");
+    const sessionId = intake.lifecycle.inspect(message.surface!)!.id;
+    const runner = runners[0]!;
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runner.isPrompting);
+
+    // `isPrompting` stays true when pi's abort promise never resolves. This
+    // was previously treated as an ordinary busy runtime, so /archive joined
+    // the stuck queue instead of letting lifecycle disposal fence it off.
+    runner.markAbortTimedOut();
+    expect(runner.isAbortTimedOut).toBe(true);
+    expect(runner.isPrompting).toBe(true);
+
+    // A queue-timing command that cannot repair the runtime must not receive
+    // a false queued acknowledgement.
+    await intake.handleText(message, "/compact");
+    expect(replies.at(-1)).toBe("`[error]` A previous turn is wedged after a failed abort\\. Use /new or /archive to recover\\.");
+
+    await intake.handleText(message, "/archive");
+
+    expect(replies.at(-1)).toBe("`[ok]` Conversation archived\\.");
+    expect(runner.dispose).toHaveBeenCalledTimes(1);
+    expect(agentRunners.has(sessionId)).toBe(false);
+    expect(intake.lifecycle.inspect(message.surface!)).toBeNull();
+
+    // The original prompt can settle late, but its stale queue cannot revive
+    // the archived runtime or append a delayed command reply.
+    pending.resolve();
+    await flushMicrotasks();
+    expect(agentRunners.has(sessionId)).toBe(false);
+  });
+
   it("orphans a later-deferred command when an earlier /new swaps the runner", async () => {
     // When /new queues before /model, /new swaps out S1's runner before the
     // deferred /model continuation runs. The isCurrent() guard then drops

@@ -17,7 +17,8 @@
     "migrate": "bun run src/migrate.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "e2e:smoke": "cd e2e && go run ."
+    "e2e:smoke": "cd e2e && go run .",
+    "e2e:test": "cd e2e && go test ./..."
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.1.0",

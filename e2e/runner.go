@@ -104,6 +104,10 @@ func runAll(ctx SmokeCtx) int {
 				lines = lines[:idx]
 			}
 			fmt.Printf("        \033[31m%s\033[0m\n", lines)
+			if ctx.env.FailFast {
+				fmt.Println("        \033[33mstopping after first failure (set E2E_FAIL_FAST=0 to continue)\033[0m")
+				break
+			}
 		} else {
 			results = append(results, TestResult{Name: tc.Name, Status: "pass", Ms: ms})
 			fmt.Printf("  \033[32mPASS\033[0m %s (%dms)\n", tc.Name, ms)

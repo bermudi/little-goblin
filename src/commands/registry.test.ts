@@ -77,6 +77,12 @@ describe("resolveTiming", () => {
     }
   });
 
+  it("declares /new and /archive as wedged-runtime recovery commands", () => {
+    expect(resolveCommand("/new")?.mayRecoverWedgedRuntime).toBe(true);
+    expect(resolveCommand("/archive")?.mayRecoverWedgedRuntime).toBe(true);
+    expect(resolveCommand("/compact")?.mayRecoverWedgedRuntime).not.toBe(true);
+  });
+
   it("/model is instant with no arg, queue with an arg", () => {
     expect(resolveTiming(resolveCommand("/model"), "/model")).toBe("instant");
     expect(resolveTiming(resolveCommand("/model"), "/model@bot")).toBe("instant");

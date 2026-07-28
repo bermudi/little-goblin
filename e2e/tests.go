@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"regexp"
@@ -9,6 +10,31 @@ import (
 )
 
 // --- Command smoke tests ---
+
+func pingInTopic(ctx SmokeCtx, driver *GoblinDriver, label string, unthreaded *LiveInbox) (err error) {
+	defer func() {
+		err = errors.Join(err, driver.cleanupCreatedTopic(ctx.ctx))
+	}()
+
+	if err := driver.sendCommand(ctx.ctx, "ping"); err != nil {
+		return fmt.Errorf("send /ping in %s: %w", label, err)
+	}
+	reply, err := driver.awaitSystemReply()
+	if err != nil {
+		if unthreaded != nil {
+			return fmt.Errorf("%w; unthreaded DM replies captured: %d", err, len(unthreaded.snapshot()))
+		}
+		return err
+	}
+	text := stripSystemTag(reply.Text)
+	if !strings.Contains(text, "pong 🐲") {
+		return assertErr("%s reply missing pong: %s", label, truncate(reply.Text, 200))
+	}
+	if !strings.Contains(text, fmt.Sprintf("user: %d", driver.meID)) {
+		return assertErr("%s reply missing driving user id: %s", label, truncate(reply.Text, 200))
+	}
+	return nil
+}
 
 func init() {
 	// /ping — exact text check.
@@ -46,7 +72,7 @@ func init() {
 		return nil
 	}, nil)
 
-	// /start — DM session creation or welcome back.
+	// /start — status only; valid whether the DM is currently bound or fresh.
 	test("start", func(ctx SmokeCtx) error {
 		if err := ctx.g.sendCommand(ctx.ctx, "start"); err != nil {
 			return fmt.Errorf("send /start: %w", err)
@@ -55,37 +81,11 @@ func init() {
 		if err != nil {
 			return err
 		}
-		expect(reply.Text).toMatch(regexp.MustCompile(`(?i)Session|Welcome back|already its own session`))
+		expect(reply.Text).toMatch(regexp.MustCompile(`(?i)(Welcome back.*Conversation|No active conversation)`))
 		return nil
 	}, nil)
 
-	// /debug — dumps diagnostics.
-	test("debug", func(ctx SmokeCtx) error {
-		if err := ctx.g.sendCommand(ctx.ctx, "debug"); err != nil {
-			return fmt.Errorf("send /debug: %w", err)
-		}
-		reply, err := ctx.g.awaitSystemReply()
-		if err != nil {
-			return err
-		}
-		expect(reply.Text).toMatch(regexp.MustCompile(`(?i)session|model|tools`))
-		return nil
-	}, nil)
-
-	// /name — name the session.
-	test("name", func(ctx SmokeCtx) error {
-		if err := ctx.g.sendCommand(ctx.ctx, fmt.Sprintf("name smoke-%d", time.Now().Unix())); err != nil {
-			return fmt.Errorf("send /name: %w", err)
-		}
-		reply, err := ctx.g.awaitSystemReply()
-		if err != nil {
-			return err
-		}
-		expect(reply.Text).toMatch(regexp.MustCompile(`(?i)Renamed|session`))
-		return nil
-	}, nil)
-
-	// /new — archive + fresh session.
+	// /new — create and bind a fresh conversation, leaving the prior one resumable.
 	test("new", func(ctx SmokeCtx) error {
 		if err := ctx.g.sendCommand(ctx.ctx, "new"); err != nil {
 			return fmt.Errorf("send /new: %w", err)
@@ -94,7 +94,72 @@ func init() {
 		if err != nil {
 			return err
 		}
-		expect(reply.Text).toMatch(regexp.MustCompile(`(?i)Created new session|new session`))
+		expect(reply.Text).toContain("Created new conversation")
+		return nil
+	}, nil)
+
+	// /debug — dump diagnostics for the conversation created above.
+	test("debug", func(ctx SmokeCtx) error {
+		if err := ctx.g.sendCommand(ctx.ctx, "debug"); err != nil {
+			return fmt.Errorf("send /debug: %w", err)
+		}
+		reply, err := ctx.g.awaitSystemReply()
+		if err != nil {
+			return err
+		}
+		expect(reply.Text).toMatch(regexp.MustCompile(`(?s)Conversation:.*Model:.*Tools:`))
+		return nil
+	}, nil)
+
+	// /name — name the active conversation.
+	test("name", func(ctx SmokeCtx) error {
+		if err := ctx.g.sendCommand(ctx.ctx, fmt.Sprintf("name smoke-%d", time.Now().Unix())); err != nil {
+			return fmt.Errorf("send /name: %w", err)
+		}
+		reply, err := ctx.g.awaitSystemReply()
+		if err != nil {
+			return err
+		}
+		expect(reply.Text).toContain("Named conversation")
+		return nil
+	}, nil)
+
+	// /cancel while idle must report honestly and return promptly.
+	test("cancel idle", func(ctx SmokeCtx) error {
+		if err := ctx.g.sendCommand(ctx.ctx, "cancel"); err != nil {
+			return fmt.Errorf("send /cancel: %w", err)
+		}
+		reply, err := ctx.g.awaitSystemReply()
+		if err != nil {
+			return err
+		}
+		expect(reply.Text).toContain("Nothing to cancel")
+		return nil
+	}, nil)
+
+	// /archive removes the active binding after /new.
+	test("archive", func(ctx SmokeCtx) error {
+		if err := ctx.g.sendCommand(ctx.ctx, "archive"); err != nil {
+			return fmt.Errorf("send /archive: %w", err)
+		}
+		reply, err := ctx.g.awaitSystemReply()
+		if err != nil {
+			return err
+		}
+		expect(reply.Text).toContain("Conversation archived")
+		return nil
+	}, nil)
+
+	// /start verifies that archive cleared the Surface binding.
+	test("start after archive", func(ctx SmokeCtx) error {
+		if err := ctx.g.sendCommand(ctx.ctx, "start"); err != nil {
+			return fmt.Errorf("send /start after /archive: %w", err)
+		}
+		reply, err := ctx.g.awaitSystemReply()
+		if err != nil {
+			return err
+		}
+		expect(reply.Text).toContain("No active conversation")
 		return nil
 	}, nil)
 
@@ -165,16 +230,17 @@ func init() {
 		return nil
 	}, nil)
 
-	test("memory: read tool", func(ctx SmokeCtx) error {
+	test("memory: search tool", func(ctx SmokeCtx) error {
 		if err := ctx.g.sendText(ctx.ctx,
-			"Use the memory_read tool with target \"user\". Reply with the first 40 characters of the body, then the marker ENDREAD."); err != nil {
+			"Use the memory_search tool with query \"smoke-test color\". Reply with one matching teal-NNNNNN token from the tool result, then the marker ENDSEARCH."); err != nil {
 			return fmt.Errorf("send: %w", err)
 		}
 		reply, err := ctx.g.awaitAgentReply()
 		if err != nil {
 			return err
 		}
-		expect(reply.Text).toContain("ENDREAD")
+		expect(reply.Text).toMatch(regexp.MustCompile(`teal-\d+`))
+		expect(reply.Text).toContain("ENDSEARCH")
 		return nil
 	}, nil)
 
@@ -261,19 +327,43 @@ func init() {
 			"Output the single character x repeated 25000 times with no spaces, no newlines, and nothing else."); err != nil {
 			return fmt.Errorf("send: %w", err)
 		}
-		reply, err := ctx.g.inbox.awaitAgentReply(ctx.env.Timeout, 4*time.Second)
+		reply, err := ctx.g.awaitDocument()
 		if err != nil {
 			return err
 		}
-		if reply.Media.Type == "document" {
-			re := regexp.MustCompile(`(?i)reply\.md$`)
-			if !re.MatchString(reply.Media.FileName) {
-				return assertErr("expected reply.md document, got fileName=%q", reply.Media.FileName)
-			}
-			return nil
+		re := regexp.MustCompile(`(?i)reply\.md$`)
+		if !re.MatchString(reply.Media.FileName) {
+			return assertErr("expected reply.md document, got fileName=%q", reply.Media.FileName)
 		}
-		// Fallback: some models may stream the full text instead of rolling over.
-		expect(reply.Text).toBeGreaterThanOrEqual(15000)
+
+		// The file is emitted as soon as the stream crosses 20k; the model may
+		// still be producing a short tail. Stop that tail and wait for the cancel
+		// acknowledgement so the next smoke test never races this turn.
+		if err := ctx.g.sendCommand(ctx.ctx, "cancel"); err != nil {
+			return fmt.Errorf("stop big-output tail: %w", err)
+		}
+		cancelled, err := ctx.g.awaitSystemReply()
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(cancelled.Text, "Cancelled.") && !strings.Contains(cancelled.Text, "Nothing to cancel") {
+			return assertErr("expected completed cancellation after reply.md, got %q", cancelled.Text)
+		}
+		if strings.Contains(cancelled.Text, "may still be running") {
+			return assertErr("big-output runtime did not stop cleanly: %q", cancelled.Text)
+		}
+		if strings.Contains(cancelled.Text, "Cancelled.") {
+			// The runtime posts its terminal aborted response after the command ack.
+			// Consume it before the next test sends a prompt, otherwise that delayed
+			// message can be mistaken for the next turn's reply.
+			terminal, err := ctx.g.awaitAgentReply()
+			if err != nil {
+				return fmt.Errorf("wait for cancelled big-output turn to settle: %w", err)
+			}
+			if !strings.Contains(strings.ToLower(terminal.Text), "aborted") {
+				return assertErr("expected terminal aborted response after cancellation, got %q", terminal.Text)
+			}
+		}
 		return nil
 	}, nil)
 
@@ -294,22 +384,22 @@ func init() {
 			"set E2E_MCP_PROBE_PROMPT and E2E_MCP_PROBE_EXPECT (or E2E_MCP_PROBE JSON)")
 	})
 
+	test("dm-topic: /ping in a private topic", func(ctx SmokeCtx) error {
+		topic, err := newDMTopicDriver(ctx.ctx, ctx.env, ctx.dispatcher, ctx.g.api)
+		if err != nil {
+			return fmt.Errorf("create DM topic driver: %w", err)
+		}
+		return pingInTopic(ctx, topic, "DM topic", ctx.g.inbox)
+	}, func(env *Env) string {
+		return env.requires(env.DMTopicID != "", "set E2E_DM_TOPIC_ID to a private-chat topic id")
+	})
+
 	test("forum-topic: /ping in a forum topic", func(ctx SmokeCtx) error {
 		forum, err := newForumDriver(ctx.ctx, ctx.env, ctx.dispatcher, ctx.g.api)
 		if err != nil {
 			return fmt.Errorf("create forum driver: %w", err)
 		}
-		if err := forum.sendCommand(ctx.ctx, "ping"); err != nil {
-			return fmt.Errorf("send /ping in topic: %w", err)
-		}
-		reply, err := forum.awaitSystemReply()
-		if err != nil {
-			return err
-		}
-		text := stripSystemTag(reply.Text)
-		expect(text).toContain("pong 🐲")
-		expect(text).toContain(fmt.Sprintf("user: %d", forum.meID))
-		return nil
+		return pingInTopic(ctx, forum, "forum topic", nil)
 	}, func(env *Env) string {
 		return env.requires(env.ForumChat != "", "set E2E_FORUM_CHAT (and optionally E2E_FORUM_TOPIC_ID)")
 	})

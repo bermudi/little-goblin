@@ -523,11 +523,24 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       // compact, etc.). They also defer behind a prompt that has already started
       // (isPrompting), e.g. a coalescer-flushed prompt whose handleText has
       // already called runner.prompt, and behind any already-deferred command.
+      //
+      // An abort-timed-out runtime is different: its prompt cannot be used as
+      // a queue owner because it may never settle. Only registry-declared
+      // lifecycle recovery commands may bypass it; they synchronously
+      // invalidate the runtime before changing durable authority. Other
+      // queue-timing commands return the recovery guidance instead of lying
+      // that they will eventually run.
+      const runnerIsWedged = existingRunner?.isAbortTimedOut === true;
+      if (timing === "queue" && session && runnerIsWedged && !def?.mayRecoverWedgedRuntime) {
+        await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
+        return;
+      }
       // Interrupt-timing (/cancel) and instant-timing commands run immediately.
-      const busy =
+      const busy = !runnerIsWedged && (
         existingRunner?.isStreaming ||
         existingRunner?.isPrompting ||
-        (session ? dispatcher.isCommandPending(session.id) : false);
+        (session ? dispatcher.isCommandPending(session.id) : false)
+      );
       if (timing === "queue" && session && busy) {
         await sendSystemReply(message, "Queued. Will run after this turn.", "queued");
         const queueRunner = existingRunner ?? await dispatcher.getOrCreateRunner(session, surface);

@@ -2,18 +2,19 @@
 
 Parked scope and open questions. Items graduate only when a deliberate implementation phase begins; parked artifacts remain historical design input, not active work.
 
-## Current stabilization closure
+## Stabilization closure
 
-**Persistence and runtime-authority closure — in progress.** This bounded merge-gate slice owns only:
+**Persistence and runtime-authority closure — complete.** The bounded merge-gate slice delivered:
 
 - fail-closed validation for canonical bindings, Surface settings, Conversation state, and pending project-assignment intent;
 - intent-owned planned-Conversation recovery with no overwrite of malformed, internal, conflicting, or incompatible state;
 - mandatory lifecycle-owned authority for every Surface-backed runtime, including `/queue` acquisition after a failed `/project` write;
-- regression coverage, operator/documentation repair, migration rehearsal, and live Telegram smoke-test gates before merge.
+- recovery from oversized Telegram output without repeated `reply.md` rollover or lifecycle commands becoming trapped behind a wedged runtime;
+- regression coverage, operator/documentation repair, deployment-order checks, and a sequential 22/22 live Telegram smoke run covering DM commands, model and tool turns, memory, subagents, voice, files, oversized output, MCP, private DM topics, and forum topics.
 
-It does not revive a parked feature or adopt a new planning tool.
+The deployment entered state version 4 through an operator-approved recoverable fresh-state reset, so no production legacy-state migration was required. Offline migration behavior remains covered by migration and deployment-order tests.
 
-**Next when this closure is accepted:** re-evaluate `pi-native-skill-layout` from current code and accepted decisions. Do not copy its obsolete startup-migration design.
+**Next implementation candidate:** re-evaluate `pi-native-skill-layout` from current code and accepted decisions. Do not copy its obsolete startup-migration design. A planning-process cutover may occur first, but it must not revive or mechanically translate stale parked task lists.
 
 ## Parked changes
 

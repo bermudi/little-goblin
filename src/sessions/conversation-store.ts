@@ -209,5 +209,3 @@ export class ConversationStore {
     throw new Error("unable to allocate a unique conversation id");
   }
 }
-
-

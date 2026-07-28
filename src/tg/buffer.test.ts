@@ -50,6 +50,8 @@ interface MockBot {
   documents: DocumentCall[];
   chatActions: ChatActionCall[];
   chatActionOpts: Record<string, unknown>[];
+  /** Optional barrier used to hold a document upload in a race test. */
+  documentBarrier?: { started: () => void; wait: Promise<void> };
   /** Set to throw the next sendMessage / sendRichMessage / editMessageText / sendDocument. */
   failNext: {
     send?: unknown;
@@ -139,6 +141,11 @@ function makeBot(): MockBot {
           const err = state.failNext.document;
           state.failNext.document = undefined;
           throw err;
+        }
+        const barrier = state.documentBarrier;
+        if (barrier) {
+          barrier.started();
+          await barrier.wait;
         }
         documents.push({ chatId, filename: document.filename, document });
         return { message_id: ++state.nextMessageId };
@@ -1750,6 +1757,36 @@ describe("MessageBuffer", () => {
       await buffer.flushResponse(true);
       const lastSend = m.send[m.send.length - 1];
       expect(lastSend?.text).toBe("after");
+    });
+
+    it("keeps only the post-snapshot tail when a document upload overlaps streaming", async () => {
+      const m = makeBot();
+      let releaseDocument!: () => void;
+      let documentStarted!: () => void;
+      m.documentBarrier = {
+        wait: new Promise<void>((resolve) => { releaseDocument = resolve; }),
+        started: () => documentStarted(),
+      };
+      const started = new Promise<void>((resolve) => { documentStarted = resolve; });
+      const buffer = new MessageBuffer(m.bot, dmSurface(1), ALL_OFF);
+      const big = "R".repeat(BIG_OUTPUT_THRESHOLD + 1);
+
+      buffer.onTextDelta(big);
+      const firstEscape = buffer.flushResponse(true);
+      await started;
+
+      // This delta lands while `maybeFileEscape` awaits sendDocument. It is
+      // the next response segment, not part of the reply.md body.
+      buffer.onTextDelta("tail");
+      releaseDocument();
+      await firstEscape;
+
+      expect(m.documents).toHaveLength(1);
+      expect(buffer._state().accumulatedText).toBe("tail");
+
+      await buffer.flushResponse(true);
+      expect(m.documents).toHaveLength(1);
+      expect(m.send.at(-1)?.text).toBe("tail");
     });
 
     it("clears state even if sendDocument fails", async () => {

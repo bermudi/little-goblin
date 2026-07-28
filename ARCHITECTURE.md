@@ -439,18 +439,18 @@ One ordered sequence, walked end to end. Historical change names remain useful l
 | 4 | `surface-derived-memory-context` | 27 | **archived** | Memory scope derives from Surface, not session metadata |
 | 5 | `transcript-surface-provenance` | 29 | **archived** | Event-time provenance for history that may move; state version 3; provenance-aware indexing and dreaming |
 | 6 | `conversation-lifecycle` | 48 | **archived** | Surface/Binding/Conversation split; compatible movement; Surface-owned preferences and automation; filesystem state version 4 |
-| 6a | Persistence and runtime-authority closure | authority corruption + pending-assignment fence | **in progress** | Fail closed on canonical authority corruption; recover only intent-owned planned directories; require lifecycle authority for every Surface runtime |
+| 6a | Persistence and runtime-authority closure | authority corruption + pending-assignment fence | **complete** | Fail closed on canonical authority corruption; recover only intent-owned planned directories; require lifecycle authority for every Surface runtime |
 | 7 | `pi-native-skill-layout` | 9 | **parked** (`specs/parked/`) | `workspace/skills/` → `.agents/skills/` |
 | 8 | `skill-catalog-resolution` | 16 | **parked** | Explicit catalog roots; `skillSources` switch dies |
 | 9 | `surface-skill-policy` | 16 | **parked** | Per-Surface `/skills` selection |
 | 10 | `subagent-skill-inheritance` | patch | **parked** | Generic subagents inherit the frozen resolved manifest |
 | 11 | `inner-life` | 25 | **parked** | Bounded wake/effect authority |
 | 12 | `delegated-work-ownership` | 36 | **parked** | Attached vs durable work; origin-Surface delivery |
-| 13 | `visible-dreaming` | — | **parked (placeholder)** | Rewrite against `inner-life`; must not be built from its placeholder |
+| 13 | `visible-dreaming` | — | **deferred; prior placeholder deleted** | Rewrite against `inner-life`; recover historical notes from Git only if needed |
 
-Steps 1–6, including attachment intake and agent-owned prompt files, are archived. The persistence and runtime-authority closure is the sole merge-gate implementation slice: it closes corruption/recovery and runtime-fencing gaps without extending parked feature seams. Steps 7–13 remain parked under `specs/parked/` (see `specs/backlog.md`).
+Steps 1–6a, including attachment intake, agent-owned prompt files, and the persistence/runtime-authority closure, are complete. Steps 7–12 remain parked under `specs/parked/`; step 13 has no live parked artifact (see `specs/backlog.md`).
 
-**WIP limit: one implementation phase in progress, one plainly described next.** Persistence and runtime-authority closure is the sole current WIP. After its merge gate passes, the next candidate is the parked `pi-native-skill-layout` train; all other parked scope remains deferred until deliberately resumed.
+**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The next candidate is a fresh re-evaluation of the parked `pi-native-skill-layout` train; all other parked scope remains deferred until deliberately resumed.
 
 Storage-layout cleanup and workspace write authority cross this chain and must declare dependencies before implementation.
 

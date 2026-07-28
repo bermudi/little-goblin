@@ -4,16 +4,23 @@
 
 ### Requirement: Workspace path module centralizes goblin-owned paths
 
-The `src/workspace/paths.ts` module SHALL export canonical path helpers for goblin-owned directories and user-authored prompt files under `$GOBLIN_HOME/workspace/` and the ephemeral scratch workdir.
+The `src/workspace/paths.ts` module SHALL export canonical path helpers for the persistent personal workspace, attachments, prompt files, and the current legacy skill directory under `$GOBLIN_HOME/workspace/`. `workdirPath` MAY remain as an offline-migration compatibility helper for the retired `$GOBLIN_HOME/scratch/workdir/` location; runtime code MUST NOT treat it as execution authority.
 
 #### Scenario: Workspace path helpers available
 
-- **WHEN** a consumer imports `{ workdirPath, agentsMdPath, soulMdPath, heartbeatMdPath, skillsPath }` from `src/workspace/paths.ts`
-- **THEN** `workdirPath(home)` SHALL resolve to `$GOBLIN_HOME/scratch/workdir/`
+- **WHEN** a consumer imports `{ workspacePath, attachmentsPath, agentsMdPath, soulMdPath, heartbeatMdPath, skillsPath }` from `src/workspace/paths.ts`
+- **THEN** `workspacePath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/`
+- **AND** `attachmentsPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/attachments/`
 - **AND** `agentsMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/AGENTS.md`
 - **AND** `soulMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/SOUL.md`
 - **AND** `heartbeatMdPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/HEARTBEAT.md`
 - **AND** `skillsPath(home)` SHALL resolve to `$GOBLIN_HOME/workspace/skills/`
+
+#### Scenario: Retired workdir helper is migration-only
+
+- **WHEN** application runtime code resolves a personal Execution Environment
+- **THEN** it SHALL use `workspacePath(home)`
+- **AND** it SHALL NOT use `workdirPath(home)`
 
 ### Requirement: Workspace path module has no runtime dependencies
 

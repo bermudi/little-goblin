@@ -186,13 +186,12 @@ The system SHALL parse the config file using JSON5, supporting comments, trailin
 
 ### Requirement: skillSources config field
 
-The config file SHALL accept an optional `skillSources` field controlling where goblin's main agent discovers pi skills. The field SHALL accept one of three string values:
+The config file SHALL accept an optional compatibility `skillSources` field controlling where goblin's main agent discovers pi skills. Until the explicit skill-catalog train replaces this seam, the field SHALL accept exactly two string values:
 
 - `"goblin-only"` (default) — only `$GOBLIN_HOME/workspace/skills/` is available.
 - `"user"` — goblin skills plus the user's personal skills from `~/.agents/skills/` and cwd ancestor `.agents/skills/` directories.
-- `"auto"` — pi's full default auto-discovery (cwd ancestor walk, user home dirs, packages).
 
-When `skillSources` is absent from the config file, it SHALL default to `"goblin-only"`.
+Pi's ambient `"auto"` discovery mode is retired and SHALL fail validation. When `skillSources` is absent from the config file, it SHALL default to `"goblin-only"`.
 
 #### Scenario: Default when field absent
 
@@ -209,10 +208,10 @@ When `skillSources` is absent from the config file, it SHALL default to `"goblin
 - **WHEN** `goblin.json5` contains `skillSources: "user"`
 - **THEN** the Config SHALL contain `skillSources: "user"`
 
-#### Scenario: Auto mode
+#### Scenario: Auto mode rejected
 
 - **WHEN** `goblin.json5` contains `skillSources: "auto"`
-- **THEN** the Config SHALL contain `skillSources: "auto"`
+- **THEN** Zod validation SHALL reject with an enum error
 
 #### Scenario: Invalid value
 

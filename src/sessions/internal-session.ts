@@ -80,4 +80,3 @@ export function assertInternalSessionState(value: unknown): asserts value is Int
     throw new Error("internal session requires the exact personal executionEnvironment");
   }
 }
-

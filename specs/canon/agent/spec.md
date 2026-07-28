@@ -34,14 +34,19 @@ The `AgentRunner` SHALL create pi's `AgentSession` via `createAgentSession()` la
 - **THEN** pi's `AgentSession` SHALL be created before the prompt is dispatched
 - **AND** the session SHALL receive the constructed Goblin system prompt
 
-### Requirement: cwd is the shared goblin workspace
+### Requirement: cwd derives from the Conversation Execution Environment
 
-Every `AgentRunner` SHALL pass `cwd = workdirPath($GOBLIN_HOME)` to `createAgentSession()`, where `workdirPath` is imported from `src/workspace/paths.ts`. Per-session workdirs MUST NOT be used.
+Every `AgentRunner` SHALL receive the Conversation's validated immutable Execution Environment from lifecycle-owned runtime assembly and pass its resolved CWD to `createAgentSession()`. It MUST NOT infer CWD from Telegram routing, mutable session fields, or the retired `scratch/workdir` path.
 
-#### Scenario: Runner created
+#### Scenario: Personal Conversation runner created
 
-- **WHEN** an `AgentRunner` is instantiated in any session
-- **THEN** pi's `AgentSession` SHALL run with cwd `$GOBLIN_HOME/scratch/workdir/`
+- **WHEN** an `AgentRunner` is instantiated for a personal Conversation
+- **THEN** pi's `AgentSession` SHALL run with cwd `$GOBLIN_HOME/workspace/`
+
+#### Scenario: Project Conversation runner created
+
+- **WHEN** an `AgentRunner` is instantiated for a project Conversation
+- **THEN** pi's `AgentSession` SHALL run with the Conversation's canonical immutable `projectRoot`
 
 ### Requirement: Shared services point at $GOBLIN_HOME/state/pi/
 

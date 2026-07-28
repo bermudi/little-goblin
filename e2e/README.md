@@ -50,7 +50,8 @@ Optional feature gates (tests skip cleanly when unset):
 | Variable | Enables |
 |---|---|
 | `E2E_CHAT` | Target a specific chat instead of goblin's DM |
-| `E2E_FORUM_CHAT` | Forum topic test (supergroup username/id) |
+| `E2E_DM_TOPIC_ID` | Private-chat topic id inside the Goblin DM, or `create` for an ephemeral smoke topic |
+| `E2E_FORUM_CHAT` | Forum topic test (supergroup username or Bot API numeric id) |
 | `E2E_FORUM_TOPIC_ID` | Topic id, or `create` to make a fresh one |
 | `E2E_PROJECT_DIR` | File round-trip test (writable directory) |
 | `E2E_VOICE=1` | Voice note test (requires Edge TTS: `uvx edge-tts`) |
@@ -63,20 +64,27 @@ Optional tuning:
 | `E2E_TIMEOUT_MS` | `180000` | Agent reply timeout |
 | `E2E_SETTLE_MS` | `2500` | Stream settle window (no-edit quiet period) |
 | `E2E_COMMAND_TIMEOUT_MS` | `30000` | System reply timeout |
+| `E2E_FAIL_FAST` | `1` | Stop after the first failed external interaction; set `0` to continue |
 | `E2E_ONLY` | — | Comma-separated test names to run exclusively |
 | `E2E_SKIP` | — | Comma-separated test names to skip |
 
 ## Test inventory
 
-**Commands:** `ping`, `help`, `start`, `debug`, `name`, `new`
+**Commands:** `ping`, `help`, `start`, `new`, `debug`, `name`, idle `cancel`, `archive`, and `start` after archive
 
-**Conversation + tools:** exact literal reply, bash echo, read file, memory write+recall, memory_read tool
+**Conversation + tools:** exact literal reply, bash echo, read file, memory write+recall, memory_search tool
 
 **Subagents:** spawn + bash stdout, `/subagents` list
 
 **Media:** `/voice` returns a voice note, file round-trip (send→read back), >20k char rollover to `reply.md`
 
-**Optional:** MCP tool call, forum topic `/ping`
+**Optional:** MCP tool call, private-DM topic `/ping`, forum-supergroup topic `/ping`
+
+Harness-only checks run without Telegram:
+
+```sh
+bun run e2e:test
+```
 
 ## Architecture
 
@@ -105,4 +113,4 @@ The inbox classifies each incoming message from goblin:
 - **agent** — streamed assistant response (the final text)
 - **media** — voice note, document, or photo
 
-`awaitAgentReply` picks the newest agent/media message and returns once it has gone `E2E_SETTLE_MS` without an edit (goblin streams by editing, so this detects when the stream is done).
+`awaitAgentReply` picks the newest agent/media message and returns once it has gone `E2E_SETTLE_MS` without an edit (goblin streams by editing, so this detects when the stream is done). Telegram may deliver rich responses through short or gap updates that `tg.UpdateDispatcher` intentionally drops; the driver therefore polls recent history as a fallback, keyed strictly after the message it sent, and extracts `RichMessage` content without allowing an older reply to satisfy the test.

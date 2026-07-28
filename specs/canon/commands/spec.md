@@ -185,6 +185,15 @@ The `/revive <id> <prompt>` command SHALL revive the subagent with the supplied 
 
 Queue-timing commands SHALL defer behind an in-flight turn rather than aborting it. If an earlier queued continuation swaps out the runner, later continuations for the stale runner SHALL be dropped by the current-runner guard. `/cancel` is the sole exception: it interrupts.
 
+A runtime whose main-agent abort timed out is not a queue owner: its outstanding prompt may never settle. `/new` and `/archive` SHALL bypass that runtime's queue and invoke their lifecycle transitions directly, so lifecycle invalidation fences the wedged runtime before durable authority changes. Other queue-timing commands SHALL return the existing recovery guidance instead of acknowledging work that cannot run.
+
+#### Scenario: Archive after timed-out abort
+
+- **GIVEN** the active runtime's abort timed out and its prompt remains unsettled
+- **WHEN** `/archive` is sent
+- **THEN** it SHALL NOT reply that the command is queued
+- **AND** it SHALL invalidate the runtime, clear the binding, and archive the Conversation
+
 #### Scenario: Rapid command spam
 
 - **WHEN** `/new` then `/archive` are sent in quick succession while a turn is streaming

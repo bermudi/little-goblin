@@ -934,7 +934,7 @@ export class MessageBuffer implements TurnCallbacks {
 
     // Big output? Escape to file before doing anything else; rich messages
     // remove the 4096 limit but 20KB+ readability is still poor as chat text.
-    if (await this.maybeFileEscape(text)) {
+    if (await this.maybeFileEscape(text, sealedText !== undefined)) {
       this.lastResponseEditTime = now;
       return;
     }
@@ -1076,7 +1076,10 @@ export class MessageBuffer implements TurnCallbacks {
     }
   }
 
-  private async maybeFileEscape(text: string = this.accumulatedText): Promise<boolean> {
+  private async maybeFileEscape(
+    text: string = this.accumulatedText,
+    textWasDetached: boolean = false,
+  ): Promise<boolean> {
     if (text.length <= BIG_OUTPUT_THRESHOLD) return false;
 
     const summary =
@@ -1105,10 +1108,16 @@ export class MessageBuffer implements TurnCallbacks {
       if (wrote) await unlink(tmpPath).catch(() => {});
     }
 
-    // Preserve any text that arrived after the snapshot was detached. In a
-    // normal flush `accumulatedText === text`, so overflow is empty. During a
-    // boundary seal `accumulatedText` may already hold the next segment.
-    const overflow = this.accumulatedText === text ? "" : this.accumulatedText;
+    // Preserve only text that arrived after this flush's snapshot. A normal
+    // flush retains the snapshot in `accumulatedText`, so remove that prefix;
+    // otherwise each concurrent delta would restore the entire uploaded body
+    // and trigger another reply.md upload forever. A boundary seal has already
+    // detached its next-segment tail before calling this method.
+    const overflow = textWasDetached
+      ? this.accumulatedText
+      : this.accumulatedText.startsWith(text)
+        ? this.accumulatedText.slice(text.length)
+        : this.accumulatedText;
 
     if (documentError !== null) {
       // Document upload failures are not recorded as `sendMessage` metrics.

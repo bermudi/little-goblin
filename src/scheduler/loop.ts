@@ -563,10 +563,9 @@ ${formatted}`;
       const due = this.store.listDue(nowIso);
       // Each schedule is processed in isolation: a throw from one schedule
       // (e.g. a non-ENOENT HEARTBEAT.md read error, a synchronous dispatcher
-      // bug) MUST NOT skip the remaining due schedules in this tick. Without
-      // this, a mis-permissioned heartbeat — which re-dues every tick because
-      // it is resolved before claimDue — would starve every other schedule
-      // until an operator fixes the file.
+      // bug) MUST NOT skip the remaining due schedules in this tick. Prompt
+      // resolution occurs after claimDue, so processOne records the failed
+      // occurrence before rethrowing to this isolation boundary.
       for (const schedule of due) {
         try {
           await this.processOne(schedule, nowIso);
@@ -624,19 +623,18 @@ ${formatted}`;
     // its body from `$GOBLIN_HOME/state/surfaces/<SurfaceId>/HEARTBEAT.md`
     // (then global, then constant) using the owning Surface; a user schedule
     // uses its captured prompt.
-    const isHeartbeat = schedule.kind === "heartbeat";
-    const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.surface) : schedule.prompt ?? "";
-
+    //
     // Binding is valid: dispatch the prompt as a fresh turn through the current
     // Conversation runtime. The dispatcher serializes through the per-session
     // queue, so a scheduled turn waits behind any in-flight turn. Async prompt
     // failures are reported via the onError callback (records outcome: "error").
-    // A synchronous throw from enqueueScheduledTurn (a dispatcher bug) would
-    // otherwise leave the schedule claimed with no last-run status, so we catch,
-    // record "error", and re-throw — the per-schedule catch in tick() logs it,
-    // the remaining due schedules in this tick still run, and future ticks
-    // continue.
+    // Prompt resolution and a synchronous dispatcher throw both occur after the
+    // claim, so catch, record "error", and re-throw — the per-schedule catch in
+    // tick() logs it, the remaining due schedules in this tick still run, and
+    // future ticks continue.
     try {
+      const isHeartbeat = schedule.kind === "heartbeat";
+      const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.surface) : schedule.prompt ?? "";
       this.dispatcher.enqueueScheduledTurn(peeked.state, schedule.surface, prompt, (err) => {
         const msg = err instanceof Error ? err.message : String(err);
         this.store.recordRun(schedule.id, {

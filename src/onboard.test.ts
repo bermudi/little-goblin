@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { main, parseIdList, buildConfig } from "./onboard.ts";
+import { main, parseIdList, buildConfig, runInitialStateMigration } from "./onboard.ts";
 import { DEFAULT_AGENTS_TEMPLATE, buildSoulTemplate, createMissingPromptFiles } from "./onboard.ts";
 import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
+import { stateVersionPath } from "./state-version.ts";
 
 describe("onboard", () => {
   let tempDir: string;
@@ -24,6 +25,16 @@ describe("onboard", () => {
     } catch {
       // ignore cleanup errors
     }
+  });
+
+  it("reports how to recover when initial state migration fails", () => {
+    const reports: string[] = [];
+    mkdirSync(dirname(stateVersionPath(tempDir)), { recursive: true });
+    writeFileSync(stateVersionPath(tempDir), JSON.stringify({ version: Number.MAX_SAFE_INTEGER }));
+
+    expect(() => runInitialStateMigration(tempDir, (message) => reports.push(message))).toThrow(/newer than supported/);
+    expect(reports).toContain("The config was written successfully, but state is not at the required version.");
+    expect(reports).toContain("Run `bun run migrate` to diagnose and complete migration before starting the bot.");
   });
 
   it("exits when config already exists", async () => {

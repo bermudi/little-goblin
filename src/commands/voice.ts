@@ -24,7 +24,7 @@ export async function readLastAssistantMessage(home: string, sessionId: string):
     const { entry } = entries[i]!;
     if (entry === null || entry.role !== "assistant") continue;
     const text = extractEntryText(entry.content);
-    if (text.length > 0) return text;
+    return text.length > 0 ? text : null;
   }
   return null;
 }

@@ -385,6 +385,46 @@ describe("SubagentRunner — double-revive race guard", () => {
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await secondRevive;
   });
+
+  it("cleans up an attachment callback failure so the subagent can be revived again", async () => {
+    const id = await spawnAndComplete();
+
+    await expect(
+      runner.revive(DEFAULT_PARENT_CAPTURE, id, "will not start", undefined, async () => {
+        throw new Error("attachment failed");
+      }),
+    ).rejects.toThrow("attachment failed");
+    expect(runner.list().find((info) => info.id === id)).toBeUndefined();
+
+    resetPiMockState();
+    const retry = runner.revive(DEFAULT_PARENT_CAPTURE, id, "retry");
+    await flush();
+    sessionHolder.emit({ type: "agent_end", messages: [] });
+    await expect(retry).resolves.toBe("");
+  });
+
+  it("does not restart a subagent cancelled during asynchronous attachment", async () => {
+    const id = await spawnAndComplete();
+    let releaseAttachment!: () => void;
+    const attachmentStarted = new Promise<void>((resolve) => {
+      releaseAttachment = resolve;
+    });
+    let markAttached!: () => void;
+    const attached = new Promise<void>((resolve) => {
+      markAttached = resolve;
+    });
+
+    const revival = runner.revive(DEFAULT_PARENT_CAPTURE, id, "will be cancelled", undefined, async () => {
+      markAttached();
+      await attachmentStarted;
+    });
+    await attached;
+    await runner.cancel(id);
+    releaseAttachment();
+
+    await expect(revival).rejects.toThrow("Subagent was cancelled");
+    expect(sessionHolder.sendUserMessage).not.toHaveBeenCalledWith("will be cancelled");
+  });
 });
 
 describe("SubagentRunner — revive with deleted AGENTS.md", () => {

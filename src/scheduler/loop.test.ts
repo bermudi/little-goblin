@@ -848,12 +848,14 @@ describe("SchedulerLoop", () => {
       expect(dispatched).not.toContain("[heartbeat]");
       expect(dispatched).toEqual(["deploy reminder"]);
 
-      // The heartbeat was claimed before the prompt resolution threw, so it was
-      // advanced to its next run and is no longer due at the same timestamp.
+      // The heartbeat was claimed before prompt resolution, so it advanced to
+      // its next run. The failure is nevertheless persisted as the occurrence's
+      // last-run status rather than silently disappearing.
       const afterHeartbeat = store.getForSurface(heartbeatLoc, heartbeat.id)!;
       expect(afterHeartbeat.kind).toBe("heartbeat");
       expect(new Date(afterHeartbeat.nextRunAt).getTime()).toBeGreaterThan(NOW_MS);
       expect(afterHeartbeat.enabled).toBe(true);
+      expect(afterHeartbeat.lastRun).toMatchObject({ outcome: "error" });
     });
 
     it("isolates a synchronous dispatcher throw so later due schedules still run", async () => {

@@ -459,33 +459,34 @@ export class MessageBuffer implements TurnCallbacks {
   /**
    * Send an out-of-band informational notice to the surface. Used for
    * bounded, non-blocking notifications such as a prompt-file write summary.
-   * Wraps `sendSystemReply` so formatting and plain-text fallback are shared
-   * with other system messages; metrics are recorded in the `system` channel.
+   * Formatting and plain-text fallback are shared with other system messages.
+   * This is the delivery boundary: it emits exactly one aggregate metric and
+   * propagates a final Telegram failure to its best-effort caller.
    */
   async sendNotice(text: string): Promise<void> {
+    const op: "sendMessage" = "sendMessage";
     const sender = {
       reply: async (formatted: string, opts?: ReplyOpts) => {
-        const op: "sendMessage" = "sendMessage";
-        try {
-          const sendOpts = opts ? this.withThread(opts as Record<string, unknown>) : this.withThread();
-          await this.bot.api.sendMessage(this.chatId, formatted, sendOpts);
-          this.recordTelegramEvent({ type: "telegram", op, channel: "system", outcome: "success" });
-        } catch (err) {
-          const { outcome, errorCode, errorDescription, retryAfterSec } = classifyTelegramError(err);
-          this.recordTelegramEvent({
-            type: "telegram",
-            op,
-            channel: "system",
-            outcome,
-            errorCode,
-            errorDescription,
-            retryAfterSec,
-          });
-          throw err;
-        }
+        const sendOpts = opts ? this.withThread(opts as Record<string, unknown>) : this.withThread();
+        await this.bot.api.sendMessage(this.chatId, formatted, sendOpts);
       },
     };
-    await sendSystemReply(sender, text, "info", { silent: true });
+    try {
+      await sendSystemReply(sender, text, "info", { silent: true, propagateErrors: true });
+      this.recordTelegramEvent({ type: "telegram", op, channel: "system", outcome: "success" });
+    } catch (err) {
+      const { outcome, errorCode, errorDescription, retryAfterSec } = classifyTelegramError(err);
+      this.recordTelegramEvent({
+        type: "telegram",
+        op,
+        channel: "system",
+        outcome,
+        errorCode,
+        errorDescription,
+        retryAfterSec,
+      });
+      throw err;
+    }
   }
 
   /**

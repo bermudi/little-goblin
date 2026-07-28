@@ -63,6 +63,7 @@ describe("readLastAssistantMessage", () => {
 
   it("returns null when the last assistant message has only non-text blocks", async () => {
     writeTranscript(home, sessionId, [
+      { role: "assistant", content: "an earlier answer" },
       {
         role: "assistant",
         content: [

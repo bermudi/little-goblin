@@ -260,13 +260,13 @@ describe("MessageBuffer", () => {
       }
     });
 
-    it("records an error metric and does not throw when the system message fails", async () => {
+    it("records an error metric and propagates a system-message failure", async () => {
       const m = makeBot();
       const metrics = makeMetrics();
       try {
         m.failNext.send = new Error("network");
         const buffer = new MessageBuffer(m.bot, dmSurface(1), { metrics: metrics.store });
-        await expect(buffer.sendNotice("prompt file summary")).resolves.toBeUndefined();
+        await expect(buffer.sendNotice("prompt file summary")).rejects.toThrow("network");
         await tick();
 
         const events = readTelegramEvents(metrics.home);
@@ -277,6 +277,25 @@ describe("MessageBuffer", () => {
           channel: "system",
           outcome: "error",
         });
+      } finally {
+        metrics.cleanup();
+      }
+    });
+
+    it("records one success metric when a parse failure falls back to plain text", async () => {
+      const m = makeBot();
+      const metrics = makeMetrics();
+      try {
+        m.failNext.send = { error_code: 400, description: "Bad Request: can't parse entities" };
+        const buffer = new MessageBuffer(m.bot, dmSurface(1), { metrics: metrics.store });
+        await buffer.sendNotice("prompt file summary");
+        await tick();
+
+        expect(m.send).toHaveLength(1);
+        expect(m.send[0]!.opts).toEqual({ disable_notification: true });
+        const events = readTelegramEvents(metrics.home);
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ channel: "system", outcome: "success" });
       } finally {
         metrics.cleanup();
       }

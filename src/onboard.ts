@@ -207,6 +207,24 @@ export function buildConfig(answers: Answers): string {
   return lines.join("\n");
 }
 
+/**
+ * Run the state migration after onboarding has written its config. Preserve
+ * the failure for the CLI exit path while giving the operator the concrete
+ * recovery command; a bare migration exception otherwise leaves a configured
+ * but intentionally unstartable installation with no next step.
+ */
+export function runInitialStateMigration(home: string, report: (message: string) => void = console.error): void {
+  try {
+    runMigrations(home);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    report(`\n⚠️  State migration failed: ${message}`);
+    report("The config was written successfully, but state is not at the required version.");
+    report("Run `bun run migrate` to diagnose and complete migration before starting the bot.");
+    throw err;
+  }
+}
+
 export async function main(): Promise<void> {
   const goblinHome = process.env.GOBLIN_HOME ?? join(homedir(), "goblin");
   const configPath = join(goblinHome, "goblin.json5");
@@ -264,7 +282,7 @@ export async function main(): Promise<void> {
 
   // Run offline state migration so a fresh install has a current state-version
   // and any legacy layout is canonicalized before the bot starts.
-  runMigrations(goblinHome);
+  runInitialStateMigration(goblinHome);
 
   console.log(`\n✅ Created ${configPath}`);
   if (promptResult.createdSoul) console.log(`✅ Created ${soulMdPath(goblinHome)}`);

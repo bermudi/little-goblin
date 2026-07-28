@@ -229,6 +229,15 @@ describe("sendSystemReply", () => {
     await sendSystemReply({ reply: m.reply }, "x", "ok");
     expect(m.calls).toHaveLength(0);
   });
+
+  it("propagates a final error when requested by a best-effort caller", async () => {
+    const m = makeMessage();
+    m.reply.mockImplementation(() => Promise.reject(new Error("network gone")));
+
+    await expect(
+      sendSystemReply({ reply: m.reply }, "x", "info", { propagateErrors: true }),
+    ).rejects.toThrow("network gone");
+  });
 });
 
 describe("classifyTelegramError", () => {

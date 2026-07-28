@@ -25,6 +25,13 @@ interface SystemMessageSender {
 
 export type SystemTag = "ok" | "error" | "warn" | "info" | "queued";
 
+export interface SystemReplyOptions {
+  /** Deliver without a Telegram notification unless explicitly false. */
+  silent?: boolean;
+  /** Re-throw a final Telegram delivery failure after the plain-text retry. */
+  propagateErrors?: boolean;
+}
+
 const SPECIAL = new Set([
   "_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|",
   "{", "}", ".", "!", "\\",
@@ -288,15 +295,16 @@ export function classifyTelegramError(err: unknown): TelegramApiErrorInfo {
  * Formats `text` via {@link systemReply} and sends it through `message.reply`
  * with `parse_mode: "MarkdownV2"` and `disable_notification: true` (unless
  * `opts.silent === false`). On a 400 parse error, retries once with plain text
- * (tag rendered as `[tag]` without backticks, markdown stripped). If the retry
- * also fails — or any non-parse error occurs — the error is logged and
- * swallowed; system replies must not crash the bot.
+ * (tag rendered as `[tag]` without backticks, markdown stripped). By default a
+ * final failure is logged and swallowed so ordinary system replies cannot crash
+ * the bot. Callers that own an explicit best-effort boundary can set
+ * `propagateErrors` to observe it.
  */
 export async function sendSystemReply(
   message: SystemMessageSender,
   text: string,
   tag?: SystemTag,
-  opts: { silent?: boolean } = {},
+  opts: SystemReplyOptions = {},
 ): Promise<void> {
   const silent = opts.silent !== false;
   const formatted = systemReply(text, tag);
@@ -314,9 +322,11 @@ export async function sendSystemReply(
       try {
         await message.reply(plain, retryOpts);
       } catch (retryErr) {
+        if (opts.propagateErrors) throw retryErr;
         log.warn("sendSystemReply plain-text retry failed", { error: String(retryErr) });
       }
     } else {
+      if (opts.propagateErrors) throw err;
       log.warn("sendSystemReply failed", { error: String(err) });
     }
   }

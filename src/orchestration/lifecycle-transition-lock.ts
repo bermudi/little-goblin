@@ -23,7 +23,7 @@ let tail: Promise<unknown> = Promise.resolve();
  */
 export function withLifecycleTransitionLock<T>(fn: () => T | Promise<T>): Promise<T> {
   if (lockStore.getStore()) {
-    return Promise.resolve(fn()) as Promise<T>;
+    return Promise.resolve().then(fn) as Promise<T>;
   }
   const result = tail.then(() => lockStore.run(true, fn));
   tail = result.catch(() => {});

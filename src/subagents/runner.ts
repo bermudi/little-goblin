@@ -397,6 +397,9 @@ export class SubagentRunner {
       resolveResult = res;
       rejectResult = rej;
     });
+    // Attach before any await below: cancellation during attachment may reject
+    // the result before the execution pipeline is started.
+    result.catch(() => {});
 
     const instance: SubagentInstance = {
       id,
@@ -424,7 +427,25 @@ export class SubagentRunner {
     };
     this.activeSubagents.set(id, instance);
     if (onAttached) {
-      await onAttached();
+      try {
+        await onAttached();
+      } catch (err) {
+        this.activeSubagents.delete(id);
+        this.revivesInProgress.delete(id);
+        rejectResult(err);
+        throw err;
+      }
+    }
+
+    // Cancellation can run while an asynchronous attachment callback yields.
+    // It owns the terminal state, so do not resurrect this instance on disk or
+    // launch a fresh execution after it has been cancelled.
+    if (instance.status !== "running") {
+      const completed = result.finally(() => {
+        this.revivesInProgress.delete(id);
+      });
+      completed.catch(() => {});
+      return completed;
     }
 
     // Update meta to reflect the revival — clear stale terminal fields.
@@ -452,14 +473,14 @@ export class SubagentRunner {
           ),
         rejectResult,
       );
-    result.catch(() => {});
-
     // Resolve the revive only after its bookkeeping (revivesInProgress) is
     // cleared, so a subsequent revive() of the same id observes a clean
     // slate. (The await in callers thus sees the guard already removed.)
-    return result.finally(() => {
+    const completed = result.finally(() => {
       this.revivesInProgress.delete(id);
     });
+    completed.catch(() => {});
+    return completed;
   }
 
   /**

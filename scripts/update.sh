@@ -64,10 +64,13 @@ if [[ "${old_head}" == "${new_head}" ]]; then
 else
   echo "Installing dependencies..."
   su -s /bin/bash "${user}" -c "cd ${repo_dir} && bun install"
-
-  echo "Running validate-config..."
-  su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run validate-config"
 fi
+
+# This must precede the service stop even with no code change: migrate loads
+# the config too, but a config failure after stopping would leave a previously
+# healthy service down without a migration backup to restore.
+echo "Running validate-config..."
+su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run validate-config"
 
 echo "Stopping goblin service before offline migration..."
 systemctl stop goblin

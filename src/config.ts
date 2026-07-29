@@ -6,7 +6,7 @@ import { ConfigFileSchema, type ExternalAgentsConfig, type McpConfig } from "./s
 import { resolveConfigValue } from "./resolve-value.ts";
 import { sessionsDir } from "./sessions/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
-import { skillsPath } from "./workspace/paths.ts";
+import { goblinSkillsPath, personalEnvironmentSkillsPath } from "./workspace/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
 import { namedAgentsRoot, subagentsRoot } from "./subagents/paths.ts";
 import { externalAgentsRoot } from "./external-agents/paths.ts";
@@ -160,7 +160,8 @@ function resolveValue(value: unknown): unknown {
  * Call once at startup before any consumer tries to use the paths.
  *
  * Creates the canonical three-group layout:
- *   workspace/  — user-authored prompt files, skills, and the personal execution CWD
+ *   workspace/  — user-authored prompt files and the personal execution CWD
+ *   .agents/    — deployment-wide Goblin skill catalog
  *   state/      — machine-managed state
  *   scratch/    — ephemeral generic subagent instance data (not a personal workdir)
  *
@@ -174,7 +175,8 @@ export function ensureGoblinHome(cfg: Config): void {
   const dirs = [
     home,
     join(home, "workspace"),
-    skillsPath(home),
+    goblinSkillsPath(home),
+    personalEnvironmentSkillsPath(home),
     namedAgentsRoot(home),
     join(home, "state"),
     sessionsDir(home),

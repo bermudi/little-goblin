@@ -8,6 +8,9 @@ spine: false
 
 # 0034: Explicit Skill Catalog Authority
 
+> Amended by decision 0043: the legacy catalog move is operator-owned, and
+> Goblin contains no skill-layout migration boundary or compatibility path.
+
 ## Context
 
 Goblin currently stores skills at `$GOBLIN_HOME/workspace/skills/` and injects that path into pi's `DefaultResourceLoader`. A process-wide `skillSources` switch decides whether pi ambient discovery is also enabled. This conflates deployment-wide Goblin skills, active-CWD skills, and host-user skills; enabling one authority can unintentionally enable ancestor, package, or host sources.
@@ -29,7 +32,7 @@ A Surface owns selection policy for Goblin, environment, and host catalogs. The 
 
 Goblin SHALL use pi's Agent Skills parser/loader but SHALL NOT rely on ambient skill discovery for main or generic runtimes. Exact roots are selected explicitly, project discovery does not walk above canonical `projectRoot`, and distinct selected skills with duplicate names fail rather than using path-order precedence.
 
-Legacy `$GOBLIN_HOME/workspace/skills/` has Goblin-wide semantics and migrates to `$GOBLIN_HOME/.agents/skills/`. The workspace skill-layout module is a sanctioned narrow `$GOBLIN_HOME` write boundary for canonical directory creation and atomic legacy catalog rename; it does not write prompts, state, or skill contents.
+Legacy `$GOBLIN_HOME/workspace/skills/` has Goblin-wide semantics and is moved once by the operator to `$GOBLIN_HOME/.agents/skills/`. Goblin retains only the canonical scoped paths.
 
 ## Consequences
 
@@ -40,7 +43,7 @@ Legacy `$GOBLIN_HOME/workspace/skills/` has Goblin-wide semantics and migrates t
 - Filesystem catalogs remain canonical; there is no skill registry database or marketplace.
 - Skill catalog edits take effect on runtime recreation or explicit reload, not through a watcher.
 - Decision 0004's statement that project capability relies on pi ambient auto-loading is superseded for skills; exact project `AGENTS.md` remains explicit project guidance.
-- Decision 0007's mkdir-only config exception remains narrow; startup delegates the one-time skill rename to the workspace skill-layout boundary established here.
+- Decision 0007's mkdir-only config exception remains narrow; no skill-layout migration writes occur in Goblin.
 
 ## Alternatives Considered
 

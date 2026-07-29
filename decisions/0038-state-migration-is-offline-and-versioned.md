@@ -8,6 +8,10 @@ spine: false
 
 # 0038: State Migration Is Offline And Versioned
 
+> Amended by decision 0043 for the already-completed skill-layout transition
+> only: that empty, single-deployment catalog move is operator-owned and does
+> not advance machine-managed state version 4.
+
 ## Context
 
 Seven active stabilization changes each specify their own on-disk migration, and each independently demands crash-restart safety:
@@ -49,7 +53,7 @@ The memory SQLite schema retains its own in-process versioned migration in `src/
 
 ## Consequences
 
-Seven bespoke restart-safe migrations collapse into one ordered list behind one version counter, and the fourteen-step startup order loses its migration steps entirely. The interrupted-write, mixed-generation, and partial-restart-convergence requirements are removed from `immutable-project-environments`, `pi-native-skill-layout`, `conversation-lifecycle`, `transcript-surface-provenance`, and `delegated-work-ownership`; each keeps its compute-before-write and refuse-on-ambiguity requirements, which are about correctness rather than crash recovery. Those five remaining changes need a patch to strip the restart-safety language before they are built.
+Seven bespoke restart-safe migrations collapse into one ordered list behind one version counter, and the fourteen-step startup order loses its migration steps entirely. The interrupted-write, mixed-generation, and partial-restart-convergence requirements are removed from `immutable-project-environments`, `conversation-lifecycle`, `transcript-surface-provenance`, and `delegated-work-ownership`; each keeps its compute-before-write and refuse-on-ambiguity requirements, which are about correctness rather than crash recovery. Those four remaining changes need a patch to strip the restart-safety language before they are built. (`pi-native-skill-layout` originally appeared in this list; decision 0043 reclassified its already-completed catalog move as operator-owned, so it carries no Goblin migration step to strip.)
 
 Migration correctness becomes far easier to test: a fixture directory in, a fixture directory out, no interruption matrix.
 

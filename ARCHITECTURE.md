@@ -247,7 +247,7 @@ The archived `agent-owned-prompt-files` change amended the legacy canon statemen
 
 ## Skill architecture
 
-**TARGET — accepted by decision 0034.** The frozen `pi-native-skill-layout`, `skill-catalog-resolution`, `surface-skill-policy`, and `subagent-skill-inheritance` proposals are historical design input for implementing that ruling, not specifications to execute. CURRENT Goblin still uses non-native `workspace/skills/`, manually injects it through `additionalSkillPaths`, and conflates ambient discovery behind process-wide `skillSources`; do not extend that seam.
+**CURRENT layout and TARGET resolution — accepted by decisions 0034 and 0043.** Goblin stores deployment-wide skills at `.agents/skills/` and personal-environment skills at `workspace/.agents/skills/`. The one deployment's empty legacy catalog was moved manually; Goblin has no migration step or legacy path compatibility. Runtime construction still manually injects the Goblin catalog through `additionalSkillPaths` and conflates ambient discovery behind process-wide `skillSources`; `skill-catalog-resolution` owns removal of that seam. The frozen skill proposals are historical design input, not specifications to execute.
 
 | Skill source | Canonical location | Authority |
 |---|---|---|
@@ -261,7 +261,7 @@ A Surface owns independent `goblin`, `environment`, and `host` selections. Each 
 
 Runtime construction resolves exact roots from Conversation environment plus Surface policy, disables Pi ambient skill discovery, and records source/path provenance. It never walks above canonical `projectRoot`, never implicitly loads `~/.pi/agent/skills/` or package skills, and fails on distinct selected files with duplicate names rather than depending on discovery order. Catalog edits take effect on runtime recreation or `/skills reload`.
 
-Legacy `workspace/skills/` migrates to the Goblin catalog because it historically followed the assistant into every environment. Generic subagents inherit the caller's frozen resolved manifest; named agents remain isolated in their own catalog.
+The operator moved legacy `workspace/skills/` to the Goblin catalog because it historically followed the assistant into every environment. Generic subagent manifest inheritance and named-agent catalog isolation remain TARGET behavior.
 
 ## MCP
 
@@ -397,9 +397,9 @@ Target startup is fail-before-polling:
 
 Migrations compute and validate every transformation before the first write, use atomic replacement per file, and fail loudly on ambiguity without selecting a winner. They are *not* required to be idempotent, restart-safe, or mixed-generation tolerant; recovery from a failed migration is restoration from backup. The command's backup boundary covers every persisted root a pending step may mutate, not merely `state/` when a step also moves `workspace/` or legacy `scratch/` data.
 
-The implemented filesystem sequence is Surface identity (step 1), immutable Execution Environments (step 2), transcript Surface provenance (step 3), then Conversation lifecycle ownership (step 4). The current filesystem gate is state version 4. Environment step 2 includes personal-workdir promotion; each step advances the version only after its complete transformation succeeds.
+The implemented machine-managed filesystem sequence is Surface identity (step 1), immutable Execution Environments (step 2), transcript Surface provenance (step 3), then Conversation lifecycle ownership (step 4). The current filesystem gate remains state version 4. Native skill layout was an operator-owned move and does not participate in this sequence.
 
-Two frozen parked proposals still contain obsolete restart-safe startup-migration language that must not be carried into fresh work: `pi-native-skill-layout` and `delegated-work-ownership` (both in `specs/parked/`). Current offline migration behavior is owned by the migration runner and its tests; the delivered `immutable-project-environments`, `transcript-surface-provenance`, and `conversation-lifecycle` archives are provenance only.
+The frozen `pi-native-skill-layout` proposal remains historical input and contains obsolete migration language; its delivered replacement is owned by current paths/tests plus decision 0043's operator action. The parked `delegated-work-ownership` proposal also has obsolete migration language and must not carry it into fresh work. Current offline migration behavior is owned by the migration runner and its tests; archived and frozen change material is provenance only.
 
 ## Current-to-target repair map
 
@@ -413,7 +413,7 @@ Two frozen parked proposals still contain obsolete restart-safe startup-migratio
 | Public partial rebinding methods | Multi-bound history and stale runners | deep `ConversationLifecycle` |
 | Schedule captures session and locator | Automation dies or misroutes on rotation | Surface-owned late resolution |
 | Memory scope/transcript provenance derives from session metadata | Moved history gets stale context or wrong chat attribution | `surface-derived-memory-context` → `transcript-surface-provenance` |
-| `workspace/skills` + `skillSources` | Non-native paths and mixed trust policies | `pi-native-skill-layout` → `skill-catalog-resolution` → `surface-skill-policy` |
+| Explicit Goblin path + `skillSources` | Native storage exists, but runtime source authority is still process-wide and ambient | `skill-catalog-resolution` → `surface-skill-policy` |
 | Personal CWD under `scratch/workdir` | User work is ephemeral and unbacked-up | personal workspace environment migration |
 | Durable records under `scratch/` | “Durable but disposable” contradiction | **OPEN: storage-layout cleanup** |
 | Named definitions mixed with instance state | User-authored and machine-managed lifetimes mixed | **OPEN: subagent state migration** |
@@ -461,7 +461,7 @@ One ordered sequence, walked end to end. Historical change names and task counts
 | 5 | `transcript-surface-provenance` | 29 | **archived** | Event-time provenance for history that may move; state version 3; provenance-aware indexing and dreaming |
 | 6 | `conversation-lifecycle` | 48 | **archived** | Surface/Binding/Conversation split; compatible movement; Surface-owned preferences and automation; filesystem state version 4 |
 | 6a | Persistence and runtime-authority closure | authority corruption + pending-assignment fence | **complete** | Fail closed on canonical authority corruption; recover only intent-owned planned directories; require lifecycle authority for every Surface runtime |
-| 7 | `pi-native-skill-layout` | 9 | **parked** (`specs/parked/`) | `workspace/skills/` → `.agents/skills/` |
+| 7 | `pi-native-skill-layout` | fresh Nospec slice | **implemented** | Native scoped roots; operator-owned one-time move |
 | 8 | `skill-catalog-resolution` | 16 | **parked** | Explicit catalog roots; `skillSources` switch dies |
 | 9 | `surface-skill-policy` | 16 | **parked** | Per-Surface `/skills` selection |
 | 10 | `subagent-skill-inheritance` | patch | **parked** | Generic subagents inherit the frozen resolved manifest |
@@ -469,9 +469,9 @@ One ordered sequence, walked end to end. Historical change names and task counts
 | 12 | `delegated-work-ownership` | 36 | **parked** | Attached vs durable work; origin-Surface delivery |
 | 13 | `visible-dreaming` | — | **deferred; prior placeholder deleted** | Rewrite against `inner-life`; recover historical notes from Git only if needed |
 
-Steps 1–6a, including attachment intake, agent-owned prompt files, and the persistence/runtime-authority closure, are complete. Steps 7–12 remain frozen historical inputs under `specs/parked/`; step 13 has no live parked artifact (see `BACKLOG.md`).
+Steps 1–7, including attachment intake, agent-owned prompt files, and the persistence/runtime-authority closure, are complete. Steps 8–12 remain frozen historical inputs under `specs/parked/`; step 13 has no live parked artifact (see `BACKLOG.md`).
 
-**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The next candidate is a fresh re-evaluation of the parked `pi-native-skill-layout` train; all other parked scope remains deferred until deliberately resumed.
+**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The next candidate is a fresh re-evaluation of parked `skill-catalog-resolution`; all other parked scope remains deferred until deliberately resumed.
 
 Storage-layout cleanup and workspace write authority cross this chain and must declare dependencies before implementation.
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubagentRunner, type SubagentToolFactory } from "../mod.ts";
-import { agentsMdPath, heartbeatMdPath, skillsPath, soulMdPath, workspacePath } from "../../workspace/paths.ts";
+import { agentsMdPath, goblinSkillsPath, heartbeatMdPath, soulMdPath, workspacePath } from "../../workspace/paths.ts";
 import {
   MAX_SUBAGENT_DEPTH,
   type SubagentMeta,
@@ -316,7 +316,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
 
     const loader = opts.resourceLoader as { options: Record<string, unknown> } | undefined;
     expect(loader).toBeDefined();
-    expect((loader!.options.additionalSkillPaths as string[])[0]).toBe(skillsPath(tmp));
+    expect((loader!.options.additionalSkillPaths as string[])[0]).toBe(goblinSkillsPath(tmp));
   });
 
   it("filters deployment prompt files out of generic subagent context discovery", async () => {

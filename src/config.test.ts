@@ -430,8 +430,9 @@ function homeConfig(goblinHome: string) {
 
 /** Every directory ensureGoblinHome must leave on disk, as paths under home. */
 const EXPECTED_DIRS = [
+  ".agents/skills",
   "workspace",
-  "workspace/skills",
+  "workspace/.agents/skills",
   "workspace/agents",
   "state",
   "state/sessions",

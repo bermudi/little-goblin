@@ -8,6 +8,9 @@ spine: false
 
 # 0008: Path Helper Only Path Construction
 
+> Amended by decision 0043: scoped skill callers use `goblinSkillsPath()`; the
+> temporary ambiguous `skillsPath()` name is removed.
+
 ## Context
 
 The codebase centralizes `$GOBLIN_HOME` path construction in five path-helper modules: `src/sessions/paths.ts`, `src/pi-host.ts`, `src/workspace/paths.ts`, `src/memory/paths.ts`, and `src/subagents/paths.ts`. Each is a flat set of pure functions taking `home: string`. All callers import the helpers rather than constructing paths inline with `join(home, ...)`.

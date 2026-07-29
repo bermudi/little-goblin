@@ -1,6 +1,13 @@
 import { describe, it, expect } from "bun:test";
 import { join } from "node:path";
-import { workdirPath, agentsMdPath, soulMdPath, heartbeatMdPath, skillsPath } from "./paths.ts";
+import {
+  workdirPath,
+  agentsMdPath,
+  soulMdPath,
+  heartbeatMdPath,
+  goblinSkillsPath,
+  personalEnvironmentSkillsPath,
+} from "./paths.ts";
 
 describe("workspace path helpers", () => {
   const fixtureHome = "/home/goblin";
@@ -29,9 +36,12 @@ describe("workspace path helpers", () => {
     });
   });
 
-  describe("skillsPath", () => {
-    it("returns skills directory in workspace", () => {
-      expect(skillsPath(fixtureHome)).toBe(join(fixtureHome, "workspace", "skills"));
+  describe("skill catalog paths", () => {
+    it("keeps Goblin and personal-environment authority distinct", () => {
+      expect(goblinSkillsPath(fixtureHome)).toBe(join(fixtureHome, ".agents", "skills"));
+      expect(personalEnvironmentSkillsPath(fixtureHome)).toBe(
+        join(fixtureHome, "workspace", ".agents", "skills"),
+      );
     });
   });
 });

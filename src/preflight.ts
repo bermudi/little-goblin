@@ -7,7 +7,7 @@ import { resolveModel } from "./agent/models.ts";
 import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
 import { atomicWrite } from "./fs.ts";
 import { log } from "./log.ts";
-import { skillsPath } from "./workspace/paths.ts";
+import { goblinSkillsPath, personalEnvironmentSkillsPath } from "./workspace/paths.ts";
 import { sessionsDir } from "./sessions/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
 import { runExternalAgentsPreflight } from "./external-agents/preflight.ts";
@@ -77,7 +77,8 @@ export async function runPreflight(
     await checkDirectoryWritable(cfg.goblinHome);
     await checkDirectoryWritable(join(cfg.goblinHome, "workspace"));
     await checkDirectoryWritable(join(cfg.goblinHome, "scratch"));
-    await checkDirectoryWritable(skillsPath(cfg.goblinHome));
+    await checkDirectoryWritable(goblinSkillsPath(cfg.goblinHome));
+    await checkDirectoryWritable(personalEnvironmentSkillsPath(cfg.goblinHome));
     await checkDirectoryWritable(join(cfg.goblinHome, "state"));
     await checkDirectoryWritable(sessionsDir(cfg.goblinHome));
     await checkDirectoryWritable(memoryDir(cfg.goblinHome));

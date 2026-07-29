@@ -19,7 +19,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { createPiServices, findMostRecentCompatiblePiSession, piAgentDir, type PiServices } from "../pi-host.ts";
-import { skillsPath } from "../workspace/paths.ts";
+import { goblinSkillsPath } from "../workspace/paths.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { ResolvedModel } from "./models.ts";
 
@@ -78,7 +78,7 @@ interface PiAgentBackendDeps {
   findMostRecentCompatiblePiSession: typeof findMostRecentCompatiblePiSession;
   piAgentDir: typeof piAgentDir;
   sessionDir: typeof sessionDir;
-  skillsPath: typeof skillsPath;
+  goblinSkillsPath: typeof goblinSkillsPath;
 }
 
 export interface PiAgentBackendOptions extends AgentBackendOptions {
@@ -116,7 +116,7 @@ export class PiAgentBackend implements AgentBackend {
       findMostRecentCompatiblePiSession,
       piAgentDir,
       sessionDir,
-      skillsPath,
+      goblinSkillsPath,
       ...opts.deps,
     };
   }
@@ -146,7 +146,7 @@ export class PiAgentBackend implements AgentBackend {
       settingsManager,
       systemPrompt,
       noContextFiles: true,
-      additionalSkillPaths: [this.deps.skillsPath(home)],
+      additionalSkillPaths: [this.deps.goblinSkillsPath(home)],
       ...(this.cfg.skillSources === "goblin-only" ? { noSkills: true } : {}),
     });
     await resourceLoader.reload();

@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { surfaceHeartbeatPath, sessionDir, transcriptPath } from "../sessions/paths.ts";
 import { readTranscriptEntries } from "../sessions/transcript.ts";
 import { piAgentDir } from "../pi-host.ts";
-import { agentsMdPath, skillsPath, soulMdPath, workspacePath } from "../workspace/paths.ts";
+import { agentsMdPath, goblinSkillsPath, soulMdPath, workspacePath } from "../workspace/paths.ts";
 import { personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import { ExternalAgentRunner } from "../external-agents/mod.ts";
@@ -173,7 +173,7 @@ class FakeAgentBackend implements AgentBackend {
       systemPrompt: args.systemPrompt,
       cwd,
       noContextFiles: true,
-      additionalSkillPaths: [skillsPath(home)],
+      additionalSkillPaths: [goblinSkillsPath(home)],
     };
     if (this.opts.cfg.skillSources === "goblin-only") {
       loaderOpts.noSkills = true;
@@ -929,7 +929,7 @@ describe("AgentRunner", () => {
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
       expect(loaderOpts.noSkills).toBe(true);
       expect(loaderOpts.noContextFiles).toBe(true);
-      expect(loaderOpts.additionalSkillPaths).toEqual([skillsPath(tmpDir)]);
+      expect(loaderOpts.additionalSkillPaths).toEqual([goblinSkillsPath(tmpDir)]);
       expect(loaderOpts.systemPrompt).toContain("test goblin identity");
     });
 
@@ -940,7 +940,7 @@ describe("AgentRunner", () => {
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
       expect("noSkills" in loaderOpts).toBe(false);
       expect(loaderOpts.noContextFiles).toBe(true);
-      expect(loaderOpts.additionalSkillPaths).toEqual([skillsPath(tmpDir)]);
+      expect(loaderOpts.additionalSkillPaths).toEqual([goblinSkillsPath(tmpDir)]);
       expect(loaderOpts.systemPrompt).toContain("test goblin identity");
     });
   });

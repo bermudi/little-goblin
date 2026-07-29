@@ -7,7 +7,7 @@
  * agent's own tree — strict isolation from goblin and from other agents.
  *
  * Generic subagents (no name) get a different loader that explicitly pins
- * `~/goblin/skills/` so they always see goblin's skills regardless of pi's
+ * `$GOBLIN_HOME/.agents/skills/` so they always see Goblin's skills regardless of pi's
  * default traversal behaviour.
  */
 
@@ -19,7 +19,7 @@ import {
   type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { piAgentDir } from "../pi-host.ts";
-import { agentsMdPath, heartbeatMdPath, skillsPath, soulMdPath } from "../workspace/paths.ts";
+import { agentsMdPath, goblinSkillsPath, heartbeatMdPath, soulMdPath } from "../workspace/paths.ts";
 import { namedAgentAgentsMdPath, namedAgentDir, namedAgentSkillsDir } from "./paths.ts";
 import type { NamedAgentDefinition, SubagentRole } from "./types.ts";
 
@@ -74,8 +74,8 @@ function deploymentPromptFilePaths(home: string): Set<string> {
  * and skill discovery is pinned to the agent's own `skills/` directory.
  *
  * Generic subagents use pi's defaults but explicitly pin
- * `additionalSkillPaths` to `~/goblin/skills/` so they always discover
- * goblin's skills regardless of pi's default traversal behaviour. They also
+ * `additionalSkillPaths` to `$GOBLIN_HOME/.agents/skills/` so they always
+ * discover Goblin's skills regardless of pi's default traversal behaviour. They also
  * filter goblin's deployment prompt files (`SOUL.md`, `AGENTS.md`,
  * `HEARTBEAT.md`) out of any context-file discovery.
  */
@@ -113,7 +113,7 @@ export async function buildResourceLoader(opts: {
       cwd,
       agentDir: piAgentDir(home),
       settingsManager,
-      additionalSkillPaths: [skillsPath(home)],
+      additionalSkillPaths: [goblinSkillsPath(home)],
       ...(memorySystemPrompt ? { systemPrompt: memorySystemPrompt } : {}),
       agentsFilesOverride: ({ agentsFiles }) => ({
         agentsFiles: agentsFiles.filter((f) => !deploymentFiles.has(resolve(f.path))),

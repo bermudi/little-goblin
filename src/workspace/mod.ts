@@ -1,7 +1,8 @@
 export {
   agentsMdPath,
+  goblinSkillsPath,
   heartbeatMdPath,
-  skillsPath,
+  personalEnvironmentSkillsPath,
   soulMdPath,
   workdirPath,
 } from "./paths.ts";

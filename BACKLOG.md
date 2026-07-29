@@ -14,7 +14,7 @@ Parked scope and open questions. Items graduate only when a deliberate implement
 
 ## Next
 
-**Fresh Nospec scout for `pi-native-skill-layout`.** Re-read current code, accepted decision 0034, and the current architecture before shaping work. Do not copy the parked proposal's obsolete startup-migration design or mechanically translate its task list into `.loop/`.
+**Fresh Nospec scout for `skill-catalog-resolution`.** Start from the native Goblin and personal-environment roots now implemented by `pi-native-skill-layout`, then re-read current runtime construction and accepted decision 0034. Do not mechanically translate the parked task list into `.loop/`.
 
 ## Stabilization closure
 
@@ -28,6 +28,8 @@ Parked scope and open questions. Items graduate only when a deliberate implement
 
 The deployment entered state version 4 through an operator-approved recoverable fresh-state reset, so no production legacy-state migration was required. Offline migration behavior remains covered by migration and deployment-order tests.
 
+**Pi-native skill layout — complete.** The bounded fresh slice established distinct Goblin and personal-environment `.agents/skills/` roots and points runtime callers directly at the scoped Goblin helper. Per decision 0043, the operator inspected and manually moved the deployment's empty legacy catalog; Goblin retains no migration code, compatibility alias, or state-version bump for that completed transition.
+
 ## Parked changes
 
 Historical unstarted plans live in `specs/parked/`; they are frozen references, not active work. Graduate one only by scouting current code and creating fresh work state when needed; never translate its old task list mechanically.
@@ -35,8 +37,7 @@ Historical unstarted plans live in `specs/parked/`; they are frozen references, 
 - **`acp-external-agents`** — external ACP runner. Decisions 0040 and 0041 settle execution-host separation and the fully trusted same-user delegate boundary. Protocol selection remains open: fresh executable experiments must prove bridge availability, resume semantics, cleanup, and terminal requirements before replacing frozen proposal 0030. Do not carry forward its stale session ownership, scratch storage, or constrained-permission assumptions.
 - **`delegated-work-ownership`** — decisions 0036 and 0040 are accepted, but implementation remains deferred until the ACP boundary is classified and a fresh plan replaces the proposal's stale migration/reconciliation wording. External-agent launch design must implement decision 0041's model-selected CWD, invocation parameters, and unattended dangerous profile rather than extending the current fixed-project/two-profile seam.
 - **`inner-life`** — decision 0035 is accepted and its lifecycle prerequisite is satisfied; implementation remains parked pending fresh shaping and delivery capacity.
-- **`pi-native-skill-layout`** — the next scout target; replace, rather than patch, its obsolete startup-migration design with current offline-versioned migration authority.
-- **`skill-catalog-resolution`** — follows `pi-native-skill-layout`; the lifecycle prerequisite is complete.
+- **`skill-catalog-resolution`** — the next scout target; native catalog layout and the lifecycle prerequisite are complete.
 - **`surface-skill-policy`** — follows catalog resolution; do not create the historical proposal's parallel policy coordinator.
 - **`subagent-skill-inheritance`** — follows catalog resolution and Surface policy; its frozen proposal contains stale paths and startup-migration assumptions.
 

@@ -25,7 +25,8 @@ function buildConfig(overrides: Partial<Config> & { goblinHome: string }): Confi
 function setupHome(): string {
   const home = mkdtempSync(join(tmpdir(), "goblin-preflight-"));
   mkdirSync(join(home, "workspace"), { recursive: true });
-  mkdirSync(join(home, "workspace", "skills"), { recursive: true });
+  mkdirSync(join(home, ".agents", "skills"), { recursive: true });
+  mkdirSync(join(home, "workspace", ".agents", "skills"), { recursive: true });
   mkdirSync(join(home, "state"), { recursive: true });
   mkdirSync(join(home, "state", "sessions"), { recursive: true });
   mkdirSync(join(home, "state", "memory"), { recursive: true });

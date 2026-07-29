@@ -2,15 +2,15 @@
  * Goblin workspace path helpers.
  *
  * Resolves the persistent personal workspace, attachments, user-authored
- * prompt files, and goblin-curated skills under `$GOBLIN_HOME/workspace/`.
+ * prompt files, and scoped Agent Skills catalogs.
  * The retired scratch workdir helper remains only for offline migration.
  */
 
 import { join } from "node:path";
 
 /**
- * Path to the persistent workspace root. User-authored prompt files and curated
- * skills live here; personal Execution Environments use this directory as CWD.
+ * Path to the persistent workspace root. User-authored prompt files live here;
+ * personal Execution Environments use this directory as CWD.
  */
 export function workspacePath(home: string): string {
   return join(home, "workspace");
@@ -31,9 +31,14 @@ export function agentsMdPath(home: string): string {
   return join(home, "workspace", "AGENTS.md");
 }
 
-/** Path to goblin's skills directory in the goblin workspace. */
-export function skillsPath(home: string): string {
-  return join(home, "workspace", "skills");
+/** Path to Goblin-wide skills eligible across Execution Environments. */
+export function goblinSkillsPath(home: string): string {
+  return join(home, ".agents", "skills");
+}
+
+/** Path to skills authored for the personal Execution Environment. */
+export function personalEnvironmentSkillsPath(home: string): string {
+  return join(home, "workspace", ".agents", "skills");
 }
 
 /** Path to the SOUL.md file in the goblin workspace. */

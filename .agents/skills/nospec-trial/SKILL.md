@@ -1,6 +1,6 @@
 ---
 name: nospec-trial
-description: Use for adversarial review of an existing change against repository standards and the stated intent it was meant to satisfy.
+description: Use for adversarial review of an existing change against repository standards and the intent it was meant to satisfy.
 license: MIT
 metadata:
   author: bermudi
@@ -9,86 +9,36 @@ metadata:
 
 # Trial
 
-Review an existing change on two independent axes:
+Adversarially challenge an existing change:
 
-1. **Standards** — does it fit the repository's conventions and constraints?
-2. **Intent** — does it satisfy the promised outcome beyond the narrow checks already run?
+> How could this apparently successful change still be wrong?
 
-Review after reading the diff and available evidence. In a batch cycle, read the queue, `EVIDENCE.md`, and any provided design note. Interactively, recover intent from the request and conversation.
+Do not combine this stance with building. A reviewer who edits source tends to rationalize the implementation it just produced. Reviewers report findings; `nospec-carve` owns correction and `nospec-shape` owns batch-unit generation.
 
-Use the authoritative source for each claim: code and tests for current implemented behavior, project-designated contracts for assigned promises, ADRs for rulings, the glossary for domain terms, operational context for repository practice, and the request or queue for current intent. Work specs are disposable; designated contracts are not. If ownership is unclear, surface that uncertainty rather than inferring it from a filename. Do not treat any one source as authority over every claim class.
+## Review two independent axes
 
-## Standards axis
+1. **Standards** — fit with repository conventions, constraints, neighboring code, error handling, tests, and maintained records.
+2. **Intent** — actual behavior versus the requested outcome and constraints beyond checks already run.
 
-Compare the change with stated conventions and neighboring code. Look for:
+Read the diff and available evidence first. In batch, also read the queue, `EVIDENCE.md`, and any design note. Use the authority appropriate to each claim: code/tests for implemented behavior, designated contracts for assigned promises, ADRs for rulings, glossary for domain terms, operational context for repository practice, and request or queue for current intent. Surface unclear ownership rather than guessing from a filename.
 
-- incorrect error handling, naming, layout, or test style;
-- regressions, dead code, debugging residue, or unused paths;
-- unnecessary wrappers, abstractions, and parallel implementations;
-- stale projections after a public interface, ruling, term, or operational instruction changed.
+A passing verify establishes only its mechanical scope. Probe plausible variants, call order, side effects, short-circuits, integration seams, and omissions. Promote a concern only when repository evidence supports it; a pin alert is a prompt to inspect coherence, not itself a defect.
 
-A pin alert in `EVIDENCE.md` says a durable document moved; it is a prompt to inspect coherence, not proof of a defect. Use `nospec-curator` when durable records and views may disagree.
+## Evidence and classification
 
-## Intent axis
+Every promoted finding cites an exact `path:line`, excerpt, violation, and one unambiguous fix direction.
 
-Compare the actual behavior with the outcome and constraints. A passing verify establishes only its mechanical scope.
-
-Probe plausible counterexamples outside that scope: variants, call order, side effects, short-circuit behavior, integration boundaries, and omissions. Ask how the result was produced, not only whether one visible value matched. Promote a concern only when the repository provides evidence for it.
-
-Review can inspect the unverified acceptance surface; it cannot turn judgment into deterministic proof.
-
-## Evidence and confidence
-
-Every promoted finding cites an exact `path:line` and a short excerpt.
-
-- **high** — direct evidence and a clear violation.
+- **high** — direct evidence and clear violation.
 - **medium** — direct evidence, but interpretation or impact remains uncertain.
-- **low or uncitable** — keep under `## Speculative`; do not count it as actionable.
+- **low or uncitable** — speculative; never actionable.
 
-This guard limits reviewer false positives. A plausible story without a cited premise is not a finding.
+Classify supported findings as:
 
-## Classification
+- **actionable** — should change now;
+- **trivial** — optional non-blocking polish;
+- **disputed** — evidence or project authority rejects it;
+- **deferred** — valid but intentionally outside this work.
 
-- **actionable** — should be changed now and has one clear fix direction. Patch size is irrelevant.
-- **trivial** — non-blocking polish that may be ignored; the batch runner does not send it to the fixer.
-- **disputed** — evidence does not support the concern or project authority rejects it.
-- **deferred** — valid, intentionally outside the current work.
+Patch size does not decide severity. If choosing a fix requires a new ruling, report the decision need rather than laundering it into a direction.
 
-If a one-line issue must be fixed before acceptance, classify it as actionable. Reviewers do not edit source or append queue units in batch; `nospec-mend` owns that conversion.
-
-A fix direction is one unambiguous instruction, not a menu. If choosing a direction requires a new architectural ruling, report the decision need instead of laundering it into a fix.
-
-## Batch output contract
-
-Write the requested `REVIEW.md` with exactly these sections:
-
-1. `## Standards`
-2. `## Intent`
-3. `## Speculative`
-4. `## Summary`
-
-Finding shape:
-
-```markdown
-- S1 | actionable | high
-  evidence: `path/to/file:42` — "quoted code"
-  finding: The change violates the repository's established parser boundary.
-  fix direction: Route all queue consumers through the canonical parser.
-```
-
-Use `S`, `I`, or `X` ids for standards, intent, or speculative findings. Write `No issues found.` for a clean section.
-
-The summary is machine-readable:
-
-```markdown
-## Summary
-- standards: 1
-- intent: 0
-- speculative: 0
-- actionable: 1
-- trivial: 0
-- disputed: 0
-- deferred: 0
-```
-
-`- actionable: N` is the runner's continue/stop signal. Count only actionable findings. Interactively, communicate the same evidence without manufacturing a review artifact unless one is useful.
+Interactively, communicate evidence directly without manufacturing an artifact. For runner-backed review, read [`references/batch-output.md`](references/batch-output.md).

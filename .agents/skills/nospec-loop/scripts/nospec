@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-# SCRIPT_DIR is the real .../nospec/scripts/ directory even when this entry
+# SCRIPT_DIR is the real .../nospec-loop/scripts/ directory even when this entry
 # point is invoked through the symlink created by `nospec install`. Prompts and
 # the canonical queue parser ship beside it and are resolved from that path:
 #   - Installed: $SCRIPT_DIR/..        = .agents/skills/  (or ~/.agents/skills/)
@@ -492,7 +492,7 @@ PY
 # nospec install — symlink this runner onto PATH so `nospec` works from anywhere.
 #
 # Skills.sh installs skill files but does not touch PATH. The runner ships as
-# scripts/nospec inside the nospec skill; without this step it's only callable
+# scripts/nospec inside the nospec-loop skill; without this step it's only callable
 # by its full path. The agent invokes this once (the user doesn't type the
 # long path) — see ADR-0019.
 #
@@ -1056,8 +1056,8 @@ write_fix_prompt() {
         cat > "$out" <<'EOF'
 # Nospec Fixer
 
-Load and follow the **nospec-mend** skill.
-Read the structured review artifact and append any actionable fix work units to the existing queue. Stop after updating the queue.
+Load the **nospec-shape** skill and follow its `references/review-findings.md` branch.
+Read the structured review artifact and append actionable fix work units to the existing queue. Stop after updating the queue.
 EOF
     fi
     cat >> "$out" <<EOF

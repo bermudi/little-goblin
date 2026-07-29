@@ -115,6 +115,8 @@ type ExecutionEnvironment =
 - Runner creation requires Surface and Conversation environments to agree.
 - Equal environments permit `/resume`; they do not merge routing, history, memory, schedules, or notifications.
 
+**External-agent exception — accepted by decision 0041.** The Conversation Execution Environment remains immutable and authoritative for the main runtime and pi history. A fully trusted same-user external agent may select a working directory and invocation outside that environment. Its captured Conversation environment remains provenance and default context, not filesystem confinement.
+
 `/project` is one-time Surface initialization. First assignment preserves the personal Conversation and starts fresh project history. Switching or clearing through ordinary `/project` is rejected.
 
 ## Ownership by lifetime
@@ -135,7 +137,10 @@ type ExecutionEnvironment =
 | Runner, prompt queue, Telegram sink/tools | Conversation runtime |
 | Personal identity and deployment prompts | Deployment workspace |
 | Curated memory entries | Memory store, keyed by active scope |
-| Delegated-run record and execution lifecycle | Delegated-work subsystem **(TARGET — decision 0036)** |
+| Delegated-run record and cross-run lifecycle | Delegated-work subsystem **(TARGET — decision 0036)** |
+| Pi session construction for delegated work | Pi execution host **(TARGET — decision 0040)** |
+| External provider/process protocol mechanics | External-agent execution host **(TARGET — decision 0040)** |
+| External-agent working directory, invocation parameters, and permission profile | Main model through structured launch input **(TARGET — decision 0041)** |
 | Explicit delegated-run control | Owner Conversation |
 | Automatic delegated completion destination | Origin Surface |
 | Wake/reflection/effect history | Inner-life wake store **(TARGET — decision 0035)** |
@@ -258,6 +263,12 @@ Runtime construction resolves exact roots from Conversation environment plus Sur
 
 Legacy `workspace/skills/` migrates to the Goblin catalog because it historically followed the assistant into every environment. Generic subagents inherit the caller's frozen resolved manifest; named agents remain isolated in their own catalog.
 
+## MCP
+
+**CURRENT and TARGET — accepted by decision 0042.** `mcporter` is Goblin's sole MCP gateway. It owns MCP transport, OAuth, server configuration, and server lifecycle. Goblin's `McpRunner` may invoke the gateway, select configured servers, cache and describe its catalog, normalize and bound results, and enforce timeouts; Goblin does not implement a direct MCP client or alternate gateway.
+
+The current `bunx --silent mcporter` command is implementation rather than architecture. Installation, version pinning, preflight, media normalization, and catalog UX may change without moving the gateway boundary. A direct stdio/HTTP/SSE client or another gateway requires a superseding decision.
+
 ## Attachment architecture
 
 **CURRENT — archived `personal-attachment-intake` patch.** File attachments derive their destination from the Conversation environment:
@@ -311,9 +322,11 @@ TARGET direction:
 
 ### External agents
 
-**OPEN — external-agent protocol boundary.** Frozen proposed decision 0030 explored ACP as the protocol and logical-session boundary, but it is not an accepted ruling. Current code retains the legacy external-agent seam; fresh scouting must classify the ACP boundary before implementation. External-agent authority remains code-owned: model input never supplies executable, environment, credentials, protocol session identity, or permission policy.
+**OPEN — external-agent protocol boundary.** Frozen proposed decision 0030 explored ACP as the protocol and logical-session boundary, but it is not an accepted ruling. Current code retains provider-native Codex/Claude adapters, new-session ACP for Devin, and optional PTY fallback. Fresh executable scouting must prove bridge availability, resume semantics, cleanup, and terminal requirements before a protocol ruling is accepted.
 
-**TARGET — accepted by decision 0036.** Every run captures a controlling owner Conversation, immutable environment, and origin Surface. A future protocol-specific decision must classify which runs can be durable across process or Conversation rotation; explicit owner cancellation remains destructive. Control follows the owner Conversation, but automatic completion delivery never leaves the origin Surface merely because another lane shares a CWD. The frozen `delegated-work-ownership` proposal is design input only.
+**TARGET — accepted by decisions 0036 and 0040.** The delegated-work subsystem owns run authority, cross-run lifetime, cancellation policy, and completion delivery. Pi construction and external provider/process execution remain distinct hosts behind that subsystem. Every run captures a controlling owner Conversation, lifetime, Conversation Execution Environment, and origin Surface. A future protocol-specific decision must classify which runs can continue across process death; explicit owner cancellation remains destructive. Automatic completion delivery never leaves the origin Surface merely because another lane shares a CWD.
+
+**TARGET trust boundary — accepted by decision 0041.** Goblin's main model and spawned external agents are fully trusted delegates of the same Unix user. The model may select working directory, invocation parameters, and permission profile, including an unattended dangerous profile. Project CWD and provider modes are not confinement; the same-user OS boundary is the security floor. Goblin does not inject its ambient Telegram or model-provider secrets by default; external CLIs use their same-user credential stores. That default prevents accidental secret duplication but cannot make a same-user child untrusted. Whether executable selection or explicit child-environment overrides become model-facing remains unresolved.
 
 An unavailable origin retains a bounded pending completion. Background work never creates a Conversation or pushes to a fallback Surface; the next authorized ordinary interaction on the exact origin may claim the result through a tokenized claim/ack/release handoff. Execution outcome and delivery state remain separate.
 
@@ -406,6 +419,7 @@ Two frozen parked proposals still contain obsolete restart-safe startup-migratio
 | Named definitions mixed with instance state | User-authored and machine-managed lifetimes mixed | **OPEN: subagent state migration** |
 | Internal dreaming fake session identity | Borrowed routing/runtime machinery | `inner-life` → future `visible-dreaming` rewrite |
 | Attached/durable work implicit | Rotation may cancel or orphan wrong work | `delegated-work-ownership` |
+| External-agent fixed project CWD and two non-dangerous profiles | Contradicts the accepted fully trusted same-user delegate boundary | model-selected launch context under decision 0041 |
 | `bot.ts`/`tg/intake.ts` orchestration choreography | Shallow seams and duplicated transitions | lifecycle + dispatcher modules |
 
 ## Stabilization dependency graph

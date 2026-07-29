@@ -135,7 +135,6 @@ bun run test         # run all tests
 bun run typecheck    # TypeScript check
 bun run onboard      # first-time setup wizard
 bash scripts/deployment-order.test.sh  # isolated fake-command deployment ordering checks
-bash scripts/nospec-authority.test.sh  # non-vacuous planning-authority and skill-pin checks
 ```
 
 Tests are colocated with source files (`foo.ts` ↔ `foo.test.ts`). `src/subagents/` is the one exception: its suites live under `src/subagents/test/*.suite.ts` and are bootstrapped from `src/subagents/mod.test.ts` because `bun:test` `mock.module()` is process-global.

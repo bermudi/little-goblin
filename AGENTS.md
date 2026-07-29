@@ -28,7 +28,7 @@ New feature work resumes when its architectural dependencies are explicit and th
 ### Planning discipline
 
 - **WIP limit: one implementation cycle in progress, one plainly described next.** Follow the delivery order in [`ARCHITECTURE.md`](ARCHITECTURE.md); keep everything further out in [`BACKLOG.md`](BACKLOG.md).
-- **Nospec is the active work process.** The project-local skills under `.agents/skills/nospec*` are vendored from `bermudi/nospec` at exact commit `df7382341836647f10aba32e9bea877300443fef` (audited locally at `/home/daniel/build/nospec`). To update: check out an exact candidate commit, run its upstream tests, replace all nine skill directories, regenerate `scripts/nospec-skills.sha256`, update the pin, and run `bash scripts/nospec-authority.test.sh`. Never update from a moving branch.
+- **Nospec is the active work process.** Project-local workflow skills are tracked by `skills-lock.json`.
 - Work interactively by default. A clear bounded change needs no queue. Use `.loop/<cycle>/` only when cross-session coordination or AFK execution adds value; `QUEUE.md`, `HANDOFF.md`, `REVIEW.md`, and scratch work specs are disposable, while runner-produced `EVIDENCE.md` is the retained ledger.
 - Authority is role-based: code and tests own current implemented behavior; explicitly designated contract records own their promises; root `decisions/` owns accepted architectural rulings; `ARCHITECTURE.md` owns the system map; `glossary.md` owns domain language; this file owns repository practice; `BACKLOG.md` owns work priority.
 - `specs/` is a frozen Litespec-era reference tree. Do not create, update, archive, or mechanically translate its canon, changes, parked plans, or status-ambiguous decisions. Before retiring historical material, extract still-valid behavior into code/tests or an explicitly designated contract record. Git is the archive.
@@ -79,7 +79,6 @@ This file (`AGENTS.md`) is **not** auto-injected into the system prompt today; t
 - **Colocated.** `foo.ts` ↔ `foo.test.ts` in the same directory. `bun test` discovers them automatically.
 - **One exception: `src/subagents/`.** Its tests live in `src/subagents/test/*.suite.ts`, bootstrapped from `mod.test.ts`. The reason: `bun:test` `mock.module()` is process-global, so the suites must run under a single mock install. The `.suite.ts` extension prevents bun from auto-discovering them (which would race the mock). If bun ever gets per-file mock scoping, collapse this back to colocated `.test.ts` files.
 - Add `"test": "bun test"` to package.json if it's still missing.
-- Run `bash scripts/nospec-authority.test.sh` after changing planning authority, durable-record metadata, accepted ADR inventory, or vendored workflow skills. This project-owned gate prevents a vacuous upstream `nospec check` pass.
 - Run `bun run typecheck` (`tsc --noEmit`) before committing.
 
 ## Things not to do

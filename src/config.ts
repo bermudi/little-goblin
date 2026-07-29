@@ -32,7 +32,6 @@ export interface Config {
   logLevel: "debug" | "info" | "warn" | "error";
   /** Status-line tool visibility level. See `src/tg/buffer.ts`. */
   toolVisibility: "none" | "minimal" | "standard" | "verbose" | "debug";
-  skillSources: "goblin-only" | "user";
   /** Favorite model ids for /model switching. */
   favorites: string[];
   /** Microsoft Edge TTS voice for /voice and text_to_speech. */
@@ -102,7 +101,6 @@ export function loadConfig(): Config {
     goblinHome,
     logLevel: cfg.logLevel,
     toolVisibility: cfg.toolVisibility,
-    skillSources: cfg.skillSources,
     favorites: cfg.favorites ?? [],
     voiceName: cfg.voiceName,
     groqApiKey: cfg.groqApiKey,

@@ -19,9 +19,9 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
 import { createPiServices, findMostRecentCompatiblePiSession, piAgentDir, type PiServices } from "../pi-host.ts";
-import { goblinSkillsPath } from "../workspace/paths.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { ResolvedModel } from "./models.ts";
+import type { ResolvedSkillSet } from "./skills/mod.ts";
 
 // We intentionally use structural matches for the payload shapes so callers
 // (project notice, memory snapshot) do not need to import pi's internal
@@ -51,6 +51,12 @@ export interface AgentBackendInitArgs {
   guardBuiltInTool: (tool: ToolDefinition) => ToolDefinition;
   systemPrompt: string;
   cwd: string;
+  /**
+   * Frozen resolved skill set from SkillCatalogResolver. The backend passes
+   * only the selected skill file paths to pi's DefaultResourceLoader with
+   * `noSkills: true`, so no ambient pi discovery occurs (decision 0034).
+   */
+  resolvedSkills: ResolvedSkillSet;
 }
 
 export interface AgentBackend {
@@ -78,7 +84,6 @@ interface PiAgentBackendDeps {
   findMostRecentCompatiblePiSession: typeof findMostRecentCompatiblePiSession;
   piAgentDir: typeof piAgentDir;
   sessionDir: typeof sessionDir;
-  goblinSkillsPath: typeof goblinSkillsPath;
 }
 
 export interface PiAgentBackendOptions extends AgentBackendOptions {
@@ -116,7 +121,6 @@ export class PiAgentBackend implements AgentBackend {
       findMostRecentCompatiblePiSession,
       piAgentDir,
       sessionDir,
-      goblinSkillsPath,
       ...opts.deps,
     };
   }
@@ -125,7 +129,7 @@ export class PiAgentBackend implements AgentBackend {
     if (this.session) return;
 
     const home = this.cfg.goblinHome;
-    const { resolvedModel, thinkingLevel, customTools, guardBuiltInTool, systemPrompt, cwd } = args;
+    const { resolvedModel, thinkingLevel, customTools, guardBuiltInTool, systemPrompt, cwd, resolvedSkills } = args;
 
     const { modelRuntime, settingsManager } = await this.deps.createPiServices(home);
     this.modelRuntime = modelRuntime;
@@ -146,8 +150,8 @@ export class PiAgentBackend implements AgentBackend {
       settingsManager,
       systemPrompt,
       noContextFiles: true,
-      additionalSkillPaths: [this.deps.goblinSkillsPath(home)],
-      ...(this.cfg.skillSources === "goblin-only" ? { noSkills: true } : {}),
+      noSkills: true,
+      additionalSkillPaths: resolvedSkills.skills.map((s) => s.filePath),
     });
     await resourceLoader.reload();
 

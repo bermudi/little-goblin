@@ -121,7 +121,7 @@ describe("loadConfig", () => {
     expect(cfg.logLevel).toBe("info");
   });
 
-  it("defaults skillSources to goblin-only when not specified", () => {
+  it("does not expose skillSources on Config when the key is absent", () => {
     const configContent = `{
       botToken: "test",
       allowedUsers: [123],
@@ -130,7 +130,7 @@ describe("loadConfig", () => {
     writeFileSync(join(tempDir, "goblin.json5"), configContent);
 
     const cfg = loadConfig();
-    expect(cfg.skillSources).toBe("goblin-only");
+    expect("skillSources" in cfg).toBe(false);
   });
 
   it("defaults voiceName when not specified", () => {
@@ -158,43 +158,18 @@ describe("loadConfig", () => {
     expect(cfg.voiceName).toBe("en-US-AndrewMultilingualNeural");
   });
 
-  it("accepts every valid skillSources value", () => {
-    for (const skillSources of ["goblin-only", "user"] as const) {
+  it("rejects legacy skillSources key with actionable guidance", () => {
+    for (const value of ['"goblin-only"', '"user"', '"auto"', '"everything"']) {
       const configContent = `{
         botToken: "test",
         allowedUsers: [123],
         model: "poe/test",
-        skillSources: "${skillSources}",
+        skillSources: ${value},
       }`;
       writeFileSync(join(tempDir, "goblin.json5"), configContent);
 
-      const cfg = loadConfig();
-      expect(cfg.skillSources).toBe(skillSources);
+      expect(() => loadConfig()).toThrow("skillSources has been removed");
     }
-  });
-
-  it("rejects removed auto skillSources value", () => {
-    const configContent = `{
-      botToken: "test",
-      allowedUsers: [123],
-      model: "poe/test",
-      skillSources: "auto",
-    }`;
-    writeFileSync(join(tempDir, "goblin.json5"), configContent);
-
-    expect(() => loadConfig()).toThrow("Config validation failed");
-  });
-
-  it("rejects invalid skillSources values", () => {
-    const configContent = `{
-      botToken: "test",
-      allowedUsers: [123],
-      model: "poe/test",
-      skillSources: "everything",
-    }`;
-    writeFileSync(join(tempDir, "goblin.json5"), configContent);
-
-    expect(() => loadConfig()).toThrow("Config validation failed");
   });
 
   it("includes optional API keys when present", () => {
@@ -422,7 +397,6 @@ function homeConfig(goblinHome: string) {
     modelName: "test",
     logLevel: "info" as const,
     toolVisibility: "standard" as const,
-    skillSources: "goblin-only" as const,
     voiceName: "en-US-AriaNeural",
     favorites: [],
   };

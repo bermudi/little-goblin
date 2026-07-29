@@ -25,7 +25,6 @@ function makeTestConfig(home: string): Config {
     goblinHome: home,
     logLevel: "error",
     toolVisibility: "standard",
-    skillSources: "goblin-only",
     voiceName: "en-US-AriaNeural",
     favorites: [],
   };

@@ -38,7 +38,6 @@ function makeConfig(): Config {
     goblinHome,
     logLevel: "error",
     toolVisibility: "standard",
-    skillSources: "goblin-only",
     voiceName: "en-US-AriaNeural",
     favorites: ["poe/GPT-4o"],
   };

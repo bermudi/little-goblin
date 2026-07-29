@@ -175,7 +175,6 @@ Key options:
 | `favorites` | Model IDs available to `/model`. |
 | `logLevel` | `debug`, `info`, `warn`, `error`. |
 | `toolVisibility` | Status-line detail level. |
-| `skillSources` | `goblin-only` (use only repo skills) or `user` (also discover `$GOBLIN_HOME/workspace/skills/`). |
 
 All string values support three forms:
 

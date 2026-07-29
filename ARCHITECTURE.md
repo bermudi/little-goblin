@@ -247,7 +247,7 @@ The archived `agent-owned-prompt-files` change amended the legacy canon statemen
 
 ## Skill architecture
 
-**CURRENT layout and TARGET resolution — accepted by decisions 0034 and 0043.** Goblin stores deployment-wide skills at `.agents/skills/` and personal-environment skills at `workspace/.agents/skills/`. The one deployment's empty legacy catalog was moved manually; Goblin has no migration step or legacy path compatibility. Runtime construction still manually injects the Goblin catalog through `additionalSkillPaths` and conflates ambient discovery behind process-wide `skillSources`; `skill-catalog-resolution` owns removal of that seam. The frozen skill proposals are historical design input, not specifications to execute.
+**CURRENT — accepted by decisions 0034 and 0043.** Goblin stores deployment-wide skills at `.agents/skills/` and personal-environment skills at `workspace/.agents/skills/`. The one deployment's empty legacy catalog was moved manually; Goblin has no migration step or legacy path compatibility. Runtime construction resolves exact roots from Conversation environment plus a SkillPolicy via `SkillCatalogResolver` (`src/agent/skills/`), disables Pi ambient skill discovery (`noSkills: true`), and passes only the selected skill file paths as `additionalSkillPaths`. The process-wide `skillSources` config field is removed; a legacy key fails validation with actionable guidance. The frozen skill proposals are historical design input, not specifications to execute.
 
 | Skill source | Canonical location | Authority |
 |---|---|---|
@@ -413,7 +413,7 @@ The frozen `pi-native-skill-layout` proposal remains historical input and contai
 | Public partial rebinding methods | Multi-bound history and stale runners | deep `ConversationLifecycle` |
 | Schedule captures session and locator | Automation dies or misroutes on rotation | Surface-owned late resolution |
 | Memory scope/transcript provenance derives from session metadata | Moved history gets stale context or wrong chat attribution | `surface-derived-memory-context` → `transcript-surface-provenance` |
-| Explicit Goblin path + `skillSources` | Native storage exists, but runtime source authority is still process-wide and ambient | `skill-catalog-resolution` → `surface-skill-policy` |
+| Explicit Goblin path + `skillSources` | ~~Native storage exists, but runtime source authority is still process-wide and ambient~~ Resolved: `SkillCatalogResolver` owns exact-root resolution; `skillSources` removed | ~~`skill-catalog-resolution`~~ → `surface-skill-policy` |
 | Personal CWD under `scratch/workdir` | User work is ephemeral and unbacked-up | personal workspace environment migration |
 | Durable records under `scratch/` | “Durable but disposable” contradiction | **OPEN: storage-layout cleanup** |
 | Named definitions mixed with instance state | User-authored and machine-managed lifetimes mixed | **OPEN: subagent state migration** |
@@ -462,7 +462,7 @@ One ordered sequence, walked end to end. Historical change names and task counts
 | 6 | `conversation-lifecycle` | 48 | **archived** | Surface/Binding/Conversation split; compatible movement; Surface-owned preferences and automation; filesystem state version 4 |
 | 6a | Persistence and runtime-authority closure | authority corruption + pending-assignment fence | **complete** | Fail closed on canonical authority corruption; recover only intent-owned planned directories; require lifecycle authority for every Surface runtime |
 | 7 | `pi-native-skill-layout` | fresh Nospec slice | **implemented** | Native scoped roots; operator-owned one-time move |
-| 8 | `skill-catalog-resolution` | 16 | **parked** | Explicit catalog roots; `skillSources` switch dies |
+| 8 | `skill-catalog-resolution` | fresh Nospec slice | **implemented** | Explicit catalog roots; `SkillCatalogResolver`; `skillSources` switch dies |
 | 9 | `surface-skill-policy` | 16 | **parked** | Per-Surface `/skills` selection |
 | 10 | `subagent-skill-inheritance` | patch | **parked** | Generic subagents inherit the frozen resolved manifest |
 | 11 | `inner-life` | 25 | **parked** | Bounded wake/effect authority |

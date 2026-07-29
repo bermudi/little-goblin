@@ -13,7 +13,6 @@ function makeConfig(): Config {
     goblinHome: "/tmp/goblin-test",
     logLevel: "error",
     toolVisibility: "standard",
-    skillSources: "goblin-only",
     voiceName: "en-US-AriaNeural",
     favorites: [],
   };

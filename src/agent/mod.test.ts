@@ -173,11 +173,9 @@ class FakeAgentBackend implements AgentBackend {
       systemPrompt: args.systemPrompt,
       cwd,
       noContextFiles: true,
-      additionalSkillPaths: [goblinSkillsPath(home)],
+      noSkills: true,
+      additionalSkillPaths: args.resolvedSkills.skills.map((s) => s.filePath),
     };
-    if (this.opts.cfg.skillSources === "goblin-only") {
-      loaderOpts.noSkills = true;
-    }
     capturedResourceLoaderArgs.push(loaderOpts);
 
     this.customTools = args.customTools;
@@ -295,7 +293,6 @@ function makeConfig(home: string): Config {
     goblinHome: home,
     logLevel: "info",
     toolVisibility: "standard",
-    skillSources: "goblin-only",
     voiceName: "en-US-AriaNeural",
     favorites: [],
   };
@@ -921,27 +918,36 @@ describe("AgentRunner", () => {
     });
   });
 
-  describe("skillSources resource loader modes", () => {
-    it("goblin-only passes noSkills true to the resource loader", async () => {
-      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, { skillSources: "goblin-only" });
+  describe("skill catalog resolution resource loader", () => {
+    it("always passes noSkills true and resolved skill paths to the resource loader", async () => {
+      // Write a goblin skill so the resolver has a path to pass through.
+      const skillDir = join(goblinSkillsPath(tmpDir), "test-skill");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, "SKILL.md"),
+        "---\nname: test-skill\ndescription: test\n---\nbody\n",
+        "utf-8",
+      );
+
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
       expect(loaderOpts.noSkills).toBe(true);
       expect(loaderOpts.noContextFiles).toBe(true);
-      expect(loaderOpts.additionalSkillPaths).toEqual([goblinSkillsPath(tmpDir)]);
       expect(loaderOpts.systemPrompt).toContain("test goblin identity");
+      // The resolved skill path is the SKILL.md file, not the catalog root.
+      const paths = loaderOpts.additionalSkillPaths as string[];
+      expect(paths).toContain(join(skillDir, "SKILL.md"));
     });
 
-    it("user omits noSkills from the resource loader constructor", async () => {
-      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, undefined, { skillSources: "user" });
+    it("passes an empty skill path list when no catalogs are populated", async () => {
+      const runner = await makeRunner(tmpDir);
       await runner.prompt("hi", nopCallbacks());
 
       const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
-      expect("noSkills" in loaderOpts).toBe(false);
-      expect(loaderOpts.noContextFiles).toBe(true);
-      expect(loaderOpts.additionalSkillPaths).toEqual([goblinSkillsPath(tmpDir)]);
-      expect(loaderOpts.systemPrompt).toContain("test goblin identity");
+      expect(loaderOpts.noSkills).toBe(true);
+      expect(loaderOpts.additionalSkillPaths).toEqual([]);
     });
   });
 

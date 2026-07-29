@@ -14,7 +14,7 @@ Parked scope and open questions. Items graduate only when a deliberate implement
 
 ## Next
 
-**Fresh Nospec scout for `skill-catalog-resolution`.** Start from the native Goblin and personal-environment roots now implemented by `pi-native-skill-layout`, then re-read current runtime construction and accepted decision 0034. Do not mechanically translate the parked task list into `.loop/`.
+**Fresh Nospec scout for `surface-skill-policy`.** `skill-catalog-resolution` is implemented: `SkillCatalogResolver` (`src/agent/skills/`) owns exact-root resolution from Conversation environment plus a `SkillPolicy`, `skillSources` is removed with visible rejection, and the default policy (Goblin all / environment all / host none) is wired into runtime construction. The next step is per-Surface `SkillPolicy` selection — a Surface-owned field on `SurfaceSettings` and `/skills` commands — building on the resolver's `SkillPolicy` input.
 
 ## Stabilization closure
 
@@ -37,7 +37,7 @@ Historical unstarted plans live in `specs/parked/`; they are frozen references, 
 - **`acp-external-agents`** — external ACP runner. Decisions 0040 and 0041 settle execution-host separation and the fully trusted same-user delegate boundary. Protocol selection remains open: fresh executable experiments must prove bridge availability, resume semantics, cleanup, and terminal requirements before replacing frozen proposal 0030. Do not carry forward its stale session ownership, scratch storage, or constrained-permission assumptions.
 - **`delegated-work-ownership`** — decisions 0036 and 0040 are accepted, but implementation remains deferred until the ACP boundary is classified and a fresh plan replaces the proposal's stale migration/reconciliation wording. External-agent launch design must implement decision 0041's model-selected CWD, invocation parameters, and unattended dangerous profile rather than extending the current fixed-project/two-profile seam.
 - **`inner-life`** — decision 0035 is accepted and its lifecycle prerequisite is satisfied; implementation remains parked pending fresh shaping and delivery capacity.
-- **`skill-catalog-resolution`** — the next scout target; native catalog layout and the lifecycle prerequisite are complete.
+- **`skill-catalog-resolution`** — implemented. `SkillCatalogResolver` (`src/agent/skills/`) owns exact-root resolution from Conversation environment plus a `SkillPolicy`; `skillSources` is removed with visible rejection; default policy (Goblin all / environment all / host none) wired into runtime construction. Follow-up: `surface-skill-policy` for per-Surface selection.
 - **`surface-skill-policy`** — follows catalog resolution; do not create the historical proposal's parallel policy coordinator.
 - **`subagent-skill-inheritance`** — follows catalog resolution and Surface policy; its frozen proposal contains stale paths and startup-migration assumptions.
 

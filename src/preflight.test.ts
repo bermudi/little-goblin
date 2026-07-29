@@ -15,7 +15,6 @@ function buildConfig(overrides: Partial<Config> & { goblinHome: string }): Confi
     anthropicApiKey: "sk-test",
     logLevel: "info",
     toolVisibility: "standard",
-    skillSources: "goblin-only",
     favorites: [],
     voiceName: "en-US-EmmaMultilingualNeural",
     ...overrides,

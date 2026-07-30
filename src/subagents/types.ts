@@ -79,7 +79,8 @@ export interface GenericSpawnOptions extends SpawnOptionsBase {
 }
 
 /**
- * Spawn a named agent. The runner loads `~/goblin/agents/<name>/AGENTS.md`
+ * Spawn a named agent. The runner loads
+ * `$GOBLIN_HOME/workspace/agents/<name>/AGENTS.md`
  * and isolates skills to the agent's own catalog; the caller's manifest is
  * not inherited.
  */

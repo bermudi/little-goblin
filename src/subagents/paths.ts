@@ -11,7 +11,8 @@
  *       └── agents/               # named agent definitions (phase 3)
  *           └── <name>/
  *               ├── AGENTS.md
- *               ├── skills/
+ *               ├── .agents/
+ *               │   └── skills/
  *               └── instances/
  *                   └── <id>/
  *                       ├── session.jsonl
@@ -46,7 +47,7 @@ export function namedAgentAgentsMdPath(home: string, name: string): string {
 }
 
 export function namedAgentSkillsDir(home: string, name: string): string {
-  return join(namedAgentDir(home, name), "skills");
+  return join(namedAgentDir(home, name), ".agents", "skills");
 }
 
 export function namedAgentInstanceDir(home: string, name: string, id: string): string {

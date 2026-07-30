@@ -255,13 +255,13 @@ The archived `agent-owned-prompt-files` change amended the legacy canon statemen
 | Personal environment catalog | `$GOBLIN_HOME/workspace/.agents/skills/` | Capabilities authored for the personal Execution Environment |
 | Project environment catalog | exact `<projectRoot>/.agents/skills/` and `<projectRoot>/.pi/skills/` | Capabilities supplied by one project Execution Environment |
 | Host catalog | exact `~/.agents/skills/` | Unix-user capabilities, disabled by default and explicitly selectable |
-| Named-agent catalog (TARGET) | `$GOBLIN_HOME/workspace/agents/<name>/.agents/skills/` | Isolated named-agent capabilities; CURRENT code still reads legacy `skills/` |
+| Named-agent catalog | `$GOBLIN_HOME/workspace/agents/<name>/.agents/skills/` | Isolated named-agent capabilities; legacy `skills/` is ignored |
 
 A Surface owns independent `goblin`, `environment`, and `host` selections. Each source is `all`, `none`, or an explicit selected-name set. Defaults are Goblin all, environment all, host none. The optional policy is persisted in the SurfaceId-keyed topic settings record; absence means the defaults without an eager write. `/new` preserves policy; `/resume` uses destination Surface policy.
 
 `ConversationLifecycle` owns `/skills` inspection, policy mutation, and reload transitions. Inspection is non-creating; mutation and reload resolve the candidate catalog before persistence/invalidation, then invalidate the current runtime through the existing runtime-host seam. Cleanup failure is reported after the durable policy is already authoritative. Runtime construction resolves exact roots from Conversation environment plus destination Surface policy before registering the runner, freezes the resolved manifest, disables Pi ambient skill discovery, and records source/path provenance. It never walks above canonical `projectRoot`, never implicitly loads `~/.pi/agent/skills/` or package skills, and fails on distinct selected files with duplicate names rather than depending on discovery order. Catalog edits take effect on runtime recreation or `/skills reload`.
 
-The operator moved legacy `workspace/skills/` to the Goblin catalog because it historically followed the assistant into every environment. Generic subagents now inherit the caller runtime's exact environment and frozen manifest. Named-agent catalog isolation at the canonical `.agents/skills/` path remains TARGET behavior; current named definitions still read legacy `skills/`.
+The operator moved legacy `workspace/skills/` to the Goblin catalog because it historically followed the assistant into every environment. Generic subagents inherit the caller runtime's exact environment and frozen manifest. Named agents use only their canonical isolated `.agents/skills/` catalog; legacy per-agent `skills/` directories are ignored and any deployment move is operator-owned.
 
 ## MCP
 
@@ -310,12 +310,12 @@ Dreaming currently uses compatibility internal-session machinery. TARGET archite
 
 ### Subagents
 
-CURRENT subagents have custom pi construction, generic/named definitions, recursive spawning, and persisted instance records. Generic subagents inherit the caller runtime's immutable Execution Environment and frozen resolved skill manifest — exact selected files with no catalog re-discovery; recursive spawns inherit the received authority, revivals inherit the reviving runtime's authority, and a missing or unloaded inherited file fails the invocation visibly. Named definitions still load their isolated catalog from the legacy `workspace/agents/<name>/skills/` path; TARGET moves them to `.agents/skills/` catalogs as the parked named half of `subagent-skill-inheritance`.
+CURRENT subagents have custom pi construction, generic/named definitions, recursive spawning, and persisted instance records. Generic subagents inherit the caller runtime's immutable Execution Environment and frozen resolved skill manifest — exact selected files with no catalog re-discovery; recursive spawns inherit the received authority, revivals inherit the reviving runtime's authority, and a missing or unloaded inherited file fails the invocation visibly. Named definitions load only their isolated `workspace/agents/<name>/.agents/skills/` catalog with ambient discovery disabled; they do not inherit caller skills, and legacy `skills/` directories are ignored.
 
 TARGET direction:
 
 - generic execution inherits an explicit parent environment, memory context, and resolved skill manifest (**implemented**);
-- named-agent definitions remain user-authored under workspace;
+- named-agent definitions remain user-authored under workspace and use isolated pi-native skill catalogs (**implemented**);
 - machine-managed instance records move to state in the separate storage-layout migration;
 - a `SubagentHost` seam owns pi construction while `DelegatedWorkHost` owns cross-run lifetime;
 - current blocking generic/named invocations are attached and their full recursive tree dies with the creating runtime; durable subagents require a future detached-result contract.
@@ -443,7 +443,7 @@ conversation-lifecycle ─┬─► inner-life ─► visible-dreaming rewrite
                         └─► delegated-work-ownership ◄─ immutable-project-environments, ACP boundary
 ```
 
-`conversation-lifecycle` and its four hard prerequisites are implemented; current code and tests own that behavior, while the archived change material preserves delivery provenance. Runtime assembly consumes the captured-memory interface, and user-visible transcript writes consume writer context and event-time provenance. The persistence/runtime-authority hardening slice, Surface skill-policy train, and generic half of subagent skill inheritance are complete. Named-agent catalog isolation remains parked.
+`conversation-lifecycle` and its four hard prerequisites are implemented; current code and tests own that behavior, while the archived change material preserves delivery provenance. Runtime assembly consumes the captured-memory interface, and user-visible transcript writes consume writer context and event-time provenance. The persistence/runtime-authority hardening slice, Surface skill-policy train, and both halves of subagent skill inheritance are complete.
 
 A temporary "same-Surface resume" mode was rejected because canonical unbound Conversations intentionally persist no previous-Surface authority. Enforcing it would require a second historical-binding store that the target model does not otherwise need. Memory capture and transcript provenance were therefore prerequisites, not runtime feature flags.
 
@@ -464,14 +464,14 @@ One ordered sequence, walked end to end. Historical change names and task counts
 | 7 | `pi-native-skill-layout` | fresh Nospec slice | **implemented** | Native scoped roots; operator-owned one-time move |
 | 8 | `skill-catalog-resolution` | fresh Nospec slice | **implemented** | Explicit catalog roots; `SkillCatalogResolver`; `skillSources` switch dies |
 | 9 | `surface-skill-policy` | fresh Nospec slice | **implemented** | Per-Surface `/skills` selection |
-| 10 | `subagent-skill-inheritance` | patch | **implemented (generic half)** | Generic subagents inherit the frozen resolved manifest; named-catalog isolation remains parked |
+| 10 | `subagent-skill-inheritance` | patch | **implemented** | Generic subagents inherit frozen runtime authority; named agents use isolated pi-native catalogs |
 | 11 | `inner-life` | 25 | **parked** | Bounded wake/effect authority |
 | 12 | `delegated-work-ownership` | 36 | **parked** | Attached vs durable work; origin-Surface delivery |
 | 13 | `visible-dreaming` | — | **deferred; prior placeholder deleted** | Rewrite against `inner-life`; recover historical notes from Git only if needed |
 
-Steps 1–9, including attachment intake, agent-owned prompt files, the persistence/runtime-authority closure, native skill layout, catalog resolution, and Surface skill policy, are complete. Step 10's generic half is implemented; its named-catalog half and steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
+Steps 1–10, including attachment intake, agent-owned prompt files, the persistence/runtime-authority closure, native skill layout, catalog resolution, Surface skill policy, and subagent skill inheritance, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
 
-**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active and no next candidate is selected; the named half of step 10 and all other parked scope remain deferred until deliberately resumed.
+**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active and no next candidate is selected; all parked scope remains deferred until deliberately resumed.
 
 Storage-layout cleanup and workspace write authority cross this chain and must declare dependencies before implementation.
 

@@ -1,10 +1,12 @@
 /**
  * Named-agent definition loading and resource-loader construction.
  *
- * A "named agent" is a curated subagent recipe at `~/goblin/agents/<name>/`
- * with its own `AGENTS.md` (system prompt) and `skills/` directory. Spawning
- * one uses a custom pi `ResourceLoader` that pins skill discovery to the
- * agent's own tree — strict isolation from goblin and from other agents.
+ * A "named agent" is a curated subagent recipe at
+ * `$GOBLIN_HOME/workspace/agents/<name>/` with its own `AGENTS.md` (system
+ * prompt) and `.agents/skills/` catalog. Spawning one uses a custom pi
+ * `ResourceLoader` that pins skill discovery to the agent's canonical catalog
+ * — strict isolation from Goblin, execution-environment, host, caller, and
+ * other named-agent skills.
  *
  * Generic subagents (no name) run in the parent runtime's inherited Execution
  * Environment and get a loader that pins exactly its frozen resolved skill
@@ -29,11 +31,14 @@ import type { NamedAgentDefinition, SubagentRole } from "./types.ts";
 export const VALID_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 
 /**
- * Load a named agent definition from `~/goblin/agents/<name>/`.
+ * Load a named agent definition from
+ * `$GOBLIN_HOME/workspace/agents/<name>/`.
  *
- * `AGENTS.md` is required. The `skills/` directory is optional — its path
- * is recorded so the resource loader can pin to it for strict isolation,
- * regardless of whether the agent has any skills yet.
+ * `AGENTS.md` is required. The `.agents/skills/` directory is optional — its
+ * canonical path is recorded so the resource loader can pin to it for strict
+ * isolation, regardless of whether the agent has any skills yet. Legacy
+ * `skills/` is deliberately ignored; catalog moves are operator-owned per
+ * decision 0043.
  */
 export function loadNamedAgent(home: string, name: string): NamedAgentDefinition {
   const agentsMdPath = namedAgentAgentsMdPath(home, name);
@@ -71,9 +76,10 @@ function deploymentPromptFilePaths(home: string): Set<string> {
 /**
  * Build the pi `ResourceLoader` for a subagent.
  *
- * Named subagents get strict isolation: goblin's project AGENTS.md is not
+ * Named subagents get strict isolation: Goblin's project AGENTS.md is not
  * auto-discovered, the named agent's AGENTS.md is the system prompt verbatim,
- * and skill discovery is pinned to the agent's own `skills/` directory.
+ * and skill discovery is pinned to the agent's own canonical
+ * `.agents/skills/` directory with ambient discovery disabled.
  *
  * Generic subagents pin `additionalSkillPaths` to exactly the inherited
  * manifest's SKILL.md files with `noSkills: true`, mirroring the main

@@ -47,9 +47,9 @@ describe("subagents paths", () => {
     );
   });
 
-  it("resolves a named agent skills directory by name", () => {
+  it("resolves a named agent's isolated pi-native skills directory by name", () => {
     expect(namedAgentSkillsDir(home, "researcher")).toBe(
-      join(home, "workspace", "agents", "researcher", "skills"),
+      join(home, "workspace", "agents", "researcher", ".agents", "skills"),
     );
   });
 

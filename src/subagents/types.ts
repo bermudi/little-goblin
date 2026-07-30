@@ -215,7 +215,8 @@ export interface SubagentMeta {
 }
 
 /**
- * Definition of a named agent loaded from `~/goblin/agents/<name>/`.
+ * Definition of a named agent loaded from
+ * `$GOBLIN_HOME/workspace/agents/<name>/`.
  */
 export interface NamedAgentDefinition {
   name: string;
@@ -223,7 +224,7 @@ export interface NamedAgentDefinition {
   dir: string;
   /** Contents of `AGENTS.md` — used as the system prompt. */
   agentsMd: string;
-  /** Absolute path to the agent's `skills/` directory (may not exist on disk yet). */
+  /** Absolute path to the agent's `.agents/skills/` catalog (may not exist yet). */
   skillsDir: string;
 }
 

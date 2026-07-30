@@ -108,7 +108,7 @@ A bounded frozen summary is included at runtime creation; `memory_search` suppli
 Spawn subagents to do focused work in the background:
 
 - **Generic subagents** inherit the parent context and can use goblin’s skills.
-- **Named subagents** are recipes in `$GOBLIN_HOME/workspace/agents/<name>/` with their own `AGENTS.md` and isolated `skills/` directory.
+- **Named subagents** are recipes in `$GOBLIN_HOME/workspace/agents/<name>/` with their own `AGENTS.md` and isolated `.agents/skills/` catalog.
 - Recursive spawning up to **depth 3**.
 - Default timeout: **10 minutes**.
 - Subagents are headless: they run through the same agent code but do not talk to Telegram directly. Results come back to the parent turn.

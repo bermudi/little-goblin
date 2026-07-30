@@ -14,7 +14,7 @@ Parked scope and open questions. Items graduate only when a deliberate implement
 
 ## Next
 
-**No next cycle is selected.** `subagent-skill-inheritance` (generic half) is implemented: generic subagents receive the caller runtime's immutable Execution Environment plus exactly its frozen resolved manifest (recursive spawns inherit both, revivals inherit both from the reviving runtime per the memory-authority precedent), and missing or unloaded inherited files fail visibly. Named agents keep their existing isolation. The dependent follow-up is named-agent catalog isolation (`workspace/agents/<name>/.agents/skills/`); it graduates only when deliberately resumed.
+**No next cycle is selected.** `subagent-skill-inheritance` is implemented: generic subagents receive the caller runtime's immutable Execution Environment plus exactly its frozen resolved manifest (recursive spawns inherit both, revivals inherit both from the reviving runtime per the memory-authority precedent), and missing or unloaded inherited files fail visibly. Named agents load only their canonical isolated `workspace/agents/<name>/.agents/skills/` catalog with ambient discovery disabled and do not inherit caller skills.
 
 ## Stabilization closure
 
@@ -39,7 +39,7 @@ Historical unstarted plans live in `specs/parked/`; they are frozen references, 
 - **`inner-life`** — decision 0035 is accepted and its lifecycle prerequisite is satisfied; implementation remains parked pending fresh shaping and delivery capacity.
 - **`skill-catalog-resolution`** — implemented. `SkillCatalogResolver` (`src/agent/skills/`) owns exact-root resolution from Conversation environment plus a `SkillPolicy`; `skillSources` is removed with visible rejection; default policy (Goblin all / environment all / host none) wired into runtime construction.
 - **`surface-skill-policy`** — implemented. Surface-owned policy persistence, `/skills` inspection/mutation/reload, lifecycle invalidation, and eager runtime manifest resolution now use the existing deep seams; do not create the historical proposal's parallel policy coordinator.
-- **`subagent-skill-inheritance`** — generic environment plus frozen-manifest inheritance implemented. Named-agent catalog isolation (`workspace/agents/<name>/.agents/skills/`) remains parked; the frozen proposal's legacy-`skills/` startup migration stays dead per the decision-0043 precedent (operator moves catalogs by hand, Goblin keeps no migration code).
+- **`subagent-skill-inheritance`** — implemented. Generic agents inherit environment plus frozen manifest; named agents use only `workspace/agents/<name>/.agents/skills/`. The frozen proposal's legacy-`skills/` startup migration stays dead per decision 0043: operators move catalogs by hand, and Goblin has no migration or compatibility path.
 
 ## Deferred
 

@@ -350,8 +350,11 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     expect(result.agentsFiles.map((f) => f.path)).toEqual([join(tmp, "project", "AGENTS.md")]);
   });
 
-  it("for named subagents, builds a DefaultResourceLoader pinned to the agent's skills dir", async () => {
-    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
+  it("pins named subagents to their canonical isolated catalog and ignores legacy skills", async () => {
+    const agentDir = namedAgentDir(tmp, "researcher");
+    const legacySkillsDir = join(agentDir, "skills");
+    mkdirSync(join(legacySkillsDir, "legacy-only"), { recursive: true });
+    mkdirSync(join(namedAgentSkillsDir(tmp, "researcher"), "canonical"), { recursive: true });
     const agentsMd = "# Researcher\nYou are a research specialist.\n";
     writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), agentsMd);
 
@@ -360,13 +363,17 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     await flush();
 
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    expect(opts.cwd).toBe(namedAgentDir(tmp, "researcher"));
+    expect(opts.cwd).toBe(agentDir);
     const loader = opts.resourceLoader as { options: Record<string, unknown> };
     expect(loader).toBeDefined();
     expect(loader.options.systemPrompt).toBe(agentsMd);
     expect(loader.options.noContextFiles).toBe(true);
     expect(loader.options.noSkills).toBe(true);
     expect(loader.options.additionalSkillPaths).toEqual([namedAgentSkillsDir(tmp, "researcher")]);
+    expect(loader.options.additionalSkillPaths).not.toContain(legacySkillsDir);
+    // Decision 0043 makes catalog moves operator-owned: loading changes neither tree.
+    expect(existsSync(join(legacySkillsDir, "legacy-only"))).toBe(true);
+    expect(existsSync(join(namedAgentSkillsDir(tmp, "researcher"), "canonical"))).toBe(true);
   });
 
   it("sends the initial prompt as the first user message", async () => {

@@ -41,7 +41,13 @@ import { McpRunner, createMcpTools } from "../mcp/mod.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { environmentCwd, projectRootOf } from "../sessions/environment.ts";
 import { surfaceHeartbeatPath } from "../sessions/paths.ts";
-import { resolveSkillSet, DEFAULT_SKILL_POLICY, type SkillPolicy } from "./skills/mod.ts";
+import {
+  cloneSkillPolicy,
+  resolveSkillSet,
+  DEFAULT_SKILL_POLICY,
+  type ResolvedSkillSet,
+  type SkillPolicy,
+} from "./skills/mod.ts";
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,10 +89,12 @@ interface AgentRunnerOptionsBase {
   mcpRunner?: McpRunner;
   /**
    * Skill selection policy for this runtime. Defaults to
-   * {@link DEFAULT_SKILL_POLICY} (Goblin all, environment all, host none) until
-   * `surface-skill-policy` introduces per-Surface selection.
+   * {@link DEFAULT_SKILL_POLICY} (Goblin all, environment all, host none) when
+   * a caller has no Surface-specific policy.
    */
   skillPolicy?: SkillPolicy;
+  /** Frozen catalog result captured by orchestration during runtime creation. */
+  resolvedSkills?: ResolvedSkillSet;
   /**
    * Pre-resolved model to use. When present, the runner skips `resolveModel()`
    * and uses this value directly. Useful for tests that drive the SDK with a
@@ -316,6 +324,7 @@ export class AgentRunner {
   private topicNameCache = new Map<string, string | null>();
   private executionEnvironment: ExecutionEnvironment;
   private skillPolicy: SkillPolicy;
+  private resolvedSkills: ResolvedSkillSet | null;
   private _modelName: string | undefined;
   private _thinkingLevel: ThinkingLevel | undefined;
   private resolvedModel: ResolvedModel | null = null;
@@ -422,7 +431,8 @@ export class AgentRunner {
       : () => true;
     this.getTopicName = opts.getTopicName;
     this.executionEnvironment = opts.executionEnvironment;
-    this.skillPolicy = opts.skillPolicy ?? DEFAULT_SKILL_POLICY;
+    this.skillPolicy = cloneSkillPolicy(opts.skillPolicy ?? DEFAULT_SKILL_POLICY);
+    this.resolvedSkills = opts.resolvedSkills ?? null;
     this._modelName = opts.modelName ?? (opts.resolvedModel ? `${opts.resolvedModel.model.provider}/${opts.resolvedModel.model.id}` : undefined);
     this._thinkingLevel = opts.thinkingLevel;
     this.resolvedModel = opts.resolvedModel ?? null;
@@ -472,9 +482,10 @@ export class AgentRunner {
       // Resolve skill catalogs into a frozen set before backend init. Skills
       // are snapshotted at runtime creation (decision 0034); no ambient pi
       // discovery, no watcher, no per-turn reload.
-      const resolvedSkills = await this.awaitCurrent(() =>
+      const resolvedSkills = this.resolvedSkills ?? await this.awaitCurrent(() =>
         resolveSkillSet(this.executionEnvironment, this.skillPolicy, home),
       );
+      this.resolvedSkills = resolvedSkills;
       if (resolvedSkills.diagnostics.length > 0) {
         log.debug("Skill catalog diagnostics", {
           sessionId: this.sessionId,

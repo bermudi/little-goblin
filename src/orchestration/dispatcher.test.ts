@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TurnDispatcher } from "./dispatcher.ts";
@@ -18,6 +18,7 @@ import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import type { TurnSink, SurfaceSettings } from "./dispatcher.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
 import type { TranscriptWriterContext } from "../sessions/transcript.ts";
+import { DEFAULT_SKILL_POLICY, type SkillPolicy } from "../agent/skills/mod.ts";
 
 class FakeAgentRunner {
   disposeCalled = false;
@@ -175,6 +176,7 @@ function buildDispatcher(
     setModelName: () => {},
     getThinkingLevel: () => surfaceThinkingLevel,
     setThinkingLevel: () => {},
+    getSkillPolicy: () => DEFAULT_SKILL_POLICY,
   };
   const betaSurfaces: Surface[] = [];
   const createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][] = [];
@@ -474,6 +476,8 @@ describe("TurnDispatcher async runner creation", () => {
     opts: {
       createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
       surfaceRuntimeAuthority?: SurfaceRuntimeAuthority;
+      surfacePolicy?: SkillPolicy;
+      cfg?: Config;
     } = {},
   ): {
     dispatcher: TurnDispatcher;
@@ -489,6 +493,7 @@ describe("TurnDispatcher async runner creation", () => {
       setModelName: () => {},
       getThinkingLevel: () => undefined,
       setThinkingLevel: () => {},
+      getSkillPolicy: () => opts.surfacePolicy ?? DEFAULT_SKILL_POLICY,
     };
     const createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][] = [];
     const createAgentRunner = opts.createAgentRunner ?? ((o) => {
@@ -504,7 +509,7 @@ describe("TurnDispatcher async runner creation", () => {
     });
 
     const dispatcher = new TurnDispatcher({
-      cfg: {} as Config,
+      cfg: opts.cfg ?? ({} as Config),
       surfaceSettings,
       subagentRunner: subagentRunner as unknown as SubagentRunner,
       memoryStore,
@@ -525,6 +530,26 @@ describe("TurnDispatcher async runner creation", () => {
 
     return { dispatcher, runners, subagentRunner, createAgentRunnerCalls };
   }
+
+  it("eagerly freezes the Surface policy and resolved manifest at runtime creation", async () => {
+    const skillPath = join(tmpDir, ".agents", "skills", "alpha", "SKILL.md");
+    mkdirSync(join(tmpDir, ".agents", "skills", "alpha"), { recursive: true });
+    writeFileSync(skillPath, "---\nname: alpha\ndescription: alpha\n---\nbody\n", "utf-8");
+    const policy: SkillPolicy = {
+      goblin: { mode: "selected", names: ["alpha"] },
+      environment: { mode: "none" },
+      host: { mode: "none" },
+    };
+    const { dispatcher, createAgentRunnerCalls } = buildAsyncDispatcher({
+      cfg: { goblinHome: tmpDir } as Config,
+      surfacePolicy: policy,
+    });
+
+    await dispatcher.getOrCreateRunner(makeSession("abc123def0"), dmSurface(1));
+    const opts = createAgentRunnerCalls[0]!;
+    expect(opts.skillPolicy).toEqual(policy);
+    expect(opts.resolvedSkills?.skills.map((skill) => skill.name)).toEqual(["alpha"]);
+  });
 
   it("getOrCreateRunner is async and returns a runner with a captured memory context", async () => {
     await memoryStore.add("general", "test fact");
@@ -648,6 +673,27 @@ describe("TurnDispatcher async runner creation", () => {
 
     await expect(creationPromise).rejects.toThrow(/stale runtime creation.*binding/);
     expect(createAgentRunnerCalls).toHaveLength(0);
+  });
+
+  it("does not resurrect a runtime invalidated during the final authority check", async () => {
+    let dispatcher!: TurnDispatcher;
+    let assertCount = 0;
+    const authority: SurfaceRuntimeAuthority = {
+      ...permissiveRuntimeAuthority(),
+      assertCurrentBinding: async () => {
+        assertCount++;
+        if (assertCount === 2) {
+          await dispatcher.disposeRunner("abc123def0");
+        }
+      },
+    };
+    const built = buildAsyncDispatcher({ surfaceRuntimeAuthority: authority });
+    dispatcher = built.dispatcher;
+    const session = makeSession("abc123def0");
+
+    await expect(dispatcher.getOrCreateRunner(session, dmSurface(1))).rejects.toThrow(/before registration/);
+    expect(built.createAgentRunnerCalls).toHaveLength(0);
+    expect(dispatcher.hasRuntime(session.id)).toBe(false);
   });
 
   it("capture failure: a rejected capture leaves no half-created runtime", async () => {

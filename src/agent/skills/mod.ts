@@ -8,9 +8,14 @@
 
 export {
   DEFAULT_SKILL_POLICY,
+  SKILL_SOURCES,
   SkillResolutionError,
+  cloneSkillPolicy,
   isValidSkillName,
   normalizeSelectedNames,
+  normalizeSkillPolicy,
+  skillPolicyFingerprint,
+  validateSkillPolicy,
 } from "./types.ts";
 
 export type {

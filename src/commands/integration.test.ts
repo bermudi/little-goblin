@@ -26,6 +26,7 @@ import { setModelName } from "../sessions/topic-settings.ts";
 import { personalEnvironment, projectEnvironment } from "../sessions/environment.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
+import { DEFAULT_SKILL_POLICY } from "../agent/skills/mod.ts";
 
 function makeTestConfig(home: string): Config {
   return {
@@ -87,6 +88,7 @@ describe("rapid command spam integration", () => {
       setModelName: () => {},
       getThinkingLevel: () => undefined,
       setThinkingLevel: () => {},
+      getSkillPolicy: () => DEFAULT_SKILL_POLICY,
     };
   }
 

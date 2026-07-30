@@ -31,7 +31,7 @@ import {
   SkillSource,
   SkillPolicy,
   SourceSelection,
-  normalizeSelectedNames,
+  normalizeSkillPolicy,
 } from "./types.ts";
 
 /**
@@ -99,13 +99,15 @@ async function resolveWithEnv(
   policy: SkillPolicy,
   home: string,
 ): Promise<ResolvedSkillSet> {
+  const canonicalPolicy = normalizeSkillPolicy(policy);
+
   // Build the list of (path, source) inputs for pi's loader. Only sources
   // whose selection is not `none` are loaded; `none` sources contribute no
   // skills and no diagnostics.
   const sources: SkillSource[] = ["goblin", "environment", "host"];
   const inputs: Array<{ path: string; source: SkillSource }> = [];
   for (const source of sources) {
-    if (policy[source].mode === "none") continue;
+    if (canonicalPolicy[source].mode === "none") continue;
     for (const root of sourceRoots(source, environment, home)) {
       inputs.push({ path: root, source });
     }
@@ -125,11 +127,11 @@ async function resolveWithEnv(
   // Apply policy per source and detect missing selected names.
   const selected: Array<{ skill: Skill; source: SkillSource }> = [];
   for (const source of sources) {
-    const selection = policy[source];
+    const selection = canonicalPolicy[source];
     const skillsForSource = bySource.get(source)!;
 
     if (selection.mode === "selected") {
-      const normalized = normalizeSelectedNames(source, selection.names);
+      const normalized = [...selection.names];
       const loadedNames = new Set(skillsForSource.map((e) => e.skill.name));
       const missing = normalized.filter((n) => !loadedNames.has(n));
       if (missing.length > 0) {
@@ -203,7 +205,7 @@ async function resolveWithEnv(
     }),
   );
 
-  const fingerprint = computeFingerprint(environment, policy, resolvedSkills);
+  const fingerprint = computeFingerprint(environment, canonicalPolicy, resolvedSkills);
   return { skills: resolvedSkills, diagnostics: resolvedDiagnostics, fingerprint };
 }
 

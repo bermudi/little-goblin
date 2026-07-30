@@ -4,6 +4,7 @@ import { assertCanonicalProjectRoot, isCanonicalProjectRoot } from "./environmen
 import { topicSettingsPath } from "./paths.ts";
 import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 import { log } from "../log.ts";
+import { cloneSkillPolicy, DEFAULT_SKILL_POLICY, validateSkillPolicy, type SkillPolicy } from "../agent/skills/types.ts";
 import { parseSurfaceId, surfaceId } from "../surface.ts";
 
 const ALL_THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -54,7 +55,7 @@ function validateSurfaceSettings(surfaceKey: string, value: unknown): asserts va
   if (!isRecord(value)) {
     throw new Error(`invalid settings for surface ${surfaceKey}`);
   }
-  const validKeys = new Set(["projectRoot", "modelName", "thinkingLevel"]);
+  const validKeys = new Set(["projectRoot", "modelName", "thinkingLevel", "skillPolicy"]);
   for (const key of Object.keys(value)) {
     if (!validKeys.has(key)) {
       throw new Error(`invalid settings field ${key} for surface ${surfaceKey}`);
@@ -70,6 +71,9 @@ function validateSurfaceSettings(surfaceKey: string, value: unknown): asserts va
     typeof value.thinkingLevel === "string" ? value.thinkingLevel : undefined,
   )) {
     throw new Error(`invalid thinkingLevel for surface ${surfaceKey}`);
+  }
+  if (value.skillPolicy !== undefined) {
+    validateSkillPolicy(value.skillPolicy, `skillPolicy for surface ${surfaceKey}`);
   }
 }
 
@@ -177,7 +181,7 @@ export function loadLegacyTopicSettings(home: string): LegacyTopicSettingsFile {
 }
 
 function isEmptySettings(s: TopicSettings): boolean {
-  return !s.projectRoot && !s.modelName && !s.thinkingLevel;
+  return !s.projectRoot && !s.modelName && !s.thinkingLevel && !s.skillPolicy;
 }
 
 function settingsForSurface(settings: TopicSettingsFile, surface: Surface): TopicSettings | undefined {
@@ -226,6 +230,25 @@ export function bindProjectRoot(home: string, surface: Surface, projectRoot: str
   updateSurface(settings, surface, (s) => ({ ...s, projectRoot }));
   saveTopicSettings(home, settings);
   log.info("bound projectRoot", { surfaceId: surfaceId(surface), projectRoot });
+}
+
+/** Read the effective Surface skill policy, applying defaults without writing them. */
+export function getSkillPolicy(home: string, surface: Surface): SkillPolicy {
+  const settings = loadTopicSettings(home);
+  const stored = settingsForSurface(settings, surface)?.skillPolicy;
+  return cloneSkillPolicy(stored ?? DEFAULT_SKILL_POLICY);
+}
+
+/** Persist the complete validated skill policy for a Surface atomically. */
+export function setSkillPolicy(home: string, surface: Surface, policy: SkillPolicy): void {
+  const settings = loadTopicSettings(home);
+  const canonical = cloneSkillPolicy(policy);
+  updateSurface(settings, surface, (s) => ({ ...s, skillPolicy: canonical }));
+  saveTopicSettings(home, settings);
+  log.info("bound skill policy", {
+    surfaceId: surfaceId(surface),
+    policy: canonical,
+  });
 }
 
 /** Read the model override for a complete Surface, or undefined if using the config default. */

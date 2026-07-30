@@ -126,7 +126,7 @@ type ExecutionEnvironment =
 | Telegram address and lane kind | Surface |
 | Project assignment | Surface |
 | Model and thinking preferences | Surface |
-| SkillPolicy | Surface **(TARGET — decision 0034)** |
+| SkillPolicy | Surface **(CURRENT — decision 0034)** |
 | Schedules and heartbeat | Surface |
 | Proactive-contact master policy | Deployment |
 | Proactive-contact consent | Surface, intersected with deployment and WakeProfile policy |
@@ -201,7 +201,7 @@ Conversation
 
 Destination Surface
   ├── model + thinking preference
-  ├── Surface SkillPolicy (TARGET — later skill-policy train)
+  ├── Surface SkillPolicy (CURRENT — decision 0034)
   ├── Surface-derived memory context captured for this runtime
   ├── schedule authority
   └── Telegram delivery/tool closures
@@ -257,9 +257,9 @@ The archived `agent-owned-prompt-files` change amended the legacy canon statemen
 | Host catalog | exact `~/.agents/skills/` | Unix-user capabilities, disabled by default and explicitly selectable |
 | Named-agent catalog | `$GOBLIN_HOME/workspace/agents/<name>/.agents/skills/` | Isolated named-agent capabilities |
 
-A Surface owns independent `goblin`, `environment`, and `host` selections. Each source is `all`, `none`, or an explicit selected-name set. Defaults are Goblin all, environment all, host none. `/new` preserves policy; `/resume` uses destination Surface policy.
+A Surface owns independent `goblin`, `environment`, and `host` selections. Each source is `all`, `none`, or an explicit selected-name set. Defaults are Goblin all, environment all, host none. The optional policy is persisted in the SurfaceId-keyed topic settings record; absence means the defaults without an eager write. `/new` preserves policy; `/resume` uses destination Surface policy.
 
-Runtime construction resolves exact roots from Conversation environment plus Surface policy, disables Pi ambient skill discovery, and records source/path provenance. It never walks above canonical `projectRoot`, never implicitly loads `~/.pi/agent/skills/` or package skills, and fails on distinct selected files with duplicate names rather than depending on discovery order. Catalog edits take effect on runtime recreation or `/skills reload`.
+`ConversationLifecycle` owns `/skills` inspection, policy mutation, and reload transitions. Inspection is non-creating; mutation and reload resolve the candidate catalog before persistence/invalidation, then invalidate the current runtime through the existing runtime-host seam. Cleanup failure is reported after the durable policy is already authoritative. Runtime construction resolves exact roots from Conversation environment plus destination Surface policy before registering the runner, freezes the resolved manifest, disables Pi ambient skill discovery, and records source/path provenance. It never walks above canonical `projectRoot`, never implicitly loads `~/.pi/agent/skills/` or package skills, and fails on distinct selected files with duplicate names rather than depending on discovery order. Catalog edits take effect on runtime recreation or `/skills reload`.
 
 The operator moved legacy `workspace/skills/` to the Goblin catalog because it historically followed the assistant into every environment. Generic subagent manifest inheritance and named-agent catalog isolation remain TARGET behavior.
 
@@ -413,7 +413,7 @@ The frozen `pi-native-skill-layout` proposal remains historical input and contai
 | Public partial rebinding methods | Multi-bound history and stale runners | deep `ConversationLifecycle` |
 | Schedule captures session and locator | Automation dies or misroutes on rotation | Surface-owned late resolution |
 | Memory scope/transcript provenance derives from session metadata | Moved history gets stale context or wrong chat attribution | `surface-derived-memory-context` → `transcript-surface-provenance` |
-| Explicit Goblin path + `skillSources` | ~~Native storage exists, but runtime source authority is still process-wide and ambient~~ Resolved: `SkillCatalogResolver` owns exact-root resolution; `skillSources` removed | ~~`skill-catalog-resolution`~~ → `surface-skill-policy` |
+| Explicit Goblin path + `skillSources` | ~~Native storage exists, but runtime source authority is still process-wide and ambient~~ Resolved: `SkillCatalogResolver` owns exact-root resolution; `skillSources` removed; Surface-owned policy selects sources | ~~`skill-catalog-resolution`~~ → ~~`surface-skill-policy`~~ |
 | Personal CWD under `scratch/workdir` | User work is ephemeral and unbacked-up | personal workspace environment migration |
 | Durable records under `scratch/` | “Durable but disposable” contradiction | **OPEN: storage-layout cleanup** |
 | Named definitions mixed with instance state | User-authored and machine-managed lifetimes mixed | **OPEN: subagent state migration** |
@@ -443,7 +443,7 @@ conversation-lifecycle ─┬─► inner-life ─► visible-dreaming rewrite
                         └─► delegated-work-ownership ◄─ immutable-project-environments, ACP boundary
 ```
 
-`conversation-lifecycle` and its four hard prerequisites are implemented; current code and tests own that behavior, while the archived change material preserves delivery provenance. Runtime assembly consumes the captured-memory interface, and user-visible transcript writes consume writer context and event-time provenance. The persistence/runtime-authority hardening slice is also complete. Skill policy remains a later train and is not a lifecycle contract.
+`conversation-lifecycle` and its four hard prerequisites are implemented; current code and tests own that behavior, while the archived change material preserves delivery provenance. Runtime assembly consumes the captured-memory interface, and user-visible transcript writes consume writer context and event-time provenance. The persistence/runtime-authority hardening slice and the Surface skill-policy train are also complete. Generic subagent manifest inheritance remains the next dependent train and is not implemented by the main runtime.
 
 A temporary "same-Surface resume" mode was rejected because canonical unbound Conversations intentionally persist no previous-Surface authority. Enforcing it would require a second historical-binding store that the target model does not otherwise need. Memory capture and transcript provenance were therefore prerequisites, not runtime feature flags.
 
@@ -463,15 +463,15 @@ One ordered sequence, walked end to end. Historical change names and task counts
 | 6a | Persistence and runtime-authority closure | authority corruption + pending-assignment fence | **complete** | Fail closed on canonical authority corruption; recover only intent-owned planned directories; require lifecycle authority for every Surface runtime |
 | 7 | `pi-native-skill-layout` | fresh Nospec slice | **implemented** | Native scoped roots; operator-owned one-time move |
 | 8 | `skill-catalog-resolution` | fresh Nospec slice | **implemented** | Explicit catalog roots; `SkillCatalogResolver`; `skillSources` switch dies |
-| 9 | `surface-skill-policy` | 16 | **parked** | Per-Surface `/skills` selection |
+| 9 | `surface-skill-policy` | fresh Nospec slice | **implemented** | Per-Surface `/skills` selection |
 | 10 | `subagent-skill-inheritance` | patch | **parked** | Generic subagents inherit the frozen resolved manifest |
 | 11 | `inner-life` | 25 | **parked** | Bounded wake/effect authority |
 | 12 | `delegated-work-ownership` | 36 | **parked** | Attached vs durable work; origin-Surface delivery |
 | 13 | `visible-dreaming` | — | **deferred; prior placeholder deleted** | Rewrite against `inner-life`; recover historical notes from Git only if needed |
 
-Steps 1–7, including attachment intake, agent-owned prompt files, and the persistence/runtime-authority closure, are complete. Steps 8–12 remain frozen historical inputs under `specs/parked/`; step 13 has no live parked artifact (see `BACKLOG.md`).
+Steps 1–9, including attachment intake, agent-owned prompt files, the persistence/runtime-authority closure, native skill layout, catalog resolution, and Surface skill policy, are complete. Steps 10–12 remain frozen historical inputs under `specs/parked/`; step 13 has no live parked artifact (see `BACKLOG.md`).
 
-**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The next candidate is a fresh re-evaluation of parked `skill-catalog-resolution`; all other parked scope remains deferred until deliberately resumed.
+**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The next candidate is `subagent-skill-inheritance`; all other parked scope remains deferred until deliberately resumed.
 
 Storage-layout cleanup and workspace write authority cross this chain and must declare dependencies before implementation.
 

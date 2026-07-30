@@ -36,6 +36,11 @@ import { executeVoice } from "./voice.ts";
 import { pingHandler } from "./ping.ts";
 import { buildStartHandler } from "./start.ts";
 import { buildScheduleDeps, executeSchedule } from "./schedule.ts";
+import {
+  formatSkillsStatus,
+  formatSkillsTransition,
+  parseSkillsCommand,
+} from "./skills.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { SystemTag } from "../tg/format.ts";
@@ -509,6 +514,26 @@ const queueHandler: CommandHandler = async ({ session, existingRunner, rawText }
   return replied(ack, sideEffects, tag);
 };
 
+const skillsHandler: CommandHandler = async ({ deps, surface, rawText }) => {
+  try {
+    const intent = parseSkillsCommand(rawText);
+    if (intent.kind === "inspect") {
+      const status = await deps.lifecycle.inspectSkillPolicy(surface);
+      return replied(formatSkillsStatus(status), [], "info");
+    }
+    if (intent.kind === "reload") {
+      const result = await deps.lifecycle.reloadSkills(surface);
+      return replied(formatSkillsTransition(intent, result), [], result.cleanupError ? "warn" : "ok");
+    }
+    const result = await deps.lifecycle.setSkillSelection(surface, intent.source, intent.selection);
+    return replied(formatSkillsTransition(intent, result), [], result.cleanupError ? "warn" : "ok");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error("skills command failed", { error: message, surfaceId: surfaceId(surface) });
+    return replied(`Skills command rejected: ${message}`, [], "warn");
+  }
+};
+
 const scheduleHandler: CommandHandler = async ({ deps, surface, rawText }) => {
   // `/schedule` is instant-timing and surface-owned: it mutates the schedule
   // store for the invoking Surface and does not require a bound conversation.
@@ -539,6 +564,15 @@ const startGrammyFactory: GrammyHandlerFactory = ({ lifecycle }) => {
  */
 function instantUnlessArg(rawText: string): CommandTiming {
   return parseCommandArg(rawText) === "" ? "instant" : "queue";
+}
+
+function skillsTiming(rawText: string): CommandTiming {
+  try {
+    return parseSkillsCommand(rawText).kind === "inspect" ? "instant" : "queue";
+  } catch {
+    // Invalid syntax has no side effects and should be reported immediately.
+    return "instant";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +694,14 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
     description: "manage scheduled turns and heartbeat for this surface",
     timing: "instant",
     handler: scheduleHandler,
+  },
+  {
+    name: "skills",
+    argsHint: "[reload|<source> all|none|only <name> ...]",
+    description: "inspect or select Surface skill catalogs",
+    timing: skillsTiming,
+    mayRecoverWedgedRuntime: true,
+    handler: skillsHandler,
   },
   {
     name: "ping",

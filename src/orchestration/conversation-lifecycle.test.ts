@@ -14,7 +14,14 @@ import { validateBindings } from "../sessions/bindings.ts";
 import type { BindingsFile } from "../sessions/types.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import { loadPendingProjectAssignment, savePendingProjectAssignment } from "../sessions/project-assignment.ts";
-import { getProjectRoot, getModelName, getThinkingLevelValidated, setModelName, setThinkingLevel } from "../sessions/topic-settings.ts";
+import {
+  getProjectRoot,
+  getModelName,
+  getSkillPolicy,
+  getThinkingLevelValidated,
+  setModelName,
+  setThinkingLevel,
+} from "../sessions/topic-settings.ts";
 import { sessionDir, statePath } from "../sessions/paths.ts";
 import { environmentFromProjectRoot, personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
 import { dmSurface, surfaceId, supergroupSurface, topicSurface, type Surface } from "../surface.ts";
@@ -24,6 +31,8 @@ import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod
 import type { AgentRunner } from "../agent/mod.ts";
 import type { Config } from "../config.ts";
 import type { TranscriptWriterContext } from "../sessions/transcript.ts";
+import { DEFAULT_SKILL_POLICY } from "../agent/skills/mod.ts";
+import { goblinSkillsPath, personalEnvironmentSkillsPath } from "../workspace/paths.ts";
 
 class InMemoryBindingStore implements BindingStore {
   bindings: BindingsFile = { version: 1, surfaces: {} };
@@ -45,9 +54,15 @@ class InMemoryBindingStore implements BindingStore {
 
 class FakeRuntimeHost implements ConversationRuntimeHost {
   disposed: ConversationId[] = [];
+  active = new Set<ConversationId>();
   throwOnNext: ConversationId | null = null;
 
+  hasRuntime(id: ConversationId): boolean {
+    return this.active.has(id);
+  }
+
   async disposeRuntime(id: ConversationId): Promise<void> {
+    this.active.delete(id);
     if (this.throwOnNext === id) {
       this.throwOnNext = null;
       throw new Error(`dispose failed for ${id}`);
@@ -113,7 +128,18 @@ function staticSettings(env: ExecutionEnvironment): SurfaceSettings {
     setModelName: () => {},
     getThinkingLevel: () => undefined,
     setThinkingLevel: () => {},
+    getSkillPolicy: () => DEFAULT_SKILL_POLICY,
   };
+}
+
+function writeSkill(root: string, name: string): void {
+  const dir = join(root, name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${name} skill\n---\nbody\n`,
+    "utf-8",
+  );
 }
 
 function fileBasedSettings(home: string): SurfaceSettings {
@@ -123,6 +149,7 @@ function fileBasedSettings(home: string): SurfaceSettings {
     setModelName: (surface, modelName) => setModelName(home, surface, modelName),
     getThinkingLevel: (surface) => getThinkingLevelValidated(home, surface),
     setThinkingLevel: (surface, thinkingLevel) => setThinkingLevel(home, surface, thinkingLevel),
+    getSkillPolicy: (surface) => getSkillPolicy(home, surface),
   };
 }
 
@@ -527,6 +554,128 @@ describe("ConversationLifecycle", () => {
       lifecycle.settings.setThinkingLevel(surface, "high");
       expect(lifecycle.settings.getModelName(surface)).toBe("poe/SurfaceModel");
       expect(lifecycle.settings.getThinkingLevel(surface)).toBe("high");
+    });
+
+    it("inspects an unbound Surface with defaults and does not create history", async () => {
+      const { lifecycle } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      writeSkill(goblinSkillsPath(tmpDir), "goblin-alpha");
+      writeSkill(personalEnvironmentSkillsPath(tmpDir), "environment-beta");
+
+      const status = await lifecycle.inspectSkillPolicy(surface);
+      expect(status.policy).toEqual(DEFAULT_SKILL_POLICY);
+      expect(status.resolvedSkills.skills.map((skill) => skill.name).sort()).toEqual([
+        "environment-beta",
+        "goblin-alpha",
+      ]);
+      expect(lifecycle.inspect(surface)).toBeNull();
+    });
+
+    it("does not replay a pending project assignment during inspection", async () => {
+      const { lifecycle, store } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const projectRoot = join(tmpDir, "pending-project");
+      mkdirSync(projectRoot, { recursive: true });
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: surfaceId(surface),
+        plannedSessionId: "abcdef1234",
+        projectRoot,
+      });
+
+      const status = await lifecycle.inspectSkillPolicy(surface);
+
+      expect(status.environment).toEqual(personalEnvironment());
+      expect(store.load("abcdef1234" as ConversationId)).toBeNull();
+      expect(loadPendingProjectAssignment(tmpDir)?.plannedSessionId).toBe("abcdef1234");
+    });
+
+    it("persists a Surface selection and invalidates its current runtime", async () => {
+      const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      writeSkill(goblinSkillsPath(tmpDir), "goblin-alpha");
+      const conversation = await lifecycle.resolveOrStart(surface);
+      runtimeHost.active.add(conversation.id);
+
+      const result = await lifecycle.setSkillSelection(surface, "goblin", { mode: "none" });
+      expect(result.runtime).toBe("invalidated");
+      expect(runtimeHost.disposed).toContain(conversation.id);
+      expect(lifecycle.settings.getSkillPolicy(surface)).toEqual({
+        goblin: { mode: "none" },
+        environment: { mode: "all" },
+        host: { mode: "none" },
+      });
+      expect(lifecycle.inspect(surface)?.id).toBe(conversation.id);
+    });
+
+    it("reports cleanup failure without restoring the stale runtime", async () => {
+      const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const conversation = await lifecycle.resolveOrStart(surface);
+      runtimeHost.active.add(conversation.id);
+      runtimeHost.throwOnNext = conversation.id;
+
+      const result = await lifecycle.setSkillSelection(surface, "goblin", { mode: "none" });
+      expect(result.runtime).toBe("invalidated");
+      expect(result.cleanupError).toContain("dispose failed");
+      expect(lifecycle.settings.getSkillPolicy(surface).goblin).toEqual({ mode: "none" });
+      expect(runtimeHost.active.has(conversation.id)).toBe(false);
+    });
+
+    it("rejects a missing selected skill before settings or runtime changes", async () => {
+      const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const conversation = await lifecycle.resolveOrStart(surface);
+      runtimeHost.active.add(conversation.id);
+
+      await expect(
+        lifecycle.setSkillSelection(surface, "environment", {
+          mode: "selected",
+          names: ["missing-skill"],
+        }),
+      ).rejects.toThrow(/not found in environment catalog/);
+      expect(lifecycle.settings.getSkillPolicy(surface)).toEqual(DEFAULT_SKILL_POLICY);
+      expect(runtimeHost.disposed).toEqual([]);
+    });
+
+    it("reloads edited catalogs without changing durable policy", async () => {
+      const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      writeSkill(goblinSkillsPath(tmpDir), "goblin-alpha");
+      await lifecycle.resolveOrStart(surface);
+      writeSkill(goblinSkillsPath(tmpDir), "goblin-beta");
+      const conversation = lifecycle.inspect(surface);
+      expect(conversation).not.toBeNull();
+      runtimeHost.active.add(conversation!.id);
+
+      const result = await lifecycle.reloadSkills(surface);
+      expect(result.resolvedSkills.skills.map((skill) => skill.name)).toContain("goblin-beta");
+      expect(result.runtime).toBe("invalidated");
+      expect(lifecycle.settings.getSkillPolicy(surface)).toEqual(DEFAULT_SKILL_POLICY);
+    });
+
+    it("survives rotation and uses the destination policy on resume", async () => {
+      const { lifecycle } = makeFileLifecycle(tmpDir);
+      const source = dmSurface(1);
+      const destination = dmSurface(2);
+      const target = await lifecycle.resolveOrStart(source);
+      await lifecycle.setSkillPolicy(source, {
+        goblin: { mode: "none" },
+        environment: { mode: "all" },
+        host: { mode: "none" },
+      });
+      await lifecycle.setSkillPolicy(destination, {
+        goblin: { mode: "all" },
+        environment: { mode: "none" },
+        host: { mode: "none" },
+      });
+
+      await lifecycle.rotate(source);
+      expect(lifecycle.settings.getSkillPolicy(source).goblin).toEqual({ mode: "none" });
+      await lifecycle.resume(destination, target.id);
+      expect(lifecycle.settings.getSkillPolicy(destination).environment).toEqual({ mode: "none" });
+      expect(lifecycle.inspect(destination)?.id).toBe(target.id);
+      expect(lifecycle.inspect(source)?.id).not.toBe(target.id);
     });
 
     it("survives rotation: a fresh conversation keeps the surface model and thinking", async () => {

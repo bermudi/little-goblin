@@ -11,6 +11,8 @@ import type { TurnDispatcher } from "./dispatcher.ts";
  * quiescence (AgentRunner.dispose and subagent/external cleanup) is bounded.
  */
 export interface ConversationRuntimeHost {
+  /** True when a runner or in-flight creation currently holds this identity. */
+  hasRuntime?(conversationId: ConversationId): boolean;
   disposeRuntime(conversationId: ConversationId): Promise<void>;
 }
 
@@ -26,6 +28,7 @@ export function createTurnDispatcherRuntimeHost(
 ): ConversationRuntimeHost {
   const getDispatcher = typeof dispatcher === "function" ? dispatcher : () => dispatcher;
   return {
+    hasRuntime: (conversationId) => getDispatcher().hasRuntime(conversationId),
     disposeRuntime: (conversationId) => getDispatcher().disposeRunner(conversationId),
   };
 }

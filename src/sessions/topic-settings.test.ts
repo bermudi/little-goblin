@@ -9,13 +9,16 @@ import {
   getProjectRoot,
   bindProjectRoot,
   getModelName,
+  getSkillPolicy,
   getThinkingLevel,
   setModelName,
+  setSkillPolicy,
   setThinkingLevel,
   type TopicSettingsFile,
 } from "./topic-settings.ts";
 import { topicSettingsPath } from "./paths.ts";
 import { dmSurface, supergroupSurface, topicSurface, surfaceId } from "../surface.ts";
+import { DEFAULT_SKILL_POLICY, type SkillPolicy } from "../agent/skills/mod.ts";
 
 const dm = dmSurface(889192981);
 const sg = supergroupSurface(-1003958530002);
@@ -317,6 +320,55 @@ describe("topic-settings", () => {
       expect(getModelName(tmpDir, topic)).toBe("poe/TopicModel");
       expect(getModelName(tmpDir, dm)).toBe("poe/DmModel");
       expect(getThinkingLevel(tmpDir, dm)).toBeUndefined();
+    });
+  });
+
+  describe("skill policy", () => {
+    it("returns defaults without eagerly writing a Surface record", () => {
+      expect(getSkillPolicy(tmpDir, topic)).toEqual(DEFAULT_SKILL_POLICY);
+      expect(loadTopicSettings(tmpDir)).toEqual(emptyTopicSettings());
+    });
+
+    it("persists a complete canonical policy and keeps Surfaces isolated", () => {
+      const policy: SkillPolicy = {
+        goblin: { mode: "none" },
+        environment: { mode: "selected", names: ["alpha", "zeta"] },
+        host: { mode: "all" },
+      };
+      setSkillPolicy(tmpDir, topic, policy);
+      setSkillPolicy(tmpDir, dm, { ...DEFAULT_SKILL_POLICY, goblin: { mode: "none" } });
+
+      expect(getSkillPolicy(tmpDir, topic)).toEqual(policy);
+      expect(getSkillPolicy(tmpDir, dm)).toEqual({ ...DEFAULT_SKILL_POLICY, goblin: { mode: "none" } });
+      expect(loadTopicSettings(tmpDir).surfaces[topicKey]?.skillPolicy).toEqual(policy);
+    });
+
+    it("rejects empty, duplicate, and unsorted persisted selections", () => {
+      const invalidPolicies: unknown[] = [
+        {
+          goblin: { mode: "all" },
+          environment: { mode: "selected", names: [] },
+          host: { mode: "none" },
+        },
+        {
+          goblin: { mode: "all" },
+          environment: { mode: "selected", names: ["alpha", "alpha"] },
+          host: { mode: "none" },
+        },
+        {
+          goblin: { mode: "all" },
+          environment: { mode: "selected", names: ["zeta", "alpha"] },
+          host: { mode: "none" },
+        },
+      ];
+
+      for (const skillPolicy of invalidPolicies) {
+        expect(() => saveTopicSettings(tmpDir, {
+          version: 1,
+          surfaces: { [topicKey]: { skillPolicy: skillPolicy as SkillPolicy } },
+        })).toThrow();
+      }
+      expect(loadTopicSettings(tmpDir)).toEqual(emptyTopicSettings());
     });
   });
 });

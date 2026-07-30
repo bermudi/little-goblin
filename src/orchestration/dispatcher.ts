@@ -19,6 +19,12 @@ import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import { environmentsEqual } from "../sessions/environment.ts";
+import {
+  resolveSkillSet,
+  skillPolicyFingerprint,
+  type ResolvedSkillSet,
+  type SkillPolicy,
+} from "../agent/skills/mod.ts";
 import type { SurfaceSettings } from "./conversation-lifecycle.ts";
 export type { SurfaceSettings };
 
@@ -174,6 +180,8 @@ export class TurnDispatcher {
   private readonly runners: Map<string, AgentRunner>;
   /** Surface a runner was created for, keyed by session/conversation id. */
   private readonly runnerSurfaceIds: Map<string, SurfaceId>;
+  /** Frozen skill-policy and manifest identity captured by each runtime. */
+  private readonly runnerSkillContexts: Map<string, { policyFingerprint: string; manifestFingerprint: string | null }>;
   /** Compatibility internal runtimes intentionally have no Surface authority. */
   private readonly internalRunnerIds: Set<string>;
   /**
@@ -182,7 +190,11 @@ export class TurnDispatcher {
    * the same (session, surface) — a request for a different surface overwrites
    * the entry, causing the prior creation's post-capture recheck to fail.
    */
-  private readonly inFlightCreations: Map<string, { promise: Promise<AgentRunner>; surfaceId: SurfaceId }>;
+  private readonly inFlightCreations: Map<string, {
+    promise: Promise<AgentRunner>;
+    surfaceId: SurfaceId;
+    policyFingerprint: string;
+  }>;
   private readonly promptQueues: Map<string, Promise<void>>;
   private readonly cfg: Config;
   private readonly surfaceSettings: SurfaceSettings;
@@ -209,8 +221,9 @@ export class TurnDispatcher {
     this.dreamingPipeline = options.dreamingPipeline;
     this.runners = options.agentRunners;
     this.runnerSurfaceIds = new Map<string, SurfaceId>();
+    this.runnerSkillContexts = new Map();
     this.internalRunnerIds = new Set<string>();
-    this.inFlightCreations = new Map<string, { promise: Promise<AgentRunner>; surfaceId: SurfaceId }>();
+    this.inFlightCreations = new Map();
     this.promptQueues = options.promptQueues ?? new Map<string, Promise<void>>();
     this.promptQueueMeta = options.promptQueueMeta ?? new Map<string, PromptQueueEntry>();
     this.createAgentRunner = options.createAgentRunner;
@@ -239,6 +252,11 @@ export class TurnDispatcher {
     return this.runners.has(sessionId);
   }
 
+  /** True when a runner or an in-flight runtime construction owns this id. */
+  hasRuntime(sessionId: string): boolean {
+    return this.runners.has(sessionId) || this.inFlightCreations.has(sessionId);
+  }
+
   /**
    * Construct a new Surface-backed `AgentRunner` from a completed memory
    * context capture. The caller is responsible for capturing the memory
@@ -250,6 +268,8 @@ export class TurnDispatcher {
     session: SessionState,
     surface: Surface,
     memoryContext: CapturedMemoryContext,
+    skillPolicy: SkillPolicy = this.surfaceSettings.getSkillPolicy(surface),
+    resolvedSkills?: ResolvedSkillSet,
   ): AgentRunner {
     if (!this.surfaceRuntimeAuthority.isCurrentBinding(surface, session.id)) {
       throw new Error(`cannot construct runtime for stale binding: ${surfaceId(surface)} → ${session.id}`);
@@ -280,6 +300,8 @@ export class TurnDispatcher {
       executionEnvironment: session.executionEnvironment,
       modelName,
       thinkingLevel,
+      skillPolicy,
+      resolvedSkills,
       scheduleStore: this.scheduleStore,
       externalAgentRunner: this.externalAgentRunner,
       mcpRunner: this.mcpRunner,
@@ -387,11 +409,28 @@ export class TurnDispatcher {
       throw new Error(`conversation ${session.id} is reserved by an internal runtime`);
     }
     const expectedSurfaceId = surfaceId(surface);
+    const skillPolicy = this.surfaceSettings.getSkillPolicy(surface);
+    const expectedPolicyFingerprint = skillPolicyFingerprint(skillPolicy);
     const existing = this.runners.get(session.id);
     const existingSurfaceId = this.runnerSurfaceIds.get(session.id);
-    if (existing && existingSurfaceId === expectedSurfaceId) {
+    const existingSkillContext = this.runnerSkillContexts.get(session.id);
+    if (
+      existing &&
+      existingSurfaceId === expectedSurfaceId &&
+      existingSkillContext?.policyFingerprint === expectedPolicyFingerprint
+    ) {
       await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
-      if (this.runners.get(session.id) === existing && this.runnerSurfaceIds.get(session.id) === expectedSurfaceId) {
+      if (
+        this.runners.get(session.id) === existing &&
+        this.runnerSurfaceIds.get(session.id) === expectedSurfaceId &&
+        this.runnerSkillContexts.get(session.id)?.policyFingerprint === expectedPolicyFingerprint
+      ) {
+        log.debug("reusing runner", {
+          sessionId: session.id,
+          surfaceId: expectedSurfaceId,
+          policyFingerprint: expectedPolicyFingerprint,
+          manifestFingerprint: existingSkillContext?.manifestFingerprint ?? null,
+        });
         return existing;
       }
       return this.getOrCreateRunner(session, surface);
@@ -403,7 +442,11 @@ export class TurnDispatcher {
     // A different-surface request overwrites the entry, causing the prior
     // creation's recheck to fail.
     const inFlight = this.inFlightCreations.get(session.id);
-    if (inFlight && inFlight.surfaceId === expectedSurfaceId) {
+    if (
+      inFlight &&
+      inFlight.surfaceId === expectedSurfaceId &&
+      inFlight.policyFingerprint === expectedPolicyFingerprint
+    ) {
       return inFlight.promise;
     }
 
@@ -413,9 +456,20 @@ export class TurnDispatcher {
       resolveCreation = resolve;
       rejectCreation = reject;
     });
-    this.inFlightCreations.set(session.id, { promise: creationPromise, surfaceId: expectedSurfaceId });
+    this.inFlightCreations.set(session.id, {
+      promise: creationPromise,
+      surfaceId: expectedSurfaceId,
+      policyFingerprint: expectedPolicyFingerprint,
+    });
 
-    this.doCreateAndRegisterRunner(session, surface, expectedSurfaceId, creationPromise)
+    this.doCreateAndRegisterRunner(
+      session,
+      surface,
+      expectedSurfaceId,
+      expectedPolicyFingerprint,
+      skillPolicy,
+      creationPromise,
+    )
       .then(resolveCreation, rejectCreation)
       .finally(() => {
         const current = this.inFlightCreations.get(session.id);
@@ -436,6 +490,8 @@ export class TurnDispatcher {
     session: SessionState,
     surface: Surface,
     expectedSurfaceId: SurfaceId,
+    expectedPolicyFingerprint: string,
+    skillPolicy: SkillPolicy,
     creationPromise: Promise<AgentRunner>,
   ): Promise<AgentRunner> {
     await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
@@ -443,11 +499,60 @@ export class TurnDispatcher {
       throw new Error(`stale runtime creation for session ${session.id}: invalidated before capture`);
     }
 
-    // Dispose existing runner through the single cleanup seam. The
-    // `preserveInFlight` parameter keeps THIS creation's in-flight entry so
-    // the post-capture recheck doesn't discard it. This awaits quiescence
-    // (runner.dispose, subagent cancel, external-agent cancel) before
-    // creating the replacement, so old and new runners never overlap.
+    let resolvedSkills: ResolvedSkillSet | undefined;
+    if (typeof this.cfg.goblinHome === "string") {
+      resolvedSkills = await resolveSkillSet(
+        session.executionEnvironment,
+        skillPolicy,
+        this.cfg.goblinHome,
+      );
+      if (resolvedSkills.diagnostics.length > 0) {
+        log.debug("runtime skill catalog diagnostics", {
+          sessionId: session.id,
+          surfaceId: expectedSurfaceId,
+          count: resolvedSkills.diagnostics.length,
+        });
+      }
+    } else {
+      // Some narrow unit fixtures use a partial Config and inject a fake
+      // runner. Production Config always has goblinHome; leave those fixtures
+      // on AgentRunner's lazy compatibility fallback.
+      log.debug("skipping eager skill resolution for partial config", {
+        sessionId: session.id,
+        surfaceId: expectedSurfaceId,
+      });
+    }
+
+    if (skillPolicyFingerprint(this.surfaceSettings.getSkillPolicy(surface)) !== expectedPolicyFingerprint) {
+      throw new Error(`stale runtime creation for session ${session.id}: skill policy changed during resolution`);
+    }
+    try {
+      await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `stale runtime creation for session ${session.id}: binding for ${expectedSurfaceId} is no longer current (${message})`,
+      );
+    }
+
+    // The authority check above is async. A lifecycle invalidation can dispose
+    // this creation while it is suspended, so repeat the synchronous identity
+    // checks before disposing any existing runner. A second check immediately
+    // before registration closes the later resurrection window.
+    if (this.inFlightCreations.get(session.id)?.promise !== creationPromise) {
+      throw new Error(
+        `stale runtime creation for session ${session.id}: invalidated before registration`,
+      );
+    }
+    if (skillPolicyFingerprint(this.surfaceSettings.getSkillPolicy(surface)) !== expectedPolicyFingerprint) {
+      throw new Error(
+        `stale runtime creation for session ${session.id}: skill policy changed before registration`,
+      );
+    }
+
+    // Dispose existing runner through the single cleanup seam only after
+    // candidate skill resolution succeeds. The `preserveInFlight` parameter
+    // keeps THIS creation alive while old runner identity is removed.
     if (this.runners.has(session.id)) {
       await this.disposeRunner(session.id, creationPromise);
     }
@@ -491,9 +596,27 @@ export class TurnDispatcher {
       );
     }
 
-    const runner = this.createRunner(session, surface, memoryContext);
+    // The final authority check is async. Recheck identity and policy in the
+    // same synchronous turn immediately before registration so an invalidation
+    // cannot be followed by resurrection of this old runtime.
+    if (this.inFlightCreations.get(session.id)?.promise !== creationPromise) {
+      throw new Error(
+        `stale runtime creation for session ${session.id}: invalidated before registration`,
+      );
+    }
+    if (skillPolicyFingerprint(this.surfaceSettings.getSkillPolicy(surface)) !== expectedPolicyFingerprint) {
+      throw new Error(
+        `stale runtime creation for session ${session.id}: skill policy changed before registration`,
+      );
+    }
+
+    const runner = this.createRunner(session, surface, memoryContext, skillPolicy, resolvedSkills);
     this.runners.set(session.id, runner);
     this.runnerSurfaceIds.set(session.id, expectedSurfaceId);
+    this.runnerSkillContexts.set(session.id, {
+      policyFingerprint: expectedPolicyFingerprint,
+      manifestFingerprint: resolvedSkills?.fingerprint ?? null,
+    });
     log.debug("created runner for session", { sessionId: session.id, surfaceId: expectedSurfaceId });
     return runner;
   }
@@ -628,6 +751,7 @@ export class TurnDispatcher {
     const prior = this.runners.get(sessionId);
     this.runners.delete(sessionId);
     this.runnerSurfaceIds.delete(sessionId);
+    this.runnerSkillContexts.delete(sessionId);
     this.internalRunnerIds.delete(sessionId);
     // Clear the in-flight creation entry unless it matches the creation to
     // preserve (a replacement disposal). This is the stale-runner guard: a

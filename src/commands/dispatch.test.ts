@@ -167,6 +167,29 @@ function expectReplied(result: DispatchResult): Extract<DispatchResult, { kind: 
 }
 
 describe("handleCommand", () => {
+  it("inspects skills without creating a conversation", async () => {
+    const harness = makeHarness();
+    const result = expectReplied(await dispatch({ command: "/skills", harness }));
+
+    expect(result.reply).toContain("Skill policy:");
+    expect(result.reply).toContain("goblin: all");
+    expect(harness.lifecycle.inspect(harness.surface)).toBeNull();
+    expect(result.sideEffects).toEqual([]);
+  });
+
+  it("mutates an unbound Surface skill policy through the lifecycle seam", async () => {
+    const harness = makeHarness();
+    const result = expectReplied(await dispatch({
+      command: "/skills",
+      rawText: "/skills goblin none",
+      harness,
+    }));
+
+    expect(result.reply).toContain("Skill policy updated.");
+    expect(harness.lifecycle.settings.getSkillPolicy(harness.surface).goblin).toEqual({ mode: "none" });
+    expect(harness.lifecycle.inspect(harness.surface)).toBeNull();
+  });
+
   it("replies to /cancel with an active conversation and invokes the cascade itself", async () => {
     const cascade = baseCascade({ attemptedMain: true });
     const harness = makeHarness(cascade);

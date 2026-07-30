@@ -95,6 +95,13 @@ describe("resolveTiming", () => {
     expect(resolveTiming(resolveCommand("/think"), "/think high")).toBe("queue");
   });
 
+  it("/skills is instant for inspection and queued for mutations/reload", () => {
+    expect(resolveTiming(resolveCommand("/skills"), "/skills")).toBe("instant");
+    expect(resolveTiming(resolveCommand("/skills"), "/skills goblin none")).toBe("queue");
+    expect(resolveTiming(resolveCommand("/skills"), "/skills reload")).toBe("queue");
+    expect(resolveCommand("/skills")?.mayRecoverWedgedRuntime).toBe(true);
+  });
+
   it("read-only commands are instant", () => {
     for (const name of ["/debug", "/name foo", "/subagents", "/help", "/queue x", "/voice", "/schedule list", "/schedule every 1h hi"]) {
       const token = name.split(" ")[0]!;

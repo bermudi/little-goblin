@@ -10,6 +10,7 @@ import { createConversationLifecycle, type ConversationLifecycle } from "../../o
 import { createTurnDispatcherRuntimeHost } from "../../orchestration/conversation-runtime-host.ts";
 import { TurnDispatcher, type TurnSink } from "../../orchestration/dispatcher.ts";
 import { personalEnvironment } from "../../sessions/environment.ts";
+import { DEFAULT_SKILL_POLICY } from "../../agent/skills/mod.ts";
 import { runtimeSessionWithPreferences } from "../../sessions/mod.ts";
 import type { SessionState } from "../../sessions/types.ts";
 import { surfaceId, topicSurface, type Surface } from "../../surface.ts";
@@ -142,6 +143,7 @@ function createFixture(): RuntimeFixture {
     setModelName: () => {},
     getThinkingLevel: () => undefined,
     setThinkingLevel: () => {},
+    getSkillPolicy: () => DEFAULT_SKILL_POLICY,
   };
 
   const subagentRunner = new SubagentRunner(cfg, (subRunner, depth, sessionId, parentCapture, onStatusUpdate) => [

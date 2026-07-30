@@ -5,9 +5,27 @@ import type { ConversationId, ConversationState, SessionState } from "../session
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import type { BindingStore } from "../sessions/bindings.ts";
 import { FileBindingStore } from "../sessions/bindings.ts";
-import { getProjectRoot, bindProjectRoot, getModelName, getThinkingLevelValidated, setModelName, setThinkingLevel } from "../sessions/topic-settings.ts";
+import {
+  getProjectRoot,
+  bindProjectRoot,
+  getModelName,
+  getSkillPolicy as getStoredSkillPolicy,
+  getThinkingLevelValidated,
+  setModelName,
+  setSkillPolicy as saveSkillPolicy,
+  setThinkingLevel,
+} from "../sessions/topic-settings.ts";
 import { assertCanonicalProjectRoot, environmentFromProjectRoot, environmentsEqual, projectEnvironment, projectRootOf } from "../sessions/environment.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
+import {
+  cloneSkillPolicy,
+  resolveSkillSet,
+  skillPolicyFingerprint,
+  type ResolvedSkillSet,
+  type SkillPolicy,
+  type SkillSource,
+  type SourceSelection,
+} from "../agent/skills/mod.ts";
 import type { BindingsFile } from "../sessions/types.ts";
 import { isValidConversationId } from "../sessions/conversation.ts";
 import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
@@ -26,9 +44,9 @@ import {
 
 /**
  * Surface-scoped settings adapter used by the lifecycle to determine the
- * effective execution environment, model, and thinking preferences for a
- * Surface. Model and thinking are owned by the Surface and survive conversation
- * rotation, resume, and archive.
+ * effective execution environment, model, thinking preferences, and skill
+ * policy for a Surface. These settings survive conversation rotation, resume,
+ * and archive; the execution environment itself remains Conversation-owned.
  */
 export interface SurfaceSettings {
   effectiveEnvironment(surface: Surface): ExecutionEnvironment;
@@ -36,6 +54,23 @@ export interface SurfaceSettings {
   setModelName(surface: Surface, modelName: string | undefined): void;
   getThinkingLevel(surface: Surface): ThinkingLevel | undefined;
   setThinkingLevel(surface: Surface, thinkingLevel: ThinkingLevel | undefined): void;
+  getSkillPolicy(surface: Surface): SkillPolicy;
+}
+
+/** Persistence callback kept private to lifecycle policy transitions. */
+export type SkillPolicyWriter = (surface: Surface, policy: SkillPolicy) => void;
+
+export interface SkillPolicyStatus {
+  readonly environment: ExecutionEnvironment;
+  readonly policy: SkillPolicy;
+  readonly resolvedSkills: ResolvedSkillSet;
+}
+
+export type SkillRuntimeTransition = "invalidated" | "none";
+
+export interface SkillPolicyTransition extends SkillPolicyStatus {
+  readonly runtime: SkillRuntimeTransition;
+  readonly cleanupError?: string;
 }
 
 /**
@@ -55,6 +90,10 @@ export interface ConversationLifecycle extends SurfaceRuntimeAuthority {
   rotate(surface: Surface): Promise<ConversationState>;
   resume(surface: Surface, target: ConversationId): Promise<ConversationState>;
   archive(surface: Surface): Promise<void>;
+  inspectSkillPolicy(surface: Surface): Promise<SkillPolicyStatus>;
+  setSkillPolicy(surface: Surface, policy: SkillPolicy): Promise<SkillPolicyTransition>;
+  setSkillSelection(surface: Surface, source: SkillSource, selection: SourceSelection): Promise<SkillPolicyTransition>;
+  reloadSkills(surface: Surface): Promise<SkillPolicyTransition>;
   assignProject(surface: Surface, requestedRoot: string): Promise<ProjectAssignmentResult>;
   listResumable(surface: Surface): ConversationState[];
 }
@@ -78,6 +117,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   private readonly bindings: BindingStore;
   readonly settings: SurfaceSettings;
   private readonly runtimeHost: ConversationRuntimeHost;
+  private readonly skillPolicyWriter: SkillPolicyWriter;
 
   constructor(
     home: string,
@@ -85,12 +125,14 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     bindings: BindingStore,
     settings: SurfaceSettings,
     runtimeHost: ConversationRuntimeHost,
+    skillPolicyWriter: SkillPolicyWriter = (surface, policy) => saveSkillPolicy(home, surface, policy),
   ) {
     this.home = home;
     this.store = store;
     this.bindings = bindings;
     this.settings = settings;
     this.runtimeHost = runtimeHost;
+    this.skillPolicyWriter = skillPolicyWriter;
   }
 
   inspect(surface: Surface): ConversationState | null {
@@ -259,6 +301,131 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       this.store.archive(current.id);
       log.info("conversation archived", { surface: key, conversation: current.id });
     });
+  }
+
+  async inspectSkillPolicy(surface: Surface): Promise<SkillPolicyStatus> {
+    // Inspection is deliberately non-creating. Pending project assignment
+    // replay belongs to an authority-changing/runtime-acquisition path; a
+    // status read must not turn an unbound Surface into a Conversation.
+    return withLifecycleTransitionLock(() => this.resolveSkillPolicyStatus(surface));
+  }
+
+  async setSkillPolicy(surface: Surface, policy: SkillPolicy): Promise<SkillPolicyTransition> {
+    return withLifecycleTransitionLock(async () => {
+      const key = surfaceId(surface);
+      await this.reconcilePendingAssignment(key);
+      const candidate = cloneSkillPolicy(policy);
+      return this.commitSkillPolicy(surface, candidate);
+    });
+  }
+
+  async setSkillSelection(
+    surface: Surface,
+    source: SkillSource,
+    selection: SourceSelection,
+  ): Promise<SkillPolicyTransition> {
+    return withLifecycleTransitionLock(async () => {
+      const key = surfaceId(surface);
+      await this.reconcilePendingAssignment(key);
+      const current = cloneSkillPolicy(this.settings.getSkillPolicy(surface));
+      current[source] = selection;
+      const candidate = cloneSkillPolicy(current);
+      return this.commitSkillPolicy(surface, candidate);
+    });
+  }
+
+  private async commitSkillPolicy(surface: Surface, candidate: SkillPolicy): Promise<SkillPolicyTransition> {
+    // Resolve before touching durable settings or the current runtime. A
+    // missing selected skill or cross-source collision therefore leaves both
+    // authorities unchanged.
+    const status = await this.resolveSkillPolicyStatus(surface, candidate);
+    this.skillPolicyWriter(surface, candidate);
+    const invalidation = await this.invalidateSurfaceRuntime(surface);
+
+    log.info("Surface skill policy changed", {
+      surfaceId: surfaceId(surface),
+      environment: status.environment,
+      policy: status.policy,
+      manifestFingerprint: status.resolvedSkills.fingerprint,
+      runtime: invalidation.runtime,
+      cleanupError: invalidation.cleanupError,
+    });
+    return { ...status, ...invalidation };
+  }
+
+  async reloadSkills(surface: Surface): Promise<SkillPolicyTransition> {
+    return withLifecycleTransitionLock(async () => {
+      const key = surfaceId(surface);
+      await this.reconcilePendingAssignment(key);
+
+      // Resolve first: reload is not allowed to destroy a usable runtime when
+      // the newly edited catalog is invalid or no longer satisfies selection.
+      const status = await this.resolveSkillPolicyStatus(surface);
+      const invalidation = await this.invalidateSurfaceRuntime(surface);
+      log.info("Surface skills reloaded", {
+        surfaceId: key,
+        environment: status.environment,
+        policy: status.policy,
+        manifestFingerprint: status.resolvedSkills.fingerprint,
+        runtime: invalidation.runtime,
+        cleanupError: invalidation.cleanupError,
+      });
+      return { ...status, ...invalidation };
+    });
+  }
+
+  private async resolveSkillPolicyStatus(
+    surface: Surface,
+    candidate?: SkillPolicy,
+  ): Promise<SkillPolicyStatus> {
+    const environment = this.settings.effectiveEnvironment(surface);
+    const policy = cloneSkillPolicy(candidate ?? this.settings.getSkillPolicy(surface));
+    const resolvedSkills = await resolveSkillSet(environment, policy, this.home);
+    log.debug("resolved Surface skill policy", {
+      surfaceId: surfaceId(surface),
+      environment,
+      policy,
+      skills: resolvedSkills.skills.map((skill) => ({
+        source: skill.source,
+        name: skill.name,
+        filePath: skill.filePath,
+      })),
+      diagnostics: resolvedSkills.diagnostics.length,
+      manifestFingerprint: resolvedSkills.fingerprint,
+      policyFingerprint: skillPolicyFingerprint(policy),
+    });
+    return { environment, policy, resolvedSkills };
+  }
+
+  private async invalidateSurfaceRuntime(surface: Surface): Promise<{
+    runtime: SkillRuntimeTransition;
+    cleanupError?: string;
+  }> {
+    const key = surfaceId(surface);
+    const rawConversationId = this.bindings.load().surfaces[key];
+    if (!rawConversationId || !isValidConversationId(rawConversationId)) {
+      return { runtime: "none" };
+    }
+
+    const conversationId = rawConversationId as ConversationId;
+    const hadRuntime = this.runtimeHost.hasRuntime?.(conversationId) ?? false;
+    try {
+      // The runtime host removes runner/queue identity synchronously before it
+      // awaits disposal. This call also fences an in-flight runtime creation.
+      await this.runtimeHost.disposeRuntime(conversationId);
+      return { runtime: hadRuntime ? "invalidated" : "none" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error("Surface skill runtime cleanup failed", {
+        surfaceId: key,
+        conversationId,
+        error: message,
+      });
+      return {
+        runtime: hadRuntime ? "invalidated" : "none",
+        cleanupError: message,
+      };
+    }
   }
 
   async assignProject(surface: Surface, requestedRoot: string): Promise<ProjectAssignmentResult> {
@@ -457,6 +624,10 @@ export class FileSurfaceSettings implements SurfaceSettings {
   setThinkingLevel(surface: Surface, thinkingLevel: ThinkingLevel | undefined): void {
     setThinkingLevel(this.home, surface, thinkingLevel);
   }
+
+  getSkillPolicy(surface: Surface): SkillPolicy {
+    return getStoredSkillPolicy(this.home, surface);
+  }
 }
 
 type MutableAttachmentSignal = AttachmentSignal & {
@@ -498,6 +669,7 @@ export function createConversationLifecycle(
   home: string,
   runtimeHost: ConversationRuntimeHost,
   settings?: SurfaceSettings,
+  skillPolicyWriter?: SkillPolicyWriter,
 ): ConversationLifecycle {
   return new ConversationLifecycleManager(
     home,
@@ -505,5 +677,6 @@ export function createConversationLifecycle(
     new FileBindingStore(home),
     settings ?? new FileSurfaceSettings(home),
     runtimeHost,
+    skillPolicyWriter,
   );
 }

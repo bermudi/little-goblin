@@ -4,6 +4,7 @@
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Surface, SurfaceId } from "../surface.ts";
+import type { SkillPolicy } from "../agent/skills/types.ts";
 import type { ExecutionEnvironment } from "./environment.ts";
 
 /** Migration-only legacy locator shape (chat + optional topic). Not exported from the session module API. */
@@ -75,6 +76,8 @@ export interface TopicSettings {
   modelName?: string;
   /** Surface-scoped thinking level override. Falls back to model default when absent. */
   thinkingLevel?: string;
+  /** Surface-owned skill selection policy. Missing means the effective defaults. */
+  skillPolicy?: SkillPolicy;
 }
 
 /** Legacy pre-Surface topic-settings.json shape. Loaded only by migration. */

@@ -522,7 +522,7 @@ describe("ConversationLifecycle", () => {
         store,
         bindings,
         staticSettings(personalEnvironment()),
-        { disposeRuntime: async () => {} },
+        { hasRuntime: () => false, disposeRuntime: async () => {} },
       );
       const result = await freshLifecycle.assignProject(surface, projectRoot);
 
@@ -745,7 +745,7 @@ describe("ConversationLifecycle", () => {
         store,
         bindings,
         fileBasedSettings(tmpDir),
-        { disposeRuntime: async () => {} },
+        { hasRuntime: () => false, disposeRuntime: async () => {} },
       );
       const result = await lifecycle.resolveOrStart(surface);
 

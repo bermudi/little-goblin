@@ -408,7 +408,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     }
 
     const conversationId = rawConversationId as ConversationId;
-    const hadRuntime = this.runtimeHost.hasRuntime?.(conversationId) ?? false;
+    const hadRuntime = this.runtimeHost.hasRuntime(conversationId);
     try {
       // The runtime host removes runner/queue identity synchronously before it
       // awaits disposal. This call also fences an in-flight runtime creation.

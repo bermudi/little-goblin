@@ -12,7 +12,7 @@ import type { TurnDispatcher } from "./dispatcher.ts";
  */
 export interface ConversationRuntimeHost {
   /** True when a runner or in-flight creation currently holds this identity. */
-  hasRuntime?(conversationId: ConversationId): boolean;
+  hasRuntime(conversationId: ConversationId): boolean;
   disposeRuntime(conversationId: ConversationId): Promise<void>;
 }
 

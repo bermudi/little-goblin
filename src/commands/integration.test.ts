@@ -51,7 +51,7 @@ describe("rapid command spam integration", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-cmd-int-"));
     cfg = makeTestConfig(tmpDir);
-    const runtimeHost = { disposeRuntime: async () => {} };
+    const runtimeHost = { hasRuntime: () => false, disposeRuntime: async () => {} };
     lifecycle = createConversationLifecycle(tmpDir, runtimeHost);
     conversationStore = new ConversationStore(tmpDir);
   });
@@ -66,6 +66,9 @@ describe("rapid command spam integration", () => {
 
   class FakeRuntimeHost implements ConversationRuntimeHost {
     disposed: string[] = [];
+    hasRuntime(_id: ConversationId): boolean {
+      return false;
+    }
     async disposeRuntime(id: ConversationId): Promise<void> {
       this.disposed.push(id);
     }

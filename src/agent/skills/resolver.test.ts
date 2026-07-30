@@ -67,9 +67,12 @@ describe("SkillCatalogResolver", () => {
       const names = result.skills.map((s) => s.name);
       expect(names).toContain("goblin-skill");
       expect(names).toContain("env-skill");
-      if (hostWritten) {
-        expect(names).not.toContain(hostSkillName);
-        rmSync(hostSkillDir, { recursive: true, force: true });
+      try {
+        if (hostWritten) {
+          expect(names).not.toContain(hostSkillName);
+        }
+      } finally {
+        if (hostWritten) rmSync(hostSkillDir, { recursive: true, force: true });
       }
     });
 

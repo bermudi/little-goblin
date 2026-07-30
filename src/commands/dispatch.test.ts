@@ -93,7 +93,7 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
 } {
   const cfg = makeConfig();
   const interrupt = mock(async () => cascade);
-  const runtimeHost = { disposeRuntime: async () => {} };
+  const runtimeHost = { hasRuntime: () => false, disposeRuntime: async () => {} };
   const lifecycle = createConversationLifecycle(cfg.goblinHome, runtimeHost);
   const conversationStore = new ConversationStore(cfg.goblinHome);
   const surface = dmSurface(123);

@@ -16,6 +16,7 @@ import {
   createTestHome,
   DEFAULT_AUTHORITY,
   DEFAULT_PARENT_CAPTURE,
+  EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   getCapturedCreateArgs,
   installStandardPiMock,
@@ -42,7 +43,7 @@ describe("SubagentRunner.revive", () => {
   });
 
   async function spawnGeneric(): Promise<string> {
-    const handle = await runner.spawn({ prompt: "first turn", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "first turn", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     sessionHolder.emit({ type: "agent_start" });
@@ -64,7 +65,7 @@ describe("SubagentRunner.revive", () => {
   }
 
   it("throws 'Subagent not found' when id does not exist on disk", async () => {
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, "nonexistent-id", "ping")).rejects.toThrow("Subagent not found");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, "nonexistent-id", "ping")).rejects.toThrow("Subagent not found");
   });
 
   it("throws 'Subagent not found' when dir exists but has no session file", async () => {
@@ -84,14 +85,14 @@ describe("SubagentRunner.revive", () => {
       }),
     );
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, id, "ping")).rejects.toThrow("Subagent not found");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "ping")).rejects.toThrow("Subagent not found");
   });
 
   it("revives a generic subagent and sends the new prompt", async () => {
     const id = await spawnGeneric();
 
     resetPiMockState();
-    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, id, "second turn");
+    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "second turn");
     await flush();
 
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
@@ -120,7 +121,7 @@ describe("SubagentRunner.revive", () => {
     expect(meta.status).toBe("completed");
 
     resetPiMockState();
-    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, id, "follow-up");
+    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "follow-up");
     await flush();
 
     meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, id), "utf-8")) as SubagentMeta;
@@ -137,7 +138,7 @@ describe("SubagentRunner.revive", () => {
     const id = await spawnGeneric();
 
     resetPiMockState();
-    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, id, "check");
+    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "check");
     resultPromise.catch(() => {});
     await flush();
 
@@ -170,7 +171,7 @@ describe("SubagentRunner.revive", () => {
     writeFileSync(join(instDir, "2026-01-01T00-00-00_fake-session.jsonl"), "");
 
     resetPiMockState();
-    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, handle.id, "more research");
+    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "more research");
     await flush();
 
     const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
@@ -194,7 +195,7 @@ describe("SubagentRunner.revive", () => {
       throw new Error("revive-fail");
     });
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, id, "bad")).rejects.toThrow("revive-fail");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "bad")).rejects.toThrow("revive-fail");
   });
 });
 
@@ -213,19 +214,19 @@ describe("SubagentRunner — revive guards", () => {
   });
 
   it("throws when reviving a subagent that is already running", async () => {
-    const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     writeFileSync(join(genericSubagentDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, handle.id, "second")).rejects.toThrow("Subagent is already running");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "second")).rejects.toThrow("Subagent is already running");
   });
 
   it("clears stale errorMessage and completedAt on revival", async () => {
     sessionHolder.sendUserMessage = mock(async () => {
       throw new Error("first-fail");
     });
-    const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     await flush();
     await expect(handle.result).rejects.toThrow("first-fail");
@@ -233,7 +234,7 @@ describe("SubagentRunner — revive guards", () => {
     writeFileSync(join(genericSubagentDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
 
     resetPiMockState();
-    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, handle.id, "second");
+    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "second");
     await flush();
 
     let meta = JSON.parse(
@@ -272,7 +273,7 @@ describe("SubagentRunner — corrupted meta.json", () => {
     writeFileSync(join(dir, "meta.json"), "NOT VALID JSON{{{");
     writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, id, "hello")).rejects.toThrow("Subagent not found");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "hello")).rejects.toThrow("Subagent not found");
   });
 
   it("allows a same-id retry after a corrupted meta.json failure", async () => {
@@ -281,7 +282,7 @@ describe("SubagentRunner — corrupted meta.json", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "meta.json"), "NOT VALID JSON");
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, id, "first try")).rejects.toThrow("Subagent not found");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "first try")).rejects.toThrow("Subagent not found");
 
     // Repair the directory with a valid meta and a session file.
     writeFileSync(
@@ -298,7 +299,7 @@ describe("SubagentRunner — corrupted meta.json", () => {
     );
     writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
 
-    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, id, "second try");
+    const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "second try");
     await flush();
     expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("second try");
 
@@ -329,7 +330,7 @@ describe("SubagentRunner — double-revive race guard", () => {
   });
 
   async function spawnAndComplete(): Promise<string> {
-    const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -345,10 +346,10 @@ describe("SubagentRunner — double-revive race guard", () => {
     const id = await spawnAndComplete();
     resetPiMockState();
 
-    const firstRevive = runner.revive(DEFAULT_PARENT_CAPTURE, id, "turn 2");
+    const firstRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 2");
     await flush();
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, id, "turn 2b")).rejects.toThrow("Subagent revive already in progress");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 2b")).rejects.toThrow("Subagent revive already in progress");
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await firstRevive;
@@ -358,13 +359,13 @@ describe("SubagentRunner — double-revive race guard", () => {
     const id = await spawnAndComplete();
     resetPiMockState();
 
-    const firstRevive = runner.revive(DEFAULT_PARENT_CAPTURE, id, "turn 2");
+    const firstRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 2");
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await firstRevive;
 
     resetPiMockState();
-    const secondRevive = runner.revive(DEFAULT_PARENT_CAPTURE, id, "turn 3");
+    const secondRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 3");
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await secondRevive;
@@ -377,10 +378,10 @@ describe("SubagentRunner — double-revive race guard", () => {
       throw new Error("revive-err");
     });
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, id, "bad")).rejects.toThrow("revive-err");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "bad")).rejects.toThrow("revive-err");
 
     resetPiMockState();
-    const secondRevive = runner.revive(DEFAULT_PARENT_CAPTURE, id, "turn 3");
+    const secondRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 3");
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await secondRevive;
@@ -390,14 +391,14 @@ describe("SubagentRunner — double-revive race guard", () => {
     const id = await spawnAndComplete();
 
     await expect(
-      runner.revive(DEFAULT_PARENT_CAPTURE, id, "will not start", undefined, async () => {
+      runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "will not start", undefined, async () => {
         throw new Error("attachment failed");
       }),
     ).rejects.toThrow("attachment failed");
     expect(runner.list().find((info) => info.id === id)).toBeUndefined();
 
     resetPiMockState();
-    const retry = runner.revive(DEFAULT_PARENT_CAPTURE, id, "retry");
+    const retry = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "retry");
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await expect(retry).resolves.toBe("");
@@ -414,7 +415,7 @@ describe("SubagentRunner — double-revive race guard", () => {
       markAttached = resolve;
     });
 
-    const revival = runner.revive(DEFAULT_PARENT_CAPTURE, id, "will be cancelled", undefined, async () => {
+    const revival = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "will be cancelled", undefined, async () => {
       markAttached();
       await attachmentStarted;
     });
@@ -454,7 +455,7 @@ describe("SubagentRunner — revive with deleted AGENTS.md", () => {
     writeFileSync(join(instDir, "2026-01-01T00-00-00.jsonl"), "");
     rmSync(namedAgentAgentsMdPath(tmp, "researcher"));
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, handle.id, "more")).rejects.toThrow(/definition missing; cannot revive/);
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "more")).rejects.toThrow(/definition missing; cannot revive/);
   });
 });
 
@@ -474,6 +475,6 @@ describe("SubagentRunner — revive rejects after dispose", () => {
 
   it("throws after dispose", async () => {
     await runner.dispose();
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, "any-id", "ping")).rejects.toThrow("SubagentRunner is disposed");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, "any-id", "ping")).rejects.toThrow("SubagentRunner is disposed");
   });
 });

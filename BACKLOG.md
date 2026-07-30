@@ -14,7 +14,7 @@ Parked scope and open questions. Items graduate only when a deliberate implement
 
 ## Next
 
-**Next cycle: `subagent-skill-inheritance`.** `surface-skill-policy` is implemented: SurfaceId-keyed settings persist independent Goblin/environment/host selections; `/skills` provides non-creating inspection, queued mutation, and reload; lifecycle transitions resolve before persistence and invalidate runtimes through the existing host seam; dispatcher runtime creation freezes the destination policy's resolved manifest. The next step is generic subagent inheritance of that frozen manifest. Named-agent isolation remains a later dependent concern.
+**No next cycle is selected.** `subagent-skill-inheritance` (generic half) is implemented: generic subagents receive the caller runtime's immutable Execution Environment plus exactly its frozen resolved manifest (recursive spawns inherit both, revivals inherit both from the reviving runtime per the memory-authority precedent), and missing or unloaded inherited files fail visibly. Named agents keep their existing isolation. The dependent follow-up is named-agent catalog isolation (`workspace/agents/<name>/.agents/skills/`); it graduates only when deliberately resumed.
 
 ## Stabilization closure
 
@@ -39,7 +39,7 @@ Historical unstarted plans live in `specs/parked/`; they are frozen references, 
 - **`inner-life`** — decision 0035 is accepted and its lifecycle prerequisite is satisfied; implementation remains parked pending fresh shaping and delivery capacity.
 - **`skill-catalog-resolution`** — implemented. `SkillCatalogResolver` (`src/agent/skills/`) owns exact-root resolution from Conversation environment plus a `SkillPolicy`; `skillSources` is removed with visible rejection; default policy (Goblin all / environment all / host none) wired into runtime construction.
 - **`surface-skill-policy`** — implemented. Surface-owned policy persistence, `/skills` inspection/mutation/reload, lifecycle invalidation, and eager runtime manifest resolution now use the existing deep seams; do not create the historical proposal's parallel policy coordinator.
-- **`subagent-skill-inheritance`** — follows catalog resolution and Surface policy; its frozen proposal contains stale paths and startup-migration assumptions.
+- **`subagent-skill-inheritance`** — generic environment plus frozen-manifest inheritance implemented. Named-agent catalog isolation (`workspace/agents/<name>/.agents/skills/`) remains parked; the frozen proposal's legacy-`skills/` startup migration stays dead per the decision-0043 precedent (operator moves catalogs by hand, Goblin keeps no migration code).
 
 ## Deferred
 
@@ -76,6 +76,7 @@ Historical unstarted plans live in `specs/parked/`; they are frozen references, 
 - v1.x: EphemeralReply / auto-delete for transient system messages — deferred from `reply-formatting`. System acks (`[queued]`, `[ok] Saved file.`) currently persist in the thread. An `EphemeralReply` wrapper (like Hermes') could auto-delete them after a TTL if the chat gets noisy. Not needed for single-user homelab today.
 - **Native interactive external-agent messaging.** The frozen `acp-external-agents` proposal explored immutable child runs that resume an `end_turn`-completed ACP session for follow-up prompts. That direction is historical input, not accepted behavior; classify it with the ACP boundary before implementation.
 - v1.x: explicit environment-based external-agent authentication — decision 0041 keeps user-scoped CLI credential stores as the operational default and forbids ambient inheritance of Goblin's process secrets. If a backend later requires explicit key forwarding, design a deliberate per-backend input; never forward the parent environment wholesale.
+- v1.x: main-runtime missing-skill-file hardening — pi's `DefaultResourceLoader` only records a diagnostic when an `additionalSkillPaths` entry vanishes, so a SKILL.md deleted between manifest resolution and `PiAgentBackend.init` degrades silently. `subagent-skill-inheritance` validates both filesystem state and the post-reload loaded set for subagent loaders; the main backend path (`src/agent/backend.ts`) lacks that postcondition. The window is small (resolution and init are one synchronous stretch), so this is a patch, not a design problem.
 
 - **MCP bridge v2 (deferred from `mcp-bridge`):**
   - Image and binary passthrough for vision servers (`zai-vision`, `gemini-media`).

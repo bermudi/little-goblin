@@ -8,6 +8,7 @@ import { genericSubagentMetaPath } from "../paths.ts";
 import {
   createTestHome,
   DEFAULT_AUTHORITY,
+  EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   installStandardPiMock,
   makeConfig,
@@ -37,7 +38,7 @@ describe("SubagentRunner.cancel", () => {
   });
 
   it("calls session.abort() and updates status to cancelled", async () => {
-    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     expect(sessionHolder.abort).not.toHaveBeenCalled();
@@ -48,7 +49,7 @@ describe("SubagentRunner.cancel", () => {
   });
 
   it("persists status=cancelled to meta.json with completedAt", async () => {
-    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     await runner.cancel(handle.id);
@@ -61,7 +62,7 @@ describe("SubagentRunner.cancel", () => {
   });
 
   it("cleans up the event subscription on cancel", async () => {
-    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     const listenerCountBefore = sessionHolder.listeners.length;
@@ -92,9 +93,9 @@ describe("SubagentRunner.list", () => {
   });
 
   it("returns multiple subagents with correct shape", async () => {
-    const first = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY });
+    const first = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     first.result.catch(() => {});
-    const second = await runner.spawn({ prompt: "b", authority: DEFAULT_AUTHORITY });
+    const second = await runner.spawn({ prompt: "b", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     second.result.catch(() => {});
     await flush();
 
@@ -113,7 +114,7 @@ describe("SubagentRunner.list", () => {
   });
 
   it("reflects cancelled status after cancel()", async () => {
-    const handle = await runner.spawn({ prompt: "x", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "x", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     await runner.cancel(handle.id);
 
@@ -122,7 +123,7 @@ describe("SubagentRunner.list", () => {
   });
 
   it("reflects completed status after agent_end", async () => {
-    const handle = await runner.spawn({ prompt: "x", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "x", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
@@ -147,14 +148,14 @@ describe("SubagentRunner — prune terminal instances", () => {
   });
 
   it("prunes completed subagents on next spawn", async () => {
-    const first = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY });
+    const first = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await first.result;
 
     expect(runner.list()).toHaveLength(1);
 
-    const second = await runner.spawn({ prompt: "b", authority: DEFAULT_AUTHORITY });
+    const second = await runner.spawn({ prompt: "b", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     second.result.catch(() => {});
     await flush();
 
@@ -167,13 +168,13 @@ describe("SubagentRunner — prune terminal instances", () => {
   });
 
   it("prunes cancelled subagents on next spawn", async () => {
-    const first = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY });
+    const first = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     await runner.cancel(first.id);
 
     expect(runner.list()).toHaveLength(1);
 
-    const second = await runner.spawn({ prompt: "b", authority: DEFAULT_AUTHORITY });
+    const second = await runner.spawn({ prompt: "b", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     second.result.catch(() => {});
     await flush();
 
@@ -187,6 +188,7 @@ describe("SubagentRunner — prune terminal instances", () => {
       prompt: "a",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -195,6 +197,7 @@ describe("SubagentRunner — prune terminal instances", () => {
       authority: DEFAULT_AUTHORITY,
       spawnedBy: a.id,
       depth: 1,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -206,7 +209,7 @@ describe("SubagentRunner — prune terminal instances", () => {
     // Spawning a third subagent triggers pruneTerminal(). The completed
     // parent must be retained because child b is still running and needs
     // the ancestry chain for cascade cancel.
-    const c = await runner.spawn({ prompt: "c", authority: DEFAULT_AUTHORITY });
+    const c = await runner.spawn({ prompt: "c", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     c.result.catch(() => {});
     await flush();
 
@@ -222,7 +225,7 @@ describe("SubagentRunner — prune terminal instances", () => {
     expect(bInst).toBeDefined();
     markCompleted(bInst!);
 
-    const d = await runner.spawn({ prompt: "d", authority: DEFAULT_AUTHORITY });
+    const d = await runner.spawn({ prompt: "d", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     d.result.catch(() => {});
     await flush();
 
@@ -231,7 +234,7 @@ describe("SubagentRunner — prune terminal instances", () => {
     expect(idsAfterFirst).toContain(a.id); // a still retained (was parent of b)
     expect(idsAfterFirst).toContain(d.id);
 
-    const e = await runner.spawn({ prompt: "e", authority: DEFAULT_AUTHORITY });
+    const e = await runner.spawn({ prompt: "e", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     e.result.catch(() => {});
     await flush();
 
@@ -260,7 +263,7 @@ describe("SubagentRunner — dispose", () => {
   });
 
   it("cancels running subagents and clears the map", async () => {
-    const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     handle.result.catch(() => {});
     await flush();
 
@@ -275,7 +278,7 @@ describe("SubagentRunner — dispose", () => {
   });
 
   it("disposes subagents that already completed", async () => {
-    const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -305,7 +308,7 @@ describe("SubagentRunner — cancel with abort() that throws", () => {
       throw new Error("abort-failed");
     });
 
-    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     await runner.cancel(handle.id);
 
@@ -334,13 +337,13 @@ describe("SubagentRunner — disposed flag", () => {
 
   it("rejects spawn after dispose", async () => {
     await runner.dispose();
-    await expect(runner.spawn({ prompt: "late", authority: DEFAULT_AUTHORITY })).rejects.toThrow("SubagentRunner is disposed");
+    await expect(runner.spawn({ prompt: "late", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE })).rejects.toThrow("SubagentRunner is disposed");
   });
 
   it("rejects spawn even if active map was empty at dispose time", async () => {
     expect(runner.list()).toEqual([]);
     await runner.dispose();
-    await expect(runner.spawn({ prompt: "x", authority: DEFAULT_AUTHORITY })).rejects.toThrow("SubagentRunner is disposed");
+    await expect(runner.spawn({ prompt: "x", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE })).rejects.toThrow("SubagentRunner is disposed");
   });
 });
 
@@ -359,7 +362,7 @@ describe("SubagentRunner — dispose does not overwrite completed", () => {
   });
 
   it("preserves completed meta.json status on dispose", async () => {
-    const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await handle.result;
@@ -378,7 +381,7 @@ describe("SubagentRunner — dispose does not overwrite completed", () => {
       throw new Error("boom");
     });
 
-    const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     await flush();
     await expect(handle.result).rejects.toThrow("boom");
@@ -412,7 +415,7 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
       throw new Error("first-fail");
     });
 
-    const handle = await runner.spawn({ prompt: "trigger", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "trigger", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     const metaPath = genericSubagentMetaPath(tmp, handle.id);
     const dir = dirname(metaPath);
 
@@ -429,7 +432,7 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
   });
 
   it("markCompleted still resolves with text when persistMeta fails", async () => {
-    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     const metaPath = genericSubagentMetaPath(tmp, handle.id);
@@ -475,11 +478,13 @@ describe("SubagentRunner.cancelBySession", () => {
       prompt: "a",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     const b = await runner.spawn({
       prompt: "b",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -502,12 +507,14 @@ describe("SubagentRunner.cancelBySession", () => {
       prompt: "a",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     const b = await runner.spawn({
       prompt: "b",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: a.id,
       depth: 1,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -523,6 +530,7 @@ describe("SubagentRunner.cancelBySession", () => {
       prompt: "a",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -531,6 +539,7 @@ describe("SubagentRunner.cancelBySession", () => {
       authority: DEFAULT_AUTHORITY,
       spawnedBy: a.id,
       depth: 1,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -550,6 +559,7 @@ describe("SubagentRunner.cancelBySession", () => {
       prompt: "a",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -566,7 +576,7 @@ describe("SubagentRunner.cancelBySession", () => {
   });
 
   it("does not match null spawnedBy", async () => {
-    await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY });
+    await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     await runner.cancelBySession("session-abc");
@@ -587,11 +597,13 @@ describe("SubagentRunner.cancelBySession", () => {
       prompt: "a",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     const c = await runner.spawn({
       prompt: "c",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-def",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -607,6 +619,7 @@ describe("SubagentRunner.cancelBySession", () => {
       prompt: "a",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 

@@ -2,11 +2,26 @@ import { mock } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ResolvedSkillSet } from "../../agent/skills/mod.ts";
 import type { Config } from "../../config.ts";
 import type { ActiveScope, CapturedMemoryContext, SurfaceMemoryAuthority } from "../../memory/mod.ts";
 import { piAgentDir } from "../../pi-host.ts";
 import { workspacePath } from "../../workspace/paths.ts";
+import { personalEnvironment } from "../../sessions/environment.ts";
 import { dmSurface, supergroupSurface, surfaceId, type Surface } from "../../surface.ts";
+import type { GenericSubagentInheritance } from "../types.ts";
+
+const EMPTY_RESOLVED_SKILL_SET: ResolvedSkillSet = {
+  skills: [],
+  diagnostics: [],
+  fingerprint: "test-empty",
+};
+
+/** Empty inherited authority for generic calls that don't exercise skills. */
+export const EMPTY_GENERIC_SUBAGENT_INHERITANCE: GenericSubagentInheritance = {
+  executionEnvironment: personalEnvironment(),
+  resolvedSkills: EMPTY_RESOLVED_SKILL_SET,
+};
 
 /** Default active scope for tests that don't need a specific topic/agent scope. */
 export const DEFAULT_SCOPE: ActiveScope = {
@@ -61,6 +76,11 @@ export const OTHER_PARENT_CAPTURE: CapturedMemoryContext = {
 type Listener = (event: Record<string, unknown>) => void;
 
 const capturedCreateArgs: unknown[] = [];
+let loadedSkillPathsOverride: readonly string[] | null = null;
+
+export function setLoadedSkillPathsOverride(paths: readonly string[] | null): void {
+  loadedSkillPathsOverride = paths;
+}
 
 export const sessionHolder = {
   listeners: [] as Listener[],
@@ -113,6 +133,7 @@ export function getCapturedCreateArgs(): readonly unknown[] {
 
 export function resetPiMockState(): void {
   clearCapturedCreateArgs();
+  loadedSkillPathsOverride = null;
   sessionHolder.reset();
 }
 
@@ -145,6 +166,14 @@ export function standardPiMock() {
       }
 
       async reload(): Promise<void> {}
+
+      getSkills(): { skills: Array<{ filePath: string }>; diagnostics: [] } {
+        const paths = loadedSkillPathsOverride ?? (this.options.additionalSkillPaths ?? []) as string[];
+        return {
+          skills: paths.map((filePath) => ({ filePath })),
+          diagnostics: [],
+        };
+      }
     },
     createAgentSession: async (opts: unknown) => {
       capturedCreateArgs.push(opts);

@@ -19,6 +19,7 @@ import type { TurnSink, SurfaceSettings } from "./dispatcher.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
 import type { TranscriptWriterContext } from "../sessions/transcript.ts";
 import { DEFAULT_SKILL_POLICY, type SkillPolicy } from "../agent/skills/mod.ts";
+import type { GenericSubagentInheritance } from "../subagents/mod.ts";
 
 class FakeAgentRunner {
   disposeCalled = false;
@@ -29,6 +30,7 @@ class FakeAgentRunner {
   _modelName = "";
   memoryContext: CapturedMemoryContext | InternalMemoryContext | undefined = undefined;
   transcriptWriterContext: TranscriptWriterContext | undefined = undefined;
+  genericSubagentInheritance: GenericSubagentInheritance | null = null;
 
   get isStreaming(): boolean {
     return this._isStreaming;
@@ -67,6 +69,7 @@ class FakeSubagentRunner {
   cancelled: string[] = [];
   lastReviveArgs: {
     parentCapture: CapturedMemoryContext | InternalMemoryContext;
+    inheritance: GenericSubagentInheritance | null;
     id: string;
     prompt: string;
     onStatusUpdate?: (msg: string) => void;
@@ -91,12 +94,13 @@ class FakeSubagentRunner {
 
   revive(
     parentCapture: CapturedMemoryContext | InternalMemoryContext,
+    inheritance: GenericSubagentInheritance | null,
     id: string,
     prompt: string,
     _onStatusUpdate?: (msg: string) => void,
     onAttached?: () => void | Promise<void>,
   ): Promise<string> {
-    this.lastReviveArgs = { parentCapture, id, prompt };
+    this.lastReviveArgs = { parentCapture, inheritance, id, prompt };
     if (onAttached) {
       onAttached();
     }
@@ -501,6 +505,9 @@ describe("TurnDispatcher async runner creation", () => {
       const runner = new FakeAgentRunner();
       runner.disposeCalled = false;
       runner.memoryContext = o.memoryContext;
+      runner.genericSubagentInheritance = o.resolvedSkills === undefined
+        ? null
+        : { executionEnvironment: o.executionEnvironment, resolvedSkills: o.resolvedSkills };
       runner.transcriptWriterContext =
         o.memoryContext.kind === "surface"
           ? { kind: "surface", sourceSurfaceId: o.memoryContext.authority.sourceSurfaceId }
@@ -768,7 +775,10 @@ describe("TurnDispatcher async runner creation", () => {
     const surface = dmSurface(1);
     const guard = new FakeBindingGuard();
     guard.bind(surface, session.id);
-    const { dispatcher, subagentRunner } = buildAsyncDispatcher({ surfaceRuntimeAuthority: guard });
+    const { dispatcher, subagentRunner } = buildAsyncDispatcher({
+      surfaceRuntimeAuthority: guard,
+      cfg: { goblinHome: tmpDir } as Config,
+    });
 
     await dispatcher.getOrCreateRunner(session, surface);
     const result = await dispatcher.reviveSubagent(surface, session, "sub-1", "follow-up");
@@ -781,6 +791,10 @@ describe("TurnDispatcher async runner creation", () => {
     if (subagentRunner.lastReviveArgs!.parentCapture.kind === "surface") {
       expect(subagentRunner.lastReviveArgs!.parentCapture.authority.sourceSurfaceId).toBe(surfaceId(surface));
     }
+    expect(subagentRunner.lastReviveArgs!.inheritance).toEqual({
+      executionEnvironment: personalEnvironment(),
+      resolvedSkills: expect.objectContaining({ skills: [] }),
+    });
   });
 
   it("reviveSubagent rejects when no runner exists for the session", async () => {
@@ -840,12 +854,13 @@ describe("TurnDispatcher async runner creation", () => {
     let finishRevive!: () => void;
     subagentRunner.revive = async (
       parentCapture,
+      inheritance,
       id,
       prompt,
       _onStatusUpdate,
       onAttached,
     ) => {
-      subagentRunner.lastReviveArgs = { parentCapture, id, prompt };
+      subagentRunner.lastReviveArgs = { parentCapture, inheritance, id, prompt };
       onAttached?.();
       return new Promise((resolve) => {
         finishRevive = () => resolve("revived result");

@@ -12,11 +12,20 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { CapturedMemoryContext } from "../memory/mod.ts";
-import type { SubagentRunner } from "./mod.ts";
+import type { GenericSubagentInheritance, SubagentRunner } from "./mod.ts";
 import { listNamedAgents } from "./paths.ts";
 
 /** Default timeout for subagent execution (10 minutes). */
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+
+function requireGenericInheritance(
+  inheritance: GenericSubagentInheritance | null,
+): GenericSubagentInheritance {
+  if (inheritance === null) {
+    throw new Error("Generic subagent spawn requires inherited execution and skill authority");
+  }
+  return inheritance;
+}
 
 /**
  * Create a promise that rejects after `ms` milliseconds, cancelling the
@@ -46,7 +55,7 @@ const spawnSubagentSchema = Type.Object({
   name: Type.Optional(
     Type.String({
       description:
-        "Named agent to spawn (e.g. 'researcher'). Loads AGENTS.md and isolated skills from ~/goblin/agents/<name>/. Omit for a generic subagent that inherits parent skills.",
+        "Named agent to spawn (e.g. 'researcher'). Loads AGENTS.md and isolated skills from ~/goblin/agents/<name>/. Omit to request a generic subagent when this runtime has inheritance authority.",
     }),
   ),
 });
@@ -55,59 +64,71 @@ type SpawnSubagentInput = Static<typeof spawnSubagentSchema>;
 
 const BASE_DESCRIPTION = `Spawn a subagent to perform a focused task. The subagent runs to completion and its final response is returned.
 
-Subagents are sandboxed: they have no access to Telegram and run with standard tools (read, bash, edit, write, memory). They can spawn their own subagents, up to depth 3.
+Subagents are sandboxed: they have no access to Telegram and run with standard tools (read, bash, edit, write, memory). They can spawn their own subagents, up to depth 3.`;
 
-Use named agents for specialist work. Use generic subagents (no name) for ad-hoc tasks that benefit from the parent's project context.`;
-
-/** Build dynamic description listing available named agents. */
-function buildDescription(home: string): string {
+/** Build dynamic description listing available named agents and caller capability. */
+function buildDescription(home: string, canSpawnGeneric: boolean): string {
   const agents = listNamedAgents(home);
   const agentsList = agents.length > 0 ? `Available named agents: ${agents.join(", ")}.` : "No named agents configured.";
-  return `${BASE_DESCRIPTION}\n\n${agentsList}`;
+  const generic = canSpawnGeneric
+    ? "Use generic subagents (no name) for ad-hoc tasks; they inherit this runtime's execution environment and frozen skills."
+    : "This named runtime has no generic inheritance manifest, so it can spawn named agents only.";
+  return `${BASE_DESCRIPTION}\n\n${generic}\n\n${agentsList}`;
 }
 
 const PROMPT_SNIPPET = "spawn_subagent: delegate work to a subagent and get results.";
 
-const PROMPT_GUIDELINES = [
-  "Prefer spawning a subagent for self-contained tasks that don't need direct user interaction.",
-  "For specialist work, use a named agent (e.g. spawn_subagent({name: 'researcher', prompt: '...'})).",
-  "For ad-hoc tasks, omit the name to spawn a generic subagent that inherits your project context.",
-];
+function promptGuidelines(canSpawnGeneric: boolean): string[] {
+  const guidelines = [
+    "Prefer spawning a subagent for self-contained tasks that don't need direct user interaction.",
+    "For specialist work, use a named agent (e.g. spawn_subagent({name: 'researcher', prompt: '...'})).",
+  ];
+  if (canSpawnGeneric) {
+    guidelines.push("For ad-hoc tasks, omit the name to spawn a generic subagent with your execution environment and skills.");
+  }
+  return guidelines;
+}
 
 /**
  * Create the `spawn_subagent` tool bound to a `SubagentRunner` instance.
  *
  * `depth` is the spawner's depth (goblin=0, subagent=1+). The tool passes
- * it through so the runner enforces the cap.
+ * it through so the runner enforces the cap. `inheritance` is the spawner's
+ * frozen execution environment and skill authority: generic spawns receive it
+ * verbatim and named spawns ignore it. A named runtime passes `null`, so an
+ * omitted `name` fails visibly instead of fabricating an empty manifest.
  */
 export function createSpawnSubagentTool(
   runner: SubagentRunner,
   depth: number,
   sessionId: string,
   parentCapture: CapturedMemoryContext,
+  inheritance: GenericSubagentInheritance | null,
   onStatusUpdate?: (message: string) => void,
   timeoutMs?: number,
 ): ToolDefinition {
   return defineTool({
     name: "spawn_subagent",
     label: "Spawn Subagent",
-    description: buildDescription(runner.goblinHome),
+    description: buildDescription(runner.goblinHome, inheritance !== null),
     promptSnippet: PROMPT_SNIPPET,
-    promptGuidelines: PROMPT_GUIDELINES,
+    promptGuidelines: promptGuidelines(inheritance !== null),
     parameters: spawnSubagentSchema,
     async execute(
       _toolCallId: string,
       params: SpawnSubagentInput,
     ) {
-      const handle = await runner.spawn({
+      const base = {
         prompt: params.prompt,
         authority: parentCapture.authority,
-        name: params.name,
         depth,
         spawnedBy: sessionId,
         onStatusUpdate,
         timeoutMs,
-      });
+      };
+      const handle = params.name !== undefined
+        ? await runner.spawn({ ...base, name: params.name })
+        : await runner.spawn({ ...base, inheritance: requireGenericInheritance(inheritance) });
 
       // Block until the subagent finishes or the timeout fires.
       // Errors propagate as tool errors that the LLM can read and decide
@@ -155,10 +176,16 @@ const REVIVE_PROMPT_GUIDELINES = [
 
 /**
  * Create the `revive_subagent` tool bound to a `SubagentRunner` instance.
+ *
+ * A revived generic subagent inherits the *reviving* runtime's frozen
+ * execution environment and skills (`inheritance`), mirroring the
+ * memory-authority rule. Named revivers pass `null`; generic revival then
+ * fails visibly, while named revival continues to use its isolated catalog.
  */
 export function createReviveSubagentTool(
   runner: SubagentRunner,
   parentCapture: CapturedMemoryContext,
+  inheritance: GenericSubagentInheritance | null,
   onStatusUpdate?: (message: string) => void,
   timeoutMs?: number,
 ): ToolDefinition {
@@ -175,7 +202,7 @@ export function createReviveSubagentTool(
     ) {
       const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const result = await Promise.race([
-        runner.revive(parentCapture, params.id, params.prompt, onStatusUpdate),
+        runner.revive(parentCapture, inheritance, params.id, params.prompt, onStatusUpdate),
         timeoutReject(effectiveTimeout, params.id, runner),
       ]);
       return {

@@ -15,6 +15,7 @@ import { namedAgentAgentsMdPath, namedAgentDir } from "../paths.ts";
 import { topicSurface, surfaceId, type Surface } from "../../surface.ts";
 import {
   createTestHome,
+  EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   getCapturedCreateArgs,
   installStandardPiMock,
@@ -82,6 +83,7 @@ describe("SubagentRunner — scoped memory", () => {
     const handle = await runner.spawn({
       prompt: "work",
       authority: TOPIC_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -159,6 +161,7 @@ describe("SubagentRunner — scoped memory", () => {
     const handle = await runner.spawn({
       prompt: "work",
       authority: TOPIC_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -186,6 +189,7 @@ describe("SubagentRunner — scoped memory", () => {
     const handle = await runner.spawn({
       prompt: "work",
       authority: TOPIC_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -285,6 +289,7 @@ describe("SubagentRunner — scoped memory", () => {
     const anonHandle = await runner.spawn({
       prompt: "persona",
       authority: TOPIC_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -327,6 +332,7 @@ describe("SubagentRunner — scoped memory", () => {
     const handle = await runner.spawn({
       prompt: "remember, I prefer concise summaries with test output",
       authority: TOPIC_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -404,7 +410,7 @@ describe("SubagentRunner — scoped memory", () => {
   }
 
   it("registers memory_search on the subagent tool list", async () => {
-    const handle = await runner.spawn({ prompt: "work", authority: TOPIC_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: TOPIC_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     expect(captureTools().some((t) => t.name === "memory_search")).toBe(true);
@@ -464,7 +470,7 @@ describe("SubagentRunner — scoped memory", () => {
       { scope: { topic: { chatId: -100123, topicId: 7 } }, content: "topic deployment notes" },
     ]);
 
-    const handle = await runner.spawn({ prompt: "work", authority: TOPIC_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: TOPIC_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     const search = captureTools().find((t) => t.name === "memory_search")!;

@@ -19,6 +19,7 @@ import { createReviveSubagentTool, createSpawnSubagentTool } from "../tool.ts";
 import { genericSubagentDir } from "../paths.ts";
 import {
   createTestHome,
+  EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   getCapturedCreateArgs,
   installStandardPiMock,
@@ -90,6 +91,7 @@ function makeFakeAgentRunner(opts: ConstructorParameters<typeof AgentRunner>[0])
   const capture = assertSurfaceCapture(opts.memoryContext);
   return {
     memoryContext: capture,
+    genericSubagentInheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     get isStreaming() {
       return false;
     },
@@ -146,9 +148,9 @@ function createFixture(): RuntimeFixture {
     getSkillPolicy: () => DEFAULT_SKILL_POLICY,
   };
 
-  const subagentRunner = new SubagentRunner(cfg, (subRunner, depth, sessionId, parentCapture, onStatusUpdate) => [
-    createSpawnSubagentTool(subRunner, depth, sessionId, parentCapture, onStatusUpdate),
-    createReviveSubagentTool(subRunner, parentCapture, onStatusUpdate),
+  const subagentRunner = new SubagentRunner(cfg, (subRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate) => [
+    createSpawnSubagentTool(subRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate),
+    createReviveSubagentTool(subRunner, parentCapture, inheritedSkills, onStatusUpdate),
   ]);
 
   let dispatcher: TurnDispatcher | undefined;
@@ -216,7 +218,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     expect(mainResult.entries.map((e) => e.text)).not.toContain("surface-y fact");
 
     // First subagent inherits the Surface X authority.
-    const childX = await fx.subagentRunner.spawn({ prompt: "child x", authority: captureX.authority });
+    const childX = await fx.subagentRunner.spawn({ prompt: "child x", authority: captureX.authority, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     const childXInstance = getInstance(fx.subagentRunner, childX.id);
     expect(childXInstance?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
@@ -259,6 +261,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
       prompt: "child x",
       authority: captureX.authority,
       spawnedBy: sessionX.id,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
     const childXInstance = getInstance(fx.subagentRunner, childX.id);
@@ -330,6 +333,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
       prompt: "child y",
       authority: captureY.authority,
       spawnedBy: sessionY.id,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
     const childYInstance = getInstance(fx.subagentRunner, childY.id);
@@ -358,6 +362,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
       prompt: "child x",
       authority: captureX.authority,
       spawnedBy: sessionX.id,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
@@ -402,6 +407,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
       prompt: "child x",
       authority: captureX.authority,
       spawnedBy: sessionX.id,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });

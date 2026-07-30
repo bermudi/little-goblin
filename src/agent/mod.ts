@@ -29,7 +29,7 @@ import {
 } from "../memory/mod.ts";
 import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
-import { type SubagentRunner } from "../subagents/mod.ts";
+import { type GenericSubagentInheritance, type SubagentRunner } from "../subagents/mod.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
@@ -477,11 +477,10 @@ export class AgentRunner {
       }));
       this.goblinSystemPrompt = goblinSystemPrompt;
 
-      const tools = await this.awaitCurrent(() => this.buildCustomTools());
-
-      // Resolve skill catalogs into a frozen set before backend init. Skills
-      // are snapshotted at runtime creation (decision 0034); no ambient pi
-      // discovery, no watcher, no per-turn reload.
+      // Resolve skill catalogs into a frozen set before building tools and
+      // backend init. Skills are snapshotted at runtime creation (decision
+      // 0034); no ambient pi discovery, no watcher, no per-turn reload. The
+      // spawn/revive subagent tools built below inherit this same manifest.
       const resolvedSkills = this.resolvedSkills ?? await this.awaitCurrent(() =>
         resolveSkillSet(this.executionEnvironment, this.skillPolicy, home),
       );
@@ -492,6 +491,8 @@ export class AgentRunner {
           count: resolvedSkills.diagnostics.length,
         });
       }
+
+      const tools = await this.awaitCurrent(() => this.buildCustomTools());
 
       let systemPrompt = goblinSystemPrompt.prompt;
       // Consume the completed capture — do not reread the store for the frozen
@@ -555,6 +556,12 @@ export class AgentRunner {
 
     if (this.subagentRunner && this.memoryContext.kind === "surface") {
       const { createSpawnSubagentTool, createReviveSubagentTool } = await import("../subagents/tool.ts");
+      // Generic subagents inherit this runtime's immutable environment and
+      // frozen manifest. init() resolves the latter before building tools.
+      const inheritance = this.genericSubagentInheritance;
+      if (inheritance === null) {
+        throw new Error("generic subagent inheritance unavailable for subagent tools");
+      }
       // Use delegating wrappers so the tools always forward to the current
       // turn's MessageBuffer — callbacks change per-prompt().
       tools.push(
@@ -563,6 +570,7 @@ export class AgentRunner {
           0,
           this.sessionId,
           this.memoryContext,
+          inheritance,
           (msg) => this.sendStatusUpdate(msg),
           undefined,
         ),
@@ -571,6 +579,7 @@ export class AgentRunner {
         createReviveSubagentTool(
           this.subagentRunner,
           this.memoryContext,
+          inheritance,
           (msg) => this.sendStatusUpdate(msg),
         ),
       );
@@ -994,6 +1003,19 @@ export class AgentRunner {
    */
   get skillsLoaded(): number | null {
     return this.backend.getSkills()?.skills.length ?? null;
+  }
+
+  /**
+   * Invocation authority inherited by generic subagent spawns and revivals.
+   * Production Surface runtimes resolve it eagerly; lazy compatibility
+   * runners expose `null` until initialization completes.
+   */
+  get genericSubagentInheritance(): GenericSubagentInheritance | null {
+    if (this.resolvedSkills === null) return null;
+    return {
+      executionEnvironment: this.executionEnvironment,
+      resolvedSkills: this.resolvedSkills,
+    };
   }
 
   /**

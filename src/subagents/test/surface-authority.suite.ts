@@ -15,6 +15,7 @@ import {
   DEFAULT_AUTHORITY,
   DEFAULT_PARENT_CAPTURE,
   DEFAULT_SCOPE,
+  EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   getCapturedCreateArgs,
   installStandardPiMock,
@@ -95,7 +96,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
   it("freezes the parent Surface authority at spawn and ignores later parent movement", async () => {
     await seedScopes(tmp);
 
-    const firstHandle = await runner.spawn({ prompt: "first", authority: PARENT_AUTHORITY });
+    const firstHandle = await runner.spawn({ prompt: "first", authority: PARENT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     const firstInstance = getInstance(runner, firstHandle.id);
     expect(firstInstance?.authority).toEqual(PARENT_AUTHORITY);
@@ -113,7 +114,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
 
     clearCapturedCreateArgs();
 
-    const secondHandle = await runner.spawn({ prompt: "second", authority: MOVED_AUTHORITY });
+    const secondHandle = await runner.spawn({ prompt: "second", authority: MOVED_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     const secondInstance = getInstance(runner, secondHandle.id);
     expect(secondInstance?.authority).toEqual(MOVED_AUTHORITY);
@@ -134,13 +135,13 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     await seedScopes(tmp);
 
     let capturedParentCapture: CapturedMemoryContext | undefined;
-    const toolFactory: SubagentToolFactory = (subRunner, depth, sessionId, parentCapture, onStatusUpdate) => {
+    const toolFactory: SubagentToolFactory = (subRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate) => {
       capturedParentCapture = parentCapture;
-      return [createSpawnSubagentTool(subRunner, depth, sessionId, parentCapture, onStatusUpdate, undefined)];
+      return [createSpawnSubagentTool(subRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate, undefined)];
     };
     runner = new SubagentRunner(makeConfig(tmp), toolFactory);
 
-    const parentHandle = await runner.spawn({ prompt: "parent", authority: PARENT_AUTHORITY });
+    const parentHandle = await runner.spawn({ prompt: "parent", authority: PARENT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     expect(capturedParentCapture).toBeDefined();
     expect(capturedParentCapture!.authority).toEqual(PARENT_AUTHORITY);
@@ -160,6 +161,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
       0,
       "sess-after-parent",
       capturedParentCapture!,
+      EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     );
 
     const execPromise = spawnTool.execute("tc-nested", { prompt: "child" }, undefined, undefined, {} as never);
@@ -202,7 +204,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
   it("revival uses the reviving parent runtime's current authority, not the persisted legacy scope", async () => {
     await seedScopes(tmp);
 
-    const firstHandle = await runner.spawn({ prompt: "first", authority: PARENT_AUTHORITY });
+    const firstHandle = await runner.spawn({ prompt: "first", authority: PARENT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await firstHandle.result;
@@ -212,7 +214,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
 
     clearCapturedCreateArgs();
     const secondRunner = new SubagentRunner(makeConfig(tmp));
-    const revivePromise = secondRunner.revive(MOVED_PARENT_CAPTURE, firstHandle.id, "follow-up");
+    const revivePromise = secondRunner.revive(MOVED_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, firstHandle.id, "follow-up");
     await flush();
 
     const instance = getInstance(secondRunner, firstHandle.id);
@@ -261,7 +263,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     );
     writeFileSync(join(dir, "2026-01-01T00-00-00_legacy.jsonl"), "");
 
-    const revivePromise = runner.revive(DEFAULT_PARENT_CAPTURE, id, "go");
+    const revivePromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "go");
     await flush();
 
     const instance = getInstance(runner, id);
@@ -282,7 +284,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
   it("rejects spawn when given a legacy ActiveScope instead of SurfaceMemoryAuthority", async () => {
     const badAuthority = DEFAULT_SCOPE as unknown as typeof DEFAULT_AUTHORITY;
     await expect(
-      runner.spawn({ prompt: "x", authority: badAuthority }),
+      runner.spawn({ prompt: "x", authority: badAuthority, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE }),
     ).rejects.toThrow("Subagent spawn requires a SurfaceMemoryAuthority");
   });
 
@@ -291,7 +293,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
       kind: "internal" as const,
       caller: { kind: "internal" as const },
     } as unknown as typeof DEFAULT_PARENT_CAPTURE;
-    await expect(runner.revive(internalCapture, "any-id", "go")).rejects.toThrow(
+    await expect(runner.revive(internalCapture, EMPTY_GENERIC_SUBAGENT_INHERITANCE, "any-id", "go")).rejects.toThrow(
       "Revival requires a Surface-backed parent memory context",
     );
   });
@@ -330,7 +332,7 @@ describe("Subagent tool factories — parent capture closure", () => {
     );
     writeFileSync(join(dir, "2026-01-01T00-00-00_tool.jsonl"), "");
 
-    const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE);
+    const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE);
     const execPromise = tool.execute("tc-rev", { id, prompt: "hi" }, undefined, undefined, {} as never);
     await flush();
 

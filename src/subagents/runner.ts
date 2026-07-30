@@ -32,7 +32,7 @@ import {
   type SurfaceMemoryCaller,
 } from "../memory/mod.ts";
 import { createPiServices, type PiServices } from "../pi-host.ts";
-import { workspacePath } from "../workspace/paths.ts";
+import { environmentCwd } from "../sessions/environment.ts";
 import {
   type ExecutionDeps,
   markErrored,
@@ -51,6 +51,7 @@ import {
 } from "./paths.ts";
 import {
   MAX_SUBAGENT_DEPTH,
+  type GenericSubagentInheritance,
   type NamedAgentDefinition,
   type SpawnOptions,
   type SubagentHandle,
@@ -60,14 +61,31 @@ import {
   type SubagentRole,
 } from "./types.ts";
 
-/** Factory that produces tools to inject into spawned subagents. */
+/**
+ * Factory that produces tools to inject into spawned subagents.
+ *
+ * `inheritance` is the frozen environment and skill authority this subagent
+ * received: recursive generic spawns pass it on unchanged; it is `null` for
+ * named agents.
+ */
 export type SubagentToolFactory = (
   runner: SubagentRunner,
   depth: number,
   sessionId: string,
   parentCapture: CapturedMemoryContext,
+  inheritance: GenericSubagentInheritance | null,
   onStatusUpdate?: (message: string) => void,
 ) => ToolDefinition[];
+
+function genericExecutionCwd(
+  inheritance: GenericSubagentInheritance | null,
+  home: string,
+): string {
+  if (inheritance === null) {
+    throw new Error("generic subagent requires inherited execution authority");
+  }
+  return environmentCwd(inheritance.executionEnvironment, home);
+}
 
 /**
  * Manages all subagents spawned within a goblin process.
@@ -98,7 +116,8 @@ export class SubagentRunner {
    * Spawn a new subagent and kick off its first turn.
    *
    * Generic (no `name`): creates `~/goblin/subagents/<id>/`, persisted pi
-   * session, inherits goblin's project context (cwd = workdir).
+   * session, inherits goblin's project context (cwd = workdir) and the
+   * caller's frozen resolved skill manifest (exact files, no re-discovery).
    *
    * Named (`name` provided): loads `~/goblin/agents/<name>/AGENTS.md` (must
    * exist), creates `~/goblin/agents/<name>/instances/<id>/` for persistence,
@@ -166,17 +185,20 @@ export class SubagentRunner {
     let metaPath: string;
     let definition: NamedAgentDefinition | null;
     let displayName: string | null;
+    let inheritance: GenericSubagentInheritance | null;
 
     if (options.name !== undefined) {
       role = "named";
       definition = loadNamedAgent(this.cfg.goblinHome, options.name);
       displayName = options.name;
+      inheritance = null;
       dir = namedAgentInstanceDir(this.cfg.goblinHome, options.name, id);
       metaPath = namedAgentInstanceMetaPath(this.cfg.goblinHome, options.name, id);
     } else {
       role = "generic";
       definition = null;
       displayName = null;
+      inheritance = options.inheritance;
       dir = genericSubagentDir(this.cfg.goblinHome, id);
       metaPath = genericSubagentMetaPath(this.cfg.goblinHome, id);
     }
@@ -197,14 +219,13 @@ export class SubagentRunner {
     };
     writeMetaAtomic(metaPath, meta);
 
-    // Persisted session lives in the subagent's own directory.
-    // cwd: generic → goblin's persistent workspace (personal/no-project fallback);
-    //      named   → the named agent's root dir (so the resource loader
-    //                discovers nothing outside the agent's tree).
+    // Persisted session lives in the subagent's own directory. Generic
+    // execution uses the caller Conversation's immutable environment; named
+    // execution uses its definition root for prompt/catalog isolation.
     const cwd =
       role === "named"
         ? namedAgentDir(this.cfg.goblinHome, options.name as string)
-        : workspacePath(this.cfg.goblinHome);
+        : genericExecutionCwd(inheritance, this.cfg.goblinHome);
     const sessionManager = SessionManager.create(cwd, dir);
 
     // The result promise is wired during runInstance; capture the resolver
@@ -234,6 +255,7 @@ export class SubagentRunner {
       // Store raw callback for nested spawning (prevents prefix stacking)
       rawStatusCallback: options.onStatusUpdate,
       definition,
+      inheritance,
       session: null,
       unsubscribe: null,
       result,
@@ -286,9 +308,15 @@ export class SubagentRunner {
    * handling, meta persistence).
    *
    * Throws "Subagent not found" if no `meta.json` exists for the given id.
+   *
+   * A revived generic subagent inherits the *reviving* runtime's frozen
+   * environment and skill authority (`inheritance`), mirroring the
+   * memory-authority rule: revival is a new invocation. Named agents ignore
+   * it and keep their isolated catalog.
    */
   async revive(
     parentCapture: CapturedMemoryContext,
+    inheritance: GenericSubagentInheritance | null,
     id: string,
     prompt: string,
     onStatusUpdate?: (message: string) => void,
@@ -336,6 +364,16 @@ export class SubagentRunner {
       throw err;
     }
 
+    // A generic revival without the reviving runtime's environment/manifest
+    // authority would either run under the wrong CWD or re-run discovery.
+    // Both violate decision 0034 and the execution-environment contract.
+    if (meta.role === "generic" && inheritance === null) {
+      this.revivesInProgress.delete(id);
+      throw new Error(
+        `Generic subagent '${id}' revival requires the reviving runtime's resolved skill manifest and execution environment`,
+      );
+    }
+
     // Find the persisted session file inside the subagent's dir.
     const sessionFile = findSessionFile(dir);
     if (sessionFile === null) {
@@ -365,11 +403,11 @@ export class SubagentRunner {
       }
     }
 
-    // Determine cwd the same way spawn() does.
+    // Determine cwd from the new invocation's authority, just as spawn() does.
     const cwd =
       meta.role === "named" && meta.name !== null
         ? namedAgentDir(this.cfg.goblinHome, meta.name)
-        : workspacePath(this.cfg.goblinHome);
+        : genericExecutionCwd(inheritance, this.cfg.goblinHome);
 
     // Open the existing session so conversation history is preserved.
     let sessionManager: SessionManager;
@@ -420,6 +458,7 @@ export class SubagentRunner {
       // Store raw callback for nested spawning (prevents prefix stacking)
       rawStatusCallback: onStatusUpdate,
       definition,
+      inheritance: meta.role === "generic" ? inheritance : null,
       session: null,
       unsubscribe: null,
       result,
@@ -792,8 +831,8 @@ export class SubagentRunner {
     return {
       cfg: this.cfg,
       services,
-      buildTools: (depth, sessionId, parentCapture, onStatusUpdate) =>
-        this.toolFactory ? this.toolFactory(this, depth, sessionId, parentCapture, onStatusUpdate) : [],
+      buildTools: (depth, sessionId, parentCapture, inheritance, onStatusUpdate) =>
+        this.toolFactory ? this.toolFactory(this, depth, sessionId, parentCapture, inheritance, onStatusUpdate) : [],
       memoryStore,
     };
   }

@@ -5,8 +5,10 @@
  */
 
 import type { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import type { ResolvedSkillSet } from "../agent/skills/mod.ts";
 import type { SurfaceMemoryAuthority, CapturedMemoryContext, SurfaceMemoryCaller } from "../memory/mod.ts";
 import type { ActiveScope } from "../memory/scope.ts";
+import type { ExecutionEnvironment } from "../sessions/environment.ts";
 
 /** Status of a subagent instance. */
 export type SubagentStatus = "running" | "completed" | "cancelled" | "error";
@@ -15,9 +17,22 @@ export type SubagentStatus = "running" | "completed" | "cancelled" | "error";
 export type SubagentRole = "generic" | "named";
 
 /**
- * Options accepted by `SubagentRunner.spawn()`.
+ * Invocation-lifetime authority inherited by a generic subagent.
+ *
+ * The spawning or reviving runtime is authoritative for both values. Keeping
+ * them together prevents an environment-selected manifest from being run
+ * under an unrelated CWD. Recursive generic children receive this same
+ * immutable bundle; named agents use their definition directory instead.
  */
-export interface SpawnOptions {
+export interface GenericSubagentInheritance {
+  readonly executionEnvironment: ExecutionEnvironment;
+  readonly resolvedSkills: ResolvedSkillSet;
+}
+
+/**
+ * Options shared by every `SubagentRunner.spawn()` call.
+ */
+interface SpawnOptionsBase {
   /** The user-message-style prompt sent to the subagent on its first turn. */
   prompt: string;
   /**
@@ -26,11 +41,6 @@ export interface SpawnOptions {
    * derived separately from the child role.
    */
   authority: SurfaceMemoryAuthority;
-  /**
-   * Optional named-agent identifier. When set, the runner loads
-   * `~/goblin/agents/<name>/AGENTS.md` and isolates skills.
-   */
-  name?: string;
   /**
    * Depth of the *spawner* in the subagent tree. Goblin (root) is 0,
    * a subagent goblin spawned is at depth 1, and so on. The runner
@@ -56,6 +66,32 @@ export interface SpawnOptions {
    */
   timeoutMs?: number;
 }
+
+/**
+ * Spawn a generic subagent. The parent runtime's immutable Execution
+ * Environment and frozen manifest are mandatory: the child runs under that
+ * CWD, receives exactly those selected files, and never re-runs discovery.
+ */
+export interface GenericSpawnOptions extends SpawnOptionsBase {
+  name?: undefined;
+  /** Frozen environment and skill authority inherited from the spawning runtime. */
+  inheritance: GenericSubagentInheritance;
+}
+
+/**
+ * Spawn a named agent. The runner loads `~/goblin/agents/<name>/AGENTS.md`
+ * and isolates skills to the agent's own catalog; the caller's manifest is
+ * not inherited.
+ */
+export interface NamedSpawnOptions extends SpawnOptionsBase {
+  /** Named-agent identifier (e.g. 'researcher'). */
+  name: string;
+}
+
+/**
+ * Options accepted by `SubagentRunner.spawn()`.
+ */
+export type SpawnOptions = GenericSpawnOptions | NamedSpawnOptions;
 
 /**
  * Handle returned by `spawn()` while the subagent is running or queued.
@@ -140,6 +176,12 @@ export interface SubagentInstance {
    * `skillsDir` to override pi's resource loader for strict isolation.
    */
   definition: NamedAgentDefinition | null;
+  /**
+   * Frozen environment and skill authority inherited from the spawning or
+   * reviving runtime. Set for generic subagents; `null` for named agents,
+   * which use their definition directory and isolated catalog.
+   */
+  inheritance: GenericSubagentInheritance | null;
   /** AgentSession created when execution starts. */
   session: AgentSession | null;
   /** Tear-down for the AgentSession event subscription. */

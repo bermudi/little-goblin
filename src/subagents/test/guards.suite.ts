@@ -7,6 +7,7 @@ import type { SubagentInstance, SubagentMeta } from "../types.ts";
 import {
   createTestHome,
   DEFAULT_AUTHORITY,
+  EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   installStandardPiMock,
   makeConfig,
@@ -55,6 +56,11 @@ describe("SubagentRunner — cancel guards", () => {
         }
 
         async reload(): Promise<void> {}
+
+        getSkills(): { skills: Array<{ filePath: string }>; diagnostics: [] } {
+          const paths = (this.options.additionalSkillPaths ?? []) as string[];
+          return { skills: paths.map((filePath) => ({ filePath })), diagnostics: [] };
+        }
       },
       createAgentSession: async (opts: unknown) => {
         void opts;
@@ -63,7 +69,7 @@ describe("SubagentRunner — cancel guards", () => {
       },
     }));
 
-    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     await runner.cancel(handle.id);
@@ -77,7 +83,7 @@ describe("SubagentRunner — cancel guards", () => {
   });
 
   it("cancel on completed subagent is a no-op (doesn't overwrite status)", async () => {
-    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
@@ -93,7 +99,7 @@ describe("SubagentRunner — cancel guards", () => {
     sessionHolder.sendUserMessage = mock(async () => {
       throw new Error("boom");
     });
-    const handle = await runner.spawn({ prompt: "trigger", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "trigger", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     await flush();
     await expect(handle.result).rejects.toThrow("boom");
@@ -139,13 +145,18 @@ describe("SubagentRunner — startup error handling", () => {
         }
 
         async reload(): Promise<void> {}
+
+        getSkills(): { skills: Array<{ filePath: string }>; diagnostics: [] } {
+          const paths = (this.options.additionalSkillPaths ?? []) as string[];
+          return { skills: paths.map((filePath) => ({ filePath })), diagnostics: [] };
+        }
       },
       createAgentSession: async () => {
         throw new Error("session-creation-failed");
       },
     }));
 
-    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     await flush();
 
@@ -174,7 +185,7 @@ describe("SubagentRunner — double-cancel race guard", () => {
   });
 
   it("second cancel is a no-op when first cancels synchronously", async () => {
-    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     await Promise.all([runner.cancel(handle.id), runner.cancel(handle.id)]);
@@ -199,7 +210,7 @@ describe("SubagentRunner — cancel vs agent_end race", () => {
   });
 
   it("agent_end arriving during cancel() does not overwrite cancelled status", async () => {
-    const handle = await runner.spawn({ prompt: "test", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "test", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     sessionHolder.abort = mock(async () => {
@@ -216,7 +227,7 @@ describe("SubagentRunner — cancel vs agent_end race", () => {
   });
 
   it("error event arriving during cancel() does not overwrite cancelled status", async () => {
-    const handle = await runner.spawn({ prompt: "test", authority: DEFAULT_AUTHORITY });
+    const handle = await runner.spawn({ prompt: "test", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
     sessionHolder.abort = mock(async () => {
@@ -247,6 +258,7 @@ describe("SubagentRunner — parent status guard", () => {
       prompt: "parent",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -255,6 +267,7 @@ describe("SubagentRunner — parent status guard", () => {
       authority: DEFAULT_AUTHORITY,
       spawnedBy: parent.id,
       depth: 1,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -266,6 +279,7 @@ describe("SubagentRunner — parent status guard", () => {
       prompt: "parent",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 
@@ -281,6 +295,7 @@ describe("SubagentRunner — parent status guard", () => {
         authority: DEFAULT_AUTHORITY,
         spawnedBy: parent.id,
         depth: 1,
+        inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
       }),
     ).rejects.toThrow("Cannot spawn subagent from a non-running parent");
   });
@@ -290,6 +305,7 @@ describe("SubagentRunner — parent status guard", () => {
       prompt: "parent",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
     await runner.cancel(parent.id);
@@ -300,6 +316,7 @@ describe("SubagentRunner — parent status guard", () => {
         authority: DEFAULT_AUTHORITY,
         spawnedBy: parent.id,
         depth: 1,
+        inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
       }),
     ).rejects.toThrow("Cannot spawn subagent from a non-running parent");
   });
@@ -309,6 +326,7 @@ describe("SubagentRunner — parent status guard", () => {
       prompt: "top",
       authority: DEFAULT_AUTHORITY,
       spawnedBy: "session-xyz",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
 

@@ -11,6 +11,7 @@ import { createConversationLifecycle } from "../orchestration/conversation-lifec
 import type { TurnDispatcher } from "../orchestration/dispatcher.ts";
 import { dmSurface, surfaceId, type Surface } from "../surface.ts";
 import type { CapturedMemoryContext } from "../memory/mod.ts";
+import type { ResolvedSkillSet } from "../agent/skills/mod.ts";
 import { MetricsStore, type MetricsEvent, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { AgentRunner } from "../agent/mod.ts";
@@ -23,6 +24,12 @@ import {
   REVIVE_SUBAGENT_USAGE_REPLY,
 } from "./subagents.ts";
 import { handleCommand, type DispatchDeps, type DispatchOpts, type DispatchResult } from "./dispatch.ts";
+
+const EMPTY_RESOLVED_SKILL_SET: ResolvedSkillSet = {
+  skills: [],
+  diagnostics: [],
+  fingerprint: "test-empty",
+};
 
 const dirs: string[] = [];
 
@@ -112,7 +119,15 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
         frozenUserBody: "",
         frozenActiveMemoryBody: "",
       };
-      return await subagentRunner.revive(parentCapture, id, prompt);
+      return await subagentRunner.revive(
+        parentCapture,
+        {
+          executionEnvironment: personalEnvironment(),
+          resolvedSkills: EMPTY_RESOLVED_SKILL_SET,
+        },
+        id,
+        prompt,
+      );
     },
   } as unknown as TurnDispatcher;
   return {
@@ -440,8 +455,8 @@ describe("handleCommand", () => {
     expect(result.reply).toBe("Revived subagent `abc`:\ndone");
     const calls = revive.mock.calls as unknown as unknown[][];
     expect(calls.length).toBe(1);
-    expect(calls[0]![1]).toBe("abc");
-    expect(calls[0]![2]).toBe("inspect again");
+    expect(calls[0]![2]).toBe("abc");
+    expect(calls[0]![3]).toBe("inspect again");
     expect((calls[0]![0] as { kind: string }).kind).toBe("surface");
   });
 

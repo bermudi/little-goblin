@@ -362,6 +362,7 @@ export class TurnDispatcher {
 
         const result = this.subagentRunner.revive(
           runner.memoryContext,
+          runner.genericSubagentInheritance,
           subagentId,
           prompt,
           undefined,

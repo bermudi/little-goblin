@@ -36,7 +36,7 @@ import { boundedError, log } from "../log.ts";
 import { piAgentDir, type PiServices } from "../pi-host.ts";
 import { persistMetaPatch } from "./meta.ts";
 import { buildResourceLoader } from "./named-agents.ts";
-import type { SubagentInstance, SubagentStatus } from "./types.ts";
+import type { GenericSubagentInheritance, SubagentInstance, SubagentStatus } from "./types.ts";
 
 /**
  * Dependencies the execution engine needs but does not own.
@@ -52,6 +52,7 @@ export interface ExecutionDeps {
     depth: number,
     sessionId: string,
     parentCapture: CapturedMemoryContext,
+    inheritance: GenericSubagentInheritance | null,
     onStatusUpdate?: (msg: string) => void,
   ) => ToolDefinition[];
 }
@@ -139,6 +140,7 @@ async function _runInstanceInner(
     cwd,
     role: instance.role,
     definition: instance.definition,
+    inheritedSkills: instance.inheritance?.resolvedSkills ?? null,
     settingsManager: services.settingsManager,
     memorySystemPrompt: frozenSummary ?? undefined,
   });
@@ -155,7 +157,7 @@ async function _runInstanceInner(
     // parent's status callback.
     // Pass rawStatusCallback to nested subagent to prevent prefix stacking.
     customTools: [
-      ...buildTools(instance.depth, instance.id, capture, instance.rawStatusCallback),
+      ...buildTools(instance.depth, instance.id, capture, instance.inheritance, instance.rawStatusCallback),
       // memory_search subsumes the old memory_read and memory_read_index tools.
       // Persona gating: a named subagent searches its own persona scope; an
       // anonymous subagent searches none.

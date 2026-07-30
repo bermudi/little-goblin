@@ -18,6 +18,7 @@ export { SubagentRunner, type SubagentToolFactory } from "./runner.ts";
 
 // Convenience re-export so callers can pull everything from one entry point.
 export type {
+  GenericSubagentInheritance,
   NamedAgentDefinition,
   SpawnOptions,
   SubagentHandle,

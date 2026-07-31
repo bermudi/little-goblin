@@ -17,7 +17,7 @@
  * Historical design: `specs/changes/archive/2026-04-26-subagent-runtime/`.
  */
 
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -25,7 +25,6 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { boundedError, log } from "../log.ts";
 import {
-  memoryDir,
   MemoryStore,
   EmbeddingProvider,
   type CapturedMemoryContext,
@@ -33,6 +32,7 @@ import {
 } from "../memory/mod.ts";
 import { createPiServices, type PiServices } from "../pi-host.ts";
 import { environmentCwd } from "../sessions/environment.ts";
+import { topicScopeDir } from "../memory/paths.ts";
 import {
   type ExecutionDeps,
   markErrored,
@@ -40,8 +40,18 @@ import {
   runInstance,
   teardownInstance,
 } from "./execution.ts";
-import { findSessionFile, loadSubagentMeta, persistMetaPatch, writeMetaAtomic } from "./meta.ts";
-import { loadNamedAgent, VALID_NAME_RE } from "./named-agents.ts";
+import {
+  assertSafeSubagentId,
+  findSessionFile,
+  loadSubagentMeta,
+  persistMetaPatch,
+  writeMetaAtomic,
+} from "./meta.ts";
+import {
+  loadNamedAgent,
+  NamedAgentNotFoundError,
+  VALID_NAME_RE,
+} from "./named-agents.ts";
 import {
   genericSubagentDir,
   genericSubagentMetaPath,
@@ -85,6 +95,28 @@ function genericExecutionCwd(
     throw new Error("generic subagent requires inherited execution authority");
   }
   return environmentCwd(inheritance.executionEnvironment, home);
+}
+
+function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && "code" in err;
+}
+
+function assertTopicDirectory(home: string, id: string, chatId: number, topicId: number): void {
+  const path = topicScopeDir(home, chatId, topicId);
+  try {
+    if (!statSync(path).isDirectory()) {
+      throw new Error(
+        `Subagent '${id}' topic scope (${chatId}/${topicId}) is not a directory; cannot revive`,
+      );
+    }
+  } catch (err) {
+    if (isNodeErrnoException(err) && err.code === "ENOENT") {
+      throw new Error(
+        `Subagent '${id}' topic scope (${chatId}/${topicId}) no longer exists; cannot revive`,
+      );
+    }
+    throw err;
+  }
 }
 
 /**
@@ -208,6 +240,15 @@ export class SubagentRunner {
     // file land side-by-side.
     mkdirSync(dir, { recursive: true });
 
+    // Prepare the execution CWD and persisted session manager before creating
+    // the authoritative running record. A setup failure may leave an empty
+    // directory, but it must not leave metadata claiming a runnable instance.
+    const cwd =
+      role === "named"
+        ? namedAgentDir(this.cfg.goblinHome, options.name as string)
+        : genericExecutionCwd(inheritance, this.cfg.goblinHome);
+    const sessionManager = SessionManager.create(cwd, dir);
+
     const meta: SubagentMeta = {
       id,
       role,
@@ -219,15 +260,6 @@ export class SubagentRunner {
       status: "running",
     };
     writeMetaAtomic(metaPath, meta);
-
-    // Persisted session lives in the subagent's own directory. Generic
-    // execution uses the caller Conversation's immutable environment; named
-    // execution uses its definition root for prompt/catalog isolation.
-    const cwd =
-      role === "named"
-        ? namedAgentDir(this.cfg.goblinHome, options.name as string)
-        : genericExecutionCwd(inheritance, this.cfg.goblinHome);
-    const sessionManager = SessionManager.create(cwd, dir);
 
     // The result promise is wired during runInstance; capture the resolver
     // pair here so the instance carries it before execution kicks off.
@@ -308,7 +340,9 @@ export class SubagentRunner {
    * `runInstance()` — reusing all execution wiring (status callbacks, error
    * handling, meta persistence).
    *
-   * Throws "Subagent not found" if no `meta.json` exists for the given id.
+   * Throws "Subagent not found" only when no matching metadata or session
+   * file exists. Present but malformed or mismatched state raises a diagnostic
+   * metadata error instead.
    *
    * A revived generic subagent inherits the *reviving* runtime's frozen
    * environment and skill authority (`inheritance`), mirroring the
@@ -326,6 +360,10 @@ export class SubagentRunner {
     if (this.disposed) {
       throw new Error("SubagentRunner is disposed");
     }
+
+    // The id enters filesystem path construction below and may originate from
+    // a model tool call. Reject traversal and malformed segments first.
+    assertSafeSubagentId(id);
 
     // Guard against concurrent revive() of the same subagent ID.
     if (this.revivesInProgress.has(id)) {
@@ -391,16 +429,17 @@ export class SubagentRunner {
         : { kind: "anonymous-subagent" };
 
     // Validate that the topic directory exists if the subagent has a topic scope.
-    // This catches cases where the topic was archived since the subagent was last run.
+    // This catches archived topics and rejects regular files masquerading as
+    // scope containers. Only ENOENT is treated as absence; other stat errors
+    // remain diagnostic and propagate to the caller.
     if (authority.activeScope.topicScope !== "general") {
       const chatId = authority.activeScope.chatId;
       const topicId = authority.activeScope.topicScope.topicId;
-      const topicDir = join(memoryDir(this.cfg.goblinHome), "topics", String(chatId), String(topicId));
-      if (!existsSync(topicDir)) {
+      try {
+        assertTopicDirectory(this.cfg.goblinHome, id, chatId, topicId);
+      } catch (err) {
         this.revivesInProgress.delete(id);
-        throw new Error(
-          `Subagent '${id}' topic scope (${chatId}/${topicId}) no longer exists; cannot revive`,
-        );
+        throw err;
       }
     }
 
@@ -424,9 +463,12 @@ export class SubagentRunner {
     if (meta.role === "named" && meta.name !== null) {
       try {
         definition = loadNamedAgent(this.cfg.goblinHome, meta.name);
-      } catch {
+      } catch (err) {
         this.revivesInProgress.delete(id);
-        throw new Error(`Named agent '${meta.name}' definition missing; cannot revive`);
+        if (err instanceof NamedAgentNotFoundError) {
+          throw new Error(`Named agent '${meta.name}' definition missing; cannot revive`);
+        }
+        throw err;
       }
     }
 
@@ -490,12 +532,15 @@ export class SubagentRunner {
     }
 
     // Update meta to reflect the revival — clear stale terminal fields.
-    // Best-effort: stale meta is cosmetic; the session file is the
-    // source of truth for revival.
+    // A failed durable transition must stop revival rather than launching a
+    // run whose on-disk record still claims the prior terminal state.
     try {
       persistMetaPatch(instance, { status: "running", completedAt: undefined, errorMessage: undefined });
     } catch (err) {
-      log.warn("failed to persist revive meta", { id, ...boundedError(err) });
+      this.activeSubagents.delete(id);
+      this.revivesInProgress.delete(id);
+      rejectResult(err);
+      throw err;
     }
 
     log.debug("subagent revived", { id, role: meta.role, name: meta.name });
@@ -571,6 +616,8 @@ export class SubagentRunner {
     // cannot reassign them mid-cleanup.
     const session = instance.session;
     const unsubscribe = instance.unsubscribe;
+    let persistenceFailed = false;
+    let persistenceError: unknown;
 
     try {
       if (session !== null) {
@@ -589,6 +636,8 @@ export class SubagentRunner {
           completedAt: new Date().toISOString(),
         });
       } catch (err) {
+        persistenceFailed = true;
+        persistenceError = err;
         log.error("cancel persistMeta failed — disk state may be stale", {
           id,
           ...boundedError(err),
@@ -621,14 +670,18 @@ export class SubagentRunner {
     }
 
     log.debug("subagent cancelled", { id });
+    if (persistenceFailed) {
+      throw persistenceError;
+    }
   }
 
   /**
    * Cancel every subagent in the spawn tree rooted at the given session id.
    *
    * Walks `spawnedBy` parentage, marks all non-terminal instances as
-   * `cancelled` synchronously before any await, then tears them down. The
-   * method never rejects — per-instance errors are logged and swallowed.
+   * `cancelled` synchronously before any await, then tears them down. Cleanup
+   * continues for every target; durable metadata failures are rethrown after
+   * all targets have been attempted.
    */
   async cancelBySession(sessionId: string): Promise<void> {
     // 1. Collect all descendants in the session's spawn tree (BFS by parentage).
@@ -666,6 +719,7 @@ export class SubagentRunner {
     // 3. Clean up each targeted instance concurrently. Start all aborts in
     //    parallel so a parent that is blocked on a child result can be
     //    unblocked when the child's abort settles.
+    const persistenceFailures: unknown[] = [];
     await Promise.all(
       targets.map(async (instance) => {
         // Capture session/unsubscribe before any await so a concurrent runInstance
@@ -688,6 +742,7 @@ export class SubagentRunner {
             completedAt: new Date().toISOString(),
           });
         } catch (err) {
+          persistenceFailures.push(err);
           log.error("cancelBySession persistMeta failed", {
             id: instance.id,
             ...boundedError(err),
@@ -719,6 +774,9 @@ export class SubagentRunner {
         sessionId,
       });
     }
+    if (persistenceFailures.length > 0) {
+      throw persistenceFailures[0];
+    }
   }
 
   /**
@@ -728,6 +786,7 @@ export class SubagentRunner {
   async dispose(): Promise<void> {
     this.disposed = true;
     const ids = [...this.activeSubagents.keys()];
+    const persistenceFailures: unknown[] = [];
     await Promise.all(
       ids.map(async (id) => {
         const instance = this.activeSubagents.get(id);
@@ -764,6 +823,7 @@ export class SubagentRunner {
               completedAt: new Date().toISOString(),
             });
           } catch (err) {
+            persistenceFailures.push(err);
             log.error("dispose persistMeta failed", {
               id,
               ...boundedError(err),
@@ -782,6 +842,9 @@ export class SubagentRunner {
     );
     this.activeSubagents.clear();
     log.debug("SubagentRunner disposed", { count: ids.length });
+    if (persistenceFailures.length > 0) {
+      throw persistenceFailures[0];
+    }
   }
 
   /**

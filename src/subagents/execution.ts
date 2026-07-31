@@ -39,6 +39,28 @@ import { buildResourceLoader } from "./named-agents.ts";
 import type { GenericSubagentInheritance, SubagentInstance, SubagentStatus } from "./types.ts";
 
 /**
+ * Terminal execution failed and its durable error transition failed as well.
+ * The original execution error is retained as `cause` and as
+ * `executionError`; the persistence failure is carried separately so callers
+ * can diagnose both without pretending either one succeeded.
+ */
+export class SubagentTerminalError extends Error {
+  readonly executionError: unknown;
+  readonly persistenceError: unknown;
+
+  constructor(executionError: unknown, persistenceError: unknown) {
+    super(
+      `Subagent execution failed: ${boundedError(executionError).error}; ` +
+        `metadata persistence failed: ${boundedError(persistenceError).error}`,
+      { cause: executionError },
+    );
+    this.name = "SubagentTerminalError";
+    this.executionError = executionError;
+    this.persistenceError = persistenceError;
+  }
+}
+
+/**
  * Dependencies the execution engine needs but does not own.
  *
  * `buildTools` lets the runner inject `spawn_subagent` / `revive_subagent`
@@ -210,8 +232,15 @@ async function _runInstanceInner(
           resolveText?.(finalText);
         },
         onError: (err) => {
-          markErrored(instance, err);
-          rejectErr?.(err);
+          try {
+            markErrored(instance, err);
+            rejectErr?.(err);
+          } catch (terminalErr) {
+            // markErrored combines execution and persistence failures after
+            // cleanup. Reject that combined diagnostic rather than allowing a
+            // throwing event callback to leave completion pending.
+            rejectErr?.(terminalErr);
+          }
         },
       });
     } catch (err) {
@@ -279,8 +308,9 @@ export function handleEvent(
 
 /**
  * Mark the subagent as completed. Always updates in-memory status and
- * tears down, even if the disk write fails — a logging failure should
- * not destroy a compute result.
+ * tears down. If the durable transition fails, the persistence error is
+ * raised after cleanup so callers cannot report a successful run with stale
+ * metadata.
  *
  * Guard: does nothing if instance is already in a terminal state
  * (cancelled/error). This prevents race conditions where cancel() sets
@@ -301,20 +331,28 @@ export function markCompleted(instance: SubagentInstance): void {
     // Clear stale error from a previous lifecycle (e.g. after revival).
     errorMessage: undefined,
   };
+  let persistenceFailed = false;
+  let persistenceError: unknown;
   try {
     persistMetaPatch(instance, patch);
   } catch (err) {
+    persistenceFailed = true;
+    persistenceError = err;
     log.error("failed to persist completed meta", { id: instance.id, ...boundedError(err) });
   }
   instance.status = "completed";
   teardownInstance(instance);
   log.debug("subagent completed", { id: instance.id });
+  if (persistenceFailed) {
+    throw persistenceError;
+  }
 }
 
 /**
  * Mark the subagent as errored. Always updates in-memory status and
- * tears down, even if the disk write fails — a logging failure should
- * not prevent cleanup.
+ * tears down before reporting a durable-transition failure. If metadata
+ * persistence fails, the returned execution failure is combined with that
+ * persistence error so callers retain diagnostic evidence of both.
  *
  * Guard: does nothing if instance is already in a terminal state
  * (cancelled). This prevents race conditions where cancel() sets
@@ -330,6 +368,8 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
     return;
   }
   const errorMessage = err instanceof Error ? err.message : String(err);
+  let persistenceFailed = false;
+  let persistenceError: unknown;
   try {
     persistMetaPatch(instance, {
       status: "error",
@@ -337,11 +377,16 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
       errorMessage,
     });
   } catch (persistErr) {
+    persistenceFailed = true;
+    persistenceError = persistErr;
     log.error("failed to persist error meta", { id: instance.id, ...boundedError(persistErr) });
   }
   instance.status = "error";
   teardownInstance(instance);
   log.warn("subagent errored", { id: instance.id, ...boundedError(errorMessage) });
+  if (persistenceFailed) {
+    throw new SubagentTerminalError(err, persistenceError);
+  }
 }
 
 /**

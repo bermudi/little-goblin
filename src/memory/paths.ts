@@ -20,7 +20,13 @@ export function dreamsDir(home: string): string {
   return join(memoryDir(home), "dreams");
 }
 
-function topicScopeDir(home: string, chatId: number, topicId: number): string {
+/**
+ * Path to the durable directory for one Telegram topic scope.
+ *
+ * Callers that need to inspect the scope container use this helper rather
+ * than reconstructing `$GOBLIN_HOME/state/memory/topics/...` inline.
+ */
+export function topicScopeDir(home: string, chatId: number, topicId: number): string {
   return join(memoryDir(home), "topics", String(chatId), String(topicId));
 }
 

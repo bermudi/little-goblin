@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { chmodSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { SubagentRunner } from "../mod.ts";
-import { markCompleted } from "../execution.ts";
+import { markCompleted, SubagentTerminalError } from "../execution.ts";
 import type { SubagentInstance, SubagentMeta } from "../types.ts";
 import { genericSubagentMetaPath } from "../paths.ts";
 import {
@@ -410,9 +410,10 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("markErrored still updates in-memory status when persistMeta fails", async () => {
+  it("rejects with both execution and metadata persistence failures", async () => {
+    const executionError = new Error("first-fail");
     sessionHolder.sendUserMessage = mock(async () => {
-      throw new Error("first-fail");
+      throw executionError;
     });
 
     const handle = await runner.spawn({ prompt: "trigger", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
@@ -425,13 +426,25 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
     await flush();
     await flush();
 
-    await expect(handle.result).rejects.toThrow("first-fail");
+    let failure: unknown;
+    try {
+      await handle.result;
+    } catch (err) {
+      failure = err;
+    }
+    expect(failure).toBeInstanceOf(SubagentTerminalError);
+    const combined = failure as SubagentTerminalError;
+    expect(combined.executionError).toBe(executionError);
+    expect(combined.cause).toBe(executionError);
+    expect(combined.persistenceError).toBeInstanceOf(Error);
+    expect(combined.message).toContain("first-fail");
+    expect(combined.message).toContain("metadata persistence failed");
     expect(runner.list().find((entry) => entry.id === handle.id)?.status).toBe("error");
 
     chmodSync(dir, 0o755);
   });
 
-  it("markCompleted still resolves with text when persistMeta fails", async () => {
+  it("markCompleted rejects the result when persistMeta fails", async () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
@@ -448,7 +461,7 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
     });
     sessionHolder.emit({ type: "agent_end", messages: [] });
 
-    await expect(handle.result).resolves.toBe("important result");
+    await expect(handle.result).rejects.toThrow(/EACCES|metadata file is missing/);
     expect(runner.list().find((entry) => entry.id === handle.id)?.status).toBe("completed");
 
     chmodSync(dir, 0o755);

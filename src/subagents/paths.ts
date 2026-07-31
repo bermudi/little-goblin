@@ -19,7 +19,7 @@
  *                       └── meta.json
  */
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 export function subagentsRoot(home: string): string {
@@ -62,21 +62,38 @@ export function namedAgentInstanceMetaPath(home: string, name: string, id: strin
  * List all valid named agents in ~/goblin/workspace/agents/.
  * A directory is considered a named agent if it contains AGENTS.md.
  */
+function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && "code" in err;
+}
+
 export function listNamedAgents(home: string): string[] {
   const root = namedAgentsRoot(home);
-  if (!existsSync(root)) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch (err) {
+    if (isNodeErrnoException(err) && err.code === "ENOENT") return [];
+    throw err;
+  }
 
   const agents: string[] = [];
-  try {
-    for (const entry of readdirSync(root)) {
-      const agentDir = join(root, entry);
+  for (const entry of entries) {
+    const agentDir = join(root, entry);
+    try {
       if (!statSync(agentDir).isDirectory()) continue;
-      if (existsSync(join(agentDir, "AGENTS.md"))) {
+    } catch (err) {
+      if (isNodeErrnoException(err) && err.code === "ENOENT") continue;
+      throw err;
+    }
+
+    try {
+      if (statSync(join(agentDir, "AGENTS.md")).isFile()) {
         agents.push(entry);
       }
+    } catch (err) {
+      if (isNodeErrnoException(err) && err.code === "ENOENT") continue;
+      throw err;
     }
-  } catch {
-    // Fail silently — no agents available
   }
   return agents.sort();
 }

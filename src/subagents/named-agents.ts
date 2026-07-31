@@ -30,6 +30,17 @@ import type { NamedAgentDefinition, SubagentRole } from "./types.ts";
 /** Valid characters for a named agent: alphanumeric, hyphens, underscores. */
 export const VALID_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 
+export class NamedAgentNotFoundError extends Error {
+  constructor(name: string) {
+    super(`Named agent '${name}' not found`);
+    this.name = "NamedAgentNotFoundError";
+  }
+}
+
+function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && "code" in err;
+}
+
 /**
  * Load a named agent definition from
  * `$GOBLIN_HOME/workspace/agents/<name>/`.
@@ -46,8 +57,8 @@ export function loadNamedAgent(home: string, name: string): NamedAgentDefinition
   try {
     agentsMd = readFileSync(agentsMdPath, "utf-8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error(`Named agent '${name}' not found`);
+    if (isNodeErrnoException(err) && err.code === "ENOENT") {
+      throw new NamedAgentNotFoundError(name);
     }
     throw err;
   }
@@ -137,7 +148,7 @@ export async function buildResourceLoader(opts: {
           );
         }
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        if (isNodeErrnoException(err) && err.code === "ENOENT") {
           missing.push(skillPath);
           continue;
         }

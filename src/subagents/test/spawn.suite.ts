@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubagentRunner, type GenericSubagentInheritance, type SubagentToolFactory } from "../mod.ts";
 import type { ResolvedSkillSet } from "../../agent/skills/mod.ts";
@@ -146,6 +146,25 @@ describe("SubagentRunner.spawn — generic", () => {
 
     expect(runner.list()[0]?.id).toBe(handle.id);
     expect(existsSync(genericSubagentDir(tmp, handle.id))).toBe(true);
+  });
+
+  it("does not persist running metadata when pre-registration setup fails", async () => {
+    const invalidInheritance = null as unknown as GenericSubagentInheritance;
+
+    await expect(
+      runner.spawn({
+        prompt: "cannot prepare",
+        authority: DEFAULT_AUTHORITY,
+        inheritance: invalidInheritance,
+      }),
+    ).rejects.toThrow("generic subagent requires inherited execution authority");
+
+    expect(runner.list()).toEqual([]);
+    const instanceDirs = readdirSync(subagentsRoot(tmp));
+    expect(instanceDirs.length).toBeGreaterThan(0);
+    for (const instanceDir of instanceDirs) {
+      expect(existsSync(join(subagentsRoot(tmp), instanceDir, "meta.json"))).toBe(false);
+    }
   });
 
   it("rejects spawning beyond depth 3", async () => {

@@ -236,7 +236,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     await revivePromise;
   });
 
-  it("ignores legacy namedAgent field in persisted meta during revive", async () => {
+  it("ignores the real legacy namedAgent audit field during revive and rewrites current scope", async () => {
     const store = new MemoryStore(tmp);
     try {
       await store.add("general", "default fact");
@@ -247,7 +247,11 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     const id = "legacy-meta-test";
     const dir = genericSubagentDir(tmp, id);
     mkdirSync(dir, { recursive: true });
-    const legacyActiveScope = { chatId: 999, topicScope: "general", namedAgent: "legacy-agent" };
+    const legacyActiveScope = {
+      chatId: 999,
+      topicScope: "general",
+      namedAgent: { name: "legacy-agent" },
+    };
     writeFileSync(
       join(dir, "meta.json"),
       JSON.stringify({
@@ -279,6 +283,11 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
 
     sessionHolder.emit({ type: "agent_end", messages: [] });
     await revivePromise;
+
+    const rewritten = JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")) as {
+      activeScope: Record<string, unknown>;
+    };
+    expect(rewritten.activeScope).toEqual({ chatId: 999, topicScope: "general" });
   });
 
   it("rejects spawn when given a legacy ActiveScope instead of SurfaceMemoryAuthority", async () => {

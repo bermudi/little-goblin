@@ -18,3 +18,4 @@ await import("./test/tools.suite.ts");
 await import("./test/memory.suite.ts");
 await import("./test/surface-authority.suite.ts");
 await import("./test/runtime-authority.suite.ts");
+await import("./test/meta.suite.ts");

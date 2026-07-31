@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { SubagentRunner } from "../mod.ts";
+import { topicScopeDir } from "../../memory/paths.ts";
 import { workspacePath } from "../../workspace/paths.ts";
 import type { SubagentMeta } from "../types.ts";
 import {
@@ -79,6 +80,7 @@ describe("SubagentRunner.revive", () => {
         role: "generic",
         name: null,
         spawnedBy: null,
+        activeScope: DEFAULT_PARENT_CAPTURE.authority.activeScope,
         depth: 1,
         createdAt: new Date().toISOString(),
         status: "completed",
@@ -86,6 +88,62 @@ describe("SubagentRunner.revive", () => {
     );
 
     await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "ping")).rejects.toThrow("Subagent not found");
+  });
+
+  it("rejects revival when the topic directory is missing", async () => {
+    const id = await spawnGeneric();
+    const topicCapture = {
+      ...DEFAULT_PARENT_CAPTURE,
+      authority: {
+        ...DEFAULT_PARENT_CAPTURE.authority,
+        activeScope: { chatId: 777, topicScope: { topicId: 42 } },
+      },
+    };
+
+    await expect(
+      runner.revive(topicCapture, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "topic missing"),
+    ).rejects.toThrow(/topic scope \(777\/42\) no longer exists/);
+  });
+
+  it("rejects revival when the topic path is a regular file", async () => {
+    const id = await spawnGeneric();
+    const topicPath = topicScopeDir(tmp, 777, 42);
+    mkdirSync(dirname(topicPath), { recursive: true });
+    writeFileSync(topicPath, "not a directory");
+    const topicCapture = {
+      ...DEFAULT_PARENT_CAPTURE,
+      authority: {
+        ...DEFAULT_PARENT_CAPTURE.authority,
+        activeScope: { chatId: 777, topicScope: { topicId: 42 } },
+      },
+    };
+
+    await expect(
+      runner.revive(topicCapture, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "topic file"),
+    ).rejects.toThrow(/topic scope \(777\/42\) is not a directory/);
+  });
+
+  it("propagates non-ENOENT topic stat failures", async () => {
+    const id = await spawnGeneric();
+    const topicPath = topicScopeDir(tmp, 777, 42);
+    const chatPath = dirname(topicPath);
+    mkdirSync(dirname(chatPath), { recursive: true });
+    writeFileSync(chatPath, "not a chat directory");
+    const topicCapture = {
+      ...DEFAULT_PARENT_CAPTURE,
+      authority: {
+        ...DEFAULT_PARENT_CAPTURE.authority,
+        activeScope: { chatId: 777, topicScope: { topicId: 42 } },
+      },
+    };
+
+    let failure: unknown;
+    try {
+      await runner.revive(topicCapture, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "topic stat error");
+    } catch (err) {
+      failure = err;
+    }
+    expect((failure as NodeJS.ErrnoException).code).toBe("ENOTDIR");
   });
 
   it("revives a generic subagent and sends the new prompt", async () => {
@@ -266,14 +324,16 @@ describe("SubagentRunner — corrupted meta.json", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("throws 'Subagent not found' for corrupted meta.json (not raw SyntaxError)", async () => {
+  it("reports malformed meta.json instead of treating it as not found", async () => {
     const id = "aaaaaaaa-0000-0000-0000-000000000000";
     const dir = genericSubagentDir(tmp, id);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "meta.json"), "NOT VALID JSON{{{");
     writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "hello")).rejects.toThrow("Subagent not found");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "hello")).rejects.toThrow(
+      /Invalid subagent metadata .* malformed JSON/,
+    );
   });
 
   it("allows a same-id retry after a corrupted meta.json failure", async () => {
@@ -282,7 +342,9 @@ describe("SubagentRunner — corrupted meta.json", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "meta.json"), "NOT VALID JSON");
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "first try")).rejects.toThrow("Subagent not found");
+    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "first try")).rejects.toThrow(
+      /Invalid subagent metadata .* malformed JSON/,
+    );
 
     // Repair the directory with a valid meta and a session file.
     writeFileSync(
@@ -292,6 +354,7 @@ describe("SubagentRunner — corrupted meta.json", () => {
         role: "generic",
         name: null,
         spawnedBy: null,
+        activeScope: DEFAULT_PARENT_CAPTURE.authority.activeScope,
         depth: 1,
         createdAt: new Date().toISOString(),
         status: "completed",

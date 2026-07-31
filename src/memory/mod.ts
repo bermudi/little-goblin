@@ -19,6 +19,7 @@ export {
   memoryDbPath,
   dreamsDir,
   scopeMemoryPath,
+  topicScopeDir,
   userPath,
 } from "./paths.ts";
 export {

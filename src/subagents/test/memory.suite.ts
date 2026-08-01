@@ -11,21 +11,15 @@ import {
 } from "../../memory/mod.ts";
 import { memoryDir } from "../../memory/paths.ts";
 import { SubagentRunner } from "../mod.ts";
+import { FakeSubagentHost } from "./fake-host.ts";
 import { namedAgentAgentsMdPath, namedAgentDir } from "../paths.ts";
 import { topicSurface, surfaceId, type Surface } from "../../surface.ts";
 import {
   createTestHome,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
-  getCapturedCreateArgs,
-  installStandardPiMock,
   makeConfig,
-  resetPiMockState,
-  sessionHolder,
 } from "./support.ts";
-
-// Install mock before any tests run
-installStandardPiMock();
 
 const TOPIC_SCOPE: ActiveScope = {
   chatId: -100123,
@@ -68,11 +62,12 @@ async function seedMemory(
 describe("SubagentRunner — scoped memory", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagents-memory-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -87,11 +82,7 @@ describe("SubagentRunner — scoped memory", () => {
     });
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const tools = opts.customTools as Array<{
-      name: string;
-      execute: (toolCallId: string, params: unknown) => Promise<unknown>;
-    }>;
+    const tools = captureTools();
     const memoryWrite = tools.find((tool) => tool.name === "memory_write");
 
     expect(memoryWrite).toBeDefined();
@@ -105,7 +96,7 @@ describe("SubagentRunner — scoped memory", () => {
     expect(check.readBody({ topic: { chatId: -100123, topicId: 42 } })).toBe("topic fact");
     check.close();
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 
@@ -125,11 +116,7 @@ describe("SubagentRunner — scoped memory", () => {
     });
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const tools = opts.customTools as Array<{
-      name: string;
-      execute: (toolCallId: string, params: unknown) => Promise<unknown>;
-    }>;
+    const tools = captureTools();
     const memoryWrite = tools.find((tool) => tool.name === "memory_write");
 
     expect(memoryWrite).toBeDefined();
@@ -153,7 +140,7 @@ describe("SubagentRunner — scoped memory", () => {
     );
     check.close();
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 
@@ -165,11 +152,7 @@ describe("SubagentRunner — scoped memory", () => {
     });
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const tools = opts.customTools as Array<{
-      name: string;
-      execute: (toolCallId: string, params: unknown) => Promise<unknown>;
-    }>;
+    const tools = captureTools();
     const memoryWrite = tools.find((tool) => tool.name === "memory_write");
 
     expect(memoryWrite).toBeDefined();
@@ -181,7 +164,7 @@ describe("SubagentRunner — scoped memory", () => {
       }),
     ).rejects.toThrow('target = "agent" is only valid for named subagents');
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 
@@ -193,8 +176,7 @@ describe("SubagentRunner — scoped memory", () => {
     });
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const tools = opts.customTools as Array<{ name: string; parameters: unknown }>;
+    const tools = captureToolsAs<{ name: string; parameters: unknown }>();
     const searchTool = tools.find((tool) => tool.name === "memory_search");
     const writeTool = tools.find((tool) => tool.name === "memory_write");
 
@@ -209,7 +191,7 @@ describe("SubagentRunner — scoped memory", () => {
       ),
     );
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 
@@ -230,11 +212,7 @@ describe("SubagentRunner — scoped memory", () => {
     });
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const tools = opts.customTools as Array<{
-      name: string;
-      execute: (toolCallId: string, params: unknown) => Promise<unknown>;
-    }>;
+    const tools = captureTools();
     const searchTool = tools.find((tool) => tool.name === "memory_search");
 
     expect(searchTool).toBeDefined();
@@ -245,7 +223,7 @@ describe("SubagentRunner — scoped memory", () => {
     // This is intentional isolation - subagents don't see peer personas.
     expect(parsed.agents).toEqual([]);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 
@@ -269,23 +247,21 @@ describe("SubagentRunner — scoped memory", () => {
 
     // Named subagent: system prompt is the agent's AGENTS.md plus the frozen
     // memory summary; the per-turn aside is a bounded relevant-memory snapshot.
-    const namedOpts = getCapturedCreateArgs()[0] as { resourceLoader?: { options?: { systemPrompt?: string } } };
-    const namedSystem = namedOpts.resourceLoader?.options?.systemPrompt ?? "";
+    const namedInvocation = host.latest().invocations[0];
+    const namedSystem = namedInvocation?.systemPrompt ?? "";
     expect(namedSystem).toContain("# Researcher");
     expect(namedSystem).toContain("[goblin memory summary (frozen at session start)]");
     expect(namedSystem).toContain("## user.md\nuser memory");
     expect(namedSystem).toContain("## memory.md\ntopic memory");
 
-    expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
-    const [namedPayload] = sessionHolder.sendCustomMessage.mock.calls[0]!;
-    const namedAside = (namedPayload as { content: string }).content;
+    expect(namedInvocation?.relevantMemoryPrelude).toBeDefined();
+    const namedAside = namedInvocation?.relevantMemoryPrelude?.content ?? "";
     expect(namedAside).toContain("## relevant memory");
     expect(namedAside).toContain("persona memory");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await namedHandle.result;
 
-    resetPiMockState();
     const anonHandle = await runner.spawn({
       prompt: "persona",
       authority: TOPIC_AUTHORITY,
@@ -295,14 +271,14 @@ describe("SubagentRunner — scoped memory", () => {
 
     // Anonymous subagent: no agent AGENTS.md section and no persona memory in
     // the relevant-memory aside (it is not allowed to search agent scopes).
-    const anonOpts = getCapturedCreateArgs()[0] as { resourceLoader?: { options?: { systemPrompt?: string } } };
-    const anonSystem = anonOpts.resourceLoader?.options?.systemPrompt ?? "";
+    const anonInvocation = host.latest().invocations[0];
+    const anonSystem = anonInvocation?.systemPrompt ?? "";
     expect(anonSystem).not.toContain("# Researcher");
     expect(anonSystem).toContain("[goblin memory summary (frozen at session start)]");
 
-    expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(0);
+    expect(anonInvocation?.relevantMemoryPrelude).toBeUndefined();
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await anonHandle.result;
   });
 
@@ -338,7 +314,7 @@ describe("SubagentRunner — scoped memory", () => {
 
     // Emit agent_end — a main-agent runner would schedule reflection here.
     // A subagent must not.
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
     // Drain any microtasks a hypothetical fire-and-log pass would queue.
     await flush();
@@ -371,7 +347,7 @@ describe("SubagentRunner — scoped memory", () => {
     await flush();
 
     // Complete the named subagent WITHOUT calling memory_write({target:"agent"}).
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
     await flush();
     await flush();
@@ -391,16 +367,27 @@ describe("SubagentRunner — scoped memory", () => {
   // persona scopes. Anonymous subagents SHALL NOT search any persona scope.
   // -------------------------------------------------------------------------
 
-  /** Extract the customTools array from the captured createAgentSession args. */
+  /**
+   * Extract the customTools array from the opaque execution invocation, cast to
+   * the requested element shape. Throws loudly if no invocation was recorded,
+   * since FakeSubagentExecution.run() always pushes exactly one before the
+   * deferred resolves.
+   */
+  function captureToolsAs<T extends { name: string }>(): T[] {
+    const invocation = host.latest().invocations[0];
+    if (!invocation) throw new Error("Expected a subagent invocation but none was recorded");
+    return invocation.customTools as unknown as T[];
+  }
+
+  /** Extract the customTools array (with execute) from the invocation. */
   function captureTools(): Array<{
     name: string;
     execute: (toolCallId: string, params: unknown) => Promise<unknown>;
   }> {
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    return opts.customTools as Array<{
+    return captureToolsAs<{
       name: string;
       execute: (toolCallId: string, params: unknown) => Promise<unknown>;
-    }>;
+    }>();
   }
 
   /** Parse the JSON payload of a tool's text result. */
@@ -415,7 +402,7 @@ describe("SubagentRunner — scoped memory", () => {
 
     expect(captureTools().some((t) => t.name === "memory_search")).toBe(true);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 
@@ -457,7 +444,7 @@ describe("SubagentRunner — scoped memory", () => {
     // Different-chat topic excluded without all_chats.
     expect(scopes.has("topics/-999/1")).toBe(false);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 
@@ -485,7 +472,7 @@ describe("SubagentRunner — scoped memory", () => {
     // Same-chat topic scope remains searchable by anonymous subagents.
     expect(scopes.has("topics/-100123/7")).toBe(true);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 });

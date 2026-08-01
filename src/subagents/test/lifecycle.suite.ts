@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { SubagentRunner } from "../mod.ts";
+import { FakeSubagentHost } from "./fake-host.ts";
 import { markCompleted, SubagentTerminalError } from "../execution.ts";
 import type { SubagentInstance, SubagentMeta } from "../types.ts";
 import { genericSubagentMetaPath } from "../paths.ts";
@@ -10,23 +11,18 @@ import {
   DEFAULT_AUTHORITY,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
-  installStandardPiMock,
   makeConfig,
-  resetPiMockState,
-  sessionHolder,
 } from "./support.ts";
-
-// Install mock before any tests run
-installStandardPiMock();
 
 describe("SubagentRunner.cancel", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagents-cancel-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -41,10 +37,10 @@ describe("SubagentRunner.cancel", () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    expect(sessionHolder.abort).not.toHaveBeenCalled();
+    expect(host.latest().stopCalls).toBe(0);
     await runner.cancel(handle.id);
 
-    expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+    expect(host.latest().stopCalls).toBe(1);
     expect(runner.list().find((entry) => entry.id === handle.id)?.status).toBe("cancelled");
   });
 
@@ -61,27 +57,25 @@ describe("SubagentRunner.cancel", () => {
     expect(meta.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it("cleans up the event subscription on cancel", async () => {
+  it("stops the prepared execution on cancel", async () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    const listenerCountBefore = sessionHolder.listeners.length;
-    expect(listenerCountBefore).toBeGreaterThanOrEqual(1);
-
     await runner.cancel(handle.id);
 
-    expect(sessionHolder.listeners.length).toBeLessThan(listenerCountBefore);
+    expect(host.latest().stopCalls).toBe(1);
   });
 });
 
 describe("SubagentRunner.list", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagents-list-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -126,7 +120,7 @@ describe("SubagentRunner.list", () => {
     const handle = await runner.spawn({ prompt: "x", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
 
     expect(runner.list()[0]?.status).toBe("completed");
@@ -136,11 +130,12 @@ describe("SubagentRunner.list", () => {
 describe("SubagentRunner — prune terminal instances", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-prune-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -150,7 +145,7 @@ describe("SubagentRunner — prune terminal instances", () => {
   it("prunes completed subagents on next spawn", async () => {
     const first = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await first.result;
 
     expect(runner.list()).toHaveLength(1);
@@ -163,7 +158,7 @@ describe("SubagentRunner — prune terminal instances", () => {
     expect(ids).not.toContain(first.id);
     expect(ids).toContain(second.id);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("second");
     await second.result;
   });
 
@@ -179,7 +174,7 @@ describe("SubagentRunner — prune terminal instances", () => {
     await flush();
 
     expect(runner.list().map((entry) => entry.id)).not.toContain(first.id);
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("second");
     await second.result;
   });
 
@@ -243,7 +238,7 @@ describe("SubagentRunner — prune terminal instances", () => {
     expect(idsAfterSecond).not.toContain(b.id);
     expect(idsAfterSecond).toContain(e.id);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("end");
     await e.result;
   });
 });
@@ -251,11 +246,12 @@ describe("SubagentRunner — prune terminal instances", () => {
 describe("SubagentRunner — dispose", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-dispose-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -280,7 +276,7 @@ describe("SubagentRunner — dispose", () => {
   it("disposes subagents that already completed", async () => {
     const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
 
     expect(runner.list()).toHaveLength(1);
@@ -289,28 +285,26 @@ describe("SubagentRunner — dispose", () => {
   });
 });
 
-describe("SubagentRunner — cancel with abort() that throws", () => {
+describe("SubagentRunner — cancel with stop() that throws", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-cancel-abort-throws-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("still updates status and cleans up if session.abort() throws", async () => {
-    sessionHolder.abort = mock(async () => {
-      throw new Error("abort-failed");
-    });
-
+  it("updates status but surfaces a stop() failure", async () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    await runner.cancel(handle.id);
+    host.latest().stopFailure = new Error("stop-failed");
+    await expect(runner.cancel(handle.id)).rejects.toThrow("stop-failed");
 
     expect(runner.list()[0]?.status).toBe("cancelled");
 
@@ -328,7 +322,6 @@ describe("SubagentRunner — disposed flag", () => {
   beforeEach(() => {
     tmp = createTestHome("goblin-disposed-flag-");
     runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
   });
 
   afterEach(() => {
@@ -350,11 +343,12 @@ describe("SubagentRunner — disposed flag", () => {
 describe("SubagentRunner — dispose does not overwrite completed", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-dispose-no-overwrite-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -364,7 +358,7 @@ describe("SubagentRunner — dispose does not overwrite completed", () => {
   it("preserves completed meta.json status on dispose", async () => {
     const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
 
     let meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8")) as SubagentMeta;
@@ -377,13 +371,9 @@ describe("SubagentRunner — dispose does not overwrite completed", () => {
   });
 
   it("preserves errored meta.json status on dispose", async () => {
-    sessionHolder.sendUserMessage = mock(async () => {
-      throw new Error("boom");
-    });
-
     const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    await flush();
+    host.latest().fail(new Error("boom"));
     await expect(handle.result).rejects.toThrow("boom");
 
     let meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8")) as SubagentMeta;
@@ -399,11 +389,12 @@ describe("SubagentRunner — dispose does not overwrite completed", () => {
 describe("SubagentRunner — persistMeta failure resilience", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-persist-resilience-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -412,9 +403,6 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
 
   it("rejects with both execution and metadata persistence failures", async () => {
     const executionError = new Error("first-fail");
-    sessionHolder.sendUserMessage = mock(async () => {
-      throw executionError;
-    });
 
     const handle = await runner.spawn({ prompt: "trigger", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     const metaPath = genericSubagentMetaPath(tmp, handle.id);
@@ -424,7 +412,7 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
     chmodSync(dir, 0o444);
 
     await flush();
-    await flush();
+    host.latest().fail(executionError);
 
     let failure: unknown;
     try {
@@ -453,13 +441,7 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
     rmSync(metaPath);
     chmodSync(dir, 0o444);
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "text_delta", delta: "important result" },
-    });
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("important result");
 
     await expect(handle.result).rejects.toThrow(/EACCES|metadata file is missing/);
     expect(runner.list().find((entry) => entry.id === handle.id)?.status).toBe("completed");
@@ -471,11 +453,12 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
 describe("SubagentRunner.cancelBySession", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-cancel-by-session-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -503,7 +486,7 @@ describe("SubagentRunner.cancelBySession", () => {
 
     await runner.cancelBySession("session-abc");
 
-    expect(sessionHolder.abort).toHaveBeenCalledTimes(2);
+    expect(host.executions.reduce((count, execution) => count + execution.stopCalls, 0)).toBe(2);
     expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
     expect(runner.list().find((entry) => entry.id === b.id)?.status).toBe("cancelled");
 
@@ -535,7 +518,7 @@ describe("SubagentRunner.cancelBySession", () => {
 
     expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
     expect(runner.list().find((entry) => entry.id === b.id)?.status).toBe("cancelled");
-    expect(sessionHolder.abort).toHaveBeenCalledTimes(2);
+    expect(host.executions.reduce((count, execution) => count + execution.stopCalls, 0)).toBe(2);
   });
 
   it("cancels a running child even when its parent is already terminal", async () => {
@@ -564,7 +547,7 @@ describe("SubagentRunner.cancelBySession", () => {
 
     expect(aInst?.status).toBe("completed");
     expect(runner.list().find((entry) => entry.id === b.id)?.status).toBe("cancelled");
-    expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+    expect(host.executions.reduce((count, execution) => count + execution.stopCalls, 0)).toBe(1);
   });
 
   it("skips terminal instances", async () => {
@@ -585,7 +568,7 @@ describe("SubagentRunner.cancelBySession", () => {
     expect(aInst?.status).toBe("completed");
     const meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, a.id), "utf-8")) as SubagentMeta;
     expect(meta.status).toBe("completed");
-    expect(sessionHolder.abort).not.toHaveBeenCalled();
+    expect(host.executions[0]?.stopCalls).toBe(0);
   });
 
   it("does not match null spawnedBy", async () => {
@@ -595,13 +578,13 @@ describe("SubagentRunner.cancelBySession", () => {
     await runner.cancelBySession("session-abc");
 
     expect(runner.list()[0]?.status).toBe("running");
-    expect(sessionHolder.abort).not.toHaveBeenCalled();
+    expect(host.executions.every((execution) => execution.stopCalls === 0)).toBe(true);
   });
 
   it("is a no-op when no subagents match the session", async () => {
     await runner.cancelBySession("session-xyz");
 
-    expect(sessionHolder.abort).not.toHaveBeenCalled();
+    expect(host.executions).toHaveLength(0);
     expect(runner.list()).toHaveLength(0);
   });
 
@@ -624,7 +607,7 @@ describe("SubagentRunner.cancelBySession", () => {
 
     expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
     expect(runner.list().find((entry) => entry.id === c.id)?.status).toBe("running");
-    expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+    expect(host.executions.reduce((count, execution) => count + execution.stopCalls, 0)).toBe(1);
   });
 
   it("does not double-cancel when called concurrently with cancel", async () => {
@@ -638,7 +621,7 @@ describe("SubagentRunner.cancelBySession", () => {
 
     await Promise.all([runner.cancelBySession("session-abc"), runner.cancel(a.id)]);
 
-    expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+    expect(host.executions[0]?.stopCalls).toBe(1);
     expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
   });
 });

@@ -1,27 +1,11 @@
 /**
- * Subagent execution engine.
+ * Subagent lifecycle execution coordinator.
  *
- * Given a fully-constructed `SubagentInstance`, drive it from "running" to
- * a terminal state (`completed` / `error` / `cancelled`):
- *
- *   1. Build the pi `ResourceLoader` (named-agent isolation vs. generic).
- *   2. Create the `AgentSession` with goblin's shared pi services.
- *   3. Subscribe to events, dispatch them through the shared
- *      `dispatchAgentEvent` adapter, accumulate the assistant text.
- *   4. Send the initial prompt; resolve on `agent_end`, reject on errors.
- *   5. Persist the terminal status to `meta.json` and tear down the session.
- *
- * Both `spawn()` and `revive()` on the runner call `runInstance` — the
- * lifecycle entry points only differ in how they construct the instance.
+ * This module owns invocation preparation, memory/tool assembly, and durable
+ * terminal transitions. Pi construction and Pi event mechanics live behind
+ * `SubagentHost`; no Pi session object escapes this boundary.
  */
 
-import {
-  createAgentSession,
-  type AgentSessionEvent,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
-import { dispatchAgentEvent, type TurnCallbacks } from "../agent/events.ts";
-import type { Config } from "../config.ts";
 import {
   MemoryStore,
   createMemorySearchTool,
@@ -30,13 +14,10 @@ import {
   formatRelevantMemory,
   type CapturedMemoryContext,
 } from "../memory/mod.ts";
-import { resolveModel } from "../agent/models.ts";
 import { boundedError, log } from "../log.ts";
-
-import { piAgentDir, type PiServices } from "../pi-host.ts";
+import type { SubagentInvocation } from "./host.ts";
 import { persistMetaPatch } from "./meta.ts";
-import { buildResourceLoader } from "./named-agents.ts";
-import type { GenericSubagentInheritance, SubagentInstance, SubagentStatus } from "./types.ts";
+import type { GenericSubagentInheritance, SubagentInstance } from "./types.ts";
 
 /**
  * Terminal execution failed and its durable error transition failed as well.
@@ -60,15 +41,8 @@ export class SubagentTerminalError extends Error {
   }
 }
 
-/**
- * Dependencies the execution engine needs but does not own.
- *
- * `buildTools` lets the runner inject `spawn_subagent` / `revive_subagent`
- * without execution.ts having to know about the toolFactory signature.
- */
+/** Dependencies owned by the coordinator, not by the Pi host. */
 export interface ExecutionDeps {
-  cfg: Config;
-  services: PiServices;
   memoryStore: MemoryStore;
   buildTools: (
     depth: number,
@@ -76,14 +50,13 @@ export interface ExecutionDeps {
     parentCapture: CapturedMemoryContext,
     inheritance: GenericSubagentInheritance | null,
     onStatusUpdate?: (msg: string) => void,
-  ) => ToolDefinition[];
+  ) => SubagentInvocation["customTools"];
 }
 
 /**
  * Wrap a status callback so every message is prefixed with
  * `🧠 <label> `. Named agents use their name; generic agents use
- * the first 8 chars of their UUID. Returns `undefined` when the
- * input callback is `undefined` (no allocation overhead).
+ * the first 8 chars of their UUID.
  */
 export function prefixStatusCallback(
   label: string,
@@ -95,215 +68,179 @@ export function prefixStatusCallback(
 }
 
 /**
- * Drive the instance to a terminal state. Resolves with the accumulated
- * assistant text on `agent_end`, rejects on session errors.
- *
- * Wraps `_runInstanceInner` to catch startup failures (model resolution,
- * createAgentSession, resource loader reload) that would otherwise leave
- * meta.json stuck in "running".
+ * Drive the instance to a terminal state. Memory and Pi resources have
+ * separate owners: this coordinator closes the former, while the host lease
+ * closes the latter before its `run()` promise settles.
  */
 export async function runInstance(
   instance: SubagentInstance,
-  cwd: string,
   deps: ExecutionDeps,
 ): Promise<string> {
+  let text: string | undefined;
+  let executionFailure: unknown;
   try {
-    return await _runInstanceInner(instance, cwd, deps);
+    text = await runInvocation(instance, deps);
   } catch (err) {
+    executionFailure = err;
+  }
+
+  // Memory search records recall statistics on the next event-loop turn. Let
+  // that deferred store work drain before closing this invocation-owned store;
+  // otherwise a successful search races its own teardown and emits a noisy
+  // "closed database" warning.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  let closeFailure: unknown;
+  try {
+    deps.memoryStore.close();
+  } catch (err) {
+    closeFailure = err;
+    log.error("subagent memory store close failed", {
+      id: instance.id,
+      ...boundedError(err),
+    });
+  }
+
+  const failure = combineFailures(
+    [executionFailure, closeFailure].filter((value) => value !== undefined),
+    "Subagent execution and cleanup failed",
+  );
+  if (failure !== null) {
     if (instance.status === "running") {
-      markErrored(instance, err);
-    }
-    throw err;
-  } finally {
-    try {
-      deps.memoryStore.close();
-    } catch (err) {
-      log.error("subagent memory store close failed", {
-        id: instance.id,
-        ...boundedError(err),
-      });
-    }
-  }
-}
-
-async function _runInstanceInner(
-  instance: SubagentInstance,
-  cwd: string,
-  deps: ExecutionDeps,
-): Promise<string> {
-  const { cfg, services, buildTools, memoryStore } = deps;
-
-  const resolved = resolveModel(cfg);
-  await services.modelRuntime.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
-
-  // Guard: if cancel() was called before we created the session, stop here.
-  const statusBeforeCreate: SubagentStatus = instance.status;
-  if (statusBeforeCreate === "cancelled") {
-    return "";
-  }
-
-  // Capture a fresh invocation-lifetime memory context from the inherited
-  // Surface authority and the child caller descriptor. The summary, search
-  // boundary, and write scope are frozen for this run.
-  const capture = await captureInvocationMemoryContext({
-    authority: instance.authority,
-    caller: instance.caller,
-    store: memoryStore,
-  });
-  instance.capture = capture;
-
-  // Frozen memory summary is injected into the subagent's system prompt at
-  // session creation (mirrors the main AgentRunner init path). The bounded
-  // per-turn relevant-memory aside is sent as a next-turn custom message.
-  const frozenSummary = capture.frozenSummary;
-
-  const resourceLoader = await buildResourceLoader({
-    home: cfg.goblinHome,
-    cwd,
-    role: instance.role,
-    definition: instance.definition,
-    inheritedSkills: instance.inheritance?.resolvedSkills ?? null,
-    settingsManager: services.settingsManager,
-    memorySystemPrompt: frozenSummary ?? undefined,
-  });
-
-  const { session } = await createAgentSession({
-    cwd,
-    agentDir: piAgentDir(cfg.goblinHome),
-    modelRuntime: services.modelRuntime,
-    settingsManager: services.settingsManager,
-    sessionManager: instance.sessionManager,
-    model: resolved.model,
-    thinkingLevel: resolved.thinkingLevel,
-    // Subagents receive no Telegram β tools; all UI flows through the
-    // parent's status callback.
-    // Pass rawStatusCallback to nested subagent to prevent prefix stacking.
-    customTools: [
-      ...buildTools(instance.depth, instance.id, capture, instance.inheritance, instance.rawStatusCallback),
-      // memory_search subsumes the old memory_read and memory_read_index tools.
-      // Persona gating: a named subagent searches its own persona scope; an
-      // anonymous subagent searches none.
-      createMemorySearchTool({
-        store: memoryStore,
-        context: capture,
-      }),
-      createMemoryWriteTool({ store: memoryStore, context: capture }),
-    ],
-    ...(resourceLoader ? { resourceLoader } : {}),
-  });
-
-  // Guard: if cancel() was called while we were setting up the session,
-  // tear down immediately instead of sending the prompt.
-  const statusAfterCreate: SubagentStatus = instance.status;
-  if (statusAfterCreate === "cancelled") {
-    try {
-      await session.abort();
-    } catch {
-      // best-effort
-    } finally {
       try {
-        session.dispose();
-      } catch {
-        // best-effort
+        markErrored(instance, failure);
+      } catch (persistenceFailure) {
+        if (persistenceFailure instanceof SubagentTerminalError && closeFailure === undefined) {
+          throw persistenceFailure;
+        }
+        throw combineFailures([failure, persistenceFailure], "Subagent terminal transition failed") ?? persistenceFailure;
       }
     }
-    return "";
+    throw failure;
   }
 
-  instance.session = session;
+  if (instance.status === "running") {
+    // A compliant host reserves completion synchronously at agent_settled.
+    // Keep the fallback for small injected hosts that simply resolve run().
+    instance.completionClaimed = true;
+    markCompleted(instance);
+  }
+  return text ?? "";
+}
 
-  // Resolve on agent_end, reject on errors during the run.
-  let finalText = "";
-  let resolveText: ((s: string) => void) | null = null;
-  let rejectErr: ((e: unknown) => void) | null = null;
-  const completion = new Promise<string>((res, rej) => {
-    resolveText = res;
-    rejectErr = rej;
-  });
+function combineFailures(failures: readonly unknown[], message: string): Error | null {
+  if (failures.length === 0) return null;
+  if (failures.length === 1) {
+    const failure = failures[0];
+    return failure instanceof Error ? failure : new Error(String(failure));
+  }
+  return new AggregateError(failures, message);
+}
 
-  instance.unsubscribe = session.subscribe((event) => {
-    try {
-      handleEvent(instance, event, {
-        onText: (delta) => {
-          finalText += delta;
-        },
-        onEnd: () => {
-          markCompleted(instance);
-          resolveText?.(finalText);
-        },
-        onError: (err) => {
-          try {
-            markErrored(instance, err);
-            rejectErr?.(err);
-          } catch (terminalErr) {
-            // markErrored combines execution and persistence failures after
-            // cleanup. Reject that combined diagnostic rather than allowing a
-            // throwing event callback to leave completion pending.
-            rejectErr?.(terminalErr);
-          }
-        },
-      });
-    } catch (err) {
-      log.error("subagent event handler threw", {
-        id: instance.id,
-        ...boundedError(err),
-      });
-      // Ensure the completion promise settles even if handleEvent or
-      // persistMeta throws — otherwise the parent's tool call hangs forever.
-      rejectErr?.(err);
-    }
-  });
-
-  // Fire the initial prompt. If this throws (e.g. provider auth error
-  // before any events stream), the outer .then in spawn() turns it into
-  // a rejected `handle.result`.
+async function runInvocation(
+  instance: SubagentInstance,
+  deps: ExecutionDeps,
+): Promise<string> {
+  const preparedExecution = instance.execution;
+  let runStarted = false;
+  let primaryFailure: unknown;
   try {
-    const relevantAside = await formatRelevantMemory({
-      store: memoryStore,
+    if (isCancelled(instance)) return "";
+
+    // Capture a fresh invocation-lifetime memory context from the inherited
+    // Surface authority and child caller descriptor. This remains coordinator
+    // work; the host receives only the resulting prompt material and tools.
+    const capture = await captureInvocationMemoryContext({
+      authority: instance.authority,
+      caller: instance.caller,
+      store: deps.memoryStore,
+    });
+    instance.capture = capture;
+    if (isCancelled(instance)) return "";
+
+    const relevantMemoryPrelude = await formatRelevantMemory({
+      store: deps.memoryStore,
       context: capture,
       promptText: instance.initialPrompt,
     });
-    if (relevantAside !== null) {
-      await session.sendCustomMessage(relevantAside, { deliverAs: "nextTurn" });
-    }
-    await session.sendUserMessage(instance.initialPrompt);
-  } catch (err) {
-    markErrored(instance, err);
-    throw err;
-  }
+    if (isCancelled(instance)) return "";
 
-  return completion;
+    const customTools = [
+      ...deps.buildTools(
+        instance.depth,
+        instance.id,
+        capture,
+        instance.inheritance,
+        instance.rawStatusCallback,
+      ),
+      // memory_search subsumes the old memory_read and memory_read_index tools.
+      // Persona gating is encoded by the captured caller/context.
+      createMemorySearchTool({
+        store: deps.memoryStore,
+        context: capture,
+      }),
+      createMemoryWriteTool({ store: deps.memoryStore, context: capture }),
+    ];
+    if (isCancelled(instance)) return "";
+
+    const execution = instance.execution;
+    if (execution === null) {
+      throw new Error(`Subagent '${instance.id}' has no prepared execution lease`);
+    }
+
+    // The status check and lease assignment are synchronous. A cancellation
+    // that wins before this point never creates Pi resources; a cancellation
+    // after it is handled by the host's stop fence.
+    if (isCancelled(instance)) return "";
+
+    runStarted = true;
+    try {
+      return await execution.run({
+        prompt: instance.initialPrompt,
+        systemPrompt: systemPromptFor(instance, capture),
+        relevantMemoryPrelude: relevantMemoryPrelude ?? undefined,
+        customTools,
+        onStatusUpdate: instance.onStatusUpdate,
+        onCompletionClaimed: () => {
+          if (instance.status === "running") instance.completionClaimed = true;
+        },
+      });
+    } catch (error) {
+      primaryFailure = error;
+      throw error;
+    }
+  } catch (error) {
+    primaryFailure ??= error;
+    throw error;
+  } finally {
+    if (preparedExecution !== null && instance.execution === preparedExecution) {
+      if (!runStarted) {
+        try {
+          await preparedExecution.stop();
+        } catch (stopFailure) {
+          throw combineFailures(
+            [primaryFailure, stopFailure].filter((value) => value !== undefined),
+            "Subagent execution cleanup failed",
+          ) ?? stopFailure;
+        }
+      }
+      instance.execution = null;
+    }
+  }
 }
 
-/**
- * Translate a single AgentSession event into status-callback updates
- * and lifecycle hooks. Centralised so the run loop stays linear.
- *
- * Constructs a fresh `TurnCallbacks` adapter per event (no retained state)
- * and delegates to `dispatchAgentEvent` from `src/agent/events.ts` — the
- * same shared dispatch goblin uses.
- */
-export function handleEvent(
+function isCancelled(instance: SubagentInstance): boolean {
+  return instance.status === "cancelled";
+}
+
+function systemPromptFor(
   instance: SubagentInstance,
-  event: AgentSessionEvent,
-  hooks: {
-    onText: (delta: string) => void;
-    onEnd: () => void;
-    onError: (err: unknown) => void;
-  },
-): void {
-  const adapter: TurnCallbacks = {
-    onTextDelta: (delta) => hooks.onText(delta),
-    onToolStart: (name) => instance.onStatusUpdate?.(`tool: ${name}`),
-    onToolEnd: (name, isError) => instance.onStatusUpdate?.(
-      isError ? `tool error: ${name}` : `tool ok: ${name}`,
-    ),
-    onStatusUpdate: (msg) => instance.onStatusUpdate?.(msg),
-    onMessageStart: () => {},
-    onMessageEnd: () => {},
-    onAgentEnd: () => hooks.onEnd(),
-  };
-  dispatchAgentEvent(event, adapter);
+  capture: CapturedMemoryContext,
+): string | undefined {
+  const sections: string[] = [];
+  if (instance.definition !== null) sections.push(instance.definition.agentsMd);
+  if (capture.frozenSummary) sections.push(capture.frozenSummary);
+  return sections.length > 0 ? sections.join("\n\n") : undefined;
 }
 
 /**
@@ -311,11 +248,6 @@ export function handleEvent(
  * tears down. If the durable transition fails, the persistence error is
  * raised after cleanup so callers cannot report a successful run with stale
  * metadata.
- *
- * Guard: does nothing if instance is already in a terminal state
- * (cancelled/error). This prevents race conditions where cancel() sets
- * status to 'cancelled' during await session.abort(), and then agent_end
- * arrives before cancel() resumes.
  */
 export function markCompleted(instance: SubagentInstance): void {
   if (instance.status !== "running") {
@@ -325,10 +257,10 @@ export function markCompleted(instance: SubagentInstance): void {
     });
     return;
   }
+  instance.completionClaimed = true;
   const patch = {
     status: "completed" as const,
     completedAt: new Date().toISOString(),
-    // Clear stale error from a previous lifecycle (e.g. after revival).
     errorMessage: undefined,
   };
   let persistenceFailed = false;
@@ -343,21 +275,12 @@ export function markCompleted(instance: SubagentInstance): void {
   instance.status = "completed";
   teardownInstance(instance);
   log.debug("subagent completed", { id: instance.id });
-  if (persistenceFailed) {
-    throw persistenceError;
-  }
+  if (persistenceFailed) throw persistenceError;
 }
 
 /**
- * Mark the subagent as errored. Always updates in-memory status and
- * tears down before reporting a durable-transition failure. If metadata
- * persistence fails, the returned execution failure is combined with that
- * persistence error so callers retain diagnostic evidence of both.
- *
- * Guard: does nothing if instance is already in a terminal state
- * (cancelled). This prevents race conditions where cancel() sets
- * status to 'cancelled' during await session.abort(), and then an error
- * event arrives.
+ * Mark the subagent as errored. The execution error remains the primary
+ * failure; a durable-transition failure is combined in SubagentTerminalError.
  */
 export function markErrored(instance: SubagentInstance, err: unknown): void {
   if (instance.status !== "running") {
@@ -382,28 +305,18 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
     log.error("failed to persist error meta", { id: instance.id, ...boundedError(persistErr) });
   }
   instance.status = "error";
+  instance.completionClaimed = false;
   teardownInstance(instance);
   log.warn("subagent errored", { id: instance.id, ...boundedError(errorMessage) });
-  if (persistenceFailed) {
-    throw new SubagentTerminalError(err, persistenceError);
-  }
+  if (persistenceFailed) throw new SubagentTerminalError(err, persistenceError);
 }
 
 /**
- * Clean up a terminal subagent: null out session and subscription.
- *
- * The instance stays in the runner's `activeSubagents` map so `list()`
- * can report recently-completed subagents. The heavyweight objects
- * (AgentSession, unsubscribe closure) are released. Prune stale entries
- * lazily on the next `spawn()` call.
+ * Drop the opaque invocation lease from the lifecycle record. Normal run
+ * completion and explicit cancellation have already asked the host to stop;
+ * this function only severs coordinator references and never reimplements Pi
+ * cleanup policy.
  */
 export function teardownInstance(instance: SubagentInstance): void {
-  instance.unsubscribe?.();
-  instance.unsubscribe = null;
-  try {
-    instance.session?.dispose();
-  } catch {
-    /* best-effort — session may already be disposed */
-  }
-  instance.session = null;
+  instance.execution = null;
 }

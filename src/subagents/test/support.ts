@@ -75,53 +75,93 @@ export const OTHER_PARENT_CAPTURE: CapturedMemoryContext = {
 
 type Listener = (event: Record<string, unknown>) => void;
 
+export interface TestSessionHolder {
+  listeners: Listener[];
+  inUse: boolean;
+  sendCustomMessage: ReturnType<typeof mock>;
+  sendUserMessage: ReturnType<typeof mock>;
+  abort: ReturnType<typeof mock>;
+  dispose: ReturnType<typeof mock>;
+  reset(): void;
+  emit(event: Record<string, unknown>): void;
+  complete(messages?: readonly unknown[], willRetry?: boolean): void;
+  readonly proxy: {
+    subscribe(listener: Listener): () => void;
+    sendCustomMessage(message: unknown, options?: unknown): Promise<void>;
+    sendUserMessage(text: string): Promise<void>;
+    abort(): Promise<void>;
+    dispose(): void;
+  };
+}
+
 const capturedCreateArgs: unknown[] = [];
 let loadedSkillPathsOverride: readonly string[] | null = null;
+const sessionHolders: TestSessionHolder[] = [];
 
 export function setLoadedSkillPathsOverride(paths: readonly string[] | null): void {
   loadedSkillPathsOverride = paths;
 }
 
-export const sessionHolder = {
-  listeners: [] as Listener[],
-  sendCustomMessage: mock(async (_msg: unknown, _opts?: unknown) => {}),
-  sendUserMessage: mock(async (_text: string) => {}),
-  abort: mock(async () => {}),
-  dispose: mock(() => {}),
+function makeSessionHolder(): TestSessionHolder {
+  const holder: TestSessionHolder = {
+    listeners: [],
+    inUse: false,
+    sendCustomMessage: mock(async (_msg: unknown, _opts?: unknown) => {}),
+    sendUserMessage: mock(async (_text: string) => {}),
+    abort: mock(async () => {}),
+    dispose: mock(() => {}),
 
-  reset(): void {
-    this.listeners = [];
-    this.sendCustomMessage = mock(async (_msg: unknown, _opts?: unknown) => {});
-    this.sendUserMessage = mock(async (_text: string) => {});
-    this.abort = mock(async () => {});
-    this.dispose = mock(() => {});
-  },
+    reset(): void {
+      this.listeners = [];
+      this.inUse = false;
+      this.sendCustomMessage = mock(async (_msg: unknown, _opts?: unknown) => {});
+      this.sendUserMessage = mock(async (_text: string) => {});
+      this.abort = mock(async () => {});
+      this.dispose = mock(() => {});
+    },
 
-  emit(event: Record<string, unknown>): void {
-    for (const listener of this.listeners) {
-      listener(event);
-    }
-  },
+    emit(event: Record<string, unknown>): void {
+      for (const listener of [...this.listeners]) listener(event);
+    },
 
-  get proxy() {
-    const holder = this;
-    return {
-      subscribe(listener: Listener) {
-        holder.listeners.push(listener);
-        return () => {
-          const index = holder.listeners.indexOf(listener);
-          if (index !== -1) {
-            holder.listeners.splice(index, 1);
+    complete(messages: readonly unknown[] = [], willRetry = false): void {
+      this.emit({ type: "agent_end", messages, willRetry });
+      if (!willRetry) this.emit({ type: "agent_settled" });
+    },
+
+    get proxy() {
+      return {
+        subscribe(listener: Listener) {
+          holder.listeners.push(listener);
+          return () => {
+            const index = holder.listeners.indexOf(listener);
+            if (index !== -1) holder.listeners.splice(index, 1);
+          };
+        },
+        sendCustomMessage: (msg: unknown, opts?: unknown) => holder.sendCustomMessage(msg, opts),
+        sendUserMessage: (text: string) => holder.sendUserMessage(text),
+        abort: () => holder.abort(),
+        dispose: () => {
+          try {
+            holder.dispose();
+          } finally {
+            holder.inUse = false;
           }
-        };
-      },
-      sendCustomMessage: (msg: unknown, opts?: unknown) => holder.sendCustomMessage(msg, opts),
-      sendUserMessage: (text: string) => holder.sendUserMessage(text),
-      abort: () => holder.abort(),
-      dispose: () => holder.dispose(),
-    };
-  },
-};
+        },
+      };
+    },
+  };
+  return holder;
+}
+
+export const sessionHolder = makeSessionHolder();
+sessionHolders.push(sessionHolder);
+
+export function getSessionHolder(index: number): TestSessionHolder {
+  const holder = sessionHolders[index];
+  if (holder === undefined) throw new Error(`No fake session holder at index ${index}`);
+  return holder;
+}
 
 export function clearCapturedCreateArgs(): void {
   capturedCreateArgs.length = 0;
@@ -134,6 +174,7 @@ export function getCapturedCreateArgs(): readonly unknown[] {
 export function resetPiMockState(): void {
   clearCapturedCreateArgs();
   loadedSkillPathsOverride = null;
+  sessionHolders.length = 1;
   sessionHolder.reset();
 }
 
@@ -177,7 +218,13 @@ export function standardPiMock() {
     },
     createAgentSession: async (opts: unknown) => {
       capturedCreateArgs.push(opts);
-      return { session: sessionHolder.proxy, extensionsResult: {} };
+      let holder = sessionHolders.find((candidate) => !candidate.inUse);
+      if (holder === undefined) {
+        holder = makeSessionHolder();
+        sessionHolders.push(holder);
+      }
+      holder.inUse = true;
+      return { session: holder.proxy, extensionsResult: {} };
     },
   };
 }

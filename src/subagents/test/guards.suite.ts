@@ -1,112 +1,90 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { genericSubagentMetaPath } from "../paths.ts";
 import { SubagentRunner } from "../mod.ts";
+import type { SubagentHost } from "../host.ts";
 import { markCompleted } from "../execution.ts";
 import type { SubagentInstance, SubagentMeta } from "../types.ts";
+import { FakeSubagentHost } from "./fake-host.ts";
 import {
   createTestHome,
   DEFAULT_AUTHORITY,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
-  installStandardPiMock,
   makeConfig,
-  resetPiMockState,
-  sessionHolder,
 } from "./support.ts";
-import { mock } from "bun:test";
 
 describe("SubagentRunner — cancel guards", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagent-cancel-guards-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
-    installStandardPiMock();
-  });
-
-  it("cancel before session init (race): runAgent checks status after creating session", async () => {
-    let resolveCreate!: () => void;
-    const createBlocked = new Promise<void>((resolve) => {
-      resolveCreate = resolve;
-    });
-
-    mock.module("@earendil-works/pi-coding-agent", () => ({
-      defineTool: <T>(definition: T) => definition,
-      ModelRuntime: { create: async () => ({ setRuntimeApiKey: async () => {} }) },
-      SettingsManager: { inMemory: () => ({}) },
-      SessionManager: {
-        create: (_cwd: string, dir: string) => {
-          mkdirSync(dir, { recursive: true });
-          return { __stub: true };
-        },
-        open: () => ({ __stub: true }),
-      },
-      DefaultResourceLoader: class {
-        options: Record<string, unknown>;
-
-        constructor(options: Record<string, unknown>) {
-          this.options = options;
-        }
-
-        async reload(): Promise<void> {}
-
-        getSkills(): { skills: Array<{ filePath: string }>; diagnostics: [] } {
-          const paths = (this.options.additionalSkillPaths ?? []) as string[];
-          return { skills: paths.map((filePath) => ({ filePath })), diagnostics: [] };
-        }
-      },
-      createAgentSession: async (opts: unknown) => {
-        void opts;
-        await createBlocked;
-        return { session: sessionHolder.proxy, extensionsResult: {} };
-      },
-    }));
-
-    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
-    await flush();
-
-    await runner.cancel(handle.id);
-    expect(runner.list()[0]?.status).toBe("cancelled");
-
-    resolveCreate();
-    await flush();
-    await flush();
-
-    expect(sessionHolder.sendUserMessage).not.toHaveBeenCalled();
   });
 
   it("cancel on completed subagent is a no-op (doesn't overwrite status)", async () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
     expect(runner.list()[0]?.status).toBe("completed");
 
     await runner.cancel(handle.id);
     expect(runner.list()[0]?.status).toBe("completed");
-    expect(sessionHolder.abort).not.toHaveBeenCalled();
+    expect(host.latest().stopCalls).toBe(0);
   });
 
   it("cancel on errored subagent is a no-op", async () => {
-    sessionHolder.sendUserMessage = mock(async () => {
-      throw new Error("boom");
-    });
     const handle = await runner.spawn({ prompt: "trigger", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    await flush();
+    host.latest().fail(new Error("boom"));
     await expect(handle.result).rejects.toThrow("boom");
 
     expect(runner.list()[0]?.status).toBe("error");
     await runner.cancel(handle.id);
     expect(runner.list()[0]?.status).toBe("error");
+  });
+
+  it("cancel during coordinator setup phase prevents execution.run()", async () => {
+    // Block execution.run() before it records the invocation. After flush(),
+    // the coordinator has completed its async memory/tool setup and is stuck
+    // at the runBarrier inside FakeSubagentExecution.run() — the invocation
+    // has NOT been accepted yet. Cancelling here exercises the pre-run()
+    // isCancelled() window in runInvocation: cancel claims "cancelled"
+    // synchronously, stop() sets `stopped`, and when the barrier releases,
+    // run() sees `stopped` and rejects without ever recording the invocation.
+    let releaseRun!: () => void;
+    host.runBarrier = new Promise<void>((resolve) => { releaseRun = resolve; });
+
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
+    await flush();
+
+    // The coordinator has reached execution.run() but it is blocked on the
+    // barrier — no invocation has been recorded.
+    expect(host.latest().invocations.length).toBe(0);
+
+    const cancelPromise = runner.cancel(handle.id);
+    // cancel() synchronously claims "cancelled" before awaiting stop.
+    expect(runner.list()[0]?.status).toBe("cancelled");
+
+    // Release the run barrier so execution.run() can proceed; it will see
+    // `stopped` and reject, unblocking the coordinator settlement that
+    // cancel() is waiting on via collectSettlement.
+    releaseRun();
+    await cancelPromise;
+
+    expect(runner.list()[0]?.status).toBe("cancelled");
+    expect(host.latest().invocations.length).toBe(0);
+    expect(host.latest().stopCalls).toBe(1);
+    await handle.result.catch(() => {});
   });
 });
 
@@ -116,51 +94,26 @@ describe("SubagentRunner — startup error handling", () => {
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagent-startup-err-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
   });
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
-    installStandardPiMock();
   });
 
-  it("marks meta as error when createAgentSession throws", async () => {
-    mock.module("@earendil-works/pi-coding-agent", () => ({
-      defineTool: <T>(definition: T) => definition,
-      ModelRuntime: { create: async () => ({ setRuntimeApiKey: async () => {} }) },
-      SettingsManager: { inMemory: () => ({}) },
-      SessionManager: {
-        create: (_cwd: string, dir: string) => {
-          mkdirSync(dir, { recursive: true });
-          return { __stub: true };
+  it("marks meta as error when execution startup throws", async () => {
+    const startupError = new Error("session-creation-failed");
+    const failingHost: SubagentHost = {
+      prepare: () => ({
+        run: async () => {
+          throw startupError;
         },
-        open: () => ({ __stub: true }),
-      },
-      DefaultResourceLoader: class {
-        options: Record<string, unknown>;
-
-        constructor(options: Record<string, unknown>) {
-          this.options = options;
-        }
-
-        async reload(): Promise<void> {}
-
-        getSkills(): { skills: Array<{ filePath: string }>; diagnostics: [] } {
-          const paths = (this.options.additionalSkillPaths ?? []) as string[];
-          return { skills: paths.map((filePath) => ({ filePath })), diagnostics: [] };
-        }
-      },
-      createAgentSession: async () => {
-        throw new Error("session-creation-failed");
-      },
-    }));
+        stop: async () => {},
+      }),
+    };
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, failingHost);
 
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
-    await flush();
-    await flush();
-
-    await expect(handle.result).rejects.toThrow("session-creation-failed");
+    await expect(handle.result).rejects.toBe(startupError);
 
     const meta = JSON.parse(
       readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
@@ -173,11 +126,12 @@ describe("SubagentRunner — startup error handling", () => {
 describe("SubagentRunner — double-cancel race guard", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-cancel-race-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -190,34 +144,42 @@ describe("SubagentRunner — double-cancel race guard", () => {
 
     await Promise.all([runner.cancel(handle.id), runner.cancel(handle.id)]);
 
-    expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+    expect(host.latest().stopCalls).toBe(1);
     expect(runner.list()[0]?.status).toBe("cancelled");
   });
 });
 
-describe("SubagentRunner — cancel vs agent_end race", () => {
+describe("SubagentRunner — cancel vs completion race", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-cancel-race-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("agent_end arriving during cancel() does not overwrite cancelled status", async () => {
+  it("completion arriving during cancel() does not overwrite cancelled status", async () => {
     const handle = await runner.spawn({ prompt: "test", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    sessionHolder.abort = mock(async () => {
-      sessionHolder.emit({ type: "agent_end", messages: [] });
-    });
-
-    await runner.cancel(handle.id);
+    // Hold stop() in-flight so complete() can race with it. The barrier must
+    // be set on the execution directly — the host copies it during prepare(),
+    // which already ran inside spawn(). With the deferred settled check,
+    // complete() genuinely resolves the completion promise while stop() is
+    // still pending — the coordinator receives "late" but markCompleted is
+    // skipped because instance.status is already "cancelled".
+    let resolveStop!: () => void;
+    host.latest().stopBarrier = new Promise<void>((resolve) => { resolveStop = resolve; });
+    const cancelPromise = runner.cancel(handle.id);
+    host.latest().complete("late");
+    resolveStop();
+    await cancelPromise;
 
     expect(runner.list().find((entry) => entry.id === handle.id)?.status).toBe("cancelled");
     const meta = JSON.parse(
@@ -226,27 +188,41 @@ describe("SubagentRunner — cancel vs agent_end race", () => {
     expect(meta.status).toBe("cancelled");
   });
 
-  it("error event arriving during cancel() does not overwrite cancelled status", async () => {
+  it("failure arriving during cancel() does not overwrite cancelled status", async () => {
     const handle = await runner.spawn({ prompt: "test", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    sessionHolder.abort = mock(async () => {
-      sessionHolder.emit({ type: "agent_end", messages: [] });
-    });
+    // Same stopBarrier interleaving as the completion race. The barrier is set
+    // on the execution directly (the host copies it during prepare(), which
+    // already ran). fail() genuinely rejects the completion promise while
+    // stop() is still pending. The coordinator receives the error but
+    // markErrored is skipped because instance.status is already "cancelled".
+    // The late failure propagates through collectSettlement and is surfaced
+    // by cancel() — but the lifecycle status remains "cancelled" regardless.
+    let resolveStop!: () => void;
+    host.latest().stopBarrier = new Promise<void>((resolve) => { resolveStop = resolve; });
+    const cancelPromise = runner.cancel(handle.id);
+    host.latest().fail(new Error("late failure"));
+    resolveStop();
 
-    await runner.cancel(handle.id);
+    // cancel() surfaces the late failure (it is not a StoppedError, so
+    // collectSettlement does not filter it), but the lifecycle guard
+    // prevents markErrored from overwriting the "cancelled" status.
+    await expect(cancelPromise).rejects.toThrow("late failure");
     expect(runner.list().find((entry) => entry.id === handle.id)?.status).toBe("cancelled");
+    await handle.result.catch(() => {});
   });
 });
 
 describe("SubagentRunner — parent status guard", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-parent-guard-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {

@@ -3,25 +3,42 @@
  *
  * The runtime is split across cohesive modules:
  *
- *   - `runner.ts`        — `SubagentRunner` class (lifecycle orchestrator)
- *   - `execution.ts`     — drives an instance to a terminal state
- *   - `meta.ts`          — `meta.json` persistence + session-file lookup
- *   - `named-agents.ts`  — named-agent loading + ResourceLoader construction
+ *   - `runner.ts`        — `SubagentRunner` compatibility lifecycle owner
+ *   - `execution.ts`     — coordinator-side memory/tool/terminal transitions
+ *   - `host.ts`          — opaque Pi execution lease and Pi resource mechanics
+ *   - `meta.ts`          — `meta.json` persistence + exact history lookup
+ *   - `named-agents.ts`  — loader-free named-agent definition loading
  *   - `paths.ts`         — `~/goblin/...` path helpers
- *   - `types.ts`         — shared type definitions
+ *   - `types.ts`         — shared lifecycle definitions
  *
  * Current behavior is exercised by `mod.test.ts` and `test/*.suite.ts`.
- * Historical design: `specs/changes/archive/2026-04-26-subagent-runtime/`.
  */
 
-export { SubagentRunner, type SubagentToolFactory } from "./runner.ts";
+export {
+  SubagentRunner,
+  type SubagentMemoryStoreFactory,
+  type SubagentToolFactory,
+} from "./runner.ts";
+export {
+  PiSubagentHost,
+  SubagentExecutionStoppedError,
+  SubagentExecutionQuiescenceError,
+  type PiSubagentHostOptions,
+  type SubagentHost,
+  type SubagentExecution,
+  type SubagentCustomMessage,
+  type SubagentInvocation,
+  type SubagentPreparation,
+  type SubagentHistory,
+  type SubagentResourcePreparation,
+} from "./host.ts";
 
-// Convenience re-export so callers can pull everything from one entry point.
 export type {
   GenericSubagentInheritance,
   NamedAgentDefinition,
   SpawnOptions,
   SubagentHandle,
+  SubagentHistoryTarget,
   SubagentInfo,
   SubagentInstance,
   SubagentMeta,

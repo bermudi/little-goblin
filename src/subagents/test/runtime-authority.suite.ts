@@ -15,20 +15,15 @@ import { runtimeSessionWithPreferences } from "../../sessions/mod.ts";
 import type { SessionState } from "../../sessions/types.ts";
 import { surfaceId, topicSurface, type Surface } from "../../surface.ts";
 import { SubagentRunner, type SubagentInstance } from "../mod.ts";
+import { FakeSubagentHost } from "./fake-host.ts";
 import { createReviveSubagentTool, createSpawnSubagentTool } from "../tool.ts";
 import { genericSubagentDir } from "../paths.ts";
 import {
   createTestHome,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
-  getCapturedCreateArgs,
-  installStandardPiMock,
   makeConfig,
-  resetPiMockState,
-  sessionHolder,
 } from "./support.ts";
-
-installStandardPiMock();
 
 const SURFACE_X: Surface = topicSurface("supergroup", -100123, 1);
 const SURFACE_Y: Surface = topicSurface("supergroup", -100123, 2);
@@ -104,18 +99,7 @@ function makeFakeAgentRunner(opts: ConstructorParameters<typeof AgentRunner>[0])
     get modelName() {
       return "poe/test-model";
     },
-    async prompt() {
-      return new Promise<void>((resolve) => {
-        const listener = (event: Record<string, unknown>) => {
-          if (event.type === "agent_end") {
-            const index = sessionHolder.listeners.indexOf(listener as (event: Record<string, unknown>) => void);
-            if (index !== -1) sessionHolder.listeners.splice(index, 1);
-            resolve();
-          }
-        };
-        sessionHolder.listeners.push(listener as (event: Record<string, unknown>) => void);
-      });
-    },
+    async prompt() {},
     async abort() {},
     async dispose() {},
     async followUp() {},
@@ -132,6 +116,7 @@ interface RuntimeFixture {
   lifecycle: ConversationLifecycle;
   dispatcher: TurnDispatcher;
   subagentRunner: SubagentRunner;
+  subagentHost: FakeSubagentHost;
   memoryStore: MemoryStore;
 }
 
@@ -148,10 +133,11 @@ function createFixture(): RuntimeFixture {
     getSkillPolicy: () => DEFAULT_SKILL_POLICY,
   };
 
+  const subagentHost = new FakeSubagentHost();
   const subagentRunner = new SubagentRunner(cfg, (subRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate) => [
     createSpawnSubagentTool(subRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate),
     createReviveSubagentTool(subRunner, parentCapture, inheritedSkills, onStatusUpdate),
-  ]);
+  ], undefined, subagentHost);
 
   let dispatcher: TurnDispatcher | undefined;
   const lifecycle = createConversationLifecycle(home, createTurnDispatcherRuntimeHost(() => {
@@ -178,7 +164,7 @@ function createFixture(): RuntimeFixture {
     surfaceRuntimeAuthority: lifecycle,
   });
 
-  return { home, lifecycle, dispatcher, subagentRunner, memoryStore };
+  return { home, lifecycle, dispatcher, subagentRunner, subagentHost, memoryStore };
 }
 
 async function makeSession(lifecycle: ConversationLifecycle, surface: Surface, home: string): Promise<SessionState> {
@@ -192,7 +178,6 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
   beforeEach(async () => {
     fx = createFixture();
     await seedScopes(fx.home);
-    resetPiMockState();
   });
 
   afterEach(() => {
@@ -223,9 +208,9 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     const childXInstance = getInstance(fx.subagentRunner, childX.id);
     expect(childXInstance?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
 
-    const childXOpts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const childXTools = childXOpts.customTools as unknown[];
-    const childXSearch = findTool(childXTools, "memory_search");
+    const childXTools = fx.subagentHost.latest().invocations[0]?.customTools;
+    if (childXTools === undefined) throw new Error("No invocation captured for childX");
+    const childXSearch = findTool(childXTools as unknown[], "memory_search");
     expect(childXSearch).toBeDefined();
     const childXResult = jsonOf<{ entries: Array<{ text: string }> }>(
       await childXSearch!.execute("ms-child-x", { scope: "active" }, undefined, undefined, {} as never),
@@ -235,10 +220,10 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
 
     // The spawn_subagent tool is wired in the subagent's tool list and closes
     // over the same Surface X capture.
-    const childXSpawn = findTool(childXTools, "spawn_subagent");
+    const childXSpawn = findTool(childXTools as unknown[], "spawn_subagent");
     expect(childXSpawn).toBeDefined();
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    fx.subagentHost.latest().complete("done");
     await childX.result;
   });
 
@@ -267,8 +252,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     const childXInstance = getInstance(fx.subagentRunner, childX.id);
     expect(childXInstance?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
 
-    const childXOpts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const childXTools = childXOpts.customTools as unknown[];
+    const childXTools = fx.subagentHost.latest().invocations[0]?.customTools as unknown as unknown[];
     const childXSearch = findTool(childXTools, "memory_search");
     const childXResult = jsonOf<{ entries: Array<{ text: string }> }>(
       await childXSearch!.execute("ms-child-x", { scope: "active" }, undefined, undefined, {} as never),
@@ -328,7 +312,6 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     expect(mainYResult.entries.map((e) => e.text)).not.toContain("surface-x fact");
 
     // A new subagent from the replacement runtime captures Surface Y.
-    resetPiMockState();
     const childY = await fx.subagentRunner.spawn({
       prompt: "child y",
       authority: captureY.authority,
@@ -339,8 +322,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     const childYInstance = getInstance(fx.subagentRunner, childY.id);
     expect(childYInstance?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_Y));
 
-    const childYOpts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const childYTools = childYOpts.customTools as unknown[];
+    const childYTools = fx.subagentHost.latest().invocations[0]?.customTools as unknown as unknown[];
     const childYSearch = findTool(childYTools, "memory_search");
     const childYResult = jsonOf<{ entries: Array<{ text: string }> }>(
       await childYSearch!.execute("ms-child-y", { scope: "active" }, undefined, undefined, {} as never),
@@ -348,7 +330,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     expect(childYResult.entries.map((e) => e.text)).toContain("surface-y fact");
     expect(childYResult.entries.map((e) => e.text)).not.toContain("surface-x fact");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    fx.subagentHost.latest().complete("done");
     await childY.result;
   });
 
@@ -365,7 +347,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    fx.subagentHost.latest().complete("done");
     await childX.result;
     ensureSessionFile(fx.home, childX.id);
 
@@ -410,7 +392,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    fx.subagentHost.latest().complete("done");
     await childX.result;
 
     // Corrupt revival id: subagentRunner.revive fails before onAttached, the

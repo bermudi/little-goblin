@@ -4,14 +4,15 @@
  *
  * Owns:
  *   - the in-memory map of active instances (keyed by id)
- *   - lazy initialisation of the shared pi services
+ *   - the deployment-lifetime execution host reference
  *   - concurrency guards (disposed flag, in-flight revive set)
  *   - the public surface: `spawn`, `revive`, `cancel`, `list`, `dispose`
  *
  * Does NOT own (delegated to siblings):
  *   - persistence → `meta.ts`
- *   - named-agent loading + ResourceLoader construction → `named-agents.ts`
- *   - the run-to-completion engine → `execution.ts`
+ *   - named-agent definition loading → `named-agents.ts`
+ *   - Pi resource mechanics → `host.ts`
+ *   - the run-to-completion coordinator → `execution.ts`
  *
  * Current behavior is exercised by `mod.test.ts` and `test/*.suite.ts`.
  * Historical design: `specs/changes/archive/2026-04-26-subagent-runtime/`.
@@ -20,8 +21,6 @@
 import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { boundedError, log } from "../log.ts";
 import {
@@ -30,7 +29,15 @@ import {
   type CapturedMemoryContext,
   type SurfaceMemoryCaller,
 } from "../memory/mod.ts";
-import { createPiServices, type PiServices } from "../pi-host.ts";
+import {
+  PiSubagentHost,
+  SubagentExecutionStoppedError,
+  waitWithTimeout,
+  type SubagentExecution,
+  type SubagentHost,
+  type SubagentInvocation,
+  type SubagentPreparation,
+} from "./host.ts";
 import { environmentCwd } from "../sessions/environment.ts";
 import { topicScopeDir } from "../memory/paths.ts";
 import {
@@ -47,11 +54,8 @@ import {
   persistMetaPatch,
   writeMetaAtomic,
 } from "./meta.ts";
-import {
-  loadNamedAgent,
-  NamedAgentNotFoundError,
-  VALID_NAME_RE,
-} from "./named-agents.ts";
+import { loadNamedAgent, NamedAgentNotFoundError } from "./named-agents.ts";
+import { VALID_NAME_RE } from "./validation.ts";
 import {
   genericSubagentDir,
   genericSubagentMetaPath,
@@ -85,7 +89,12 @@ export type SubagentToolFactory = (
   parentCapture: CapturedMemoryContext,
   inheritance: GenericSubagentInheritance | null,
   onStatusUpdate?: (message: string) => void,
-) => ToolDefinition[];
+) => SubagentInvocation["customTools"];
+
+export type SubagentMemoryStoreFactory = (
+  home: string,
+  embeddingProvider?: EmbeddingProvider,
+) => MemoryStore;
 
 function genericExecutionCwd(
   inheritance: GenericSubagentInheritance | null,
@@ -95,6 +104,108 @@ function genericExecutionCwd(
     throw new Error("generic subagent requires inherited execution authority");
   }
   return environmentCwd(inheritance.executionEnvironment, home);
+}
+
+function preparationFor(
+  cwd: string,
+  history: SubagentInstance["history"],
+  role: SubagentRole,
+  definition: NamedAgentDefinition | null,
+  inheritance: GenericSubagentInheritance | null,
+): SubagentPreparation {
+  if (role === "named") {
+    if (definition === null) throw new Error("Named subagent is missing its loaded definition");
+    return {
+      cwd,
+      history,
+      resource: { kind: "named", skillsDir: definition.skillsDir },
+    };
+  }
+  if (inheritance === null) {
+    throw new Error("Generic subagent requires inherited execution and skill authority");
+  }
+  return {
+    cwd,
+    history,
+    resource: {
+      kind: "generic",
+      skillPaths: inheritance.resolvedSkills.skills.map((skill) => skill.filePath),
+    },
+  };
+}
+
+async function stopPreparedExecution(execution: SubagentExecution, id: string): Promise<void> {
+  try {
+    await execution.stop();
+  } catch (err) {
+    log.error("prepared subagent execution cleanup failed", { id, ...boundedError(err) });
+    throw err;
+  }
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  promise.catch(() => {});
+  return { promise, resolve, reject };
+}
+
+function combineFailures(failures: readonly unknown[], message: string): Error | null {
+  if (failures.length === 0) return null;
+  if (failures.length === 1) {
+    const failure = failures[0];
+    return failure instanceof Error ? failure : new Error(String(failure));
+  }
+  return new AggregateError(failures, message);
+}
+
+/**
+ * Bounds the wait for a completion-claimed subagent's final result during
+ * cancellation/disposal. The Pi completion cleanup path
+ * (`finishTerminalSuccess` → `cleanup(false)` → `session.dispose()`) has no
+ * internal timeout protection (unlike the abort path), so an unbounded
+ * `await instance.result` could block the parent agent or the entire session.
+ * Mirrors the host's default quiescence timeout magnitude.
+ */
+const CANCEL_COMPLETION_TIMEOUT_MS = 10_000;
+
+function stopInstanceExecution(instance: SubagentInstance): Promise<void> | null {
+  if (instance.stopPromise !== null) return instance.stopPromise;
+  const execution = instance.execution;
+  if (execution === null) return null;
+  instance.execution = null;
+  let stopPromise: Promise<void>;
+  try {
+    stopPromise = execution.stop();
+  } catch (error) {
+    stopPromise = Promise.reject(error);
+  }
+  instance.stopPromise = stopPromise;
+  stopPromise.catch(() => {});
+  return stopPromise;
+}
+
+async function collectSettlement(
+  instance: SubagentInstance,
+  failures: unknown[],
+): Promise<void> {
+  try {
+    await instance.settlement;
+  } catch (error) {
+    // A stopped execution is the expected consequence of cancellation. Any
+    // other rejection is coordinator cleanup that the caller must see.
+    if (!(error instanceof SubagentExecutionStoppedError)) failures.push(error);
+  }
 }
 
 function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
@@ -127,21 +238,35 @@ export class SubagentRunner {
   /** Goblin home directory — exposed for dynamic tool descriptions. */
   readonly goblinHome: string;
   private readonly activeSubagents: Map<string, SubagentInstance> = new Map();
-  private services: PiServices | null = null;
+  private host: SubagentHost | null;
   /** Produces tools (e.g. spawn_subagent) injected into each spawned subagent. */
   private readonly toolFactory: SubagentToolFactory | null;
   /** Shared embedding provider for memory stores created per subagent run. */
   private readonly embeddingProvider?: EmbeddingProvider;
+  private readonly memoryStoreFactory: SubagentMemoryStoreFactory;
   /** Prevents new spawns after dispose(). */
   private disposed = false;
   /** Guards against concurrent revive() of the same subagent ID. */
   private readonly revivesInProgress: Set<string> = new Set();
 
-  constructor(cfg: Config, toolFactory?: SubagentToolFactory, embeddingProvider?: EmbeddingProvider) {
+  constructor(
+    cfg: Config,
+    toolFactory?: SubagentToolFactory,
+    embeddingProvider?: EmbeddingProvider,
+    host?: SubagentHost,
+    memoryStoreFactory?: SubagentMemoryStoreFactory,
+  ) {
     this.cfg = cfg;
     this.goblinHome = cfg.goblinHome;
     this.toolFactory = toolFactory ?? null;
     this.embeddingProvider = embeddingProvider;
+    this.memoryStoreFactory = memoryStoreFactory ?? ((home, provider) => provider
+      ? new MemoryStore(home, undefined, { embeddings: provider })
+      : new MemoryStore(home));
+    // Lazily construct the production host on first invocation. Besides
+    // preserving deployment-lifetime caching, this keeps late test-module
+    // substitution from freezing vendor constructors at runner creation.
+    this.host = host ?? null;
   }
 
   /**
@@ -154,12 +279,12 @@ export class SubagentRunner {
    * Named (`name` provided): loads
    * `$GOBLIN_HOME/workspace/agents/<name>/AGENTS.md` (required), creates an
    * `instances/<id>/` child for persistence, and builds a
-   * `DefaultResourceLoader` that uses the AGENTS.md content as the system
+   * Pi resource preparation that uses the AGENTS.md content as the system
    * prompt and pins skill discovery to the agent's own `.agents/skills/`
    * catalog — strictly isolated from Goblin and caller skills.
    *
    * Returns immediately with a handle; `handle.result` resolves when the
-   * subagent's `agent_end` event fires (or rejects on error).
+   * subagent reaches Pi's fully settled state (or rejects on error).
    */
   async spawn(options: SpawnOptions): Promise<SubagentHandle> {
     if (this.disposed) {
@@ -236,18 +361,21 @@ export class SubagentRunner {
       metaPath = genericSubagentMetaPath(this.cfg.goblinHome, id);
     }
 
-    // Create the instance directory up-front so meta.json + pi's session
+    // Create the instance directory up-front so meta.json + history
     // file land side-by-side.
     mkdirSync(dir, { recursive: true });
 
-    // Prepare the execution CWD and persisted session manager before creating
-    // the authoritative running record. A setup failure may leave an empty
-    // directory, but it must not leave metadata claiming a runnable instance.
+    // Prepare the execution CWD before creating the authoritative running
+    // record. The Pi host prepares the exact new history target; model
+    // activation remains deferred until the lease is run.
     const cwd =
       role === "named"
         ? namedAgentDir(this.cfg.goblinHome, options.name as string)
         : genericExecutionCwd(inheritance, this.cfg.goblinHome);
-    const sessionManager = SessionManager.create(cwd, dir);
+    const history = { kind: "create" as const, sessionDir: dir };
+    const preparedExecution = this.getHost().prepare(
+      preparationFor(cwd, history, role, definition, inheritance),
+    );
 
     const meta: SubagentMeta = {
       id,
@@ -259,16 +387,21 @@ export class SubagentRunner {
       createdAt: spawnedAt,
       status: "running",
     };
-    writeMetaAtomic(metaPath, meta);
+    try {
+      writeMetaAtomic(metaPath, meta);
+    } catch (err) {
+      let stopFailure: unknown;
+      try {
+        await stopPreparedExecution(preparedExecution, id);
+      } catch (cleanupError) {
+        stopFailure = cleanupError;
+      }
+      throw combineFailures([err, stopFailure].filter((value) => value !== undefined), "Subagent spawn cleanup failed") ?? err;
+    }
 
-    // The result promise is wired during runInstance; capture the resolver
-    // pair here so the instance carries it before execution kicks off.
-    let resolveResult!: (text: string) => void;
-    let rejectResult!: (err: unknown) => void;
-    const result = new Promise<string>((res, rej) => {
-      resolveResult = res;
-      rejectResult = rej;
-    });
+    // Install both public and internal settlement before execution starts.
+    const result = deferred<string>();
+    const settlement = deferred<void>();
 
     const instance: SubagentInstance = {
       id,
@@ -282,18 +415,23 @@ export class SubagentRunner {
       spawnedBy,
       dir,
       metaPath,
-      sessionManager,
+      history,
       initialPrompt: options.prompt,
       onStatusUpdate: prefixStatusCallback(displayName ?? id.slice(0, 8), options.onStatusUpdate),
       // Store raw callback for nested spawning (prevents prefix stacking)
       rawStatusCallback: options.onStatusUpdate,
       definition,
       inheritance,
-      session: null,
-      unsubscribe: null,
-      result,
-      resolveResult,
-      rejectResult,
+      execution: preparedExecution,
+      completionClaimed: false,
+      settlement: settlement.promise,
+      resolveSettlement: () => settlement.resolve(undefined),
+      rejectSettlement: settlement.reject,
+      stopPromise: null,
+      settlementStarted: false,
+      result: result.promise,
+      resolveResult: result.resolve,
+      rejectResult: result.reject,
     };
     this.activeSubagents.set(id, instance);
 
@@ -309,33 +447,18 @@ export class SubagentRunner {
     // immediately so callers can choose between awaiting `handle.result` and
     // tracking via `list()`. Errors during startup land on `result` (the
     // tool handler awaits it and surfaces failures as tool errors).
-    this.executionDeps()
-      .catch((err) => {
-        markErrored(instance, err);
-        throw err;
-      })
-      .then(
-        (deps) =>
-          runInstance(instance, cwd, deps).then(
-            (text) => resolveResult(text),
-            (err) => rejectResult(err),
-          ),
-        rejectResult,
-      );
+    this.startInstance(instance);
 
-    // Attach a noop catch to prevent unhandled-rejection noise when callers
-    // delay observing `result` (e.g. polling via `list()` first). The
-    // rejection is still observable by any later `.catch` / `await`.
-    result.catch(() => {});
-
-    return { id, status: "running", result };
+    // The deferred helper already observes internal rejections; callers still
+    // receive the ordinary public result promise.
+    return { id, status: "running", result: result.promise };
   }
 
   /**
    * Resume a persisted subagent and send it a follow-up prompt.
    *
-   * Loads the subagent's `meta.json` to locate its session directory, opens
-   * the existing `.jsonl` session file via pi's `SessionManager.open()`,
+   * Loads the subagent's `meta.json` to locate its history directory and
+   * selects the existing `.jsonl` file without rediscovering it in the host,
    * reconstructs a `SubagentInstance`, and runs the new prompt through
    * `runInstance()` — reusing all execution wiring (status callbacks, error
    * handling, meta persistence).
@@ -449,14 +572,9 @@ export class SubagentRunner {
         ? namedAgentDir(this.cfg.goblinHome, meta.name)
         : genericExecutionCwd(inheritance, this.cfg.goblinHome);
 
-    // Open the existing session so conversation history is preserved.
-    let sessionManager: SessionManager;
-    try {
-      sessionManager = SessionManager.open(sessionFile, dir, cwd);
-    } catch (err) {
-      this.revivesInProgress.delete(id);
-      throw err;
-    }
+    // Preserve the exact lexical history target selected by meta.ts. The Pi
+    // host opens exactly this file and does not rediscover a latest history.
+    const history = { kind: "open" as const, sessionDir: dir, sessionFile };
 
     // Rebuild the named-agent definition if the subagent is named.
     let definition: NamedAgentDefinition | null = null;
@@ -472,16 +590,26 @@ export class SubagentRunner {
       }
     }
 
-    // Wire result promise the same way spawn() does.
-    let resolveResult!: (text: string) => void;
-    let rejectResult!: (err: unknown) => void;
-    const result = new Promise<string>((res, rej) => {
-      resolveResult = res;
-      rejectResult = rej;
-    });
-    // Attach before any await below: cancellation during attachment may reject
-    // the result before the execution pipeline is started.
-    result.catch(() => {});
+    let preparedExecution: SubagentExecution;
+    try {
+      preparedExecution = this.getHost().prepare(
+        preparationFor(
+          cwd,
+          history,
+          meta.role,
+          definition,
+          meta.role === "generic" ? inheritance : null,
+        ),
+      );
+    } catch (err) {
+      this.revivesInProgress.delete(id);
+      throw err;
+    }
+
+    // Install both public and internal settlement before attachment can race
+    // cancellation or startup.
+    const result = deferred<string>();
+    const settlement = deferred<void>();
 
     const instance: SubagentInstance = {
       id,
@@ -495,18 +623,23 @@ export class SubagentRunner {
       spawnedBy: meta.spawnedBy ?? null,
       dir,
       metaPath: join(dir, "meta.json"),
-      sessionManager,
+      history,
       initialPrompt: prompt,
       onStatusUpdate: prefixStatusCallback(meta.name ?? id.slice(0, 8), onStatusUpdate),
       // Store raw callback for nested spawning (prevents prefix stacking)
       rawStatusCallback: onStatusUpdate,
       definition,
       inheritance: meta.role === "generic" ? inheritance : null,
-      session: null,
-      unsubscribe: null,
-      result,
-      resolveResult,
-      rejectResult,
+      execution: preparedExecution,
+      completionClaimed: false,
+      settlement: settlement.promise,
+      resolveSettlement: () => settlement.resolve(undefined),
+      rejectSettlement: settlement.reject,
+      stopPromise: null,
+      settlementStarted: false,
+      result: result.promise,
+      resolveResult: result.resolve,
+      rejectResult: result.reject,
     };
     this.activeSubagents.set(id, instance);
     if (onAttached) {
@@ -515,8 +648,16 @@ export class SubagentRunner {
       } catch (err) {
         this.activeSubagents.delete(id);
         this.revivesInProgress.delete(id);
-        rejectResult(err);
-        throw err;
+        const stopFailures: unknown[] = [];
+        await this.stopAndCollect(instance, stopFailures);
+        const stopFailure = stopFailures[0];
+        const failure = combineFailures(
+          [err, stopFailure].filter((value) => value !== undefined),
+          "Subagent revive cleanup failed",
+        ) ?? err;
+        result.reject(failure);
+        settlement.reject(failure);
+        throw failure;
       }
     }
 
@@ -524,7 +665,17 @@ export class SubagentRunner {
     // It owns the terminal state, so do not resurrect this instance on disk or
     // launch a fresh execution after it has been cancelled.
     if (instance.status !== "running") {
-      const completed = result.finally(() => {
+      let stopFailure: unknown;
+      if (instance.stopPromise !== null) {
+        try {
+          await instance.stopPromise;
+        } catch (error) {
+          stopFailure = error;
+        }
+      }
+      if (stopFailure === undefined) settlement.resolve(undefined);
+      else settlement.reject(stopFailure);
+      const completed = result.promise.finally(() => {
         this.revivesInProgress.delete(id);
       });
       completed.catch(() => {});
@@ -539,30 +690,26 @@ export class SubagentRunner {
     } catch (err) {
       this.activeSubagents.delete(id);
       this.revivesInProgress.delete(id);
-      rejectResult(err);
-      throw err;
+      const stopFailures: unknown[] = [];
+      await this.stopAndCollect(instance, stopFailures);
+      const stopFailure = stopFailures[0];
+      const failure = combineFailures(
+        [err, stopFailure].filter((value) => value !== undefined),
+        "Subagent revive cleanup failed",
+      ) ?? err;
+      result.reject(failure);
+      settlement.reject(failure);
+      throw failure;
     }
 
     log.debug("subagent revived", { id, role: meta.role, name: meta.name });
 
     // Kick off execution — same pipeline as spawn().
-    this.executionDeps()
-      .catch((err) => {
-        markErrored(instance, err);
-        throw err;
-      })
-      .then(
-        (deps) =>
-          runInstance(instance, cwd, deps).then(
-            (text) => resolveResult(text),
-            (err) => rejectResult(err),
-          ),
-        rejectResult,
-      );
+    this.startInstance(instance);
     // Resolve the revive only after its bookkeeping (revivesInProgress) is
     // cleared, so a subsequent revive() of the same id observes a clean
     // slate. (The await in callers thus sees the guard already removed.)
-    const completed = result.finally(() => {
+    const completed = result.promise.finally(() => {
       this.revivesInProgress.delete(id);
     });
     completed.catch(() => {});
@@ -588,91 +735,57 @@ export class SubagentRunner {
   }
 
   /**
-   * Cancel an active subagent.
-   *
-   * Calls `session.abort()` on the underlying `AgentSession` and marks the
-   * subagent as cancelled in both in-memory state and `meta.json`.
-   *
-   * Throws "Subagent not found" if the id is not in the active map.
-   * No-op if the subagent is already in a terminal state.
+   * Cancel an active subagent. The runner owns the policy and metadata
+   * transition; the host receives only the Pi stop mechanism.
    */
   async cancel(id: string): Promise<void> {
     const instance = this.activeSubagents.get(id);
     if (instance === undefined) {
       throw new Error("Subagent not found");
     }
+    if (instance.status !== "running") return;
 
-    // No-op on terminal states — don't overwrite the audit trail.
-    // Synchronous check + set prevents double-cancel races.
-    if (instance.status !== "running") {
+    // A host success reservation wins over cancellation, but the operation
+    // still waits for final cleanup/metadata outcome so it cannot report a
+    // false quiescent success.
+    if (instance.completionClaimed) {
+      try {
+        await waitWithTimeout(instance.result, CANCEL_COMPLETION_TIMEOUT_MS, () =>
+          new Error("Subagent completion wait timed out during cancel"));
+      } catch (err) {
+        const failure = combineFailures([err], "Subagent cancellation failed");
+        if (failure !== null) throw failure;
+      }
       return;
     }
-    // Mark cancelled synchronously before any await so concurrent
-    // cancel() calls see a non-running status and exit early.
+
+    // Claim cancellation synchronously so a terminal Pi event cannot win
+    // after this point. Capture the lease before awaiting; no coordinator
+    // path may replace it after the lifecycle claim.
     instance.status = "cancelled";
     instance.rejectResult(new Error("Subagent was cancelled"));
-
-    // Capture session/unsubscribe before any await so a concurrent runInstance
-    // cannot reassign them mid-cleanup.
-    const session = instance.session;
-    const unsubscribe = instance.unsubscribe;
-    let persistenceFailed = false;
-    let persistenceError: unknown;
+    const failures: unknown[] = [];
+    await this.stopAndCollect(instance, failures, "subagent execution stop failed during cancel");
 
     try {
-      if (session !== null) {
-        try {
-          await session.abort();
-        } catch {
-          // abort() may throw if the session is in a bad state.
-          // We still want to update status and clean up.
-          log.debug("session.abort() threw during cancel", { id, error: "(swallowed)" });
-        }
-      }
-
-      try {
-        persistMetaPatch(instance, {
-          status: "cancelled",
-          completedAt: new Date().toISOString(),
-        });
-      } catch (err) {
-        persistenceFailed = true;
-        persistenceError = err;
-        log.error("cancel persistMeta failed — disk state may be stale", {
-          id,
-          ...boundedError(err),
-        });
-      }
-
-      try {
-        unsubscribe?.();
-      } catch {
-        // best-effort
-      } finally {
-        instance.unsubscribe = null;
-      }
-
-      try {
-        teardownInstance(instance);
-      } catch (err) {
-        log.error("cancel teardown failed", { id, ...boundedError(err) });
-      }
+      persistMetaPatch(instance, {
+        status: "cancelled",
+        completedAt: new Date().toISOString(),
+      });
     } catch (err) {
-      // teardown failed — still try to clean up.
-      try {
-        unsubscribe?.();
-      } catch {
-        // best-effort
-      }
-      instance.unsubscribe = null;
-      instance.session = null;
-      log.error("cancel cleanup failed", { id, ...boundedError(err) });
+      failures.push(err);
+      log.error("cancel persistMeta failed — disk state may be stale", {
+        id,
+        ...boundedError(err),
+      });
     }
 
+    if (instance.settlementStarted) await collectSettlement(instance, failures);
+    else instance.resolveSettlement();
+    teardownInstance(instance);
     log.debug("subagent cancelled", { id });
-    if (persistenceFailed) {
-      throw persistenceError;
-    }
+    const failure = combineFailures(failures, "Subagent cancellation failed");
+    if (failure !== null) throw failure;
   }
 
   /**
@@ -705,36 +818,37 @@ export class SubagentRunner {
       }
     }
 
-    // 2. Mark every non-terminal instance as cancelled synchronously before any await.
+    // 2. Mark every cancellable instance synchronously before any await.
     const targets: SubagentInstance[] = [];
+    const completionClaims: SubagentInstance[] = [];
     for (const id of queue) {
       const instance = this.activeSubagents.get(id);
       if (instance !== undefined && instance.status === "running") {
-        instance.status = "cancelled";
-        instance.rejectResult(new Error("Subagent was cancelled"));
-        targets.push(instance);
+        if (instance.completionClaimed) {
+          completionClaims.push(instance);
+        } else {
+          instance.status = "cancelled";
+          instance.rejectResult(new Error("Subagent was cancelled"));
+          targets.push(instance);
+        }
       }
     }
 
     // 3. Clean up each targeted instance concurrently. Start all aborts in
     //    parallel so a parent that is blocked on a child result can be
     //    unblocked when the child's abort settles.
-    const persistenceFailures: unknown[] = [];
-    await Promise.all(
-      targets.map(async (instance) => {
-        // Capture session/unsubscribe before any await so a concurrent runInstance
-        // cannot reassign them mid-cleanup.
-        const session = instance.session;
-        const unsubscribe = instance.unsubscribe;
-
-        if (session !== null) {
-          try {
-            await session.abort();
-          } catch {
-            // abort() may throw if the session is in a bad state.
-            // We still want to persist and clean up.
-          }
+    const failures: unknown[] = [];
+    await Promise.all([
+      ...completionClaims.map(async (instance) => {
+        try {
+          await waitWithTimeout(instance.result, CANCEL_COMPLETION_TIMEOUT_MS, () =>
+            new Error("Subagent completion wait timed out during cascade cancel"));
+        } catch (err) {
+          failures.push(err);
         }
+      }),
+      ...targets.map(async (instance) => {
+        await this.stopAndCollect(instance, failures, "cancelBySession execution stop failed");
 
         try {
           persistMetaPatch(instance, {
@@ -742,51 +856,38 @@ export class SubagentRunner {
             completedAt: new Date().toISOString(),
           });
         } catch (err) {
-          persistenceFailures.push(err);
+          failures.push(err);
           log.error("cancelBySession persistMeta failed", {
             id: instance.id,
             ...boundedError(err),
           });
         }
 
-        try {
-          unsubscribe?.();
-        } catch {
-          // best-effort
-        } finally {
-          instance.unsubscribe = null;
-        }
-
-        try {
-          teardownInstance(instance);
-        } catch (err) {
-          log.error("cancelBySession teardown failed", {
-            id: instance.id,
-            ...boundedError(err),
-          });
-        }
+        if (instance.settlementStarted) await collectSettlement(instance, failures);
+        else instance.resolveSettlement();
+        teardownInstance(instance);
       }),
-    );
+    ]);
 
-    if (targets.length > 0) {
+    if (targets.length > 0 || completionClaims.length > 0) {
       log.debug("cascade-cancel: subagents cancelled", {
         count: targets.length,
+        completionClaims: completionClaims.length,
         sessionId,
       });
     }
-    if (persistenceFailures.length > 0) {
-      throw persistenceFailures[0];
-    }
+    const failure = combineFailures(failures, "Subagent cascade cancellation failed");
+    if (failure !== null) throw failure;
   }
 
   /**
    * Gracefully shut down all active subagents.
-   * Aborts running ones, disposes their sessions, and clears the map.
+   * Stops running invocation leases and clears the map.
    */
   async dispose(): Promise<void> {
     this.disposed = true;
     const ids = [...this.activeSubagents.keys()];
-    const persistenceFailures: unknown[] = [];
+    const failures: unknown[] = [];
     await Promise.all(
       ids.map(async (id) => {
         const instance = this.activeSubagents.get(id);
@@ -794,56 +895,69 @@ export class SubagentRunner {
         // Only cancel instances that are still running. Completed/errored/
         // cancelled instances should keep their existing status — don't
         // overwrite a successful completion with "cancelled".
-        if (instance.status === "running") {
+        if (instance.status === "running" && instance.completionClaimed) {
+          try {
+            await waitWithTimeout(instance.result, CANCEL_COMPLETION_TIMEOUT_MS, () =>
+              new Error("Subagent completion wait timed out during dispose"));
+          } catch (err) {
+            failures.push(err);
+          }
+        } else if (instance.status === "running") {
           // Mark cancelled before any await so a concurrent runInstance sees
-          // the non-running status and does not start/assign a new session.
+          // the non-running status and does not activate a new lease.
           instance.status = "cancelled";
           instance.rejectResult(new Error("Subagent was cancelled"));
-          // Capture session/unsubscribe before any await so a concurrent
-          // runInstance cannot reassign them mid-cleanup.
-          const session = instance.session;
-          const unsubscribe = instance.unsubscribe;
-          try {
-            if (session !== null) {
-              await session.abort();
-            }
-          } catch {
-            /* best-effort */
-          }
-          try {
-            unsubscribe?.();
-          } catch {
-            /* best-effort */
-          } finally {
-            instance.unsubscribe = null;
-          }
+          await this.stopAndCollect(instance, failures, "dispose execution stop failed");
           try {
             persistMetaPatch(instance, {
               status: "cancelled",
               completedAt: new Date().toISOString(),
             });
           } catch (err) {
-            persistenceFailures.push(err);
+            failures.push(err);
             log.error("dispose persistMeta failed", {
               id,
               ...boundedError(err),
             });
           }
+          if (instance.settlementStarted) await collectSettlement(instance, failures);
+          else instance.resolveSettlement();
+        } else if (instance.status === "cancelled") {
+          if (instance.settlementStarted) await collectSettlement(instance, failures);
+          else instance.resolveSettlement();
         }
-        try {
-          teardownInstance(instance);
-        } catch (err) {
-          log.error("dispose teardown failed", {
-            id,
-            ...boundedError(err),
-          });
-        }
+        teardownInstance(instance);
       }),
     );
     this.activeSubagents.clear();
     log.debug("SubagentRunner disposed", { count: ids.length });
-    if (persistenceFailures.length > 0) {
-      throw persistenceFailures[0];
+    const failure = combineFailures(failures, "Subagent disposal failed");
+    if (failure !== null) throw failure;
+  }
+
+  /**
+   * Stop an instance's execution and collect any failure into `failures`.
+   *
+   * Encapsulates the repeated stop-and-collect pattern: call
+   * `stopInstanceExecution`, await the resulting promise (if any), and push
+   * any rejection into the caller's `failures` accumulator. When `logLabel`
+   * is provided, a rejection is also logged at error level with the instance
+   * id — preserving the per-call-site logging of the inlined originals.
+   */
+  private async stopAndCollect(
+    instance: SubagentInstance,
+    failures: unknown[],
+    logLabel?: string,
+  ): Promise<void> {
+    const stopPromise = stopInstanceExecution(instance);
+    if (stopPromise === null) return;
+    try {
+      await stopPromise;
+    } catch (err) {
+      failures.push(err);
+      if (logLabel !== undefined) {
+        log.error(logLabel, { id: instance.id, ...boundedError(err) });
+      }
     }
   }
 
@@ -871,32 +985,68 @@ export class SubagentRunner {
     }
   }
 
-  /**
-   * Lazily create the shared pi services (auth, model registry, settings).
-   * All subagents within a `SubagentRunner` share these — only the
-   * `SessionManager` is per-subagent so each has its own conversation file.
-   *
-   * Lazy-init is safe without synchronization because Node.js' single-
-   * threaded event loop serializes code between async ticks.
-   */
-  private async getPiServices(): Promise<PiServices> {
-    return (this.services ??= await createPiServices(this.cfg.goblinHome));
+  private getHost(): SubagentHost {
+    return this.host ?? (this.host = new PiSubagentHost(this.cfg));
   }
 
   /**
-   * Bundle the dependencies execution.ts needs. Per-call so the toolFactory
-   * always sees the current `this`.
+   * Bundle coordinator-owned execution dependencies. Pi infrastructure is
+   * deployment-lifetime state inside `SubagentHost`; each invocation gets its
+   * own memory store and tool closures here.
    */
+  private startInstance(instance: SubagentInstance): void {
+    instance.settlementStarted = true;
+    void this.executionDeps().then(
+      (deps) => {
+        void runInstance(instance, deps).then(
+          (text) => {
+            instance.resolveResult(text);
+            instance.resolveSettlement();
+          },
+          (err: unknown) => {
+            instance.rejectResult(err);
+            instance.rejectSettlement(err);
+          },
+        );
+      },
+      (err: unknown) => {
+        void this.failStartup(instance, err).then(
+          () => {
+            const failure = new Error("Subagent startup ended without a terminal failure");
+            instance.rejectResult(failure);
+            instance.rejectSettlement(failure);
+          },
+          (failure: unknown) => {
+            instance.rejectResult(failure);
+            instance.rejectSettlement(failure);
+          },
+        );
+      },
+    );
+  }
+
+  private async failStartup(instance: SubagentInstance, err: unknown): Promise<never> {
+    const failures: unknown[] = [err];
+    await this.stopAndCollect(instance, failures);
+    const failure = combineFailures(failures, "Subagent startup failed") ?? err;
+
+    if (instance.status === "running") {
+      try {
+        markErrored(instance, failure);
+      } catch (terminalError) {
+        throw combineFailures([failure, terminalError], "Subagent startup transition failed") ?? terminalError;
+      }
+    }
+    throw failure;
+  }
+
   private async executionDeps(): Promise<ExecutionDeps> {
-    const services = await this.getPiServices();
-    const memoryStore = this.embeddingProvider
-      ? new MemoryStore(this.cfg.goblinHome, undefined, { embeddings: this.embeddingProvider })
-      : new MemoryStore(this.cfg.goblinHome);
+    const memoryStore = this.memoryStoreFactory(this.cfg.goblinHome, this.embeddingProvider);
     return {
-      cfg: this.cfg,
-      services,
       buildTools: (depth, sessionId, parentCapture, inheritance, onStatusUpdate) =>
-        this.toolFactory ? this.toolFactory(this, depth, sessionId, parentCapture, inheritance, onStatusUpdate) : [],
+        this.toolFactory
+          ? this.toolFactory(this, depth, sessionId, parentCapture, inheritance, onStatusUpdate)
+          : [],
       memoryStore,
     };
   }

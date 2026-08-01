@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubagentRunner } from "../mod.ts";
+import { FakeSubagentHost } from "./fake-host.ts";
 import {
   genericSubagentDir,
   namedAgentAgentsMdPath,
@@ -13,23 +14,18 @@ import {
   DEFAULT_PARENT_CAPTURE,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
-  installStandardPiMock,
   makeConfig,
-  resetPiMockState,
-  sessionHolder,
 } from "./support.ts";
-
-// Install mock before any tests run
-installStandardPiMock();
 
 describe("spawn_subagent tool", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagent-tool-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -58,13 +54,7 @@ describe("spawn_subagent tool", () => {
     );
     await flush();
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "text_delta", delta: "Analysis complete." },
-    });
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("Analysis complete.");
 
     const result = await execPromise;
     expect(result.content).toEqual([{ type: "text", text: "Analysis complete." }]);
@@ -91,7 +81,7 @@ describe("spawn_subagent tool", () => {
     expect(runner.list()[0]?.name).toBe("researcher");
     expect(runner.list()[0]?.role).toBe("named");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await execPromise;
   });
 
@@ -119,11 +109,12 @@ describe("spawn_subagent tool", () => {
 describe("revive_subagent tool", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-revive-tool-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -145,7 +136,7 @@ describe("revive_subagent tool", () => {
 
     const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
 
     const dir = genericSubagentDir(tmp, handle.id);
@@ -160,9 +151,9 @@ describe("revive_subagent tool", () => {
     );
     await flush();
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     const result = await revivePromise;
-    expect(result.content).toEqual([{ type: "text", text: "" }]);
+    expect(result.content).toEqual([{ type: "text", text: "done" }]);
   });
 
   it("does not fabricate an empty manifest for a named caller reviving generic history", async () => {
@@ -172,7 +163,7 @@ describe("revive_subagent tool", () => {
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
 
     const { createReviveSubagentTool } = await import("../tool.ts");
@@ -195,11 +186,12 @@ describe("revive_subagent tool", () => {
 describe("spawn_subagent tool — timeout", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-tool-timeout-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -240,13 +232,7 @@ describe("spawn_subagent tool — timeout", () => {
     );
     await flush();
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "text_delta", delta: "Done!" },
-    });
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("Done!");
 
     const result = await execPromise;
     expect(result.content).toEqual([{ type: "text", text: "Done!" }]);
@@ -256,11 +242,12 @@ describe("spawn_subagent tool — timeout", () => {
 describe("revive_subagent tool — timeout", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-revive-tool-timeout-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -270,7 +257,7 @@ describe("revive_subagent tool — timeout", () => {
   async function spawnAndComplete(): Promise<string> {
     const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
 
     const dir = genericSubagentDir(tmp, handle.id);
@@ -283,7 +270,6 @@ describe("revive_subagent tool — timeout", () => {
 
   it("times out and cancels the revived subagent after timeoutMs", async () => {
     const id = await spawnAndComplete();
-    resetPiMockState();
 
     const { createReviveSubagentTool } = await import("../tool.ts");
     const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, undefined, 50);
@@ -307,7 +293,6 @@ describe("revive_subagent tool — timeout", () => {
 
   it("completes normally if revived subagent finishes before timeout", async () => {
     const id = await spawnAndComplete();
-    resetPiMockState();
 
     const { createReviveSubagentTool } = await import("../tool.ts");
     const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, undefined, 10000);
@@ -321,13 +306,7 @@ describe("revive_subagent tool — timeout", () => {
     );
     await flush();
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "text_delta", delta: "Revived!" },
-    });
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("Revived!");
 
     const result = await execPromise;
     expect(result.content).toEqual([{ type: "text", text: "Revived!" }]);

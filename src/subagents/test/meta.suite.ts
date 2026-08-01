@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubagentRunner } from "../mod.ts";
+import { FakeSubagentHost } from "./fake-host.ts";
 import {
   loadSubagentMeta,
   parseSubagentMeta,
@@ -22,13 +23,8 @@ import {
   DEFAULT_PARENT_CAPTURE,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
-  installStandardPiMock,
   makeConfig,
-  resetPiMockState,
-  sessionHolder,
 } from "./support.ts";
-
-installStandardPiMock();
 
 function validMeta(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -55,11 +51,12 @@ function writeSession(path: string): void {
 describe("Subagent metadata boundary", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagent-meta-boundary-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -209,7 +206,6 @@ describe("Subagent metadata boundary", () => {
     await expect(runner.cancel(missing.id)).rejects.toThrow(/metadata file is missing/);
     expect(existsSync(genericSubagentMetaPath(tmp, missing.id))).toBe(false);
 
-    resetPiMockState();
     const corrupt = await runner.spawn({
       prompt: "corrupt metadata",
       authority: DEFAULT_AUTHORITY,
@@ -221,7 +217,7 @@ describe("Subagent metadata boundary", () => {
 
     await expect(runner.cancel(corrupt.id)).rejects.toThrow(/malformed JSON/);
     expect(readFileSync(corruptPath, "utf-8")).toBe("not-json");
-    expect(sessionHolder.abort).toHaveBeenCalled();
+    expect(host.latest().stopCalls).toBe(1);
   });
 
   it("rejects status-dependent metadata that has no error detail", async () => {

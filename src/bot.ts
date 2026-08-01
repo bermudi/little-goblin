@@ -11,7 +11,7 @@ import { registerCommands } from "./commands/mod.ts";
 import { SessionManager, type ConversationState } from "./sessions/mod.ts";
 import { guestSurface, surfaceId, type Surface } from "./surface.ts";
 import { AgentRunner } from "./agent/mod.ts";
-import { SubagentRunner, type SubagentToolFactory } from "./subagents/mod.ts";
+import { SubagentRunner, PiSubagentHost, type SubagentToolFactory } from "./subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "./subagents/tool.ts";
 import { configureVoice } from "./voice.ts";
 import { ScheduleStore } from "./scheduler/store.ts";
@@ -160,7 +160,13 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
   const runners = new Map<string, AgentRunner>();
   const memoryEngine = options.memoryEngine ?? new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
   const memoryStore = memoryEngine.readStore;
-  const subagentRunner = new SubagentRunner(cfg, subagentToolFactory, memoryEngine.embeddingProvider);
+  const subagentHost = new PiSubagentHost(cfg);
+  const subagentRunner = new SubagentRunner(
+    cfg,
+    subagentToolFactory,
+    memoryEngine.embeddingProvider,
+    subagentHost,
+  );
   // One shared schedule store: `/schedule` mutates it from the command path,
   // and the scheduler loop reads/claims from it. Constructed here so both
   // intake and the loop (wired in index.ts) share a single instance.

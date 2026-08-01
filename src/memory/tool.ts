@@ -3,7 +3,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import type { MemoryStore, StoreResult } from "./store.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
 import { activeMemoryScopeFor, type ActiveScope, type MemoryScope } from "./scope.ts";
-import { VALID_NAME_RE } from "../subagents/named-agents.ts";
+import { VALID_NAME_RE } from "../subagents/validation.ts";
 import { checkMemorySafety } from "./safety.ts";
 import { searchMemoryEntries, type MemorySearchOutput } from "./search.ts";
 import { stripEntryMetadata } from "./entry.ts";

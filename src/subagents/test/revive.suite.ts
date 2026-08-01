@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SubagentRunner } from "../mod.ts";
+import { FakeSubagentHost } from "./fake-host.ts";
 import { topicScopeDir } from "../../memory/paths.ts";
 import { workspacePath } from "../../workspace/paths.ts";
 import type { SubagentMeta } from "../types.ts";
@@ -19,24 +20,18 @@ import {
   DEFAULT_PARENT_CAPTURE,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
-  getCapturedCreateArgs,
-  installStandardPiMock,
   makeConfig,
-  resetPiMockState,
-  sessionHolder,
 } from "./support.ts";
-
-// Install mock before any tests run
-installStandardPiMock();
 
 describe("SubagentRunner.revive", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagents-revive-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -47,13 +42,7 @@ describe("SubagentRunner.revive", () => {
     const handle = await runner.spawn({ prompt: "first turn", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "text_delta", delta: "first response" },
-    });
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("first response");
     await handle.result;
 
     const dir = genericSubagentDir(tmp, handle.id);
@@ -149,25 +138,17 @@ describe("SubagentRunner.revive", () => {
   it("revives a generic subagent and sends the new prompt", async () => {
     const id = await spawnGeneric();
 
-    resetPiMockState();
     const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "second turn");
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    expect(opts.cwd).toBe(workspacePath(tmp));
-    expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
+    expect(host.preparations.at(-1)?.cwd).toBe(workspacePath(tmp));
+    expect(host.latest().invocations[0]?.customTools.map((tool) => tool.name)).toEqual([
       "memory_search",
       "memory_write",
     ]);
-    expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("second turn");
+    expect(host.latest().invocations[0]?.prompt).toBe("second turn");
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "text_delta", delta: "second response" },
-    });
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("second response");
 
     await expect(resultPromise).resolves.toBe("second response");
   });
@@ -178,14 +159,13 @@ describe("SubagentRunner.revive", () => {
     let meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, id), "utf-8")) as SubagentMeta;
     expect(meta.status).toBe("completed");
 
-    resetPiMockState();
     const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "follow-up");
     await flush();
 
     meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, id), "utf-8")) as SubagentMeta;
     expect(meta.status).toBe("running");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await resultPromise;
 
     meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, id), "utf-8")) as SubagentMeta;
@@ -195,7 +175,6 @@ describe("SubagentRunner.revive", () => {
   it("tracks the revived subagent in list()", async () => {
     const id = await spawnGeneric();
 
-    resetPiMockState();
     const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "check");
     resultPromise.catch(() => {});
     await flush();
@@ -203,7 +182,7 @@ describe("SubagentRunner.revive", () => {
     const entry = runner.list().find((info) => info.id === id);
     expect(entry?.status).toBe("running");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await resultPromise;
   });
 
@@ -219,7 +198,7 @@ describe("SubagentRunner.revive", () => {
     });
     await flush();
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
 
     const instDir = namedAgentInstanceDir(tmp, "researcher", handle.id);
@@ -228,43 +207,38 @@ describe("SubagentRunner.revive", () => {
     }
     writeFileSync(join(instDir, "2026-01-01T00-00-00_fake-session.jsonl"), "");
 
-    resetPiMockState();
     const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "more research");
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    expect(opts.cwd).toBe(namedAgentDir(tmp, "researcher"));
-    const loader = opts.resourceLoader as { options: Record<string, unknown> };
-    expect(loader.options.systemPrompt).toBe(agentsMd);
-    expect(loader.options.noContextFiles).toBe(true);
-    expect(loader.options.noSkills).toBe(true);
-    expect(loader.options.additionalSkillPaths).toEqual([namedAgentSkillsDir(tmp, "researcher")]);
-    expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("more research");
+    expect(host.preparations.at(-1)?.cwd).toBe(namedAgentDir(tmp, "researcher"));
+    expect(host.preparations.at(-1)?.resource).toEqual({ kind: "named", skillsDir: namedAgentSkillsDir(tmp, "researcher") });
+    expect(host.latest().invocations[0]?.systemPrompt).toBe(agentsMd);
+    expect(host.latest().invocations[0]?.prompt).toBe("more research");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("more");
     await resultPromise;
   });
 
   it("rejects revive result when the revived subagent errors", async () => {
     const id = await spawnGeneric();
 
-    resetPiMockState();
-    sessionHolder.sendUserMessage = mock(async () => {
-      throw new Error("revive-fail");
-    });
+    const result = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "bad");
+    await flush();
+    host.latest().fail(new Error("revive-fail"));
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "bad")).rejects.toThrow("revive-fail");
+    await expect(result).rejects.toThrow("revive-fail");
   });
 });
 
 describe("SubagentRunner — revive guards", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagent-revive-guards-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -281,17 +255,13 @@ describe("SubagentRunner — revive guards", () => {
   });
 
   it("clears stale errorMessage and completedAt on revival", async () => {
-    sessionHolder.sendUserMessage = mock(async () => {
-      throw new Error("first-fail");
-    });
     const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    await flush();
+    host.latest().fail(new Error("first-fail"));
     await expect(handle.result).rejects.toThrow("first-fail");
 
     writeFileSync(join(genericSubagentDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
 
-    resetPiMockState();
     const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "second");
     await flush();
 
@@ -301,7 +271,7 @@ describe("SubagentRunner — revive guards", () => {
     expect(meta.status).toBe("running");
     expect(meta.errorMessage).toBeUndefined();
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await resultPromise;
 
     meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8")) as SubagentMeta;
@@ -313,11 +283,12 @@ describe("SubagentRunner — revive guards", () => {
 describe("SubagentRunner — corrupted meta.json", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-corrupted-meta-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -364,15 +335,9 @@ describe("SubagentRunner — corrupted meta.json", () => {
 
     const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "second try");
     await flush();
-    expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("second try");
+    expect(host.latest().invocations[0]?.prompt).toBe("second try");
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "text_delta", delta: "retry response" },
-    });
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("retry response");
 
     await expect(resultPromise).resolves.toBe("retry response");
   });
@@ -381,11 +346,12 @@ describe("SubagentRunner — corrupted meta.json", () => {
 describe("SubagentRunner — double-revive race guard", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-revive-race-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -395,7 +361,7 @@ describe("SubagentRunner — double-revive race guard", () => {
   async function spawnAndComplete(): Promise<string> {
     const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
     const dir = genericSubagentDir(tmp, handle.id);
     if (!existsSync(dir)) {
@@ -407,46 +373,41 @@ describe("SubagentRunner — double-revive race guard", () => {
 
   it("throws 'Subagent revive already in progress' on concurrent revive of same ID", async () => {
     const id = await spawnAndComplete();
-    resetPiMockState();
 
     const firstRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 2");
     await flush();
 
     await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 2b")).rejects.toThrow("Subagent revive already in progress");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await firstRevive;
   });
 
   it("clears revivesInProgress after revive completes", async () => {
     const id = await spawnAndComplete();
-    resetPiMockState();
 
     const firstRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 2");
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await firstRevive;
 
-    resetPiMockState();
     const secondRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 3");
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await secondRevive;
   });
 
   it("clears revivesInProgress after revive errors", async () => {
     const id = await spawnAndComplete();
-    resetPiMockState();
-    sessionHolder.sendUserMessage = mock(async () => {
-      throw new Error("revive-err");
-    });
+    const failedRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "bad");
+    await flush();
+    host.latest().fail(new Error("revive-err"));
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "bad")).rejects.toThrow("revive-err");
+    await expect(failedRevive).rejects.toThrow("revive-err");
 
-    resetPiMockState();
     const secondRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 3");
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await secondRevive;
   });
 
@@ -460,11 +421,10 @@ describe("SubagentRunner — double-revive race guard", () => {
     ).rejects.toThrow("attachment failed");
     expect(runner.list().find((info) => info.id === id)).toBeUndefined();
 
-    resetPiMockState();
     const retry = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "retry");
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
-    await expect(retry).resolves.toBe("");
+    host.latest().complete("done");
+    await expect(retry).resolves.toBe("done");
   });
 
   it("does not restart a subagent cancelled during asynchronous attachment", async () => {
@@ -487,18 +447,20 @@ describe("SubagentRunner — double-revive race guard", () => {
     releaseAttachment();
 
     await expect(revival).rejects.toThrow("Subagent was cancelled");
-    expect(sessionHolder.sendUserMessage).not.toHaveBeenCalledWith("will be cancelled");
+    expect(host.executions).toHaveLength(2);
+    expect(host.latest().invocations).toHaveLength(0);
   });
 });
 
 describe("SubagentRunner — revive with deleted AGENTS.md", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-revive-deleted-agents-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -511,7 +473,7 @@ describe("SubagentRunner — revive with deleted AGENTS.md", () => {
 
     const handle = await runner.spawn({ prompt: "go", name: "researcher", authority: DEFAULT_AUTHORITY });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
 
     const instDir = namedAgentInstanceDir(tmp, "researcher", handle.id);
@@ -529,7 +491,6 @@ describe("SubagentRunner — revive rejects after dispose", () => {
   beforeEach(() => {
     tmp = createTestHome("goblin-revive-disposed-");
     runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
   });
 
   afterEach(() => {

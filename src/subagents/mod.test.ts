@@ -1,15 +1,10 @@
-/**
- * Subagent test bootstrap.
- *
- * The pi module mock is process-global, so we install it once here and then
- * load focused suites under `test/`. This keeps navigation sane without
- * reintroducing cross-file mock ordering hazards.
- */
-
+// The pi module mock is process-global; install it once in this bootstrap.
 import { installStandardPiMock } from "./test/support.ts";
 
 installStandardPiMock();
 
+await import("./test/host.suite.ts");
+await import("./test/fake-lifecycle.suite.ts");
 await import("./test/spawn.suite.ts");
 await import("./test/revive.suite.ts");
 await import("./test/lifecycle.suite.ts");

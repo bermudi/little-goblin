@@ -6,25 +6,19 @@ import { memoryDir } from "../../memory/paths.ts";
 import { activeMemoryScopeFor } from "../../memory/scope.ts";
 import { surfaceId, topicSurface } from "../../surface.ts";
 import { SubagentRunner, type SubagentToolFactory } from "../mod.ts";
+import { FakeSubagentHost } from "./fake-host.ts";
 import { genericSubagentDir, namedAgentAgentsMdPath, namedAgentDir } from "../paths.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "../tool.ts";
 import type { SubagentInstance } from "../types.ts";
 import {
-  clearCapturedCreateArgs,
   createTestHome,
   DEFAULT_AUTHORITY,
   DEFAULT_PARENT_CAPTURE,
   DEFAULT_SCOPE,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
-  getCapturedCreateArgs,
-  installStandardPiMock,
   makeConfig,
-  resetPiMockState,
-  sessionHolder,
 } from "./support.ts";
-
-installStandardPiMock();
 
 function getInstance(runner: SubagentRunner, id: string): SubagentInstance | undefined {
   return (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(id);
@@ -82,11 +76,12 @@ function findSearch(
 describe("SubagentRunner — Surface-derived invocation authority", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-surface-authority-");
-    resetPiMockState();
-    runner = new SubagentRunner(makeConfig(tmp));
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -101,7 +96,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     const firstInstance = getInstance(runner, firstHandle.id);
     expect(firstInstance?.authority).toEqual(PARENT_AUTHORITY);
 
-    const firstSearch = findSearch((getCapturedCreateArgs()[0] as Record<string, unknown>).customTools as unknown[]);
+    const firstSearch = findSearch(host.latest().invocations[0]?.customTools as unknown as unknown[]);
     expect(firstSearch).toBeDefined();
     const firstResult = jsonOf<{ entries: Array<{ text: string }> }>(
       await firstSearch!.execute("ms-1", { scope: "active" }, undefined, undefined, {} as never),
@@ -109,17 +104,16 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     expect(firstResult.entries.map((e) => e.text)).toContain("parent-topic fact");
     expect(firstResult.entries.map((e) => e.text)).not.toContain("moved-topic fact");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await firstHandle.result;
 
-    clearCapturedCreateArgs();
 
     const secondHandle = await runner.spawn({ prompt: "second", authority: MOVED_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     const secondInstance = getInstance(runner, secondHandle.id);
     expect(secondInstance?.authority).toEqual(MOVED_AUTHORITY);
 
-    const secondSearch = findSearch((getCapturedCreateArgs()[0] as Record<string, unknown>).customTools as unknown[]);
+    const secondSearch = findSearch(host.latest().invocations[0]?.customTools as unknown as unknown[]);
     expect(secondSearch).toBeDefined();
     const secondResult = jsonOf<{ entries: Array<{ text: string }> }>(
       await secondSearch!.execute("ms-2", { scope: "active" }, undefined, undefined, {} as never),
@@ -127,7 +121,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     expect(secondResult.entries.map((e) => e.text)).toContain("moved-topic fact");
     expect(secondResult.entries.map((e) => e.text)).not.toContain("parent-topic fact");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await secondHandle.result;
   });
 
@@ -139,22 +133,21 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
       capturedParentCapture = parentCapture;
       return [createSpawnSubagentTool(subRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate, undefined)];
     };
-    runner = new SubagentRunner(makeConfig(tmp), toolFactory);
+    runner = new SubagentRunner(makeConfig(tmp), toolFactory, undefined, host);
 
     const parentHandle = await runner.spawn({ prompt: "parent", authority: PARENT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     expect(capturedParentCapture).toBeDefined();
     expect(capturedParentCapture!.authority).toEqual(PARENT_AUTHORITY);
 
-    const parentTools = (getCapturedCreateArgs()[0] as Record<string, unknown>).customTools as Array<{
+    const parentTools = host.latest().invocations[0]?.customTools as unknown as Array<{
       name: string;
       execute: (...args: unknown[]) => Promise<unknown>;
     }>;
     expect(parentTools.some((t) => t.name === "spawn_subagent")).toBe(true);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await parentHandle.result;
-    clearCapturedCreateArgs();
 
     const spawnTool = createSpawnSubagentTool(
       runner,
@@ -173,7 +166,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     expect(childInstance?.authority).toEqual(PARENT_AUTHORITY);
     expect(childInstance?.authority).toBe(capturedParentCapture!.authority);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await execPromise;
   });
 
@@ -197,7 +190,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     expect(instance?.capture?.caller).toEqual({ kind: "named-subagent", name: "researcher" });
     expect(instance?.capture?.authority.activeScope).toEqual(DEFAULT_SCOPE);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 
@@ -206,14 +199,13 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
 
     const firstHandle = await runner.spawn({ prompt: "first", authority: PARENT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await firstHandle.result;
 
     const firstDir = genericSubagentDir(tmp, firstHandle.id);
     writeFileSync(join(firstDir, "2026-01-01T00-00-00.jsonl"), "");
 
-    clearCapturedCreateArgs();
-    const secondRunner = new SubagentRunner(makeConfig(tmp));
+    const secondRunner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
     const revivePromise = secondRunner.revive(MOVED_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, firstHandle.id, "follow-up");
     await flush();
 
@@ -224,7 +216,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as { activeScope: unknown };
     expect(meta.activeScope).toEqual(PARENT_SCOPE);
 
-    const search = findSearch((getCapturedCreateArgs()[0] as Record<string, unknown>).customTools as unknown[]);
+    const search = findSearch(host.latest().invocations[0]?.customTools as unknown as unknown[]);
     expect(search).toBeDefined();
     const result = jsonOf<{ entries: Array<{ text: string }> }>(
       await search!.execute("ms-revived", { scope: "active" }, undefined, undefined, {} as never),
@@ -232,7 +224,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     expect(result.entries.map((e) => e.text)).toContain("moved-topic fact");
     expect(result.entries.map((e) => e.text)).not.toContain("parent-topic fact");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await revivePromise;
   });
 
@@ -274,14 +266,14 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     expect(instance?.authority).toEqual(DEFAULT_AUTHORITY);
     expect(instance?.caller).toEqual({ kind: "anonymous-subagent" });
 
-    const search = findSearch((getCapturedCreateArgs()[0] as Record<string, unknown>).customTools as unknown[]);
+    const search = findSearch(host.latest().invocations[0]?.customTools as unknown as unknown[]);
     expect(search).toBeDefined();
     const result = jsonOf<{ entries: Array<{ text: string }> }>(
       await search!.execute("ms-legacy", { scope: "active" }, undefined, undefined, {} as never),
     );
     expect(result.entries.map((e) => e.text)).toContain("default fact");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await revivePromise;
 
     const rewritten = JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")) as {
@@ -311,11 +303,12 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
 describe("Subagent tool factories — parent capture closure", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-tool-capture-");
-    resetPiMockState();
-    runner = new SubagentRunner(makeConfig(tmp));
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -348,7 +341,7 @@ describe("Subagent tool factories — parent capture closure", () => {
     const instance = getInstance(runner, id);
     expect(instance?.authority).toEqual(DEFAULT_AUTHORITY);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await execPromise;
   });
 });

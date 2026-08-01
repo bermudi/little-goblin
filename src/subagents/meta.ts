@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { atomicWrite } from "../fs.ts";
 import { boundedError, log } from "../log.ts";
-import { VALID_NAME_RE } from "./named-agents.ts";
+import { VALID_NAME_RE } from "./validation.ts";
 import {
   genericSubagentDir,
   genericSubagentMetaPath,

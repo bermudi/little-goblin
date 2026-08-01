@@ -4,11 +4,11 @@
  * Historical design: `specs/changes/archive/2026-04-26-subagent-runtime/`.
  */
 
-import type { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ResolvedSkillSet } from "../agent/skills/mod.ts";
 import type { SurfaceMemoryAuthority, CapturedMemoryContext, SurfaceMemoryCaller } from "../memory/mod.ts";
 import type { ActiveScope } from "../memory/scope.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
+import type { SubagentExecution } from "./host.ts";
 
 /** Status of a subagent instance. */
 export type SubagentStatus = "running" | "completed" | "cancelled" | "error";
@@ -99,8 +99,8 @@ export type SpawnOptions = GenericSpawnOptions | NamedSpawnOptions;
  *
  * `status` reflects the subagent's state at the moment `spawn()` returned —
  * always `"running"` for a fresh spawn. The terminal state is observable
- * via `result`: it resolves with the subagent's final assistant text on
- * `agent_end`, or rejects with the underlying error on failure / abort.
+ * via `result`: it resolves with the subagent's final assistant text when
+ * Pi reaches `agent_settled`, or rejects with the underlying error on failure / abort.
  *
  * Callers (the `spawn_subagent` tool, future revival flows) should
  * `await handle.result` to obtain the response and let exceptions
@@ -111,6 +111,20 @@ export interface SubagentHandle {
   status: SubagentStatus;
   result: Promise<string>;
 }
+
+/**
+ * Exact persisted history target — either create a new session directory or open an existing session file.
+ */
+export type SubagentHistoryTarget =
+  | {
+      readonly kind: "create";
+      readonly sessionDir: string;
+    }
+  | {
+      readonly kind: "open";
+      readonly sessionDir: string;
+      readonly sessionFile: string;
+    };
 
 /**
  * Lightweight metadata exposed by `list()`.
@@ -135,8 +149,8 @@ export interface SubagentInfo {
  * `status` is mutated as the lifecycle advances:
  *   running → completed | error | cancelled
  *
- * `session`, `unsubscribe`, and `result` are populated by phase 4's
- * execution wiring once the AgentSession kicks off.
+ * `execution` is populated by the coordinator once the invocation plan is
+ * ready. Pi session objects never escape the host lease.
  */
 export interface SubagentInstance {
   id: string;
@@ -160,9 +174,9 @@ export interface SubagentInstance {
   dir: string;
   /** Absolute path to `meta.json` for this subagent. */
   metaPath: string;
-  /** The pi SessionManager owning the persisted session for this subagent. */
-  sessionManager: SessionManager;
-  /** Initial prompt — handed to the AgentSession on the first turn. */
+  /** Exact new/open history target selected by the coordinator. */
+  history: SubagentHistoryTarget;
+  /** Initial prompt — handed to the opaque Pi execution lease. */
   initialPrompt: string;
   /** Optional status callback registered by the spawner (already prefixed). */
   onStatusUpdate?: (message: string) => void;
@@ -183,11 +197,19 @@ export interface SubagentInstance {
    * which use their definition directory and isolated catalog.
    */
   inheritance: GenericSubagentInheritance | null;
-  /** AgentSession created when execution starts. */
-  session: AgentSession | null;
-  /** Tear-down for the AgentSession event subscription. */
-  unsubscribe: (() => void) | null;
-  /** Resolves with the subagent's final assistant text on `agent_end`. */
+  /** Opaque invocation-lifetime Pi lease created by the host. */
+  execution: SubagentExecution | null;
+  /** Ephemeral host success reservation; never persisted as authority. */
+  completionClaimed: boolean;
+  /** Coordinator settlement, distinct from the immediately cancellable result. */
+  settlement: Promise<void>;
+  resolveSettlement: () => void;
+  rejectSettlement: (error: unknown) => void;
+  /** Shared idempotent stop operation across startup and cancellation races. */
+  stopPromise: Promise<void> | null;
+  /** Whether coordinator execution/cleanup has been launched for this lease. */
+  settlementStarted: boolean;
+  /** Resolves with the subagent's final assistant text after Pi reaches `agent_settled`. */
   result: Promise<string>;
   /** Resolves/rejects `result`. Stored on the instance so cancellation paths
    * can settle the handle when the agent session cannot. */

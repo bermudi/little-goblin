@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubagentRunner, type GenericSubagentInheritance, type SubagentToolFactory } from "../mod.ts";
+import { FakeSubagentHost } from "./fake-host.ts";
 import type { ResolvedSkillSet } from "../../agent/skills/mod.ts";
 import { personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../../sessions/environment.ts";
-import { agentsMdPath, goblinSkillsPath, heartbeatMdPath, soulMdPath, workspacePath } from "../../workspace/paths.ts";
+import { goblinSkillsPath, workspacePath } from "../../workspace/paths.ts";
 import {
   MAX_SUBAGENT_DEPTH,
   type SubagentMeta,
@@ -25,16 +26,8 @@ import {
   DEFAULT_PARENT_CAPTURE,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
-  getCapturedCreateArgs,
-  installStandardPiMock,
   makeConfig,
-  resetPiMockState,
-  sessionHolder,
-  setLoadedSkillPathsOverride,
 } from "./support.ts";
-
-// Install mock before any tests run
-installStandardPiMock();
 
 describe("SubagentRunner — skeleton", () => {
   let tmp: string;
@@ -43,7 +36,6 @@ describe("SubagentRunner — skeleton", () => {
   beforeEach(() => {
     tmp = createTestHome("goblin-subagents-");
     runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
   });
 
   afterEach(() => {
@@ -75,11 +67,12 @@ describe("SubagentRunner — skeleton", () => {
 describe("SubagentRunner.spawn — generic", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagents-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -140,7 +133,7 @@ describe("SubagentRunner.spawn — generic", () => {
     });
   });
 
-  it("provisions a persisted SessionManager pointing at the subagent dir", async () => {
+  it("prepares an exact persisted history target under the subagent dir", async () => {
     const handle = await runner.spawn({ prompt: "ping", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     handle.result.catch(() => {});
 
@@ -187,11 +180,12 @@ describe("SubagentRunner.spawn — generic", () => {
 describe("SubagentRunner.spawn — named", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagents-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -309,121 +303,53 @@ describe("SubagentRunner.spawn — named", () => {
 describe("SubagentRunner.spawn — execution & result return", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagents-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("creates an AgentSession with the subagent-only tool list and the subagent's SessionManager", async () => {
+  it("passes the subagent-only tools and prepared plan through the opaque host", async () => {
     const handle = await runner.spawn({ prompt: "Analyze logs", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
-    handle.result.catch(() => {});
     await flush();
 
-    const captured = getCapturedCreateArgs();
-    expect(captured).toHaveLength(1);
-    const opts = captured[0] as Record<string, unknown>;
-    expect(opts.cwd).toBe(workspacePath(tmp));
-    expect(Array.isArray(opts.customTools)).toBe(true);
-    const names = (opts.customTools as Array<{ name: string }>).map((tool) => tool.name);
+    expect(host.preparations[0]?.cwd).toBe(workspacePath(tmp));
+    const invocation = host.latest().invocations[0];
+    expect(invocation?.prompt).toBe("Analyze logs");
+    const names = invocation?.customTools.map((tool) => tool.name);
     expect(names).not.toContain("schedule_turn");
-    expect(names).toEqual([
-      "memory_search",
-      "memory_write",
-    ]);
-    expect(opts.sessionManager).toBeDefined();
+    expect(names).toEqual(["memory_search", "memory_write"]);
 
-    const loader = opts.resourceLoader as { options: Record<string, unknown> } | undefined;
-    expect(loader).toBeDefined();
-    expect(loader!.options.noSkills).toBe(true);
-    expect(loader!.options.additionalSkillPaths).toEqual([]);
+    host.latest().complete("done");
+    await expect(handle.result).resolves.toBe("done");
   });
 
-  it("filters deployment prompt files out of generic subagent context discovery", async () => {
-    const handle = await runner.spawn({ prompt: "go", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
-    handle.result.catch(() => {});
-    await flush();
-
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const loader = opts.resourceLoader as {
-      options: {
-        agentsFilesOverride?: (base: { agentsFiles: { path: string; content: string }[] }) => { agentsFiles: { path: string; content: string }[] };
-      };
-    };
-    expect(loader).toBeDefined();
-    const override = loader.options.agentsFilesOverride;
-    expect(override).toBeDefined();
-
-    const input = [
-      { path: soulMdPath(tmp), content: "soul" },
-      { path: agentsMdPath(tmp), content: "agents" },
-      { path: heartbeatMdPath(tmp), content: "heartbeat" },
-      { path: join(tmp, "project", "AGENTS.md"), content: "project" },
-    ];
-    const result = override!({ agentsFiles: input });
-    expect(result.agentsFiles.map((f) => f.path)).toEqual([join(tmp, "project", "AGENTS.md")]);
-  });
-
-  it("pins named subagents to their canonical isolated catalog and ignores legacy skills", async () => {
-    const agentDir = namedAgentDir(tmp, "researcher");
-    const legacySkillsDir = join(agentDir, "skills");
-    mkdirSync(join(legacySkillsDir, "legacy-only"), { recursive: true });
-    mkdirSync(join(namedAgentSkillsDir(tmp, "researcher"), "canonical"), { recursive: true });
-    const agentsMd = "# Researcher\nYou are a research specialist.\n";
-    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), agentsMd);
-
-    const handle = await runner.spawn({ prompt: "go", name: "researcher", authority: DEFAULT_AUTHORITY });
-    handle.result.catch(() => {});
-    await flush();
-
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    expect(opts.cwd).toBe(agentDir);
-    const loader = opts.resourceLoader as { options: Record<string, unknown> };
-    expect(loader).toBeDefined();
-    expect(loader.options.systemPrompt).toBe(agentsMd);
-    expect(loader.options.noContextFiles).toBe(true);
-    expect(loader.options.noSkills).toBe(true);
-    expect(loader.options.additionalSkillPaths).toEqual([namedAgentSkillsDir(tmp, "researcher")]);
-    expect(loader.options.additionalSkillPaths).not.toContain(legacySkillsDir);
-    // Decision 0043 makes catalog moves operator-owned: loading changes neither tree.
-    expect(existsSync(join(legacySkillsDir, "legacy-only"))).toBe(true);
-    expect(existsSync(join(namedAgentSkillsDir(tmp, "researcher"), "canonical"))).toBe(true);
-  });
-
-  it("sends the initial prompt as the first user message", async () => {
+  it("passes the initial prompt to the opaque execution", async () => {
     const handle = await runner.spawn({ prompt: "Hello there", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     handle.result.catch(() => {});
     await flush();
 
-    expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith("Hello there");
+    expect(host.latest().invocations[0]?.prompt).toBe("Hello there");
+    host.latest().complete("done");
+    await handle.result;
   });
 
-  it("resolves handle.result with the accumulated assistant text on agent_end", async () => {
+  it("resolves handle.result with the execution result", async () => {
     const handle = await runner.spawn({ prompt: "Greet me", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "text_delta", delta: "Hello, " },
-    });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "text_delta", delta: "world!" },
-    });
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("Hello, world!");
 
     await expect(handle.result).resolves.toBe("Hello, world!");
   });
 
-  it("propagates status updates via onStatusUpdate (agent_start + tool events)", async () => {
+  it("passes status updates through the coordinator-owned prefix", async () => {
     const events: string[] = [];
     const handle = await runner.spawn({
       prompt: "do work",
@@ -436,44 +362,22 @@ describe("SubagentRunner.spawn — execution & result return", () => {
 
     const prefix = `🧠 ${handle.id.slice(0, 8)} `;
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "thinking_start" },
-    });
-    sessionHolder.emit({
-      type: "tool_execution_start",
-      toolCallId: "t1",
-      toolName: "bash",
-      args: {},
-    });
-    sessionHolder.emit({
-      type: "tool_execution_end",
-      toolCallId: "t1",
-      toolName: "bash",
-      result: {},
-      isError: false,
-    });
+    host.latest().emitStatus("thinking...");
+    host.latest().emitStatus("tool: bash");
+    host.latest().emitStatus("tool ok: bash");
 
     expect(events).toEqual([
-      `${prefix}thinking...`,
       `${prefix}thinking...`,
       `${prefix}tool: bash`,
       `${prefix}tool ok: bash`,
     ]);
   });
 
-  it("updates meta.json with status=completed and completedAt on agent_end", async () => {
+  it("updates meta.json with status=completed and completedAt on execution completion", async () => {
     const handle = await runner.spawn({ prompt: "ping", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "text_delta", delta: "pong" },
-    });
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("pong");
 
     await handle.result;
 
@@ -485,14 +389,10 @@ describe("SubagentRunner.spawn — execution & result return", () => {
     expect(runner.list()[0]?.status).toBe("completed");
   });
 
-  it("rejects handle.result and writes status=error when sendUserMessage throws", async () => {
-    sessionHolder.sendUserMessage = mock(async () => {
-      throw new Error("boom");
-    });
-
+  it("rejects handle.result and writes status=error when execution fails", async () => {
     const handle = await runner.spawn({ prompt: "trigger", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    await flush();
+    host.latest().fail(new Error("boom"));
 
     await expect(handle.result).rejects.toThrow("boom");
 
@@ -508,11 +408,12 @@ describe("SubagentRunner.spawn — execution & result return", () => {
 describe("SubagentRunner — status prefix propagation", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagents-status-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -530,15 +431,9 @@ describe("SubagentRunner — status prefix propagation", () => {
     handle.result.catch(() => {});
     await flush();
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "thinking_delta", delta: "hmm" },
-    });
+    host.latest().emitStatus("thinking...");
 
     expect(events).toEqual([
-      `🧠 ${handle.id.slice(0, 8)} thinking...`,
       `🧠 ${handle.id.slice(0, 8)} thinking...`,
     ]);
   });
@@ -557,21 +452,10 @@ describe("SubagentRunner — status prefix propagation", () => {
     handle.result.catch(() => {});
     await flush();
 
-    sessionHolder.emit({ type: "agent_start" });
-    sessionHolder.emit({
-      type: "message_update",
-      message: {},
-      assistantMessageEvent: { type: "thinking_start" },
-    });
-    sessionHolder.emit({
-      type: "tool_execution_start",
-      toolCallId: "t1",
-      toolName: "read",
-      args: {},
-    });
+    host.latest().emitStatus("thinking...");
+    host.latest().emitStatus("tool: read");
 
     expect(events).toEqual([
-      "🧠 researcher thinking...",
       "🧠 researcher thinking...",
       "🧠 researcher tool: read",
     ]);
@@ -581,15 +465,7 @@ describe("SubagentRunner — status prefix propagation", () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    expect(() => {
-      sessionHolder.emit({ type: "agent_start" });
-      sessionHolder.emit({
-        type: "tool_execution_start",
-        toolCallId: "t1",
-        toolName: "bash",
-        args: {},
-      });
-    }).not.toThrow();
+    expect(() => host.latest().emitStatus("tool: bash")).not.toThrow();
 
     handle.result.catch(() => {});
   });
@@ -605,13 +481,7 @@ describe("SubagentRunner — status prefix propagation", () => {
     handle.result.catch(() => {});
     await flush();
 
-    sessionHolder.emit({
-      type: "tool_execution_end",
-      toolCallId: "t1",
-      toolName: "bash",
-      result: {},
-      isError: true,
-    });
+    host.latest().emitStatus("tool error: bash");
 
     expect(events).toEqual([`🧠 ${handle.id.slice(0, 8)} tool error: bash`]);
   });
@@ -620,11 +490,12 @@ describe("SubagentRunner — status prefix propagation", () => {
 describe("SubagentRunner — name validation", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-name-validation-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
@@ -656,7 +527,7 @@ describe("SubagentRunner — name validation", () => {
     handle.result.catch(() => {});
 
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 });
@@ -668,7 +539,6 @@ describe("SubagentRunner — negative depth rejection", () => {
   beforeEach(() => {
     tmp = createTestHome("goblin-depth-neg-");
     runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
   });
 
   afterEach(() => {
@@ -683,10 +553,11 @@ describe("SubagentRunner — negative depth rejection", () => {
 describe("SubagentRunner — recursive tool injection", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagent-recursion-");
-    resetPiMockState();
+    host = new FakeSubagentHost();
   });
 
   afterEach(() => {
@@ -697,43 +568,42 @@ describe("SubagentRunner — recursive tool injection", () => {
     const { createSpawnSubagentTool } = await import("../tool.ts");
     runner = new SubagentRunner(makeConfig(tmp), (subagentRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate) => [
       createSpawnSubagentTool(subagentRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate, undefined),
-    ]);
+    ], undefined, host);
 
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const tools = opts.customTools as Array<{ name: string }>;
+    const tools = host.latest().invocations[0]?.customTools ?? [];
     expect(tools.map((tool) => tool.name)).toContain("spawn_subagent");
     expect(tools.map((tool) => tool.name)).toContain("memory_write");
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 
   it("always registers scoped memory tools even when no toolFactory is provided", async () => {
-    runner = new SubagentRunner(makeConfig(tmp));
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
 
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    expect((opts.customTools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
+    expect(host.latest().invocations[0]?.customTools.map((tool) => tool.name)).toEqual([
       "memory_search",
       "memory_write",
     ]);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 });
 
 describe("SubagentRunner — nested prefix prevention", () => {
   let tmp: string;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-nested-prefix-");
-    resetPiMockState();
+    host = new FakeSubagentHost();
   });
 
   afterEach(() => {
@@ -758,7 +628,7 @@ describe("SubagentRunner — nested prefix prevention", () => {
       return [];
     };
 
-    const parentRunner = new SubagentRunner(makeConfig(tmp), toolFactory);
+    const parentRunner = new SubagentRunner(makeConfig(tmp), toolFactory, undefined, host);
     const handle = await parentRunner.spawn({
       prompt: "parent",
       authority: DEFAULT_AUTHORITY,
@@ -773,7 +643,7 @@ describe("SubagentRunner — nested prefix prevention", () => {
     expect(receivedCallbacks).toContain("parent-saw: test-message");
     expect(receivedCallbacks).toHaveLength(2);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
   });
 });
@@ -781,15 +651,15 @@ describe("SubagentRunner — nested prefix prevention", () => {
 describe("SubagentRunner — skill inheritance", () => {
   let tmp: string;
   let runner: SubagentRunner;
+  let host: FakeSubagentHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-subagent-skills-");
-    runner = new SubagentRunner(makeConfig(tmp));
-    resetPiMockState();
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
 
   afterEach(() => {
-    setLoadedSkillPathsOverride(null);
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -812,10 +682,9 @@ describe("SubagentRunner — skill inheritance", () => {
     return { executionEnvironment, resolvedSkills };
   }
 
-  it("pins exactly the inherited manifest files with ambient discovery disabled", async () => {
+  it("passes the frozen manifest and execution CWD to the host", async () => {
     const alpha = writeSkill(goblinSkillsPath(tmp), "alpha");
     const beta = writeSkill(join(tmp, "project", ".agents", "skills"), "beta");
-    // An unselected skill in the same catalog must not leak in.
     writeSkill(goblinSkillsPath(tmp), "unselected");
 
     const handle = await runner.spawn({
@@ -829,70 +698,14 @@ describe("SubagentRunner — skill inheritance", () => {
         projectEnvironment(join(tmp, "project")),
       ),
     });
-    handle.result.catch(() => {});
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const loader = opts.resourceLoader as { options: Record<string, unknown> };
-    expect(loader.options.noSkills).toBe(true);
-    expect(loader.options.additionalSkillPaths).toEqual([alpha, beta]);
-    expect(opts.cwd).toBe(join(tmp, "project"));
+    const preparation = host.preparations[0];
+    expect(preparation?.cwd).toBe(join(tmp, "project"));
+    expect(preparation?.resource).toEqual({ kind: "generic", skillPaths: [alpha, beta] });
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("done");
     await handle.result;
-  });
-
-  it("fails visibly when an inherited skill file is missing", async () => {
-    const missing = join(goblinSkillsPath(tmp), "ghost", "SKILL.md");
-    const handle = await runner.spawn({
-      prompt: "work",
-      authority: DEFAULT_AUTHORITY,
-      inheritance: inheritanceOf(
-        manifestOf({ source: "goblin", name: "ghost", filePath: missing }),
-      ),
-    });
-
-    await expect(handle.result).rejects.toThrow(`inherited skill file(s) missing: ${missing}`);
-
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
-    expect(meta.status).toBe("error");
-  });
-
-  it("rejects an inherited path that is no longer a regular file", async () => {
-    const alpha = writeSkill(goblinSkillsPath(tmp), "alpha");
-    rmSync(alpha);
-    mkdirSync(alpha);
-
-    const handle = await runner.spawn({
-      prompt: "work",
-      authority: DEFAULT_AUTHORITY,
-      inheritance: inheritanceOf(
-        manifestOf({ source: "goblin", name: "alpha", filePath: alpha }),
-      ),
-    });
-
-    await expect(handle.result).rejects.toThrow(
-      `inherited skill path is not a file: ${alpha}`,
-    );
-  });
-
-  it("fails visibly when pi omits an inherited skill during reload", async () => {
-    const alpha = writeSkill(goblinSkillsPath(tmp), "alpha");
-    setLoadedSkillPathsOverride([]);
-
-    const handle = await runner.spawn({
-      prompt: "work",
-      authority: DEFAULT_AUTHORITY,
-      inheritance: inheritanceOf(
-        manifestOf({ source: "goblin", name: "alpha", filePath: alpha }),
-      ),
-    });
-
-    await expect(handle.result).rejects.toThrow(
-      `inherited skill file(s) failed to load: ${alpha}`,
-    );
   });
 
   it("recursive generic spawns inherit the same frozen manifest", async () => {
@@ -907,7 +720,7 @@ describe("SubagentRunner — skill inheritance", () => {
       factorySaw = childInheritance;
       return [createSpawnSubagentTool(subRunner, depth, sessionId, parentCapture, childInheritance, onStatusUpdate, undefined)];
     };
-    runner = new SubagentRunner(makeConfig(tmp), toolFactory);
+    runner = new SubagentRunner(makeConfig(tmp), toolFactory, undefined, host);
 
     const handle = await runner.spawn({
       prompt: "parent",
@@ -917,9 +730,8 @@ describe("SubagentRunner — skill inheritance", () => {
     await flush();
     expect(factorySaw).toBe(inheritance);
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("parent");
     await handle.result;
-    resetPiMockState();
 
     // Drive a nested generic spawn through a tool built with the manifest the
     // parent's toolFactory received: the child must get the same frozen
@@ -929,12 +741,10 @@ describe("SubagentRunner — skill inheritance", () => {
     childExec.catch(() => {});
     await flush();
 
-    const childCreate = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const childLoader = childCreate.resourceLoader as { options: Record<string, unknown> };
-    expect(childLoader.options.noSkills).toBe(true);
-    expect(childLoader.options.additionalSkillPaths).toEqual([alpha]);
+    expect(host.latest().invocations[0]?.prompt).toBe("child");
+    expect(host.preparations.at(-1)?.resource).toEqual({ kind: "generic", skillPaths: [alpha] });
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("child");
     await childExec;
   });
 
@@ -950,11 +760,10 @@ describe("SubagentRunner — skill inheritance", () => {
       ),
     });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("first");
     await handle.result;
     writeFileSync(join(genericSubagentDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
 
-    resetPiMockState();
     const projectRoot = join(tmp, "revive-project");
     mkdirSync(projectRoot, { recursive: true });
     const revivePromise = runner.revive(
@@ -968,13 +777,10 @@ describe("SubagentRunner — skill inheritance", () => {
     );
     await flush();
 
-    const opts = getCapturedCreateArgs()[0] as Record<string, unknown>;
-    const loader = opts.resourceLoader as { options: Record<string, unknown> };
-    expect(loader.options.noSkills).toBe(true);
-    expect(loader.options.additionalSkillPaths).toEqual([beta]);
-    expect(opts.cwd).toBe(projectRoot);
+    expect(host.preparations.at(-1)?.cwd).toBe(projectRoot);
+    expect(host.preparations.at(-1)?.resource).toEqual({ kind: "generic", skillPaths: [beta] });
 
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("second");
     await revivePromise;
   });
 
@@ -985,7 +791,7 @@ describe("SubagentRunner — skill inheritance", () => {
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
-    sessionHolder.emit({ type: "agent_end", messages: [] });
+    host.latest().complete("first");
     await handle.result;
 
     await expect(

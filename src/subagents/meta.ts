@@ -11,7 +11,7 @@
  * only absence case; malformed records and filesystem failures propagate.
  */
 
-import { readFileSync, readdirSync, type Dirent } from "node:fs";
+import { readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { atomicWrite } from "../fs.ts";
@@ -320,13 +320,14 @@ export function loadSubagentMeta(home: string, id: string): { dir: string; meta:
   );
   if (genericResult !== null) candidates.push(genericResult);
 
+  const agentsRoot = namedAgentsRoot(home);
   let entries: Dirent[] = [];
   try {
-    entries = readdirSync(namedAgentsRoot(home), { withFileTypes: true });
+    entries = readdirSync(agentsRoot, { withFileTypes: true });
   } catch (err) {
     if (!(isNodeErrnoException(err) && err.code === "ENOENT")) {
       log.error("subagent named-agent tree read failed", {
-        path: namedAgentsRoot(home),
+        path: agentsRoot,
         ...boundedError(err),
       });
       throw err;
@@ -334,8 +335,18 @@ export function loadSubagentMeta(home: string, id: string): { dir: string; meta:
   }
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
     const name = entry.name;
+    const agentDir = join(agentsRoot, name);
+    try {
+      // Dirent.isDirectory() reports false for symlinks. Use statSync, like
+      // listNamedAgents(), so a symlink to a named-agent directory has one
+      // meaning for discovery and metadata revival.
+      if (!statSync(agentDir).isDirectory()) continue;
+    } catch (err) {
+      if (isNodeErrnoException(err) && err.code === "ENOENT") continue;
+      throw err;
+    }
+
     const dir = namedAgentInstanceDir(home, name, id);
     const metaPath = namedAgentInstanceMetaPath(home, name, id);
     const namedResult = readMetaCandidate(metaPath, dir, {

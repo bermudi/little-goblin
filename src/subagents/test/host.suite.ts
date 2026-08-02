@@ -158,6 +158,35 @@ describe("PiSubagentHost contract", () => {
     await expect(second).resolves.toBe("");
   });
 
+  it("retries PiServices initialization after a transient failure", async () => {
+    let serviceCreates = 0;
+    const services = {
+      modelRuntime: {
+        setRuntimeApiKey: async (_provider: string, _key: string) => {},
+      },
+      settingsManager: {},
+    } as unknown as PiServices;
+    const host = new PiSubagentHost(makeConfig(home), {
+      deps: {
+        createPiServices: async () => {
+          serviceCreates += 1;
+          if (serviceCreates === 1) throw new Error("transient services failure");
+          return services;
+        },
+      },
+    });
+
+    const first = host.prepare(genericPreparation(home, join(home, "first"))).run(invocation({ prompt: "first" }));
+    await expect(first).rejects.toThrow("transient services failure");
+
+    const second = host.prepare(genericPreparation(home, join(home, "second"))).run(invocation({ prompt: "second" }));
+    await flush();
+    expect(serviceCreates).toBe(2);
+
+    getSessionHolder(0).complete();
+    await expect(second).resolves.toBe("");
+  });
+
   it("uses the injected resource-loader constructor", async () => {
     let constructions = 0;
     class SentinelLoader {

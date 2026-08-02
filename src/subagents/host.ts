@@ -154,7 +154,14 @@ export class PiSubagentHost implements SubagentHost {
       getServices: () => {
         // Memoize the promise, not merely its eventual value. This prevents
         // concurrent first invocations from constructing PiServices twice.
-        servicesPromise ??= deps.createPiServices(cfg.goblinHome);
+        // A failed initialization must not become deployment-lifetime poison:
+        // clear the rejected attempt so a later invocation can retry.
+        if (servicesPromise === null) {
+          servicesPromise = deps.createPiServices(cfg.goblinHome).catch((error: unknown) => {
+            servicesPromise = null;
+            throw error;
+          });
+        }
         return servicesPromise;
       },
     };

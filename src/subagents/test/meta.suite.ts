@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubagentRunner } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
@@ -12,10 +12,12 @@ import {
 import {
   genericSubagentDir,
   genericSubagentMetaPath,
+  listNamedAgents,
   namedAgentAgentsMdPath,
   namedAgentDir,
   namedAgentInstanceDir,
   namedAgentInstanceMetaPath,
+  namedAgentsRoot,
 } from "../paths.ts";
 import {
   createTestHome,
@@ -192,6 +194,35 @@ describe("Subagent metadata boundary", () => {
     }
 
     expect(() => loadSubagentMeta(tmp, id)).toThrow(SubagentMetadataAmbiguityError);
+  });
+
+  it("revives a named instance beneath a symlinked named-agent directory", async () => {
+    const id = "symlinked-named";
+    const targetDir = join(tmp, "named-agent-target");
+    const targetInstanceDir = join(targetDir, "instances", id);
+    mkdirSync(targetInstanceDir, { recursive: true });
+    writeFileSync(join(targetDir, "AGENTS.md"), "# Researcher");
+    writeMeta(join(targetInstanceDir, "meta.json"), validMeta(id, {
+      role: "named",
+      name: "researcher",
+    }));
+    writeSession(join(targetInstanceDir, "2026-01-01T00-00-00.jsonl"));
+
+    mkdirSync(namedAgentsRoot(tmp), { recursive: true });
+    symlinkSync(targetDir, namedAgentDir(tmp, "researcher"), "dir");
+
+    expect(listNamedAgents(tmp)).toEqual(["researcher"]);
+    expect(loadSubagentMeta(tmp, id).meta.name).toBe("researcher");
+
+    const revival = runner.revive(
+      DEFAULT_PARENT_CAPTURE,
+      EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      id,
+      "continue",
+    );
+    await flush();
+    host.latest().complete("revived");
+    await expect(revival).resolves.toBe("revived");
   });
 
   it("never reconstructs a missing or corrupt record during cancellation", async () => {

@@ -138,7 +138,7 @@ type ExecutionEnvironment =
 | Personal identity and deployment prompts | Deployment workspace |
 | Curated memory entries | Memory store, keyed by active scope |
 | Delegated-run record and cross-run lifecycle | Delegated-work subsystem **(TARGET — decision 0036)** |
-| Pi session construction for delegated work | Pi execution host **(TARGET — decision 0040)** |
+| Pi session construction for delegated work | Pi execution host **(CURRENT — decision 0040)** |
 | External provider/process protocol mechanics | External-agent execution host **(TARGET — decision 0040)** |
 | External-agent working directory, invocation parameters, and permission profile | Main model through structured launch input **(TARGET — decision 0041)** |
 | Explicit delegated-run control | Owner Conversation |
@@ -310,15 +310,11 @@ Dreaming currently uses compatibility internal-session machinery. TARGET archite
 
 ### Subagents
 
-CURRENT subagents have custom pi construction, generic/named definitions, recursive spawning, and persisted instance records. Generic subagents inherit the caller runtime's immutable Execution Environment and frozen resolved skill manifest — exact selected files with no catalog re-discovery; recursive spawns inherit the received authority, revivals inherit the reviving runtime's authority, and a missing or unloaded inherited file fails the invocation visibly. Named definitions load only their isolated `workspace/agents/<name>/.agents/skills/` catalog with ambient discovery disabled; they do not inherit caller skills, and legacy `skills/` directories are ignored.
+**CURRENT — Pi execution host extraction complete.** Subagents have custom Pi construction behind `PiSubagentHost`, generic/named definitions, recursive spawning, and persisted instance records. `PiSubagentHost` owns Pi session construction, resource loading, Pi event mechanics, and one invocation-lifetime execution lease; `SubagentRunner` and `execution.ts` own invocation preparation, memory/tool assembly, and durable lifecycle transitions. Generic subagents inherit the caller runtime's immutable Execution Environment and frozen resolved skill manifest — exact selected files with no catalog re-discovery; recursive spawns inherit the received authority, revivals inherit the reviving runtime's authority, and a missing or unloaded inherited file fails the invocation visibly. Named definitions load only their isolated `workspace/agents/<name>/.agents/skills/` catalog with ambient discovery disabled; they do not inherit caller skills, and legacy `skills/` directories are ignored.
 
 TARGET direction:
 
-- generic execution inherits an explicit parent environment, memory context, and resolved skill manifest (**implemented**);
-- named-agent definitions remain user-authored under workspace and use isolated pi-native skill catalogs (**implemented**);
-- machine-managed instance records move to state in the separate storage-layout migration;
-- a `SubagentHost` seam owns pi construction while `DelegatedWorkHost` owns cross-run lifetime;
-- current blocking generic/named invocations are attached and their full recursive tree dies with the creating runtime; durable subagents require a future detached-result contract.
+- `DelegatedWorkHost` remains to own delegated-run records, the move of machine-managed instance state out of `scratch/` and workspace trees, cross-run lifetime, cancellation policy, and completion delivery. Current blocking generic/named invocations are attached and their full recursive tree dies with the creating runtime; durable subagents require a future detached-result contract.
 
 ### External agents
 

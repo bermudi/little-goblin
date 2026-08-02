@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import {
   DefaultResourceLoader,
   SessionManager,
@@ -21,7 +22,7 @@ import { log } from "../log.ts";
 import { createPiServices, findMostRecentCompatiblePiSession, piAgentDir, type PiServices } from "../pi-host.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { ResolvedModel } from "./models.ts";
-import type { ResolvedSkillSet } from "./skills/mod.ts";
+import { SkillResolutionError, type ResolvedSkillSet } from "./skills/mod.ts";
 
 // We intentionally use structural matches for the payload shapes so callers
 // (project notice, memory snapshot) do not need to import pi's internal
@@ -90,6 +91,36 @@ export interface PiAgentBackendOptions extends AgentBackendOptions {
   deps?: Partial<PiAgentBackendDeps>;
 }
 
+function isEnoent(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function normalizeSkillPath(filePath: string): string {
+  return resolve(filePath);
+}
+
+async function validateSelectedSkillFiles(skillPaths: readonly string[]): Promise<void> {
+  const unavailable: string[] = [];
+  for (const skillPath of skillPaths) {
+    try {
+      const stats = await stat(skillPath);
+      if (!stats.isFile()) unavailable.push(`${skillPath} (not a regular file)`);
+    } catch (error) {
+      if (isEnoent(error)) {
+        unavailable.push(`${skillPath} (missing)`);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  if (unavailable.length > 0) {
+    throw new SkillResolutionError(
+      `resolved skill file(s) cannot be loaded before Pi initialization: ${unavailable.join(", ")}`,
+    );
+  }
+}
+
 /**
  * Concrete backend that wraps the real pi-coding-agent AgentSession.
  *
@@ -144,6 +175,9 @@ export class PiAgentBackend implements AgentBackend {
       ? this.deps.SessionManager.open(recent, piSessionDir, cwd)
       : this.deps.SessionManager.create(cwd, piSessionDir);
 
+    const selectedSkillPaths = resolvedSkills.skills.map((skill) => skill.filePath);
+    await validateSelectedSkillFiles(selectedSkillPaths);
+
     const resourceLoader = new this.deps.DefaultResourceLoader({
       cwd,
       agentDir,
@@ -151,9 +185,21 @@ export class PiAgentBackend implements AgentBackend {
       systemPrompt,
       noContextFiles: true,
       noSkills: true,
-      additionalSkillPaths: resolvedSkills.skills.map((s) => s.filePath),
+      additionalSkillPaths: selectedSkillPaths,
     });
     await resourceLoader.reload();
+
+    const loadedSkillPaths = new Set(
+      resourceLoader.getSkills().skills.map((skill) => normalizeSkillPath(skill.filePath)),
+    );
+    const notLoaded = selectedSkillPaths.filter(
+      (skillPath) => !loadedSkillPaths.has(normalizeSkillPath(skillPath)),
+    );
+    if (notLoaded.length > 0) {
+      throw new SkillResolutionError(
+        `resolved skill file(s) failed to load in Pi: ${notLoaded.join(", ")}`,
+      );
+    }
 
     // Pi exposes factory functions for the default tool definitions. Build
     // those definitions here and override the SDK defaults through its public

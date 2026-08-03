@@ -392,38 +392,38 @@ describe("replyNoActiveSession", () => {
 });
 
 describe("buildBot integration", () => {
-  it("/new creates a session and replies", async () => {
+  it("/new creates a Conversation and replies", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
 
-    expect(built.manager.list()).toHaveLength(1);
+    expect(built.lifecycle.inspect(dmSurface(1))).not.toBeNull();
     expect(built.api.sent[0]).toContain("Created new conversation");
   });
 
   it("/archive disposes/removes the current runner and replies", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
-    const session = built.manager.list()[0]!;
-    const prior = built.agentRunners.get(session.id)! as unknown as MockAgentRunner;
+    const conversation = built.lifecycle.inspect(dmSurface(1))!;
+    const prior = built.agentRunners.get(conversation.id)! as unknown as MockAgentRunner;
 
     await built.bot.handleUpdate(textUpdate("/archive"));
 
     expect(prior.dispose).toHaveBeenCalled();
-    expect(built.agentRunners.has(session.id)).toBe(false);
+    expect(built.agentRunners.has(conversation.id)).toBe(false);
     expect(built.api.sent.at(-1)).toContain("Conversation archived");
   });
 
   it("/project changes project directory and forces runner disposal", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
-    const session = built.manager.list()[0]!;
-    const prior = built.agentRunners.get(session.id)! as unknown as MockAgentRunner;
+    const conversation = built.lifecycle.inspect(dmSurface(1))!;
+    const prior = built.agentRunners.get(conversation.id)! as unknown as MockAgentRunner;
 
     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
 
-    expect(projectRootOf(built.manager.effectiveEnvironment(dmSurface(1)))).toBe(built.cfg.goblinHome);
+    expect(projectRootOf(built.lifecycle.settings.effectiveEnvironment(dmSurface(1)))).toBe(built.cfg.goblinHome);
     expect(prior.dispose).toHaveBeenCalled();
-    expect(built.agentRunners.has(session.id)).toBe(false);
+    expect(built.agentRunners.has(conversation.id)).toBe(false);
   });
 
   it("unknown DM command without active conversation prompts for /new", async () => {
@@ -664,16 +664,16 @@ describe("buildBot integration", () => {
     expect(prompt).toBe("[From: Daniel (@bermudi)]\nlisten\n\n[Audio file `song.mp3` saved.]");
   });
 
-  it("/resume of the already-bound session is a no-op", async () => {
+  it("/resume of the already-bound Conversation is a no-op", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
-    const session = built.manager.list()[0]!;
-    const oldRunner = built.agentRunners.get(session.id)!;
+    const conversation = built.lifecycle.inspect(dmSurface(1))!;
+    const oldRunner = built.agentRunners.get(conversation.id)!;
 
-    await built.bot.handleUpdate(textUpdate(`/resume ${session.id}`));
+    await built.bot.handleUpdate(textUpdate(`/resume ${conversation.id}`));
 
     expect((oldRunner as unknown as MockAgentRunner).dispose).not.toHaveBeenCalled();
-    expect(built.agentRunners.get(session.id)).toBe(oldRunner);
+    expect(built.agentRunners.get(conversation.id)).toBe(oldRunner);
   });
 
   it("archives orphaned topic memory when Telegram reports topic not found", async () => {
@@ -707,15 +707,15 @@ describe("buildBot integration", () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new", 2));
     expect(built.api.sent).toEqual([]);
-    expect(built.manager.list()).toEqual([]);
+    expect(built.lifecycle.inspect(dmSurface(1))).toBeNull();
   });
 
   it("records system reply sendMessage success metrics", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
     await flushMicrotasks();
-    const session = built.manager.list()[0]!;
-    const events = readTelegramEvents(built.cfg.goblinHome, session.id);
+    const conversation = built.lifecycle.inspect(dmSurface(1))!;
+    const events = readTelegramEvents(built.cfg.goblinHome, conversation.id);
     const systemSuccess = events.find((e) => e.op === "sendMessage" && e.channel === "system" && e.outcome === "success");
     expect(systemSuccess).toBeDefined();
   });
@@ -725,15 +725,15 @@ describe("buildBot integration", () => {
     built.api.failParseOnce();
     await built.bot.handleUpdate(textUpdate("/new"));
     await flushMicrotasks();
-    const session = built.manager.list()[0]!;
+    const conversation = built.lifecycle.inspect(dmSurface(1))!;
     await waitFor(
       () =>
-        readTelegramEvents(built.cfg.goblinHome, session.id).filter(
+        readTelegramEvents(built.cfg.goblinHome, conversation.id).filter(
           (e) => e.op === "sendMessage" && e.channel === "system",
         ).length === 2,
       1000,
     );
-    const events = readTelegramEvents(built.cfg.goblinHome, session.id);
+    const events = readTelegramEvents(built.cfg.goblinHome, conversation.id);
     expect(events.filter((e) => e.op === "sendMessage" && e.channel === "system").length).toBe(2);
     const first = events.find((e) => e.op === "sendMessage" && e.channel === "system" && e.outcome === "error");
     expect(first).toBeDefined();

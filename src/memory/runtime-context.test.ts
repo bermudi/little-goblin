@@ -105,19 +105,16 @@ describe("runtime memory context — Surface-derived authority", () => {
     });
   });
 
-  describe("assertSurfaceBackedAuthorityInput — zero-chat rejection", () => {
-    it("rejects a zero-chat DM Surface as Telegram identity", () => {
-      // The dreaming compatibility session historically used chatId: 0 as a
-      // sentinel. That value MUST NOT be reinterpreted as a Telegram Surface
-      // or used to construct SurfaceMemoryAuthority. Internal callers use
-      // InternalMemoryContext instead.
+  describe("assertSurfaceBackedAuthorityInput — Surface validation", () => {
+    it("rejects an invalid DM Surface as Telegram identity", () => {
+      // Surface validation rejects values outside the canonical Surface domain.
       const zeroChat = { kind: "dm", chatId: 0 } as unknown as Surface;
       expect(() => assertSurfaceBackedAuthorityInput(zeroChat)).toThrow(
-        /zero-chat Surface/,
+        /invalid chatId/,
       );
     });
 
-    it("rejects a zero-chat topic Surface", () => {
+    it("rejects an invalid topic Surface", () => {
       const zeroChat = {
         kind: "topic",
         container: "supergroup",
@@ -125,7 +122,7 @@ describe("runtime memory context — Surface-derived authority", () => {
         topicId: 42,
       } as unknown as Surface;
       expect(() => assertSurfaceBackedAuthorityInput(zeroChat)).toThrow(
-        /zero-chat Surface/,
+        /invalid chatId/,
       );
     });
 
@@ -288,7 +285,7 @@ describe("runtime memory context — Surface-derived authority", () => {
       }
     });
 
-    it("rejects a zero-chat Surface as Telegram identity", async () => {
+    it("rejects an invalid Surface input", async () => {
       const store = new MemoryStore(tmpDir);
       try {
         await expect(
@@ -297,7 +294,7 @@ describe("runtime memory context — Surface-derived authority", () => {
             caller: { kind: "main" },
             store,
           }),
-        ).rejects.toThrow(/zero-chat Surface/);
+        ).rejects.toThrow(/invalid chatId/);
       } finally {
         store.close();
       }

@@ -42,7 +42,7 @@ function discoverTranscripts(home: string): TranscriptFile[] {
     const entries = readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      // Archived sessions live under their own subtree; skip like SessionManager.list().
+      // Archived Conversations live under their own subtree and are not indexed.
       if (entry.name === "archive") continue;
       // Skip internal non-conversation directories (e.g. the dreaming extractor)
       // so their synthetic transcripts are not re-indexed as user conversation

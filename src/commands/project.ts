@@ -10,7 +10,7 @@
 import { parseCommandArg } from "./parse.ts";
 import { resolveProjectRoot } from "../sessions/environment.ts";
 import type { ProjectAssignmentResult } from "../orchestration/conversation-lifecycle.ts";
-import type { SessionState } from "../sessions/types.ts";
+import type { ConversationState } from "../sessions/types.ts";
 
 export interface ProjectCommandDeps {
   /** The raw command text, e.g. "/project ~/foo". */
@@ -22,8 +22,8 @@ export interface ProjectCommandDeps {
 export type ProjectCommandResult =
   | { kind: "missing-arg"; reply: string }
   | { kind: "bad-path"; reply: string }
-  | { kind: "assigned"; reply: string; projectRoot: string; sessionId: string; session: SessionState; previousSessionId?: string }
-  | { kind: "already-assigned"; reply: string; projectRoot: string; sessionId?: string; session?: SessionState }
+  | { kind: "assigned"; reply: string; projectRoot: string; conversationId: string; conversation: ConversationState; previousConversationId?: string }
+  | { kind: "already-assigned"; reply: string; projectRoot: string; conversationId?: string; conversation?: ConversationState }
   | { kind: "conflict"; reply: string }
   | { kind: "rejected"; reply: string }
   | { kind: "error"; reply: string };
@@ -59,19 +59,19 @@ export async function executeProject(deps: ProjectCommandDeps): Promise<ProjectC
         return {
           kind: "assigned",
           projectRoot,
-          sessionId: result.session.id,
-          session: result.session,
-          previousSessionId: result.previousSessionId,
-          reply: result.previousSessionId
-            ? `Project assigned to \`${projectRoot}\`. New conversation \`${result.session.id}\`; previous conversation \`${result.previousSessionId}\` is stored and resumable.`
-            : `Project assigned to \`${projectRoot}\`. Conversation \`${result.session.id}\` is ready.`,
+          conversationId: result.conversation.id,
+          conversation: result.conversation,
+          previousConversationId: result.previousConversationId,
+          reply: result.previousConversationId
+            ? `Project assigned to \`${projectRoot}\`. New conversation \`${result.conversation.id}\`; previous conversation \`${result.previousConversationId}\` is stored and resumable.`
+            : `Project assigned to \`${projectRoot}\`. Conversation \`${result.conversation.id}\` is ready.`,
         };
       case "already-assigned":
         return {
           kind: "already-assigned",
           projectRoot: result.projectRoot ?? projectRoot,
-          sessionId: result.session?.id,
-          session: result.session,
+          conversationId: result.conversation?.id,
+          conversation: result.conversation,
           reply: `This chat is already assigned to project \`${result.projectRoot ?? projectRoot}\`.`,
         };
       case "conflict":

@@ -17,7 +17,7 @@
 
 import { statSync, readFileSync } from "node:fs";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { SessionState } from "./sessions/types.ts";
+import type { ConversationState } from "./sessions/mod.ts";
 import { transcriptPath } from "./sessions/paths.ts";
 import type { AgentRunner } from "./agent/mod.ts";
 import type { SubagentRunner } from "./subagents/mod.ts";
@@ -63,7 +63,7 @@ export interface Diagnostics {
 
 /** Inputs for `gatherDiagnostics`. */
 export interface DiagnosticsDeps {
-  session: SessionState;
+  conversation: ConversationState;
   runner: AgentRunner | null;
   subagentRunner: SubagentRunner;
   goblinHome: string;
@@ -105,14 +105,14 @@ function readTranscriptStats(path: string): { bytes: number | null; lines: numbe
 }
 
 export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
-  const path = transcriptPath(deps.goblinHome, deps.session.id);
+  const path = transcriptPath(deps.goblinHome, deps.conversation.id);
   const { bytes, lines } = readTranscriptStats(path);
   const subagentList = deps.subagentRunner.list();
 
   return {
-    sessionId: deps.session.id,
-    sessionName: deps.session.title ?? null,
-    createdAt: deps.session.createdAt,
+    sessionId: deps.conversation.id,
+    sessionName: deps.conversation.title ?? null,
+    createdAt: deps.conversation.createdAt,
     model: deps.runner?.modelName ?? deps.modelName,
     thinkingLevel: deps.thinkingLevel ?? null,
     runnerInitialized: deps.runner?.isInitialized ?? false,
@@ -126,7 +126,7 @@ export function gatherDiagnostics(deps: DiagnosticsDeps): Diagnostics {
     contextTokens: deps.runner?.contextTokens ?? null,
     contextFiles: deps.runner?.contextFiles ?? null,
     projectDir: deps.projectDir ?? null,
-    metrics: readMetricsSummary(deps.goblinHome, deps.session.id),
+    metrics: readMetricsSummary(deps.goblinHome, deps.conversation.id),
   };
 }
 

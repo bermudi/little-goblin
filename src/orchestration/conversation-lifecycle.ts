@@ -1,13 +1,11 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Surface, SurfaceId } from "../surface.ts";
 import { surfaceId } from "../surface.ts";
-import type { ConversationId, ConversationState, SessionState } from "../sessions/types.ts";
+import type { ConversationId, ConversationState } from "../sessions/types.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
-import type { BindingStore } from "../sessions/bindings.ts";
-import { FileBindingStore } from "../sessions/bindings.ts";
+import { FileBindingStore, validateBindings, type BindingStore } from "../sessions/bindings.ts";
 import {
   getProjectRoot,
-  bindProjectRoot,
   getModelName,
   getSkillPolicy as getStoredSkillPolicy,
   getThinkingLevelValidated,
@@ -28,18 +26,16 @@ import {
 } from "../agent/skills/mod.ts";
 import type { BindingsFile } from "../sessions/types.ts";
 import { isValidConversationId } from "../sessions/conversation.ts";
-import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
 import { log } from "../log.ts";
 import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
 import type { AttachmentSignal, AttachedWork, SurfaceRuntimeAuthority } from "./dispatcher.ts";
 import { withLifecycleTransitionLock } from "./lifecycle-transition-lock.ts";
-import type { ProjectAssignmentIntent } from "../sessions/project-assignment.ts";
+import type { PreparedProjectAssignment, ProjectAssignmentIntent } from "../sessions/project-assignment.ts";
 import {
-  createOrVerifyProjectSession,
+  applyPreparedProjectAssignment,
   loadPendingProjectAssignment,
-  reconcilePendingProjectAssignment,
+  preparePendingProjectAssignment,
   savePendingProjectAssignment,
-  clearPendingProjectAssignment,
 } from "../sessions/project-assignment.ts";
 
 /**
@@ -86,6 +82,11 @@ export interface ConversationLifecycle extends SurfaceRuntimeAuthority {
    * lifecycle transition lock before returning authority.
    */
   inspect(surface: Surface): ConversationState | null;
+  /**
+   * Resolve the currently bound compatible Conversation after reconciling any
+   * pending project assignment. Never creates Conversation history.
+   */
+  resolveCurrent(surface: Surface): Promise<ConversationState | null>;
   resolveOrStart(surface: Surface): Promise<ConversationState>;
   rotate(surface: Surface): Promise<ConversationState>;
   resume(surface: Surface, target: ConversationId): Promise<ConversationState>;
@@ -99,12 +100,27 @@ export interface ConversationLifecycle extends SurfaceRuntimeAuthority {
 }
 
 export type ProjectAssignmentResult =
-  | { kind: "assigned"; session: SessionState; projectRoot: string; previousSessionId?: string }
-  | { kind: "already-assigned"; session?: SessionState; projectRoot?: string }
+  | { kind: "assigned"; conversation: ConversationState; projectRoot: string; previousConversationId?: string }
+  | { kind: "already-assigned"; conversation?: ConversationState; projectRoot?: string }
   | { kind: "conflict"; currentRoot: string };
 
 function cloneBindings(bindings: BindingsFile): BindingsFile {
   return { version: 1, surfaces: { ...bindings.surfaces } } as BindingsFile;
+}
+
+/**
+ * Reconcile pending project assignment during cold startup, before any
+ * Telegram adapter, runtime host, or bot is constructed. No disposal is
+ * needed because runtime identity does not exist yet.
+ */
+export function reconcileProjectAssignmentAtColdStart(
+  home: string,
+  store: ConversationStore = new ConversationStore(home),
+  bindings: BindingStore = new FileBindingStore(home),
+): void {
+  const prepared = preparePendingProjectAssignment(home, store, bindings);
+  if (prepared === null) return;
+  applyPreparedProjectAssignment(home, bindings, prepared);
 }
 
 /**
@@ -150,10 +166,17 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     return conv;
   }
 
+  async resolveCurrent(surface: Surface): Promise<ConversationState | null> {
+    return withLifecycleTransitionLock(async () => {
+      await this.reconcilePendingAssignment();
+      return this.inspect(surface);
+    });
+  }
+
   async resolveOrStart(surface: Surface): Promise<ConversationState> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
-      await this.reconcilePendingAssignment(key);
+      await this.reconcilePendingAssignment();
       const env = this.settings.effectiveEnvironment(surface);
       const bindings = this.bindings.load();
       const currentId = bindings.surfaces[key];
@@ -187,7 +210,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async rotate(surface: Surface): Promise<ConversationState> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
-      await this.reconcilePendingAssignment(key);
+      await this.reconcilePendingAssignment();
       const env = this.settings.effectiveEnvironment(surface);
       const bindings = this.bindings.load();
       const currentId = bindings.surfaces[key];
@@ -218,7 +241,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async resume(surface: Surface, target: ConversationId): Promise<ConversationState> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
-      await this.reconcilePendingAssignment(key);
+      await this.reconcilePendingAssignment();
       const env = this.settings.effectiveEnvironment(surface);
       const targetConv = this.store.load(target);
       if (!targetConv) {
@@ -273,7 +296,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async archive(surface: Surface): Promise<void> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
-      await this.reconcilePendingAssignment(key);
+      await this.reconcilePendingAssignment();
       const bindings = this.bindings.load();
       const currentId = bindings.surfaces[key];
       if (!currentId) {
@@ -312,8 +335,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
 
   async setSkillPolicy(surface: Surface, policy: SkillPolicy): Promise<SkillPolicyTransition> {
     return withLifecycleTransitionLock(async () => {
-      const key = surfaceId(surface);
-      await this.reconcilePendingAssignment(key);
+      await this.reconcilePendingAssignment();
       const candidate = cloneSkillPolicy(policy);
       return this.commitSkillPolicy(surface, candidate);
     });
@@ -325,8 +347,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     selection: SourceSelection,
   ): Promise<SkillPolicyTransition> {
     return withLifecycleTransitionLock(async () => {
-      const key = surfaceId(surface);
-      await this.reconcilePendingAssignment(key);
+      await this.reconcilePendingAssignment();
       const current = cloneSkillPolicy(this.settings.getSkillPolicy(surface));
       current[source] = selection;
       const candidate = cloneSkillPolicy(current);
@@ -356,7 +377,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async reloadSkills(surface: Surface): Promise<SkillPolicyTransition> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
-      await this.reconcilePendingAssignment(key);
+      await this.reconcilePendingAssignment();
 
       // Resolve first: reload is not allowed to destroy a usable runtime when
       // the newly edited catalog is invalid or no longer satisfies selection.
@@ -432,7 +453,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     return withLifecycleTransitionLock(async () => {
       assertCanonicalProjectRoot(requestedRoot, "requested projectRoot");
       const key = surfaceId(surface);
-      await this.reconcilePendingAssignment(key);
+      await this.reconcilePendingAssignment();
 
       const settingsRoot = getProjectRoot(this.home, surface);
       const existingEnv = environmentFromProjectRoot(settingsRoot);
@@ -446,7 +467,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
         return {
           kind: "already-assigned",
           projectRoot: requestedRoot,
-          session: boundConv ? runtimeSessionWithPreferences(boundConv, surface, this.home) : undefined,
+          conversation: boundConv ?? undefined,
         };
       }
 
@@ -455,60 +476,45 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
         return { kind: "conflict", currentRoot: projectRootOf(existingEnv) ?? requestedRoot };
       }
 
-      // Personal/unassigned: proceed with first assignment.
+      // Personal/unassigned: persist a replayable intent, plan its exact
+      // Conversation, quiesce the displaced runtime, then commit authority.
+      // After intent persistence, the planned Conversation is the only write
+      // before quiescence and is safe recovery state.
       const bindings = this.bindings.load();
-      const rawPreviousSessionId = bindings.surfaces[key];
-      const previousSessionId = rawPreviousSessionId && isValidConversationId(rawPreviousSessionId) ? rawPreviousSessionId : undefined;
-
-      if (previousSessionId) {
-        // Synchronously invalidate and quiesce the prior runtime. Failure here
-        // leaves no intent and no change to settings/binding.
-        try {
-          await this.runtimeHost.disposeRuntime(previousSessionId as ConversationId);
-        } catch (err) {
-          log.error("prior runtime quiescence failed during project assignment", {
-            surfaceId: key,
-            previousSessionId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          throw new Error(`Failed to quiesce the current conversation: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-
-      const plannedSessionId = this.store.allocateId();
+      validateBindings(bindings);
+      const previousConversationId = bindings.surfaces[key] as ConversationId | undefined;
+      const plannedConversationId = this.store.allocateId();
       const intent: ProjectAssignmentIntent = {
         version: 1,
         surfaceId: key,
-        previousSessionId,
-        plannedSessionId,
+        previousSessionId: previousConversationId,
+        plannedSessionId: plannedConversationId,
         projectRoot: requestedRoot,
       };
       savePendingProjectAssignment(this.home, intent);
 
-      let conv: ConversationState;
       try {
-        conv = createOrVerifyProjectSession(this.store, surface, plannedSessionId, requestedRoot);
-        bindProjectRoot(this.home, surface, requestedRoot);
-        const nextBindings = cloneBindings(bindings);
-        nextBindings.surfaces[key] = plannedSessionId;
-        this.bindings.save(nextBindings);
-        clearPendingProjectAssignment(this.home);
+        const prepared = preparePendingProjectAssignment(this.home, this.store, this.bindings);
+        if (prepared === null) {
+          throw new Error("pending project assignment disappeared during planning");
+        }
+        await this.quiescePreparedProjectAssignment(prepared);
+        const conversation = applyPreparedProjectAssignment(this.home, this.bindings, prepared);
+        return {
+          kind: "assigned",
+          conversation,
+          projectRoot: requestedRoot,
+          previousConversationId,
+        };
       } catch (err) {
         log.error("project assignment failed after intent persistence", {
           surfaceId: key,
-          plannedSessionId,
+          plannedConversationId,
           projectRoot: requestedRoot,
           error: err instanceof Error ? err.message : String(err),
         });
         throw err;
       }
-
-      return {
-        kind: "assigned",
-        session: runtimeSessionWithPreferences(conv, surface, this.home),
-        projectRoot: requestedRoot,
-        previousSessionId,
-      };
     });
   }
 
@@ -519,8 +525,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
 
   async assertCurrentBinding(surface: Surface, conversationId: string): Promise<void> {
     await withLifecycleTransitionLock(async () => {
-      const key = surfaceId(surface);
-      await this.reconcilePendingAssignment(key);
+      await this.reconcilePendingAssignment();
       this.assertCurrentBindingLocked(surface, conversationId);
     });
   }
@@ -549,8 +554,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     fn: (signal: AttachmentSignal) => Promise<AttachedWork<T>>,
   ): Promise<AttachedWork<T>> {
     return withLifecycleTransitionLock(async () => {
-      const key = surfaceId(surface);
-      await this.reconcilePendingAssignment(key);
+      await this.reconcilePendingAssignment();
       this.assertCurrentBindingLocked(surface, conversationId);
       const signal = createAttachmentSignal();
       const work = fn(signal);
@@ -580,19 +584,30 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   }
 
   /**
-   * Replay any pending project-assignment intent and dispose the runtime that
-   * was bound to this surface before the replay, if the replay changed the
-   * binding. This keeps ordinary message resolution from creating a fresh
-   * conversation that conflicts with a not-yet-cleared assignment intent.
+   * Plan the single pending assignment, quiesce its displaced runtime while
+   * the old Binding is still authoritative, then commit settings and Binding.
    */
-  private async reconcilePendingAssignment(surfaceKey: SurfaceId): Promise<void> {
-    const before = this.bindings.load();
-    reconcilePendingProjectAssignment(this.home, this.store, this.bindings);
-    const after = this.bindings.load();
-    const oldId = before.surfaces[surfaceKey];
-    const newId = after.surfaces[surfaceKey];
-    if (oldId && oldId !== newId && isValidConversationId(oldId)) {
-      await this.runtimeHost.disposeRuntime(oldId);
+  private async reconcilePendingAssignment(): Promise<void> {
+    const prepared = preparePendingProjectAssignment(this.home, this.store, this.bindings);
+    if (prepared === null) return;
+    await this.quiescePreparedProjectAssignment(prepared);
+    applyPreparedProjectAssignment(this.home, this.bindings, prepared);
+  }
+
+  private async quiescePreparedProjectAssignment(prepared: PreparedProjectAssignment): Promise<void> {
+    const displaced = prepared.currentConversationId;
+    if (displaced === undefined || displaced === prepared.conversation.id) return;
+
+    try {
+      await this.runtimeHost.disposeRuntime(displaced);
+    } catch (error) {
+      log.error("project assignment runtime quiescence failed", {
+        surfaceId: prepared.intent.surfaceId,
+        displacedConversationId: displaced,
+        plannedConversationId: prepared.conversation.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
   }
 }

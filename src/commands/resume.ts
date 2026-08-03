@@ -1,20 +1,20 @@
-import type { SessionState } from "../sessions/types.ts";
+import type { ConversationState } from "../sessions/types.ts";
 
 export interface ResumeCommandDeps {
   rawText: string;
   /** Conversations compatible with the invoking Surface's execution environment. */
-  sessions: SessionState[];
+  conversations: ConversationState[];
   /** Conversations that exist but are incompatible with the invoking Surface. */
-  incompatibleSessions?: SessionState[];
-  bindSession: (sessionId: string) => SessionState | Promise<SessionState>;
+  incompatibleConversations?: ConversationState[];
+  bindConversation: (conversationId: string) => ConversationState | Promise<ConversationState>;
 }
 
 export type ResumeCommandResult =
   | { kind: "list"; reply: string }
   | { kind: "not-found"; reply: string }
   | { kind: "ambiguous"; reply: string }
-  | { kind: "incompatible"; session: SessionState; reply: string }
-  | { kind: "resumed"; session: SessionState; reply: string };
+  | { kind: "incompatible"; conversation: ConversationState; reply: string }
+  | { kind: "resumed"; conversation: ConversationState; reply: string };
 
 export const NO_NAMED_SESSIONS_REPLY = "No named conversations yet. Use /name <conversation name> in an active conversation to name it.";
 
@@ -23,31 +23,31 @@ export function parseResumeTarget(rawText: string): string | undefined {
   return value === "" ? undefined : value;
 }
 
-function matchesTarget(session: SessionState, target: string): boolean {
+function matchesTarget(session: ConversationState, target: string): boolean {
   return session.id === target || session.id.startsWith(target) || session.title === target;
 }
 
-function formatSessionLine(session: SessionState): string {
+function formatSessionLine(session: ConversationState): string {
   return `- ${session.id}${session.title ? ` — ${session.title}` : ""}`;
 }
 
-export function formatNamedSessionsList(sessions: SessionState[]): string {
+export function formatNamedSessionsList(sessions: ConversationState[]): string {
   const named = sessions.filter((session) => session.title !== undefined && session.title.trim() !== "");
   if (named.length === 0) return NO_NAMED_SESSIONS_REPLY;
   return `Named conversations:\n${named.map(formatSessionLine).join("\n")}`;
 }
 
-function formatIncompatibleReply(session: SessionState): string {
+function formatIncompatibleReply(session: ConversationState): string {
   const title = session.title ? ` — ${session.title}` : "";
   return `Conversation \`${session.id}\`${title} cannot be resumed on this surface: its execution environment is incompatible.`;
 }
 
 export async function executeResume(deps: ResumeCommandDeps): Promise<ResumeCommandResult> {
   const target = parseResumeTarget(deps.rawText);
-  if (!target) return { kind: "list", reply: formatNamedSessionsList(deps.sessions) };
+  if (!target) return { kind: "list", reply: formatNamedSessionsList(deps.conversations) };
 
-  const compatible = deps.sessions.filter((session) => matchesTarget(session, target));
-  const incompatible = (deps.incompatibleSessions ?? []).filter((session) => matchesTarget(session, target));
+  const compatible = deps.conversations.filter((conversation) => matchesTarget(conversation, target));
+  const incompatible = (deps.incompatibleConversations ?? []).filter((conversation) => matchesTarget(conversation, target));
 
   if (compatible.length === 0 && incompatible.length === 0) {
     return { kind: "not-found", reply: `No conversation found for \`${target}\`.` };
@@ -60,14 +60,14 @@ export async function executeResume(deps: ResumeCommandDeps): Promise<ResumeComm
 
   if (incompatible.length === 1) {
     const [session] = incompatible;
-    return { kind: "incompatible", session: session!, reply: formatIncompatibleReply(session!) };
+    return { kind: "incompatible", conversation: session!, reply: formatIncompatibleReply(session!) };
   }
 
   const [match] = compatible;
-  const session = await deps.bindSession(match!.id);
+  const conversation = await deps.bindConversation(match!.id);
   return {
     kind: "resumed",
-    session,
-    reply: `Resumed conversation \`${session.id}\`${session.title ? ` — ${session.title}` : ""}`,
+    conversation,
+    reply: `Resumed conversation \`${conversation.id}\`${conversation.title ? ` — ${conversation.title}` : ""}`,
   };
 }

@@ -9,7 +9,7 @@ import {
   type Diagnostics,
 } from "./diagnostics.ts";
 import { MetricsStore, type MetricsEvent, type TelegramMetricsEvent } from "./metrics/mod.ts";
-import type { SessionState } from "./sessions/types.ts";
+import type { ConversationState } from "./sessions/mod.ts";
 import { sessionDir, transcriptPath } from "./sessions/paths.ts";
 import type { SubagentRunner } from "./subagents/mod.ts";
 import type { AgentRunner } from "./agent/mod.ts";
@@ -33,8 +33,8 @@ function stubRunner(opts: { tools: string[] | null; modelName: string; initializ
   } as unknown as AgentRunner;
 }
 
-function makeSession(id: string): SessionState {
-  return { id, createdAt: "2026-04-29T00:00:00.000Z", chatId: 1, executionEnvironment: personalEnvironment() };
+function makeSession(id: string): ConversationState {
+  return { id, createdAt: "2026-04-29T00:00:00.000Z", executionEnvironment: personalEnvironment() };
 }
 
 const baseDiagnostics: Diagnostics = {
@@ -193,7 +193,7 @@ describe("gatherDiagnostics", () => {
     writeFileSync(transcriptFile, '{"a":1}\n{"a":2}\n{"a":3}\n');
 
     const d = gatherDiagnostics({
-      session,
+      conversation: session,
       runner: stubRunner({ tools: ["bash"], modelName: "m1" }),
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -237,7 +237,7 @@ describe("gatherDiagnostics", () => {
     });
 
     const d = gatherDiagnostics({
-      session,
+      conversation: session,
       runner: stubRunner({ tools: ["bash"], modelName: "m1" }),
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -271,7 +271,7 @@ describe("gatherDiagnostics", () => {
     }
 
     const d = gatherDiagnostics({
-      session,
+      conversation: session,
       runner: stubRunner({ tools: ["bash"], modelName: "m1" }),
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -285,7 +285,7 @@ describe("gatherDiagnostics", () => {
   it("reports null events stats when the file is missing", () => {
     const session = makeSession("abcdef1235");
     const d = gatherDiagnostics({
-      session,
+      conversation: session,
       runner: null,
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -297,7 +297,7 @@ describe("gatherDiagnostics", () => {
 
   it("falls back to deps.modelName when runner is null", () => {
     const d = gatherDiagnostics({
-      session: makeSession("abcdef1236"),
+      conversation: makeSession("abcdef1236"),
       runner: null,
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -315,7 +315,7 @@ describe("gatherDiagnostics", () => {
       { id: "d", name: null, role: "generic", status: "cancelled", spawnedAt: "", spawnedBy: null },
     ];
     const d = gatherDiagnostics({
-      session: makeSession("abcdef1237"),
+      conversation: makeSession("abcdef1237"),
       runner: null,
       subagentRunner: stubSubagentRunner(subagents),
       goblinHome: tmpDir,
@@ -327,7 +327,7 @@ describe("gatherDiagnostics", () => {
 
   it("passes projectDir through when provided", () => {
     const d = gatherDiagnostics({
-      session: makeSession("abcdef1237"),
+      conversation: makeSession("abcdef1237"),
       runner: null,
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -339,7 +339,7 @@ describe("gatherDiagnostics", () => {
 
   it("skillsLoaded and contextTokens remain null (best-effort, not exposed by pi)", () => {
     const d = gatherDiagnostics({
-      session: makeSession("abcdef1238"),
+      conversation: makeSession("abcdef1238"),
       runner: stubRunner({ tools: [], modelName: "m", initialized: true }),
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -352,7 +352,7 @@ describe("gatherDiagnostics", () => {
 
   it("reports runnerInitialized=false when the runner exists but is not primed", () => {
     const d = gatherDiagnostics({
-      session: makeSession("abcdef1239"),
+      conversation: makeSession("abcdef1239"),
       runner: stubRunner({ tools: null, modelName: "m", initialized: false }),
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -364,7 +364,7 @@ describe("gatherDiagnostics", () => {
 
   it("reports runnerInitialized=false when there is no runner", () => {
     const d = gatherDiagnostics({
-      session: makeSession("abcdef123a"),
+      conversation: makeSession("abcdef123a"),
       runner: null,
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -379,7 +379,7 @@ describe("gatherDiagnostics", () => {
       contextFiles: ["/home/user/.goblin/workspace/SOUL.md", "/home/user/project/AGENTS.md"],
     };
     const d = gatherDiagnostics({
-      session: makeSession("abcdef123b"),
+      conversation: makeSession("abcdef123b"),
       runner: runner as unknown as AgentRunner,
       subagentRunner: stubSubagentRunner(),
       goblinHome: tmpDir,
@@ -397,7 +397,7 @@ describe("generateDiagnostics", () => {
     const tmp = mkdtempSync(join(tmpdir(), "goblin-diag-"));
     try {
       const out = generateDiagnostics({
-        session: makeSession("abc1234568"),
+        conversation: makeSession("abc1234568"),
         runner: stubRunner({ tools: ["memory"], modelName: "model-x" }),
         subagentRunner: stubSubagentRunner(),
         goblinHome: tmp,

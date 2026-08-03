@@ -2,15 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConversationLifecycleManager } from "./conversation-lifecycle.ts";
+import { ConversationLifecycleManager, reconcileProjectAssignmentAtColdStart } from "./conversation-lifecycle.ts";
 import type { SurfaceSettings, ConversationLifecycle } from "./conversation-lifecycle.ts";
 import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
 import { createTurnDispatcherRuntimeHost } from "./conversation-runtime-host.ts";
 import { TurnDispatcher, type TurnSink } from "./dispatcher.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
-import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
 import type { BindingStore } from "../sessions/bindings.ts";
-import { validateBindings } from "../sessions/bindings.ts";
+import { loadBindings, saveBindings, validateBindings } from "../sessions/bindings.ts";
 import type { BindingsFile } from "../sessions/types.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import { loadPendingProjectAssignment, savePendingProjectAssignment } from "../sessions/project-assignment.ts";
@@ -56,12 +55,14 @@ class FakeRuntimeHost implements ConversationRuntimeHost {
   disposed: ConversationId[] = [];
   active = new Set<ConversationId>();
   throwOnNext: ConversationId | null = null;
+  onDispose: ((id: ConversationId) => void) | undefined;
 
   hasRuntime(id: ConversationId): boolean {
     return this.active.has(id);
   }
 
   async disposeRuntime(id: ConversationId): Promise<void> {
+    this.onDispose?.(id);
     this.active.delete(id);
     if (this.throwOnNext === id) {
       this.throwOnNext = null;
@@ -209,6 +210,154 @@ describe("ConversationLifecycle", () => {
       const conv = new ConversationStore(tmpDir).create(projectEnvironment(projectRoot));
       bindings.bindings = { version: 1, surfaces: { [surfaceId(dmSurface(1))]: conv.id } } as BindingsFile;
       expect(lifecycle.inspect(dmSurface(1))).toBeNull();
+    });
+
+    it("does not reconcile pending assignment or create history", () => {
+      const { lifecycle, store } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const projectRoot = join(tmpDir, "inspection-project");
+      mkdirSync(projectRoot, { recursive: true });
+      const plannedSessionId = store.allocateId();
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: surfaceId(surface),
+        plannedSessionId,
+        projectRoot,
+      });
+
+      expect(lifecycle.inspect(surface)).toBeNull();
+      expect(store.load(plannedSessionId)).toBeNull();
+      expect(loadPendingProjectAssignment(tmpDir)?.plannedSessionId).toBe(plannedSessionId);
+    });
+  });
+
+  describe("resolveCurrent", () => {
+    it("returns null for an unbound Surface without creating history", async () => {
+      const { lifecycle, store } = makeLifecycle(personalEnvironment(), tmpDir);
+
+      expect(await lifecycle.resolveCurrent(dmSurface(1))).toBeNull();
+      expect(store.list()).toEqual([]);
+    });
+
+    it("returns the currently bound compatible Conversation", async () => {
+      const { lifecycle } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const created = await lifecycle.resolveOrStart(surface);
+
+      expect((await lifecycle.resolveCurrent(surface))?.id).toBe(created.id);
+    });
+
+    it("quiesces the displaced runtime while the old binding is still authoritative", async () => {
+      const { lifecycle, store, bindings, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const key = surfaceId(surface);
+      const prior = await lifecycle.resolveOrStart(surface);
+      runtimeHost.active.add(prior.id);
+      const projectRoot = join(tmpDir, "pending-project");
+      mkdirSync(projectRoot, { recursive: true });
+      const plannedId = store.allocateId();
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        previousSessionId: prior.id,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+      let observedOldAuthority = false;
+      runtimeHost.onDispose = (id) => {
+        expect(id).toBe(prior.id);
+        expect(bindings.bindings.surfaces[key]).toBe(prior.id);
+        expect(getProjectRoot(tmpDir, surface)).toBeUndefined();
+        expect(loadPendingProjectAssignment(tmpDir)?.plannedSessionId).toBe(plannedId);
+        observedOldAuthority = true;
+      };
+
+      const resolved = await lifecycle.resolveCurrent(surface);
+
+      expect(observedOldAuthority).toBe(true);
+      expect(resolved?.id).toBe(plannedId);
+      expect(resolved?.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+      expect(bindings.bindings.surfaces[key]).toBe(plannedId);
+      expect(runtimeHost.disposed).toContain(prior.id);
+      expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+    });
+
+    it("leaves settings, binding, and intent unchanged when reconciliation quiescence fails", async () => {
+      const { lifecycle, store, bindings, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const key = surfaceId(surface);
+      const prior = await lifecycle.resolveOrStart(surface);
+      const projectRoot = join(tmpDir, "failed-pending-project");
+      mkdirSync(projectRoot, { recursive: true });
+      const plannedId = store.allocateId();
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        previousSessionId: prior.id,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+      const intentBefore = loadPendingProjectAssignment(tmpDir);
+      runtimeHost.throwOnNext = prior.id;
+
+      await expect(lifecycle.resolveCurrent(surface)).rejects.toThrow(/dispose failed/);
+
+      expect(getProjectRoot(tmpDir, surface)).toBeUndefined();
+      expect(bindings.bindings.surfaces[key]).toBe(prior.id);
+      expect(loadPendingProjectAssignment(tmpDir)).toEqual(intentBefore);
+      expect(store.load(plannedId)?.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+    });
+  });
+
+  describe("cold-start reconciliation", () => {
+    it("applies a pending assignment through production persistence without constructing a runtime host", () => {
+      const store = new ConversationStore(tmpDir);
+      const surface = dmSurface(1);
+      const key = surfaceId(surface);
+      const prior = store.create(personalEnvironment());
+      const bindings = loadBindings(tmpDir);
+      bindings.surfaces[key] = prior.id;
+      saveBindings(tmpDir, bindings);
+      const projectRoot = join(tmpDir, "startup-project");
+      mkdirSync(projectRoot, { recursive: true });
+      const plannedId = store.allocateId();
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        previousSessionId: prior.id,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+
+      reconcileProjectAssignmentAtColdStart(tmpDir);
+
+      expect(loadBindings(tmpDir).surfaces[key]).toBe(plannedId);
+      expect(store.load(plannedId)?.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+      expect(getProjectRoot(tmpDir, surface)).toBe(projectRoot);
+      expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+    });
+
+    it("propagates reconciliation conflicts and leaves the pending intent", () => {
+      const store = new ConversationStore(tmpDir);
+      const bindings = new InMemoryBindingStore();
+      const surface = dmSurface(1);
+      const conflicting = store.create(personalEnvironment());
+      bindings.bindings = {
+        version: 1,
+        surfaces: { [surfaceId(surface)]: conflicting.id },
+      } as BindingsFile;
+      const projectRoot = join(tmpDir, "startup-conflict-project");
+      mkdirSync(projectRoot, { recursive: true });
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: surfaceId(surface),
+        plannedSessionId: store.allocateId(),
+        projectRoot,
+      });
+
+      expect(() => reconcileProjectAssignmentAtColdStart(tmpDir, store, bindings)).toThrow(/replay conflict/);
+      expect(loadPendingProjectAssignment(tmpDir)).not.toBeNull();
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(conflicting.id);
     });
   });
 
@@ -440,8 +589,8 @@ describe("ConversationLifecycle", () => {
       expect(result.kind).toBe("assigned");
       if (result.kind === "assigned") {
         expect(result.projectRoot).toBe(projectRoot);
-        expect(result.session.executionEnvironment).toEqual(projectEnvironment(projectRoot));
-        expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(result.session.id);
+        expect(result.conversation.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+        expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(result.conversation.id);
       }
     });
 
@@ -457,7 +606,7 @@ describe("ConversationLifecycle", () => {
       const second = await lifecycle.assignProject(surface, projectRoot);
       expect(second.kind).toBe("already-assigned");
       if (second.kind === "already-assigned" && first.kind === "assigned") {
-        expect(second.session?.id).toBe(first.session.id);
+        expect(second.conversation?.id).toBe(first.conversation.id);
       }
     });
 
@@ -491,17 +640,22 @@ describe("ConversationLifecycle", () => {
       expect(runtimeHost.disposed).toContain(prior.id);
     });
 
-    it("does not persist anything when prior runtime quiescence fails", async () => {
+    it("keeps assignment authority unchanged and leaves a resumable plan when quiescence fails", async () => {
       const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
+      const key = surfaceId(surface);
       const prior = await lifecycle.resolveOrStart(surface);
       const projectRoot = join(tmpDir, "project");
       mkdirSync(projectRoot, { recursive: true });
       runtimeHost.throwOnNext = prior.id;
 
       await expect(lifecycle.assignProject(surface, projectRoot)).rejects.toThrow(/dispose failed/);
-      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(prior.id);
-      expect(store.list().filter((c) => c.executionEnvironment.kind === "project")).toHaveLength(0);
+
+      const pending = loadPendingProjectAssignment(tmpDir);
+      expect(getProjectRoot(tmpDir, surface)).toBeUndefined();
+      expect(bindings.bindings.surfaces[key]).toBe(prior.id);
+      expect(pending?.previousSessionId).toBe(prior.id);
+      expect(store.load(pending!.plannedSessionId)?.executionEnvironment).toEqual(projectEnvironment(projectRoot));
     });
 
     it("replays a pending assignment before committing", async () => {
@@ -528,7 +682,7 @@ describe("ConversationLifecycle", () => {
 
       expect(result.kind).toBe("already-assigned");
       if (result.kind === "already-assigned") {
-        expect(result.session?.id).toBe(conv.id);
+        expect(result.conversation?.id).toBe(conv.id);
       }
       expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(conv.id);
     });
@@ -831,9 +985,9 @@ describe("ConversationLifecycle", () => {
       expect(resultA.kind).toBe("assigned");
       expect(resultB.kind).toBe("assigned");
       if (resultA.kind === "assigned" && resultB.kind === "assigned") {
-        expect(resultA.session.id).not.toBe(resultB.session.id);
-        expect(resultA.session.executionEnvironment).toEqual(projectEnvironment(projectRoot));
-        expect(resultB.session.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+        expect(resultA.conversation.id).not.toBe(resultB.conversation.id);
+        expect(resultA.conversation.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+        expect(resultB.conversation.executionEnvironment).toEqual(projectEnvironment(projectRoot));
       }
       expect(bindings.bindings.surfaces[surfaceId(surfaceA)]).not.toBe(bindings.bindings.surfaces[surfaceId(surfaceB)]);
     });
@@ -950,7 +1104,7 @@ describe("ConversationLifecycle", () => {
       dispatcherRef = dispatcher;
 
       const personal = await lifecycle.resolveOrStart(surface);
-      const personalSession = runtimeSessionWithPreferences(personal, surface, runtimeHome);
+      const personalSession = personal;
       await dispatcher.getOrCreateRunner(personalSession, surface);
       bindings.failNextSave = true;
 
@@ -980,11 +1134,11 @@ describe("ConversationLifecycle", () => {
       const displaced = await lifecycle.resolveOrStart(destination);
 
       const r1 = await dispatcher.getOrCreateRunner(
-        runtimeSessionWithPreferences(target, source, runtimeHome),
+        target,
         source,
       );
       const r2 = await dispatcher.getOrCreateRunner(
-        runtimeSessionWithPreferences(displaced, destination, runtimeHome),
+        displaced,
         destination,
       );
 
@@ -1007,7 +1161,7 @@ describe("ConversationLifecycle", () => {
       expect(dispatcher.getRunner(displaced.id)).toBeNull();
 
       const r3 = await dispatcher.getOrCreateRunner(
-        runtimeSessionWithPreferences(target, destination, runtimeHome),
+        target,
         destination,
       );
 

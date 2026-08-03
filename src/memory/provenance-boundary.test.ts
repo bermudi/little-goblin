@@ -78,7 +78,6 @@ function parseImports(src: string): ImportInfo[] {
 
 const STATE_BINDING_MODULES = [
   "../sessions/state.ts",
-  "../sessions/manager.ts",
   "../sessions/bindings.ts",
   "../sessions/conversation-store.ts",
   "../sessions/project-assignment.ts",

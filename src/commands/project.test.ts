@@ -8,14 +8,13 @@ import { chmodSync, mkdtempSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { executeProject, MISSING_ARG_REPLY, BAD_PATH_REPLY } from "./project.ts";
-import type { SessionState } from "../sessions/types.ts";
+import type { ConversationState } from "../sessions/types.ts";
 import { personalEnvironment, projectEnvironment } from "../sessions/environment.ts";
 
-function stubSession(id = "new-sess-01", root?: string): SessionState {
+function stubSession(id = "new-sess-01", root?: string): ConversationState {
   return {
     id,
     createdAt: new Date().toISOString(),
-    chatId: 1,
     executionEnvironment: root ? projectEnvironment(root) : personalEnvironment(),
   };
 }
@@ -25,7 +24,7 @@ function makeAssignProject(root: string) {
     if (canonicalRoot !== root) {
       throw new Error(`expected ${root}, got ${canonicalRoot}`);
     }
-    return { kind: "assigned" as const, projectRoot: root, session: stubSession("new-sess-01", root) };
+    return { kind: "assigned" as const, projectRoot: root, conversation: stubSession("new-sess-01", root) };
   });
 }
 
@@ -53,7 +52,7 @@ describe("executeProject", () => {
     expect(result.kind).toBe("assigned");
     if (result.kind === "assigned") {
       expect(result.projectRoot).toBe(root);
-      expect(result.sessionId).toBe("new-sess-01");
+      expect(result.conversationId).toBe("new-sess-01");
     }
     expect(assignProject).toHaveBeenCalledWith(root);
   });
@@ -161,7 +160,7 @@ describe("executeProject", () => {
     const assignProject = mock(async () => ({
       kind: "already-assigned" as const,
       projectRoot: root,
-      session: stubSession("existing-sess", root),
+      conversation: stubSession("existing-sess", root),
     }));
     const result = await executeProject({ rawText: "/project /tmp", assignProject });
     expect(result.kind).toBe("already-assigned");

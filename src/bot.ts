@@ -8,7 +8,7 @@ import { MemoryEngine } from "./memory/mod.ts";
 import { MetricsStore, type TelegramMetricsEvent } from "./metrics/mod.ts";
 import { classifyTelegramError, type ReplyOpts } from "./tg/format.ts";
 import { registerCommands } from "./commands/mod.ts";
-import { SessionManager, type ConversationState } from "./sessions/mod.ts";
+import type { ConversationState } from "./sessions/mod.ts";
 import { guestSurface, surfaceId, type Surface } from "./surface.ts";
 import { AgentRunner } from "./agent/mod.ts";
 import { SubagentRunner, PiSubagentHost, type SubagentToolFactory } from "./subagents/mod.ts";
@@ -24,6 +24,7 @@ import {
 import { ExternalAgentRunner } from "./external-agents/mod.ts";
 import { McpRunner } from "./mcp/mod.ts";
 import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
+import type { ConversationLifecycle } from "./orchestration/conversation-lifecycle.ts";
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -52,7 +53,7 @@ function safeRecordTelegramEvent(metrics: MetricsStore | undefined, event: Teleg
 
 /**
  * Resolve the `MetricsStore` for a system reply, swallowing resolution errors.
- * `manager.resolve` can throw on non-`ENOENT` filesystem errors (fail-loud
+ * Lifecycle inspection can throw on non-`ENOENT` filesystem errors (fail-loud
  * rule); a resolution failure after a successful `ctx.reply` must not be
  * treated as a reply failure, so we log and return `undefined` instead.
  */
@@ -153,10 +154,21 @@ interface BuildBotOptions {
   memoryEngine?: MemoryEngine;
 }
 
-export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot; manager: SessionManager; subagentRunner: SubagentRunner; agentRunners: Map<string, AgentRunner>; scheduleStore: ScheduleStore; dispatcher: TurnDispatcher; externalAgentRunner: ExternalAgentRunner | undefined; mcpRunner: McpRunner | undefined; memoryEngine: MemoryEngine } {
+export interface BuiltBot {
+  bot: Bot;
+  lifecycle: ConversationLifecycle;
+  subagentRunner: SubagentRunner;
+  agentRunners: Map<string, AgentRunner>;
+  scheduleStore: ScheduleStore;
+  dispatcher: TurnDispatcher;
+  externalAgentRunner: ExternalAgentRunner | undefined;
+  mcpRunner: McpRunner | undefined;
+  memoryEngine: MemoryEngine;
+}
+
+export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   configureVoice(cfg);
   const bot = new Bot(cfg.botToken);
-  const manager = new SessionManager(cfg);
   const runners = new Map<string, AgentRunner>();
   const memoryEngine = options.memoryEngine ?? new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
   const memoryStore = memoryEngine.readStore;
@@ -328,5 +340,15 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): { bot: Bot
     });
   });
 
-  return { bot, manager, subagentRunner, agentRunners: runners, scheduleStore, dispatcher: intake.dispatcher, externalAgentRunner, mcpRunner, memoryEngine };
+  return {
+    bot,
+    lifecycle: intake.lifecycle,
+    subagentRunner,
+    agentRunners: runners,
+    scheduleStore,
+    dispatcher: intake.dispatcher,
+    externalAgentRunner,
+    mcpRunner,
+    memoryEngine,
+  };
 }

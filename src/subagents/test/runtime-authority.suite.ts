@@ -11,8 +11,7 @@ import { createTurnDispatcherRuntimeHost } from "../../orchestration/conversatio
 import { TurnDispatcher, type TurnSink } from "../../orchestration/dispatcher.ts";
 import { personalEnvironment } from "../../sessions/environment.ts";
 import { DEFAULT_SKILL_POLICY } from "../../agent/skills/mod.ts";
-import { runtimeSessionWithPreferences } from "../../sessions/mod.ts";
-import type { SessionState } from "../../sessions/types.ts";
+import type { ConversationState } from "../../sessions/types.ts";
 import { surfaceId, topicSurface, type Surface } from "../../surface.ts";
 import { SubagentRunner, type SubagentInstance } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
@@ -167,9 +166,9 @@ function createFixture(): RuntimeFixture {
   return { home, lifecycle, dispatcher, subagentRunner, subagentHost, memoryStore };
 }
 
-async function makeSession(lifecycle: ConversationLifecycle, surface: Surface, home: string): Promise<SessionState> {
+async function makeSession(lifecycle: ConversationLifecycle, surface: Surface, _home: string): Promise<ConversationState> {
   const conv = await lifecycle.resolveOrStart(surface);
-  return runtimeSessionWithPreferences(conv, surface, home);
+  return conv;
 }
 
 describe("TurnDispatcher + SubagentRunner Surface authority integration", () => {
@@ -295,7 +294,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     expect(getInstance(fx.subagentRunner, childX.id)?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
 
     // Replacement runtime captures Surface Y.
-    const sessionY = runtimeSessionWithPreferences(convY, SURFACE_Y, fx.home);
+    const sessionY = convY;
     const runnerY = await fx.dispatcher.getOrCreateRunner(sessionY, SURFACE_Y);
     const captureY = assertSurfaceCapture(runnerY.memoryContext);
     expect(captureY.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_Y));
@@ -367,7 +366,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     expect(fx.lifecycle.inspect(SURFACE_Y)?.id).toBe(sessionX.id);
 
     // Replacement runtime can still be created for Surface Y after the move.
-    const sessionY = runtimeSessionWithPreferences(convY, SURFACE_Y, fx.home);
+    const sessionY = convY;
     const runnerY = await fx.dispatcher.getOrCreateRunner(sessionY, SURFACE_Y);
     const captureY = assertSurfaceCapture(runnerY.memoryContext);
     expect(captureY.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_Y));

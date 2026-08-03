@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { ConversationStore } from "./conversation-store.ts";
 import { sessionDir, sessionsDir, statePath, transcriptPath, metricsPath } from "./paths.ts";
 import { personalEnvironment, projectEnvironment } from "./environment.ts";
-import type { SessionState } from "./types.ts";
 
 describe("ConversationStore", () => {
   let tmpDir: string;
@@ -111,7 +110,7 @@ describe("ConversationStore", () => {
     });
 
     it("rejects a chatId:0 record at a canonical Conversation ID", () => {
-      const corrupt: SessionState = {
+      const corrupt = {
         id: "abc123def0",
         createdAt: new Date().toISOString(),
         chatId: 0,
@@ -133,7 +132,7 @@ describe("ConversationStore", () => {
     });
 
     it("rejects legacy routing fields in current-version Conversation state", () => {
-      const legacy: SessionState = {
+      const legacy = {
         id: "abc123def0",
         createdAt: "2024-01-01T00:00:00.000Z",
         chatId: 123,
@@ -192,7 +191,7 @@ describe("ConversationStore", () => {
     });
 
     it("fails closed for a chatId:0 record at a canonical Conversation ID", () => {
-      const corrupt: SessionState = {
+      const corrupt = {
         id: "abc123def0",
         createdAt: new Date().toISOString(),
         chatId: 0,

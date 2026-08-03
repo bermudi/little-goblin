@@ -1,11 +1,11 @@
 /**
- * Pending project-assignment intent storage and helpers.
+ * Pending project-assignment intent storage and commit planning.
  *
  * A pending intent captures the durable commit point for first project
  * assignment: SurfaceId, optional prior Conversation ID, planned future
  * Conversation ID, and canonical project root. It is persisted atomically
- * before the Conversation directory or binding is mutated, and cleared once
- * the assignment is complete.
+ * before the Conversation directory or assignment authority is mutated, and
+ * cleared once the assignment is complete.
  */
 
 import { unlinkSync } from "node:fs";
@@ -15,7 +15,7 @@ import { loadJsonFile, saveJsonFile } from "./state-file.ts";
 import { log } from "../log.ts";
 import { pendingProjectAssignmentPath } from "./paths.ts";
 import { ConversationStore } from "./conversation-store.ts";
-import type { ConversationId } from "./types.ts";
+import type { BindingsFile, ConversationId, ConversationState } from "./types.ts";
 import { isValidConversationId, validateConversationId } from "./conversation.ts";
 import { assertCanonicalProjectRoot, environmentsEqual, projectEnvironment } from "./environment.ts";
 import { getProjectRoot, bindProjectRoot } from "./topic-settings.ts";
@@ -27,6 +27,19 @@ export interface ProjectAssignmentIntent {
   previousSessionId?: string;
   plannedSessionId: string;
   projectRoot: string;
+}
+
+/**
+ * Fully validated assignment work that is safe to quiesce and then commit.
+ * Planning may create only the intent-owned Conversation; it does not mutate
+ * Surface settings, Bindings, or the pending intent.
+ */
+export interface PreparedProjectAssignment {
+  readonly intent: ProjectAssignmentIntent;
+  readonly surface: Surface;
+  readonly conversation: ConversationState;
+  readonly currentProjectRoot: string | undefined;
+  readonly currentConversationId: ConversationId | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -89,17 +102,11 @@ export function clearPendingProjectAssignment(home: string): void {
   log.info("pending project assignment cleared", { surfaceId: intent.surfaceId });
 }
 
-/**
- * Create a project conversation with the planned id, or verify that an
- * existing conversation at that id already has the expected project
- * environment. Used both during first assignment and crash recovery.
- */
-export function createOrVerifyProjectSession(
+function createOrVerifyPlannedConversation(
   store: ConversationStore,
-  _surface: Surface,
   id: string,
   projectRoot: string,
-): ReturnType<ConversationStore["createWithId"]> {
+): ConversationState {
   validateConversationId(id);
   const existing = store.load(id as ConversationId);
   if (existing) {
@@ -115,52 +122,153 @@ export function createOrVerifyProjectSession(
   return store.createPlannedWithId(projectEnvironment(projectRoot), id as ConversationId);
 }
 
-/**
- * Replay a pending project-assignment intent, if one exists. This is the
- * durable commit point for first project assignment: it creates/verifies the
- * planned conversation, binds the project root to the surface, updates
- * bindings, and clears the intent.
- */
-export function reconcilePendingProjectAssignment(
-  home: string,
-  store: ConversationStore,
-  bindingStore: BindingStore,
-): void {
-  const intent = loadPendingProjectAssignment(home);
-  if (intent === null) return;
+function cloneBindings(bindings: BindingsFile): BindingsFile {
+  return { version: 1, surfaces: { ...bindings.surfaces } } as BindingsFile;
+}
 
-  const surface = parseSurfaceId(intent.surfaceId);
+interface ProjectAssignmentAuthoritySnapshot {
+  readonly bindings: BindingsFile;
+  readonly projectRoot: string | undefined;
+  readonly conversationId: ConversationId | undefined;
+  readonly plannedOwnerSurfaceId: string | undefined;
+}
+
+function readProjectAssignmentAuthority(
+  home: string,
+  bindingStore: BindingStore,
+  surface: Surface,
+  plannedConversationId: string,
+): ProjectAssignmentAuthoritySnapshot {
   const key = surfaceId(surface);
   const bindings = bindingStore.load();
   validateBindings(bindings);
-  const boundId = bindings.surfaces[key];
+  return {
+    bindings,
+    projectRoot: getProjectRoot(home, surface),
+    conversationId: bindings.surfaces[key] as ConversationId | undefined,
+    plannedOwnerSurfaceId: Object.entries(bindings.surfaces)
+      .find(([candidateSurfaceId, conversationId]) => (
+        candidateSurfaceId !== key && conversationId === plannedConversationId
+      ))?.[0],
+  };
+}
 
-  // Validate every existing authority source before creating Q or editing any
-  // other file. An intent only authorizes its own planned ID and, when present,
-  // its recorded predecessor; it never authorizes choosing another matching
-  // project conversation as a winner.
-  if (boundId !== undefined && boundId !== intent.plannedSessionId && boundId !== intent.previousSessionId) {
+function assertAssignmentAuthorityStable(
+  prepared: PreparedProjectAssignment,
+  authority: ProjectAssignmentAuthoritySnapshot,
+): void {
+  const key = surfaceId(prepared.surface);
+  if (authority.projectRoot !== prepared.currentProjectRoot) {
+    throw new Error(`pending assignment settings changed after planning for surface ${key}`);
+  }
+  if (authority.conversationId !== prepared.currentConversationId) {
+    throw new Error(`pending assignment binding changed after planning for surface ${key}`);
+  }
+  if (authority.plannedOwnerSurfaceId !== undefined) {
     throw new Error(
-      `pending assignment replay conflict: surface ${intent.surfaceId} is bound to ${boundId}, expected ${intent.previousSessionId ?? "(none)"} or ${intent.plannedSessionId}`,
+      `pending assignment binding changed after planning: planned conversation is bound to ${authority.plannedOwnerSurfaceId}`,
     );
   }
-  const settingsRoot = getProjectRoot(home, surface);
-  if (settingsRoot !== undefined && settingsRoot !== intent.projectRoot) {
+}
+
+function intentsEqual(left: ProjectAssignmentIntent, right: ProjectAssignmentIntent): boolean {
+  return left.version === right.version
+    && left.surfaceId === right.surfaceId
+    && left.previousSessionId === right.previousSessionId
+    && left.plannedSessionId === right.plannedSessionId
+    && left.projectRoot === right.projectRoot;
+}
+
+/**
+ * Validate a pending assignment and create or verify only its planned
+ * Conversation. No Surface setting, Binding, or pending-intent write occurs.
+ */
+export function preparePendingProjectAssignment(
+  home: string,
+  store: ConversationStore,
+  bindingStore: BindingStore,
+): PreparedProjectAssignment | null {
+  const intent = loadPendingProjectAssignment(home);
+  if (intent === null) return null;
+
+  const surface = parseSurfaceId(intent.surfaceId);
+  const authority = readProjectAssignmentAuthority(
+    home,
+    bindingStore,
+    surface,
+    intent.plannedSessionId,
+  );
+
+  // An intent authorizes only its planned ID and its recorded predecessor. It
+  // never authorizes choosing another matching project Conversation as winner.
+  if (
+    authority.conversationId !== undefined
+    && authority.conversationId !== intent.plannedSessionId
+    && authority.conversationId !== intent.previousSessionId
+  ) {
     throw new Error(
-      `pending assignment replay conflict: surface ${intent.surfaceId} is assigned to ${settingsRoot}, expected ${intent.projectRoot}`,
+      `pending assignment replay conflict: surface ${intent.surfaceId} is bound to ${authority.conversationId}, expected ${intent.previousSessionId ?? "(none)"} or ${intent.plannedSessionId}`,
+    );
+  }
+  if (authority.projectRoot !== undefined && authority.projectRoot !== intent.projectRoot) {
+    throw new Error(
+      `pending assignment replay conflict: surface ${intent.surfaceId} is assigned to ${authority.projectRoot}, expected ${intent.projectRoot}`,
+    );
+  }
+  if (authority.plannedOwnerSurfaceId !== undefined) {
+    throw new Error(
+      `pending assignment replay conflict: planned conversation ${intent.plannedSessionId} is bound to ${authority.plannedOwnerSurfaceId}`,
     );
   }
 
-  const conv = createOrVerifyProjectSession(store, surface, intent.plannedSessionId, intent.projectRoot);
+  // All existing authority has been validated before this sole planning write.
+  const conversation = createOrVerifyPlannedConversation(store, intent.plannedSessionId, intent.projectRoot);
+  return {
+    intent,
+    surface,
+    conversation,
+    currentProjectRoot: authority.projectRoot,
+    currentConversationId: authority.conversationId,
+  };
+}
 
-  if (settingsRoot === undefined) {
-    bindProjectRoot(home, surface, intent.projectRoot);
+/**
+ * Apply a previously prepared assignment. Callers with a live runtime host
+ * must quiesce `currentConversationId` first when it differs from the planned
+ * Conversation. Cold-start callers may apply directly because no host exists.
+ */
+export function applyPreparedProjectAssignment(
+  home: string,
+  bindingStore: BindingStore,
+  prepared: PreparedProjectAssignment,
+): ConversationState {
+  const currentIntent = loadPendingProjectAssignment(home);
+  if (currentIntent === null || !intentsEqual(currentIntent, prepared.intent)) {
+    throw new Error("pending assignment changed after planning; refusing stale commit");
   }
-  if (boundId !== conv.id) {
-    bindings.surfaces[key] = conv.id;
-    bindingStore.save(bindings);
+
+  const key = surfaceId(prepared.surface);
+  const authority = readProjectAssignmentAuthority(
+    home,
+    bindingStore,
+    prepared.surface,
+    prepared.conversation.id,
+  );
+  assertAssignmentAuthorityStable(prepared, authority);
+
+  if (prepared.currentProjectRoot === undefined) {
+    bindProjectRoot(home, prepared.surface, prepared.intent.projectRoot);
+  }
+  if (authority.conversationId !== prepared.conversation.id) {
+    const next = cloneBindings(authority.bindings);
+    next.surfaces[key] = prepared.conversation.id;
+    bindingStore.save(next);
   }
 
   clearPendingProjectAssignment(home);
-  log.info("replayed pending project assignment", { surfaceId: intent.surfaceId, sessionId: conv.id });
+  log.info("replayed pending project assignment", {
+    surfaceId: prepared.intent.surfaceId,
+    conversationId: prepared.conversation.id,
+  });
+  return prepared.conversation;
 }

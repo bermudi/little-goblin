@@ -1,9 +1,8 @@
-import type { SessionState } from "../sessions/types.ts";
+import type { ConversationState } from "../sessions/mod.ts";
 
 export interface NameCommandDeps {
-  hasSession: boolean;
   rawText: string;
-  session: SessionState | null;
+  conversation: ConversationState | null;
   setTitle: (title: string | undefined) => void;
 }
 
@@ -21,11 +20,11 @@ export function parseSessionName(rawText: string): string | undefined {
 }
 
 export function executeName(deps: NameCommandDeps): NameCommandResult {
-  if (!deps.hasSession || !deps.session) {
+  if (!deps.conversation) {
     return { kind: "missing-session", reply: NO_ACTIVE_SESSION_TO_NAME_REPLY };
   }
   const title = parseSessionName(deps.rawText);
   if (!title) return { kind: "usage", reply: NAME_USAGE_REPLY };
   deps.setTitle(title);
-  return { kind: "renamed", reply: `Named conversation \`${deps.session.id}\`: ${title}` };
+  return { kind: "renamed", reply: `Named conversation \`${deps.conversation.id}\`: ${title}` };
 }

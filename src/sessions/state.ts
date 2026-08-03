@@ -1,5 +1,9 @@
-import { readFileSync } from "node:fs";
-import type { ConversationState, ConversationId, SessionState } from "./types.ts";
+import type { ConversationState, ConversationId } from "./types.ts";
+import {
+  assertInternalSessionId,
+  assertInternalSessionState,
+  type InternalSessionState,
+} from "./internal-session.ts";
 import type { ExecutionEnvironment } from "./environment.ts";
 import { isCanonicalProjectRoot } from "./environment.ts";
 import { validateConversationId } from "./conversation.ts";
@@ -66,20 +70,6 @@ function validateConversationState(id: ConversationId, raw: unknown): Conversati
   };
 }
 
-function validateState(state: unknown, id: string): SessionState | null {
-  if (state === undefined) return null;
-  if (!isRecord(state)) {
-    throw new Error(`session ${id} state is not an object`);
-  }
-  if (state.id !== id) {
-    throw new Error(`session ${id} state file id mismatch: ${String(state.id)}`);
-  }
-  if (!isValidExecutionEnvironment(state.executionEnvironment)) {
-    throw new Error(`session ${id} has missing or invalid executionEnvironment`);
-  }
-  return state as unknown as SessionState;
-}
-
 /**
  * Load canonical conversation state from disk, dropping migration-only legacy
  * fields (chatId, topicId, modelName, thinkingLevel, projectDir) from the
@@ -107,42 +97,21 @@ export function saveConversationState(home: string, state: ConversationState): v
   saveJsonFile(statePath(home, state.id), canonical);
 }
 
-/**
- * Load session state from disk.
- * Returns null if the session doesn't exist.
- * Throws if state exists but lacks a valid executionEnvironment.
- *
- * @deprecated Use loadConversationState for canonical reads; SessionState is a
- * legacy compatibility shape.
- */
-export function loadState(home: string, id: string): SessionState | null {
+/** Load and validate the explicit Surface-free internal runtime record. */
+export function loadInternalSessionState(home: string, id: string): InternalSessionState | null {
+  assertInternalSessionId(id);
   const state = loadJsonFile<unknown | undefined>(statePath(home, id), undefined);
-  return validateState(state, id);
-}
-
-/**
- * Load session state without validating executionEnvironment. Used only by
- * environment migration, which must read legacy state before rewriting it.
- * Malformed JSON is treated as a migration failure, not a default value.
- */
-export function loadLegacyState(home: string, id: string): SessionState | null {
-  const path = statePath(home, id);
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf-8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw e;
+  if (state === undefined) return null;
+  assertInternalSessionState(state);
+  if (state.id !== id) {
+    throw new Error(`internal session ${id} state file id mismatch: ${state.id}`);
   }
-  return JSON.parse(raw) as SessionState;
+  return state;
 }
 
-/**
- * Save session state atomically (write to tmp, then rename).
- *
- * @deprecated Use saveConversationState for canonical writes; this preserves
- * legacy fields for compatibility callers only.
- */
-export function saveState(home: string, state: SessionState): void {
+/** Persist the explicit Surface-free internal runtime record atomically. */
+export function saveInternalSessionState(home: string, state: InternalSessionState): void {
+  assertInternalSessionId(state.id);
+  assertInternalSessionState(state);
   saveJsonFile(statePath(home, state.id), state);
 }

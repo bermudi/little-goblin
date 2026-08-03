@@ -14,8 +14,6 @@ import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.
 import { MetricsStore } from "../metrics/mod.ts";
 import {
   ConversationStore,
-  type SessionState,
-  runtimeSessionWithPreferences,
   type ConversationState,
 } from "../sessions/mod.ts";
 import { surfaceId, type Surface, type GuestSurface } from "../surface.ts";
@@ -92,7 +90,7 @@ export interface TelegramIntakeOptions {
    * (Telegram rendering + the `onTopicNotFound` orphan-archive hook). Tests
    * inject a fake to observe sink creation without a real `MessageBuffer`.
    */
-  createMessageBuffer?: (surface: Surface, session?: SessionState) => TurnSink;
+  createMessageBuffer?: (surface: Surface, session?: ConversationState) => TurnSink;
   /** Shared schedule store for `/schedule`. Wired in Phase 6 (bot.ts). */
   scheduleStore?: ScheduleStore;
   /** Shared external agent runner. Wired in Phase 6 (bot.ts). */
@@ -103,7 +101,7 @@ export interface TelegramIntakeOptions {
 
 type ActiveTurn = {
   surface: Surface;
-  session: SessionState;
+  session: ConversationState;
   environment: ExecutionEnvironment;
   schedule: (
     run: (runner: AgentRunner, isCurrent: () => boolean) => Promise<void>,
@@ -202,7 +200,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   // surface for a surface. This rendering logic lived inside the dispatcher
   // before relocation; it moves here (the Telegram layer) so the dispatcher
   // stays transport-agnostic. Tests override via `options.createMessageBuffer`.
-  const createMessageBuffer = options.createMessageBuffer ?? ((surface: Surface, session?: SessionState): TurnSink => {
+  const createMessageBuffer = options.createMessageBuffer ?? ((surface: Surface, session?: ConversationState): TurnSink => {
     const metrics = session ? new MetricsStore(cfg.goblinHome, session.id) : undefined;
     return new MessageBuffer(bot, surface, {
       visibility: cfg.toolVisibility,
@@ -304,7 +302,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   function scheduleFreshTurn(
     message: TelegramIntakeMessage,
     surface: Surface,
-    session: SessionState,
+    session: ConversationState,
     runner: AgentRunner,
     content: PromptContent,
     failureLog: string,
@@ -335,15 +333,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
    * semantics stay identical: create runners, dispose runners (severing their
    * prompt queue chain), or enqueue a fresh prompt.
    */
-  async function applySideEffects(sideEffects: SideEffect[], message: TelegramIntakeMessage, surface: Surface): Promise<void> {
+  async function applySideEffects(sideEffects: SideEffect[], message: TelegramIntakeMessage): Promise<void> {
     for (const effect of sideEffects) {
       if (effect.kind === "runner-created") {
-        await dispatcher.getOrCreateRunner(effect.session, effect.surface);
+        await dispatcher.getOrCreateRunner(effect.conversation, effect.surface);
       } else if (effect.kind === "runner-disposed") {
-        await dispatcher.disposeRunner(effect.sessionId);
+        await dispatcher.disposeRunner(effect.conversationId);
       } else if (effect.kind === "queue-prompt") {
-        const queueRunner = await dispatcher.getOrCreateRunner(effect.session, surface);
-        scheduleFreshTurn(message, surface, effect.session, queueRunner, effect.text, "queued prompt failed");
+        const queueRunner = await dispatcher.getOrCreateRunner(effect.conversation, effect.surface);
+        scheduleFreshTurn(message, effect.surface, effect.conversation, queueRunner, effect.text, "queued prompt failed");
       }
     }
   }
@@ -361,7 +359,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   function scheduleDeferredCommand(
     message: TelegramIntakeMessage,
     surface: Surface,
-    session: SessionState,
+    session: ConversationState,
     runner: AgentRunner,
     rawText: string,
     command: string,
@@ -382,14 +380,14 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           rawText,
           surface,
 
-          session,
+          conversation: session,
           existingRunner: currentRunner,
           bot,
         });
         // Queue-timing commands always have a handler, so fallthrough is
         // impossible here — but narrow for the typechecker regardless.
         if (result.kind === "fallthrough") return;
-        await applySideEffects(result.sideEffects, message, surface);
+        await applySideEffects(result.sideEffects, message);
         if (result.kind === "replied") await sendSystemReply(message, result.reply, result.tag ?? "ok");
       },
       async (err) => {
@@ -407,7 +405,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   function steerOrFallbackToFreshTurn(
     message: TelegramIntakeMessage,
     surface: Surface,
-    session: SessionState,
+    session: ConversationState,
     runner: AgentRunner,
     text: string,
   ): void {
@@ -437,7 +435,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       log.error(`failed to resolve ${kind}`, { error: String(err), surfaceId: surfaceId(surface) });
       return null;
     }
-    const session = runtimeSessionWithPreferences(conversation, surface, cfg.goblinHome);
+    const session = conversation;
 
     return {
       surface,
@@ -486,7 +484,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     externalAgentRunner: options.externalAgentRunner,
   };
 
-  async function runPrompt(message: TelegramIntakeMessage, surface: Surface, runner: AgentRunner, session: SessionState, content: PromptContent): Promise<void> {
+  async function runPrompt(message: TelegramIntakeMessage, surface: Surface, runner: AgentRunner, session: ConversationState, content: PromptContent): Promise<void> {
     const buffer = dispatcher.createMessageBuffer(surface, session);
     await runner.prompt(message.prepare(content), buffer);
   }
@@ -514,7 +512,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     if (command !== null) {
       // Commands, status reads, and scheduler-related interactions inspect the
       // current binding without creating history.
-      const session = existingConversation ? runtimeSessionWithPreferences(existingConversation, surface, cfg.goblinHome) : null;
+      const session = existingConversation ? existingConversation : null;
       const existingRunner = session ? dispatcher.getRunner(session.id) : null;
       const timing = resolveTiming(def, rawText ?? "");
 
@@ -555,12 +553,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           rawText: rawText ?? "",
           surface,
 
-          session,
+          conversation: session,
           existingRunner,
           bot,
         });
         if (result.kind !== "fallthrough") {
-          await applySideEffects(result.sideEffects, message, surface);
+          await applySideEffects(result.sideEffects, message);
           if (result.kind === "handled") return;
           await sendSystemReply(message, result.reply, result.tag ?? "ok");
           return;
@@ -576,7 +574,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     // Ordinary authorized content lazily creates a conversation on any supported
     // surface, including DMs and guest text.
     const conversation = await lifecycle.resolveOrStart(surface);
-    const session = runtimeSessionWithPreferences(conversation, surface, cfg.goblinHome);
+    const session = conversation;
 
     const runner = await dispatcher.getOrCreateRunner(session, surface);
     if (!rawText) return;
@@ -886,7 +884,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       }
       return;
     }
-    const session = runtimeSessionWithPreferences(conversation, surface, cfg.goblinHome);
+    const session = conversation;
     const runner = await dispatcher.getOrCreateRunner(session, surface);
 
     // Busy path: never queue. guest_query_id would expire before a queued turn

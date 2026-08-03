@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { dmSurface, surfaceId } from "../surface.ts";
 import type { SurfaceId } from "../surface.ts";
 import {
+  applyPreparedProjectAssignment,
   clearPendingProjectAssignment,
   loadPendingProjectAssignment,
-  reconcilePendingProjectAssignment,
+  preparePendingProjectAssignment,
   savePendingProjectAssignment,
 } from "./project-assignment.ts";
 import { pendingProjectAssignmentPath, topicSettingsPath } from "./paths.ts";
@@ -111,7 +112,13 @@ describe("project-assignment", () => {
     });
   });
 
-  describe("reconcilePendingProjectAssignment", () => {
+  describe("prepared assignment", () => {
+    function prepareAndApply(): void {
+      const prepared = preparePendingProjectAssignment(tmpDir, store, bindings);
+      if (prepared === null) throw new Error("expected a pending assignment");
+      applyPreparedProjectAssignment(tmpDir, bindings, prepared);
+    }
+
     function makeProjectDir(name: string): string {
       const dir = join(tmpDir, name);
       mkdirSync(dir, { recursive: true });
@@ -136,7 +143,7 @@ describe("project-assignment", () => {
       projectRoot = makeProjectDir("project");
     });
 
-    it("creates Q when Q is absent", () => {
+    it("creates Q during planning without writing authority, then applies the plan", () => {
       savePendingProjectAssignment(tmpDir, {
         version: 1,
         surfaceId: key,
@@ -144,10 +151,18 @@ describe("project-assignment", () => {
         projectRoot,
       });
 
-      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+      const prepared = preparePendingProjectAssignment(tmpDir, store, bindings);
+
+      expect(prepared?.conversation.id).toBe(plannedId);
+      expect(store.load(plannedId)?.executionEnvironment).toEqual(projectEnvironment(projectRoot));
+      expect(loadPendingProjectAssignment(tmpDir)?.plannedSessionId).toBe(plannedId);
+      expect(bindings.bindings.surfaces[key]).toBeUndefined();
+      expect(loadTopicSettings(tmpDir).surfaces[key]).toBeUndefined();
+
+      if (prepared === null) throw new Error("expected a prepared assignment");
+      applyPreparedProjectAssignment(tmpDir, bindings, prepared);
 
       expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
-      expect(store.load(plannedId)?.executionEnvironment).toEqual(projectEnvironment(projectRoot));
       expect(bindings.bindings.surfaces[key]).toBe(plannedId);
       expect(loadTopicSettings(tmpDir).surfaces[key]).toEqual({ projectRoot });
     });
@@ -161,7 +176,7 @@ describe("project-assignment", () => {
         projectRoot,
       });
 
-      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+      prepareAndApply();
 
       expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
       const list = store.list();
@@ -182,7 +197,7 @@ describe("project-assignment", () => {
         projectRoot,
       });
 
-      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+      prepareAndApply();
 
       expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
       expect(bindings.bindings.surfaces[key]).toBe(plannedId);
@@ -201,7 +216,7 @@ describe("project-assignment", () => {
       });
       bindings.bindings = { version: 1, surfaces: { [key]: previousId } } as BindingsFile;
 
-      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+      prepareAndApply();
 
       expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
       expect(bindings.bindings.surfaces[key]).toBe(plannedId);
@@ -221,7 +236,7 @@ describe("project-assignment", () => {
       bindings.bindings = { version: 1, surfaces: { [key]: plannedId } } as BindingsFile;
 
       const beforeList = store.list();
-      reconcilePendingProjectAssignment(tmpDir, store, bindings);
+      prepareAndApply();
 
       expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
       expect(store.list()).toEqual(beforeList);
@@ -237,10 +252,27 @@ describe("project-assignment", () => {
         projectRoot,
       });
 
-      expect(() => reconcilePendingProjectAssignment(tmpDir, store, bindings)).toThrow(/different execution environment/);
+      expect(() => prepareAndApply()).toThrow(/different execution environment/);
       expect(loadPendingProjectAssignment(tmpDir)).not.toBeNull();
       expect(loadTopicSettings(tmpDir).surfaces[key]).toBeUndefined();
       expect(bindings.bindings.surfaces[key]).toBeUndefined();
+    });
+
+    it("rejects a planned Conversation already bound to another Surface before writing settings", () => {
+      writeState(plannedId, projectEnvironment(projectRoot));
+      const otherKey = surfaceId(dmSurface(2));
+      bindings.bindings = { version: 1, surfaces: { [otherKey]: plannedId } } as BindingsFile;
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+
+      expect(() => prepareAndApply()).toThrow(/planned conversation.*bound to/);
+      expect(loadPendingProjectAssignment(tmpDir)).not.toBeNull();
+      expect(loadTopicSettings(tmpDir).surfaces[key]).toBeUndefined();
+      expect(bindings.bindings.surfaces[otherKey]).toBe(plannedId);
     });
 
     it("rejects malformed or chatId:0 planned state without changing other authority", () => {
@@ -255,7 +287,7 @@ describe("project-assignment", () => {
       });
       const malformedBefore = readFileSync(join(stateDir, "state.json"), "utf-8");
 
-      expect(() => reconcilePendingProjectAssignment(tmpDir, store, bindings)).toThrow(SyntaxError);
+      expect(() => prepareAndApply()).toThrow(SyntaxError);
       expect(readFileSync(join(stateDir, "state.json"), "utf-8")).toBe(malformedBefore);
       expect(loadTopicSettings(tmpDir).surfaces[key]).toBeUndefined();
       expect(bindings.bindings.surfaces[key]).toBeUndefined();
@@ -269,7 +301,7 @@ describe("project-assignment", () => {
         executionEnvironment: personalEnvironment(),
       }));
 
-      expect(() => reconcilePendingProjectAssignment(tmpDir, store, bindings)).toThrow(/unexpected state field: chatId/);
+      expect(() => prepareAndApply()).toThrow(/unexpected state field: chatId/);
       expect(loadTopicSettings(tmpDir).surfaces[key]).toBeUndefined();
       expect(bindings.bindings.surfaces[key]).toBeUndefined();
     });
@@ -293,7 +325,7 @@ describe("project-assignment", () => {
       });
       bindings.bindings = { version: 1, surfaces: { [key]: "not-valid" } } as BindingsFile;
 
-      expect(() => reconcilePendingProjectAssignment(tmpDir, store, bindings)).toThrow(/invalid conversation id/);
+      expect(() => prepareAndApply()).toThrow(/invalid conversation id/);
       expect(bindings.bindings.surfaces[key]).toBe("not-valid");
       expect(loadPendingProjectAssignment(tmpDir)).not.toBeNull();
     });

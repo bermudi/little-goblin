@@ -17,10 +17,9 @@ import { executeArchive } from "./archive.ts";
 import { executeName } from "./name.ts";
 import { executeResume } from "./resume.ts";
 import { sessionDir, sessionsDir, surfaceHeartbeatPath } from "../sessions/paths.ts";
-import { createConversationLifecycle, ConversationLifecycleManager, type ConversationLifecycle, type SurfaceSettings } from "../orchestration/conversation-lifecycle.ts";
+import { createConversationLifecycle, ConversationLifecycleManager, FileSurfaceSettings, type ConversationLifecycle, type SurfaceSettings } from "../orchestration/conversation-lifecycle.ts";
 import type { ConversationRuntimeHost } from "../orchestration/conversation-runtime-host.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
-import { runtimeSession, runtimeSessionWithPreferences } from "../sessions/conversation.ts";
 import { FileBindingStore } from "../sessions/bindings.ts";
 import { setModelName } from "../sessions/topic-settings.ts";
 import { personalEnvironment, projectEnvironment } from "../sessions/environment.ts";
@@ -60,8 +59,8 @@ describe("rapid command spam integration", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function runtimeSessionFor(conv: import("../sessions/types.ts").ConversationState, surface = dmSurface(123456)) {
-    return runtimeSessionWithPreferences(conv, surface, cfg.goblinHome);
+  function conversationFor(conv: import("../sessions/types.ts").ConversationState) {
+    return conv;
   }
 
   class FakeRuntimeHost implements ConversationRuntimeHost {
@@ -99,10 +98,10 @@ describe("rapid command spam integration", () => {
     const surface = dmSurface(123456);
 
     const newResult = await executeNew({
-      createSession: async () => runtimeSessionFor(await lifecycle.rotate(surface)),
+      createConversation: async () => conversationFor(await lifecycle.rotate(surface)),
     });
     expect(newResult.kind).toBe("created");
-    const sessionId = newResult.session.id;
+    const sessionId = newResult.conversation.id;
     expect(existsSync(sessionDir(cfg.goblinHome, sessionId))).toBe(true);
 
     const afterNew = lifecycle.inspect(surface);
@@ -130,14 +129,14 @@ describe("rapid command spam integration", () => {
     const surface = dmSurface(123456);
 
     const first = await executeNew({
-      createSession: async () => runtimeSessionFor(await lifecycle.rotate(surface)),
+      createConversation: async () => conversationFor(await lifecycle.rotate(surface)),
     });
-    const firstId = first.session.id;
+    const firstId = first.conversation.id;
 
     const second = await executeNew({
-      createSession: async () => runtimeSessionFor(await lifecycle.rotate(surface)),
+      createConversation: async () => conversationFor(await lifecycle.rotate(surface)),
     });
-    const secondId = second.session.id;
+    const secondId = second.conversation.id;
     expect(secondId).not.toBe(firstId);
 
     expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
@@ -162,31 +161,30 @@ describe("rapid command spam integration", () => {
     const surface = dmSurface(123456);
 
     const first = await executeNew({
-      createSession: async () => runtimeSessionFor(await lifecycle.rotate(surface)),
+      createConversation: async () => conversationFor(await lifecycle.rotate(surface)),
     });
-    const firstId = first.session.id;
+    const firstId = first.conversation.id;
 
     const nameResult = executeName({
-      hasSession: true,
       rawText: "/name ttt",
-      session: first.session,
+      conversation: first.conversation,
       setTitle: (title) => conversationStore.setTitle(firstId, title),
     });
     expect(nameResult.kind).toBe("renamed");
 
     const second = await executeNew({
-      createSession: async () => runtimeSessionFor(await lifecycle.rotate(surface)),
+      createConversation: async () => conversationFor(await lifecycle.rotate(surface)),
     });
-    const secondId = second.session.id;
+    const secondId = second.conversation.id;
     expect(secondId).not.toBe(firstId);
     expect(lifecycle.inspect(surface)?.id).toBe(secondId);
     expect(existsSync(sessionDir(cfg.goblinHome, firstId))).toBe(true);
 
-    const resumable = lifecycle.listResumable(surface).map((c) => runtimeSessionFor(c, surface));
+    const resumable = lifecycle.listResumable(surface).map((c) => conversationFor(c));
     const resumeResult = await executeResume({
       rawText: "/resume ttt",
-      sessions: resumable,
-      bindSession: async (sessionId) => runtimeSessionFor(await lifecycle.resume(surface, sessionId as import("../sessions/types.ts").ConversationId), surface),
+      conversations: resumable,
+      bindConversation: async (sessionId) => conversationFor(await lifecycle.resume(surface, sessionId as import("../sessions/types.ts").ConversationId)),
     });
 
     expect(resumeResult.kind).toBe("resumed");
@@ -200,21 +198,21 @@ describe("rapid command spam integration", () => {
     mkdirSync(projectRoot, { recursive: true });
 
     const projectConv = conversationStore.create(projectEnvironment(projectRoot), "project conv");
-    const compatible = lifecycle.listResumable(surface).map((c) => runtimeSessionFor(c, surface));
-    const all = conversationStore.list().map((c) => runtimeSession(c, surface));
+    const compatible = lifecycle.listResumable(surface).map((c) => conversationFor(c));
+    const all = conversationStore.list().map((c) => c);
     const compatibleIds = new Set(compatible.map((s) => s.id));
     const incompatible = all.filter((s) => !compatibleIds.has(s.id));
 
     const result = await executeResume({
       rawText: "/resume project conv",
-      sessions: compatible,
-      incompatibleSessions: incompatible,
-      bindSession: async (sessionId) => runtimeSessionFor(await lifecycle.resume(surface, sessionId as ConversationId), surface),
+      conversations: compatible,
+      incompatibleConversations: incompatible,
+      bindConversation: async (sessionId) => conversationFor(await lifecycle.resume(surface, sessionId as ConversationId)),
     });
 
     expect(result.kind).toBe("incompatible");
     if (result.kind !== "incompatible") throw new Error("expected incompatible");
-    expect(result.session.id).toBe(projectConv.id);
+    expect(result.conversation.id).toBe(projectConv.id);
     expect(lifecycle.inspect(surface)).toBeNull();
   });
 
@@ -224,7 +222,7 @@ describe("rapid command spam integration", () => {
       tmpDir,
       conversationStore,
       new FileBindingStore(tmpDir),
-      staticSettings(personalEnvironment()),
+      new FileSurfaceSettings(tmpDir),
       runtimeHost,
     );
     const source = dmSurface(111);
@@ -234,26 +232,22 @@ describe("rapid command spam integration", () => {
     const displaced = await manager.resolveOrStart(destination);
     setModelName(tmpDir, destination, "poe/DestinationModel");
 
-    const compatible = manager.listResumable(destination).map((c) => runtimeSessionWithPreferences(c, destination, tmpDir));
-    const all = conversationStore.list().map((c) => runtimeSession(c, destination));
+    const compatible = manager.listResumable(destination).map((c) => c);
+    const all = conversationStore.list().map((c) => c);
     const compatibleIds = new Set(compatible.map((s) => s.id));
     const incompatible = all.filter((s) => !compatibleIds.has(s.id));
 
     const result = await executeResume({
       rawText: `/resume ${target.id}`,
-      sessions: compatible,
-      incompatibleSessions: incompatible,
-      bindSession: async (sessionId) => runtimeSessionWithPreferences(
-        await manager.resume(destination, sessionId as ConversationId),
-        destination,
-        tmpDir,
-      ),
+      conversations: compatible,
+      incompatibleConversations: incompatible,
+      bindConversation: (conversationId) => manager.resume(destination, conversationId as ConversationId),
     });
 
     expect(result.kind).toBe("resumed");
     if (result.kind !== "resumed") throw new Error("expected resumed");
-    expect(result.session.id).toBe(target.id);
-    expect(result.session.modelName).toBe("poe/DestinationModel");
+    expect(result.conversation.id).toBe(target.id);
+    expect(manager.settings.getModelName(destination)).toBe("poe/DestinationModel");
     expect(manager.inspect(source)).toBeNull();
     expect(manager.inspect(destination)?.id).toBe(target.id);
     expect(existsSync(sessionDir(tmpDir, displaced.id))).toBe(true);
@@ -309,7 +303,7 @@ describe("rapid command spam integration", () => {
 
     // /new rotates to a fresh conversation.
     const newResult = await executeNew({
-      createSession: async () => runtimeSessionFor(await lifecycle.rotate(surface)),
+      createConversation: async () => conversationFor(await lifecycle.rotate(surface)),
     });
     expect(newResult.kind).toBe("created");
     expect(scheduleStore.getHeartbeat(surface)?.id).toBe(heartbeat.id);

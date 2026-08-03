@@ -8,8 +8,8 @@ import type { Config } from "../config.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import { log } from "../log.ts";
 import { MemoryStore } from "../memory/mod.ts";
-import { SessionManager } from "../sessions/mod.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
+import { InternalSessionStore } from "../sessions/internal-session-store.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { dmSurface, guestSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
 import { metricsPath, transcriptPath } from "../sessions/paths.ts";
@@ -118,7 +118,7 @@ function makeGuestMessage(chatId = 99): {
 
 interface IntakeHarness {
   cfg: Config;
-  manager: SessionManager;
+  conversationStore: ConversationStore;
   agentRunners: Map<string, AgentRunner>;
   intake: ReturnType<typeof createTelegramIntake> & { lifecycle: ConversationLifecycle };
   bot: Bot;
@@ -200,7 +200,7 @@ function installVoiceFetch(opts: {
 }
 
 function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new SubagentRunner(cfg)): IntakeHarness {
-  const manager = new SessionManager(cfg);
+  const conversationStore = new ConversationStore(cfg.goblinHome);
   const agentRunners = new Map<string, AgentRunner>();
   const bufferLocators: Surface[] = [];
   const editForumTopic = mock(async () => true);
@@ -221,7 +221,7 @@ function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new Su
       return runner as unknown as AgentRunner;
     },
   });
-  return { cfg, manager, agentRunners, intake, bot, bufferLocators, editForumTopic, subagentRunner };
+  return { cfg, conversationStore, agentRunners, intake, bot, bufferLocators, editForumTopic, subagentRunner };
 }
 
 function makeMessage(replies: string[] = [], overrides: Partial<TelegramIntakeMessage> = {}): TelegramIntakeMessage {
@@ -289,13 +289,13 @@ afterEach(() => {
 
 describe("Telegram intake", () => {
   it("handles command creation, idle prompts, and streaming steer without buildBot", async () => {
-    const { manager, intake } = makeHarness();
+    const { conversationStore, intake } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
 
     await intake.handleText(message, "/new");
 
-    expect(manager.list()).toHaveLength(1);
+    expect(conversationStore.list()).toHaveLength(1);
     expect(replies[0]).toContain("Created new conversation");
     expect(runners).toHaveLength(1);
 
@@ -312,28 +312,28 @@ describe("Telegram intake", () => {
   });
 
   it("applies runner-disposing command side effects", async () => {
-    const { cfg, agentRunners, intake, manager } = makeHarness();
+    const { cfg, agentRunners, intake } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
 
     await intake.handleText(message, "/new");
-    const firstSession = manager.list()[0]!;
+    const firstConversation = intake.lifecycle.inspect(dmSurface(1))!;
     const firstRunner = runners[0]!;
 
     await intake.handleText(message, "/archive");
 
     expect(firstRunner.dispose).toHaveBeenCalledTimes(1);
-    expect(agentRunners.has(firstSession.id)).toBe(false);
+    expect(agentRunners.has(firstConversation.id)).toBe(false);
     expect(replies.at(-1)).toContain("Conversation archived");
 
     await intake.handleText(message, "/new");
-    const secondSession = manager.list().at(-1)!;
+    const secondConversation = intake.lifecycle.inspect(dmSurface(1))!;
     const secondRunner = runners.at(-1)!;
 
     await intake.handleText(message, `/project ${cfg.goblinHome}`);
 
     expect(secondRunner.dispose).toHaveBeenCalledTimes(1);
-    expect(agentRunners.has(secondSession.id)).toBe(false);
+    expect(agentRunners.has(secondConversation.id)).toBe(false);
     expect(replies.at(-1)).toContain("Project assigned");
   });
 
@@ -374,20 +374,20 @@ describe("Telegram intake", () => {
   });
 
   it("lazily creates a conversation for plain text when none is bound", async () => {
-    const { intake, manager } = makeHarness();
+    const { intake, conversationStore } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
 
     await intake.handleText(message, "hello");
     await waitFor(() => runners[0]?.prompt?.mock?.calls?.length === 1);
 
-    expect(manager.list()).toHaveLength(1);
+    expect(conversationStore.list()).toHaveLength(1);
     expect(runners[0]!.prompt).toHaveBeenCalledWith("[prepared] hello", expect.anything());
     expect(replies).toEqual([]);
   });
 
   it("lazily creates a conversation for the first unbound media message", async () => {
-    const { intake, manager } = makeHarness();
+    const { intake, conversationStore } = makeHarness();
     installVoiceFetch({ audio: new Uint8Array([1, 2, 3]) });
     const replies: string[] = [];
     const message = makeMessage(replies);
@@ -395,7 +395,7 @@ describe("Telegram intake", () => {
     await intake.handlePhoto(message, fakeApi(), ["small", "big"], "first photo");
     await waitFor(() => runners[0]?.prompt?.mock?.calls?.length === 1);
 
-    expect(manager.list()).toHaveLength(1);
+    expect(conversationStore.list()).toHaveLength(1);
     const content = runners[0]!.prompt.mock.calls[0]![0] as { type: string; text?: string; mimeType?: string }[];
     expect(Array.isArray(content)).toBe(true);
     expect(content.some((part) => part.type === "text" && part.text === "first photo")).toBe(true);
@@ -404,14 +404,14 @@ describe("Telegram intake", () => {
   });
 
   it("writes assistant transcript with the destination surface id after a cross-surface resume", async () => {
-    const { cfg, intake, manager } = makeHarness();
+    const { cfg, intake } = makeHarness();
     const replies1: string[] = [];
     const message1 = makeMessage(replies1, { surface: dmSurface(1) });
 
     await intake.handleText(message1, "hello");
     await waitFor(() => runners[0]?.prompt?.mock?.calls?.length === 1);
 
-    const convId = manager.list()[0]!.id;
+    const convId = intake.lifecycle.inspect(dmSurface(1))!.id;
     expect(convId).toBeDefined();
 
     const replies2: string[] = [];
@@ -511,7 +511,7 @@ describe("Telegram intake", () => {
   });
 
   it("records a photo download failure reply in the transcript", async () => {
-    const { intake, manager, cfg } = makeHarness();
+    const { intake, cfg } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
     globalThis.fetch = mock(async () => new Response("", { status: 404 })) as unknown as typeof fetch;
@@ -523,8 +523,8 @@ describe("Telegram intake", () => {
     const replyText = "`[error]` Sorry, I couldn't download that image\\.";
     expect(replies.some((r) => r === replyText)).toBe(true);
 
-    const sessionId = manager.list()[0]!.id;
-    const lines = readTranscriptLines(cfg.goblinHome, sessionId);
+    const conversationId = intake.lifecycle.inspect(dmSurface(1))!.id;
+    const lines = readTranscriptLines(cfg.goblinHome, conversationId);
     const lastEntry = lines.at(-1);
     expect(lastEntry).toEqual({
       ts: expect.any(String),
@@ -541,7 +541,7 @@ describe("Telegram intake", () => {
     // Surface context, never mutates the transcript, and emits a telemetry
     // signal that contains only bounded identifiers.
     const cfg = makeConfig();
-    const manager = new SessionManager(cfg);
+    const conversationStore = new ConversationStore(cfg.goblinHome);
     const agentRunners = new Map<string, AgentRunner>();
     const warnSpy = spyOn(log, "warn");
 
@@ -565,9 +565,9 @@ describe("Telegram intake", () => {
     globalThis.fetch = mock(async () => new Response("", { status: 404 })) as unknown as typeof fetch;
 
     await intake.handleText(message, "/new");
-    const conversationCount = manager.list().length;
+    const conversationCount = conversationStore.list().length;
     const runnerCount = agentRunners.size;
-    const sessionId = manager.list()[0]!.id;
+    const conversationId = intake.lifecycle.inspect(dmSurface(1))!.id;
 
     await intake.handlePhoto(message, fakeApi(), ["file-id"], undefined);
     await flushMicrotasks();
@@ -577,18 +577,18 @@ describe("Telegram intake", () => {
     expect(replies.some((r) => r === replyText)).toBe(true);
 
     // 2. The transcript JSONL is unchanged (no synthetic entry appended).
-    const path = transcriptPath(cfg.goblinHome, sessionId);
+    const path = transcriptPath(cfg.goblinHome, conversationId);
     expect(readFileSync(path, "utf-8").trim()).toBe("");
 
     // 3. No additional binding lookup or runtime creation occurred.
-    expect(manager.list()).toHaveLength(conversationCount);
+    expect(conversationStore.list()).toHaveLength(conversationCount);
     expect(agentRunners.size).toBe(runnerCount);
 
     // 4. The telemetry signal is bounded and contains no reply text.
     const noContextCall = warnSpy.mock.calls.find((call) => call[0] === "no-transcript-writer-context");
     expect(noContextCall).toBeDefined();
     const payload = noContextCall![1] as Record<string, unknown>;
-    expect(payload.sessionId).toBe(sessionId);
+    expect(payload.sessionId).toBe(conversationId);
     expect(payload.surfaceId).toBe("tg:v1:dm:1");
     expect(payload.surfaceKind).toBe("dm");
     expect(payload.runnerPresent).toBe(true);
@@ -870,7 +870,7 @@ describe("Telegram intake", () => {
     await flushMicrotasks();
 
     slow.resolve();
-    // /model succeeds first, then /new creates the second session.
+    // /model succeeds first, then /new creates the second Conversation.
     await waitFor(() => replies.filter((r) => r.includes("Switched to")).length === 1);
     await waitFor(() => replies.filter((r) => r.includes("Created new conversation")).length === 2);
 
@@ -913,12 +913,11 @@ describe("Telegram intake", () => {
     expect(replies.at(-1)).toBe("`[error]` Failed to switch model\\. Please try again\\.");
   });
 
-  it("shares per-session ordering between /queue and scheduled dispatch", async () => {
-    // The dispatcher extraction requirement: Telegram `/queue` prompts and
-    // scheduler-dispatched prompts must serialize through the same per-session
-    // chain so a due scheduled turn cannot start while a queued prompt is in
-    // flight. We drive both paths through the same dispatcher instance.
-    const { intake, manager } = makeHarness();
+  it("shares per-Conversation ordering between /queue and scheduled dispatch", async () => {
+    // Telegram `/queue` prompts and scheduler-dispatched prompts must serialize
+    // through the same per-Conversation chain so a due scheduled turn cannot
+    // start while a queued prompt is in flight.
+    const { intake } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
     const pending = deferred();
@@ -930,7 +929,7 @@ describe("Telegram intake", () => {
     };
 
     await intake.handleText(message, "/new");
-    const session = manager.list()[0]!;
+    const conversation = intake.lifecycle.inspect(dmSurface(1))!;
     const dispatcher = intake.dispatcher;
 
     // 1. Start a slow Telegram turn.
@@ -942,7 +941,7 @@ describe("Telegram intake", () => {
     await flushMicrotasks();
 
     // 3. Enqueue a scheduled turn on the SAME dispatcher (scheduler path).
-    dispatcher.enqueueScheduledTurn(session, dmSurface(1), "third (scheduled)");
+    dispatcher.enqueueScheduledTurn(conversation, dmSurface(1), "third (scheduled)");
     await flushMicrotasks();
 
     // Only the first turn has started; the other two wait on the chain.
@@ -957,9 +956,9 @@ describe("Telegram intake", () => {
     expect(order[2]).toBe("third (scheduled)");
   });
 
-  it("queues a scheduler tick behind an active Telegram turn for the same session", async () => {
+  it("queues a scheduler tick behind an active Telegram turn for the same Conversation", async () => {
     const cfg = makeConfig();
-    const { intake, manager } = makeHarness(cfg);
+    const { intake, conversationStore } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);
     const now = Date.parse("2026-07-04T12:00:00Z");
@@ -980,7 +979,9 @@ describe("Telegram intake", () => {
     });
     const loop = new SchedulerLoop({
       store,
-      sessionSource: manager,
+      lifecycle: intake.lifecycle,
+      conversationCatalog: conversationStore,
+      internalSessionStore: new InternalSessionStore(cfg.goblinHome),
       dispatcher: intake.dispatcher,
       clock: fixedClock(now),
       home: cfg.goblinHome,
@@ -1008,7 +1009,7 @@ describe("Telegram intake", () => {
     // before the queued scheduled turn starts. The isCurrent() guard must
     // abort the scheduled turn without producing side effects — the scheduled
     // prompt never reaches the disposed runner.
-    const { intake, manager, agentRunners } = makeHarness();
+    const { intake, agentRunners } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
     const pending = deferred();
@@ -1017,19 +1018,19 @@ describe("Telegram intake", () => {
     };
 
     await intake.handleText(message, "/new");
-    const session = manager.list()[0]!;
+    const conversation = intake.lifecycle.inspect(dmSurface(1))!;
     const dispatcher = intake.dispatcher;
     const firstRunner = runners[0]!;
 
     // Start a slow turn, then enqueue a scheduled turn behind it.
     await intake.handleText(message, "slow");
     await waitFor(() => firstRunner.isStreaming);
-    dispatcher.enqueueScheduledTurn(session, dmSurface(1), "scheduled prompt");
+    dispatcher.enqueueScheduledTurn(conversation, dmSurface(1), "scheduled prompt");
     await flushMicrotasks();
 
     // Swap the runner out (as /new does) before the scheduled turn starts.
-    await dispatcher.disposeRunner(session.id);
-    expect(agentRunners.has(session.id)).toBe(false);
+    await dispatcher.disposeRunner(conversation.id);
+    expect(agentRunners.has(conversation.id)).toBe(false);
 
     // Release the in-flight turn. The queued scheduled turn wakes, sees its
     // runner is no longer current, and aborts.
@@ -1040,7 +1041,7 @@ describe("Telegram intake", () => {
     expect(firstRunner.prompt).toHaveBeenCalledTimes(1);
     expect(firstRunner.prompt.mock.calls[0]![0]).toBe("[prepared] slow");
     // No new runner was created for the scheduled turn (isCurrent() aborted).
-    expect(dispatcher.hasRunner(session.id)).toBe(false);
+    expect(dispatcher.hasRunner(conversation.id)).toBe(false);
   });
 
   it("disposeRunner clears runner and queues before canceling subagents", async () => {
@@ -1166,7 +1167,7 @@ describe("Telegram intake", () => {
   it("replies that the voice could not be transcribed on ASR failure and does not prompt", async () => {
     const cfg = makeConfig();
     cfg.groqApiKey = "groq-key";
-    const { intake, manager, cfg: harnessCfg } = makeHarness(cfg);
+    const { intake, cfg: harnessCfg } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);
     installVoiceFetch({ groqStatus: 500, groqBody: '{"error":"internal"}' });
@@ -1182,8 +1183,8 @@ describe("Telegram intake", () => {
 
     // The error reply is recorded as an assistant entry so the context window
     // stays honest about what the bot said.
-    const sessionId = manager.list()[0]!.id;
-    const lines = readTranscriptLines(harnessCfg.goblinHome, sessionId);
+    const conversationId = intake.lifecycle.inspect(dmSurface(1))!.id;
+    const lines = readTranscriptLines(harnessCfg.goblinHome, conversationId);
     const lastEntry = lines.at(-1);
     expect(lastEntry).toEqual({
       ts: expect.any(String),
@@ -1404,36 +1405,38 @@ describe("Telegram intake", () => {
       expect(results).toHaveLength(0);
     });
 
-    it("auto-creates a guest session keyed on the foreign chat id", async () => {
-      const { intake, manager } = makeHarness();
+    it("auto-creates a guest Conversation keyed on the foreign chat id", async () => {
+      const { intake } = makeHarness();
       const { message, results } = makeGuestMessage(7777);
       MockAgentRunner.nextPrompt = async () => {};
 
       await intake.handleGuestMessage(message, "first");
 
       // A guest binding for chat 7777 now exists.
-      expect(await manager.peekBinding(guestSurface(7777))).not.toBeNull();
+      expect(intake.lifecycle.inspect(guestSurface(7777))).not.toBeNull();
       // And NOT a DM binding for the same id.
-      expect(await manager.peekBinding(dmSurface(7777))).toBeNull();
+      expect(intake.lifecycle.inspect(dmSurface(7777))).toBeNull();
       expect(results).toHaveLength(1);
     });
 
-    it("reuses the same guest session on a second summon from the same chat", async () => {
-      const { intake, manager } = makeHarness();
+    it("reuses the same guest Conversation on a second summon from the same chat", async () => {
+      const { intake, conversationStore } = makeHarness();
       MockAgentRunner.nextPrompt = async (_c, buffer) => {
         (buffer as GuestReplySink).onTextDelta("ack");
       };
 
       await intake.handleGuestMessage(makeGuestMessage(7777).message, "first");
-      const firstSession = await manager.peekBinding(guestSurface(7777));
-      expect(firstSession).not.toBeNull();
+      const firstConversation = intake.lifecycle.inspect(guestSurface(7777));
+      expect(firstConversation).not.toBeNull();
 
       await intake.handleGuestMessage(makeGuestMessage(7777).message, "second");
-      const secondSession = await manager.peekBinding(guestSurface(7777));
+      const secondConversation = intake.lifecycle.inspect(guestSurface(7777));
 
-      expect(secondSession!.sessionId).toBe(firstSession!.sessionId);
-      // Only one session was ever created.
-      expect(manager.list().filter((s) => s.chatId === 7777)).toHaveLength(1);
+      expect(secondConversation!.id).toBe(firstConversation!.id);
+      // Only one Conversation was ever created.
+      const storedConversations = conversationStore.list();
+      expect(storedConversations).toHaveLength(1);
+      expect(storedConversations[0]?.id).toBe(firstConversation!.id);
     });
 
     it("each InlineQueryResult article has a unique id and a title", async () => {
@@ -1456,9 +1459,8 @@ describe("Telegram intake", () => {
 });
 
 describe("createMessageBuffer factory", () => {
-  it("creates a session-scoped MetricsStore for an active session", async () => {
+  it("creates a Conversation-scoped MetricsStore for an active Conversation", async () => {
     const cfg = makeConfig();
-    const manager = new SessionManager(cfg);
     const agentRunners = new Map<string, AgentRunner>();
     const bot = fakeBot();
     const intake = createTelegramIntake({
@@ -1478,9 +1480,8 @@ describe("createMessageBuffer factory", () => {
     const message = makeMessage(replies);
     await intake.handleText(message, "/new");
 
-    const sessions = manager.list();
-    expect(sessions.length).toBe(1);
-    const session = sessions[0]!;
+    const conversation = intake.lifecycle.inspect(dmSurface(1));
+    expect(conversation).not.toBeNull();
 
     MockAgentRunner.nextPrompt = async (_content, buffer) => {
       (buffer as { onStatusUpdate: (text: string) => void }).onStatusUpdate("thinking");
@@ -1491,18 +1492,18 @@ describe("createMessageBuffer factory", () => {
     await intake.handleText(message, "hi");
     await waitFor(() => {
       try {
-        return readFileSync(metricsPath(cfg.goblinHome, session.id), "utf-8").trim() !== "";
+        return readFileSync(metricsPath(cfg.goblinHome, conversation!.id), "utf-8").trim() !== "";
       } catch {
         return false;
       }
     });
 
-    const raw = readFileSync(metricsPath(cfg.goblinHome, session.id), "utf-8").trim();
+    const raw = readFileSync(metricsPath(cfg.goblinHome, conversation!.id), "utf-8").trim();
     const events = raw.split("\n").map((line) => JSON.parse(line));
     expect(events.some((e) => e.type === "telegram" && e.op === "sendMessage" && e.channel === "status")).toBe(true);
   });
 
-  it("operates without a MetricsStore when no session exists", async () => {
+  it("operates without a MetricsStore when no Conversation exists", async () => {
     const cfg = makeConfig();
     const bot = fakeBot();
     const intake = createTelegramIntake({
@@ -1516,11 +1517,11 @@ describe("createMessageBuffer factory", () => {
     const replies: string[] = [];
     const message = makeMessage(replies);
     await intake.handleText(message, "/unknown");
-    // Unknown command with no active conversation returns a prompt without creating a session/metrics.
+    // Unknown command with no active Conversation returns a prompt without creating metrics.
     expect(replies.length).toBe(1);
   });
 
-  it("createMessageBuffer with no session yields a buffer with no metrics", () => {
+  it("createMessageBuffer with no Conversation yields a buffer with no metrics", () => {
     const cfg = makeConfig();
     const bot = fakeBot();
     const intake = createTelegramIntake({

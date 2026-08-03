@@ -284,7 +284,7 @@ Native model document ingestion remains unavailable in the current pi-ai content
 
 ### Scheduled automation
 
-**CURRENT — archived `conversation-lifecycle`.** Schedules and heartbeat configuration are Surface-owned. At dispatch, automation resolves the Surface's current Conversation; an unbound Surface remains pending and does not auto-create history. Schedule records, late binding inspection, pending-unbound occurrences, and heartbeat prompt paths all use Surface authority. The scheduler still reaches that authority through the compatibility `SessionManager.peekBinding` seam; replacing the compatibility name is cleanup, not missing lifecycle behavior.
+**CURRENT — archived `conversation-lifecycle`.** Schedules and heartbeat configuration are Surface-owned. At dispatch, automation resolves the Surface's current Conversation; an unbound Surface remains pending and does not auto-create history. Schedule records, late binding inspection, pending-unbound occurrences, and heartbeat prompt paths all use Surface authority. The scheduler reaches that authority through `ConversationLifecycle.resolveCurrent`; the compatibility `SessionManager.peekBinding` seam is removed.
 
 Scheduled turns use the same dispatcher and prompt queue as user turns. A captured occurrence becomes stale if its runtime is invalidated before execution.
 

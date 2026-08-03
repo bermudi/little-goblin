@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
 import type { CascadeResult } from "../interrupt.ts";
-import { type SessionState, runtimeSessionWithPreferences } from "../sessions/mod.ts";
+import { type ConversationState } from "../sessions/mod.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { createConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
@@ -106,7 +106,7 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
   const surface = dmSurface(123);
   const dispatcher: TurnDispatcher = {
     cancelPending: mock(async () => false),
-    reviveSubagent: async (_surface: Surface, _session: SessionState, id: string, prompt: string) => {
+    reviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) => {
       const parentCapture: CapturedMemoryContext = {
         kind: "surface",
         authority: {
@@ -148,15 +148,15 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
   };
 }
 
-async function createSession(harness: ReturnType<typeof makeHarness>): Promise<SessionState> {
+async function createSession(harness: ReturnType<typeof makeHarness>): Promise<ConversationState> {
   const conv = await harness.lifecycle.rotate(harness.surface);
-  return runtimeSessionWithPreferences(conv, harness.surface, harness.cfg.goblinHome);
+  return conv;
 }
 
 async function dispatch(args: {
   command: string;
   rawText?: string;
-  session?: SessionState | null;
+  session?: ConversationState | null;
   runner?: AgentRunner | null;
   harness?: ReturnType<typeof makeHarness>;
 }): Promise<DispatchResult> {
@@ -167,7 +167,7 @@ async function dispatch(args: {
     deps: harness.deps,
     surface: harness.surface,
 
-    session: args.session ?? null,
+    conversation: args.session ?? null,
     existingRunner: args.runner ?? null,
   });
 }
@@ -234,7 +234,7 @@ describe("handleCommand", () => {
     const result = expectReplied(await dispatch({ command: "/new", session: prior, harness }));
 
     expect(result.sideEffects.map((e) => e.kind)).toEqual(["runner-disposed", "runner-created"]);
-    expect(result.sideEffects[0]).toEqual({ kind: "runner-disposed", sessionId: prior.id });
+    expect(result.sideEffects[0]).toEqual({ kind: "runner-disposed", conversationId: prior.id });
   });
 
   it("/new without a prior session only creates a runner", async () => {
@@ -267,7 +267,7 @@ describe("handleCommand", () => {
     const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/project", rawText: `/project ${harness.cfg.goblinHome}`, session, harness }));
     expect(result.sideEffects).toHaveLength(2);
-    expect(result.sideEffects[0]).toEqual({ kind: "runner-disposed", sessionId: session.id });
+    expect(result.sideEffects[0]).toEqual({ kind: "runner-disposed", conversationId: session.id });
     expect(result.sideEffects[1]?.kind).toBe("runner-created");
   });
 
@@ -373,10 +373,10 @@ describe("handleCommand", () => {
     harness.conversationStore.setTitle(target.id, "target");
     const result = expectReplied(await dispatch({ command: "/resume", rawText: `/resume ${target.id}`, session: prior, harness }));
     expect(result.sideEffects.map((e) => e.kind)).toEqual(["runner-disposed", "runner-disposed", "runner-created"]);
-    expect(result.sideEffects[0]).toEqual({ kind: "runner-disposed", sessionId: prior.id });
-    expect(result.sideEffects[1]).toEqual({ kind: "runner-disposed", sessionId: target.id });
+    expect(result.sideEffects[0]).toEqual({ kind: "runner-disposed", conversationId: prior.id });
+    expect(result.sideEffects[1]).toEqual({ kind: "runner-disposed", conversationId: target.id });
     expect(result.sideEffects[2]?.kind).toBe("runner-created");
-    expect((result.sideEffects[2] as unknown as { kind: "runner-created"; session: SessionState; surface: Surface }).session.id).toBe(target.id);
+    expect((result.sideEffects[2] as unknown as { kind: "runner-created"; conversation: ConversationState; surface: Surface }).conversation.id).toBe(target.id);
   });
 
   it("/resume of the already-bound session is a no-op", async () => {
@@ -501,8 +501,7 @@ describe("handleCommand", () => {
       rawText: "/voice",
       deps: harness.deps,
       surface: harness.surface,
-
-      session,
+      conversation: session,
       existingRunner: null,
       bot,
     });
@@ -526,8 +525,7 @@ describe("handleCommand", () => {
       rawText: "/voice",
       deps: harness.deps,
       surface: harness.surface,
-
-      session,
+      conversation: session,
       existingRunner: makeRunner(true),
       bot,
     });
@@ -544,7 +542,7 @@ describe("handleCommand", () => {
     const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do this after", session, runner: makeRunner(true), harness }));
     expect(result.reply).toBe("Queued. Will run after the current turn.");
-    expect(result.sideEffects).toEqual([{ kind: "queue-prompt", session, text: "do this after" }]);
+    expect(result.sideEffects).toEqual([{ kind: "queue-prompt", conversation: session, surface: harness.surface, text: "do this after" }]);
     expect(harness.interrupt).not.toHaveBeenCalled();
   });
 
@@ -553,7 +551,7 @@ describe("handleCommand", () => {
     const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/queue", rawText: "/queue do this", session, runner: makeRunner(false), harness }));
     expect(result.reply).toBe("Running.");
-    expect(result.sideEffects).toEqual([{ kind: "queue-prompt", session, text: "do this" }]);
+    expect(result.sideEffects).toEqual([{ kind: "queue-prompt", conversation: session, surface: harness.surface, text: "do this" }]);
     // Symmetric with the streaming-variant assertion: /queue is not
     // cancel-capable, so the interrupt cascade must never fire.
     expect(harness.interrupt).not.toHaveBeenCalled();
@@ -587,7 +585,7 @@ describe("handleCommand", () => {
       deps: makeHarness().deps,
       surface: dmSurface(1),
 
-      session: null,
+      conversation: null,
       existingRunner: null,
     };
     expect("ctx" in opts).toBe(false);

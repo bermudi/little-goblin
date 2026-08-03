@@ -9,7 +9,7 @@ import type { AgentRunner } from "../agent/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
-import type { SessionState } from "../sessions/mod.ts";
+import type { ConversationState } from "../sessions/mod.ts";
 import type { InternalSessionState } from "../sessions/internal-session.ts";
 import type { Config } from "../config.ts";
 import type { Surface } from "../surface.ts";
@@ -195,7 +195,7 @@ function buildDispatcher(
     subagentRunner,
     memoryStore: new FakeMemoryStore() as unknown as MemoryStore,
     agentRunners: runners,
-    createMessageBuffer: (_surface: Surface, _session?: SessionState): TurnSink => ({
+    createMessageBuffer: (_surface: Surface, _session?: ConversationState): TurnSink => ({
       onTextDelta: () => {},
       onToolStart: () => {},
       onToolEnd: () => {},
@@ -215,8 +215,8 @@ function buildDispatcher(
   return { dispatcher, runners, subagentRunner: subagentRunner as unknown as FakeSubagentRunner, betaSurfaces, createAgentRunnerCalls };
 }
 
-function makeSession(id: string, env: ExecutionEnvironment = personalEnvironment()): SessionState {
-  return { id, createdAt: new Date().toISOString(), chatId: 1, executionEnvironment: env } as SessionState;
+function makeSession(id: string, env: ExecutionEnvironment = personalEnvironment()): ConversationState {
+  return { id, createdAt: new Date().toISOString(), executionEnvironment: env };
 }
 
 class FakeBindingGuard implements SurfaceRuntimeAuthority {
@@ -431,14 +431,12 @@ describe("TurnDispatcher runtime host support", () => {
       .toThrow(/Surface-backed runtime/);
   });
 
-  it("reads model and thinking from surface settings, falling back to session compatibility fields", () => {
+  it("reads model and thinking exclusively from Surface settings", () => {
     const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
       surfaceModelName: "poe/SurfaceModel",
       surfaceThinkingLevel: "high",
     });
     const session = makeSession("abc123def0", personalEnvironment());
-    session.modelName = "poe/SessionModel";
-    session.thinkingLevel = "low";
 
     dispatcher.createRunner(session, dmSurface(1), fakeCapturedContext());
 
@@ -448,17 +446,15 @@ describe("TurnDispatcher runtime host support", () => {
     expect(createAgentRunnerCalls[0]?.thinkingLevel).toBe("high");
   });
 
-  it("falls back to session model and thinking when surface settings are absent", () => {
+  it("leaves model and thinking unset when Surface settings are absent", () => {
     const { dispatcher, createAgentRunnerCalls } = buildDispatcher();
     const session = makeSession("abc123def0", personalEnvironment());
-    session.modelName = "poe/SessionModel";
-    session.thinkingLevel = "low";
 
     dispatcher.createRunner(session, dmSurface(1), fakeCapturedContext());
 
     expect(createAgentRunnerCalls).toHaveLength(1);
-    expect(createAgentRunnerCalls[0]?.modelName).toBe("poe/SessionModel");
-    expect(createAgentRunnerCalls[0]?.thinkingLevel).toBe("low");
+    expect(createAgentRunnerCalls[0]?.modelName).toBeUndefined();
+    expect(createAgentRunnerCalls[0]?.thinkingLevel).toBeUndefined();
   });
 });
 
@@ -521,7 +517,7 @@ describe("TurnDispatcher async runner creation", () => {
       subagentRunner: subagentRunner as unknown as SubagentRunner,
       memoryStore,
       agentRunners: runners,
-      createMessageBuffer: (_surface: Surface, _session?: SessionState): TurnSink => ({
+      createMessageBuffer: (_surface: Surface, _session?: ConversationState): TurnSink => ({
         onTextDelta: () => {},
         onToolStart: () => {},
         onToolEnd: () => {},

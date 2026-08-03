@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { log } from "../log.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
 import { surfaceHeartbeatPath } from "../sessions/paths.ts";
-import type { SessionState } from "../sessions/mod.ts";
+import type { ConversationState } from "../sessions/mod.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 
 import type { MemoryEngine } from "../memory/engine.ts";
@@ -12,7 +12,7 @@ import { appendQuarantine } from "../memory/quarantine.ts";
 import type { TranscriptLine } from "../sessions/transcript.ts";
 import type { ScheduledTurn } from "./types.ts";
 import type { ScheduleStore } from "./store.ts";
-import { createInternalSessionState, type InternalSessionId, type InternalSessionState } from "../sessions/internal-session.ts";
+import type { InternalSessionId, InternalSessionState } from "../sessions/internal-session.ts";
 
 /**
  * Default scheduler tick interval: 60 seconds. Bounds worst-case delivery
@@ -63,7 +63,7 @@ function parseLocalTime(key: string, fallback: string): { hour: number; minute: 
  * the "MUST NOT claim a user asked a new question" rule.
  */
 export const HEARTBEAT_PROMPT =
-  "[heartbeat] This is a scheduled self-check-in. No user message prompted this turn. Review the current session context and decide whether there is anything useful, timely, or important to say. If there is nothing worth saying, reply briefly that you have nothing to add and stop.";
+  "[heartbeat] This is a scheduled self-check-in. No user message prompted this turn. Review the current conversation context and decide whether there is anything useful, timely, or important to say. If there is nothing worth saying, reply briefly that you have nothing to add and stop.";
 
 /**
  * Read a candidate heartbeat prompt file and return its content if it exists
@@ -139,34 +139,39 @@ const realClock: SchedulerClock = {
  */
 export interface SchedulerDispatcher {
   enqueueScheduledTurn(
-    session: SessionState,
+    conversation: ConversationState,
     surface: Surface,
     content: string,
     onError?: (err: unknown) => void,
   ): void;
   enqueueInternalTurn?(
-    session: InternalSessionState,
+    internalSession: InternalSessionState,
     content: string,
     onComplete: (text: string) => void,
     onError: (err: unknown) => void,
   ): void;
 }
 
-/**
- * The minimal session surface the scheduler needs: a non-mutating binding
- * peek and an archived check. `SessionManager` satisfies this structurally.
- * Injected so eligibility tests can fake sessions without a filesystem.
- */
-export interface SchedulerSessionSource {
-  peekBinding(surface: Surface): { sessionId: string; state: SessionState } | null | Promise<{ sessionId: string; state: SessionState } | null>;
-  isArchived(sessionId: string): boolean;
-  list?(): SessionState[];
-  ensureInternal?(id: InternalSessionId): InternalSessionState;
+/** Scheduler-facing slice of ConversationLifecycle for late binding. */
+export interface SchedulerConversationLifecycle {
+  resolveCurrent(surface: Surface): Promise<ConversationState | null>;
+}
+
+/** Catalog of every non-archived canonical Conversation. */
+export interface ConversationCatalog {
+  list(): ConversationState[];
+}
+
+/** Persistence seam for the Surface-free dreaming compatibility runtime. */
+export interface SchedulerInternalSessionStore {
+  ensure(id: InternalSessionId): InternalSessionState;
 }
 
 export interface SchedulerOptions {
   store: ScheduleStore;
-  sessionSource: SchedulerSessionSource;
+  lifecycle: SchedulerConversationLifecycle;
+  conversationCatalog: ConversationCatalog;
+  internalSessionStore: SchedulerInternalSessionStore;
   dispatcher: SchedulerDispatcher;
   /** `$GOBLIN_HOME`, used to resolve the heartbeat prompt file at dispatch time. */
   home: string;
@@ -186,21 +191,21 @@ export interface SchedulerOptions {
 
 /**
  * Single-process scheduler loop. Polls the schedule store for due enabled
- * schedules, claims each due schedule one at a time within a tick, validates
- * the captured binding via `SessionManager.peekBinding` (never `resolve()`),
- * disables stale/mismatched/archived schedules with a `LastRunStatus`, and
- * dispatches valid prompts through the shared turn dispatcher.
+ * schedules, claims each due schedule one at a time within a tick, resolves the
+ * Surface's current Conversation through ConversationLifecycle, and dispatches
+ * valid prompts through the shared turn dispatcher.
  *
  * Lifecycle:
- *   - `start()` begins ticking after `manager.init()` has completed (caller's
- *     responsibility to order).
+ *   - `start()` begins only after startup reconciliation (caller's ordering).
  *   - `stop()` clears the timer; in-flight ticks may finish but no new due
  *     schedules are dispatched after stop begins.
  *   - Tick errors are logged and swallowed so future ticks continue.
  */
 export class SchedulerLoop {
   private readonly store: ScheduleStore;
-  private readonly sessionSource: SchedulerSessionSource;
+  private readonly lifecycle: SchedulerConversationLifecycle;
+  private readonly conversationCatalog: ConversationCatalog;
+  private readonly internalSessionStore: SchedulerInternalSessionStore;
   private readonly dispatcher: SchedulerDispatcher;
   private readonly clock: SchedulerClock;
   private readonly tickIntervalMs: number;
@@ -216,7 +221,9 @@ export class SchedulerLoop {
 
   constructor(options: SchedulerOptions) {
     this.store = options.store;
-    this.sessionSource = options.sessionSource;
+    this.lifecycle = options.lifecycle;
+    this.conversationCatalog = options.conversationCatalog;
+    this.internalSessionStore = options.internalSessionStore;
     this.dispatcher = options.dispatcher;
     this.clock = options.clock ?? realClock;
     this.tickIntervalMs = options.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS;
@@ -270,7 +277,7 @@ export class SchedulerLoop {
       );
     }
 
-    // Dreaming light sleep: per-session cursor advancement.
+    // Dreaming light sleep: per-Conversation cursor advancement.
     if (Number.isFinite(this.dreamingLightIntervalMs)) {
       this.memoryTimers.push(
         this.clock.setInterval(() => {
@@ -334,24 +341,25 @@ export class SchedulerLoop {
 
   private createModelExtractor(): CandidateExtractor {
     return async (lines, ctx) => {
-      const prompt = this.buildDreamingPrompt(ctx.sessionId, lines);
-      const raw = await this.runInternalTurnForDreaming(ctx.sessionId, prompt);
-      return this.parseDreamingResponse(raw, ctx.sessionId, lines);
+      const conversationId = ctx.sessionId;
+      const prompt = this.buildDreamingPrompt(conversationId, lines);
+      const raw = await this.runInternalTurnForDreaming(prompt);
+      return this.parseDreamingResponse(raw, conversationId, lines);
     };
   }
 
-  private runInternalTurnForDreaming(_sessionId: string, prompt: string): Promise<string> {
-    // The dreaming subagent uses a single fixed internal session. The prompt
-    // carries the per-user-session transcript excerpt, so the session id does
-    // not need to vary per chat.
+  private runInternalTurnForDreaming(prompt: string): Promise<string> {
+    // The dreaming extractor uses one fixed Surface-free internal session. Its
+    // prompt carries the source Conversation transcript excerpt, so internal
+    // runtime identity does not vary by Conversation.
     const id: InternalSessionId = "__goblin_dreaming__";
-    const session = this.sessionSource.ensureInternal?.(id) ?? createInternalSessionState(id);
+    const internalSession = this.internalSessionStore.ensure(id);
     return new Promise((resolve, reject) => {
-      this.dispatcher.enqueueInternalTurn!(session, prompt, resolve, reject);
+      this.dispatcher.enqueueInternalTurn!(internalSession, prompt, resolve, reject);
     });
   }
 
-  private buildDreamingPrompt(sessionId: string, lines: TranscriptLine[]): string {
+  private buildDreamingPrompt(conversationId: string, lines: TranscriptLine[]): string {
     const formatted = lines
       .map((line) => `[${line.index}] [${line.role}] ${line.text}`)
       .join("\n");
@@ -383,11 +391,11 @@ Return ONLY a JSON object in this exact format:
   ]
 }
 
-Transcript excerpt for session ${sessionId}:
+Transcript excerpt for Conversation ${conversationId}:
 ${formatted}`;
   }
 
-  private parseDreamingResponse = (raw: string, sessionId: string, lines: TranscriptLine[]): Candidate[] => {
+  private parseDreamingResponse = (raw: string, conversationId: string, lines: TranscriptLine[]): Candidate[] => {
     const cleaned = raw
       .replace(/```(?:json)?\n([\s\S]*?)\n```/, "$1")
       .replace(/^```(?:json)?\s*/, "")
@@ -397,8 +405,8 @@ ${formatted}`;
     const quarantineMalformed = (preview: string): void => {
       appendQuarantine({
         goblinHome: this.home,
-        sourceSession: sessionId,
-        targetScope: `transcript/${sessionId}`,
+        sourceSession: conversationId,
+        targetScope: `transcript/${conversationId}`,
         category: null,
         reason: "malformed",
         content: preview,
@@ -517,7 +525,9 @@ ${formatted}`;
         confidence,
         text: textValue,
         source: {
-          sessionId,
+          // Candidate is a memory-owned compatibility contract whose persisted
+          // field remains `sessionId`; the value is a Conversation ID.
+          sessionId: conversationId,
           lineRange: [start, end],
           sourceRole,
         },
@@ -528,14 +538,13 @@ ${formatted}`;
 
   private async runDreamingLightSleep(): Promise<void> {
     if (!this.memoryEngine) return;
-    const sessions = this.sessionSource.list?.() ?? [];
-    for (const session of sessions) {
-      if (session.chatId === 0) continue;
+    const conversations = this.conversationCatalog.list();
+    for (const conversation of conversations) {
       try {
-        await this.memoryEngine.dreaming.runLightSleep(session.id);
+        await this.memoryEngine.dreaming.runLightSleep(conversation.id);
       } catch (err) {
         log.warn("scheduled dreaming light sleep failed", {
-          sessionId: session.id,
+          conversationId: conversation.id,
           error: err instanceof Error ? err.message : String(err),
         });
       }
@@ -590,11 +599,11 @@ ${formatted}`;
    * captured work without re-enabling the schedule.
    */
   private async processOne(schedule: ScheduledTurn, nowIso: string): Promise<void> {
-    // Validate the captured binding via the NON-MUTATING peek. Never resolve(),
-    // which auto-creates sessions for topic/supergroup locators.
-    const peeked = await this.sessionSource.peekBinding(schedule.surface);
+    // Resolve late through the lifecycle. This reconciles pending assignment
+    // under the transition lock but never creates Conversation history.
+    const conversation = await this.lifecycle.resolveCurrent(schedule.surface);
 
-    if (peeked === null) {
+    if (conversation === null) {
       // Surface is unbound. Emit a single pending signal per (scheduleId,
       // nextRunAt) and leave the occurrence due and enabled.
       if (schedule.lastRun?.outcome !== "pending" || schedule.lastRun.message !== schedule.nextRunAt) {
@@ -620,7 +629,7 @@ ${formatted}`;
     // uses its captured prompt.
     //
     // Binding is valid: dispatch the prompt as a fresh turn through the current
-    // Conversation runtime. The dispatcher serializes through the per-session
+    // Conversation runtime. The dispatcher serializes through the per-Conversation
     // queue, so a scheduled turn waits behind any in-flight turn. Async prompt
     // failures are reported via the onError callback (records outcome: "error").
     // Prompt resolution and a synchronous dispatcher throw both occur after the
@@ -630,7 +639,7 @@ ${formatted}`;
     try {
       const isHeartbeat = schedule.kind === "heartbeat";
       const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.surface) : schedule.prompt ?? "";
-      this.dispatcher.enqueueScheduledTurn(peeked.state, schedule.surface, prompt, (err) => {
+      this.dispatcher.enqueueScheduledTurn(conversation, schedule.surface, prompt, (err) => {
         const msg = err instanceof Error ? err.message : String(err);
         this.store.recordRun(schedule.id, {
           at: new Date(this.clock.now()).toISOString(),

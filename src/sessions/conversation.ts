@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ConversationId, ConversationState, SessionState } from "./types.ts";
-import type { Surface } from "../surface.ts";
-import { getModelName, getThinkingLevelValidated } from "./topic-settings.ts";
+import type { ConversationId } from "./types.ts";
 
 /**
  * A goblin-generated conversation id is 10 chars of lowercase hex (0-9a-f). It
@@ -36,36 +34,4 @@ export function isValidConversationId(id: string): id is ConversationId {
 export function makeConversationId(): ConversationId {
   const hex = randomUUID().replace(/-/g, "");
   return hex.slice(0, 10) as ConversationId;
-}
-
-/**
- * Build a runtime-only `SessionState` from a canonical `ConversationState` and
- * a destination `Surface`. The result is not persisted; it carries the Telegram
- * address of the *current* binding so the dispatcher can construct the right
- * tools, sink, and memory scope. Model/thinking/project fields are left unset
- * here and filled from Surface settings before runner construction.
- */
-export function runtimeSession(conversation: ConversationState, surface: Surface): SessionState {
-  return {
-    ...conversation,
-    chatId: surface.chatId,
-    topicId: surface.kind === "topic" ? surface.topicId : undefined,
-  };
-}
-
-/**
- * Build a runtime `SessionState` for the current Surface, merging the durable
- * Conversation with Surface-scoped preferences (model, thinking level). This is
- * the single place that couples runtime session construction to surface
- * settings; commands and the lifecycle only see canonical Conversation state.
- */
-export function runtimeSessionWithPreferences(
-  conversation: ConversationState,
-  surface: Surface,
-  home: string,
-): SessionState {
-  const session = runtimeSession(conversation, surface);
-  session.modelName = getModelName(home, surface);
-  session.thinkingLevel = getThinkingLevelValidated(home, surface);
-  return session;
 }

@@ -3,9 +3,8 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Bot, Context } from "grammy";
 import type { Config } from "../config.ts";
 import { boundedError, log } from "../log.ts";
-import type { Surface, SessionState, ConversationId, ConversationStore } from "../sessions/mod.ts";
+import type { Surface, ConversationState, ConversationId, ConversationStore } from "../sessions/mod.ts";
 import { surfaceId } from "../surface.ts";
-import { runtimeSession, runtimeSessionWithPreferences } from "../sessions/mod.ts";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 
 import type { AgentRunner } from "../agent/mod.ts";
@@ -50,9 +49,9 @@ import type { SystemTag } from "../tg/format.ts";
 // ---------------------------------------------------------------------------
 
 export type SideEffect =
-  | { kind: "runner-created"; session: SessionState; surface: Surface }
-  | { kind: "runner-disposed"; sessionId: string }
-  | { kind: "queue-prompt"; session: SessionState; text: string };
+  | { kind: "runner-created"; conversation: ConversationState; surface: Surface }
+  | { kind: "runner-disposed"; conversationId: string }
+  | { kind: "queue-prompt"; conversation: ConversationState; surface: Surface; text: string };
 
 export type DispatchResult =
   | { kind: "replied"; reply: string; tag?: SystemTag; sideEffects: SideEffect[] }
@@ -93,7 +92,7 @@ export interface DispatchOpts {
   deps: DispatchDeps;
   rawText: string;
   surface: Surface;
-  session: SessionState | null;
+  conversation: ConversationState | null;
   existingRunner: AgentRunner | null;
   bot?: Bot;
 }
@@ -173,21 +172,21 @@ function errorMessage(err: unknown): string {
 // dispatch.ts switch verbatim.
 // ---------------------------------------------------------------------------
 
-const cancelHandler: CommandHandler = async ({ deps, session, existingRunner }) => {
+const cancelHandler: CommandHandler = async ({ deps, conversation, existingRunner }) => {
   // /cancel is the sole interrupter: it aborts the in-flight turn itself,
   // rather than relying on a dispatch pre-check. The cascade result drives
   // the honest reply ("Cancelled." vs "Nothing to cancel." vs timeout suffix).
   // If there is a queued-but-not-yet-started prompt (e.g. a coalescer flush
   // that has scheduled but not yet started), cancel it first so the reply
   // reflects the work that was actually stopped.
-  const cancelledPending = session
-    ? await deps.dispatcher?.cancelPending(session.id)
+  const cancelledPending = conversation
+    ? await deps.dispatcher?.cancelPending(conversation.id)
     : false;
   const cascade = await deps.interruptAndCascade(
     existingRunner,
     deps.subagentRunner,
     DEFAULT_CASCADE_TIMEOUT_MS,
-    session?.id ?? null,
+    conversation?.id ?? null,
     deps.externalAgentRunner,
   );
   if (cancelledPending) cascade.attemptedMain = true;
@@ -202,29 +201,25 @@ const cancelHandler: CommandHandler = async ({ deps, session, existingRunner }) 
   }), [], tag);
 };
 
-const newHandler: CommandHandler = async ({ deps, surface, session }) => {
-  const { lifecycle, cfg } = deps;
+const newHandler: CommandHandler = async ({ deps, surface, conversation }) => {
+  const { lifecycle } = deps;
   const sideEffects: SideEffect[] = [];
-  const priorSession = session;
+  const priorConversation = conversation;
   try {
-    const createSession = async (): Promise<SessionState> => {
-      const conversation = await lifecycle.rotate(surface);
-      return runtimeSessionWithPreferences(conversation, surface, cfg.goblinHome);
-    };
-    const result = await executeNew({ createSession });
-    if (priorSession) sideEffects.push({ kind: "runner-disposed", sessionId: priorSession.id });
-    sideEffects.push({ kind: "runner-created", session: result.session, surface });
+    const result = await executeNew({ createConversation: () => lifecycle.rotate(surface) });
+    if (priorConversation) sideEffects.push({ kind: "runner-disposed", conversationId: priorConversation.id });
+    sideEffects.push({ kind: "runner-created", conversation: result.conversation, surface });
     return replied(result.reply, sideEffects, "ok");
   } catch (err) {
-    log.error("new conversation creation failed", { error: String(err), sessionId: priorSession?.id });
+    log.error("new conversation creation failed", { error: String(err), sessionId: priorConversation?.id });
     return replied("Failed to reset conversation. Please try again.", [], "error");
   }
 };
 
-const archiveHandler: CommandHandler = async ({ deps, surface, session }) => {
+const archiveHandler: CommandHandler = async ({ deps, surface, conversation: activeConversation }) => {
   const { lifecycle, conversationStore } = deps;
   try {
-    const conversation = session ? lifecycle.inspect(surface) : null;
+    const conversation = activeConversation ? lifecycle.inspect(surface) : null;
     const hasSession = conversation !== null;
     const sessionExists = hasSession && conversationStore.load(conversation.id) !== null;
 
@@ -238,25 +233,24 @@ const archiveHandler: CommandHandler = async ({ deps, surface, session }) => {
     const tag: SystemTag = result.kind === "archived" ? "ok" : "info";
     return replied(result.reply, [], tag);
   } catch (err) {
-    log.error("archive failed", { error: String(err), sessionId: session?.id });
+    log.error("archive failed", { error: String(err), sessionId: activeConversation?.id });
     return replied("Failed to archive conversation. Please try again.", [], "error");
   }
 };
 
 const projectHandler: CommandHandler = async ({ deps, surface, rawText }) => {
-  const { cfg, lifecycle } = deps;
+  const { lifecycle } = deps;
   try {
     const result = await executeProject({
       rawText,
       assignProject: (canonicalRoot) => lifecycle.assignProject(surface, canonicalRoot),
     });
     const sideEffects: SideEffect[] = [];
-    if (result.kind === "assigned" && result.session) {
-      if (result.previousSessionId) {
-        sideEffects.push({ kind: "runner-disposed", sessionId: result.previousSessionId });
+    if (result.kind === "assigned") {
+      if (result.previousConversationId) {
+        sideEffects.push({ kind: "runner-disposed", conversationId: result.previousConversationId });
       }
-      const session = runtimeSessionWithPreferences(result.session, surface, cfg.goblinHome);
-      sideEffects.push({ kind: "runner-created", session, surface });
+      sideEffects.push({ kind: "runner-created", conversation: result.conversation, surface });
     }
     const tag: SystemTag =
       result.kind === "assigned" || result.kind === "already-assigned" ? "ok"
@@ -357,58 +351,57 @@ const thinkHandler: CommandHandler = async ({ deps, surface, existingRunner, raw
   }
 };
 
-const debugHandler: CommandHandler = async ({ deps, session, existingRunner, surface }) => {
+const debugHandler: CommandHandler = async ({ deps, conversation, existingRunner, surface }) => {
   const { cfg, subagentRunner } = deps;
-  if (!session) return replied("No active conversation.", [], "info");
+  if (!conversation) return replied("No active conversation.", [], "info");
   const surfaceModelName = deps.lifecycle.settings.getModelName(surface);
   const surfaceThinkingLevel = deps.lifecycle.settings.getThinkingLevel(surface);
   const diag = generateDiagnostics({
-    session,
+    conversation,
     runner: existingRunner,
     subagentRunner,
     goblinHome: cfg.goblinHome,
-    modelName: surfaceModelName ?? session.modelName ?? cfg.modelName,
-    thinkingLevel: surfaceThinkingLevel ?? session.thinkingLevel,
-    projectDir: projectRootOf(session.executionEnvironment) ?? undefined,
+    modelName: surfaceModelName ?? cfg.modelName,
+    thinkingLevel: surfaceThinkingLevel,
+    projectDir: projectRootOf(conversation.executionEnvironment) ?? undefined,
   });
   return replied(diag, [], "info");
 };
 
-const compactHandler: CommandHandler = async ({ session, existingRunner, rawText }) => {
+const compactHandler: CommandHandler = async ({ conversation, existingRunner, rawText }) => {
   try {
-    const result = await executeCompact({ hasSession: session !== null, rawText, runner: existingRunner });
+    const result = await executeCompact({ hasSession: conversation !== null, rawText, runner: existingRunner });
     const tag: SystemTag = result.kind === "compacted" ? "ok"
       : result.kind === "failed" ? "error"
       : "info";
     return replied(result.reply, [], tag);
   } catch (err) {
-    log.error("compact failed", { error: String(err), sessionId: session?.id });
+    log.error("compact failed", { error: String(err), sessionId: conversation?.id });
     return replied("Failed to compact conversation. Please try again.", [], "error");
   }
 };
 
-const nameHandler: CommandHandler = async ({ deps, session, rawText }) => {
+const nameHandler: CommandHandler = async ({ deps, conversation, rawText }) => {
   const { conversationStore } = deps;
   try {
     const result = executeName({
-      hasSession: session !== null,
       rawText,
-      session,
+      conversation,
       setTitle: (title) => {
-        if (!session) return;
-        conversationStore.setTitle(session.id, title);
+        if (!conversation) return;
+        conversationStore.setTitle(conversation.id, title);
       },
     });
     const tag: SystemTag = result.kind === "renamed" ? "ok" : "info";
     return replied(result.reply, [], tag);
   } catch (err) {
-    log.error("name failed", { error: String(err), sessionId: session?.id });
+    log.error("name failed", { error: String(err), sessionId: conversation?.id });
     return replied("Failed to name conversation. Please try again.", [], "error");
   }
 };
 
-const resumeHandler: CommandHandler = async ({ deps, surface, session, rawText }) => {
-  const { lifecycle, cfg, conversationStore } = deps;
+const resumeHandler: CommandHandler = async ({ deps, surface, conversation: activeConversation, rawText }) => {
+  const { lifecycle, conversationStore } = deps;
   const sideEffects: SideEffect[] = [];
   try {
     const compatible = lifecycle.listResumable(surface);
@@ -416,27 +409,28 @@ const resumeHandler: CommandHandler = async ({ deps, surface, session, rawText }
     const compatibleIds = new Set(compatible.map((c) => c.id));
     const incompatible = allResumable.filter((c) => !compatibleIds.has(c.id));
 
-    const sessions = compatible.map((c) => runtimeSessionWithPreferences(c, surface, cfg.goblinHome));
-    const incompatibleSessions = incompatible.map((c) => runtimeSession(c, surface));
-    const bindSession = async (sessionId: string): Promise<SessionState> => {
-      const conversation = await lifecycle.resume(surface, sessionId as ConversationId);
-      return runtimeSessionWithPreferences(conversation, surface, cfg.goblinHome);
-    };
-    const result = await executeResume({ rawText, sessions, incompatibleSessions, bindSession });
-    if (result.kind === "resumed" && result.session.id !== session?.id) {
+    const bindConversation = (conversationId: string): Promise<ConversationState> =>
+      lifecycle.resume(surface, conversationId as ConversationId);
+    const result = await executeResume({
+      rawText,
+      conversations: compatible,
+      incompatibleConversations: incompatible,
+      bindConversation,
+    });
+    if (result.kind === "resumed" && result.conversation.id !== activeConversation?.id) {
       // Displace the destination's prior runtime (if any) and invalidate any
       // stale runner keyed by the resumed conversation before creating a fresh
       // runtime for the destination surface.
-      if (session) sideEffects.push({ kind: "runner-disposed", sessionId: session.id });
-      sideEffects.push({ kind: "runner-disposed", sessionId: result.session.id });
-      sideEffects.push({ kind: "runner-created", session: result.session, surface });
+      if (activeConversation) sideEffects.push({ kind: "runner-disposed", conversationId: activeConversation.id });
+      sideEffects.push({ kind: "runner-disposed", conversationId: result.conversation.id });
+      sideEffects.push({ kind: "runner-created", conversation: result.conversation, surface });
     }
     const tag: SystemTag = result.kind === "resumed" ? "ok"
       : result.kind === "not-found" || result.kind === "ambiguous" || result.kind === "incompatible" ? "warn"
       : "info";
     return replied(result.reply, sideEffects, tag);
   } catch (err) {
-    log.error("resume failed", { error: String(err), sessionId: session?.id });
+    log.error("resume failed", { error: String(err), sessionId: activeConversation?.id });
     return replied("Failed to resume conversation. Please try again.", [], "error");
   }
 };
@@ -458,15 +452,15 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText }) => {
   }
 };
 
-const reviveHandler: CommandHandler = async ({ deps, rawText, surface, session }) => {
+const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversation }) => {
   const args = parseReviveSubagentArgs(rawText);
   if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY, [], "info");
-  if (session === null || deps.dispatcher === undefined) {
+  if (conversation === null || deps.dispatcher === undefined) {
     return replied("No active conversation to revive from.", [], "error");
   }
 
   try {
-    const result = await deps.dispatcher.reviveSubagent(surface, session, args.id, args.prompt);
+    const result = await deps.dispatcher.reviveSubagent(surface, conversation, args.id, args.prompt);
     return replied(result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`, [], "ok");
   } catch (err) {
     log.error("revive failed", { id: args.id, ...boundedError(err) });
@@ -476,8 +470,8 @@ const reviveHandler: CommandHandler = async ({ deps, rawText, surface, session }
 
 const helpHandler: CommandHandler = async () => replied(helpReply(), [], "info");
 
-const voiceHandler: CommandHandler = async ({ deps, session, surface, bot }) => {
-  if (!session) return replied("No active conversation. Use /new to start one.", [], "info");
+const voiceHandler: CommandHandler = async ({ deps, conversation, surface, bot }) => {
+  if (!conversation) return replied("No active conversation. Use /new to start one.", [], "info");
   if (!bot) {
     log.error("voice dispatch bot missing");
     return replied("Voice generation failed: internal error", [], "error");
@@ -485,7 +479,7 @@ const voiceHandler: CommandHandler = async ({ deps, session, surface, bot }) => 
   try {
     const voiceResult = await executeVoice({
       home: deps.cfg.goblinHome,
-      sessionId: session.id,
+      sessionId: conversation.id,
       bot,
       surface,
     });
@@ -493,22 +487,22 @@ const voiceHandler: CommandHandler = async ({ deps, session, surface, bot }) => 
       case "no-messages":
         return replied("No messages to voice yet.", [], "info");
       case "tts-failed":
-        log.warn("voice failed", { error: voiceResult.error, sessionId: session.id });
+        log.warn("voice failed", { error: voiceResult.error, sessionId: conversation.id });
         return replied(`Voice generation failed: ${voiceResult.error}`, [], "error");
       case "sent":
         return { kind: "handled", sideEffects: [] };
     }
   } catch (err) {
-    log.error("voice failed", { error: String(err), sessionId: session.id });
+    log.error("voice failed", { error: String(err), sessionId: conversation.id });
     return replied(`Voice generation failed: ${errorMessage(err)}`, [], "error");
   }
 };
 
-const queueHandler: CommandHandler = async ({ session, existingRunner, rawText }) => {
-  if (!session) return replied("No active conversation.", [], "info");
+const queueHandler: CommandHandler = async ({ conversation, existingRunner, rawText, surface }) => {
+  if (!conversation) return replied("No active conversation.", [], "info");
   const arg = parseCommandArg(rawText);
   if (arg.length === 0) return replied("Usage: /queue <text>", [], "info");
-  const sideEffects: SideEffect[] = [{ kind: "queue-prompt", session, text: arg }];
+  const sideEffects: SideEffect[] = [{ kind: "queue-prompt", conversation, surface, text: arg }];
   const ack = existingRunner?.isStreaming ? "Queued. Will run after the current turn." : "Running.";
   const tag: SystemTag = existingRunner?.isStreaming ? "queued" : "ok";
   return replied(ack, sideEffects, tag);

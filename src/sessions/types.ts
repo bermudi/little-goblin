@@ -2,7 +2,6 @@
  * Core types for session management.
  */
 
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Surface, SurfaceId } from "../surface.ts";
 import type { SkillPolicy } from "../agent/skills/types.ts";
 import type { ExecutionEnvironment } from "./environment.ts";
@@ -27,25 +26,6 @@ export interface ConversationState {
   title?: string;
   /** Immutable execution environment captured at Conversation creation. */
   executionEnvironment: ExecutionEnvironment;
-}
-
-/** Per-session state persisted in sessions/<id>/state.json.
- * @deprecated SessionState is the legacy shape; new code should use ConversationState.
- */
-export interface SessionState extends ConversationState {
-  chatId: number;
-  topicId?: number;
-  /**
-   * @deprecated Use binding-scoped projectDir via SessionManager.getProjectDir(surface) instead.
-   * This field may exist in legacy state.json files but is no longer read or written.
-   */
-  projectDir?: string;
-  /** Session-scoped model override. Falls back to config default when absent. */
-  modelName?: string;
-  /** Session-scoped thinking level override. Falls back to model default when absent. */
-  thinkingLevel?: ThinkingLevel;
-  /** Legacy archived flag; canonical archive is a directory move to sessions/archive/. */
-  archived?: boolean;
 }
 
 /** Legacy pre-Surface bindings.json shape. Loaded only by migration. */

@@ -1,6 +1,6 @@
 /**
  * Scheduler module. Owns the schedule store, scheduler loop, and time parsing
- * for scheduled turns and opt-in session heartbeat. Historical design:
+ * for scheduled turns and opt-in Surface heartbeat. Historical design:
  * `specs/changes/archive/2026-07-05-scheduled-turns/`.
  */
 
@@ -12,7 +12,14 @@ export {
   DEFAULT_TICK_INTERVAL_MS,
   HEARTBEAT_PROMPT,
 } from "./loop.ts";
-export type { SchedulerClock, SchedulerDispatcher, SchedulerOptions } from "./loop.ts";
+export type {
+  ConversationCatalog,
+  SchedulerClock,
+  SchedulerConversationLifecycle,
+  SchedulerDispatcher,
+  SchedulerInternalSessionStore,
+  SchedulerOptions,
+} from "./loop.ts";
 export {
   parseDuration,
   parseAt,

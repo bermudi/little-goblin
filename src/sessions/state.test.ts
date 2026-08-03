@@ -1,23 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConversationState, loadState, saveConversationState, saveState } from "./state.ts";
+import {
+  loadConversationState,
+  loadInternalSessionState,
+  saveConversationState,
+  saveInternalSessionState,
+} from "./state.ts";
 import { sessionDir, statePath } from "./paths.ts";
-import { personalEnvironment, projectEnvironment } from "./environment.ts";
-import type { ConversationState, SessionState } from "./types.ts";
+import { personalEnvironment } from "./environment.ts";
+import type { ConversationState } from "./types.ts";
+import { createInternalSessionState } from "./internal-session.ts";
 
-function makeState(env: SessionState["executionEnvironment"], overrides?: Partial<SessionState>): SessionState {
-  return {
-    id: "abc123def0",
-    createdAt: "2024-01-01T00:00:00.000Z",
-    chatId: 1,
-    executionEnvironment: env,
-    ...overrides,
-  };
-}
-
-describe("state", () => {
+describe("internal session state", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -28,55 +24,28 @@ describe("state", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("saveState writes state and loadState reads it back", () => {
-    const state = makeState(personalEnvironment());
-    saveState(tmpDir, state);
-    const loaded = loadState(tmpDir, state.id);
-    expect(loaded).toEqual(state);
+  it("round-trips the explicit Surface-free internal record", () => {
+    const state = createInternalSessionState("__state_test__");
+    saveInternalSessionState(tmpDir, state);
+    expect(loadInternalSessionState(tmpDir, state.id)).toEqual(state);
   });
 
-  it("loadState returns null for a missing session", () => {
-    expect(loadState(tmpDir, "0000000000")).toBeNull();
+  it("returns null when the internal record is absent", () => {
+    expect(loadInternalSessionState(tmpDir, "__missing__")).toBeNull();
   });
 
-  it("loadState throws for a session with a missing executionEnvironment", () => {
-    const state = { ...makeState(personalEnvironment()), executionEnvironment: undefined as unknown as SessionState["executionEnvironment"] };
-    saveState(tmpDir, state);
-    expect(() => loadState(tmpDir, state.id)).toThrow(/invalid executionEnvironment/);
+  it("rejects an invalid internal ID before filesystem access", () => {
+    expect(() => loadInternalSessionState(tmpDir, "../escape")).toThrow(/reserved __…__ identity/);
   });
 
-  it("loadState throws for a project environment with an empty root", () => {
-    const state = makeState({ kind: "project", projectRoot: "" });
-    saveState(tmpDir, state);
-    expect(() => loadState(tmpDir, state.id)).toThrow(/invalid executionEnvironment/);
-  });
-
-  it("loadState accepts a canonical existing project environment", () => {
-    const projectRoot = join(tmpDir, "project");
-    mkdirSync(projectRoot, { recursive: true });
-    const state = makeState(projectEnvironment(projectRoot));
-    saveState(tmpDir, state);
-    expect(loadState(tmpDir, state.id)).toEqual(state);
-  });
-
-  it("rejects missing and noncanonical project roots in persisted state", () => {
-    const missing = makeState({ kind: "project", projectRoot: join(tmpDir, "missing") });
-    saveState(tmpDir, missing);
-    expect(() => loadState(tmpDir, missing.id)).toThrow(/invalid executionEnvironment/);
-
-    const real = join(tmpDir, "real");
-    const alias = join(tmpDir, "alias");
-    mkdirSync(real, { recursive: true });
-    symlinkSync(real, alias);
-    const noncanonical = makeState({ kind: "project", projectRoot: alias });
-    saveState(tmpDir, noncanonical);
-    expect(() => loadState(tmpDir, noncanonical.id)).toThrow(/invalid executionEnvironment/);
-  });
-
-  it("saveState creates parent directories", () => {
-    const state = makeState(personalEnvironment());
-    saveState(tmpDir, state);
-    expect(existsSync(sessionDir(tmpDir, state.id))).toBe(true);
+  it("rejects routing and preference compatibility fields", () => {
+    const id = "__invalid__";
+    mkdirSync(sessionDir(tmpDir, id), { recursive: true });
+    writeFileSync(statePath(tmpDir, id), JSON.stringify({
+      ...createInternalSessionState(id),
+      modelName: "poe/legacy",
+    }));
+    expect(() => loadInternalSessionState(tmpDir, id)).toThrow(/forbidden field: modelName/);
   });
 });
 

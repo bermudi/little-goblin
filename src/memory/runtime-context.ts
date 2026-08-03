@@ -52,18 +52,8 @@ export interface CapturedMemoryContext {
   readonly frozenActiveMemoryBody: string;
 }
 
-/**
- * Reject zero-chat compatibility values as Telegram identity. A Telegram
- * `Surface` always carries a non-zero `chatId`; the dreaming compatibility
- * session's `chatId: 0` sentinel MUST NOT be reinterpreted as a Surface.
- * Internal callers use {@link InternalMemoryContext} instead.
- */
+/** Validate the complete Surface before deriving memory authority from it. */
 export function assertSurfaceBackedAuthorityInput(surface: Surface): void {
-  if (surface.chatId === 0) {
-    throw new Error(
-      "SurfaceMemoryAuthority cannot be derived from a zero-chat Surface; internal callers must use InternalMemoryContext",
-    );
-  }
   surfaceId(surface);
 }
 

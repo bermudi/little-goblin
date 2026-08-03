@@ -11,7 +11,7 @@ import {
   type CapturedMemoryContext,
   type InternalMemoryContext,
 } from "../memory/mod.ts";
-import type { SessionState } from "../sessions/types.ts";
+import type { ConversationState } from "../sessions/types.ts";
 import { assertInternalSessionState, type InternalSessionState } from "../sessions/internal-session.ts";
 import { parseSurfaceId, surfaceId, type Surface, type SurfaceId } from "../surface.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -135,7 +135,7 @@ export interface TurnDispatcherOptions {
    * never constructs a `MessageBuffer` itself — the Telegram-aware caller
    * (intake) injects this so rendering knowledge stays in `src/tg/`.
    */
-  createMessageBuffer: (surface: Surface, session?: SessionState) => TurnSink;
+  createMessageBuffer: (surface: Surface, conversation?: ConversationState) => TurnSink;
   /**
    * Mandatory factory that builds Telegram-specific beta tools (voice, photo,
    * document, TTS) for a surface. The dispatcher does not import from `src/tg/`;
@@ -203,7 +203,7 @@ export class TurnDispatcher {
   private readonly embeddingProvider?: EmbeddingProvider;
   private readonly dreamingPipeline?: DreamingPipeline;
   private readonly createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
-  private readonly createMessageBufferFn: (surface: Surface, session?: SessionState) => TurnSink;
+  private readonly createMessageBufferFn: (surface: Surface, conversation?: ConversationState) => TurnSink;
   private readonly createBetaToolsFn: (surface: Surface) => ToolDefinition[];
   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
   private readonly promptQueueMeta: Map<string, PromptQueueEntry>;
@@ -265,7 +265,7 @@ export class TurnDispatcher {
    * derived from the provided `surface`.
    */
   createRunner(
-    session: SessionState,
+    session: ConversationState,
     surface: Surface,
     memoryContext: CapturedMemoryContext,
     skillPolicy: SkillPolicy = this.surfaceSettings.getSkillPolicy(surface),
@@ -275,19 +275,18 @@ export class TurnDispatcher {
       throw new Error(`cannot construct runtime for stale binding: ${surfaceId(surface)} → ${session.id}`);
     }
     const surfaceEnv = this.surfaceSettings.effectiveEnvironment(surface);
-    if (session.chatId !== 0 && !environmentsEqual(session.executionEnvironment, surfaceEnv)) {
+    if (!environmentsEqual(session.executionEnvironment, surfaceEnv)) {
       const sessionEnv = session.executionEnvironment;
       throw new Error(
         `environment mismatch: session ${session.id} is ${sessionEnv.kind === "project" ? sessionEnv.projectRoot : sessionEnv.kind}, surface ${surface.kind}:${surface.chatId} is ${surfaceEnv.kind === "project" ? surfaceEnv.projectRoot : surfaceEnv.kind}`,
       );
     }
 
-    const betaTools = session.chatId === 0 ? [] : this.createBetaToolsFn(surface);
-    // Surface-scoped model and thinking preferences take precedence over any
-    // compatibility SessionState fields. This ensures a resumed conversation on
-    // a different surface adopts the destination surface's preferences.
-    const modelName = this.surfaceSettings.getModelName(surface) ?? session.modelName;
-    const thinkingLevel = this.surfaceSettings.getThinkingLevel(surface) ?? session.thinkingLevel;
+    const betaTools = this.createBetaToolsFn(surface);
+    // Model and thinking authority belongs exclusively to the destination
+    // Surface. Conversation state deliberately carries neither preference.
+    const modelName = this.surfaceSettings.getModelName(surface);
+    const thinkingLevel = this.surfaceSettings.getThinkingLevel(surface);
     let runner!: AgentRunner;
     const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
       cfg: this.cfg,
@@ -295,7 +294,7 @@ export class TurnDispatcher {
       surface,
       memoryContext,
       customTools: betaTools,
-      subagentRunner: session.chatId === 0 ? undefined : this.subagentRunner,
+      subagentRunner: this.subagentRunner,
       getTopicName: this.getTopicName,
       executionEnvironment: session.executionEnvironment,
       modelName,
@@ -333,7 +332,7 @@ export class TurnDispatcher {
    */
   async reviveSubagent(
     surface: Surface,
-    session: SessionState,
+    session: ConversationState,
     subagentId: string,
     prompt: string,
   ): Promise<string> {
@@ -405,7 +404,7 @@ export class TurnDispatcher {
    * registration, so an old `/queue` cannot reopen authority fenced by a
    * failed `/project` write.
    */
-  async getOrCreateRunner(session: SessionState, surface: Surface): Promise<AgentRunner> {
+  async getOrCreateRunner(session: ConversationState, surface: Surface): Promise<AgentRunner> {
     if (this.internalRunnerIds.has(session.id)) {
       throw new Error(`conversation ${session.id} is reserved by an internal runtime`);
     }
@@ -488,7 +487,7 @@ export class TurnDispatcher {
    * entry is registered.
    */
   private async doCreateAndRegisterRunner(
-    session: SessionState,
+    session: ConversationState,
     surface: Surface,
     expectedSurfaceId: SurfaceId,
     expectedPolicyFingerprint: string,
@@ -644,8 +643,8 @@ export class TurnDispatcher {
    * delegates to `createMessageBufferFn` — there is no fallback, the factory
    * is mandatory at construction.
    */
-  createMessageBuffer(surface: Surface, session?: SessionState): TurnSink {
-    return this.createMessageBufferFn(surface, session);
+  createMessageBuffer(surface: Surface, conversation?: ConversationState): TurnSink {
+    return this.createMessageBufferFn(surface, conversation);
   }
 
   /**
@@ -658,13 +657,29 @@ export class TurnDispatcher {
    * deferred commands, and scheduled turns.
    */
   schedulePrompt(
-    session: SessionState,
+    conversation: ConversationState,
     runner: AgentRunner,
     run: (isCurrent: () => boolean) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
     opts: { isPrompt?: boolean } = {},
   ): void {
-    const isCurrent = (): boolean => this.isRunnerCurrent(session.id, runner);
+    this.schedulePromptById(
+      conversation.id,
+      () => this.isRunnerCurrent(conversation.id, runner),
+      run,
+      onError,
+      opts,
+    );
+  }
+
+  /** Shared queue mechanics; callers supply the lifetime-specific authority check. */
+  private schedulePromptById(
+    sessionId: string,
+    isCurrent: () => boolean,
+    run: (isCurrent: () => boolean) => Promise<void>,
+    onError: (err: unknown) => Promise<void> | void,
+    opts: { isPrompt?: boolean } = {},
+  ): void {
     const execute = async (): Promise<void> => {
       if (!isCurrent()) return;
       try {
@@ -674,18 +689,18 @@ export class TurnDispatcher {
         try {
           await onError(err);
         } catch (handlerErr) {
-          log.error("prompt error handler failed", { error: String(handlerErr), sessionId: session.id });
+          log.error("prompt error handler failed", { error: String(handlerErr), sessionId });
         }
       }
     };
-    const prior = this.promptQueues.get(session.id);
+    const prior = this.promptQueues.get(sessionId);
     const current = prior ? prior.then(execute, execute) : execute();
     const meta: PromptQueueEntry = { isPrompt: opts.isPrompt ?? true };
-    this.promptQueues.set(session.id, current);
-    this.promptQueueMeta.set(session.id, meta);
+    this.promptQueues.set(sessionId, current);
+    this.promptQueueMeta.set(sessionId, meta);
     void current.finally(() => {
-      if (this.promptQueues.get(session.id) === current) this.promptQueues.delete(session.id);
-      if (this.promptQueueMeta.get(session.id) === meta) this.promptQueueMeta.delete(session.id);
+      if (this.promptQueues.get(sessionId) === current) this.promptQueues.delete(sessionId);
+      if (this.promptQueueMeta.get(sessionId) === meta) this.promptQueueMeta.delete(sessionId);
     });
   }
 
@@ -868,9 +883,9 @@ export class TurnDispatcher {
       onAgentEnd: () => {},
     };
 
-    this.schedulePrompt(
-      session,
-      runner,
+    this.schedulePromptById(
+      session.id,
+      () => this.runners.get(session.id) === runner && this.internalRunnerIds.has(session.id),
       async () => {
         await runner.prompt(content, sink);
         onComplete(captured.join(""));
@@ -894,7 +909,7 @@ export class TurnDispatcher {
    * method sync and fire-and-forget — the scheduler does not need to await it.
    */
   enqueueScheduledTurn(
-    session: SessionState,
+    session: ConversationState,
     surface: Surface,
     content: PromptContent,
     onError?: (err: unknown) => void,

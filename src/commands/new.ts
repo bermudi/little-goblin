@@ -16,16 +16,16 @@
  * complete) before this helper runs. See `CommandTiming` in `registry.ts`.
  */
 
-import type { SessionState } from "../sessions/types.ts";
+import type { ConversationState } from "../sessions/mod.ts";
 
 export interface NewCommandDeps {
   /** Caller-supplied session factory. */
-  createSession: () => SessionState | Promise<SessionState>;
+  createConversation: () => ConversationState | Promise<ConversationState>;
 }
 
 export type NewCommandResult = {
   kind: "created";
-  session: SessionState;
+  conversation: ConversationState;
   reply: string;
 };
 
@@ -34,10 +34,10 @@ export function createdReply(sessionId: string): string {
 }
 
 export async function executeNew(deps: NewCommandDeps): Promise<NewCommandResult> {
-  const session = await deps.createSession();
+  const conversation = await deps.createConversation();
   return {
     kind: "created",
-    session,
-    reply: createdReply(session.id),
+    conversation,
+    reply: createdReply(conversation.id),
   };
 }

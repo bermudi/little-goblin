@@ -22,7 +22,7 @@ import { workdirPath, workspacePath } from "../workspace/paths.ts";
 import { readPiSessionHeader } from "../pi-host.ts";
 import { loadBindings } from "./bindings.ts";
 import { loadTopicSettingsForEnvironmentMigration, saveTopicSettings } from "./topic-settings.ts";
-import { loadLegacyState, isValidExecutionEnvironment } from "./state.ts";
+import { isValidExecutionEnvironment } from "./state.ts";
 import { saveJsonFile } from "./state-file.ts";
 import { sessionsDir, piSessionDir, sessionDir } from "./paths.ts";
 import { surfaceId, parseSurfaceId, type Surface, type SurfaceId } from "../surface.ts";
@@ -34,7 +34,7 @@ import {
   resolveProjectRoot,
   type ExecutionEnvironment,
 } from "./environment.ts";
-import type { SessionState, TopicSettings, TopicSettingsFile, BindingsFile } from "./types.ts";
+import type { TopicSettings, TopicSettingsFile, BindingsFile } from "./types.ts";
 import { atomicWrite } from "../fs.ts";
 
 /**
@@ -43,6 +43,66 @@ import { atomicWrite } from "../fs.ts";
  * and strip it during environment canonicalization. This is the only type that
  * surfaces the legacy notice field — no normal runtime type/code exposes it.
  */
+export interface LegacySessionState {
+  id: string;
+  createdAt: string;
+  chatId: number;
+  topicId?: number | null;
+  title?: string;
+  projectDir?: string;
+  modelName?: string;
+  thinkingLevel?: string;
+  archived?: boolean;
+  executionEnvironment?: ExecutionEnvironment;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
+function isLegacySessionState(value: unknown): value is LegacySessionState {
+  if (!isRecord(value)) return false;
+  const validKeys = new Set([
+    "id",
+    "createdAt",
+    "chatId",
+    "topicId",
+    "title",
+    "projectDir",
+    "modelName",
+    "thinkingLevel",
+    "archived",
+    "executionEnvironment",
+  ]);
+  if (Object.keys(value).some((key) => !validKeys.has(key))) return false;
+  if (typeof value.id !== "string") return false;
+  if (
+    typeof value.createdAt !== "string"
+    || value.createdAt.length === 0
+    || Number.isNaN(Date.parse(value.createdAt))
+  ) return false;
+  if (typeof value.chatId !== "number" || !Number.isSafeInteger(value.chatId)) return false;
+  if (
+    value.topicId !== undefined
+    && value.topicId !== null
+    && (typeof value.topicId !== "number" || !Number.isSafeInteger(value.topicId) || value.topicId <= 0)
+  ) return false;
+  if (!isOptionalString(value.title)) return false;
+  if (!isOptionalString(value.projectDir)) return false;
+  if (!isOptionalString(value.modelName)) return false;
+  if (!isOptionalString(value.thinkingLevel)) return false;
+  if (value.archived !== undefined && typeof value.archived !== "boolean") return false;
+  if (
+    value.executionEnvironment !== undefined
+    && !isValidExecutionEnvironment(value.executionEnvironment)
+  ) return false;
+  return true;
+}
+
 export interface LegacyTopicSettingsValue {
   projectRoot?: string;
   projectDir?: string;
@@ -150,7 +210,7 @@ function collectSessionSurfaces(bindings: BindingsFile): Map<string, Surface[]> 
   return map;
 }
 
-function surfaceMatchesLegacyState(surface: Surface, state: SessionState): boolean {
+function surfaceMatchesLegacyState(surface: Surface, state: LegacySessionState): boolean {
   if (surface.chatId !== state.chatId) return false;
   if (surface.kind === "topic") {
     return typeof state.topicId === "number" && surface.topicId === state.topicId;
@@ -160,7 +220,7 @@ function surfaceMatchesLegacyState(surface: Surface, state: SessionState): boole
 
 function inferSessionEnvironment(
   id: string,
-  state: SessionState,
+  state: LegacySessionState,
   boundSurfaces: Surface[],
   settings: TopicSettingsFile,
 ): ExecutionEnvironment {
@@ -394,20 +454,35 @@ function applyWorkdirPromotion(plan: WorkdirPromotionPlan): void {
   }
 }
 
-function loadArchivedLegacyState(home: string, id: string): SessionState | null {
-  const path = join(sessionsDir(home), "archive", id, "state.json");
+function loadLegacySessionState(path: string): LegacySessionState | null {
+  let raw: string;
   try {
-    const raw = readFileSync(path, "utf-8");
-    return JSON.parse(raw) as SessionState;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw e;
+    raw = readFileSync(path, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
+
+  const parsed: unknown = JSON.parse(raw);
+  if (
+    isRecord(parsed)
+    && (
+      typeof parsed.createdAt !== "string"
+      || parsed.createdAt.length === 0
+      || Number.isNaN(Date.parse(parsed.createdAt))
+    )
+  ) {
+    throw new Error(`session state ${path} has missing or invalid createdAt`);
+  }
+  if (!isLegacySessionState(parsed)) {
+    throw new Error(`session state ${path} has malformed legacy shape`);
+  }
+  return parsed;
 }
 
-function saveSessionState(home: string, id: string, state: SessionState, env: ExecutionEnvironment, archived: boolean): void {
+function saveSessionState(home: string, id: string, state: LegacySessionState, env: ExecutionEnvironment, archived: boolean): void {
   const dir = archived ? join(sessionsDir(home), "archive", id) : sessionDir(home, id);
-  const next: SessionState = {
+  const next: LegacySessionState = {
     id: state.id,
     createdAt: state.createdAt,
     chatId: state.chatId,
@@ -420,7 +495,7 @@ function saveSessionState(home: string, id: string, state: SessionState, env: Ex
 
 export interface SessionEnvironmentPlan {
   readonly id: string;
-  readonly state: SessionState;
+  readonly state: LegacySessionState;
   readonly env: ExecutionEnvironment;
   readonly archived: boolean;
   readonly piFiles: string[];
@@ -439,7 +514,10 @@ function planSession(
   sessionSurfaces: Map<string, Surface[]>,
   settings: TopicSettingsFile,
 ): SessionEnvironmentPlan | null {
-  const state = archived ? loadArchivedLegacyState(home, id) : loadLegacyState(home, id);
+  const path = archived
+    ? join(sessionsDir(home), "archive", id, "state.json")
+    : join(sessionDir(home, id), "state.json");
+  const state = loadLegacySessionState(path);
   if (state === null) return null;
 
   const surfaces = sessionSurfaces.get(id) ?? [];

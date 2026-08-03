@@ -8,6 +8,8 @@ import { syncTelegramMenu } from "./commands/registry.ts";
 import { SchedulerLoop, DEFAULT_TRANSCRIPT_SYNC_MAX_MS } from "./scheduler/loop.ts";
 import { runPreflight } from "./preflight.ts";
 import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
+import { ConversationStore, InternalSessionStore } from "./sessions/mod.ts";
+import { reconcileProjectAssignmentAtColdStart } from "./orchestration/conversation-lifecycle.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -23,19 +25,29 @@ async function main(): Promise<void> {
   }
   const memoryEngine = new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
   await memoryEngine.migrate();
+  reconcileProjectAssignmentAtColdStart(cfg.goblinHome);
   await memoryEngine.embeddingProvider.reindexIfNeeded();
   await runPreflight(cfg);
   await validateModelAtStartup(cfg, log);
-  const { bot, manager, subagentRunner, agentRunners, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg, { memoryEngine });
+  const { bot, lifecycle, subagentRunner, agentRunners, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg, { memoryEngine });
+
   await memoryEngine.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS });
   await externalAgentRunner?.init();
-  await manager.init();
 
-  // Scheduler: start after manager.init() so bindings/state are available for
-  // peekBinding validation. Shares the same ScheduleStore and TurnDispatcher
-  // as Telegram intake, so scheduled turns serialize through the same
-  // per-session queue as /queue and media prompts.
-  const scheduler = new SchedulerLoop({ store: scheduleStore, sessionSource: manager, dispatcher, home: cfg.goblinHome, memoryEngine });
+  // Scheduled turns resolve the current Conversation through the same
+  // lifecycle authority as Telegram intake and serialize through the same
+  // per-Conversation runtime queue as /queue and media prompts. Dreaming gets
+  // canonical Conversation enumeration and Surface-free internal persistence
+  // as separate, explicit dependencies.
+  const scheduler = new SchedulerLoop({
+    store: scheduleStore,
+    lifecycle,
+    conversationCatalog: new ConversationStore(cfg.goblinHome),
+    internalSessionStore: new InternalSessionStore(cfg.goblinHome),
+    dispatcher,
+    home: cfg.goblinHome,
+    memoryEngine,
+  });
   scheduler.start();
 
   // Graceful shutdown. grammy's start() resolves when stop() is called.

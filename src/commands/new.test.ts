@@ -1,10 +1,10 @@
 import { describe, it, expect } from "bun:test";
 import { executeNew, createdReply } from "./new.ts";
-import type { SessionState } from "../sessions/types.ts";
+import type { ConversationState } from "../sessions/types.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 
-function makeSession(id: string): SessionState {
-  return { id, createdAt: new Date().toISOString(), chatId: 1, executionEnvironment: personalEnvironment() };
+function makeSession(id: string): ConversationState {
+  return { id, createdAt: new Date().toISOString(), executionEnvironment: personalEnvironment() };
 }
 
 describe("executeNew", () => {
@@ -12,7 +12,7 @@ describe("executeNew", () => {
     const created = makeSession("abc1234567");
     let createCalls = 0;
     const result = await executeNew({
-      createSession: () => {
+      createConversation: () => {
         createCalls += 1;
         return created;
       },
@@ -20,7 +20,7 @@ describe("executeNew", () => {
 
     expect(createCalls).toBe(1);
     expect(result.kind).toBe("created");
-    expect(result.session).toBe(created);
+    expect(result.conversation).toBe(created);
     expect(result.reply).toBe(createdReply("abc1234567"));
   });
 
@@ -31,9 +31,9 @@ describe("executeNew", () => {
     // pre-flip behavior where the helper rejected with a hardcoded reply.
     const created = makeSession("topic12345");
     const result = await executeNew({
-      createSession: () => created,
+      createConversation: () => created,
     });
     expect(result.kind).toBe("created");
-    expect(result.session).toBe(created);
+    expect(result.conversation).toBe(created);
   });
 });

@@ -1,13 +1,12 @@
 import { describe, it, expect } from "bun:test";
 import { executeResume, parseResumeTarget } from "./resume.ts";
-import type { SessionState } from "../sessions/types.ts";
+import type { ConversationState } from "../sessions/types.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 
-function session(id: string, title?: string): SessionState {
+function session(id: string, title?: string): ConversationState {
   return {
     id,
     createdAt: "2026-05-10T00:00:00.000Z",
-    chatId: 1,
     title,
     executionEnvironment: personalEnvironment(),
   };
@@ -21,12 +20,12 @@ describe("/resume command", () => {
   it("lists named conversations when no target is provided", async () => {
     const result = await executeResume({
       rawText: "/resume",
-      sessions: [
+      conversations: [
         session("abc123def0", "work"),
         session("anon123456"),
         session("def1234567", "memory refactor"),
       ],
-      bindSession: () => session("unused"),
+      bindConversation: () => session("unused"),
     });
     expect(result.kind).toBe("list");
     expect(result.reply).toContain("abc123def0 — work");
@@ -37,8 +36,8 @@ describe("/resume command", () => {
   it("reports when no named conversations exist", async () => {
     const result = await executeResume({
       rawText: "/resume",
-      sessions: [session("anon123456")],
-      bindSession: () => session("unused"),
+      conversations: [session("anon123456")],
+      bindConversation: () => session("unused"),
     });
     expect(result.kind).toBe("list");
     expect(result.reply).toContain("No named conversations yet");
@@ -48,8 +47,8 @@ describe("/resume command", () => {
     let bound: string | undefined;
     const result = await executeResume({
       rawText: "/resume abc123def0",
-      sessions: [session("abc123def0", "work")],
-      bindSession: (id) => {
+      conversations: [session("abc123def0", "work")],
+      bindConversation: (id) => {
         bound = id;
         return session(id, "work");
       },
@@ -61,8 +60,8 @@ describe("/resume command", () => {
   it("reports ambiguous prefix matches", async () => {
     const result = await executeResume({
       rawText: "/resume abc",
-      sessions: [session("abc123def0"), session("abc999def0")],
-      bindSession: () => session("unused"),
+      conversations: [session("abc123def0"), session("abc999def0")],
+      bindConversation: () => session("unused"),
     });
     expect(result.kind).toBe("ambiguous");
   });
@@ -71,9 +70,9 @@ describe("/resume command", () => {
     let bound: string | undefined;
     const result = await executeResume({
       rawText: "/resume other",
-      sessions: [],
-      incompatibleSessions: [session("other12345", "other")],
-      bindSession: (id) => {
+      conversations: [],
+      incompatibleConversations: [session("other12345", "other")],
+      bindConversation: (id) => {
         bound = id;
         return session(id, "other");
       },
@@ -87,9 +86,9 @@ describe("/resume command", () => {
     let bound: string | undefined;
     const result = await executeResume({
       rawText: "/resume shared",
-      sessions: [session("shared1234", "shared")],
-      incompatibleSessions: [session("shared1234", "shared")],
-      bindSession: (id) => {
+      conversations: [session("shared1234", "shared")],
+      incompatibleConversations: [session("shared1234", "shared")],
+      bindConversation: (id) => {
         bound = id;
         return session(id, "shared");
       },
@@ -101,9 +100,9 @@ describe("/resume command", () => {
   it("lists only compatible named conversations when no target is given", async () => {
     const result = await executeResume({
       rawText: "/resume",
-      sessions: [session("abc123def0", "work")],
-      incompatibleSessions: [session("def1234567", "other")],
-      bindSession: () => session("unused"),
+      conversations: [session("abc123def0", "work")],
+      incompatibleConversations: [session("def1234567", "other")],
+      bindConversation: () => session("unused"),
     });
     expect(result.kind).toBe("list");
     expect(result.reply).toContain("abc123def0");

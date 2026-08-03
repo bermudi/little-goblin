@@ -2,11 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrateExecutionEnvironments, type LegacyTopicSettingsValue } from "./environment-migration.ts";
+import { migrateExecutionEnvironments, type LegacySessionState, type LegacyTopicSettingsValue } from "./environment-migration.ts";
 import { configPath, piSessionDir, sessionDir, sessionsDir, topicSettingsPath } from "./paths.ts";
 import { workspacePath, workdirPath } from "../workspace/paths.ts";
 import { dmSurface, supergroupSurface, surfaceId, topicSurface } from "../surface.ts";
-import type { BindingsFile, SessionState, TopicSettingsFile } from "./types.ts";
+import type { BindingsFile, TopicSettingsFile } from "./types.ts";
 
 /** Migration-only topic-settings file shape carrying legacy fields (e.g. pendingProjectNotice). */
 type LegacyTopicSettingsFileInput = { version: 1; surfaces: Record<string, LegacyTopicSettingsValue> };
@@ -14,22 +14,26 @@ type LegacyTopicSettingsFileInput = { version: 1; surfaces: Record<string, Legac
 const SESSION_ID = "abcd1234ef";
 const OTHER_ID = "abcd1234f0";
 
-function makeLegacyState(overrides?: Partial<SessionState> & Record<string, unknown>): SessionState {
+function makeLegacyState(overrides?: Partial<LegacySessionState> & Record<string, unknown>): LegacySessionState {
   return {
     id: SESSION_ID,
     createdAt: "2024-01-01T00:00:00.000Z",
     chatId: 1,
     ...overrides,
-  } as SessionState;
+  } as LegacySessionState;
 }
 
-function writeState(home: string, id: string, state: SessionState): void {
+function writeRawState(home: string, id: string, state: unknown): void {
   const dir = sessionDir(home, id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "state.json"), JSON.stringify(state), "utf-8");
 }
 
-function writeArchivedState(home: string, id: string, state: SessionState): void {
+function writeState(home: string, id: string, state: LegacySessionState): void {
+  writeRawState(home, id, state);
+}
+
+function writeArchivedState(home: string, id: string, state: LegacySessionState): void {
   const dir = join(sessionsDir(home), "archive", id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "state.json"), JSON.stringify(state), "utf-8");
@@ -57,9 +61,9 @@ function writePiHistoryWithBody(home: string, id: string, cwd: string, body: str
   writeFileSync(join(dir, "history.jsonl"), JSON.stringify({ cwd }) + "\n" + body, "utf-8");
 }
 
-function readState(home: string, id: string, archived = false): SessionState {
+function readState(home: string, id: string, archived = false): LegacySessionState {
   const dir = archived ? join(sessionsDir(home), "archive", id) : sessionDir(home, id);
-  return JSON.parse(readFileSync(join(dir, "state.json"), "utf-8")) as SessionState;
+  return JSON.parse(readFileSync(join(dir, "state.json"), "utf-8")) as LegacySessionState;
 }
 
 function readPiHistory(home: string, id: string, archived = false): string {
@@ -410,6 +414,22 @@ describe("environment-migration", () => {
     writeState(tmpDir, SESSION_ID, makeLegacyState({ id: "mismatched0000" }));
 
     expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/state file id mismatch/);
+  });
+
+  it("rejects malformed legacy state at the JSON boundary", () => {
+    const malformedStates: unknown[] = [
+      null,
+      { ...makeLegacyState(), executionEnvironment: null },
+      { ...makeLegacyState(), unexpectedAuthority: true },
+    ];
+
+    for (const malformed of malformedStates) {
+      writeRawState(tmpDir, SESSION_ID, malformed);
+      expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/malformed legacy shape/);
+    }
+
+    writeRawState(tmpDir, SESSION_ID, { ...makeLegacyState(), createdAt: "not-a-date" });
+    expect(() => migrateExecutionEnvironments(tmpDir)).toThrow(/missing or invalid createdAt/);
   });
 
   it("rejects an invalid SurfaceId at the bindings load boundary", () => {

@@ -4,57 +4,41 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SchedulerLoop, HEARTBEAT_PROMPT, DEFAULT_TICK_INTERVAL_MS, resolveHeartbeatPrompt } from "./loop.ts";
 import { ScheduleStore } from "./store.ts";
-import { SessionManager } from "../sessions/manager.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
+import { InternalSessionStore } from "../sessions/internal-session-store.ts";
+import {
+  createConversationLifecycle,
+  reconcileProjectAssignmentAtColdStart,
+  type ConversationLifecycle,
+} from "../orchestration/conversation-lifecycle.ts";
+import type { MemoryEngine } from "../memory/engine.ts";
 import { loadBindings, saveBindings } from "../sessions/bindings.ts";
-import { runtimeSessionWithPreferences } from "../sessions/conversation.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
 import { surfaceHeartbeatPath } from "../sessions/paths.ts";
-import type { Config } from "../config.ts";
-import type { SessionState } from "../sessions/mod.ts";
-import type { SchedulerClock, SchedulerDispatcher, SchedulerSessionSource } from "./loop.ts";
+import type { ConversationState } from "../sessions/mod.ts";
+import type { SchedulerClock, SchedulerConversationLifecycle, SchedulerDispatcher } from "./loop.ts";
 import { dmSurface, surfaceId, type Surface } from "../surface.ts";
-
-function makeTestConfig(home: string): Config {
-  return {
-    botToken: "test-token",
-    allowedTgUserIds: new Set([123]),
-    modelName: "poe/Claude-Sonnet-4.6",
-    poeApiKey: "test-key",
-    goblinHome: home,
-    logLevel: "error",
-    toolVisibility: "standard",
-    voiceName: "en-US-AriaNeural",
-    favorites: [],
-  };
-}
 
 /** Fake dispatcher that records every enqueueScheduledTurn call. */
 function makeFakeDispatcher(): SchedulerDispatcher & {
-  calls: { session: SessionState; surface: Surface; content: string }[];
+  calls: { conversation: ConversationState; surface: Surface; content: string }[];
 } {
-  const calls: { session: SessionState; surface: Surface; content: string }[] = [];
+  const calls: { conversation: ConversationState; surface: Surface; content: string }[] = [];
   return {
     calls,
-    enqueueScheduledTurn(session, surface, content) {
-      calls.push({ session, surface, content });
+    enqueueScheduledTurn(conversation, surface, content) {
+      calls.push({ conversation, surface, content });
     },
   };
 }
 
-/**
- * Fake session source for eligibility tests. Returns canned `peekBinding` /
- * `isArchived` results so the scheduler's due/binding/archived logic can be
- * exercised without a filesystem-backed `SessionManager`.
- */
-function makeFakeSessionSource(
-  peek: { sessionId: string; state: SessionState } | null,
-  archived = false,
-): SchedulerSessionSource {
+/** Fake lifecycle resolver for binding eligibility tests. */
+function makeFakeLifecycle(
+  conversation: ConversationState | null,
+): SchedulerConversationLifecycle {
   return {
-    peekBinding: () => peek,
-    isArchived: () => archived,
+    resolveCurrent: async () => conversation,
   };
 }
 
@@ -81,36 +65,60 @@ const NOW_MS = Date.parse("2026-07-04T12:00:00Z");
 
 describe("SchedulerLoop", () => {
   let tmpDir: string;
-  let manager: SessionManager;
+  let lifecycle: ConversationLifecycle;
   let conversationStore: ConversationStore;
+  let internalSessionStore: InternalSessionStore;
   let store: ScheduleStore;
   let dispatcher: ReturnType<typeof makeFakeDispatcher>;
   let clock: ReturnType<typeof makeFakeClock>;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-loop-test-"));
-    manager = new SessionManager(makeTestConfig(tmpDir));
-    await manager.init();
+    lifecycle = createConversationLifecycle(tmpDir, {
+      hasRuntime: () => false,
+      disposeRuntime: async () => {},
+    });
     conversationStore = new ConversationStore(tmpDir);
+    internalSessionStore = new InternalSessionStore(tmpDir);
     store = new ScheduleStore(tmpDir);
     dispatcher = makeFakeDispatcher();
     clock = makeFakeClock(NOW_MS);
   });
 
-  async function createSession(loc: Surface): Promise<SessionState> {
+  async function createSession(loc: Surface): Promise<ConversationState> {
     const conv = conversationStore.create(personalEnvironment());
     const bindings = loadBindings(tmpDir);
     bindings.surfaces[surfaceId(loc)] = conv.id;
     saveBindings(tmpDir, bindings);
-    return runtimeSessionWithPreferences(conv, loc, tmpDir);
+    return conv;
   }
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  function schedulerDependencies(
+    selectedLifecycle: SchedulerConversationLifecycle = lifecycle,
+  ): {
+    lifecycle: SchedulerConversationLifecycle;
+    conversationCatalog: ConversationStore;
+    internalSessionStore: InternalSessionStore;
+  } {
+    return {
+      lifecycle: selectedLifecycle,
+      conversationCatalog: conversationStore,
+      internalSessionStore,
+    };
+  }
+
   function makeLoop(): SchedulerLoop {
-    return new SchedulerLoop({ store, sessionSource: manager, dispatcher, clock: clock.clock, home: tmpDir });
+    return new SchedulerLoop({
+      store,
+      ...schedulerDependencies(),
+      dispatcher,
+      clock: clock.clock,
+      home: tmpDir,
+    });
   }
 
   describe("constants and prompt", () => {
@@ -129,9 +137,9 @@ describe("SchedulerLoop", () => {
   });
 
   describe("due dispatch", () => {
-    it("dispatches a due schedule whose session is still bound", async () => {
+    it("dispatches a due schedule whose Conversation is still bound", async () => {
       const loc: Surface = dmSurface(100);
-      const session = await createSession(loc);
+      const conversation = await createSession(loc);
       const created = store.create({
         surface: loc,
         kind: "once",
@@ -142,7 +150,7 @@ describe("SchedulerLoop", () => {
       await makeLoop().tick();
 
       expect(dispatcher.calls).toHaveLength(1);
-      expect(dispatcher.calls[0]!.session.id).toBe(session.id);
+      expect(dispatcher.calls[0]!.conversation.id).toBe(conversation.id);
       expect(dispatcher.calls[0]!.content).toBe("check backups");
       // One-shot is completed after dispatch.
       const after = store.getForSurface(loc, created.id);
@@ -172,10 +180,10 @@ describe("SchedulerLoop", () => {
     });
   });
 
-  describe("busy-session queueing", () => {
+  describe("busy-Conversation queueing", () => {
     it("dispatches via the shared dispatcher even when the prompt is synthetic", async () => {
-      // The dispatcher (real TurnDispatcher) serializes through the per-
-      // session queue; here we assert the loop hands the work to the
+      // The dispatcher (real TurnDispatcher) serializes through the
+      // per-Conversation queue; here we assert the loop hands the work to the
       // dispatcher and does not await prompt completion itself. The fake
       // dispatcher records the call synchronously and returns immediately.
       const loc: Surface = dmSurface(100);
@@ -302,9 +310,18 @@ describe("SchedulerLoop", () => {
         nextRunAt: new Date(NOW_MS - 3600_000).toISOString(),
       });
       const restartedStore = new ScheduleStore(tmpDir);
-      const restartedManager = new SessionManager(makeTestConfig(tmpDir));
-      await restartedManager.init();
-      const restartedLoop = new SchedulerLoop({ store: restartedStore, sessionSource: restartedManager, dispatcher, clock: clock.clock, home: tmpDir });
+      reconcileProjectAssignmentAtColdStart(tmpDir);
+      const restartedLifecycle = createConversationLifecycle(tmpDir, {
+        hasRuntime: () => false,
+        disposeRuntime: async () => {},
+      });
+      const restartedLoop = new SchedulerLoop({
+        store: restartedStore,
+        ...schedulerDependencies(restartedLifecycle),
+        dispatcher,
+        clock: clock.clock,
+        home: tmpDir,
+      });
 
       await restartedLoop.tick();
       await restartedLoop.tick();
@@ -328,9 +345,18 @@ describe("SchedulerLoop", () => {
         intervalMs: 3600_000,
       });
       const restartedStore = new ScheduleStore(tmpDir);
-      const restartedManager = new SessionManager(makeTestConfig(tmpDir));
-      await restartedManager.init();
-      const restartedLoop = new SchedulerLoop({ store: restartedStore, sessionSource: restartedManager, dispatcher, clock: clock.clock, home: tmpDir });
+      reconcileProjectAssignmentAtColdStart(tmpDir);
+      const restartedLifecycle = createConversationLifecycle(tmpDir, {
+        hasRuntime: () => false,
+        disposeRuntime: async () => {},
+      });
+      const restartedLoop = new SchedulerLoop({
+        store: restartedStore,
+        ...schedulerDependencies(restartedLifecycle),
+        dispatcher,
+        clock: clock.clock,
+        home: tmpDir,
+      });
 
       await restartedLoop.tick();
       await restartedLoop.tick();
@@ -346,16 +372,16 @@ describe("SchedulerLoop", () => {
   });
 
   describe("surface binding", () => {
-    it("dispatches a due schedule to the surface's currently bound session (rotation survival)", async () => {
-      // Eligibility test: uses a fake session source (no filesystem). The
-      // surface is now bound to a different session than when the schedule was
+    it("dispatches a due schedule to the Surface's currently bound Conversation (rotation survival)", async () => {
+      // Eligibility test: uses a fake lifecycle resolver (no filesystem). The
+      // Surface is now bound to a different Conversation than when the schedule was
       // created. Phase 6 owns schedules by Surface, so the schedule survives
       // rotation and dispatches to the current binding.
-      const reboundState: SessionState = {
+      const reboundState: ConversationState = {
         id: "session-rebound",
-        chatId: 100,
         createdAt: new Date(NOW_MS).toISOString(),
-      } as SessionState;
+        executionEnvironment: personalEnvironment(),
+      };
       const created = store.create({
         surface: dmSurface(100),
         kind: "recurring",
@@ -363,13 +389,13 @@ describe("SchedulerLoop", () => {
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
         intervalMs: 3600_000,
       });
-      const source = makeFakeSessionSource({ sessionId: reboundState.id, state: reboundState });
+      const source = makeFakeLifecycle(reboundState);
 
-      const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
+      const loop = new SchedulerLoop({ store, ...schedulerDependencies(source), dispatcher, clock: clock.clock, home: tmpDir });
       await loop.tick();
 
       expect(dispatcher.calls).toHaveLength(1);
-      expect(dispatcher.calls[0]!.session.id).toBe("session-rebound");
+      expect(dispatcher.calls[0]!.conversation.id).toBe("session-rebound");
       expect(dispatcher.calls[0]!.content).toBe("x");
       const after = store.getForSurface(dmSurface(100), created.id);
       expect(after!.enabled).toBe(true);
@@ -377,9 +403,9 @@ describe("SchedulerLoop", () => {
       expect(after!.lastRun!.outcome).toBe("ok");
     });
 
-    it("leaves an unbound surface's due schedule pending and does not claim it", async () => {
-      // Eligibility test: peekBinding returns null (no live binding). The
-      // schedule records a pending lastRun but stays enabled/due for retry.
+    it("leaves an unbound Surface's due schedule pending and does not claim it", async () => {
+      // The lifecycle resolves no current Conversation. The schedule records a
+      // pending lastRun but stays enabled/due for retry.
       const created = store.create({
         surface: dmSurface(999),
         kind: "recurring",
@@ -387,9 +413,9 @@ describe("SchedulerLoop", () => {
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
         intervalMs: 3600_000,
       });
-      const source = makeFakeSessionSource(null);
+      const source = makeFakeLifecycle(null);
 
-      const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
+      const loop = new SchedulerLoop({ store, ...schedulerDependencies(source), dispatcher, clock: clock.clock, home: tmpDir });
       await loop.tick();
 
       expect(dispatcher.calls).toHaveLength(0);
@@ -416,10 +442,10 @@ describe("SchedulerLoop", () => {
       const bindings = loadBindings(tmpDir);
       delete bindings.surfaces[surfaceId(loc)];
       saveBindings(tmpDir, bindings);
-      const unboundSource = makeFakeSessionSource(null);
+      const unboundSource = makeFakeLifecycle(null);
       const unboundLoop = new SchedulerLoop({
         store,
-        sessionSource: unboundSource,
+        ...schedulerDependencies(unboundSource),
         dispatcher,
         clock: clock.clock,
         home: tmpDir,
@@ -431,16 +457,16 @@ describe("SchedulerLoop", () => {
       expect(after!.lastRun!.outcome).toBe("pending");
       expect(after!.enabled).toBe(true);
 
-      // Rebind the surface to a new session and tick again.
-      const reboundState: SessionState = {
+      // Rebind the Surface to a new Conversation and tick again.
+      const reboundState: ConversationState = {
         id: "session-after-rebind",
-        chatId: 100,
         createdAt: new Date(NOW_MS).toISOString(),
-      } as SessionState;
-      const boundSource = makeFakeSessionSource({ sessionId: reboundState.id, state: reboundState });
+        executionEnvironment: personalEnvironment(),
+      };
+      const boundSource = makeFakeLifecycle(reboundState);
       const boundLoop = new SchedulerLoop({
         store,
-        sessionSource: boundSource,
+        ...schedulerDependencies(boundSource),
         dispatcher,
         clock: clock.clock,
         home: tmpDir,
@@ -448,33 +474,12 @@ describe("SchedulerLoop", () => {
       await boundLoop.tick();
 
       expect(dispatcher.calls).toHaveLength(1);
-      expect(dispatcher.calls[0]!.session.id).toBe("session-after-rebind");
+      expect(dispatcher.calls[0]!.conversation.id).toBe("session-after-rebind");
       expect(dispatcher.calls[0]!.content).toBe("missed then rebound");
       after = store.getForSurface(loc, created.id);
       expect(after!.state).toBe("completed");
       expect(after!.enabled).toBe(false);
       expect(after!.lastRun!.outcome).toBe("ok");
-    });
-
-    it("does not consult isArchived: an unbound archived surface is pending", async () => {
-      // isArchived is still on SchedulerSessionSource, but the loop only looks
-      // at binding. A null peekBinding (with isArchived true) is pending.
-      const created = store.create({
-        surface: dmSurface(100),
-        kind: "recurring",
-        prompt: "x",
-        nextRunAt: new Date(NOW_MS - 1000).toISOString(),
-        intervalMs: 3600_000,
-      });
-      const source = makeFakeSessionSource(null, true);
-
-      const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
-      await loop.tick();
-
-      expect(dispatcher.calls).toHaveLength(0);
-      const after = store.getForSurface(dmSurface(100), created.id);
-      expect(after!.enabled).toBe(true);
-      expect(after!.lastRun!.outcome).toBe("pending");
     });
 
     it("deduplicates pending lastRun records for the same nextRunAt", async () => {
@@ -487,8 +492,8 @@ describe("SchedulerLoop", () => {
         nextRunAt: new Date(NOW_MS - 1000).toISOString(),
         intervalMs: 3600_000,
       });
-      const source = makeFakeSessionSource(null);
-      const loop = new SchedulerLoop({ store, sessionSource: source, dispatcher, clock: clock.clock, home: tmpDir });
+      const source = makeFakeLifecycle(null);
+      const loop = new SchedulerLoop({ store, ...schedulerDependencies(source), dispatcher, clock: clock.clock, home: tmpDir });
 
       await loop.tick();
       await loop.tick();
@@ -517,7 +522,7 @@ describe("SchedulerLoop", () => {
           throw new Error("boom");
         },
       };
-      const loop = new SchedulerLoop({ store, sessionSource: manager, dispatcher: throwingDispatcher, clock: clock.clock, home: tmpDir });
+      const loop = new SchedulerLoop({ store, ...schedulerDependencies(), dispatcher: throwingDispatcher, clock: clock.clock, home: tmpDir });
 
       // The tick must not reject even though dispatch threw.
       await expect(loop.tick()).resolves.toBeUndefined();
@@ -558,7 +563,7 @@ describe("SchedulerLoop", () => {
           throw new Error("sync boom");
         },
       };
-      const loop = new SchedulerLoop({ store, sessionSource: manager, dispatcher: throwingDispatcher, clock: clock.clock, home: tmpDir });
+      const loop = new SchedulerLoop({ store, ...schedulerDependencies(), dispatcher: throwingDispatcher, clock: clock.clock, home: tmpDir });
 
       await expect(loop.tick()).resolves.toBeUndefined();
 
@@ -686,13 +691,13 @@ describe("SchedulerLoop", () => {
     }
 
     async function enableHeartbeat(loc: Surface): Promise<string> {
-      const session = await createSession(loc);
+      const conversation = await createSession(loc);
       store.setHeartbeat({
         surface: loc,
         enabled: true,
         now: new Date(NOW_MS - 1800_000).toISOString(), // 30m ago → due now
       });
-      return session.id;
+      return conversation.id;
     }
 
     it("dispatches surface-scoped HEARTBEAT.md content when present", async () => {
@@ -794,8 +799,8 @@ describe("SchedulerLoop", () => {
 
       expect(dispatcher.calls).toHaveLength(1);
       expect(dispatcher.calls[0]!.content).toBe("[heartbeat] survived rotation");
-      expect(dispatcher.calls[0]!.session.id).toBe(secondConv.id);
-      expect(dispatcher.calls[0]!.session.id).not.toBe(firstSessionId);
+      expect(dispatcher.calls[0]!.conversation.id).toBe(secondConv.id);
+      expect(dispatcher.calls[0]!.conversation.id).not.toBe(firstSessionId);
     });
   });
 
@@ -832,10 +837,10 @@ describe("SchedulerLoop", () => {
       writeFileSync(blockingFile, "x", "utf-8");
       const loop = new SchedulerLoop({
         store,
-        sessionSource: manager,
+        ...schedulerDependencies(),
         dispatcher,
         clock: clock.clock,
-        // `home` only feeds resolveHeartbeatPrompt; store/manager use tmpDir.
+        // `home` only feeds resolveHeartbeatPrompt; persistence uses tmpDir.
         home: blockingFile,
       });
 
@@ -883,17 +888,17 @@ describe("SchedulerLoop", () => {
       // still run. This makes the test robust to listDue ordering.
       let firstSeen = false;
       const mixedDispatcher: SchedulerDispatcher = {
-        enqueueScheduledTurn(session, surface, content) {
+        enqueueScheduledTurn(conversation, surface, content) {
           if (!firstSeen) {
             firstSeen = true;
             throw new Error("boom on first");
           }
-          dispatcher.enqueueScheduledTurn(session, surface, content);
+          dispatcher.enqueueScheduledTurn(conversation, surface, content);
         },
       };
       const loop = new SchedulerLoop({
         store,
-        sessionSource: manager,
+        ...schedulerDependencies(),
         dispatcher: mixedDispatcher,
         clock: clock.clock,
         home: tmpDir,
@@ -904,6 +909,39 @@ describe("SchedulerLoop", () => {
       // The first schedule threw; the second still dispatched.
       expect(dispatcher.calls).toHaveLength(1);
       expect(dispatcher.calls[0]!.content).toBe("second (should still run)");
+    });
+  });
+
+  describe("Conversation enumeration for dreaming", () => {
+    it("visits bound and unbound non-archived Conversations, excluding archived and internal state", async () => {
+      const bound = await createSession(dmSurface(100));
+      const unbound = conversationStore.create(personalEnvironment());
+      const archived = conversationStore.create(personalEnvironment());
+      conversationStore.archive(archived.id);
+      const internal = internalSessionStore.ensure("__goblin_dreaming__");
+      const visited: string[] = [];
+      const memoryEngine = {
+        dreaming: {
+          runLightSleep: async (conversationId: string) => {
+            visited.push(conversationId);
+          },
+        },
+      } as unknown as MemoryEngine;
+      const loop = new SchedulerLoop({
+        store,
+        ...schedulerDependencies(),
+        dispatcher,
+        clock: clock.clock,
+        home: tmpDir,
+        memoryEngine,
+      });
+
+      await (loop as unknown as { runDreamingLightSleep(): Promise<void> }).runDreamingLightSleep();
+
+      expect(visited).toEqual(conversationStore.list().map((conversation) => conversation.id));
+      expect(new Set(visited)).toEqual(new Set([bound.id, unbound.id]));
+      expect(visited).not.toContain(archived.id);
+      expect(visited).not.toContain(internal.id);
     });
   });
 
@@ -920,7 +958,7 @@ describe("SchedulerLoop", () => {
       };
       const loop = new SchedulerLoop({
         store,
-        sessionSource: manager,
+        ...schedulerDependencies(),
         dispatcher,
         clock: countingClock,
         home: tmpDir,
@@ -947,7 +985,7 @@ describe("SchedulerLoop", () => {
       };
       const loop = new SchedulerLoop({
         store,
-        sessionSource: manager,
+        ...schedulerDependencies(),
         dispatcher,
         clock: countingClock,
         home: tmpDir,

@@ -753,12 +753,15 @@ describe("vertical slice with real AgentRunner", () => {
     await built.bot.handleUpdate(textUpdate("/new"));
     await built.bot.handleUpdate(textUpdate("hello"));
 
+    // Keep the condition deadline strictly inside Bun's test deadline so a
+    // loaded suite reports the missing response rather than racing two equal
+    // five-second timers.
     await waitFor(
       () =>
         built.api.sent.some((text) => text.includes(response)) ||
         built.api.edits.some((text) => text.includes(response)),
-      5000,
+      10_000,
     );
     expect(built.api.sent.some((text) => text.includes(response)) || built.api.edits.some((text) => text.includes(response))).toBe(true);
-  });
+  }, 15_000);
 });

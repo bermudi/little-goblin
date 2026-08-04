@@ -137,7 +137,7 @@ type ExecutionEnvironment =
 | Runner, prompt queue, Telegram sink/tools | Conversation runtime |
 | Personal identity and deployment prompts | Deployment workspace |
 | Curated memory entries | Memory store, keyed by active scope |
-| Delegated-run record and cross-run lifecycle | Delegated-work subsystem **(TARGET — decision 0036)** |
+| Delegated-run record and cross-run lifecycle | Delegated-work subsystem **(TARGET — decisions 0036 and 0045)** |
 | Pi session construction for delegated work | Pi execution host **(CURRENT — decision 0040)** |
 | External provider/process protocol mechanics | External-agent execution host **(TARGET — decision 0040)** |
 | External-agent working directory, invocation parameters, and permission profile | Main model through structured launch input **(TARGET — decision 0041)** |
@@ -314,7 +314,7 @@ Dreaming currently uses compatibility internal-session machinery. TARGET archite
 
 TARGET direction:
 
-- `DelegatedWorkHost` remains to own delegated-run records, the move of machine-managed instance state out of `scratch/` and workspace trees, cross-run lifetime, cancellation policy, and completion delivery. Current blocking generic/named invocations are attached and their full recursive tree dies with the creating runtime; durable subagents require a future detached-result contract.
+- `DelegatedWorkHost` remains to own delegated-run records, the move of machine-managed instance state out of `scratch/` and workspace trees, cross-run lifetime, cancellation policy, and completion delivery. Decision 0045 settles record storage: one host-owned store at `state/delegated-work/runs/<id>/`, each record a stable identity with an append-only invocation log, revival appending a new invocation that continues the persisted session. Current blocking generic/named invocations are attached and their full recursive tree dies with the creating runtime; durable subagents require a future detached-result contract.
 
 ### External agents
 
@@ -357,13 +357,11 @@ $GOBLIN_HOME/
     │   └── pi/
     ├── memory/memory.sqlite
     ├── inner-life/wakes/              # durable wake/effect records
-    ├── delegated-work/                # pending completion index and migration state
-    ├── pi/                            # auth + model catalog, not execution CWD
-    ├── subagents/                     # proposed machine-managed instances
-    └── external-agents/               # proposed durable run records
+    ├── delegated-work/runs/<id>/      # delegated-run records + execution state (decision 0045)
+    └── pi/                            # auth + model catalog, not execution CWD
 ```
 
-There is no target `$GOBLIN_HOME/scratch/` tree. True temporary data belongs in the OS temp directory or atomic sibling temp files and must not be authoritative. Existing `scratch/workdir`, `scratch/subagents`, and `scratch/external-agents` require explicit collision-safe migration steps before startup stops creating the old tree.
+There is no target `$GOBLIN_HOME/scratch/` tree. True temporary data belongs in the OS temp directory or atomic sibling temp files and must not be authoritative. `scratch/workdir` is retired. `scratch/subagents` and `scratch/external-agents` still require explicit collision-safe migration steps before startup stops creating the old tree: decision 0045 assigns subagent records to offline step 5 and leaves external-agent records to the ACP cycle.
 
 Named-agent definitions and machine-managed instances must not share one workspace directory in the target layout.
 
@@ -413,8 +411,8 @@ The frozen `pi-native-skill-layout` proposal remains historical input and contai
 | Memory scope/transcript provenance derives from session metadata | Moved history gets stale context or wrong chat attribution | `surface-derived-memory-context` → `transcript-surface-provenance` |
 | Explicit Goblin path + `skillSources` | ~~Native storage exists, but runtime source authority is still process-wide and ambient~~ Resolved: `SkillCatalogResolver` owns exact-root resolution; `skillSources` removed; Surface-owned policy selects sources | ~~`skill-catalog-resolution`~~ → ~~`surface-skill-policy`~~ |
 | Personal CWD under `scratch/workdir` | User work is ephemeral and unbacked-up | personal workspace environment migration |
-| Durable records under `scratch/` | “Durable but disposable” contradiction | **OPEN: storage-layout cleanup** |
-| Named definitions mixed with instance state | User-authored and machine-managed lifetimes mixed | **OPEN: subagent state migration** |
+| Durable records under `scratch/` | “Durable but disposable” contradiction | One host-owned record store (decision 0045); offline step 5 for subagents, ACP cycle for external agents |
+| Named definitions mixed with instance state | User-authored and machine-managed lifetimes mixed | Instances move to `state/delegated-work/runs/` (decision 0045); definitions stay in `workspace/agents/<name>/` |
 | Internal dreaming fake session identity | Borrowed routing/runtime machinery | `inner-life` → future `visible-dreaming` rewrite |
 | Attached/durable work implicit | Rotation may cancel or orphan wrong work | `delegated-work-ownership` |
 | External-agent fixed project CWD and two non-dangerous profiles | Contradicts the accepted fully trusted same-user delegate boundary | model-selected launch context under decision 0041 |
@@ -469,7 +467,7 @@ One ordered sequence, walked end to end. Historical change names and task counts
 
 Steps 1–10, including attachment intake, agent-owned prompt files, the persistence/runtime-authority closure, native skill layout, catalog resolution, Surface skill policy, and subagent skill inheritance, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
 
-**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active and no next candidate is selected; all parked scope remains deferred until deliberately resumed.
+**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The plainly described next is the delegated-run record store under decision 0045 — attached subagent records behind `DelegatedWorkHost`, then offline migration step 5 with startup reconciliation; remaining parked scope stays deferred until deliberately resumed.
 
 Storage-layout cleanup and workspace write authority cross this chain and must declare dependencies before implementation.
 
@@ -494,8 +492,8 @@ If the answer to 1–4 is “the caller coordinates it,” the design is not rea
 These decisions or implementation plans block a stable baseline:
 
 1. ~~**Workspace write authority.**~~ Settled by decision 0039 and implemented by `agent-owned-prompt-files`: prompt files are agent-owned, no write guard, bounded Telegram notice per write, inner-life excluded, subagents excluded, recovery via git in `workspace/`.
-2. **No-scratch migration:** final destinations and migration steps for subagent and external-agent records.
-3. **Delegated-work implementation:** cancellation races, durable storage, completion wakes, reachability input, and pending-delivery reconciliation under decision 0036.
+2. **No-scratch migration:** subagent destinations and the offline step-5 migration are settled by decision 0045 (implementation pending); external-agent record migration rides the ACP cycle under decision 0044.
+3. **Delegated-work implementation:** record storage ruled by decision 0045; cancellation races, durable lifetimes, completion wakes, reachability input, and pending-delivery reconciliation remain under decision 0036.
 4. **Surface lifecycle:** Telegram topic deletion/reachability, schedule suspension, pending outputs, and project recovery.
 5. **Inner-life implementation:** wake/effect schemas, per-effect guarantees, consent persistence, and observability under decision 0035; heartbeat conversion remains undecided.
 

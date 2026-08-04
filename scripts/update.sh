@@ -66,6 +66,13 @@ if [[ "${old_head}" == "${new_head}" ]]; then
 else
   echo "Installing dependencies..."
   su -s /bin/bash "${user}" -c "cd ${repo_dir} && bun install"
+
+  # git pull may replace this file while the current Bash process is still
+  # executing the old revision. Never run post-pull deployment steps from that
+  # stale control flow: hand off to a fresh interpreter reading the pulled
+  # file. The fresh invocation sees equal heads and continues below.
+  echo "Code changed; handing off to the pulled updater revision..."
+  exec "${BASH:-bash}" "${repo_dir}/scripts/update.sh"
 fi
 
 # This must precede the service stop even with no code change: migrate loads

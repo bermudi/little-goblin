@@ -80,6 +80,16 @@ case "${cmd}" in
     printf '%s' "$((count + 1))" >"${count_file}"
     exit 0
     ;;
+  *pull*)
+    replacement_target="${FAKE_UPDATE_SCRIPT:-${FAKE_INSTALL_SCRIPT:-}}"
+    replacement_source="${FAKE_REPLACEMENT_SCRIPT:-${FAKE_INSTALL_REPLACEMENT_SCRIPT:-}}"
+    if [[ -n "${replacement_target}" && -n "${replacement_source}" ]]; then
+      replacement_tmp="${replacement_target}.replacement"
+      cp "${replacement_source}" "${replacement_tmp}"
+      mv -f "${replacement_tmp}" "${replacement_target}"
+    fi
+    exit 0
+    ;;
   *"bun run validate-config"*)
     if [[ "${FAKE_VALIDATE_FAIL:-0}" == "1" ]]; then
       exit 1
@@ -161,6 +171,67 @@ run_with_fakes "${update_repo}" "${update_home}" bash "${repo_root}/scripts/upda
 assert_before 'bun run validate-config' 'systemctl stop goblin'
 assert_before 'systemctl stop goblin' 'bun run migrate'
 assert_before 'bun run migrate' 'systemctl start goblin'
+
+# A pull can replace update.sh itself. The updater must execute the pulled
+# revision rather than continue the pre-pull control flow.
+handoff_repo="${tmp}/handoff-repo"
+make_existing_repo "${handoff_repo}"
+cp "${repo_root}/scripts/update.sh" "${handoff_repo}/scripts/update.sh"
+handoff_replacement="${tmp}/pulled-update.sh"
+{
+  head -n 2 "${repo_root}/scripts/update.sh"
+  cat <<'EOF'
+printf 'pulled updater revision\n' >>"${FAKE_ORDER}"
+EOF
+  tail -n +3 "${repo_root}/scripts/update.sh"
+} >"${handoff_replacement}"
+chmod +x "${handoff_repo}/scripts/update.sh" "${handoff_replacement}"
+printf '0' >"${tmp}/head-count"
+: >"${order}"
+FAKE_HEAD_CHANGES=1 \
+FAKE_UPDATE_SCRIPT="${handoff_repo}/scripts/update.sh" \
+FAKE_REPLACEMENT_SCRIPT="${handoff_replacement}" \
+run_with_fakes "${handoff_repo}" "${update_home}" bash "${handoff_repo}/scripts/update.sh"
+if [[ "$(grep -c '^pulled updater revision$' "${order}")" -ne 1 ]]; then
+  echo "update.sh did not hand off exactly once to the pulled revision" >&2
+  cat "${order}" >&2
+  exit 1
+fi
+assert_before 'pulled updater revision' 'systemctl stop goblin'
+assert_before 'systemctl stop goblin' 'bun run migrate'
+assert_before 'bun run migrate' 'systemctl start goblin'
+
+# The existing-repository install path has the same self-replacement hazard.
+install_handoff_repo="${tmp}/install-handoff-repo"
+install_handoff_home="${tmp}/install-handoff-home"
+make_existing_repo "${install_handoff_repo}"
+cp "${repo_root}/scripts/install.sh" "${install_handoff_repo}/scripts/install.sh"
+mkdir -p "${install_handoff_home}"
+touch "${install_handoff_home}/goblin.json5"
+install_handoff_replacement="${tmp}/pulled-install.sh"
+{
+  head -n 2 "${repo_root}/scripts/install.sh"
+  cat <<'EOF'
+printf 'pulled installer revision\n' >>"${FAKE_ORDER}"
+EOF
+  tail -n +3 "${repo_root}/scripts/install.sh"
+} >"${install_handoff_replacement}"
+chmod +x "${install_handoff_repo}/scripts/install.sh" "${install_handoff_replacement}"
+printf '0' >"${tmp}/head-count"
+: >"${order}"
+FAKE_HEAD_CHANGES=1 \
+FAKE_INSTALL_SCRIPT="${install_handoff_repo}/scripts/install.sh" \
+FAKE_INSTALL_REPLACEMENT_SCRIPT="${install_handoff_replacement}" \
+run_with_fakes "${install_handoff_repo}" "${install_handoff_home}" bash "${repo_root}/scripts/install.sh" https://example.invalid/goblin.git
+if [[ "$(grep -c '^pulled installer revision$' "${order}")" -ne 1 ]]; then
+  echo "install.sh did not hand off exactly once to the pulled revision" >&2
+  cat "${order}" >&2
+  exit 1
+fi
+assert_before 'pulled installer revision' 'systemctl stop goblin'
+assert_before 'systemctl stop goblin' 'bun run migrate'
+assert_before 'bun run migrate' 'install-service'
+assert_before 'install-service' 'systemctl start goblin'
 
 # update config failure: validation happens while the prior service is intact.
 : >"${order}"

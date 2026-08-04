@@ -74,7 +74,7 @@ sudo bash scripts/backup.sh   # archive $GOBLIN_HOME to $GOBLIN_HOME/backups/
 sudo bash scripts/update.sh   # pull latest code, validate config, migrate state, then restart goblin
 ```
 
-`scripts/update.sh` validates configuration before stopping Goblin, then runs the offline migration with the service stopped. It restarts only after migration succeeds; on migration failure it deliberately leaves the service stopped so the operator can restore the migration backup. Run CI/typecheck before invoking it—it does not run them.
+`scripts/update.sh` validates configuration before stopping Goblin, then runs the offline migration with the service stopped. It restarts only after migration succeeds; on migration failure it deliberately leaves the service stopped so the operator can restore the migration backup. If the pull changes `update.sh` itself, the updater hands off to the pulled revision before any post-pull deployment step, so it never mixes old control flow with new code. Run CI/typecheck before invoking it—it does not run them.
 
 `scripts/backup.sh` is safe to run while the service is running: it archives `workspace/`, `state/`, and `goblin.json5`, excluding `scratch/`, `node_modules/`, `.git/`, `*.tmp`, and `state/*.jsonl` append-only logs (transcript, quarantine, and pi session files).
 

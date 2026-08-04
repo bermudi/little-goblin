@@ -73,6 +73,14 @@ if [[ -d "${repo_dir}/.git" ]] && su -s /bin/bash "${user}" -c "git -C ${repo_di
   su -s /bin/bash "${user}" -c "git -C ${repo_dir} checkout main"
   su -s /bin/bash "${user}" -c "git -C ${repo_dir} pull origin main"
   new_head="$(su -s /bin/bash "${user}" -c "git -C ${repo_dir} rev-parse HEAD")"
+
+  # The pull may replace this file while the current Bash process is still
+  # executing the old revision. Hand off before continuing with installation,
+  # migration, or service changes so all post-pull work uses the pulled code.
+  if [[ "${old_head}" != "${new_head}" ]]; then
+    echo "Code changed; handing off to the pulled installer revision..."
+    exec "${BASH:-bash}" "${repo_dir}/scripts/install.sh" "${repo_url}"
+  fi
 else
   if [[ -d "${repo_dir}" ]] && [[ -n "$(find "${repo_dir}" -mindepth 1 -maxdepth 1 -not -name '.git' -print -quit 2>/dev/null)" ]]; then
     echo "Error: ${repo_dir} exists and is not a valid git repository; remove it and re-run." >&2

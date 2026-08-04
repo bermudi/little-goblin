@@ -329,14 +329,14 @@ describe("TurnDispatcher runtime host support", () => {
     expect(runner.disposeCalled).toBe(true);
   });
 
-  it("cancels subagents by session id during dispose", async () => {
+  it("does not enumerate subagents during runtime disposal", async () => {
     const { dispatcher, runners, subagentRunner } = buildDispatcher();
     const session = makeSession("abc123def0");
     const runner = new FakeAgentRunner();
     runners.set(session.id, runner as unknown as AgentRunner);
 
     await dispatcher.disposeRunner(session.id);
-    expect(subagentRunner.cancelled).toContain(session.id);
+    expect(subagentRunner.cancelled).toEqual([]);
     expect(dispatcher.hasRunner(session.id)).toBe(false);
   });
 

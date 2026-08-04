@@ -25,6 +25,7 @@ import { createConversationLifecycle, FileSurfaceSettings } from "../orchestrati
 import { createTurnDispatcherRuntimeHost } from "../orchestration/conversation-runtime-host.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
+import type { DelegatedWorkHost } from "../delegated-work/mod.ts";
 
 import { transcribeWithGroq } from "../asr/mod.ts";
 import { MessageBuffer, createTextToSpeechTool } from "./mod.ts";
@@ -97,6 +98,8 @@ export interface TelegramIntakeOptions {
   externalAgentRunner?: ExternalAgentRunner;
   /** Shared MCP runner. Wired in buildBot. */
   mcpRunner?: McpRunner;
+  /** Shared delegated-work lifecycle host. */
+  delegatedWorkHost?: DelegatedWorkHost;
 }
 
 type ActiveTurn = {
@@ -260,6 +263,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     scheduleStore: options.scheduleStore,
     externalAgentRunner: options.externalAgentRunner,
     mcpRunner: options.mcpRunner,
+    delegatedWorkHost: options.delegatedWorkHost,
     embeddingProvider,
     dreamingPipeline,
     surfaceRuntimeAuthority: lifecycle,

@@ -12,11 +12,12 @@
  */
 
 import { readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { atomicWrite } from "../fs.ts";
 import { boundedError, log } from "../log.ts";
 import { VALID_NAME_RE } from "./validation.ts";
+import { parseSurfaceId } from "../surface.ts";
 import {
   genericSubagentDir,
   genericSubagentMetaPath,
@@ -33,6 +34,24 @@ import {
 
 const SAFE_SUBAGENT_ID_RE = /^[A-Za-z0-9_-]+$/;
 const SUBAGENT_STATUSES = ["running", "completed", "cancelled", "error"] as const;
+const DELIVERY_STATES = ["pending", "delivered", "suppressed"] as const;
+
+const executionEnvironmentSchema = z.union([
+  z.object({ kind: z.literal("personal") }).strict(),
+  z.object({
+    kind: z.literal("project"),
+    projectRoot: z.string().min(1).refine(isAbsolute, "must be an absolute path"),
+  }).strict(),
+]);
+
+const surfaceIdSchema = z.string().min(1).refine((value) => {
+  try {
+    parseSurfaceId(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, "must be a canonical SurfaceId");
 
 const timestampSchema = z.string().refine(
   (value) => !Number.isNaN(Date.parse(value)),
@@ -75,6 +94,13 @@ const subagentMetaSchema = z
     name: z.string().nullable(),
     spawnedBy: z.string().min(1).nullable(),
     activeScope: persistedActiveScopeSchema,
+    ownerConversationId: z.string().min(1).optional(),
+    runtimeId: z.string().min(1).optional(),
+    lifetime: z.literal("attached").optional(),
+    originSurfaceId: surfaceIdSchema.optional(),
+    executionEnvironment: executionEnvironmentSchema.optional(),
+    ownershipEpochId: z.string().min(1).optional(),
+    deliveryState: z.enum(DELIVERY_STATES).optional(),
     depth: z.number().int().min(1).max(MAX_SUBAGENT_DEPTH),
     createdAt: timestampSchema,
     completedAt: timestampSchema.optional(),
@@ -109,6 +135,29 @@ const subagentMetaSchema = z
         code: "custom",
         path: ["errorMessage"],
         message: "errorMessage is only valid when status = error",
+      });
+    }
+    const ownershipFields = [
+      meta.ownerConversationId,
+      meta.runtimeId,
+      meta.lifetime,
+      meta.originSurfaceId,
+      meta.executionEnvironment,
+      meta.ownershipEpochId,
+    ];
+    const hasOwnership = ownershipFields.some((value) => value !== undefined);
+    if (hasOwnership && ownershipFields.some((value) => value === undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["ownerConversationId"],
+        message: "attached ownership fields must be complete",
+      });
+    }
+    if (meta.lifetime === "attached" && meta.status === "running" && meta.deliveryState !== "pending") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["deliveryState"],
+        message: "running attached records must have pending delivery state",
       });
     }
   });

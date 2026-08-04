@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentRunner } from "../../agent/mod.ts";
 import { createMemorySearchTool } from "../../memory/mod.ts";
@@ -16,7 +16,7 @@ import { surfaceId, topicSurface, type Surface } from "../../surface.ts";
 import { SubagentRunner, type SubagentInstance } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import { createReviveSubagentTool, createSpawnSubagentTool } from "../tool.ts";
-import { genericSubagentDir } from "../paths.ts";
+import { genericSubagentDir, genericSubagentMetaPath } from "../paths.ts";
 import {
   createTestHome,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
@@ -105,6 +105,7 @@ function makeFakeAgentRunner(opts: ConstructorParameters<typeof AgentRunner>[0])
     async compact() {
       return {};
     },
+    delegatedRuntimeContext: opts.delegatedRuntimeContext ?? null,
     async setModel() {},
     setThinkingLevel() {},
   } as unknown as AgentRunner;
@@ -133,9 +134,35 @@ function createFixture(): RuntimeFixture {
   };
 
   const subagentHost = new FakeSubagentHost();
-  const subagentRunner = new SubagentRunner(cfg, (subRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate) => [
-    createSpawnSubagentTool(subRunner, depth, sessionId, parentCapture, inheritedSkills, onStatusUpdate),
-    createReviveSubagentTool(subRunner, parentCapture, inheritedSkills, onStatusUpdate),
+  const subagentRunner = new SubagentRunner(cfg, (
+    subRunner,
+    depth,
+    sessionId,
+    parentCapture,
+    inheritedSkills,
+    onStatusUpdate,
+    delegatedContext,
+    parentSubagentId,
+  ) => [
+    createSpawnSubagentTool(
+      subRunner,
+      depth,
+      sessionId,
+      parentCapture,
+      inheritedSkills,
+      onStatusUpdate,
+      undefined,
+      delegatedContext,
+      parentSubagentId,
+    ),
+    createReviveSubagentTool(
+      subRunner,
+      parentCapture,
+      inheritedSkills,
+      onStatusUpdate,
+      undefined,
+      delegatedContext,
+    ),
   ], undefined, subagentHost);
 
   let dispatcher: TurnDispatcher | undefined;
@@ -202,7 +229,12 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     expect(mainResult.entries.map((e) => e.text)).not.toContain("surface-y fact");
 
     // First subagent inherits the Surface X authority.
-    const childX = await fx.subagentRunner.spawn({ prompt: "child x", authority: captureX.authority, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
+    const childX = await fx.subagentRunner.spawn({
+      prompt: "child x",
+      authority: captureX.authority,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      delegatedContext: runnerX.delegatedRuntimeContext ?? undefined,
+    });
     await flush();
     const childXInstance = getInstance(fx.subagentRunner, childX.id);
     expect(childXInstance?.authority.sourceSurfaceId).toBe(surfaceId(SURFACE_X));
@@ -224,9 +256,143 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
 
     fx.subagentHost.latest().complete("done");
     await childX.result;
+    fx.subagentRunner.acknowledgeDelivery(childX.id);
   });
 
 
+
+  it("records attached ownership and invalidates generic work through the runtime host", async () => {
+    const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
+    const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
+    const captureX = assertSurfaceCapture(runnerX.memoryContext);
+    const runtime = runnerX.delegatedRuntimeContext;
+    if (runtime === null) throw new Error("test runner did not capture delegated runtime identity");
+
+    const tool = createSpawnSubagentTool(
+      fx.subagentRunner,
+      0,
+      sessionX.id,
+      captureX,
+      EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      undefined,
+      1000,
+      runtime,
+    );
+    const resultPromise = tool.execute(
+      "attached-run",
+      { prompt: "attached work" },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    await flush();
+
+    const entry = fx.subagentRunner.list()[0];
+    if (entry === undefined) throw new Error("generic delegated run was not registered");
+    expect(entry.ownerConversationId).toBe(sessionX.id);
+    expect(entry.runtimeId).toBe(runtime.runtimeId);
+    expect(entry.lifetime).toBe("attached");
+    expect(entry.originSurfaceId).toBe(surfaceId(SURFACE_X));
+    expect(entry.deliveryState).toBe("pending");
+
+    const runningMeta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(fx.home, entry.id), "utf-8"),
+    ) as { ownerConversationId?: string; runtimeId?: string; lifetime?: string; originSurfaceId?: string; deliveryState?: string };
+    expect(runningMeta.ownerConversationId).toBe(sessionX.id);
+    expect(runningMeta.runtimeId).toBe(runtime.runtimeId);
+    expect(runningMeta.lifetime).toBe("attached");
+    expect(runningMeta.originSurfaceId).toBe(surfaceId(SURFACE_X));
+    expect(runningMeta.deliveryState).toBe("pending");
+    expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(1);
+
+    // Disposal fences the old runtime synchronously; the blocking tool result
+    // cannot be delivered after that fence.
+    const disposal = fx.dispatcher.disposeRunner(sessionX.id);
+    expect(getInstance(fx.subagentRunner, entry.id)?.runtimeFenced).toBe(true);
+    await expect(resultPromise).rejects.toThrow(/cancelled/i);
+    await disposal;
+
+    const cancelledMeta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(fx.home, entry.id), "utf-8"),
+    ) as { status?: string; deliveryState?: string };
+    expect(cancelledMeta.status).toBe("cancelled");
+    expect(cancelledMeta.deliveryState).toBe("suppressed");
+    expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(0);
+
+    const replacementConversation = await fx.lifecycle.resume(SURFACE_Y, sessionX.id);
+    const runnerY = await fx.dispatcher.getOrCreateRunner(replacementConversation, SURFACE_Y);
+    expect(runnerY.delegatedRuntimeContext?.runtimeId).not.toBe(runtime.runtimeId);
+    expect(runnerY.delegatedRuntimeContext?.originSurfaceId).toBe(surfaceId(SURFACE_Y));
+  });
+
+  it("retains host ownership when attached cancellation cannot prove cleanup", async () => {
+    const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
+    const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
+    const captureX = assertSurfaceCapture(runnerX.memoryContext);
+    const runtime = runnerX.delegatedRuntimeContext;
+    if (runtime === null) throw new Error("test runner did not capture delegated runtime identity");
+
+    fx.subagentHost.stopFailure = new Error("stop failed");
+    const tool = createSpawnSubagentTool(
+      fx.subagentRunner,
+      0,
+      sessionX.id,
+      captureX,
+      EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      undefined,
+      1000,
+      runtime,
+    );
+    const resultPromise = tool.execute(
+      "attached-failed-cleanup",
+      { prompt: "attached work" },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    await flush();
+
+    const entry = fx.subagentRunner.list()[0];
+    if (entry === undefined) throw new Error("generic delegated run was not registered");
+    const disposal = fx.dispatcher.disposeRunner(sessionX.id);
+    await expect(resultPromise).rejects.toThrow(/cancelled/i);
+    await expect(disposal).rejects.toThrow(/stop failed/i);
+    expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(1);
+  });
+
+  it("keeps completion pending until acknowledged and suppresses it on runtime invalidation", async () => {
+    const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
+    const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
+    const captureX = assertSurfaceCapture(runnerX.memoryContext);
+    const runtime = runnerX.delegatedRuntimeContext;
+    if (runtime === null) throw new Error("test runner did not capture delegated runtime identity");
+
+    const handle = await fx.subagentRunner.spawn({
+      prompt: "finish but wait for delivery",
+      authority: captureX.authority,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      delegatedContext: runtime,
+    });
+    await flush();
+    fx.subagentHost.latest().complete("finished");
+    await handle.result;
+
+    const pendingMeta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(fx.home, handle.id), "utf-8"),
+    ) as { status?: string; deliveryState?: string };
+    expect(pendingMeta.status).toBe("completed");
+    expect(pendingMeta.deliveryState).toBe("pending");
+    expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(1);
+
+    await fx.dispatcher.disposeRunner(sessionX.id);
+
+    const suppressedMeta = JSON.parse(
+      readFileSync(genericSubagentMetaPath(fx.home, handle.id), "utf-8"),
+    ) as { status?: string; deliveryState?: string };
+    expect(suppressedMeta.status).toBe("completed");
+    expect(suppressedMeta.deliveryState).toBe("suppressed");
+    expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(0);
+  });
 
   it("recursively spawned subagents are cancelled by a same-conversation move and the replacement runtime captures Surface Y tools", async () => {
     const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
@@ -246,6 +412,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
       authority: captureX.authority,
       spawnedBy: sessionX.id,
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      delegatedContext: runnerX.delegatedRuntimeContext ?? undefined,
     });
     await flush();
     const childXInstance = getInstance(fx.subagentRunner, childX.id);
@@ -316,6 +483,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
       authority: captureY.authority,
       spawnedBy: sessionY.id,
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      delegatedContext: runnerY.delegatedRuntimeContext ?? undefined,
     });
     await flush();
     const childYInstance = getInstance(fx.subagentRunner, childY.id);
@@ -331,6 +499,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
 
     fx.subagentHost.latest().complete("done");
     await childY.result;
+    fx.subagentRunner.acknowledgeDelivery(childY.id);
   });
 
   it("revived subagent attaches under the lifecycle guard and a same-conversation move cancels it before the terminal result", async () => {
@@ -344,10 +513,12 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
       authority: captureX.authority,
       spawnedBy: sessionX.id,
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      delegatedContext: runnerX.delegatedRuntimeContext ?? undefined,
     });
     await flush();
     fx.subagentHost.latest().complete("done");
     await childX.result;
+    fx.subagentRunner.acknowledgeDelivery(childX.id);
     ensureSessionFile(fx.home, childX.id);
 
     // Begin revival. The guard attaches, then the lifecycle transition proceeds
@@ -389,10 +560,12 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
       authority: captureX.authority,
       spawnedBy: sessionX.id,
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      delegatedContext: runnerX.delegatedRuntimeContext ?? undefined,
     });
     await flush();
     fx.subagentHost.latest().complete("done");
     await childX.result;
+    fx.subagentRunner.acknowledgeDelivery(childX.id);
 
     // Corrupt revival id: subagentRunner.revive fails before onAttached, the
     // attachment gate rejects, and the lock is released.

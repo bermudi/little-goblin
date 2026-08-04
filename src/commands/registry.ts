@@ -435,15 +435,17 @@ const resumeHandler: CommandHandler = async ({ deps, surface, conversation: acti
   }
 };
 
-const subagentsHandler: CommandHandler = async ({ deps }) => {
-  return replied(formatSubagentsList(deps.subagentRunner.list()), [], "info");
+const subagentsHandler: CommandHandler = async ({ deps, conversation }) => {
+  const infos = conversation === null ? [] : deps.subagentRunner.list(conversation.id);
+  return replied(formatSubagentsList(infos), [], "info");
 };
 
-const cancelSubagentHandler: CommandHandler = async ({ deps, rawText }) => {
+const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversation }) => {
   const id = parseSubagentId(rawText);
   if (id === null) return replied(CANCEL_SUBAGENT_USAGE_REPLY, [], "info");
+  if (conversation === null) return replied("No active conversation.", [], "info");
   try {
-    await deps.subagentRunner.cancel(id);
+    await deps.subagentRunner.cancel(id, conversation.id);
     return replied(`Cancelled subagent \`${id}\`.`, [], "ok");
   } catch (err) {
     const message = errorMessage(err);

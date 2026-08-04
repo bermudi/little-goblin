@@ -8,6 +8,12 @@ import type { ResolvedSkillSet } from "../agent/skills/mod.ts";
 import type { SurfaceMemoryAuthority, CapturedMemoryContext, SurfaceMemoryCaller } from "../memory/mod.ts";
 import type { ActiveScope } from "../memory/scope.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
+import type {
+  AttachedDelegatedWorkOwnership,
+  AttachedWorkRegistration,
+  DelegatedDeliveryState,
+  DelegatedRuntimeContext,
+} from "../delegated-work/mod.ts";
 import type { SubagentExecution } from "./host.ts";
 
 /** Status of a subagent instance. */
@@ -48,8 +54,10 @@ interface SpawnOptionsBase {
    * Defaults to 0 (i.e. spawned directly by goblin).
    */
   depth?: number;
-  /** Identifier of the spawning agent (goblin session id or parent subagent id). */
+  /** Identifier of the spawning agent (legacy root session id or parent subagent id). */
   spawnedBy?: string;
+  /** Trusted runtime authority supplied by the current Conversation runtime. */
+  delegatedContext?: DelegatedRuntimeContext;
   /**
    * Optional callback for streaming subagent activity back to the caller.
    * The runner prefixes status messages with the subagent name/id.
@@ -135,6 +143,14 @@ export interface SubagentInfo {
   role: SubagentRole;
   status: SubagentStatus;
   spawnedAt: string;
+  /** Captured delegated ownership; absent only on legacy compatibility records. */
+  ownerConversationId?: string;
+  runtimeId?: string;
+  lifetime?: "attached";
+  originSurfaceId?: string;
+  executionEnvironment?: ExecutionEnvironment;
+  ownershipEpochId?: string;
+  deliveryState?: DelegatedDeliveryState;
   /**
    * Identifier of the spawning agent — goblin session id for top-level
    * subagents, or parent subagent id for nested ones. `null` for
@@ -199,6 +215,14 @@ export interface SubagentInstance {
   inheritance: GenericSubagentInheritance | null;
   /** Opaque invocation-lifetime Pi lease created by the host. */
   execution: SubagentExecution | null;
+  /** Immutable delegated ownership for the current invocation, when attached. */
+  delegatedOwnership: AttachedDelegatedWorkOwnership | null;
+  /** Registration with DelegatedWorkHost, held until terminal cleanup. */
+  delegatedRegistration: AttachedWorkRegistration | null;
+  /** True after runtime invalidation fences this invocation epoch. */
+  runtimeFenced: boolean;
+  /** Terminal execution outcome and delivery are separate pieces of state. */
+  deliveryState: DelegatedDeliveryState;
   /** Ephemeral host success reservation; never persisted as authority. */
   completionClaimed: boolean;
   /** Coordinator settlement, distinct from the immediately cancellable result. */
@@ -227,6 +251,14 @@ export interface SubagentMeta {
   name: string | null;
   spawnedBy: string | null;
   activeScope: ActiveScope;
+  /** Attached ownership fields are optional only for pre-host legacy records. */
+  ownerConversationId?: string;
+  runtimeId?: string;
+  lifetime?: "attached";
+  originSurfaceId?: string;
+  executionEnvironment?: ExecutionEnvironment;
+  ownershipEpochId?: string;
+  deliveryState?: DelegatedDeliveryState;
   depth: number;
   createdAt: string;
   /** Set when execution finishes (success, error, or cancellation). */

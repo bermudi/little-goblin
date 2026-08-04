@@ -23,6 +23,7 @@ import {
 } from "./tg/intake.ts";
 import { ExternalAgentRunner } from "./external-agents/mod.ts";
 import { McpRunner } from "./mcp/mod.ts";
+import { DelegatedWorkHost } from "./delegated-work/mod.ts";
 import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
 import type { ConversationLifecycle } from "./orchestration/conversation-lifecycle.ts";
 
@@ -37,9 +38,28 @@ const subagentToolFactory: SubagentToolFactory = (
   parentCapture,
   inheritance,
   onStatusUpdate,
+  delegatedContext,
+  parentSubagentId,
 ) => [
-  createSpawnSubagentTool(runner, depth, sessionId, parentCapture, inheritance, onStatusUpdate, undefined),
-  createReviveSubagentTool(runner, parentCapture, inheritance, onStatusUpdate),
+  createSpawnSubagentTool(
+    runner,
+    depth,
+    sessionId,
+    parentCapture,
+    inheritance,
+    onStatusUpdate,
+    undefined,
+    delegatedContext,
+    parentSubagentId,
+  ),
+  createReviveSubagentTool(
+    runner,
+    parentCapture,
+    inheritance,
+    onStatusUpdate,
+    undefined,
+    delegatedContext,
+  ),
 ];
 
 function safeRecordTelegramEvent(metrics: MetricsStore | undefined, event: TelegramMetricsEvent): void {
@@ -172,12 +192,15 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   const runners = new Map<string, AgentRunner>();
   const memoryEngine = options.memoryEngine ?? new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
   const memoryStore = memoryEngine.readStore;
+  const delegatedWorkHost = new DelegatedWorkHost();
   const subagentHost = new PiSubagentHost(cfg);
   const subagentRunner = new SubagentRunner(
     cfg,
     subagentToolFactory,
     memoryEngine.embeddingProvider,
     subagentHost,
+    undefined,
+    delegatedWorkHost,
   );
   // One shared schedule store: `/schedule` mutates it from the command path,
   // and the scheduler loop reads/claims from it. Constructed here so both
@@ -198,6 +221,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     mcpRunner,
     embeddingProvider: memoryEngine.embeddingProvider,
     dreamingPipeline: memoryEngine.dreaming,
+    delegatedWorkHost,
   });
 
   // Text coalescer: merges Telegram-split fragments before they reach intake.

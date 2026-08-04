@@ -18,6 +18,11 @@ import { SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
+import {
+  DelegatedWorkHost,
+  type ConversationRuntimeId,
+  type DelegatedRuntimeContext,
+} from "../delegated-work/mod.ts";
 import { environmentsEqual } from "../sessions/environment.ts";
 import {
   resolveSkillSet,
@@ -37,7 +42,7 @@ interface PromptQueueEntry {
   isPrompt: boolean;
 }
 
-/** Maximum time `disposeRunner` waits for the subagent cascade to settle. */
+/** Maximum time `disposeRunner` waits for legacy external-agent cleanup. */
 const DISPOSE_RUNNER_CANCEL_TIMEOUT_MS = 10_000;
 
 /**
@@ -152,6 +157,8 @@ export interface TurnDispatcherOptions {
   externalAgentRunner?: ExternalAgentRunner;
   /** Shared MCP runner. When present and configured, it is wired into every new `AgentRunner`. */
   mcpRunner?: McpRunner;
+  /** Shared delegated-work policy host. */
+  delegatedWorkHost?: DelegatedWorkHost;
   /**
    * Mandatory lifecycle-owned authority for Surface-backed runtime acquisition,
    * stale-runner checks, and attached subagent revival. Internal runtimes use
@@ -180,6 +187,8 @@ export class TurnDispatcher {
   private readonly runners: Map<string, AgentRunner>;
   /** Surface a runner was created for, keyed by session/conversation id. */
   private readonly runnerSurfaceIds: Map<string, SurfaceId>;
+  /** Stable identity for each Conversation runtime generation. */
+  private readonly runnerRuntimeIds: Map<string, ConversationRuntimeId>;
   /** Frozen skill-policy and manifest identity captured by each runtime. */
   private readonly runnerSkillContexts: Map<string, { policyFingerprint: string; manifestFingerprint: string | null }>;
   /** Compatibility internal runtimes intentionally have no Surface authority. */
@@ -210,6 +219,7 @@ export class TurnDispatcher {
   private readonly scheduleStore: ScheduleStore | undefined;
   private readonly externalAgentRunner: ExternalAgentRunner | undefined;
   private readonly mcpRunner: McpRunner | undefined;
+  private readonly delegatedWorkHost: DelegatedWorkHost;
   private readonly surfaceRuntimeAuthority: SurfaceRuntimeAuthority;
 
   constructor(options: TurnDispatcherOptions) {
@@ -221,6 +231,7 @@ export class TurnDispatcher {
     this.dreamingPipeline = options.dreamingPipeline;
     this.runners = options.agentRunners;
     this.runnerSurfaceIds = new Map<string, SurfaceId>();
+    this.runnerRuntimeIds = new Map<string, ConversationRuntimeId>();
     this.runnerSkillContexts = new Map();
     this.internalRunnerIds = new Set<string>();
     this.inFlightCreations = new Map();
@@ -233,6 +244,17 @@ export class TurnDispatcher {
     this.scheduleStore = options.scheduleStore;
     this.externalAgentRunner = options.externalAgentRunner;
     this.mcpRunner = options.mcpRunner;
+    const runnerDelegatedWorkHost = options.subagentRunner.delegatedWorkHost;
+    if (
+      options.delegatedWorkHost !== undefined &&
+      runnerDelegatedWorkHost !== undefined &&
+      options.delegatedWorkHost !== runnerDelegatedWorkHost
+    ) {
+      throw new Error("TurnDispatcher and SubagentRunner must share one DelegatedWorkHost");
+    }
+    // The runner is the registration owner; an explicitly supplied host is
+    // only a composition-root assertion/fallback for narrow test doubles.
+    this.delegatedWorkHost = runnerDelegatedWorkHost ?? options.delegatedWorkHost ?? new DelegatedWorkHost();
     this.surfaceRuntimeAuthority = options.surfaceRuntimeAuthority;
   }
 
@@ -270,6 +292,7 @@ export class TurnDispatcher {
     memoryContext: CapturedMemoryContext,
     skillPolicy: SkillPolicy = this.surfaceSettings.getSkillPolicy(surface),
     resolvedSkills?: ResolvedSkillSet,
+    runtimeId: ConversationRuntimeId = DelegatedWorkHost.newRuntimeId(),
   ): AgentRunner {
     if (!this.surfaceRuntimeAuthority.isCurrentBinding(surface, session.id)) {
       throw new Error(`cannot construct runtime for stale binding: ${surfaceId(surface)} → ${session.id}`);
@@ -283,6 +306,13 @@ export class TurnDispatcher {
     }
 
     const betaTools = this.createBetaToolsFn(surface);
+    const expectedSurfaceId = surfaceId(surface);
+    const delegatedRuntimeContext: DelegatedRuntimeContext = {
+      ownerConversationId: session.id,
+      runtimeId,
+      originSurfaceId: expectedSurfaceId,
+      executionEnvironment: session.executionEnvironment,
+    };
     // Model and thinking authority belongs exclusively to the destination
     // Surface. Conversation state deliberately carries neither preference.
     const modelName = this.surfaceSettings.getModelName(surface);
@@ -304,6 +334,7 @@ export class TurnDispatcher {
       scheduleStore: this.scheduleStore,
       externalAgentRunner: this.externalAgentRunner,
       mcpRunner: this.mcpRunner,
+      delegatedRuntimeContext,
       embeddingProvider: this.embeddingProvider,
       dreamingPipeline: this.dreamingPipeline,
       isCurrent: () =>
@@ -366,6 +397,7 @@ export class TurnDispatcher {
           prompt,
           undefined,
           () => signal.attached(),
+          runner.delegatedRuntimeContext ?? undefined,
         );
 
         // If revival fails before attachment, reject the attachment gate so the
@@ -381,7 +413,14 @@ export class TurnDispatcher {
       },
     );
 
-    return await attached.result;
+    const result = await attached.result;
+    // A blocking command is the delivery boundary for a revived run. The host
+    // keeps a completed attached registration pending until this acknowledgement
+    // so runtime invalidation can still suppress a stale result.
+    if (typeof this.subagentRunner.acknowledgeDelivery === "function") {
+      this.subagentRunner.acknowledgeDelivery(subagentId);
+    }
+    return result;
   }
 
   /**
@@ -610,9 +649,18 @@ export class TurnDispatcher {
       );
     }
 
-    const runner = this.createRunner(session, surface, memoryContext, skillPolicy, resolvedSkills);
+    const runtimeId = DelegatedWorkHost.newRuntimeId();
+    const runner = this.createRunner(
+      session,
+      surface,
+      memoryContext,
+      skillPolicy,
+      resolvedSkills,
+      runtimeId,
+    );
     this.runners.set(session.id, runner);
     this.runnerSurfaceIds.set(session.id, expectedSurfaceId);
+    this.runnerRuntimeIds.set(session.id, runtimeId);
     this.runnerSkillContexts.set(session.id, {
       policyFingerprint: expectedPolicyFingerprint,
       manifestFingerprint: resolvedSkills?.fingerprint ?? null,
@@ -753,9 +801,9 @@ export class TurnDispatcher {
    * work for the stale runner aborts via the `isCurrent()` guard. Safe to call
    * when no runner exists (no-op).
    *
-   * Disposes the runner and clears the queue first, then cancels any subagents
-   * and external agents spawned by this session so orphaned work does not
-   * outlive the runner.
+   * Disposes the runner and clears the queue first, then invalidates attached
+   * delegated work through DelegatedWorkHost. External-agent cleanup remains
+   * on its legacy host-specific adapter until that host joins this boundary.
    *
    * @param preserveInFlight When called from `doCreateAndRegisterRunner` to
    *   dispose an old runner before creating a replacement, pass the new
@@ -765,8 +813,10 @@ export class TurnDispatcher {
    */
   async disposeRunner(sessionId: string, preserveInFlight?: Promise<AgentRunner>): Promise<void> {
     const prior = this.runners.get(sessionId);
+    const runtimeId = this.runnerRuntimeIds.get(sessionId);
     this.runners.delete(sessionId);
     this.runnerSurfaceIds.delete(sessionId);
+    this.runnerRuntimeIds.delete(sessionId);
     this.runnerSkillContexts.delete(sessionId);
     this.internalRunnerIds.delete(sessionId);
     // Clear the in-flight creation entry unless it matches the creation to
@@ -779,6 +829,13 @@ export class TurnDispatcher {
     }
     this.promptQueues.delete(sessionId);
     this.promptQueueMeta.delete(sessionId);
+
+    // Fence delegated work immediately after runtime identity is removed.
+    // `invalidateRuntime` performs its fence synchronously before returning a
+    // promise, so no late generic spawn can cross this boundary.
+    const delegatedInvalidation = runtimeId === undefined
+      ? Promise.resolve()
+      : this.delegatedWorkHost.invalidateRuntime(runtimeId);
 
     // Await runner disposal and subagent/external cleanup, but track failure so
     // falsy throws (e.g. `throw undefined` or `throw null`) are still rethrown.
@@ -797,9 +854,26 @@ export class TurnDispatcher {
       }
     }
 
-    // Cancel external agents owned by this session, then cancel subagents
-    // spawned by this session, but don't block runner disposal indefinitely if
-    // a cancel is stuck.
+    // External-agent cleanup remains on its legacy adapter path in this
+    // attached-subagent slice. Generic subagents are never enumerated or
+    // cancelled here; DelegatedWorkHost owns their runtime invalidation.
+    let delegatedErr: unknown;
+    let delegatedFailed = false;
+    try {
+      await delegatedInvalidation;
+    } catch (err) {
+      delegatedErr = err;
+      delegatedFailed = true;
+      log.error("delegated work invalidation failed in disposeRunner", {
+        sessionId,
+        runtimeId: runtimeId ?? null,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // External-agent cancellation still has its legacy bounded adapter. Do not
+    // use a timeout for delegated attached work: timeout is not proof of
+    // quiescence.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const externalCancelPromise = this.externalAgentRunner
       ? this.externalAgentRunner.cancelBySession(sessionId).catch((err) => {
@@ -809,23 +883,18 @@ export class TurnDispatcher {
           });
         })
       : Promise.resolve();
-    const cancelPromise = this.subagentRunner.cancelBySession(sessionId).catch((err) => {
-      log.error("cancelBySession failed in disposeRunner", {
-        sessionId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    });
     const timeout = new Promise<void>((resolve) => {
       timer = setTimeout(() => {
-        log.warn("cancelBySession timed out in disposeRunner; continuing side effects", { sessionId });
+        log.warn("external-agent cancellation timed out in disposeRunner; continuing side effects", { sessionId });
         resolve();
       }, DISPOSE_RUNNER_CANCEL_TIMEOUT_MS);
     });
     try {
-      await Promise.race([Promise.all([externalCancelPromise, cancelPromise]), timeout]);
+      await Promise.race([externalCancelPromise, timeout]);
     } finally {
       if (timer) clearTimeout(timer);
       if (disposeFailed) throw disposeErr;
+      if (delegatedFailed) throw delegatedErr;
     }
   }
 

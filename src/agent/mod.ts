@@ -30,6 +30,7 @@ import {
 import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
 import { type GenericSubagentInheritance, type SubagentRunner } from "../subagents/mod.ts";
+import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
@@ -79,6 +80,8 @@ interface AgentRunnerOptionsBase {
    * `MemoryStore` connection that uses this provider for vector indexing.
    */
   embeddingProvider?: EmbeddingProvider;
+  /** Runtime authority used to classify generic delegated work as attached. */
+  delegatedRuntimeContext?: DelegatedRuntimeContext;
   /** Optional pre-built memory store (tests may inject one). */
   memoryStore?: MemoryStore;
   /** Shared schedule store. When present, the agent gets the `schedule_turn` tool. */
@@ -356,6 +359,8 @@ export class AgentRunner {
   private _initInProgress: boolean = false;
   /** Args for in-flight tool calls, keyed by pi `toolCallId`. */
   private pendingToolCalls = new Map<string, { toolName: string; args: unknown }>();
+  /** Captured runtime identity passed to attached delegated-work tools. */
+  public readonly delegatedRuntimeContext: DelegatedRuntimeContext | null;
 
   /** Exposed for the interrupt layer and intake. */
   get isAbortTimedOut(): boolean {
@@ -423,6 +428,7 @@ export class AgentRunner {
         : { kind: "internal" };
     this.customTools = opts.customTools;
     this.subagentRunner = opts.subagentRunner ?? null;
+    this.delegatedRuntimeContext = opts.delegatedRuntimeContext ?? null;
     this.scheduleStore = opts.scheduleStore;
     this.externalAgentRunner = opts.externalAgentRunner ?? null;
     this.mcpRunner = opts.mcpRunner ?? null;
@@ -573,6 +579,8 @@ export class AgentRunner {
           inheritance,
           (msg) => this.sendStatusUpdate(msg),
           undefined,
+          this.delegatedRuntimeContext ?? undefined,
+          undefined,
         ),
       );
       tools.push(
@@ -581,6 +589,8 @@ export class AgentRunner {
           this.memoryContext,
           inheritance,
           (msg) => this.sendStatusUpdate(msg),
+          undefined,
+          this.delegatedRuntimeContext ?? undefined,
         ),
       );
     }

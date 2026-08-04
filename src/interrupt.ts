@@ -37,9 +37,16 @@ export interface InterruptableRunner {
 
 /** Minimal shape we need from `SubagentRunner` — keeps testing trivial. */
 export interface InterruptableSubagentRunner {
-  list(): ReadonlyArray<{ id: string; status: string; spawnedBy?: string | null }>;
+  list(): ReadonlyArray<{
+    id: string;
+    status: string;
+    spawnedBy?: string | null;
+    ownerConversationId?: string;
+  }>;
   cancel(id: string): Promise<void>;
-  /** Cancel every subagent in the spawn tree rooted at the given session id. */
+  /** Cancel every attached/durable run explicitly owned by a Conversation. */
+  cancelByConversation?(conversationId: string): Promise<void>;
+  /** Compatibility fallback for pre-host spawn records. */
   cancelBySession?(sessionId: string): Promise<void>;
 }
 
@@ -207,15 +214,21 @@ export async function interruptAndCascade(
         }
       }
     }
-    live = running.filter((s) => s.spawnedBy !== undefined && s.spawnedBy !== null && reachable.has(s.spawnedBy));
+    const legacyReachable = running.filter(
+      (s) => s.spawnedBy !== undefined && s.spawnedBy !== null && reachable.has(s.spawnedBy),
+    );
+    const explicitlyOwned = running.filter((s) => s.ownerConversationId === sessionId);
+    live = [...new Map(
+      [...legacyReachable, ...explicitlyOwned].map((entry) => [entry.id, entry]),
+    ).values()];
   } else {
     live = running;
   }
   result.attemptedSubagents = live.length;
 
-  if (sessionId && subagentRunner.cancelBySession) {
-    const cancelPromise = subagentRunner.cancelBySession(sessionId).catch((err) => {
-      log.warn("subagent cancelBySession failed during cascade", {
+  if (sessionId && subagentRunner.cancelByConversation) {
+    const cancelPromise = subagentRunner.cancelByConversation(sessionId).catch((err) => {
+      log.warn("subagent owner cancellation failed during cascade", {
         error: String(err),
         sessionId,
       });
@@ -223,7 +236,7 @@ export async function interruptAndCascade(
     const outcome = await withTimeout(cancelPromise, cascadeTimeoutMs);
     if (outcome === TIMEOUT_SENTINEL) {
       result.timedOutSubagents = live.length;
-      log.warn("subagent cancelBySession timed out", { sessionId, timeoutMs: cascadeTimeoutMs });
+      log.warn("subagent owner cancellation timed out", { sessionId, timeoutMs: cascadeTimeoutMs });
     }
   } else {
     await Promise.all(

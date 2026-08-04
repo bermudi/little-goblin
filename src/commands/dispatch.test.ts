@@ -411,8 +411,9 @@ describe("handleCommand", () => {
       list: mock(() => infos),
     });
     const harness = makeHarness(baseCascade(), subagentRunner);
+    const session = await createSession(harness);
 
-    const result = expectReplied(await dispatch({ command: "/subagents", harness }));
+    const result = expectReplied(await dispatch({ command: "/subagents", session, harness }));
     expect(result.reply).toContain("Tracked subagents:");
     expect(result.reply).toContain("abc (researcher) — running named");
   });
@@ -425,10 +426,11 @@ describe("handleCommand", () => {
     const cancel = mock(async () => {});
     const subagentRunner = makeSubagentRunner({ cancel });
     const harness = makeHarness(baseCascade(), subagentRunner);
+    const session = await createSession(harness);
 
-    const result = expectReplied(await dispatch({ command: "/cancel_subagent", rawText: "/cancel_subagent abc", harness }));
+    const result = expectReplied(await dispatch({ command: "/cancel_subagent", rawText: "/cancel_subagent abc", session, harness }));
     expect(result.reply).toBe("Cancelled subagent `abc`.");
-    expect(cancel).toHaveBeenCalledWith("abc");
+    expect(cancel).toHaveBeenCalledWith("abc", session.id);
   });
 
   it("rejects /cancel_subagent without an id", async () => {
@@ -440,8 +442,9 @@ describe("handleCommand", () => {
       cancel: mock(async () => { throw new Error("Subagent not found"); }),
     });
     const harness = makeHarness(baseCascade(), subagentRunner);
+    const session = await createSession(harness);
 
-    const result = expectReplied(await dispatch({ command: "/cancel_subagent", rawText: "/cancel_subagent missing", harness }));
+    const result = expectReplied(await dispatch({ command: "/cancel_subagent", rawText: "/cancel_subagent missing", session, harness }));
     expect(result.reply).toBe("Failed to cancel subagent `missing`: Subagent not found");
   });
 

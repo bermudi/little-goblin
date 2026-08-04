@@ -12,6 +12,7 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { CapturedMemoryContext } from "../memory/mod.ts";
+import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
 import type { GenericSubagentInheritance, SubagentRunner } from "./mod.ts";
 import { listNamedAgents } from "./paths.ts";
 
@@ -28,24 +29,31 @@ function requireGenericInheritance(
 }
 
 /**
- * Create a promise that rejects after `ms` milliseconds, cancelling the
- * subagent and returning a timeout error to the LLM.
+ * Await a blocking subagent result with a timeout. The timer is cleared when
+ * the result wins; a timeout starts best-effort cancellation without delaying
+ * the timeout error returned to the model.
  */
-function timeoutReject(
+async function awaitSubagentResult(
+  result: Promise<string>,
   ms: number,
   subagentId: string,
   runner: SubagentRunner,
-): Promise<never> {
-  return new Promise<never>((_, reject) => {
-    setTimeout(async () => {
+  ownerConversationId?: string,
+): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
       reject(new Error(`Subagent ${subagentId} timed out after ${ms}ms`));
-      try {
-        await runner.cancel(subagentId);
-      } catch {
+      void runner.cancel(subagentId, ownerConversationId).catch(() => {
         // Already completed/errored — ignore.
-      }
+      });
     }, ms);
   });
+  try {
+    return await Promise.race([result, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 const spawnSubagentSchema = Type.Object({
@@ -106,6 +114,8 @@ export function createSpawnSubagentTool(
   inheritance: GenericSubagentInheritance | null,
   onStatusUpdate?: (message: string) => void,
   timeoutMs?: number,
+  delegatedContext?: DelegatedRuntimeContext,
+  parentSubagentId?: string,
 ): ToolDefinition {
   return defineTool({
     name: "spawn_subagent",
@@ -122,7 +132,8 @@ export function createSpawnSubagentTool(
         prompt: params.prompt,
         authority: parentCapture.authority,
         depth,
-        spawnedBy: sessionId,
+        spawnedBy: delegatedContext !== undefined ? parentSubagentId : sessionId,
+        delegatedContext,
         onStatusUpdate,
         timeoutMs,
       };
@@ -134,10 +145,14 @@ export function createSpawnSubagentTool(
       // Errors propagate as tool errors that the LLM can read and decide
       // how to handle.
       const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const result = await Promise.race([
+      const result = await awaitSubagentResult(
         handle.result,
-        timeoutReject(effectiveTimeout, handle.id, runner),
-      ]);
+        effectiveTimeout,
+        handle.id,
+        runner,
+        delegatedContext?.ownerConversationId,
+      );
+      runner.acknowledgeDelivery(handle.id);
 
       return {
         content: [{ type: "text" as const, text: result }],
@@ -188,6 +203,7 @@ export function createReviveSubagentTool(
   inheritance: GenericSubagentInheritance | null,
   onStatusUpdate?: (message: string) => void,
   timeoutMs?: number,
+  delegatedContext?: DelegatedRuntimeContext,
 ): ToolDefinition {
   return defineTool({
     name: "revive_subagent",
@@ -201,10 +217,22 @@ export function createReviveSubagentTool(
       params: ReviveSubagentInput,
     ) {
       const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const result = await Promise.race([
-        runner.revive(parentCapture, inheritance, params.id, params.prompt, onStatusUpdate),
-        timeoutReject(effectiveTimeout, params.id, runner),
-      ]);
+      const result = await awaitSubagentResult(
+        runner.revive(
+          parentCapture,
+          inheritance,
+          params.id,
+          params.prompt,
+          onStatusUpdate,
+          undefined,
+          delegatedContext,
+        ),
+        effectiveTimeout,
+        params.id,
+        runner,
+        delegatedContext?.ownerConversationId,
+      );
+      runner.acknowledgeDelivery(params.id);
       return {
         content: [{ type: "text" as const, text: result }],
         details: { subagentId: params.id },

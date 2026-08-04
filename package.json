@@ -12,7 +12,6 @@
     "validate-config": "bun run src/validate-config.ts",
     "install:prod": "bash scripts/install.sh",
     "install-service": "bash scripts/install-service.sh",
-    "backup": "bash scripts/backup.sh",
     "update:prod": "bash scripts/update.sh",
     "migrate": "bun run src/migrate.ts",
     "test": "bun test",

@@ -16,6 +16,7 @@ import {
 } from "../memory/mod.ts";
 import { boundedError, log } from "../log.ts";
 import type { SubagentInvocation } from "./host.ts";
+import type { AttachedDelegatedWorkOwnership, DelegatedRuntimeContext } from "../delegated-work/mod.ts";
 import { persistMetaPatch } from "./meta.ts";
 import type { GenericSubagentInheritance, SubagentInstance } from "./types.ts";
 
@@ -50,6 +51,8 @@ export interface ExecutionDeps {
     parentCapture: CapturedMemoryContext,
     inheritance: GenericSubagentInheritance | null,
     onStatusUpdate?: (msg: string) => void,
+    delegatedContext?: DelegatedRuntimeContext | AttachedDelegatedWorkOwnership,
+    parentSubagentId?: string,
   ) => SubagentInvocation["customTools"];
 }
 
@@ -122,6 +125,10 @@ export async function runInstance(
   if (instance.status === "running") {
     // A compliant host reserves completion synchronously at agent_settled.
     // Keep the fallback for small injected hosts that simply resolve run().
+    // A runtime fence must never be converted into a successful delivery.
+    if (instance.runtimeFenced && !instance.completionClaimed) {
+      throw new Error(`Subagent '${instance.id}' was fenced before completion was claimed`);
+    }
     instance.completionClaimed = true;
     markCompleted(instance);
   }
@@ -171,7 +178,9 @@ async function runInvocation(
         instance.id,
         capture,
         instance.inheritance,
-        instance.rawStatusCallback,
+        rawStatusCallbackFor(instance),
+        instance.delegatedOwnership ?? undefined,
+        instance.id,
       ),
       // memory_search subsumes the old memory_read and memory_read_index tools.
       // Persona gating is encoded by the captured caller/context.
@@ -200,9 +209,11 @@ async function runInvocation(
         systemPrompt: systemPromptFor(instance, capture),
         relevantMemoryPrelude: relevantMemoryPrelude ?? undefined,
         customTools,
-        onStatusUpdate: instance.onStatusUpdate,
+        onStatusUpdate: statusCallbackFor(instance),
         onCompletionClaimed: () => {
-          if (instance.status === "running") instance.completionClaimed = true;
+          if (instance.status === "running" && !instance.runtimeFenced) {
+            instance.completionClaimed = true;
+          }
         },
       });
     } catch (error) {
@@ -230,7 +241,25 @@ async function runInvocation(
 }
 
 function isCancelled(instance: SubagentInstance): boolean {
-  return instance.status === "cancelled";
+  return instance.status === "cancelled" || instance.runtimeFenced;
+}
+
+function statusCallbackFor(instance: SubagentInstance): ((message: string) => void) | undefined {
+  if (instance.onStatusUpdate === undefined) return undefined;
+  return (message: string) => {
+    if (!instance.runtimeFenced && instance.status === "running") {
+      instance.onStatusUpdate?.(message);
+    }
+  };
+}
+
+function rawStatusCallbackFor(instance: SubagentInstance): ((message: string) => void) | undefined {
+  if (instance.rawStatusCallback === undefined) return undefined;
+  return (message: string) => {
+    if (!instance.runtimeFenced && instance.status === "running") {
+      instance.rawStatusCallback?.(message);
+    }
+  };
 }
 
 function systemPromptFor(
@@ -258,10 +287,14 @@ export function markCompleted(instance: SubagentInstance): void {
     return;
   }
   instance.completionClaimed = true;
+  const deliveryState = instance.delegatedOwnership === null
+    ? "delivered" as const
+    : "pending" as const;
   const patch = {
     status: "completed" as const,
     completedAt: new Date().toISOString(),
     errorMessage: undefined,
+    deliveryState,
   };
   let persistenceFailed = false;
   let persistenceError: unknown;
@@ -273,7 +306,14 @@ export function markCompleted(instance: SubagentInstance): void {
     log.error("failed to persist completed meta", { id: instance.id, ...boundedError(err) });
   }
   instance.status = "completed";
-  teardownInstance(instance);
+  instance.deliveryState = persistenceFailed ? "suppressed" : deliveryState;
+  // Attached work keeps its host registration while its blocking caller still
+  // owns an undelivered result. `acknowledgeDelivery()` releases it after the
+  // tool has accepted the result; runtime invalidation can therefore suppress
+  // a completed-but-not-yet-delivered result without resurrecting it.
+  // A failed terminal write cannot safely remain pending: the result is
+  // rejected below and the registration must not become an untracked leak.
+  if (persistenceFailed) teardownInstance(instance);
   log.debug("subagent completed", { id: instance.id });
   if (persistenceFailed) throw persistenceError;
 }
@@ -298,6 +338,7 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
       status: "error",
       completedAt: new Date().toISOString(),
       errorMessage,
+      deliveryState: "suppressed",
     });
   } catch (persistErr) {
     persistenceFailed = true;
@@ -305,6 +346,7 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
     log.error("failed to persist error meta", { id: instance.id, ...boundedError(persistErr) });
   }
   instance.status = "error";
+  instance.deliveryState = "suppressed";
   instance.completionClaimed = false;
   teardownInstance(instance);
   log.warn("subagent errored", { id: instance.id, ...boundedError(errorMessage) });
@@ -317,6 +359,13 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
  * this function only severs coordinator references and never reimplements Pi
  * cleanup policy.
  */
-export function teardownInstance(instance: SubagentInstance): void {
+export function teardownInstance(
+  instance: SubagentInstance,
+  releaseDelegatedRegistration = true,
+): void {
   instance.execution = null;
+  if (releaseDelegatedRegistration && instance.deliveryState !== "pending") {
+    instance.delegatedRegistration?.release();
+    instance.delegatedRegistration = null;
+  }
 }

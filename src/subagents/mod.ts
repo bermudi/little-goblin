@@ -6,9 +6,9 @@
  *   - `runner.ts`        — `SubagentRunner` compatibility lifecycle owner
  *   - `execution.ts`     — coordinator-side memory/tool/terminal transitions
  *   - `host.ts`          — opaque Pi execution lease and Pi resource mechanics
- *   - `meta.ts`          — `meta.json` persistence + exact history lookup
+ *   - `meta.ts`          — exact history file lookup
  *   - `named-agents.ts`  — loader-free named-agent definition loading
- *   - `paths.ts`         — `~/goblin/...` path helpers
+ *   - `paths.ts`         — named-agent definition path helpers
  *   - `types.ts`         — shared lifecycle definitions
  *
  * Current behavior is exercised by `mod.test.ts` and `test/*.suite.ts`.
@@ -41,6 +41,5 @@ export type {
   SubagentHistoryTarget,
   SubagentInfo,
   SubagentInstance,
-  SubagentMeta,
   SubagentStatus,
 } from "./types.ts";

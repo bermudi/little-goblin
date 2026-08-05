@@ -11,7 +11,7 @@ import {
 } from "./transcript-provenance-migration.ts";
 import { readTranscriptRawDocumentAtPath, type TranscriptRawDocument, type TranscriptRawLine } from "./transcript.ts";
 import { runMigrations } from "../migrate.ts";
-import { readStateVersion, stateVersionPath } from "../state-version.ts";
+import { CURRENT_STATE_VERSION, readStateVersion, stateVersionPath } from "../state-version.ts";
 import { sessionsDir, sessionDir } from "./paths.ts";
 import { dmSurface, surfaceId, type SurfaceId } from "../surface.ts";
 
@@ -228,13 +228,13 @@ describe("transcript provenance migration", () => {
     writeTranscript(home, SESSION_ID, `${JSON.stringify(entry)}\n`);
 
     runMigrations(home);
-    expect(readStateVersion(home)).toBe(4);
+    expect(readStateVersion(home)).toBe(CURRENT_STATE_VERSION);
 
     const backups = readdirSync(home).filter((n) => n.startsWith(".migration-backup-"));
     expect(backups.length).toBe(1);
 
     runMigrations(home);
-    expect(readStateVersion(home)).toBe(4);
+    expect(readStateVersion(home)).toBe(CURRENT_STATE_VERSION);
     expect(readdirSync(home).filter((n) => n.startsWith(".migration-backup-")).length).toBe(1);
   });
 

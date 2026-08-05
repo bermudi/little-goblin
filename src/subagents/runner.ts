@@ -294,13 +294,14 @@ export class SubagentRunner {
   /**
    * Spawn a new subagent and kick off its first turn.
    *
-   * Generic (no `name`): creates `$GOBLIN_HOME/scratch/subagents/<id>/`,
-   * persists a pi session, and inherits the caller's Execution Environment
-   * plus frozen resolved skill manifest (exact files, no re-discovery).
+   * Generic (no `name`): creates a host-owned record under
+   * `state/delegated-work/runs/<id>/`, persists a pi session in the same run
+   * directory, and inherits the caller's Execution Environment plus frozen
+   * resolved skill manifest (exact files, no re-discovery).
    *
    * Named (`name` provided): loads
-   * `$GOBLIN_HOME/workspace/agents/<name>/AGENTS.md` (required), creates an
-   * `instances/<id>/` child for persistence, and builds a
+   * `$GOBLIN_HOME/workspace/agents/<name>/AGENTS.md` (required), creates a
+   * host-owned record under `state/delegated-work/runs/<id>/`, and builds a
    * Pi resource preparation that uses the AGENTS.md content as the system
    * prompt and pins skill discovery to the agent's own `.agents/skills/`
    * catalog — strictly isolated from Goblin and caller skills.

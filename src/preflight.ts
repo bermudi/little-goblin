@@ -10,6 +10,7 @@ import { log } from "./log.ts";
 import { goblinSkillsPath, personalEnvironmentSkillsPath } from "./workspace/paths.ts";
 import { sessionsDir } from "./sessions/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
+import { delegatedWorkRunsRoot } from "./delegated-work/paths.ts";
 import { runExternalAgentsPreflight } from "./external-agents/preflight.ts";
 
 export interface PreflightContext {
@@ -82,6 +83,7 @@ export async function runPreflight(
     await checkDirectoryWritable(join(cfg.goblinHome, "state"));
     await checkDirectoryWritable(sessionsDir(cfg.goblinHome));
     await checkDirectoryWritable(memoryDir(cfg.goblinHome));
+    await checkDirectoryWritable(delegatedWorkRunsRoot(cfg.goblinHome));
   });
 
   await ctx.check("atomic write works in state/", async () => {

@@ -8,8 +8,9 @@ import { sessionsDir } from "./sessions/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
 import { goblinSkillsPath, personalEnvironmentSkillsPath } from "./workspace/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
-import { namedAgentsRoot, subagentsRoot } from "./subagents/paths.ts";
+import { namedAgentsRoot } from "./subagents/paths.ts";
 import { externalAgentsRoot } from "./external-agents/paths.ts";
+import { delegatedWorkRunsRoot } from "./delegated-work/paths.ts";
 
 export interface Config {
   botToken: string;
@@ -181,8 +182,8 @@ export function ensureGoblinHome(cfg: Config): void {
     memoryDir(home),
     piAgentDir(home),
     join(home, "scratch"),
-    subagentsRoot(home),
     externalAgentsRoot(home),
+    delegatedWorkRunsRoot(home),
   ];
   for (const dir of dirs) {
     mkdirSync(dir, { recursive: true });

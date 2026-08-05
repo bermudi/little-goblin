@@ -6,7 +6,6 @@
 
 import type { ResolvedSkillSet } from "../agent/skills/mod.ts";
 import type { SurfaceMemoryAuthority, CapturedMemoryContext, SurfaceMemoryCaller } from "../memory/mod.ts";
-import type { ActiveScope } from "../memory/scope.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import type {
   AttachedDelegatedWorkOwnership,
@@ -243,33 +242,6 @@ export interface SubagentInstance {
   resolveResult: (text: string) => void;
   /** Rejects `result`. Stored on the instance for cancellation paths. */
   rejectResult: (err: unknown) => void;
-}
-
-/**
- * On-disk metadata for a subagent (`meta.json`).
- */
-export interface SubagentMeta {
-  id: string;
-  role: SubagentRole;
-  name: string | null;
-  spawnedBy: string | null;
-  activeScope: ActiveScope;
-  /** Attached ownership fields are optional only for pre-host legacy records. */
-  ownerConversationId?: string;
-  runtimeId?: string;
-  lifetime?: "attached";
-  originSurfaceId?: string;
-  executionEnvironment?: ExecutionEnvironment;
-  ownershipEpochId?: string;
-  deliveryState?: DelegatedDeliveryState;
-  depth: number;
-  createdAt: string;
-  /** Set when execution finishes (success, error, or cancellation). */
-  completedAt?: string;
-  /** Lifecycle status — mutated as the subagent transitions states. */
-  status?: SubagentStatus;
-  /** Populated when status is `"error"`. */
-  errorMessage?: string;
 }
 
 /**

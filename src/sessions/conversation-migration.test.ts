@@ -6,7 +6,7 @@ import { applyConversationMigration, planConversationMigration } from "./convers
 import { heartbeatMdPathForSession, schedulesPath, sessionDir, sessionsDir, statePath, surfaceHeartbeatPath } from "./paths.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
 import { runMigrations } from "../migrate.ts";
-import { readStateVersion, stateVersionPath } from "../state-version.ts";
+import { CURRENT_STATE_VERSION, readStateVersion, stateVersionPath } from "../state-version.ts";
 import type { BindingsFile, TopicSettingsFile } from "./types.ts";
 
 const CONVERSATION_ID = "a1b2c3d4e5";
@@ -141,7 +141,7 @@ describe("conversation migration", () => {
 
     runMigrations(home);
 
-    expect(readStateVersion(home)).toBe(4);
+    expect(readStateVersion(home)).toBe(CURRENT_STATE_VERSION);
     expect(JSON.parse(readFileSync(statePath(home, CONVERSATION_ID), "utf-8"))).toEqual({
       id: CONVERSATION_ID,
       createdAt: "2026-07-27T10:00:00.000Z",
@@ -150,7 +150,7 @@ describe("conversation migration", () => {
     });
 
     runMigrations(home);
-    expect(readStateVersion(home)).toBe(4);
+    expect(readStateVersion(home)).toBe(CURRENT_STATE_VERSION);
   });
 
   it("applies the precomputed state rather than re-reading a changed source", () => {

@@ -88,4 +88,31 @@ describe("runMigrations", () => {
     expect(readFileSync(configPath(home), "utf-8")).toContain("version");
     expect(readStateVersion(home)).toBe(0);
   });
+
+  it("advances from version 4 to 5 and creates the delegated-work runs root", () => {
+    // Plant a version-4 home so only step 5 runs.
+    writeFileSync(stateVersionPath(home), JSON.stringify({ version: 4 }));
+    runMigrations(home);
+    expect(readStateVersion(home)).toBe(CURRENT_STATE_VERSION);
+    expect(existsSync(join(home, "state", "delegated-work", "runs"))).toBe(true);
+  });
+
+  it("is a no-op when already at the current version", () => {
+    writeFileSync(stateVersionPath(home), JSON.stringify({ version: CURRENT_STATE_VERSION }));
+    runMigrations(home);
+    expect(readStateVersion(home)).toBe(CURRENT_STATE_VERSION);
+    const backups = readdirSync(home).filter((n) => n.startsWith(".migration-backup-"));
+    expect(backups.length).toBe(0);
+  });
+
+  it("deployment order: the state-version gate refuses to poll until migrate runs", () => {
+    // A pre-break home sits at version 4. The startup gate in src/index.ts
+    // checks readStateVersion(home) !== CURRENT_STATE_VERSION and exits.
+    writeFileSync(stateVersionPath(home), JSON.stringify({ version: 4 }));
+    expect(readStateVersion(home)).not.toBe(CURRENT_STATE_VERSION);
+
+    // After migration, the gate passes.
+    runMigrations(home);
+    expect(readStateVersion(home)).toBe(CURRENT_STATE_VERSION);
+  });
 });

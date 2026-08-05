@@ -33,6 +33,11 @@ import {
   applyConversationMigration,
   type ConversationMigrationPlan,
 } from "./sessions/conversation-migration.ts";
+import {
+  planDelegatedWorkLayout,
+  applyDelegatedWorkLayout,
+  type DelegatedWorkLayoutPlan,
+} from "./delegated-work/layout-migration.ts";
 
 interface SnapshotManifest {
   roots: Array<{ path: string; exists: boolean }>;
@@ -72,10 +77,27 @@ interface ConversationMigrationStep {
   apply(home: string, plan: ConversationMigrationPlan): void;
 }
 
+interface DelegatedWorkLayoutStep {
+  readonly version: number;
+  readonly roots: string[];
+  plan(home: string): DelegatedWorkLayoutPlan;
+  apply(home: string, plan: DelegatedWorkLayoutPlan): void;
+}
+
 const STEP_1_ROOTS = ["state"];
 const STEP_2_ROOTS = ["state", "workspace", "scratch/workdir"];
 const STEP_3_ROOTS = ["state/sessions"];
 const STEP_4_ROOTS = ["state"];
+
+/**
+ * Step 5 is a layout break, not a data transformation. Delegated-run records
+ * now live under `state/delegated-work/runs/<id>/` and the legacy
+ * `scratch/subagents` and `workspace/agents/.../instances` trees are no longer
+ * read or written. No legacy data is migrated; the operator deletes the old
+ * trees manually. The version advance gates the cutover so the new code never
+ * polls against a pre-break home.
+ */
+const STEP_5_ROOTS = ["state"];
 
 function backupDirPath(home: string): string {
   return join(home, `.migration-backup-${Date.now()}`);
@@ -147,6 +169,13 @@ const CONVERSATION_STEP: ConversationMigrationStep = {
   apply: applyConversationMigration,
 };
 
+const DELEGATED_WORK_STEP: DelegatedWorkLayoutStep = {
+  version: 5,
+  roots: STEP_5_ROOTS,
+  plan: planDelegatedWorkLayout,
+  apply: applyDelegatedWorkLayout,
+};
+
 /**
  * Run every pending migration step for the given goblin home.
  * Exported for tests and for the CLI entry point below.
@@ -171,6 +200,7 @@ export function runMigrations(home: string): void {
     step2Plan,
     step1Plan.schedules,
   );
+  const step5Plan = DELEGATED_WORK_STEP.plan(home);
 
   const rootsToSnapshot = new Set<string>();
   if (current < 1) {
@@ -184,6 +214,9 @@ export function runMigrations(home: string): void {
   }
   if (current < 4) {
     for (const root of CONVERSATION_STEP.roots) rootsToSnapshot.add(root);
+  }
+  if (current < 5) {
+    for (const root of DELEGATED_WORK_STEP.roots) rootsToSnapshot.add(root);
   }
 
   log.info("starting offline migration", { from: current, to: CURRENT_STATE_VERSION });
@@ -209,6 +242,11 @@ export function runMigrations(home: string): void {
     log.info("running migration step", { step: 4 });
     CONVERSATION_STEP.apply(home, step4Plan);
     writeStateVersion(home, 4);
+  }
+  if (current < 5) {
+    log.info("running migration step", { step: 5 });
+    DELEGATED_WORK_STEP.apply(home, step5Plan);
+    writeStateVersion(home, 5);
   }
 
   log.info("migration complete", { version: CURRENT_STATE_VERSION });

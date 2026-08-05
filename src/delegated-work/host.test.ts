@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dmSurface, surfaceId } from "../surface.ts";
@@ -10,6 +10,7 @@ import {
   DelegatedWorkRuntimeInvalidatedError,
 } from "./host.ts";
 import { asConversationRuntimeId, type AttachedWorkAdapter } from "./types.ts";
+import { delegatedWorkRecordPath, delegatedWorkRunDir } from "./paths.ts";
 
 function tempHome(): string {
   return mkdtempSync(join(tmpdir(), "goblin-delegated-host-"));
@@ -122,5 +123,85 @@ describe("DelegatedWorkHost", () => {
       "still active",
     );
     expect(host.registeredForRuntime(asConversationRuntimeId("runtime-4"))).toBe(1);
+  });
+
+  it("marks non-terminal invocations interrupted at startup reconciliation", () => {
+    const home = tempHome();
+    const runId = "recon-aaaaaaaa-0000-0000-0000-000000000001";
+    const dir = delegatedWorkRunDir(home, runId);
+    mkdirSync(dir, { recursive: true });
+
+    // Plant a record with a running invocation — the process died mid-run.
+    const now = new Date().toISOString();
+    writeFileSync(delegatedWorkRecordPath(home, runId), JSON.stringify({
+      id: runId,
+      kind: "generic-subagent",
+      name: null,
+      depth: 1,
+      createdAt: now,
+      invocations: [{
+        index: 0,
+        ownerConversationId: "conversation-a",
+        runtimeId: "runtime-dead",
+        ownershipEpochId: "epoch-dead",
+        lifetime: "attached",
+        originSurfaceId: surfaceId(dmSurface(1)),
+        executionEnvironment: personalEnvironment(),
+        status: "running",
+        outcome: null,
+        deliveryState: "pending",
+        startedAt: now,
+        completedAt: null,
+      }],
+    }));
+
+    const host = new DelegatedWorkHost(home);
+    host.reconcileStartup();
+
+    const record = host.loadRecord(runId);
+    expect(record).not.toBeNull();
+    const invocation = record!.invocations[0]!;
+    expect(invocation.status).toBe("interrupted");
+    expect(invocation.outcome).toBeNull();
+    expect(invocation.deliveryState).toBe("suppressed");
+    expect(invocation.completedAt).not.toBeNull();
+  });
+
+  it("leaves terminal invocations untouched at startup reconciliation", () => {
+    const home = tempHome();
+    const runId = "recon-bbbbbbbb-0000-0000-0000-000000000002";
+    const dir = delegatedWorkRunDir(home, runId);
+    mkdirSync(dir, { recursive: true });
+
+    const now = new Date().toISOString();
+    writeFileSync(delegatedWorkRecordPath(home, runId), JSON.stringify({
+      id: runId,
+      kind: "generic-subagent",
+      name: null,
+      depth: 1,
+      createdAt: now,
+      invocations: [{
+        index: 0,
+        ownerConversationId: "conversation-a",
+        runtimeId: "runtime-done",
+        ownershipEpochId: "epoch-done",
+        lifetime: "attached",
+        originSurfaceId: surfaceId(dmSurface(1)),
+        executionEnvironment: personalEnvironment(),
+        status: "completed",
+        outcome: { kind: "success", text: "already done" },
+        deliveryState: "delivered",
+        startedAt: now,
+        completedAt: now,
+      }],
+    }));
+
+    const host = new DelegatedWorkHost(home);
+    host.reconcileStartup();
+
+    const record = host.loadRecord(runId);
+    const invocation = record!.invocations[0]!;
+    expect(invocation.status).toBe("completed");
+    expect(invocation.deliveryState).toBe("delivered");
   });
 });

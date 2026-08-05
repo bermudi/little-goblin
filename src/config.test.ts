@@ -412,8 +412,8 @@ const EXPECTED_DIRS = [
   "state/sessions",
   "state/memory",
   "state/pi",
+  "state/delegated-work/runs",
   "scratch",
-  "scratch/subagents",
 ];
 
 describe("ensureGoblinHome", () => {
@@ -462,5 +462,12 @@ describe("ensureGoblinHome", () => {
 
     const legacyWorkdir = join(tempDir, "scratch", "workdir");
     expect(existsSync(legacyWorkdir)).toBe(false);
+  });
+
+  it("does not create the legacy scratch/subagents tree", () => {
+    ensureGoblinHome(homeConfig(tempDir));
+
+    const legacySubagents = join(tempDir, "scratch", "subagents");
+    expect(existsSync(legacySubagents)).toBe(false);
   });
 });

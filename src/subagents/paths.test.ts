@@ -1,35 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 import {
-  subagentsRoot,
-  genericSubagentDir,
-  genericSubagentMetaPath,
   namedAgentsRoot,
   namedAgentDir,
   namedAgentAgentsMdPath,
   namedAgentSkillsDir,
-  namedAgentInstanceDir,
-  namedAgentInstanceMetaPath,
 } from "./paths.ts";
 
 describe("subagents paths", () => {
   const home = "/tmp/goblin";
-
-  it("resolves the generic subagents root under scratch/", () => {
-    expect(subagentsRoot(home)).toBe(join(home, "scratch", "subagents"));
-  });
-
-  it("resolves a generic subagent instance directory by id", () => {
-    expect(genericSubagentDir(home, "inst-1")).toBe(
-      join(home, "scratch", "subagents", "inst-1"),
-    );
-  });
-
-  it("resolves a generic subagent meta.json by id", () => {
-    expect(genericSubagentMetaPath(home, "inst-1")).toBe(
-      join(home, "scratch", "subagents", "inst-1", "meta.json"),
-    );
-  });
 
   it("resolves the named agents root under workspace/", () => {
     expect(namedAgentsRoot(home)).toBe(join(home, "workspace", "agents"));
@@ -50,18 +29,6 @@ describe("subagents paths", () => {
   it("resolves a named agent's isolated pi-native skills directory by name", () => {
     expect(namedAgentSkillsDir(home, "researcher")).toBe(
       join(home, "workspace", "agents", "researcher", ".agents", "skills"),
-    );
-  });
-
-  it("resolves a named agent instance directory by name and id", () => {
-    expect(namedAgentInstanceDir(home, "researcher", "inst-9")).toBe(
-      join(home, "workspace", "agents", "researcher", "instances", "inst-9"),
-    );
-  });
-
-  it("resolves a named agent instance meta.json by name and id", () => {
-    expect(namedAgentInstanceMetaPath(home, "researcher", "inst-9")).toBe(
-      join(home, "workspace", "agents", "researcher", "instances", "inst-9", "meta.json"),
     );
   });
 });

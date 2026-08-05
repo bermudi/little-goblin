@@ -1,17 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { chmodSync, readFileSync, rmSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, rmSync } from "node:fs";
 import { SubagentRunner } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import { markCompleted, SubagentTerminalError } from "../execution.ts";
-import type { SubagentInstance, SubagentMeta } from "../types.ts";
-import { genericSubagentMetaPath } from "../paths.ts";
+import type { SubagentInstance } from "../types.ts";
 import {
+  delegatedWorkRecordPath,
+  delegatedWorkRunDir,
+} from "../../delegated-work/paths.ts";
+import {
+  completeAndAcknowledge,
   createTestHome,
   DEFAULT_AUTHORITY,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
+  readRecord,
 } from "./support.ts";
 
 describe("SubagentRunner.cancel", () => {
@@ -50,9 +54,7 @@ describe("SubagentRunner.cancel", () => {
 
     await runner.cancel(handle.id);
 
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
+    const meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("cancelled");
     expect(meta.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
@@ -145,8 +147,7 @@ describe("SubagentRunner — prune terminal instances", () => {
   it("prunes completed subagents on next spawn", async () => {
     const first = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    host.latest().complete("done");
-    await first.result;
+    await completeAndAcknowledge(runner, host, first);
 
     expect(runner.list()).toHaveLength(1);
 
@@ -200,6 +201,7 @@ describe("SubagentRunner — prune terminal instances", () => {
     const aInst = (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(a.id);
     expect(aInst).toBeDefined();
     markCompleted(aInst!);
+    runner.acknowledgeDelivery(a.id);
 
     // Spawning a third subagent triggers pruneTerminal(). The completed
     // parent must be retained because child b is still running and needs
@@ -219,6 +221,7 @@ describe("SubagentRunner — prune terminal instances", () => {
     const bInst = (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(b.id);
     expect(bInst).toBeDefined();
     markCompleted(bInst!);
+    runner.acknowledgeDelivery(b.id);
 
     const d = await runner.spawn({ prompt: "d", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     d.result.catch(() => {});
@@ -267,9 +270,7 @@ describe("SubagentRunner — dispose", () => {
     await runner.dispose();
 
     expect(runner.list()).toHaveLength(0);
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
+    const meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("cancelled");
   });
 
@@ -308,9 +309,7 @@ describe("SubagentRunner — cancel with stop() that throws", () => {
 
     expect(runner.list()[0]?.status).toBe("cancelled");
 
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
+    const meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("cancelled");
   });
 });
@@ -361,12 +360,12 @@ describe("SubagentRunner — dispose does not overwrite completed", () => {
     host.latest().complete("done");
     await handle.result;
 
-    let meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8")) as SubagentMeta;
+    let meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("completed");
 
     await runner.dispose();
 
-    meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8")) as SubagentMeta;
+    meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("completed");
   });
 
@@ -376,12 +375,12 @@ describe("SubagentRunner — dispose does not overwrite completed", () => {
     host.latest().fail(new Error("boom"));
     await expect(handle.result).rejects.toThrow("boom");
 
-    let meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8")) as SubagentMeta;
+    let meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("error");
 
     await runner.dispose();
 
-    meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8")) as SubagentMeta;
+    meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("error");
   });
 });
@@ -405,8 +404,8 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
     const executionError = new Error("first-fail");
 
     const handle = await runner.spawn({ prompt: "trigger", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
-    const metaPath = genericSubagentMetaPath(tmp, handle.id);
-    const dir = dirname(metaPath);
+    const metaPath = delegatedWorkRecordPath(tmp, handle.id);
+    const dir = delegatedWorkRunDir(tmp, handle.id);
 
     rmSync(metaPath);
     chmodSync(dir, 0o444);
@@ -436,8 +435,8 @@ describe("SubagentRunner — persistMeta failure resilience", () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    const metaPath = genericSubagentMetaPath(tmp, handle.id);
-    const dir = dirname(metaPath);
+    const metaPath = delegatedWorkRecordPath(tmp, handle.id);
+    const dir = delegatedWorkRunDir(tmp, handle.id);
     rmSync(metaPath);
     chmodSync(dir, 0o444);
 
@@ -490,8 +489,8 @@ describe("SubagentRunner.cancelBySession", () => {
     expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
     expect(runner.list().find((entry) => entry.id === b.id)?.status).toBe("cancelled");
 
-    const aMeta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, a.id), "utf-8")) as SubagentMeta;
-    const bMeta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, b.id), "utf-8")) as SubagentMeta;
+    const aMeta = readRecord(tmp, a.id);
+    const bMeta = readRecord(tmp, b.id);
     expect(aMeta.status).toBe("cancelled");
     expect(bMeta.status).toBe("cancelled");
     expect(aMeta.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
@@ -566,7 +565,7 @@ describe("SubagentRunner.cancelBySession", () => {
     await runner.cancelBySession("session-abc");
 
     expect(aInst?.status).toBe("completed");
-    const meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, a.id), "utf-8")) as SubagentMeta;
+    const meta = readRecord(tmp, a.id);
     expect(meta.status).toBe("completed");
     expect(host.executions[0]?.stopCalls).toBe(0);
   });

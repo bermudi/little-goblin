@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore, type CapturedMemoryContext } from "../../memory/mod.ts";
 import { memoryDir } from "../../memory/paths.ts";
@@ -7,7 +7,7 @@ import { activeMemoryScopeFor } from "../../memory/scope.ts";
 import { surfaceId, topicSurface } from "../../surface.ts";
 import { SubagentRunner, type SubagentToolFactory } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
-import { genericSubagentDir, namedAgentAgentsMdPath, namedAgentDir } from "../paths.ts";
+import { namedAgentAgentsMdPath, namedAgentDir } from "../paths.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "../tool.ts";
 import type { SubagentInstance } from "../types.ts";
 import {
@@ -18,6 +18,8 @@ import {
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
+  writeRecordAndSession,
+  writeSessionFile,
 } from "./support.ts";
 
 function getInstance(runner: SubagentRunner, id: string): SubagentInstance | undefined {
@@ -194,7 +196,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     await handle.result;
   });
 
-  it("revival uses the reviving parent runtime's current authority, not the persisted legacy scope", async () => {
+  it("revival uses the reviving parent runtime's current authority, not the persisted origin Surface", async () => {
     await seedScopes(tmp);
 
     const firstHandle = await runner.spawn({ prompt: "first", authority: PARENT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
@@ -202,8 +204,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     host.latest().complete("done");
     await firstHandle.result;
 
-    const firstDir = genericSubagentDir(tmp, firstHandle.id);
-    writeFileSync(join(firstDir, "2026-01-01T00-00-00.jsonl"), "");
+    writeSessionFile(tmp, firstHandle.id, "2026-01-01T00-00-00.jsonl");
 
     const secondRunner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
     const revivePromise = secondRunner.revive(MOVED_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, firstHandle.id, "follow-up");
@@ -211,10 +212,6 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
 
     const instance = getInstance(secondRunner, firstHandle.id);
     expect(instance?.authority).toEqual(MOVED_AUTHORITY);
-
-    const metaPath = join(genericSubagentDir(tmp, firstHandle.id), "meta.json");
-    const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as { activeScope: unknown };
-    expect(meta.activeScope).toEqual(PARENT_SCOPE);
 
     const search = findSearch(host.latest().invocations[0]?.customTools as unknown as unknown[]);
     expect(search).toBeDefined();
@@ -226,60 +223,6 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
 
     host.latest().complete("done");
     await revivePromise;
-  });
-
-  it("ignores the real legacy namedAgent audit field during revive and rewrites current scope", async () => {
-    const store = new MemoryStore(tmp);
-    try {
-      await store.add("general", "default fact");
-    } finally {
-      store.close();
-    }
-
-    const id = "legacy-meta-test";
-    const dir = genericSubagentDir(tmp, id);
-    mkdirSync(dir, { recursive: true });
-    const legacyActiveScope = {
-      chatId: 999,
-      topicScope: "general",
-      namedAgent: { name: "legacy-agent" },
-    };
-    writeFileSync(
-      join(dir, "meta.json"),
-      JSON.stringify({
-        id,
-        role: "generic",
-        name: null,
-        spawnedBy: null,
-        activeScope: legacyActiveScope,
-        depth: 1,
-        createdAt: new Date().toISOString(),
-        status: "completed",
-      }),
-    );
-    writeFileSync(join(dir, "2026-01-01T00-00-00_legacy.jsonl"), "");
-
-    const revivePromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "go");
-    await flush();
-
-    const instance = getInstance(runner, id);
-    expect(instance?.authority).toEqual(DEFAULT_AUTHORITY);
-    expect(instance?.caller).toEqual({ kind: "anonymous-subagent" });
-
-    const search = findSearch(host.latest().invocations[0]?.customTools as unknown as unknown[]);
-    expect(search).toBeDefined();
-    const result = jsonOf<{ entries: Array<{ text: string }> }>(
-      await search!.execute("ms-legacy", { scope: "active" }, undefined, undefined, {} as never),
-    );
-    expect(result.entries.map((e) => e.text)).toContain("default fact");
-
-    host.latest().complete("done");
-    await revivePromise;
-
-    const rewritten = JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")) as {
-      activeScope: Record<string, unknown>;
-    };
-    expect(rewritten.activeScope).toEqual({ chatId: 999, topicScope: "general" });
   });
 
   it("rejects spawn when given a legacy ActiveScope instead of SurfaceMemoryAuthority", async () => {
@@ -317,22 +260,7 @@ describe("Subagent tool factories — parent capture closure", () => {
 
   it("revive_subagent tool closes over the parent capture", async () => {
     const id = "revive-tool-test";
-    const dir = genericSubagentDir(tmp, id);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "meta.json"),
-      JSON.stringify({
-        id,
-        role: "generic",
-        name: null,
-        spawnedBy: null,
-        activeScope: DEFAULT_SCOPE,
-        depth: 1,
-        createdAt: new Date().toISOString(),
-        status: "completed",
-      }),
-    );
-    writeFileSync(join(dir, "2026-01-01T00-00-00_tool.jsonl"), "");
+    writeRecordAndSession(tmp, id, { id, kind: "generic-subagent", name: null, depth: 1, createdAt: new Date().toISOString(), invocations: [] }, "2026-01-01T00-00-00_tool.jsonl");
 
     const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE);
     const execPromise = tool.execute("tc-rev", { id, prompt: "hi" }, undefined, undefined, {} as never);

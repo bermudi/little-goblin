@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { dmSurface, surfaceId } from "../surface.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import {
@@ -7,6 +10,10 @@ import {
   DelegatedWorkRuntimeInvalidatedError,
 } from "./host.ts";
 import { asConversationRuntimeId, type AttachedWorkAdapter } from "./types.ts";
+
+function tempHome(): string {
+  return mkdtempSync(join(tmpdir(), "goblin-delegated-host-"));
+}
 
 function ownership(runtimeId: string, ownerConversationId = "conversation-a", epochId = `epoch-${runtimeId}`) {
   return {
@@ -38,7 +45,7 @@ function adapter(overrides: Partial<AttachedWorkAdapter> = {}): AttachedWorkAdap
 
 describe("DelegatedWorkHost", () => {
   it("fences before cancellation and proves attached work quiescent", async () => {
-    const host = new DelegatedWorkHost();
+    const host = new DelegatedWorkHost(tempHome());
     const registration = host.reserveAttached("run-1", ownership("runtime-1"));
     const work = adapter();
     registration.attach(work);
@@ -54,7 +61,7 @@ describe("DelegatedWorkHost", () => {
   });
 
   it("rejects a run reserved after runtime invalidation", async () => {
-    const host = new DelegatedWorkHost();
+    const host = new DelegatedWorkHost(tempHome());
     await host.invalidateRuntime(asConversationRuntimeId("runtime-1"));
 
     expect(() => host.reserveAttached("run-2", ownership("runtime-1"))).toThrow(
@@ -63,7 +70,7 @@ describe("DelegatedWorkHost", () => {
   });
 
   it("fences a reservation that loses the attach race", async () => {
-    const host = new DelegatedWorkHost();
+    const host = new DelegatedWorkHost(tempHome());
     const registration = host.reserveAttached("run-3", ownership("runtime-3"));
     const invalidation = host.invalidateRuntime(asConversationRuntimeId("runtime-3"));
     const work = adapter();
@@ -76,7 +83,7 @@ describe("DelegatedWorkHost", () => {
   });
 
   it("cancels an owner's epochs without invalidating the runtime", async () => {
-    const host = new DelegatedWorkHost();
+    const host = new DelegatedWorkHost(tempHome());
     const first = host.reserveAttached("run-owner-1", ownership("runtime-owner", "conversation-a", "epoch-owner"));
     const firstWork = adapter();
     first.attach(firstWork);
@@ -107,7 +114,7 @@ describe("DelegatedWorkHost", () => {
   });
 
   it("does not report quiescence when an adapter cannot prove it", async () => {
-    const host = new DelegatedWorkHost();
+    const host = new DelegatedWorkHost(tempHome());
     const registration = host.reserveAttached("run-4", ownership("runtime-4"));
     registration.attach(adapter({ quiesce: async () => { throw new Error("still active"); } }));
 

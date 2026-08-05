@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "../../memory/mod.ts";
 import { SubagentRunner } from "../mod.ts";
 import type { SubagentHost } from "../host.ts";
-import { genericSubagentDir, genericSubagentMetaPath } from "../paths.ts";
-import type { SubagentMeta } from "../types.ts";
+import { delegatedWorkRunDir } from "../../delegated-work/paths.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import {
   createTestHome,
@@ -13,6 +12,9 @@ import {
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
+  readRecord,
+  validRecord,
+  writeRecordAndSession,
 } from "./support.ts";
 
 class CloseFailingMemoryStore extends MemoryStore {
@@ -82,7 +84,7 @@ describe("SubagentRunner lifecycle with an opaque fake host", () => {
     expect(host.preparations).toHaveLength(1);
     expect(host.preparations[0]?.history).toEqual({
       kind: "create",
-      sessionDir: genericSubagentDir(home, handle.id),
+      sessionDir: delegatedWorkRunDir(home, handle.id),
     });
     expect(host.latest().invocations[0]?.prompt).toBe("work");
 
@@ -90,8 +92,8 @@ describe("SubagentRunner lifecycle with an opaque fake host", () => {
     await expect(handle.result).resolves.toBe("done");
     expect(runner.list()[0]?.status).toBe("completed");
 
-    const meta = JSON.parse(readFileSync(genericSubagentMetaPath(home, handle.id), "utf8")) as SubagentMeta;
-    expect(meta.status).toBe("completed");
+    const record = readRecord(home, handle.id);
+    expect(record.status).toBe("completed");
   });
 
   it("claims completion before a concurrent cancellation can overwrite it", async () => {
@@ -109,8 +111,8 @@ describe("SubagentRunner lifecycle with an opaque fake host", () => {
     await expect(handle.result).resolves.toBe("done");
     expect(execution.stopCalls).toBe(0);
     expect(runner.list()[0]?.status).toBe("completed");
-    const meta = JSON.parse(readFileSync(genericSubagentMetaPath(home, handle.id), "utf8")) as SubagentMeta;
-    expect(meta.status).toBe("completed");
+    const record = readRecord(home, handle.id);
+    expect(record.status).toBe("completed");
   });
 
   it("cancellation claims lifecycle first and stops the lease exactly once", async () => {
@@ -130,8 +132,8 @@ describe("SubagentRunner lifecycle with an opaque fake host", () => {
     // A late fake completion cannot resurrect the lifecycle record.
     execution.complete("late");
     expect(runner.list()[0]?.status).toBe("cancelled");
-    const meta = JSON.parse(readFileSync(genericSubagentMetaPath(home, handle.id), "utf8")) as SubagentMeta;
-    expect(meta.status).toBe("cancelled");
+    const record = readRecord(home, handle.id);
+    expect(record.status).toBe("cancelled");
   });
 
   it("surfaces startup and stop failures when cancellation races failStartup", async () => {
@@ -209,21 +211,8 @@ describe("SubagentRunner lifecycle with an opaque fake host", () => {
 
   it("revival passes the exact lexically selected history file to the host", async () => {
     const id = "revive-fake";
-    const dir = genericSubagentDir(home, id);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "meta.json"),
-      JSON.stringify({
-        id,
-        role: "generic",
-        name: null,
-        spawnedBy: null,
-        activeScope: DEFAULT_AUTHORITY.activeScope,
-        depth: 1,
-        createdAt: new Date().toISOString(),
-        status: "completed",
-      }),
-    );
+    const dir = delegatedWorkRunDir(home, id);
+    writeRecordAndSession(home, id, validRecord(id), undefined);
     const olderHistory = join(dir, "2026-01-01T00-00-00_old.jsonl");
     const history = join(dir, "2026-01-02T00-00-00_new.jsonl");
     // Subagent revival intentionally keeps its lexical filename policy. The

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentRunner } from "../../agent/mod.ts";
 import { createMemorySearchTool } from "../../memory/mod.ts";
@@ -16,12 +16,14 @@ import { surfaceId, topicSurface, type Surface } from "../../surface.ts";
 import { SubagentRunner, type SubagentInstance } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import { createReviveSubagentTool, createSpawnSubagentTool } from "../tool.ts";
-import { genericSubagentDir, genericSubagentMetaPath } from "../paths.ts";
+
 import {
   createTestHome,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
+  readRecord,
+  writeSessionFile,
 } from "./support.ts";
 
 const SURFACE_X: Surface = topicSurface("supergroup", -100123, 1);
@@ -60,11 +62,7 @@ function findTool(
 }
 
 function ensureSessionFile(home: string, id: string): void {
-  const dir = genericSubagentDir(home, id);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
+  writeSessionFile(home, id, "2026-01-01T00-00-00.jsonl");
 }
 
 async function seedScopes(home: string): Promise<void> {
@@ -295,14 +293,12 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     expect(entry.originSurfaceId).toBe(surfaceId(SURFACE_X));
     expect(entry.deliveryState).toBe("pending");
 
-    const runningMeta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(fx.home, entry.id), "utf-8"),
-    ) as { ownerConversationId?: string; runtimeId?: string; lifetime?: string; originSurfaceId?: string; deliveryState?: string };
-    expect(runningMeta.ownerConversationId).toBe(sessionX.id);
-    expect(runningMeta.runtimeId).toBe(runtime.runtimeId);
-    expect(runningMeta.lifetime).toBe("attached");
-    expect(runningMeta.originSurfaceId).toBe(surfaceId(SURFACE_X));
-    expect(runningMeta.deliveryState).toBe("pending");
+    const runningRecord = readRecord(fx.home, entry.id);
+    expect(runningRecord.ownerConversationId).toBe(sessionX.id);
+    expect(runningRecord.runtimeId).toBe(runtime.runtimeId);
+    expect(runningRecord.lifetime).toBe("attached");
+    expect(runningRecord.originSurfaceId).toBe(surfaceId(SURFACE_X));
+    expect(runningRecord.deliveryState).toBe("pending");
     expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(1);
 
     // Disposal fences the old runtime synchronously; the blocking tool result
@@ -312,11 +308,9 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     await expect(resultPromise).rejects.toThrow(/cancelled/i);
     await disposal;
 
-    const cancelledMeta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(fx.home, entry.id), "utf-8"),
-    ) as { status?: string; deliveryState?: string };
-    expect(cancelledMeta.status).toBe("cancelled");
-    expect(cancelledMeta.deliveryState).toBe("suppressed");
+    const cancelledRecord = readRecord(fx.home, entry.id);
+    expect(cancelledRecord.status).toBe("cancelled");
+    expect(cancelledRecord.deliveryState).toBe("suppressed");
     expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(0);
 
     const replacementConversation = await fx.lifecycle.resume(SURFACE_Y, sessionX.id);
@@ -377,20 +371,16 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     fx.subagentHost.latest().complete("finished");
     await handle.result;
 
-    const pendingMeta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(fx.home, handle.id), "utf-8"),
-    ) as { status?: string; deliveryState?: string };
-    expect(pendingMeta.status).toBe("completed");
-    expect(pendingMeta.deliveryState).toBe("pending");
+    const pendingRecord = readRecord(fx.home, handle.id);
+    expect(pendingRecord.status).toBe("completed");
+    expect(pendingRecord.deliveryState).toBe("pending");
     expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(1);
 
     await fx.dispatcher.disposeRunner(sessionX.id);
 
-    const suppressedMeta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(fx.home, handle.id), "utf-8"),
-    ) as { status?: string; deliveryState?: string };
-    expect(suppressedMeta.status).toBe("completed");
-    expect(suppressedMeta.deliveryState).toBe("suppressed");
+    const suppressedRecord = readRecord(fx.home, handle.id);
+    expect(suppressedRecord.status).toBe("completed");
+    expect(suppressedRecord.deliveryState).toBe("suppressed");
     expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(0);
   });
 

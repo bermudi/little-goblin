@@ -192,7 +192,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   const runners = new Map<string, AgentRunner>();
   const memoryEngine = options.memoryEngine ?? new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
   const memoryStore = memoryEngine.readStore;
-  const delegatedWorkHost = new DelegatedWorkHost();
+  const delegatedWorkHost = new DelegatedWorkHost(cfg.goblinHome);
   const subagentHost = new PiSubagentHost(cfg);
   const subagentRunner = new SubagentRunner(
     cfg,

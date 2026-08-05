@@ -1,20 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { SubagentRunner } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import {
-  genericSubagentDir,
   namedAgentAgentsMdPath,
   namedAgentDir,
 } from "../paths.ts";
 import {
+  completeAndAcknowledge,
   createTestHome,
   DEFAULT_AUTHORITY,
   DEFAULT_PARENT_CAPTURE,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
+  writeSessionFile,
 } from "./support.ts";
 
 describe("spawn_subagent tool", () => {
@@ -136,11 +136,9 @@ describe("revive_subagent tool", () => {
 
     const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    host.latest().complete("done");
-    await handle.result;
+    await completeAndAcknowledge(runner, host, handle, "done");
 
-    const dir = genericSubagentDir(tmp, handle.id);
-    writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
+    writeSessionFile(tmp, handle.id);
 
     const revivePromise = tool.execute(
       "tc-rev-1",
@@ -163,8 +161,7 @@ describe("revive_subagent tool", () => {
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
-    host.latest().complete("done");
-    await handle.result;
+    await completeAndAcknowledge(runner, host, handle, "done");
 
     const { createReviveSubagentTool } = await import("../tool.ts");
     const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE, null);
@@ -257,14 +254,9 @@ describe("revive_subagent tool — timeout", () => {
   async function spawnAndComplete(): Promise<string> {
     const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    host.latest().complete("done");
-    await handle.result;
+    await completeAndAcknowledge(runner, host, handle, "done");
 
-    const dir = genericSubagentDir(tmp, handle.id);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    writeFileSync(join(dir, "2026-01-01T00-00-00_fake.jsonl"), "");
+    writeSessionFile(tmp, handle.id, "2026-01-01T00-00-00_fake.jsonl");
     return handle.id;
   }
 

@@ -17,7 +17,6 @@ import {
 import { boundedError, log } from "../log.ts";
 import type { SubagentInvocation } from "./host.ts";
 import type { AttachedDelegatedWorkOwnership, DelegatedRuntimeContext } from "../delegated-work/mod.ts";
-import { persistMetaPatch } from "./meta.ts";
 import type { GenericSubagentInheritance, SubagentInstance } from "./types.ts";
 
 /**
@@ -130,7 +129,7 @@ export async function runInstance(
       throw new Error(`Subagent '${instance.id}' was fenced before completion was claimed`);
     }
     instance.completionClaimed = true;
-    markCompleted(instance);
+    markCompleted(instance, text ?? "");
   }
   return text ?? "";
 }
@@ -278,7 +277,7 @@ function systemPromptFor(
  * raised after cleanup so callers cannot report a successful run with stale
  * metadata.
  */
-export function markCompleted(instance: SubagentInstance): void {
+export function markCompleted(instance: SubagentInstance, text = ""): void {
   if (instance.status !== "running") {
     log.debug("markCompleted skipped: instance already terminal", {
       id: instance.id,
@@ -287,23 +286,24 @@ export function markCompleted(instance: SubagentInstance): void {
     return;
   }
   instance.completionClaimed = true;
-  const deliveryState = instance.delegatedOwnership === null
-    ? "delivered" as const
-    : "pending" as const;
-  const patch = {
-    status: "completed" as const,
-    completedAt: new Date().toISOString(),
-    errorMessage: undefined,
-    deliveryState,
-  };
+  // Every invocation is attached and host-owned, so a terminal success is
+  // never self-delivering: it stays pending until its blocking caller
+  // acknowledges delivery (or runtime invalidation suppresses it).
+  const deliveryState = "pending" as const;
   let persistenceFailed = false;
   let persistenceError: unknown;
   try {
-    persistMetaPatch(instance, patch);
+    instance.recordStore.closeInvocation(
+      instance.id,
+      instance.invocationIndex,
+      "completed",
+      { kind: "success", text },
+      deliveryState,
+    );
   } catch (err) {
     persistenceFailed = true;
     persistenceError = err;
-    log.error("failed to persist completed meta", { id: instance.id, ...boundedError(err) });
+    log.error("failed to persist completed record", { id: instance.id, ...boundedError(err) });
   }
   instance.status = "completed";
   instance.deliveryState = persistenceFailed ? "suppressed" : deliveryState;
@@ -334,16 +334,17 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
   let persistenceFailed = false;
   let persistenceError: unknown;
   try {
-    persistMetaPatch(instance, {
-      status: "error",
-      completedAt: new Date().toISOString(),
-      errorMessage,
-      deliveryState: "suppressed",
-    });
+    instance.recordStore.closeInvocation(
+      instance.id,
+      instance.invocationIndex,
+      "error",
+      { kind: "error", errorMessage },
+      "suppressed",
+    );
   } catch (persistErr) {
     persistenceFailed = true;
     persistenceError = persistErr;
-    log.error("failed to persist error meta", { id: instance.id, ...boundedError(persistErr) });
+    log.error("failed to persist error record", { id: instance.id, ...boundedError(persistErr) });
   }
   instance.status = "error";
   instance.deliveryState = "suppressed";

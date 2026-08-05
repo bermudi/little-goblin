@@ -1,15 +1,21 @@
 import { mock } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResolvedSkillSet } from "../../agent/skills/mod.ts";
 import type { Config } from "../../config.ts";
 import type { ActiveScope, CapturedMemoryContext, SurfaceMemoryAuthority } from "../../memory/mod.ts";
+import {
+  delegatedWorkRecordPath,
+  delegatedWorkRunDir,
+} from "../../delegated-work/paths.ts";
 import { piAgentDir } from "../../pi-host.ts";
 import { workspacePath } from "../../workspace/paths.ts";
 import { personalEnvironment } from "../../sessions/environment.ts";
 import { dmSurface, supergroupSurface, surfaceId, type Surface } from "../../surface.ts";
-import type { GenericSubagentInheritance } from "../types.ts";
+import type { GenericSubagentInheritance, SubagentHandle } from "../types.ts";
+import type { SubagentRunner } from "../mod.ts";
+import { FakeSubagentHost } from "./fake-host.ts";
 
 const EMPTY_RESOLVED_SKILL_SET: ResolvedSkillSet = {
   skills: [],
@@ -255,4 +261,148 @@ export function createTestHome(prefix: string): string {
 export async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await Promise.resolve();
+}
+
+/** Lightweight view of a host-owned delegated-work record for test assertions. */
+export interface SubagentRecordView {
+  id: string;
+  kind: string;
+  name: string | null;
+  role: "generic" | "named";
+  depth: number;
+  createdAt: string;
+  status: string;
+  completedAt: string | null;
+  errorMessage: string | undefined;
+  ownerConversationId: string | undefined;
+  runtimeId: string | undefined;
+  lifetime: "attached" | undefined;
+  originSurfaceId: string | undefined;
+  executionEnvironment: unknown;
+  deliveryState: string | undefined;
+  invocations: Record<string, unknown>[];
+}
+
+function readRecordRaw(home: string, id: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(delegatedWorkRecordPath(home, id), "utf-8")) as Record<string, unknown>;
+}
+
+function recordLastInvocation(record: Record<string, unknown>): Record<string, unknown> {
+  const invocations = record.invocations as unknown[] | undefined;
+  if (!Array.isArray(invocations) || invocations.length === 0) {
+    throw new Error("record has no invocations");
+  }
+  const last = invocations.at(-1) as Record<string, unknown> | undefined;
+  if (last === undefined) throw new Error("record has no invocations");
+  return last;
+}
+
+/** Read and derive the canonical test view from a host-owned record. */
+export function readRecord(home: string, id: string): SubagentRecordView {
+  const record = readRecordRaw(home, id);
+  const last = recordLastInvocation(record);
+  const invocations = record.invocations as unknown[];
+  const outcome = last.outcome as Record<string, unknown> | null;
+  const kind = record.kind as string;
+  return {
+    id: record.id as string,
+    kind,
+    name: record.name as string | null,
+    role: kind === "generic-subagent" ? "generic" : "named",
+    depth: record.depth as number,
+    createdAt: record.createdAt as string,
+    status: last.status as string,
+    completedAt: last.completedAt as string | null,
+    errorMessage: outcome && typeof outcome.errorMessage === "string" ? outcome.errorMessage : undefined,
+    ownerConversationId: last.ownerConversationId as string | undefined,
+    runtimeId: last.runtimeId as string | undefined,
+    lifetime: last.lifetime as "attached" | undefined,
+    originSurfaceId: last.originSurfaceId as string | undefined,
+    executionEnvironment: last.executionEnvironment,
+    deliveryState: last.deliveryState as string | undefined,
+    invocations: invocations as Record<string, unknown>[],
+  };
+}
+
+/** Return the path to a host-owned record file for tests that only need a string. */
+export function recordPathFor(home: string, id: string): string {
+  return delegatedWorkRecordPath(home, id);
+}
+
+/** Return the path to a host-owned run directory. */
+export function runDirFor(home: string, id: string): string {
+  return delegatedWorkRunDir(home, id);
+}
+
+/** Create a valid generic or named record payload for direct disk setup. */
+export function validRecord(
+  id: string,
+  overrides: Record<string, unknown> = {},
+  status: "running" | "completed" | "error" | "cancelled" | "interrupted" = "completed",
+  outcome: Record<string, unknown> | null = { kind: "success", text: "done" },
+  deliveryState: "pending" | "delivered" | "suppressed" = "delivered",
+): Record<string, unknown> {
+  const now = new Date().toISOString();
+  return {
+    id,
+    kind: "generic-subagent",
+    name: null,
+    depth: 1,
+    createdAt: now,
+    invocations: [{
+      index: 0,
+      ownerConversationId: "conversation-a",
+      runtimeId: "runtime-1",
+      ownershipEpochId: "epoch-1",
+      lifetime: "attached",
+      originSurfaceId: surfaceId(dmSurface(1)),
+      executionEnvironment: personalEnvironment(),
+      status,
+      outcome,
+      deliveryState,
+      startedAt: now,
+      completedAt: status === "running" ? null : now,
+    }],
+    ...overrides,
+  };
+}
+
+/** Write a record and an optional session file to a run directory. */
+export function writeRecordAndSession(
+  home: string,
+  id: string,
+  record: Record<string, unknown>,
+  sessionFileName?: string,
+): string {
+  const runDir = delegatedWorkRunDir(home, id);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(delegatedWorkRecordPath(home, id), JSON.stringify(record));
+  if (sessionFileName !== undefined) {
+    const sessionFile = join(runDir, sessionFileName);
+    writeFileSync(sessionFile, "");
+    return sessionFile;
+  }
+  return runDir;
+}
+
+/** Write a fake .jsonl session file into a run directory. */
+export function writeSessionFile(home: string, id: string, fileName = "2026-01-01T00-00-00.jsonl"): string {
+  const runDir = delegatedWorkRunDir(home, id);
+  mkdirSync(runDir, { recursive: true });
+  const sessionFile = join(runDir, fileName);
+  writeFileSync(sessionFile, "");
+  return sessionFile;
+}
+
+/** Complete a subagent, await its result, and acknowledge delivery to release the host registration. */
+export async function completeAndAcknowledge(
+  runner: SubagentRunner,
+  host: FakeSubagentHost,
+  handle: SubagentHandle,
+  text = "done",
+): Promise<string> {
+  host.latest().complete(text);
+  const result = await handle.result;
+  runner.acknowledgeDelivery(handle.id);
+  return result;
 }

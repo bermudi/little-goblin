@@ -13,6 +13,7 @@ import type {
   AttachedWorkRegistration,
   DelegatedDeliveryState,
   DelegatedRuntimeContext,
+  DelegatedWorkRecordStore,
 } from "../delegated-work/mod.ts";
 import type { SubagentExecution } from "./host.ts";
 
@@ -186,10 +187,12 @@ export interface SubagentInstance {
   depth: number;
   spawnedAt: string;
   spawnedBy: string | null;
-  /** Absolute path to the directory holding `session.jsonl` and `meta.json`. */
+  /** Absolute path to the run directory holding `record.json` and session files. */
   dir: string;
-  /** Absolute path to `meta.json` for this subagent. */
-  metaPath: string;
+  /** Host-owned record store for this subagent's durable lifecycle. */
+  recordStore: DelegatedWorkRecordStore;
+  /** Index of the current invocation in the record's append-only log. */
+  invocationIndex: number;
   /** Exact new/open history target selected by the coordinator. */
   history: SubagentHistoryTarget;
   /** Initial prompt — handed to the opaque Pi execution lease. */

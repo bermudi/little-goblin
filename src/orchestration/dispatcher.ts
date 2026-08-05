@@ -254,7 +254,7 @@ export class TurnDispatcher {
     }
     // The runner is the registration owner; an explicitly supplied host is
     // only a composition-root assertion/fallback for narrow test doubles.
-    this.delegatedWorkHost = runnerDelegatedWorkHost ?? options.delegatedWorkHost ?? new DelegatedWorkHost();
+    this.delegatedWorkHost = runnerDelegatedWorkHost ?? options.delegatedWorkHost ?? new DelegatedWorkHost(options.cfg.goblinHome);
     this.surfaceRuntimeAuthority = options.surfaceRuntimeAuthority;
   }
 

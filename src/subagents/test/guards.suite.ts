@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { readFileSync, rmSync } from "node:fs";
-import { genericSubagentMetaPath } from "../paths.ts";
+import { rmSync } from "node:fs";
 import { SubagentRunner } from "../mod.ts";
 import type { SubagentHost } from "../host.ts";
 import { markCompleted } from "../execution.ts";
-import type { SubagentInstance, SubagentMeta } from "../types.ts";
+import type { SubagentInstance } from "../types.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import {
   createTestHome,
@@ -12,6 +11,7 @@ import {
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
+  readRecord,
 } from "./support.ts";
 
 describe("SubagentRunner — cancel guards", () => {
@@ -115,9 +115,7 @@ describe("SubagentRunner — startup error handling", () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await expect(handle.result).rejects.toBe(startupError);
 
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
+    const meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("error");
     expect(meta.errorMessage).toBe("session-creation-failed");
   });
@@ -182,9 +180,7 @@ describe("SubagentRunner — cancel vs completion race", () => {
     await cancelPromise;
 
     expect(runner.list().find((entry) => entry.id === handle.id)?.status).toBe("cancelled");
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
+    const meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("cancelled");
   });
 
@@ -307,9 +303,6 @@ describe("SubagentRunner — parent status guard", () => {
     await flush();
 
     expect(handle.status).toBe("running");
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
-    expect(meta.spawnedBy).toBe("session-xyz");
+    expect(runner.list().find((entry) => entry.id === handle.id)?.spawnedBy).toBe("session-xyz");
   });
 });

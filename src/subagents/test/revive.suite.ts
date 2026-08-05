@@ -1,26 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SubagentRunner } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import { topicScopeDir } from "../../memory/paths.ts";
 import { workspacePath } from "../../workspace/paths.ts";
-import type { SubagentMeta } from "../types.ts";
 import {
-  genericSubagentDir,
-  genericSubagentMetaPath,
+  delegatedWorkRecordPath,
+  delegatedWorkRunDir,
+} from "../../delegated-work/paths.ts";
+import {
   namedAgentAgentsMdPath,
   namedAgentDir,
-  namedAgentInstanceDir,
   namedAgentSkillsDir,
 } from "../paths.ts";
 import {
+  completeAndAcknowledge,
   createTestHome,
   DEFAULT_AUTHORITY,
   DEFAULT_PARENT_CAPTURE,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
+  readRecord,
+  validRecord,
+  writeRecordAndSession,
+  writeSessionFile,
 } from "./support.ts";
 
 describe("SubagentRunner.revive", () => {
@@ -42,14 +47,8 @@ describe("SubagentRunner.revive", () => {
     const handle = await runner.spawn({ prompt: "first turn", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    host.latest().complete("first response");
-    await handle.result;
-
-    const dir = genericSubagentDir(tmp, handle.id);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    writeFileSync(join(dir, "2026-01-01T00-00-00_fake-session.jsonl"), "");
+    await completeAndAcknowledge(runner, host, handle, "first response");
+    writeSessionFile(tmp, handle.id, "2026-01-01T00-00-00_fake-session.jsonl");
 
     return handle.id;
   }
@@ -58,23 +57,9 @@ describe("SubagentRunner.revive", () => {
     await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, "nonexistent-id", "ping")).rejects.toThrow("Subagent not found");
   });
 
-  it("throws 'Subagent not found' when dir exists but has no session file", async () => {
+  it("throws 'Subagent not found' when run exists but has no session file", async () => {
     const id = "abc123-no-session";
-    const dir = genericSubagentDir(tmp, id);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "meta.json"),
-      JSON.stringify({
-        id,
-        role: "generic",
-        name: null,
-        spawnedBy: null,
-        activeScope: DEFAULT_PARENT_CAPTURE.authority.activeScope,
-        depth: 1,
-        createdAt: new Date().toISOString(),
-        status: "completed",
-      }),
-    );
+    writeRecordAndSession(tmp, id, validRecord(id), undefined);
 
     await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "ping")).rejects.toThrow("Subagent not found");
   });
@@ -156,19 +141,19 @@ describe("SubagentRunner.revive", () => {
   it("updates meta.json to status=running on revive, then completed on agent_end", async () => {
     const id = await spawnGeneric();
 
-    let meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, id), "utf-8")) as SubagentMeta;
+    let meta = readRecord(tmp, id);
     expect(meta.status).toBe("completed");
 
     const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "follow-up");
     await flush();
 
-    meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, id), "utf-8")) as SubagentMeta;
+    meta = readRecord(tmp, id);
     expect(meta.status).toBe("running");
 
     host.latest().complete("done");
     await resultPromise;
 
-    meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, id), "utf-8")) as SubagentMeta;
+    meta = readRecord(tmp, id);
     expect(meta.status).toBe("completed");
   });
 
@@ -198,10 +183,9 @@ describe("SubagentRunner.revive", () => {
     });
     await flush();
 
-    host.latest().complete("done");
-    await handle.result;
+    await completeAndAcknowledge(runner, host, handle, "done");
 
-    const instDir = namedAgentInstanceDir(tmp, "researcher", handle.id);
+    const instDir = delegatedWorkRunDir(tmp, handle.id);
     if (!existsSync(instDir)) {
       mkdirSync(instDir, { recursive: true });
     }
@@ -249,7 +233,7 @@ describe("SubagentRunner — revive guards", () => {
     const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
-    writeFileSync(join(genericSubagentDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
+    writeFileSync(join(delegatedWorkRunDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
 
     await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "second")).rejects.toThrow("Subagent is already running");
   });
@@ -260,21 +244,19 @@ describe("SubagentRunner — revive guards", () => {
     host.latest().fail(new Error("first-fail"));
     await expect(handle.result).rejects.toThrow("first-fail");
 
-    writeFileSync(join(genericSubagentDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
+    writeFileSync(join(delegatedWorkRunDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
 
     const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "second");
     await flush();
 
-    let meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
+    let meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("running");
     expect(meta.errorMessage).toBeUndefined();
 
     host.latest().complete("done");
     await resultPromise;
 
-    meta = JSON.parse(readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8")) as SubagentMeta;
+    meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("completed");
     expect(meta.errorMessage).toBeUndefined();
   });
@@ -295,43 +277,30 @@ describe("SubagentRunner — corrupted meta.json", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("reports malformed meta.json instead of treating it as not found", async () => {
+  it("reports malformed record.json instead of treating it as not found", async () => {
     const id = "aaaaaaaa-0000-0000-0000-000000000000";
-    const dir = genericSubagentDir(tmp, id);
+    const dir = delegatedWorkRunDir(tmp, id);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "meta.json"), "NOT VALID JSON{{{");
+    writeFileSync(delegatedWorkRecordPath(tmp, id), "NOT VALID JSON{{{");
     writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
 
     await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "hello")).rejects.toThrow(
-      /Invalid subagent metadata .* malformed JSON/,
+      /Invalid delegated work record .* malformed JSON/,
     );
   });
 
-  it("allows a same-id retry after a corrupted meta.json failure", async () => {
+  it("allows a same-id retry after a corrupted record.json failure", async () => {
     const id = "aaaaaaaa-0000-0000-0000-000000000001";
-    const dir = genericSubagentDir(tmp, id);
+    const dir = delegatedWorkRunDir(tmp, id);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "meta.json"), "NOT VALID JSON");
+    writeFileSync(delegatedWorkRecordPath(tmp, id), "NOT VALID JSON");
 
     await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "first try")).rejects.toThrow(
-      /Invalid subagent metadata .* malformed JSON/,
+      /Invalid delegated work record .* malformed JSON/,
     );
 
-    // Repair the directory with a valid meta and a session file.
-    writeFileSync(
-      join(dir, "meta.json"),
-      JSON.stringify({
-        id,
-        role: "generic",
-        name: null,
-        spawnedBy: null,
-        activeScope: DEFAULT_PARENT_CAPTURE.authority.activeScope,
-        depth: 1,
-        createdAt: new Date().toISOString(),
-        status: "completed",
-      }),
-    );
-    writeFileSync(join(dir, "2026-01-01T00-00-00.jsonl"), "");
+    // Repair the directory with a valid record and a session file.
+    writeRecordAndSession(tmp, id, validRecord(id), "2026-01-01T00-00-00.jsonl");
 
     const resultPromise = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "second try");
     await flush();
@@ -361,13 +330,8 @@ describe("SubagentRunner — double-revive race guard", () => {
   async function spawnAndComplete(): Promise<string> {
     const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
-    host.latest().complete("done");
-    await handle.result;
-    const dir = genericSubagentDir(tmp, handle.id);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    writeFileSync(join(dir, "2026-01-01T00-00-00_fake.jsonl"), "");
+    await completeAndAcknowledge(runner, host, handle, "done");
+    writeSessionFile(tmp, handle.id, "2026-01-01T00-00-00_fake.jsonl");
     return handle.id;
   }
 
@@ -390,6 +354,9 @@ describe("SubagentRunner — double-revive race guard", () => {
     await flush();
     host.latest().complete("done");
     await firstRevive;
+    // A revival is an invocation like any other: its host registration is held
+    // until the blocking caller accepts the result.
+    runner.acknowledgeDelivery(id);
 
     const secondRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 3");
     await flush();
@@ -473,11 +440,9 @@ describe("SubagentRunner — revive with deleted AGENTS.md", () => {
 
     const handle = await runner.spawn({ prompt: "go", name: "researcher", authority: DEFAULT_AUTHORITY });
     await flush();
-    host.latest().complete("done");
-    await handle.result;
+    await completeAndAcknowledge(runner, host, handle, "done");
 
-    const instDir = namedAgentInstanceDir(tmp, "researcher", handle.id);
-    writeFileSync(join(instDir, "2026-01-01T00-00-00.jsonl"), "");
+    writeSessionFile(tmp, handle.id, "2026-01-01T00-00-00.jsonl");
     rmSync(namedAgentAgentsMdPath(tmp, "researcher"));
 
     await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "more")).rejects.toThrow(/definition missing; cannot revive/);

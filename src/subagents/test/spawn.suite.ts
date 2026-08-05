@@ -1,32 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubagentRunner, type GenericSubagentInheritance, type SubagentToolFactory } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import type { ResolvedSkillSet } from "../../agent/skills/mod.ts";
 import { personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../../sessions/environment.ts";
 import { goblinSkillsPath, workspacePath } from "../../workspace/paths.ts";
+import { MAX_SUBAGENT_DEPTH } from "../types.ts";
 import {
-  MAX_SUBAGENT_DEPTH,
-  type SubagentMeta,
-} from "../types.ts";
-import {
-  genericSubagentDir,
-  genericSubagentMetaPath,
   namedAgentAgentsMdPath,
   namedAgentDir,
-  namedAgentInstanceDir,
-  namedAgentInstanceMetaPath,
   namedAgentSkillsDir,
-  subagentsRoot,
 } from "../paths.ts";
 import {
+  delegatedWorkRecordPath,
+  delegatedWorkRunDir,
+  delegatedWorkRunsRoot,
+} from "../../delegated-work/paths.ts";
+import {
+  completeAndAcknowledge,
   createTestHome,
   DEFAULT_AUTHORITY,
   DEFAULT_PARENT_CAPTURE,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
+  readRecord,
 } from "./support.ts";
 
 describe("SubagentRunner — skeleton", () => {
@@ -44,7 +43,7 @@ describe("SubagentRunner — skeleton", () => {
 
   it("instantiates without I/O", () => {
     expect(runner).toBeInstanceOf(SubagentRunner);
-    expect(existsSync(subagentsRoot(tmp))).toBe(false);
+    expect(existsSync(delegatedWorkRunsRoot(tmp))).toBe(false);
   });
 
   it("starts with no active subagents", () => {
@@ -86,25 +85,24 @@ describe("SubagentRunner.spawn — generic", () => {
     expect(handle.status).toBe("running");
     expect(handle.id).toMatch(/^[0-9a-f-]{36}$/);
 
-    const dir = genericSubagentDir(tmp, handle.id);
+    const dir = delegatedWorkRunDir(tmp, handle.id);
     expect(existsSync(dir)).toBe(true);
 
-    const metaPath = genericSubagentMetaPath(tmp, handle.id);
+    const metaPath = delegatedWorkRecordPath(tmp, handle.id);
     expect(existsSync(metaPath)).toBe(true);
 
-    const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as SubagentMeta;
+    const meta = readRecord(tmp, handle.id);
     expect(meta).toMatchObject({
       id: handle.id,
       role: "generic",
       name: null,
-      spawnedBy: null,
       depth: 1,
       status: "running",
     });
     expect(meta.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it("records spawnedBy when provided", async () => {
+  it("tracks spawnedBy in the active instance when provided", async () => {
     const handle = await runner.spawn({
       prompt: "hi",
       authority: DEFAULT_AUTHORITY,
@@ -113,10 +111,9 @@ describe("SubagentRunner.spawn — generic", () => {
     });
     handle.result.catch(() => {});
 
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
-    expect(meta.spawnedBy).toBe("goblin-session-42");
+    const list = runner.list();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.spawnedBy).toBe("goblin-session-42");
   });
 
   it("tracks the spawned subagent in list()", async () => {
@@ -138,26 +135,21 @@ describe("SubagentRunner.spawn — generic", () => {
     handle.result.catch(() => {});
 
     expect(runner.list()[0]?.id).toBe(handle.id);
-    expect(existsSync(genericSubagentDir(tmp, handle.id))).toBe(true);
+    expect(existsSync(delegatedWorkRunDir(tmp, handle.id))).toBe(true);
   });
 
-  it("does not persist running metadata when pre-registration setup fails", async () => {
-    const invalidInheritance = null as unknown as GenericSubagentInheritance;
-
+  it("does not persist a record when pre-registration validation fails", async () => {
     await expect(
       runner.spawn({
         prompt: "cannot prepare",
         authority: DEFAULT_AUTHORITY,
-        inheritance: invalidInheritance,
+        depth: -1,
+        inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
       }),
-    ).rejects.toThrow("generic subagent requires inherited execution authority");
+    ).rejects.toThrow(/Invalid depth/);
 
     expect(runner.list()).toEqual([]);
-    const instanceDirs = readdirSync(subagentsRoot(tmp));
-    expect(instanceDirs.length).toBeGreaterThan(0);
-    for (const instanceDir of instanceDirs) {
-      expect(existsSync(join(subagentsRoot(tmp), instanceDir, "meta.json"))).toBe(false);
-    }
+    expect(existsSync(delegatedWorkRunsRoot(tmp))).toBe(false);
   });
 
   it("rejects spawning beyond depth 3", async () => {
@@ -170,9 +162,7 @@ describe("SubagentRunner.spawn — generic", () => {
     const handle = await runner.spawn({ prompt: "boundary", depth: 2, authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     handle.result.catch(() => {});
 
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
+    const meta = readRecord(tmp, handle.id);
     expect(meta.depth).toBe(3);
   });
 });
@@ -198,7 +188,7 @@ describe("SubagentRunner.spawn — named", () => {
     );
   });
 
-  it("loads AGENTS.md and creates an instance directory + meta.json", async () => {
+  it("loads AGENTS.md and creates a host-owned run directory + record.json", async () => {
     const agentDir = namedAgentDir(tmp, "researcher");
     mkdirSync(agentDir, { recursive: true });
     const agentsMd = "# Researcher\n\nYou are a focused research subagent.\n";
@@ -214,13 +204,13 @@ describe("SubagentRunner.spawn — named", () => {
     expect(handle.status).toBe("running");
     expect(handle.id).toMatch(/^[0-9a-f-]{36}$/);
 
-    const instDir = namedAgentInstanceDir(tmp, "researcher", handle.id);
+    const instDir = delegatedWorkRunDir(tmp, handle.id);
     expect(existsSync(instDir)).toBe(true);
 
-    const metaPath = namedAgentInstanceMetaPath(tmp, "researcher", handle.id);
+    const metaPath = delegatedWorkRecordPath(tmp, handle.id);
     expect(existsSync(metaPath)).toBe(true);
 
-    const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as SubagentMeta;
+    const meta = readRecord(tmp, handle.id);
     expect(meta).toMatchObject({
       id: handle.id,
       role: "named",
@@ -228,21 +218,6 @@ describe("SubagentRunner.spawn — named", () => {
       depth: 1,
       status: "running",
     });
-  });
-
-  it("does not place named-agent instances under the generic subagents dir", async () => {
-    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
-    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# x");
-
-    const handle = await runner.spawn({
-      prompt: "ping",
-      name: "researcher",
-      authority: DEFAULT_AUTHORITY,
-    });
-    handle.result.catch(() => {});
-
-    expect(existsSync(genericSubagentDir(tmp, handle.id))).toBe(false);
-    expect(existsSync(namedAgentInstanceDir(tmp, "researcher", handle.id))).toBe(true);
   });
 
   it("records the named agent in list() with its name and role", async () => {
@@ -381,9 +356,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
 
     await handle.result;
 
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
+    const meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("completed");
     expect(meta.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(runner.list()[0]?.status).toBe("completed");
@@ -396,9 +369,7 @@ describe("SubagentRunner.spawn — execution & result return", () => {
 
     await expect(handle.result).rejects.toThrow("boom");
 
-    const meta = JSON.parse(
-      readFileSync(genericSubagentMetaPath(tmp, handle.id), "utf-8"),
-    ) as SubagentMeta;
+    const meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("error");
     expect(meta.errorMessage).toBe("boom");
     expect(meta.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
@@ -760,9 +731,8 @@ describe("SubagentRunner — skill inheritance", () => {
       ),
     });
     await flush();
-    host.latest().complete("first");
-    await handle.result;
-    writeFileSync(join(genericSubagentDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
+    await completeAndAcknowledge(runner, host, handle, "first");
+    writeFileSync(join(delegatedWorkRunDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
 
     const projectRoot = join(tmp, "revive-project");
     mkdirSync(projectRoot, { recursive: true });
@@ -791,8 +761,7 @@ describe("SubagentRunner — skill inheritance", () => {
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
-    host.latest().complete("first");
-    await handle.result;
+    await completeAndAcknowledge(runner, host, handle, "first");
 
     await expect(
       runner.revive(DEFAULT_PARENT_CAPTURE, null, handle.id, "second"),

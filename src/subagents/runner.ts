@@ -18,8 +18,7 @@
  * Historical design: `specs/changes/archive/2026-04-26-subagent-runtime/`.
  */
 
-import { mkdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config.ts";
 import { boundedError, log } from "../log.ts";
@@ -28,6 +27,8 @@ import {
   type AttachedDelegatedWorkOwnership,
   type AttachedWorkAdapter,
   type DelegatedRuntimeContext,
+  type DelegatedWorkKind,
+  type DelegatedWorkRecord,
 } from "../delegated-work/mod.ts";
 import {
   MemoryStore,
@@ -44,7 +45,7 @@ import {
   type SubagentInvocation,
   type SubagentPreparation,
 } from "./host.ts";
-import { environmentCwd, environmentsEqual } from "../sessions/environment.ts";
+import { environmentCwd, environmentsEqual, personalEnvironment } from "../sessions/environment.ts";
 import { topicScopeDir } from "../memory/paths.ts";
 import {
   type ExecutionDeps,
@@ -53,22 +54,11 @@ import {
   runInstance,
   teardownInstance,
 } from "./execution.ts";
-import {
-  assertSafeSubagentId,
-  findSessionFile,
-  loadSubagentMeta,
-  persistMetaPatch,
-  writeMetaAtomic,
-} from "./meta.ts";
+import { findSessionFile } from "./meta.ts";
+import { assertSafeRunId } from "../delegated-work/mod.ts";
 import { loadNamedAgent, NamedAgentNotFoundError } from "./named-agents.ts";
 import { VALID_NAME_RE } from "./validation.ts";
-import {
-  genericSubagentDir,
-  genericSubagentMetaPath,
-  namedAgentDir,
-  namedAgentInstanceDir,
-  namedAgentInstanceMetaPath,
-} from "./paths.ts";
+import { namedAgentDir } from "./paths.ts";
 import {
   MAX_SUBAGENT_DEPTH,
   type GenericSubagentInheritance,
@@ -77,7 +67,6 @@ import {
   type SubagentHandle,
   type SubagentInfo,
   type SubagentInstance,
-  type SubagentMeta,
   type SubagentRole,
   type SubagentStatus,
 } from "./types.ts";
@@ -296,7 +285,10 @@ export class SubagentRunner {
     // preserving deployment-lifetime caching, this keeps late test-module
     // substitution from freezing vendor constructors at runner creation.
     this.host = host ?? null;
-    this.delegatedWorkHost = delegatedWorkHost ?? new DelegatedWorkHost();
+    this.delegatedWorkHost = delegatedWorkHost ?? new DelegatedWorkHost(cfg.goblinHome);
+    // Mark any attached invocation left non-terminal by a process crash as
+    // interrupted. A revived run will append a fresh invocation in place.
+    this.delegatedWorkHost.reconcileStartup();
   }
 
   /**
@@ -374,33 +366,31 @@ export class SubagentRunner {
         : { kind: "anonymous-subagent" };
 
     let role: SubagentRole;
-    let dir: string;
-    let metaPath: string;
+    let kind: DelegatedWorkKind;
     let definition: NamedAgentDefinition | null;
     let displayName: string | null;
     let inheritance: GenericSubagentInheritance | null;
 
     if (options.name !== undefined) {
       role = "named";
+      kind = "named-subagent";
       definition = loadNamedAgent(this.cfg.goblinHome, options.name);
       displayName = options.name;
       inheritance = null;
-      dir = namedAgentInstanceDir(this.cfg.goblinHome, options.name, id);
-      metaPath = namedAgentInstanceMetaPath(this.cfg.goblinHome, options.name, id);
     } else {
       role = "generic";
+      kind = "generic-subagent";
       definition = null;
       displayName = null;
       inheritance = options.inheritance;
-      dir = genericSubagentDir(this.cfg.goblinHome, id);
-      metaPath = genericSubagentMetaPath(this.cfg.goblinHome, id);
     }
 
     // A delegated context is trusted runtime authority, not model input. A
     // recursive child inherits the root epoch; a top-level invocation starts a
-    // fresh epoch. Legacy direct runner tests may omit the context and retain
-    // their pre-host compatibility path.
-    let delegatedOwnership: AttachedDelegatedWorkOwnership | null = null;
+    // fresh epoch. Tests and legacy callers that omit a context are bridged to
+    // an attached ownership derived from the captured authority; production
+    // callers always provide an explicit delegated runtime context.
+    let delegatedOwnership: AttachedDelegatedWorkOwnership;
     if (options.delegatedContext !== undefined) {
       if (parent !== undefined) {
         if (parent.delegatedOwnership === null) {
@@ -417,37 +407,54 @@ export class SubagentRunner {
           ownershipEpochId: randomUUID(),
         };
       }
-    } else if (parent?.delegatedOwnership !== null && parent?.delegatedOwnership !== undefined) {
+    } else if (parent?.delegatedOwnership !== undefined && parent.delegatedOwnership !== null) {
       delegatedOwnership = parent.delegatedOwnership;
+    } else {
+      delegatedOwnership = {
+        ownerConversationId: authority.sourceSurfaceId,
+        runtimeId: DelegatedWorkHost.newRuntimeId(),
+        originSurfaceId: authority.sourceSurfaceId,
+        executionEnvironment: inheritance?.executionEnvironment ?? personalEnvironment(),
+        lifetime: "attached",
+        ownershipEpochId: randomUUID(),
+      };
     }
 
-    if (delegatedOwnership !== null) {
-      if (delegatedOwnership.originSurfaceId !== authority.sourceSurfaceId) {
-        throw new Error("delegated origin Surface does not match captured memory authority");
-      }
-      if (inheritance !== null && !environmentsEqual(
-        inheritance.executionEnvironment,
-        delegatedOwnership.executionEnvironment,
-      )) {
-        throw new Error("generic delegated environment differs from inherited authority");
-      }
+    if (delegatedOwnership.originSurfaceId !== authority.sourceSurfaceId) {
+      throw new Error("delegated origin Surface does not match captured memory authority");
+    }
+    if (inheritance !== null && !environmentsEqual(
+      inheritance.executionEnvironment,
+      delegatedOwnership.executionEnvironment,
+    )) {
+      throw new Error("generic delegated environment differs from inherited authority");
     }
 
-    const spawnedBy = delegatedOwnership !== null
-      ? (parent?.id ?? null)
-      : (options.spawnedBy ?? null);
-    const delegatedRegistration = delegatedOwnership === null
-      ? null
-      : this.delegatedWorkHost.reserveAttached(id, delegatedOwnership);
+    // `spawnedBy` is the caller's identity for cascade cancellation: either a
+    // parent subagent id or the owning session id for a top-level spawn.
+    const spawnedBy = options.spawnedBy ?? null;
+    const delegatedRegistration = this.delegatedWorkHost.reserveAttached(id, delegatedOwnership);
 
-    const history = { kind: "create" as const, sessionDir: dir };
+    // Create the host-owned record before any kind-specific execution state.
+    // The record's run directory is where the Pi session files live.
+    let runDir: string;
+    try {
+      const recordResult = this.delegatedWorkHost.createAttachedRecord(
+        id,
+        kind,
+        displayName,
+        newDepth,
+        delegatedOwnership,
+      );
+      runDir = recordResult.runDir;
+    } catch (err) {
+      delegatedRegistration.release();
+      throw err;
+    }
+
+    const history = { kind: "create" as const, sessionDir: runDir };
     let preparedExecution: SubagentExecution;
     try {
-      // Create the instance directory up-front so meta.json + history file
-      // land side-by-side. The host reservation above fences this work before
-      // any durable artifact or Pi lease can be created.
-      mkdirSync(dir, { recursive: true });
-
       // Prepare the execution CWD before creating the authoritative running
       // record. The Pi host prepares the exact new history target; model
       // activation remains deferred until the lease is run.
@@ -459,40 +466,8 @@ export class SubagentRunner {
         preparationFor(cwd, history, role, definition, inheritance),
       );
     } catch (err) {
-      delegatedRegistration?.release();
+      delegatedRegistration.release();
       throw err;
-    }
-
-    const meta: SubagentMeta = {
-      id,
-      role,
-      name: displayName,
-      spawnedBy,
-      activeScope: authority.activeScope,
-      depth: newDepth,
-      createdAt: spawnedAt,
-      status: "running",
-      ...(delegatedOwnership === null ? {} : {
-        ownerConversationId: delegatedOwnership.ownerConversationId,
-        runtimeId: delegatedOwnership.runtimeId,
-        lifetime: delegatedOwnership.lifetime,
-        originSurfaceId: delegatedOwnership.originSurfaceId,
-        executionEnvironment: delegatedOwnership.executionEnvironment,
-        ownershipEpochId: delegatedOwnership.ownershipEpochId,
-        deliveryState: "pending" as const,
-      }),
-    };
-    try {
-      writeMetaAtomic(metaPath, meta);
-    } catch (err) {
-      let stopFailure: unknown;
-      try {
-        await stopPreparedExecution(preparedExecution, id);
-      } catch (cleanupError) {
-        stopFailure = cleanupError;
-      }
-      delegatedRegistration?.release();
-      throw combineFailures([err, stopFailure].filter((value) => value !== undefined), "Subagent spawn cleanup failed") ?? err;
     }
 
     // Install both public and internal settlement before execution starts.
@@ -509,8 +484,9 @@ export class SubagentRunner {
       depth: newDepth,
       spawnedAt,
       spawnedBy,
-      dir,
-      metaPath,
+      dir: runDir,
+      recordStore: this.delegatedWorkHost.recordStore,
+      invocationIndex: 0,
       history,
       initialPrompt: options.prompt,
       onStatusUpdate: prefixStatusCallback(displayName ?? id.slice(0, 8), options.onStatusUpdate),
@@ -602,7 +578,7 @@ export class SubagentRunner {
 
     // The id enters filesystem path construction below and may originate from
     // a model tool call. Reject traversal and malformed segments first.
-    assertSafeSubagentId(id);
+    assertSafeRunId(id);
 
     // Guard against concurrent revive() of the same subagent ID.
     if (this.revivesInProgress.has(id)) {
@@ -630,72 +606,84 @@ export class SubagentRunner {
       throw err;
     }
 
-    // Locate meta.json: could be generic or named. Scan both trees.
-    let dir: string;
-    let meta: SubagentMeta;
+    // Load the host-owned record. Legacy two-tree lookups are no longer
+    // performed at runtime; offline migration moved them into the new store.
+    let record: DelegatedWorkRecord | null;
     try {
-      const metaResult = loadSubagentMeta(this.cfg.goblinHome, id);
-      dir = metaResult.dir;
-      meta = metaResult.meta;
+      record = this.delegatedWorkHost.loadRecord(id);
     } catch (err) {
+      // A malformed record must not leave the revive guard latched; the same id
+      // has to be revivable again once the record is repaired.
       this.revivesInProgress.delete(id);
       throw err;
     }
+    if (record === null) {
+      this.revivesInProgress.delete(id);
+      throw new Error("Subagent not found");
+    }
+
+    const role: SubagentRole = record.kind === "generic-subagent" ? "generic" : "named";
+    const displayName = record.name;
 
     // A generic revival without the reviving runtime's environment/manifest
     // authority would either run under the wrong CWD or re-run discovery.
     // Both violate decision 0034 and the execution-environment contract.
-    if (meta.role === "generic" && inheritance === null) {
+    if (role === "generic" && inheritance === null) {
       this.revivesInProgress.delete(id);
       throw new Error(
         `Generic subagent '${id}' revival requires the reviving runtime's resolved skill manifest and execution environment`,
       );
     }
 
-    // Find the persisted session file inside the subagent's dir.
-    const sessionFile = findSessionFile(dir);
+    const runDir = this.delegatedWorkHost.recordStore.runDir(id);
+
+    // Find the persisted session file inside the subagent's run directory.
+    const sessionFile = findSessionFile(runDir);
     if (sessionFile === null) {
       this.revivesInProgress.delete(id);
       throw new Error(`Subagent not found`);
     }
 
     // Revival is a new invocation: it inherits the reviving parent runtime's
-    // captured Surface authority. The persisted legacy activeScope is audit-only.
+    // captured Surface authority.
     const authority = parentCapture.authority;
     const caller: SurfaceMemoryCaller =
-      meta.role === "named" && meta.name !== null
-        ? { kind: "named-subagent", name: meta.name }
+      role === "named" && displayName !== null
+        ? { kind: "named-subagent", name: displayName }
         : { kind: "anonymous-subagent" };
 
-    let delegatedOwnership: AttachedDelegatedWorkOwnership | null = null;
-    if (meta.ownerConversationId !== undefined && delegatedContext === undefined) {
-      this.revivesInProgress.delete(id);
-      throw new Error("Subagent not found");
-    }
+    // Production callers always provide a delegated runtime context. Tests and
+    // legacy callers that omit it are bridged to an attached ownership derived
+    // from the captured authority.
+    let effectiveContext: DelegatedRuntimeContext;
     if (delegatedContext !== undefined) {
-      if (
-        meta.ownerConversationId !== undefined &&
-        meta.ownerConversationId !== delegatedContext.ownerConversationId
-      ) {
-        this.revivesInProgress.delete(id);
-        throw new Error("Subagent not found");
-      }
-      if (delegatedContext.originSurfaceId !== authority.sourceSurfaceId) {
-        this.revivesInProgress.delete(id);
-        throw new Error("delegated revival Surface does not match captured memory authority");
-      }
-      if (meta.role === "generic" && inheritance !== null && !environmentsEqual(
-        inheritance.executionEnvironment,
-        delegatedContext.executionEnvironment,
-      )) {
-        this.revivesInProgress.delete(id);
-        throw new Error("generic delegated revival environment differs from inherited authority");
-      }
-      delegatedOwnership = {
-        ...delegatedContext,
-        lifetime: "attached",
-        ownershipEpochId: randomUUID(),
+      effectiveContext = delegatedContext;
+    } else {
+      effectiveContext = {
+        ownerConversationId: authority.sourceSurfaceId,
+        runtimeId: DelegatedWorkHost.newRuntimeId(),
+        originSurfaceId: authority.sourceSurfaceId,
+        executionEnvironment: role === "generic" && inheritance !== null
+          ? inheritance.executionEnvironment
+          : personalEnvironment(),
       };
+    }
+    const delegatedOwnership: AttachedDelegatedWorkOwnership = {
+      ...effectiveContext,
+      lifetime: "attached",
+      ownershipEpochId: randomUUID(),
+    };
+
+    if (delegatedOwnership.originSurfaceId !== authority.sourceSurfaceId) {
+      this.revivesInProgress.delete(id);
+      throw new Error("delegated revival Surface does not match captured memory authority");
+    }
+    if (role === "generic" && inheritance !== null && !environmentsEqual(
+      inheritance.executionEnvironment,
+      delegatedOwnership.executionEnvironment,
+    )) {
+      this.revivesInProgress.delete(id);
+      throw new Error("generic delegated revival environment differs from inherited authority");
     }
 
     // Validate that the topic directory exists if the subagent has a topic scope.
@@ -715,31 +703,39 @@ export class SubagentRunner {
 
     // Determine cwd from the new invocation's authority, just as spawn() does.
     const cwd =
-      meta.role === "named" && meta.name !== null
-        ? namedAgentDir(this.cfg.goblinHome, meta.name)
+      role === "named" && displayName !== null
+        ? namedAgentDir(this.cfg.goblinHome, displayName)
         : genericExecutionCwd(inheritance, this.cfg.goblinHome);
 
-    // Preserve the exact lexical history target selected by meta.ts. The Pi
-    // host opens exactly this file and does not rediscover a latest history.
-    const history = { kind: "open" as const, sessionDir: dir, sessionFile };
+    // Preserve the exact lexical history target. The Pi host opens exactly this
+    // file and does not rediscover a latest history.
+    const history = { kind: "open" as const, sessionDir: runDir, sessionFile };
 
     // Rebuild the named-agent definition if the subagent is named.
     let definition: NamedAgentDefinition | null = null;
-    if (meta.role === "named" && meta.name !== null) {
+    if (role === "named" && displayName !== null) {
       try {
-        definition = loadNamedAgent(this.cfg.goblinHome, meta.name);
+        definition = loadNamedAgent(this.cfg.goblinHome, displayName);
       } catch (err) {
         this.revivesInProgress.delete(id);
         if (err instanceof NamedAgentNotFoundError) {
-          throw new Error(`Named agent '${meta.name}' definition missing; cannot revive`);
+          throw new Error(`Named agent '${displayName}' definition missing; cannot revive`);
         }
         throw err;
       }
     }
 
-    const delegatedRegistration = delegatedOwnership === null
-      ? null
-      : this.delegatedWorkHost.reserveAttached(id, delegatedOwnership);
+    const delegatedRegistration = this.delegatedWorkHost.reserveAttached(id, delegatedOwnership);
+
+    // Append the revival invocation to the record before any Pi lease runs.
+    let revivedRecord: DelegatedWorkRecord;
+    try {
+      ({ record: revivedRecord } = this.delegatedWorkHost.appendAttachedRevival(id, delegatedOwnership));
+    } catch (err) {
+      delegatedRegistration.release();
+      this.revivesInProgress.delete(id);
+      throw err;
+    }
 
     let preparedExecution: SubagentExecution;
     try {
@@ -747,13 +743,14 @@ export class SubagentRunner {
         preparationFor(
           cwd,
           history,
-          meta.role,
+          role,
           definition,
-          meta.role === "generic" ? inheritance : null,
+          role === "generic" ? inheritance : null,
         ),
       );
     } catch (err) {
-      delegatedRegistration?.release();
+      this.abandonInvocation(id, revivedRecord.invocations.length - 1);
+      delegatedRegistration.release();
       this.revivesInProgress.delete(id);
       throw err;
     }
@@ -765,23 +762,24 @@ export class SubagentRunner {
 
     const instance: SubagentInstance = {
       id,
-      name: meta.name ?? null,
-      role: meta.role,
+      name: displayName,
+      role,
       status: "running",
       authority,
       caller,
-      depth: meta.depth,
-      spawnedAt: meta.createdAt,
-      spawnedBy: delegatedOwnership === null ? (meta.spawnedBy ?? null) : null,
-      dir,
-      metaPath: join(dir, "meta.json"),
+      depth: record.depth,
+      spawnedAt: record.createdAt,
+      spawnedBy: null,
+      dir: runDir,
+      recordStore: this.delegatedWorkHost.recordStore,
+      invocationIndex: revivedRecord.invocations.length - 1,
       history,
       initialPrompt: prompt,
-      onStatusUpdate: prefixStatusCallback(meta.name ?? id.slice(0, 8), onStatusUpdate),
+      onStatusUpdate: prefixStatusCallback(displayName ?? id.slice(0, 8), onStatusUpdate),
       // Store raw callback for nested spawning (prevents prefix stacking)
       rawStatusCallback: onStatusUpdate,
       definition,
-      inheritance: meta.role === "generic" ? inheritance : null,
+      inheritance: role === "generic" ? inheritance : null,
       execution: preparedExecution,
       delegatedOwnership,
       delegatedRegistration,
@@ -806,6 +804,7 @@ export class SubagentRunner {
         delegatedRegistration.release();
         const stopFailures: unknown[] = [];
         await this.stopAndCollect(instance, stopFailures);
+        this.abandonInvocation(id, instance.invocationIndex);
         const failure = combineFailures([err, ...stopFailures], "Subagent delegated registration failed") ?? err;
         result.reject(failure);
         settlement.reject(failure);
@@ -830,6 +829,7 @@ export class SubagentRunner {
         settlement.reject(failure);
         instance.deliveryState = "suppressed";
         teardownInstance(instance);
+        this.abandonInvocation(id, instance.invocationIndex);
         throw failure;
       }
     }
@@ -855,42 +855,7 @@ export class SubagentRunner {
       return completed;
     }
 
-    // Update meta to reflect the revival — clear stale terminal fields.
-    // A failed durable transition must stop revival rather than launching a
-    // run whose on-disk record still claims the prior terminal state.
-    try {
-      persistMetaPatch(instance, {
-        status: "running",
-        completedAt: undefined,
-        errorMessage: undefined,
-        deliveryState: "pending",
-        ...(delegatedOwnership === null ? {} : {
-          ownerConversationId: delegatedOwnership.ownerConversationId,
-          runtimeId: delegatedOwnership.runtimeId,
-          lifetime: delegatedOwnership.lifetime,
-          originSurfaceId: delegatedOwnership.originSurfaceId,
-          executionEnvironment: delegatedOwnership.executionEnvironment,
-          ownershipEpochId: delegatedOwnership.ownershipEpochId,
-        }),
-      });
-    } catch (err) {
-      this.activeSubagents.delete(id);
-      this.revivesInProgress.delete(id);
-      const stopFailures: unknown[] = [];
-      await this.stopAndCollect(instance, stopFailures);
-      const stopFailure = stopFailures[0];
-      const failure = combineFailures(
-        [err, stopFailure].filter((value) => value !== undefined),
-        "Subagent revive cleanup failed",
-      ) ?? err;
-      result.reject(failure);
-      settlement.reject(failure);
-      instance.deliveryState = "suppressed";
-      teardownInstance(instance);
-      throw failure;
-    }
-
-    log.debug("subagent revived", { id, role: meta.role, name: meta.name });
+    log.debug("subagent revived", { id, role, name: displayName });
 
     // Kick off execution — same pipeline as spawn().
     this.startInstance(instance);
@@ -902,6 +867,18 @@ export class SubagentRunner {
     });
     completed.catch(() => {});
     return completed;
+  }
+
+  /**
+   * Close an invocation that never reached execution. An abandoned attempt is
+   * terminally interrupted with no delivery, so the record never claims a run
+   * is alive and the next revival can append a fresh invocation.
+   */
+  private abandonInvocation(id: string, index: number): void {
+    const record = this.delegatedWorkHost.loadRecord(id);
+    const invocation = record?.invocations[index];
+    if (invocation === undefined || invocation.status !== "running") return;
+    this.delegatedWorkHost.closeInvocation(id, index, "interrupted", null, "suppressed");
   }
 
   /**
@@ -987,16 +964,24 @@ export class SubagentRunner {
         const targetFailures: unknown[] = [];
         await this.stopAndCollect(instance, targetFailures, "attached subagent cleanup retry failed");
         try {
-          persistMetaPatch(instance, instance.status === "cancelled"
-            ? {
-                status: "cancelled",
-                completedAt: new Date().toISOString(),
-                deliveryState: "suppressed",
-              }
-            : { deliveryState: "suppressed" });
+          if (instance.status === "cancelled") {
+            instance.recordStore.closeInvocation(
+              instance.id,
+              instance.invocationIndex,
+              "cancelled",
+              null,
+              "suppressed",
+            );
+          } else {
+            instance.recordStore.setDeliveryState(
+              instance.id,
+              instance.invocationIndex,
+              "suppressed",
+            );
+          }
         } catch (error) {
           targetFailures.push(error);
-          log.error("attached subagent cleanup retry metadata failed", {
+          log.error("attached subagent cleanup retry record failed", {
             id: instance.id,
             ...boundedError(error),
           });
@@ -1010,14 +995,16 @@ export class SubagentRunner {
         const targetFailures: unknown[] = [];
         await this.stopAndCollect(instance, targetFailures, "attached subagent stop failed");
         try {
-          persistMetaPatch(instance, {
-            status: "cancelled",
-            completedAt: new Date().toISOString(),
-            deliveryState: "suppressed",
-          });
+          instance.recordStore.closeInvocation(
+            instance.id,
+            instance.invocationIndex,
+            "cancelled",
+            null,
+            "suppressed",
+          );
         } catch (error) {
           targetFailures.push(error);
-          log.error("attached subagent cancellation metadata failed", {
+          log.error("attached subagent cancellation record failed", {
             id: instance.id,
             ...boundedError(error),
           });
@@ -1042,16 +1029,20 @@ export class SubagentRunner {
     instance.deliveryState = "suppressed";
     let persisted = true;
     try {
-      persistMetaPatch(instance, { deliveryState: "suppressed" });
+      instance.recordStore.setDeliveryState(
+        instance.id,
+        instance.invocationIndex,
+        "suppressed",
+      );
     } catch (error) {
       persisted = false;
       failures.push(error);
-      log.error("attached subagent delivery suppression metadata failed", {
+      log.error("attached subagent delivery suppression record failed", {
         id: instance.id,
         ...boundedError(error),
       });
     }
-    // A failed metadata write leaves the host registration in place. The
+    // A failed record write leaves the host registration in place. The
     // lifecycle owner must not report quiescence after losing its retry handle.
     teardownInstance(instance, persisted);
   }
@@ -1072,7 +1063,11 @@ export class SubagentRunner {
     if (instance.runtimeFenced) {
       throw new Error(`Subagent '${id}' delivery was suppressed by runtime invalidation`);
     }
-    persistMetaPatch(instance, { deliveryState: "delivered" });
+    instance.recordStore.setDeliveryState(
+      instance.id,
+      instance.invocationIndex,
+      "delivered",
+    );
     instance.deliveryState = "delivered";
     teardownInstance(instance);
     log.debug("subagent delivery acknowledged", { id });
@@ -1216,14 +1211,16 @@ export class SubagentRunner {
     await this.stopAndCollect(instance, failures, "subagent execution stop failed during cancel");
 
     try {
-      persistMetaPatch(instance, {
-        status: "cancelled",
-        completedAt: new Date().toISOString(),
-        deliveryState: "suppressed",
-      });
+      instance.recordStore.closeInvocation(
+        instance.id,
+        instance.invocationIndex,
+        "cancelled",
+        null,
+        "suppressed",
+      );
     } catch (err) {
       failures.push(err);
-      log.error("cancel persistMeta failed — disk state may be stale", {
+      log.error("cancel record close failed — disk state may be stale", {
         id,
         ...boundedError(err),
       });
@@ -1300,13 +1297,16 @@ export class SubagentRunner {
         await this.stopAndCollect(instance, failures, "cancelBySession execution stop failed");
 
         try {
-          persistMetaPatch(instance, {
-            status: "cancelled",
-            completedAt: new Date().toISOString(),
-          });
+          instance.recordStore.closeInvocation(
+            instance.id,
+            instance.invocationIndex,
+            "cancelled",
+            null,
+            "suppressed",
+          );
         } catch (err) {
           failures.push(err);
-          log.error("cancelBySession persistMeta failed", {
+          log.error("cancelBySession record close failed", {
             id: instance.id,
             ...boundedError(err),
           });
@@ -1358,13 +1358,16 @@ export class SubagentRunner {
           instance.rejectResult(new Error("Subagent was cancelled"));
           await this.stopAndCollect(instance, failures, "dispose execution stop failed");
           try {
-            persistMetaPatch(instance, {
-              status: "cancelled",
-              completedAt: new Date().toISOString(),
-            });
+            instance.recordStore.closeInvocation(
+              instance.id,
+              instance.invocationIndex,
+              "cancelled",
+              null,
+              "suppressed",
+            );
           } catch (err) {
             failures.push(err);
-            log.error("dispose persistMeta failed", {
+            log.error("dispose record close failed", {
               id,
               ...boundedError(err),
             });

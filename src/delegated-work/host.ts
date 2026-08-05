@@ -4,11 +4,20 @@ import { parseSurfaceId } from "../surface.ts";
 import { boundedError, log } from "../log.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import {
+  DelegatedWorkRecordStore,
+  parseDelegatedWorkRecord,
+  type DelegatedWorkKind,
+  type DelegatedWorkOutcome,
+  type DelegatedWorkRecord,
+  type DelegatedWorkStatus,
+} from "./store.ts";
+import {
   asConversationRuntimeId,
   type AttachedDelegatedWorkOwnership,
   type AttachedWorkAdapter,
   type AttachedWorkRegistration,
   type ConversationRuntimeId,
+  type DelegatedDeliveryState,
 } from "./types.ts";
 
 /** A rejected registration cannot be mistaken for a run that was cancelled. */
@@ -95,6 +104,11 @@ export class DelegatedWorkHost {
   private readonly invalidations = new Map<ConversationRuntimeId, Promise<void>>();
   /** Explicit cancellation fences an epoch without invalidating its runtime. */
   private readonly cancelledEpochs = new Set<string>();
+  readonly recordStore: DelegatedWorkRecordStore;
+
+  constructor(home: string, recordStore?: DelegatedWorkRecordStore) {
+    this.recordStore = recordStore ?? new DelegatedWorkRecordStore(home);
+  }
 
   /** Create a runtime identity for a newly assembled Conversation runtime. */
   static newRuntimeId(): ConversationRuntimeId {
@@ -287,5 +301,88 @@ export class DelegatedWorkHost {
     return [...this.registrations.values()].filter(
       (entry) => entry.ownership.runtimeId === runtimeId,
     ).length;
+  }
+
+  /**
+   * Create a new delegated-run record with its first attached invocation.
+   *
+   * The returned run directory is where kind-specific state (e.g., the Pi
+   * session file) must live.
+   */
+  createAttachedRecord(
+    runId: string,
+    kind: DelegatedWorkKind,
+    name: string | null,
+    depth: number,
+    ownership: AttachedDelegatedWorkOwnership,
+  ): { record: DelegatedWorkRecord; runDir: string } {
+    return this.recordStore.createRecord(runId, kind, name, depth, ownership);
+  }
+
+  /**
+   * Append a new attached invocation to an existing record.
+   *
+   * Revival never patches a running invocation back to running; it always adds
+   * a new entry that resumes the persisted session in the same run directory.
+   */
+  appendAttachedRevival(
+    runId: string,
+    ownership: AttachedDelegatedWorkOwnership,
+  ): { record: DelegatedWorkRecord; runDir: string } {
+    return this.recordStore.appendInvocation(runId, ownership);
+  }
+
+  /** Close an invocation with a terminal status, outcome, and delivery state. */
+  closeInvocation(
+    runId: string,
+    index: number,
+    status: Extract<DelegatedWorkStatus, "completed" | "cancelled" | "error" | "interrupted">,
+    outcome: DelegatedWorkOutcome | null,
+    deliveryState: DelegatedDeliveryState,
+  ): DelegatedWorkRecord {
+    return this.recordStore.closeInvocation(runId, index, status, outcome, deliveryState);
+  }
+
+  /** Update delivery state for an already-terminal invocation. */
+  setDeliveryState(
+    runId: string,
+    index: number,
+    deliveryState: DelegatedDeliveryState,
+  ): DelegatedWorkRecord {
+    return this.recordStore.setDeliveryState(runId, index, deliveryState);
+  }
+
+  /** Load a record if it exists; malformed records fail loudly. */
+  loadRecord(runId: string): DelegatedWorkRecord | null {
+    return this.recordStore.load(runId);
+  }
+
+  /** List known run ids from the host-owned store. */
+  listRecordIds(): string[] {
+    return this.recordStore.listIds();
+  }
+
+  /**
+   * At startup, any attached invocation left non-terminal died with its
+   * Conversation runtime. Mark those invocations interrupted without claiming
+   * a successful outcome or delivery.
+   */
+  reconcileStartup(): void {
+    for (const id of this.recordStore.listIds()) {
+      const record = this.recordStore.load(id);
+      if (record === null) continue;
+      const lastInvocation = record.invocations.at(-1);
+      if (lastInvocation !== undefined && lastInvocation.status === "running") {
+        this.recordStore.closeInvocation(id, lastInvocation.index, "interrupted", null, "suppressed");
+      }
+    }
+  }
+
+  /**
+   * Validate raw record JSON without reading from disk. Useful for tests and
+   * migration code that need to assert the canonical shape.
+   */
+  static parseRecord(raw: unknown, path: string): DelegatedWorkRecord {
+    return parseDelegatedWorkRecord(raw, path);
   }
 }

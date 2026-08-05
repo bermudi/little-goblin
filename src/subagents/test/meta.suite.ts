@@ -1,62 +1,66 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DelegatedWorkRecordStore } from "../../delegated-work/store.ts";
+import {
+  delegatedWorkRecordPath,
+  delegatedWorkRunDir,
+  delegatedWorkRunsRoot,
+} from "../../delegated-work/paths.ts";
+import { personalEnvironment } from "../../sessions/environment.ts";
+import { dmSurface, surfaceId } from "../../surface.ts";
 import { SubagentRunner } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import {
-  loadSubagentMeta,
-  parseSubagentMeta,
-  SubagentMetadataAmbiguityError,
-  writeMetaAtomic,
-} from "../meta.ts";
-import {
-  genericSubagentDir,
-  genericSubagentMetaPath,
-  listNamedAgents,
-  namedAgentAgentsMdPath,
-  namedAgentDir,
-  namedAgentInstanceDir,
-  namedAgentInstanceMetaPath,
-  namedAgentsRoot,
-} from "../paths.ts";
-import {
+  completeAndAcknowledge,
   createTestHome,
   DEFAULT_AUTHORITY,
   DEFAULT_PARENT_CAPTURE,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
+  writeSessionFile,
 } from "./support.ts";
 
-function validMeta(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function validRecord(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id,
-    role: "generic",
+    kind: "generic-subagent",
     name: null,
-    spawnedBy: null,
-    activeScope: DEFAULT_PARENT_CAPTURE.authority.activeScope,
     depth: 1,
     createdAt: new Date().toISOString(),
-    status: "completed",
+    invocations: [{
+      index: 0,
+      ownerConversationId: "conversation-a",
+      runtimeId: "runtime-1",
+      ownershipEpochId: "epoch-1",
+      lifetime: "attached",
+      originSurfaceId: surfaceId(dmSurface(1)),
+      executionEnvironment: personalEnvironment(),
+      status: "running",
+      outcome: null,
+      deliveryState: "pending",
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+    }],
     ...overrides,
   };
 }
 
-function writeMeta(path: string, value: unknown): void {
+function writeRecord(path: string, value: unknown): void {
+  mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, JSON.stringify(value));
 }
 
-function writeSession(path: string): void {
-  writeFileSync(path, "");
-}
-
-describe("Subagent metadata boundary", () => {
+describe("Delegated work record store boundary", () => {
   let tmp: string;
   let runner: SubagentRunner;
   let host: FakeSubagentHost;
+  let store: DelegatedWorkRecordStore;
 
   beforeEach(() => {
-    tmp = createTestHome("goblin-subagent-meta-boundary-");
+    tmp = createTestHome("goblin-delegated-record-boundary-");
+    store = new DelegatedWorkRecordStore(tmp);
     host = new FakeSubagentHost();
     runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
@@ -65,185 +69,141 @@ describe("Subagent metadata boundary", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("rejects malformed instance IDs before filesystem lookup", async () => {
+  it("rejects malformed run IDs before filesystem lookup", async () => {
     for (const id of ["", "../escape", "nested/id", "..\\escape"]) {
       await expect(
         runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "go"),
       ).rejects.toThrow(/safe path segment/);
     }
 
-    expect(existsSync(join(tmp, "scratch"))).toBe(false);
+    expect(existsSync(delegatedWorkRunsRoot(tmp))).toBe(false);
   });
 
-  it("normalizes the historical object-or-null namedAgent field and writes current scope", () => {
-    const currentScope = { chatId: -100123, topicScope: "general" } as const;
-    for (const [index, namedAgent] of [
-      { name: "legacy-agent" },
-      null,
-    ].entries()) {
-      const id = `legacy-scope-${index}`;
-      const dir = genericSubagentDir(tmp, id);
-      mkdirSync(dir, { recursive: true });
-      const path = genericSubagentMetaPath(tmp, id);
-      const parsed = parseSubagentMeta(
-        validMeta(id, {
-          activeScope: { ...currentScope, namedAgent },
-        }),
-        path,
-      );
+  it("creates a record with an append-only invocation log on spawn", async () => {
+    const handle = await runner.spawn({
+      prompt: "Analyze logs",
+      authority: DEFAULT_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+    });
+    handle.result.catch(() => {});
 
-      expect(parsed.activeScope).toEqual(currentScope);
-      writeMetaAtomic(path, parsed);
-      expect(JSON.parse(readFileSync(path, "utf-8")).activeScope).toEqual(currentScope);
-    }
+    const runDir = delegatedWorkRunDir(tmp, handle.id);
+    expect(existsSync(runDir)).toBe(true);
 
-    expect(() =>
-      parseSubagentMeta(
-        validMeta("legacy-string", {
-          activeScope: { ...currentScope, namedAgent: "legacy-agent" },
-        }),
-        genericSubagentMetaPath(tmp, "legacy-string"),
-      ),
-    ).toThrow();
+    const recordPath = delegatedWorkRecordPath(tmp, handle.id);
+    expect(existsSync(recordPath)).toBe(true);
+
+    const record = JSON.parse(readFileSync(recordPath, "utf-8"));
+    expect(record).toMatchObject({
+      id: handle.id,
+      kind: "generic-subagent",
+      name: null,
+      depth: 1,
+    });
+    expect(record.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(record.invocations).toHaveLength(1);
+    expect(record.invocations[0]).toMatchObject({
+      index: 0,
+      status: "running",
+      deliveryState: "pending",
+      outcome: null,
+    });
   });
 
-  it("rejects a generic record whose id disagrees with its path", async () => {
-    const id = "requested-id";
-    const dir = genericSubagentDir(tmp, id);
-    mkdirSync(dir, { recursive: true });
-    writeMeta(genericSubagentMetaPath(tmp, id), validMeta("different-id"));
-    writeSession(join(dir, "2026-01-01T00-00-00.jsonl"));
+  it("revival appends a new invocation instead of patching the old one", async () => {
+    const handle = await runner.spawn({
+      prompt: "first turn",
+      authority: DEFAULT_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+    });
+    await flush();
 
-    await expect(
-      runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "go"),
-    ).rejects.toThrow(/record id does not match/);
-  });
+    await completeAndAcknowledge(runner, host, handle, "first response");
 
-  it("rejects a named record whose name disagrees with its directory", async () => {
-    const id = "named-id";
-    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
-    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher");
-    const dir = namedAgentInstanceDir(tmp, "researcher", id);
-    mkdirSync(dir, { recursive: true });
-    writeMeta(
-      namedAgentInstanceMetaPath(tmp, "researcher", id),
-      validMeta(id, { role: "named", name: "writer" }),
-    );
-    writeSession(join(dir, "2026-01-01T00-00-00.jsonl"));
+    writeSessionFile(tmp, handle.id, "2026-01-01T00-00-00.jsonl");
 
-    await expect(
-      runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "go"),
-    ).rejects.toThrow(/record name does not match/);
-  });
-
-  it("does not fall through a corrupt generic record into a named tree", async () => {
-    const id = "same-id";
-    const genericDir = genericSubagentDir(tmp, id);
-    mkdirSync(genericDir, { recursive: true });
-    writeFileSync(genericSubagentMetaPath(tmp, id), "not-json");
-
-    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
-    writeFileSync(namedAgentAgentsMdPath(tmp, "researcher"), "# Researcher");
-    const namedDir = namedAgentInstanceDir(tmp, "researcher", id);
-    mkdirSync(namedDir, { recursive: true });
-    writeMeta(
-      namedAgentInstanceMetaPath(tmp, "researcher", id),
-      validMeta(id, { role: "named", name: "researcher" }),
-    );
-    writeSession(join(namedDir, "2026-01-01T00-00-00.jsonl"));
-
-    await expect(
-      runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "go"),
-    ).rejects.toThrow(/malformed JSON/);
-  });
-
-  it("rejects ambiguity between generic and named records with the same id", () => {
-    const id = "duplicate-generic-named";
-    const genericDir = genericSubagentDir(tmp, id);
-    mkdirSync(genericDir, { recursive: true });
-    writeMeta(genericSubagentMetaPath(tmp, id), validMeta(id));
-
-    mkdirSync(namedAgentDir(tmp, "researcher"), { recursive: true });
-    mkdirSync(namedAgentInstanceDir(tmp, "researcher", id), { recursive: true });
-    writeMeta(
-      namedAgentInstanceMetaPath(tmp, "researcher", id),
-      validMeta(id, { role: "named", name: "researcher" }),
-    );
-
-    let failure: unknown;
-    try {
-      loadSubagentMeta(tmp, id);
-    } catch (err) {
-      failure = err;
-    }
-    expect(failure).toBeInstanceOf(SubagentMetadataAmbiguityError);
-    const ambiguity = failure as SubagentMetadataAmbiguityError;
-    expect(ambiguity.paths).toHaveLength(2);
-    expect(ambiguity.message).toContain(id);
-  });
-
-  it("rejects ambiguity across multiple named-agent records", () => {
-    const id = "duplicate-named";
-    for (const name of ["researcher", "writer"]) {
-      mkdirSync(namedAgentDir(tmp, name), { recursive: true });
-      mkdirSync(namedAgentInstanceDir(tmp, name, id), { recursive: true });
-      writeMeta(
-        namedAgentInstanceMetaPath(tmp, name, id),
-        validMeta(id, { role: "named", name }),
-      );
-    }
-
-    expect(() => loadSubagentMeta(tmp, id)).toThrow(SubagentMetadataAmbiguityError);
-  });
-
-  it("revives a named instance beneath a symlinked named-agent directory", async () => {
-    const id = "symlinked-named";
-    const targetDir = join(tmp, "named-agent-target");
-    const targetInstanceDir = join(targetDir, "instances", id);
-    mkdirSync(targetInstanceDir, { recursive: true });
-    writeFileSync(join(targetDir, "AGENTS.md"), "# Researcher");
-    writeMeta(join(targetInstanceDir, "meta.json"), validMeta(id, {
-      role: "named",
-      name: "researcher",
-    }));
-    writeSession(join(targetInstanceDir, "2026-01-01T00-00-00.jsonl"));
-
-    mkdirSync(namedAgentsRoot(tmp), { recursive: true });
-    symlinkSync(targetDir, namedAgentDir(tmp, "researcher"), "dir");
-
-    expect(listNamedAgents(tmp)).toEqual(["researcher"]);
-    expect(loadSubagentMeta(tmp, id).meta.name).toBe("researcher");
+    const recordPath = delegatedWorkRecordPath(tmp, handle.id);
+    let record = JSON.parse(readFileSync(recordPath, "utf-8")) as Record<string, unknown>;
+    expect(record.invocations).toHaveLength(1);
+    expect((record.invocations as Record<string, unknown>[])[0]?.status).toBe("completed");
 
     const revival = runner.revive(
       DEFAULT_PARENT_CAPTURE,
       EMPTY_GENERIC_SUBAGENT_INHERITANCE,
-      id,
+      handle.id,
       "continue",
     );
     await flush();
+
+    record = JSON.parse(readFileSync(recordPath, "utf-8")) as Record<string, unknown>;
+    expect(record.invocations).toHaveLength(2);
+    expect((record.invocations as Record<string, unknown>[])[0]?.status).toBe("completed");
+    expect((record.invocations as Record<string, unknown>[])[1]?.status).toBe("running");
+
     host.latest().complete("revived");
     await expect(revival).resolves.toBe("revived");
+
+    record = JSON.parse(readFileSync(recordPath, "utf-8")) as Record<string, unknown>;
+    expect((record.invocations as Record<string, unknown>[])[1]?.status).toBe("completed");
   });
 
-  it("never reconstructs a missing or corrupt record during cancellation", async () => {
+  it("rejects a record whose id disagrees with its file path", () => {
+    const id = "requested-id";
+    const path = delegatedWorkRecordPath(tmp, id);
+    writeRecord(path, validRecord("different-id"));
+
+    expect(() => store.load(id)).toThrow(/record id does not match/);
+  });
+
+  it("rejects a generic record with a non-null name", () => {
+    const id = "generic-with-name";
+    const path = delegatedWorkRecordPath(tmp, id);
+    writeRecord(path, validRecord(id, { name: "writer" }));
+
+    expect(() => store.load(id)).toThrow(/generic-subagent records must have name = null/);
+  });
+
+  it("rejects a named record without a valid name", () => {
+    const id = "named-without-name";
+    const path = delegatedWorkRecordPath(tmp, id);
+    writeRecord(path, validRecord(id, { kind: "named-subagent", name: null }));
+
+    expect(() => store.load(id)).toThrow(/named-subagent records must have a valid agent name/);
+  });
+
+  it("rejects non-contiguous invocation indices", () => {
+    const id = "bad-indices";
+    const path = delegatedWorkRecordPath(tmp, id);
+    const baseInvocation = (validRecord(id).invocations as Record<string, unknown>[])[0] as Record<string, unknown>;
+    writeRecord(path, validRecord(id, {
+      invocations: [
+        baseInvocation,
+        { ...baseInvocation, index: 2 },
+      ],
+    }));
+
+    expect(() => store.load(id)).toThrow(/invocation indices must be contiguous/);
+  });
+
+  it("does not reconstruct a missing or corrupt record during cancellation", async () => {
     const missing = await runner.spawn({
-      prompt: "missing metadata",
+      prompt: "missing record",
       authority: DEFAULT_AUTHORITY,
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
-    rmSync(genericSubagentMetaPath(tmp, missing.id));
+    rmSync(delegatedWorkRecordPath(tmp, missing.id));
 
-    await expect(runner.cancel(missing.id)).rejects.toThrow(/metadata file is missing/);
-    expect(existsSync(genericSubagentMetaPath(tmp, missing.id))).toBe(false);
+    await expect(runner.cancel(missing.id)).rejects.toThrow(/record not found/);
+    expect(existsSync(delegatedWorkRecordPath(tmp, missing.id))).toBe(false);
 
     const corrupt = await runner.spawn({
-      prompt: "corrupt metadata",
+      prompt: "corrupt record",
       authority: DEFAULT_AUTHORITY,
       inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
     });
     await flush();
-    const corruptPath = genericSubagentMetaPath(tmp, corrupt.id);
+    const corruptPath = delegatedWorkRecordPath(tmp, corrupt.id);
     writeFileSync(corruptPath, "not-json");
 
     await expect(runner.cancel(corrupt.id)).rejects.toThrow(/malformed JSON/);
@@ -251,15 +211,15 @@ describe("Subagent metadata boundary", () => {
     expect(host.latest().stopCalls).toBe(1);
   });
 
-  it("rejects status-dependent metadata that has no error detail", async () => {
-    const id = "invalid-status";
-    const dir = genericSubagentDir(tmp, id);
-    mkdirSync(dir, { recursive: true });
-    writeMeta(genericSubagentMetaPath(tmp, id), validMeta(id, { status: "error" }));
-    writeSession(join(dir, "2026-01-01T00-00-00.jsonl"));
+  it("lists run ids from the host-owned store", () => {
+    for (const id of ["run-a", "run-b"]) {
+      writeRecord(delegatedWorkRecordPath(tmp, id), validRecord(id));
+    }
 
-    await expect(
-      runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "go"),
-    ).rejects.toThrow(/error records must include errorMessage/);
+    expect(store.listIds()).toEqual(["run-a", "run-b"]);
+  });
+
+  it("returns null for a missing record", () => {
+    expect(store.load("no-such-run")).toBeNull();
   });
 });

@@ -227,6 +227,10 @@ export async function interruptAndCascade(
   result.attemptedSubagents = live.length;
 
   if (sessionId && subagentRunner.cancelByConversation) {
+    // Owner-scoped cancellation covers every explicitly owned run; the
+    // legacy spawnedBy tree may reach additional subagents that were never
+    // attached to a Conversation and must be cancelled individually.
+    const owned = live.filter((s) => s.ownerConversationId === sessionId);
     const cancelPromise = subagentRunner.cancelByConversation(sessionId).catch((err) => {
       log.warn("subagent owner cancellation failed during cascade", {
         error: String(err),
@@ -235,9 +239,22 @@ export async function interruptAndCascade(
     });
     const outcome = await withTimeout(cancelPromise, cascadeTimeoutMs);
     if (outcome === TIMEOUT_SENTINEL) {
-      result.timedOutSubagents = live.length;
+      result.timedOutSubagents = owned.length;
       log.warn("subagent owner cancellation timed out", { sessionId, timeoutMs: cascadeTimeoutMs });
     }
+
+    const residual = live.filter((s) => s.ownerConversationId !== sessionId);
+    await Promise.all(
+      residual.map(async (s) => {
+        const residualPromise = subagentRunner.cancel(s.id).catch((err) => {
+          log.warn("subagent cancel failed during cascade", { id: s.id, error: String(err) });
+        });
+        if (await withTimeout(residualPromise, cascadeTimeoutMs) === TIMEOUT_SENTINEL) {
+          result.timedOutSubagents += 1;
+          log.warn("subagent cancel timed out during cascade", { id: s.id, timeoutMs: cascadeTimeoutMs });
+        }
+      }),
+    );
   } else {
     await Promise.all(
       live.map(async (s) => {

@@ -13,11 +13,23 @@ import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { CapturedMemoryContext } from "../memory/mod.ts";
 import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
-import type { GenericSubagentInheritance, SubagentRunner } from "./mod.ts";
+import { RuntimeFenceError, type GenericSubagentInheritance, type SubagentRunner } from "./mod.ts";
 import { listNamedAgents } from "./paths.ts";
+import { log, boundedError } from "../log.ts";
 
 /** Default timeout for subagent execution (10 minutes). */
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+
+function safeAcknowledgeDelivery(runner: SubagentRunner, id: string): void {
+  try {
+    runner.acknowledgeDelivery(id);
+  } catch (err) {
+    if (err instanceof RuntimeFenceError) {
+      throw err;
+    }
+    log.error("subagent delivery acknowledgement failed", { id, ...boundedError(err) });
+  }
+}
 
 function requireGenericInheritance(
   inheritance: GenericSubagentInheritance | null,
@@ -152,7 +164,7 @@ export function createSpawnSubagentTool(
         runner,
         delegatedContext?.ownerConversationId,
       );
-      runner.acknowledgeDelivery(handle.id);
+      safeAcknowledgeDelivery(runner, handle.id);
 
       return {
         content: [{ type: "text" as const, text: result }],
@@ -232,7 +244,7 @@ export function createReviveSubagentTool(
         runner,
         delegatedContext?.ownerConversationId,
       );
-      runner.acknowledgeDelivery(params.id);
+      safeAcknowledgeDelivery(runner, params.id);
       return {
         content: [{ type: "text" as const, text: result }],
         details: { subagentId: params.id },

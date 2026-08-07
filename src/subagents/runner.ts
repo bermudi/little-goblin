@@ -94,6 +94,16 @@ export type SubagentMemoryStoreFactory = (
   embeddingProvider?: EmbeddingProvider,
 ) => MemoryStore;
 
+/** Thrown when a completed subagent delivery is rejected by runtime invalidation. */
+export class RuntimeFenceError extends Error {
+  readonly subagentId: string;
+  constructor(subagentId: string) {
+    super(`Subagent '${subagentId}' delivery was suppressed by runtime invalidation`);
+    this.name = "RuntimeFenceError";
+    this.subagentId = subagentId;
+  }
+}
+
 function genericExecutionCwd(
   inheritance: GenericSubagentInheritance | null,
   home: string,
@@ -286,9 +296,6 @@ export class SubagentRunner {
     // substitution from freezing vendor constructors at runner creation.
     this.host = host ?? null;
     this.delegatedWorkHost = delegatedWorkHost ?? new DelegatedWorkHost(cfg.goblinHome);
-    // Mark any attached invocation left non-terminal by a process crash as
-    // interrupted. A revived run will append a fresh invocation in place.
-    this.delegatedWorkHost.reconcileStartup();
   }
 
   /**
@@ -1031,7 +1038,6 @@ export class SubagentRunner {
   /** Suppress a terminal result that has not yet been accepted by its caller. */
   private suppressPendingDelivery(instance: SubagentInstance, failures: unknown[]): void {
     if (instance.deliveryState !== "pending") return;
-    instance.deliveryState = "suppressed";
     let persisted = true;
     try {
       instance.recordStore.setDeliveryState(
@@ -1039,6 +1045,7 @@ export class SubagentRunner {
         instance.invocationIndex,
         "suppressed",
       );
+      instance.deliveryState = "suppressed";
     } catch (error) {
       persisted = false;
       failures.push(error);
@@ -1066,7 +1073,7 @@ export class SubagentRunner {
       throw new Error(`Subagent '${id}' has no pending delivery`);
     }
     if (instance.runtimeFenced) {
-      throw new Error(`Subagent '${id}' delivery was suppressed by runtime invalidation`);
+      throw new RuntimeFenceError(id);
     }
     instance.recordStore.setDeliveryState(
       instance.id,
@@ -1239,7 +1246,7 @@ export class SubagentRunner {
 
     if (instance.settlementStarted) await collectSettlement(instance, failures);
     else instance.resolveSettlement();
-    teardownInstance(instance);
+    teardownInstance(instance, failures.length === 0);
     log.debug("subagent cancelled", { id });
     const failure = combineFailures(failures, "Subagent cancellation failed");
     if (failure !== null) throw failure;
@@ -1285,6 +1292,7 @@ export class SubagentRunner {
           completionClaims.push(instance);
         } else {
           instance.status = "cancelled";
+          instance.deliveryState = "suppressed";
           instance.rejectResult(new Error("Subagent was cancelled"));
           targets.push(instance);
         }
@@ -1302,6 +1310,9 @@ export class SubagentRunner {
             new Error("Subagent completion wait timed out during cascade cancel"));
         } catch (err) {
           failures.push(err);
+        }
+        if (instance.status === "completed" && instance.deliveryState === "pending") {
+          this.suppressPendingDelivery(instance, failures);
         }
       }),
       ...targets.map(async (instance) => {

@@ -25,14 +25,19 @@ function makeRunner(opts: {
 }
 
 function makeSubagentRunner(
-  subs: ReadonlyArray<{ id: string; status: string; spawnedBy?: string | null }>,
+  subs: ReadonlyArray<{ id: string; status: string; spawnedBy?: string | null; ownerConversationId?: string }>,
   cancelImpl?: (id: string) => Promise<void>,
-): InterruptableSubagentRunner & { cancel: ReturnType<typeof mock> } {
+  cancelByConversationImpl?: (conversationId: string) => Promise<void>,
+): InterruptableSubagentRunner & { cancel: ReturnType<typeof mock>; cancelByConversation?: ReturnType<typeof mock> } {
   const cancel = mock(cancelImpl ?? (async (_id: string) => {}));
-  return {
+  const runner: InterruptableSubagentRunner & { cancel: ReturnType<typeof mock>; cancelByConversation?: ReturnType<typeof mock> } = {
     list: () => subs,
     cancel,
   };
+  if (cancelByConversationImpl !== undefined) {
+    runner.cancelByConversation = mock(cancelByConversationImpl);
+  }
+  return runner;
 }
 
 describe("interruptAndCascade", () => {
@@ -286,6 +291,47 @@ describe("interruptAndCascade", () => {
       ]);
       await interruptAndCascade(null, sr);
       expect(sr.cancel).toHaveBeenCalledTimes(2);
+    });
+
+    it("cancels legacy-reachable subagents after owner-scoped cancellation", async () => {
+      const sr = makeSubagentRunner(
+        [
+          { id: "a", status: "running", spawnedBy: "sess-A" },
+          { id: "b", status: "running", spawnedBy: "sess-A", ownerConversationId: "sess-A" },
+          { id: "c", status: "running", spawnedBy: "a" },
+          { id: "d", status: "running", spawnedBy: "sess-B" },
+        ],
+        undefined,
+        async (_conversationId) => {},
+      );
+      const res = await interruptAndCascade(null, sr, 5000, "sess-A");
+      expect(sr.cancelByConversation).toBeDefined();
+      expect(sr.cancelByConversation!).toHaveBeenCalledWith("sess-A");
+      expect(sr.cancelByConversation!).toHaveBeenCalledTimes(1);
+      const ids = sr.cancel.mock.calls.map((c) => c[0]).sort();
+      expect(ids).toEqual(["a", "c"]);
+      expect(res.attemptedSubagents).toBe(3);
+      expect(res.timedOutSubagents).toBe(0);
+    });
+
+    it("counts residual subagent timeouts without double-counting the owned set", async () => {
+      const sr = makeSubagentRunner(
+        [
+          { id: "a", status: "running", spawnedBy: "sess-A", ownerConversationId: "sess-A" },
+          { id: "b", status: "running", spawnedBy: "sess-A" },
+          { id: "c", status: "running", spawnedBy: "a" },
+        ],
+        async (id) => {
+          if (id === "b") return;
+          await new Promise<void>(() => {});
+        },
+        async (_conversationId) => new Promise(() => {}),
+      );
+      const res = await interruptAndCascade(null, sr, 10, "sess-A");
+      const ids = sr.cancel.mock.calls.map((c) => c[0]).sort();
+      expect(ids).toEqual(["b", "c"]);
+      expect(res.attemptedSubagents).toBe(3);
+      expect(res.timedOutSubagents).toBe(2); // a (owned) + c (residual), b resolved
     });
   });
 

@@ -67,6 +67,41 @@ describe("SubagentRunner.cancel", () => {
 
     expect(host.latest().stopCalls).toBe(1);
   });
+
+  it("retains host registration when closeInvocation fails, allowing a later invalidation retry", async () => {
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
+    await flush();
+
+    const instance = (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(handle.id);
+    expect(instance).toBeDefined();
+    const runtimeId = instance!.delegatedOwnership!.runtimeId;
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(1);
+
+    const recordStore = instance!.recordStore;
+    const originalCloseInvocation = recordStore.closeInvocation.bind(recordStore);
+    let closeCalls = 0;
+    recordStore.closeInvocation = (id, index, status, outcome, deliveryState, completedAt) => {
+      closeCalls += 1;
+      if (closeCalls === 1) throw new Error("disk full");
+      return originalCloseInvocation(id, index, status, outcome, deliveryState, completedAt);
+    };
+
+    await expect(runner.cancel(handle.id)).rejects.toThrow("disk full");
+
+    expect(runner.list()[0]?.status).toBe("cancelled");
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(1);
+    let diskRecord = readRecord(tmp, handle.id);
+    expect(diskRecord.status).toBe("running");
+
+    // Restore the record store and retry via runtime invalidation.
+    recordStore.closeInvocation = originalCloseInvocation;
+    await runner.delegatedWorkHost.invalidateRuntime(runtimeId);
+
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(0);
+    diskRecord = readRecord(tmp, handle.id);
+    expect(diskRecord.status).toBe("cancelled");
+    expect(diskRecord.deliveryState).toBe("suppressed");
+  });
 });
 
 describe("SubagentRunner.list", () => {
@@ -622,5 +657,71 @@ describe("SubagentRunner.cancelBySession", () => {
 
     expect(host.executions[0]?.stopCalls).toBe(1);
     expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
+  });
+
+  it("sets deliveryState to suppressed and releases the delegated registration", async () => {
+    const a = await runner.spawn({
+      prompt: "a",
+      authority: DEFAULT_AUTHORITY,
+      spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+    });
+    a.result.catch(() => {});
+    await flush();
+
+    const aInst = getInstance(a.id);
+    expect(aInst).toBeDefined();
+    const runtimeId = aInst!.delegatedOwnership!.runtimeId;
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(1);
+
+    await runner.cancelBySession("session-abc");
+
+    const cancelledRecord = readRecord(tmp, a.id);
+    expect(cancelledRecord.status).toBe("cancelled");
+    expect(cancelledRecord.deliveryState).toBe("suppressed");
+    expect(runner.list().find((entry) => entry.id === a.id)?.deliveryState).toBe("suppressed");
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(0);
+
+    // The next spawn triggers pruneTerminal, which can now remove the terminal
+    // instance because its deliveryState is no longer pending and its
+    // delegated registration has been released.
+    const b = await runner.spawn({
+      prompt: "b",
+      authority: DEFAULT_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+    });
+    b.result.catch(() => {});
+    await flush();
+
+    expect(getInstance(a.id)).toBeUndefined();
+    expect(runner.list().some((entry) => entry.id === a.id)).toBe(false);
+  });
+
+  it("suppresses pending delivery for a completion-claimed instance", async () => {
+    const a = await runner.spawn({
+      prompt: "a",
+      authority: DEFAULT_AUTHORITY,
+      spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+    });
+    a.result.catch(() => {});
+    await flush();
+
+    const aInst = getInstance(a.id);
+    expect(aInst).toBeDefined();
+    const runtimeId = aInst!.delegatedOwnership!.runtimeId;
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(1);
+
+    // Claim completion without awaiting the result, so the coordinator sees a
+    // running instance whose completion has been claimed and whose delivery is
+    // still pending when cancellation begins.
+    host.latest().complete("done");
+    await runner.cancelBySession("session-abc");
+
+    const record = readRecord(tmp, a.id);
+    expect(record.status).toBe("completed");
+    expect(record.deliveryState).toBe("suppressed");
+    expect(runner.list().find((entry) => entry.id === a.id)?.deliveryState).toBe("suppressed");
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(0);
   });
 });

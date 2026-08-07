@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { SubagentRunner } from "../mod.ts";
+import { RuntimeFenceError, SubagentRunner, type SubagentInstance } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import {
   namedAgentAgentsMdPath,
@@ -16,6 +16,10 @@ import {
   makeConfig,
   writeSessionFile,
 } from "./support.ts";
+
+function getInstance(runner: SubagentRunner, id: string): SubagentInstance | undefined {
+  return (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(id);
+}
 
 describe("spawn_subagent tool", () => {
   let tmp: string;
@@ -104,6 +108,45 @@ describe("spawn_subagent tool", () => {
       /Maximum subagent depth reached/,
     );
   });
+
+  it("preserves the resolved result when acknowledgeDelivery fails with a non-fence error", async () => {
+    const { createSpawnSubagentTool } = await import("../tool.ts");
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE);
+
+    const execPromise = tool.execute("tc-1", { prompt: "go" }, undefined, undefined, {} as never);
+    await flush();
+
+    const recordStore = runner.delegatedWorkHost.recordStore;
+    const originalSetDeliveryState = recordStore.setDeliveryState.bind(recordStore);
+    recordStore.setDeliveryState = (id, index, deliveryState) => {
+      if (deliveryState === "delivered") throw new Error("disk full");
+      return originalSetDeliveryState(id, index, deliveryState);
+    };
+
+    host.latest().complete("Done!");
+
+    const result = await execPromise;
+    expect(result.content).toEqual([{ type: "text", text: "Done!" }]);
+  });
+
+  it("propagates a runtime-fence acknowledgeDelivery failure", async () => {
+    const { createSpawnSubagentTool } = await import("../tool.ts");
+    const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE);
+
+    const originalAcknowledgeDelivery = runner.acknowledgeDelivery.bind(runner);
+    runner.acknowledgeDelivery = (id) => {
+      const instance = getInstance(runner, id);
+      if (instance !== undefined) instance.runtimeFenced = true;
+      originalAcknowledgeDelivery(id);
+    };
+
+    const execPromise = tool.execute("tc-1", { prompt: "go" }, undefined, undefined, {} as never);
+    await flush();
+
+    host.latest().complete("Done!");
+
+    await expect(execPromise).rejects.toBeInstanceOf(RuntimeFenceError);
+  });
 });
 
 describe("revive_subagent tool", () => {
@@ -177,6 +220,77 @@ describe("revive_subagent tool", () => {
     await expect(
       tool.execute("tc-rev-1", { id: "nonexistent", prompt: "hi" }, undefined, undefined, {} as never),
     ).rejects.toThrow("Subagent not found");
+  });
+
+  it("preserves the resolved result when acknowledgeDelivery fails with a non-fence error", async () => {
+    const handle = await runner.spawn({
+      prompt: "first",
+      authority: DEFAULT_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+    });
+    await flush();
+    await completeAndAcknowledge(runner, host, handle, "done");
+
+    writeSessionFile(tmp, handle.id);
+
+    const { createReviveSubagentTool } = await import("../tool.ts");
+    const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE);
+
+    const execPromise = tool.execute(
+      "tc-rev-1",
+      { id: handle.id, prompt: "follow-up" },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    await flush();
+
+    const recordStore = runner.delegatedWorkHost.recordStore;
+    const originalSetDeliveryState = recordStore.setDeliveryState.bind(recordStore);
+    recordStore.setDeliveryState = (id, index, deliveryState) => {
+      if (deliveryState === "delivered") throw new Error("disk full");
+      return originalSetDeliveryState(id, index, deliveryState);
+    };
+
+    host.latest().complete("Revived!");
+
+    const result = await execPromise;
+    expect(result.content).toEqual([{ type: "text", text: "Revived!" }]);
+  });
+
+  it("propagates a runtime-fence acknowledgeDelivery failure", async () => {
+    const handle = await runner.spawn({
+      prompt: "first",
+      authority: DEFAULT_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+    });
+    await flush();
+    await completeAndAcknowledge(runner, host, handle, "done");
+
+    writeSessionFile(tmp, handle.id);
+
+    const originalAcknowledgeDelivery = runner.acknowledgeDelivery.bind(runner);
+    runner.acknowledgeDelivery = (id) => {
+      const instance = getInstance(runner, id);
+      if (instance !== undefined) instance.runtimeFenced = true;
+      originalAcknowledgeDelivery(id);
+    };
+
+    const { createReviveSubagentTool } = await import("../tool.ts");
+    const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE);
+
+    const execPromise = tool.execute(
+      "tc-rev-1",
+      { id: handle.id, prompt: "follow-up" },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    await flush();
+
+    host.latest().complete("Revived!");
+
+    await expect(execPromise).rejects.toBeInstanceOf(RuntimeFenceError);
   });
 });
 

@@ -105,9 +105,11 @@ export class DelegatedWorkHost {
   /** Explicit cancellation fences an epoch without invalidating its runtime. */
   private readonly cancelledEpochs = new Set<string>();
   readonly recordStore: DelegatedWorkRecordStore;
+  private reconciled = false;
 
   constructor(home: string, recordStore?: DelegatedWorkRecordStore) {
     this.recordStore = recordStore ?? new DelegatedWorkRecordStore(home);
+    this.reconcileStartup();
   }
 
   /** Create a runtime identity for a newly assembled Conversation runtime. */
@@ -139,8 +141,9 @@ export class DelegatedWorkHost {
     const ready = new Promise<AttachedWorkAdapter | null>((resolve) => {
       resolveReady = resolve;
     });
-    // This is an internal coordination promise. A setup failure calls release,
-    // so it always settles even when no adapter was attached.
+    // This is an internal coordination promise. It always settles even when no
+    // adapter was attached: a setup failure calls release, and a runtime fence
+    // resolves ready to null via fenceEntries.
     ready.catch(() => {});
     const entry: RegistrationEntry = {
       runId,
@@ -216,6 +219,9 @@ export class DelegatedWorkHost {
     for (const entry of entries) {
       entry.fenced = true;
       entry.adapter?.fence();
+      // A reservation that never attached cannot produce an adapter after the
+      // fence. Settle `ready` so `cancelEntries` cannot wait forever.
+      if (entry.adapter === null) entry.resolveReady(null);
     }
   }
 
@@ -247,9 +253,10 @@ export class DelegatedWorkHost {
     await Promise.all(entries.map(async (entry) => {
       const entryFailures: unknown[] = [];
       try {
-        // A reservation can only be observed without an adapter in a setup
-        // race. Waiting for readiness lets the host distinguish setup failure
-        // (release -> null) from a real adapter that must be quiesced.
+        // A reservation can be observed without an adapter in a setup race or
+        // after a runtime fence. Waiting for readiness lets the host distinguish
+        // setup failure (release -> null) and fence settlement (resolveReady ->
+        // null) from a real adapter that must be quiesced.
         const adapter = entry.adapter ?? await entry.ready;
         if (adapter === null) return;
         try {
@@ -367,13 +374,22 @@ export class DelegatedWorkHost {
    * Conversation runtime. Mark those invocations interrupted without claiming
    * a successful outcome or delivery.
    */
-  reconcileStartup(): void {
+  private reconcileStartup(): void {
+    if (this.reconciled) return;
+    this.reconciled = true;
     for (const id of this.recordStore.listIds()) {
-      const record = this.recordStore.load(id);
-      if (record === null) continue;
-      const lastInvocation = record.invocations.at(-1);
-      if (lastInvocation !== undefined && lastInvocation.status === "running") {
-        this.recordStore.closeInvocation(id, lastInvocation.index, "interrupted", null, "suppressed");
+      try {
+        const record = this.recordStore.load(id);
+        if (record === null) continue;
+        const lastInvocation = record.invocations.at(-1);
+        if (lastInvocation !== undefined && lastInvocation.status === "running") {
+          this.recordStore.closeInvocation(id, lastInvocation.index, "interrupted", null, "suppressed");
+        }
+      } catch (error) {
+        log.error("delegated work startup reconciliation skipped a run", {
+          runId: id,
+          ...boundedError(error),
+        });
       }
     }
   }

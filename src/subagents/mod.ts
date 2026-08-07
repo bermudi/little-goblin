@@ -16,6 +16,7 @@
 
 export {
   SubagentRunner,
+  RuntimeFenceError,
   type SubagentMemoryStoreFactory,
   type SubagentToolFactory,
 } from "./runner.ts";

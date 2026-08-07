@@ -26,7 +26,15 @@ goblin_home="${GOBLIN_DEPLOY_HOME:-/var/lib/goblin}"
 user="${GOBLIN_DEPLOY_USER:-goblin}"
 group="${GOBLIN_DEPLOY_GROUP:-goblin}"
 
-repo_url="${1:-}"
+changed_head_handoff=0
+repo_url=""
+for arg in "$@"; do
+  if [[ "${arg}" == "--changed-head-handoff" ]]; then
+    changed_head_handoff=1
+  else
+    repo_url="${arg}"
+  fi
+done
 if [[ -z "${repo_url}" ]]; then
   repo_url="$(git -C "${script_dir}" remote get-url origin 2>/dev/null || true)"
 fi
@@ -79,7 +87,7 @@ if [[ -d "${repo_dir}/.git" ]] && su -s /bin/bash "${user}" -c "git -C ${repo_di
   # migration, or service changes so all post-pull work uses the pulled code.
   if [[ "${old_head}" != "${new_head}" ]]; then
     echo "Code changed; handing off to the pulled installer revision..."
-    exec "${BASH:-bash}" "${repo_dir}/scripts/install.sh" "${repo_url}"
+    exec "${BASH:-bash}" "${repo_dir}/scripts/install.sh" "${repo_url}" --changed-head-handoff
   fi
 else
   if [[ -d "${repo_dir}" ]] && [[ -n "$(find "${repo_dir}" -mindepth 1 -maxdepth 1 -not -name '.git' -print -quit 2>/dev/null)" ]]; then
@@ -130,7 +138,7 @@ if [[ "${repo_existed}" -eq 0 ]]; then
   echo "Starting goblin service..."
   systemctl start goblin
   echo "Goblin installed and started."
-elif [[ "${old_head}" != "${new_head}" ]]; then
+elif [[ "${old_head}" != "${new_head}" ]] || [[ "${changed_head_handoff}" -eq 1 ]]; then
   echo "Code changed; starting goblin service..."
   systemctl start goblin
   echo "Goblin updated and started."

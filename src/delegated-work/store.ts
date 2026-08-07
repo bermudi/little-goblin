@@ -271,6 +271,9 @@ export class DelegatedWorkRecordStore {
     startedAt = new Date().toISOString(),
   ): RecordStoreResult {
     assertSafeRunId(id);
+    if (this.load(id) !== null) {
+      throw new Error(`Cannot create delegated work record ${id}: already exists`);
+    }
     const record: DelegatedWorkRecord = {
       id,
       kind,

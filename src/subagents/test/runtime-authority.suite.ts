@@ -47,6 +47,15 @@ function findInstanceBySpawnedBy(runner: SubagentRunner, spawnedBy: string): Sub
   return undefined;
 }
 
+function callSuppressPendingDelivery(
+  runner: SubagentRunner,
+  instance: SubagentInstance,
+  failures: unknown[],
+): void {
+  (runner as unknown as { suppressPendingDelivery: (instance: SubagentInstance, failures: unknown[]) => void })
+    .suppressPendingDelivery(instance, failures);
+}
+
 function jsonOf<T>(result: unknown): T {
   const r = result as { content: Array<{ type: string; text: string }> };
   return JSON.parse(r.content[0]!.text) as T;
@@ -382,6 +391,55 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     expect(suppressedRecord.status).toBe("completed");
     expect(suppressedRecord.deliveryState).toBe("suppressed");
     expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(0);
+  });
+
+  it("keeps delivery pending when suppression record write fails and allows retry", async () => {
+    const sessionX = await makeSession(fx.lifecycle, SURFACE_X, fx.home);
+    const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
+    const captureX = assertSurfaceCapture(runnerX.memoryContext);
+    const runtime = runnerX.delegatedRuntimeContext;
+    if (runtime === null) throw new Error("test runner did not capture delegated runtime identity");
+
+    const handle = await fx.subagentRunner.spawn({
+      prompt: "finish but wait for delivery",
+      authority: captureX.authority,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      delegatedContext: runtime,
+    });
+    await flush();
+    fx.subagentHost.latest().complete("finished");
+    await handle.result;
+
+    const instance = getInstance(fx.subagentRunner, handle.id);
+    if (instance === undefined) throw new Error("subagent instance not found");
+    expect(instance.status).toBe("completed");
+    expect(instance.deliveryState).toBe("pending");
+
+    const recordStore = instance.recordStore;
+    const originalSetDeliveryState = recordStore.setDeliveryState.bind(recordStore);
+    let calls = 0;
+    recordStore.setDeliveryState = (id, index, deliveryState) => {
+      calls += 1;
+      if (calls === 1) throw new Error("disk full");
+      return originalSetDeliveryState(id, index, deliveryState);
+    };
+
+    const failures: unknown[] = [];
+    callSuppressPendingDelivery(fx.subagentRunner, instance, failures);
+
+    expect(failures).toHaveLength(1);
+    expect(instance.deliveryState).toBe("pending");
+    expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(1);
+    let diskRecord = readRecord(fx.home, handle.id);
+    expect(diskRecord.deliveryState).toBe("pending");
+
+    callSuppressPendingDelivery(fx.subagentRunner, instance, failures);
+
+    expect(failures).toHaveLength(1);
+    expect(instance.deliveryState).toBe("suppressed");
+    expect(fx.subagentRunner.delegatedWorkHost.registeredForRuntime(runtime.runtimeId)).toBe(0);
+    diskRecord = readRecord(fx.home, handle.id);
+    expect(diskRecord.deliveryState).toBe("suppressed");
   });
 
   it("recursively spawned subagents are cancelled by a same-conversation move and the replacement runtime captures Surface Y tools", async () => {

@@ -72,6 +72,7 @@ class FakeAgentRunner {
 
 class FakeSubagentRunner {
   cancelled: string[] = [];
+  acknowledged: string[] = [];
   lastReviveArgs: {
     parentCapture: CapturedMemoryContext | InternalMemoryContext;
     inheritance: GenericSubagentInheritance | null;
@@ -110,6 +111,10 @@ class FakeSubagentRunner {
       onAttached();
     }
     return Promise.resolve("revived result");
+  }
+
+  acknowledgeDelivery(id: string): void {
+    this.acknowledged.push(id);
   }
 }
 
@@ -216,6 +221,7 @@ function buildDispatcher(
     subagentRunner,
     memoryStore: new FakeMemoryStore() as unknown as MemoryStore,
     agentRunners: runners,
+    delegatedWorkHost: new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost,
     createMessageBuffer: (_surface: Surface, _session?: ConversationState): TurnSink => ({
       onTextDelta: () => {},
       onToolStart: () => {},
@@ -532,12 +538,13 @@ describe("TurnDispatcher async runner creation", () => {
           : { kind: "internal" };
       return runner as unknown as AgentRunner;
     });
+    const delegatedWorkHost = opts.delegatedWorkHost ?? new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost;
 
     const dispatcher = new TurnDispatcher({
       cfg: opts.cfg ?? ({} as Config),
       surfaceSettings,
       subagentRunner: subagentRunner as unknown as SubagentRunner,
-      delegatedWorkHost: opts.delegatedWorkHost,
+      delegatedWorkHost,
       memoryStore,
       agentRunners: runners,
       createMessageBuffer: (_surface: Surface, _session?: ConversationState): TurnSink => ({
@@ -934,6 +941,49 @@ describe("TurnDispatcher async runner creation", () => {
       return { result: Promise.resolve("ok") };
     });
     expect(released).toBe(true);
+  });
+
+  it("reviveSubagent suppresses stale result and acknowledgement when the runner is invalidated after attachment", async () => {
+    await memoryStore.add("general", "test fact");
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+    const guard = new FakeBindingGuard();
+    guard.bind(surface, session.id);
+    const { dispatcher, subagentRunner } = buildAsyncDispatcher({
+      surfaceRuntimeAuthority: guard,
+      delegatedWorkHost: new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost,
+    });
+    await dispatcher.getOrCreateRunner(session, surface);
+
+    let finishRevive!: () => void;
+    subagentRunner.revive = async (
+      parentCapture,
+      inheritance,
+      id,
+      prompt,
+      _onStatusUpdate,
+      onAttached,
+    ) => {
+      subagentRunner.lastReviveArgs = { parentCapture, inheritance, id, prompt };
+      onAttached?.();
+      return new Promise((resolve) => {
+        finishRevive = () => resolve("stale result");
+      });
+    };
+
+    const revivePromise = dispatcher.reviveSubagent(surface, session, "sub-1", "follow-up");
+
+    // Wait for microtask queue so the attachment signal fires.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(guard.lockReleases).toBe(1);
+
+    // Simulate a lifecycle replacement that disposes the runner while the
+    // revived subagent is still running.
+    await dispatcher.disposeRunner(session.id);
+
+    finishRevive();
+    await expect(revivePromise).rejects.toThrow(/completed after its runtime was invalidated/);
+    expect(subagentRunner.acknowledged).toHaveLength(0);
   });
 
   it("captures an early delegated invalidation rejection while runner dispose is pending and rethrows it", async () => {

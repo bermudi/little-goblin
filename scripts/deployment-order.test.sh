@@ -58,7 +58,10 @@ write_fake systemctl <<'EOF'
 #!/usr/bin/env bash
 printf 'systemctl %s\n' "$*" >>"${FAKE_ORDER}"
 if [[ "$1" == "is-active" ]]; then
-  exit 0
+  if [[ "${FAKE_SERVICE_ACTIVE:-1}" == "1" ]]; then
+    exit 0
+  fi
+  exit 1
 fi
 EOF
 write_fake su <<'EOF'
@@ -230,6 +233,31 @@ if [[ "$(grep -c '^pulled installer revision$' "${order}")" -ne 1 ]]; then
 fi
 assert_before 'pulled installer revision' 'systemctl stop goblin'
 assert_before 'systemctl stop goblin' 'bun run migrate'
+assert_before 'bun run migrate' 'install-service'
+assert_before 'install-service' 'systemctl start goblin'
+
+# The handoff must also start the service when the existing service was
+# initially stopped; otherwise the changed-head restart is lost.
+install_inactive_handoff_repo="${tmp}/install-inactive-handoff-repo"
+install_inactive_handoff_home="${tmp}/install-inactive-handoff-home"
+make_existing_repo "${install_inactive_handoff_repo}"
+cp "${repo_root}/scripts/install.sh" "${install_inactive_handoff_repo}/scripts/install.sh"
+mkdir -p "${install_inactive_handoff_home}"
+touch "${install_inactive_handoff_home}/goblin.json5"
+printf '0' >"${tmp}/head-count"
+: >"${order}"
+FAKE_HEAD_CHANGES=1 \
+FAKE_SERVICE_ACTIVE=0 \
+FAKE_INSTALL_SCRIPT="${install_inactive_handoff_repo}/scripts/install.sh" \
+FAKE_INSTALL_REPLACEMENT_SCRIPT="${install_handoff_replacement}" \
+run_with_fakes "${install_inactive_handoff_repo}" "${install_inactive_handoff_home}" bash "${repo_root}/scripts/install.sh" https://example.invalid/goblin.git
+if [[ "$(grep -c '^pulled installer revision$' "${order}")" -ne 1 ]]; then
+  echo "install.sh did not hand off exactly once to the pulled revision (inactive service)" >&2
+  cat "${order}" >&2
+  exit 1
+fi
+assert_absent 'systemctl stop goblin'
+assert_before 'pulled installer revision' 'bun run migrate'
 assert_before 'bun run migrate' 'install-service'
 assert_before 'install-service' 'systemctl start goblin'
 

@@ -84,6 +84,7 @@ export interface AttachmentSignal {
  */
 export interface AttachedWork<T> {
   result: Promise<T>;
+  runner?: AgentRunner;
 }
 
 /**
@@ -360,6 +361,9 @@ export class TurnDispatcher {
    *
    * Throws before `AgentSession` creation when the runner is absent, stale,
    * or Surface-backed capture mismatch.
+   *
+   * Throws after completion when the runner was invalidated while the revived
+   * subagent was running — the result is suppressed as stale.
    */
   async reviveSubagent(
     surface: Surface,
@@ -409,11 +413,18 @@ export class TurnDispatcher {
           }
         });
 
-        return { result };
+        return { result, runner };
       },
     );
 
     const result = await attached.result;
+    if (attached.runner === undefined || !this.isRunnerCurrent(session.id, attached.runner)) {
+      log.warn("revived subagent completed after its runtime was invalidated", {
+        subagentId,
+        sessionId: session.id,
+      });
+      throw new Error(`subagent '${subagentId}' completed after its runtime was invalidated`);
+    }
     // A blocking command is the delivery boundary for a revived run. The host
     // keeps a completed attached registration pending until this acknowledgement
     // so runtime invalidation can still suppress a stale result.
@@ -893,15 +904,12 @@ export class TurnDispatcher {
       await Promise.race([externalCancelPromise, timeout]);
     } finally {
       if (timer) clearTimeout(timer);
-      if (disposeFailed && delegatedFailed) {
-        throw new AggregateError(
-          [disposeErr, delegatedErr],
-          "disposeRunner cleanup failed",
-        );
-      }
-      if (disposeFailed) throw disposeErr;
-      if (delegatedFailed) throw delegatedErr;
     }
+    if (disposeFailed && delegatedFailed) {
+      throw new AggregateError([disposeErr, delegatedErr], "disposeRunner cleanup failed");
+    }
+    if (disposeFailed) throw disposeErr;
+    if (delegatedFailed) throw delegatedErr;
   }
 
   /**

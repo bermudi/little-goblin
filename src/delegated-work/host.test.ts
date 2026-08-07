@@ -9,6 +9,7 @@ import {
   DelegatedWorkHost,
   DelegatedWorkRuntimeInvalidatedError,
 } from "./host.ts";
+import { DelegatedWorkRecordError } from "./store.ts";
 import { asConversationRuntimeId, type AttachedWorkAdapter } from "./types.ts";
 import { delegatedWorkRecordPath, delegatedWorkRunDir } from "./paths.ts";
 
@@ -125,6 +126,14 @@ describe("DelegatedWorkHost", () => {
     expect(host.registeredForRuntime(asConversationRuntimeId("runtime-4"))).toBe(1);
   });
 
+  it("settles runtime invalidation for an unattached, unreleased reservation", async () => {
+    const host = new DelegatedWorkHost(tempHome());
+    host.reserveAttached("run-unattached", ownership("runtime-unattached"));
+
+    const invalidation = host.invalidateRuntime(asConversationRuntimeId("runtime-unattached"));
+    await expect(invalidation).resolves.toBeUndefined();
+  });
+
   it("marks non-terminal invocations interrupted at startup reconciliation", () => {
     const home = tempHome();
     const runId = "recon-aaaaaaaa-0000-0000-0000-000000000001";
@@ -156,7 +165,6 @@ describe("DelegatedWorkHost", () => {
     }));
 
     const host = new DelegatedWorkHost(home);
-    host.reconcileStartup();
 
     const record = host.loadRecord(runId);
     expect(record).not.toBeNull();
@@ -197,11 +205,63 @@ describe("DelegatedWorkHost", () => {
     }));
 
     const host = new DelegatedWorkHost(home);
-    host.reconcileStartup();
 
     const record = host.loadRecord(runId);
     const invocation = record!.invocations[0]!;
     expect(invocation.status).toBe("completed");
     expect(invocation.deliveryState).toBe("delivered");
+  });
+
+  it("continues startup reconciliation when one record is malformed", () => {
+    const home = tempHome();
+    const badRunId = "recon-bad-0000-0000-0000-000000000001";
+    const goodRunId = "recon-good-0000-0000-0000-000000000002";
+
+    const badDir = delegatedWorkRunDir(home, badRunId);
+    const goodDir = delegatedWorkRunDir(home, goodRunId);
+    mkdirSync(badDir, { recursive: true });
+    mkdirSync(goodDir, { recursive: true });
+
+    // Plant a malformed record that fails validation on load.
+    writeFileSync(delegatedWorkRecordPath(home, badRunId), JSON.stringify({
+      id: badRunId,
+      kind: "generic-subagent",
+    }));
+
+    // Plant a valid record with a running invocation that should be closed.
+    const now = new Date().toISOString();
+    writeFileSync(delegatedWorkRecordPath(home, goodRunId), JSON.stringify({
+      id: goodRunId,
+      kind: "generic-subagent",
+      name: null,
+      depth: 1,
+      createdAt: now,
+      invocations: [{
+        index: 0,
+        ownerConversationId: "conversation-a",
+        runtimeId: "runtime-dead",
+        ownershipEpochId: "epoch-dead",
+        lifetime: "attached",
+        originSurfaceId: surfaceId(dmSurface(1)),
+        executionEnvironment: personalEnvironment(),
+        status: "running",
+        outcome: null,
+        deliveryState: "pending",
+        startedAt: now,
+        completedAt: null,
+      }],
+    }));
+
+    const host = new DelegatedWorkHost(home);
+
+    expect(() => host.loadRecord(badRunId)).toThrow(DelegatedWorkRecordError);
+
+    const record = host.loadRecord(goodRunId);
+    expect(record).not.toBeNull();
+    const invocation = record!.invocations[0]!;
+    expect(invocation.status).toBe("interrupted");
+    expect(invocation.outcome).toBeNull();
+    expect(invocation.deliveryState).toBe("suppressed");
+    expect(invocation.completedAt).not.toBeNull();
   });
 });

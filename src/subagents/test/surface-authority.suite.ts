@@ -204,6 +204,7 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     await flush();
     host.latest().complete("done");
     await firstHandle.result;
+    runner.acknowledgeDelivery(firstHandle.id);
 
     writeSessionFile(tmp, firstHandle.id, "2026-01-01T00-00-00.jsonl");
 

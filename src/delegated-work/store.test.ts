@@ -87,6 +87,21 @@ describe("DelegatedWorkRecordStore", () => {
     expect(existsSync(delegatedWorkRecordPath(home, "run-1"))).toBe(true);
   });
 
+  it("rejects creating a record that already exists and preserves the original", () => {
+    store.createRecord("run-1", "generic-subagent", null, 1, ownership("runtime-1"));
+    expect(() =>
+      store.createRecord("run-1", "named-subagent", "researcher", 2, ownership("runtime-2"))
+    ).toThrow(/Cannot create delegated work record run-1: already exists/);
+
+    const record = store.load("run-1");
+    expect(record).not.toBeNull();
+    expect(record?.kind).toBe("generic-subagent");
+    expect(record?.name).toBeNull();
+    expect(record?.depth).toBe(1);
+    expect(record?.invocations).toHaveLength(1);
+    expect(record?.invocations[0]?.runtimeId).toBe("runtime-1");
+  });
+
   it("rejects a generic record with a name", () => {
     expect(() =>
       store.createRecord("run-2", "generic-subagent", "bad-name", 1, ownership("runtime-1"))

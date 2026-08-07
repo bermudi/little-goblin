@@ -5,6 +5,7 @@ import { SubagentRunner, type SubagentPreparation } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import {
   DelegatedWorkHost,
+  DelegatedWorkRecordStore,
   asConversationRuntimeId,
   type DelegatedDeliveryState,
   type DelegatedWorkOutcome,
@@ -559,5 +560,52 @@ describe("SubagentRunner — abandonInvocation cleanup containment", () => {
     expect(record.runtimeId).toBeDefined();
     expect(testRunner.delegatedWorkHost.registeredForRuntime(asConversationRuntimeId(record.runtimeId as string))).toBe(0);
     expect(delegatedHost.loadRecordCalls).toBe(2);
+  });
+});
+
+describe("SubagentRunner — shared delegated-work host", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = createTestHome("goblin-shared-host-reconcile-");
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("reconciles once across multiple SubagentRunner instances that share the same host", () => {
+    class CountingRecordStore extends DelegatedWorkRecordStore {
+      listIdsCalls = 0;
+      closeInvocationCalls = 0;
+      listIds(): string[] {
+        this.listIdsCalls += 1;
+        return super.listIds();
+      }
+      closeInvocation(
+        ...args: Parameters<DelegatedWorkRecordStore["closeInvocation"]>
+      ): ReturnType<DelegatedWorkRecordStore["closeInvocation"]> {
+        this.closeInvocationCalls += 1;
+        return super.closeInvocation(...args);
+      }
+    }
+
+    const id = "shared-reconcile-aaaaaaaa-0000-0000-0000-000000000001";
+    const record = validRecord(id, {}, "running", null, "pending");
+    writeRecordAndSession(tmp, id, record, undefined);
+
+    const store = new CountingRecordStore(tmp);
+    const delegatedHost = new DelegatedWorkHost(tmp, store);
+    const subagentHost = new FakeSubagentHost();
+    const cfg = makeConfig(tmp);
+
+    new SubagentRunner(cfg, undefined, undefined, subagentHost, undefined, delegatedHost);
+    new SubagentRunner(cfg, undefined, undefined, subagentHost, undefined, delegatedHost);
+
+    const loaded = delegatedHost.loadRecord(id);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.invocations[0]!.status).toBe("interrupted");
+    expect(store.listIdsCalls).toBe(1);
+    expect(store.closeInvocationCalls).toBe(1);
   });
 });

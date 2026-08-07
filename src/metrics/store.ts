@@ -1,5 +1,6 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
+import { log, boundedError } from "../log.ts";
 import { metricsPath } from "../sessions/paths.ts";
 
 const LOCK_STALE_MS = 5000;
@@ -26,22 +27,39 @@ function lockMetricsFile(filePath: string): () => void {
       return () => {
         try {
           unlinkSync(lockPath);
-        } catch {
-          // ENOENT is expected if another writer already cleaned up.
+        } catch (error) {
+          // Another writer may have released the lock first; all other cleanup
+          // failures must surface rather than leaving a stale lock silently.
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+          throw error;
         }
       };
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        // A concurrent rm -rf of the session dir removed the parent path
+        // between the initial mkdir and the open. Recreate it and retry.
+        mkdirSync(dir, { recursive: true });
+        continue;
+      }
       if (code === "EEXIST") {
-        // Another writer holds the lock. Check for staleness and retry.
+        // Another writer holds the lock. A missing lock is an expected race;
+        // stat and stale-lock cleanup failures otherwise need to surface.
+        let stat: ReturnType<typeof statSync>;
         try {
-          const s = statSync(lockPath);
-          if (Date.now() - s.mtimeMs > LOCK_STALE_MS) {
+          stat = statSync(lockPath);
+        } catch (statError) {
+          if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw statError;
+        }
+        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+          try {
             unlinkSync(lockPath);
-            continue;
+          } catch (unlinkError) {
+            if ((unlinkError as NodeJS.ErrnoException).code === "ENOENT") continue;
+            throw unlinkError;
           }
-        } catch {
-          // Race: lock was released between check and stat; retry.
+          continue;
         }
         Bun.sleepSync(LOCK_RETRY_SLEEP_MS);
         continue;
@@ -233,23 +251,46 @@ export class MetricsStore {
     }
   }
 
+  private releaseAfterWrite(release: () => void, writeError: unknown): void {
+    try {
+      release();
+    } catch (releaseErr) {
+      if (writeError !== undefined) {
+        log.error("metrics lock release failed after write failure", {
+          ...boundedError(writeError),
+          releaseErr: boundedError(releaseErr).error,
+        });
+        throw writeError;
+      }
+      throw releaseErr;
+    }
+  }
+
   record(event: MetricsEvent): void {
     const release = lockMetricsFile(this.path);
+    let writeError: unknown;
     try {
       this.writeLine(JSON.stringify(event) + "\n");
+    } catch (e) {
+      writeError = e;
+      throw e;
     } finally {
-      release();
+      this.releaseAfterWrite(release, writeError);
     }
   }
 
   incrementCounter(name: string, scope: string | null = null, delta: number = 1): void {
     const path = this.path;
     const release = lockMetricsFile(path);
+    let writeError: unknown;
     try {
       const last = lastCounterValue(path, name, scope);
       this.writeLine(JSON.stringify({ type: "counter", name, scope, value: last + delta }) + "\n");
+    } catch (e) {
+      writeError = e;
+      throw e;
     } finally {
-      release();
+      this.releaseAfterWrite(release, writeError);
     }
   }
 }

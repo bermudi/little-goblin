@@ -470,7 +470,7 @@ One ordered sequence, walked end to end. Historical change names and task counts
 
 Steps 1–10a, including attachment intake, agent-owned prompt files, the persistence/runtime-authority closure, native skill layout, catalog resolution, Surface skill policy, subagent skill inheritance, and the delegated-run record store, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
 
-**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The plainly described next is ACP external agents under decision 0044 — capability-scoped Claude/Devin ACP behind the external-agent execution host, abandoning `scratch/external-agents/` in place; remaining parked scope stays deferred until deliberately resumed.
+**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The plainly described next is the command/lifecycle authority closure recorded in `BACKLOG.md`: commands call complete lifecycle operations rather than direct store/runtime mutations. ACP external agents under decision 0044 follows that stabilization repair — capability-scoped Claude/Devin ACP behind the external-agent execution host, abandoning `scratch/external-agents/` in place; remaining parked scope stays deferred until deliberately resumed.
 
 ## Feature readiness gate
 

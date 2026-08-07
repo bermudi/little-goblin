@@ -73,7 +73,7 @@ Updates are scripted:
 sudo bash scripts/update.sh   # pull latest code, validate config, migrate state, then restart goblin
 ```
 
-`scripts/update.sh` validates configuration before stopping Goblin, then runs the offline migration with the service stopped. It restarts only after migration succeeds; on migration failure it deliberately leaves the service stopped so the operator can restore the migration backup. If the pull changes `update.sh` itself, the updater hands off to the pulled revision before any post-pull deployment step, so it never mixes old control flow with new code. Run CI/typecheck before invoking it—it does not run them.
+`scripts/update.sh` validates configuration before stopping Goblin, then runs the offline migration with the service stopped. It restarts only after migration succeeds; on migration failure it deliberately leaves the service stopped so the operator can restore from the migration backup, which the migration writes to `$GOBLIN_HOME/.migration-backup-<timestamp>/` (a `snapshot.json` manifest plus copies of the persisted roots). If the pull changes `update.sh` itself, the updater hands off to the pulled revision before any post-pull deployment step, so it never mixes old control flow with new code. Run CI/typecheck before invoking it—it does not run them.
 
 ## Core ideas
 

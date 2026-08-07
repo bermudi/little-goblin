@@ -126,6 +126,17 @@ export async function runInstance(
     // Keep the fallback for small injected hosts that simply resolve run().
     // A runtime fence must never be converted into a successful delivery.
     if (instance.runtimeFenced && !instance.completionClaimed) {
+      try {
+        markCancelled(instance);
+      } catch (persistenceFailure) {
+        throw combineFailures(
+          [
+            new Error(`Subagent '${instance.id}' was fenced before completion was claimed`),
+            persistenceFailure,
+          ],
+          "Subagent cancellation persistence failed",
+        ) ?? persistenceFailure;
+      }
       throw new Error(`Subagent '${instance.id}' was fenced before completion was claimed`);
     }
     instance.completionClaimed = true;
@@ -352,6 +363,41 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
   teardownInstance(instance);
   log.warn("subagent errored", { id: instance.id, ...boundedError(errorMessage) });
   if (persistenceFailed) throw new SubagentTerminalError(err, persistenceError);
+}
+
+/**
+ * Persist a runtime-fenced invocation as cancelled, not error.
+ * Runtime invalidation is a lifecycle cancellation, not an execution failure.
+ */
+export function markCancelled(instance: SubagentInstance): void {
+  if (instance.status !== "running") {
+    log.debug("markCancelled skipped: instance already terminal", {
+      id: instance.id,
+      status: instance.status,
+    });
+    return;
+  }
+  let persistenceFailed = false;
+  let persistenceError: unknown;
+  try {
+    instance.recordStore.closeInvocation(
+      instance.id,
+      instance.invocationIndex,
+      "cancelled",
+      null,
+      "suppressed",
+    );
+  } catch (err) {
+    persistenceFailed = true;
+    persistenceError = err;
+    log.error("failed to persist cancelled record", { id: instance.id, ...boundedError(err) });
+  }
+  instance.status = "cancelled";
+  instance.deliveryState = "suppressed";
+  instance.completionClaimed = false;
+  teardownInstance(instance);
+  log.debug("subagent cancelled (fenced)", { id: instance.id });
+  if (persistenceFailed) throw persistenceError;
 }
 
 /**

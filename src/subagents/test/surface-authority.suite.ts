@@ -18,6 +18,7 @@ import {
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
+  validRecord,
   writeRecordAndSession,
   writeSessionFile,
 } from "./support.ts";
@@ -260,7 +261,7 @@ describe("Subagent tool factories — parent capture closure", () => {
 
   it("revive_subagent tool closes over the parent capture", async () => {
     const id = "revive-tool-test";
-    writeRecordAndSession(tmp, id, { id, kind: "generic-subagent", name: null, depth: 1, createdAt: new Date().toISOString(), invocations: [] }, "2026-01-01T00-00-00_tool.jsonl");
+    writeRecordAndSession(tmp, id, validRecord(id), "2026-01-01T00-00-00_tool.jsonl");
 
     const tool = createReviveSubagentTool(runner, DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE);
     const execPromise = tool.execute("tc-rev", { id, prompt: "hi" }, undefined, undefined, {} as never);

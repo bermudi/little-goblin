@@ -2,11 +2,18 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DelegatedWorkRecordStore } from "./store.ts";
-import { delegatedWorkRecordPath } from "./paths.ts";
+import {
+  DelegatedWorkRecordStore,
+  assertSafeRunId,
+  parseDelegatedWorkRecord,
+} from "./store.ts";
+import { delegatedWorkRecordPath, delegatedWorkRunsRoot } from "./paths.ts";
+import { log } from "../log.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
 import type { ConversationRuntimeId } from "./types.ts";
+
+const baseTimestamp = "2024-01-01T00:00:00.000Z";
 
 function ownership(runtimeId: string) {
   return {
@@ -16,6 +23,34 @@ function ownership(runtimeId: string) {
     originSurfaceId: surfaceId(dmSurface(1)),
     executionEnvironment: personalEnvironment(),
     ownershipEpochId: `epoch-${runtimeId}`,
+  };
+}
+
+function makeInvocation(index: number, status: string, completedAt: string | null = null): Record<string, unknown> {
+  return {
+    index,
+    ownerConversationId: "conversation-a",
+    runtimeId: "runtime-1",
+    ownershipEpochId: "epoch-1",
+    lifetime: "attached",
+    originSurfaceId: surfaceId(dmSurface(1)),
+    executionEnvironment: personalEnvironment(),
+    status,
+    outcome: status === "running" ? null : { kind: "success", text: "done" },
+    deliveryState: status === "running" ? "pending" : "delivered",
+    startedAt: baseTimestamp,
+    completedAt,
+  };
+}
+
+function makeRecord(id: string, invocations: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    id,
+    kind: "generic-subagent",
+    name: null,
+    depth: 1,
+    createdAt: baseTimestamp,
+    invocations,
   };
 }
 
@@ -115,12 +150,80 @@ describe("DelegatedWorkRecordStore", () => {
     expect(record.invocations[0]?.outcome).toEqual({ kind: "success", text: "x" });
   });
 
+  it("updates delivery state for every terminal status", () => {
+    const terminalStatuses = ["completed", "cancelled", "error", "interrupted"] as const;
+    for (const status of terminalStatuses) {
+      const runId = `run-terminal-${status}`;
+      store.createRecord(runId, "generic-subagent", null, 1, ownership("runtime-1"));
+      store.closeInvocation(
+        runId,
+        0,
+        status,
+        status === "completed" ? { kind: "success", text: "x" } : null,
+        "pending",
+      );
+
+      const record = store.setDeliveryState(runId, 0, "delivered");
+      expect(record.invocations[0]?.deliveryState).toBe("delivered");
+      expect(record.invocations[0]?.status).toBe(status);
+    }
+  });
+
+  it("rejects setDeliveryState on a running invocation", () => {
+    store.createRecord("run-8", "generic-subagent", null, 1, ownership("runtime-1"));
+    expect(() => store.setDeliveryState("run-8", 0, "delivered")).toThrow(
+      /Cannot set delivery state on invocation 0 of run-8: still running/,
+    );
+  });
+
   it("lists run ids and returns null for missing records", () => {
     store.createRecord("alpha", "generic-subagent", null, 1, ownership("runtime-1"));
     store.createRecord("beta", "generic-subagent", null, 1, ownership("runtime-1"));
 
     expect(store.listIds()).toEqual(["alpha", "beta"]);
     expect(store.load("missing")).toBeNull();
+  });
+
+  it("lists only canonical run directories that contain a record file", () => {
+    const runsRoot = delegatedWorkRunsRoot(home);
+
+    // Valid run directory with a record.json file.
+    store.createRecord("valid-run", "generic-subagent", null, 1, ownership("runtime-1"));
+
+    // Unsafe directory name (would fail assertSafeRunId if passed to load).
+    mkdirSync(join(runsRoot, "..evil"), { recursive: true });
+    writeFileSync(join(runsRoot, "..evil", "record.json"), "{}");
+
+    // Safe directory name but no record.json file.
+    mkdirSync(join(runsRoot, "empty-dir"), { recursive: true });
+
+    // Safe name, but the entry is a regular file, not a directory.
+    writeFileSync(join(runsRoot, "not-a-dir"), "I am not a run");
+
+    // Unsafe name and a regular file.
+    writeFileSync(join(runsRoot, "..evil-file"), "I am not a run");
+
+    const calls: { msg: string; extra: unknown }[] = [];
+    const originalWarn = log.warn;
+    log.warn = (msg: string, extra?: unknown) => {
+      calls.push({ msg, extra });
+    };
+
+    try {
+      expect(store.listIds()).toEqual(["valid-run"]);
+
+      const skippedPaths = calls
+        .map((call) => (call.extra as { path: string }).path)
+        .sort();
+      expect(skippedPaths).toEqual([join(runsRoot, "..evil"), join(runsRoot, "..evil-file")]);
+      for (const call of calls) {
+        expect(call.msg).toBe("delegated work run directory skipped: not a canonical run id");
+      }
+    } finally {
+      log.warn = originalWarn;
+    }
+
+    expect(store.load("empty-dir")).toBeNull();
   });
 
   it("fails loudly on malformed JSON", () => {
@@ -138,16 +241,83 @@ describe("DelegatedWorkRecordStore", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       path,
-      JSON.stringify({
-        id: "different-id",
-        kind: "generic-subagent",
-        name: null,
-        depth: 1,
-        createdAt: new Date().toISOString(),
-        invocations: [],
-      }),
+      JSON.stringify(makeRecord("different-id", [makeInvocation(0, "running")])),
     );
     expect(() => store.load("id-mismatch")).toThrow(/record id does not match/);
     expect(existsSync(dir)).toBe(true);
+  });
+});
+
+describe("assertSafeRunId and zod schema", () => {
+  it("rejects a run id with a trailing line terminator", () => {
+    expect(() => assertSafeRunId("run-1\n")).toThrow(
+      /run ID must be a non-empty single safe path segment/,
+    );
+  });
+
+  it("rejects a record whose id contains a line terminator", () => {
+    expect(() =>
+      parseDelegatedWorkRecord(
+        makeRecord("run-1\n", [makeInvocation(0, "running")]),
+        "test-path",
+      ),
+    ).toThrow(/must be a safe run ID/);
+  });
+});
+
+describe("parseDelegatedWorkRecord", () => {
+  it("rejects an empty invocation log", () => {
+    expect(() =>
+      parseDelegatedWorkRecord(makeRecord("run-empty", []), "test-path"),
+    ).toThrow();
+  });
+
+  it("rejects two running invocations", () => {
+    expect(() =>
+      parseDelegatedWorkRecord(
+        makeRecord("run-two-running", [makeInvocation(0, "running"), makeInvocation(1, "running")]),
+        "test-path",
+      ),
+    ).toThrow(/only the last invocation may be running/);
+  });
+
+  it("rejects a running invocation before a terminal one", () => {
+    expect(() =>
+      parseDelegatedWorkRecord(
+        makeRecord("run-running-first", [
+          makeInvocation(0, "running"),
+          makeInvocation(1, "completed", baseTimestamp),
+        ]),
+        "test-path",
+      ),
+    ).toThrow(/only the last invocation may be running/);
+  });
+
+  it("accepts a record with a single running invocation", () => {
+    expect(parseDelegatedWorkRecord(makeRecord("run-ok", [makeInvocation(0, "running")]), "test-path")).toBeDefined();
+  });
+
+  it("accepts a record with all terminal invocations", () => {
+    expect(
+      parseDelegatedWorkRecord(
+        makeRecord("run-all-terminal", [
+          makeInvocation(0, "completed", baseTimestamp),
+          makeInvocation(1, "completed", baseTimestamp),
+        ]),
+        "test-path",
+      ),
+    ).toBeDefined();
+  });
+
+  it("accepts a record with a running invocation only at the tail", () => {
+    expect(
+      parseDelegatedWorkRecord(
+        makeRecord("run-tail-running", [
+          makeInvocation(0, "completed", baseTimestamp),
+          makeInvocation(1, "running"),
+        ]),
+        "test-path",
+      ),
+    ).toBeDefined();
   });
 });

@@ -20,10 +20,12 @@ import { dmSurface, surfaceId } from "../surface.ts";
 import type { TranscriptWriterContext } from "../sessions/transcript.ts";
 import { DEFAULT_SKILL_POLICY, type SkillPolicy } from "../agent/skills/mod.ts";
 import type { GenericSubagentInheritance } from "../subagents/mod.ts";
+import type { ConversationRuntimeId, DelegatedWorkHost } from "../delegated-work/mod.ts";
 
 class FakeAgentRunner {
   disposeCalled = false;
   disposeDelayMs = 0;
+  disposeRejectsWith: Error | undefined;
   _isStreaming = false;
   _isPrompting = false;
   _isAbortTimedOut = false;
@@ -52,6 +54,9 @@ class FakeAgentRunner {
     this.disposeCalled = true;
     if (this.disposeDelayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, this.disposeDelayMs));
+    }
+    if (this.disposeRejectsWith) {
+      throw this.disposeRejectsWith;
     }
   }
 
@@ -105,6 +110,22 @@ class FakeSubagentRunner {
       onAttached();
     }
     return Promise.resolve("revived result");
+  }
+}
+
+class FakeDelegatedWorkHost {
+  invalidateRuntimeCalls: ConversationRuntimeId[] = [];
+  invalidateRuntimeRejectWith: Error | undefined;
+  invalidateRuntimeDelayMs = 0;
+
+  async invalidateRuntime(runtimeId: ConversationRuntimeId): Promise<void> {
+    this.invalidateRuntimeCalls.push(runtimeId);
+    if (this.invalidateRuntimeDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.invalidateRuntimeDelayMs));
+    }
+    if (this.invalidateRuntimeRejectWith) {
+      throw this.invalidateRuntimeRejectWith;
+    }
   }
 }
 
@@ -478,6 +499,7 @@ describe("TurnDispatcher async runner creation", () => {
       surfaceRuntimeAuthority?: SurfaceRuntimeAuthority;
       surfacePolicy?: SkillPolicy;
       cfg?: Config;
+      delegatedWorkHost?: DelegatedWorkHost;
     } = {},
   ): {
     dispatcher: TurnDispatcher;
@@ -515,6 +537,7 @@ describe("TurnDispatcher async runner creation", () => {
       cfg: opts.cfg ?? ({} as Config),
       surfaceSettings,
       subagentRunner: subagentRunner as unknown as SubagentRunner,
+      delegatedWorkHost: opts.delegatedWorkHost,
       memoryStore,
       agentRunners: runners,
       createMessageBuffer: (_surface: Surface, _session?: ConversationState): TurnSink => ({
@@ -911,5 +934,63 @@ describe("TurnDispatcher async runner creation", () => {
       return { result: Promise.resolve("ok") };
     });
     expect(released).toBe(true);
+  });
+
+  it("captures an early delegated invalidation rejection while runner dispose is pending and rethrows it", async () => {
+    const delegatedWorkHost = new FakeDelegatedWorkHost();
+    delegatedWorkHost.invalidateRuntimeRejectWith = new Error("invalidation failed");
+
+    const { dispatcher } = buildAsyncDispatcher({
+      delegatedWorkHost: delegatedWorkHost as unknown as DelegatedWorkHost,
+    });
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+
+    const runner = await dispatcher.getOrCreateRunner(session, surface);
+    const fakeRunner = runner as unknown as FakeAgentRunner;
+    fakeRunner.disposeDelayMs = 50;
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const disposePromise = dispatcher.disposeRunner(session.id);
+      await expect(disposePromise).rejects.toThrow("invalidation failed");
+      // Allow any unhandled rejection event that escaped the eager handler to fire.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+
+    expect(fakeRunner.disposeCalled).toBe(true);
+    expect(delegatedWorkHost.invalidateRuntimeCalls).toHaveLength(1);
+  });
+
+  it("combines runner dispose and delegated invalidation failures instead of dropping the invalidation error", async () => {
+    const delegatedWorkHost = new FakeDelegatedWorkHost();
+    delegatedWorkHost.invalidateRuntimeRejectWith = new Error("invalidation failed");
+
+    const { dispatcher } = buildAsyncDispatcher({
+      delegatedWorkHost: delegatedWorkHost as unknown as DelegatedWorkHost,
+    });
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+
+    const runner = await dispatcher.getOrCreateRunner(session, surface);
+    const fakeRunner = runner as unknown as FakeAgentRunner;
+    fakeRunner.disposeRejectsWith = new Error("dispose failed");
+
+    await expect(dispatcher.disposeRunner(session.id)).rejects.toMatchObject({
+      errors: [
+        expect.objectContaining({ message: "dispose failed" }),
+        expect.objectContaining({ message: "invalidation failed" }),
+      ],
+    });
+
+    expect(fakeRunner.disposeCalled).toBe(true);
+    expect(delegatedWorkHost.invalidateRuntimeCalls).toHaveLength(1);
   });
 });

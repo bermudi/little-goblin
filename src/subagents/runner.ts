@@ -467,6 +467,7 @@ export class SubagentRunner {
         preparationFor(cwd, history, role, definition, inheritance),
       );
     } catch (err) {
+      this.abandonInvocation(id, 0);
       delegatedRegistration.release();
       throw err;
     }
@@ -512,19 +513,18 @@ export class SubagentRunner {
     };
     this.activeSubagents.set(id, instance);
 
-    if (delegatedRegistration !== null) {
-      try {
-        delegatedRegistration.attach(this.attachedAdapterFor(instance));
-      } catch (err) {
-        this.activeSubagents.delete(id);
-        delegatedRegistration.release();
-        const failures: unknown[] = [];
-        await stopPreparedExecution(preparedExecution, id).catch((failure) => failures.push(failure));
-        const failure = combineFailures([err, ...failures], "Subagent delegated registration failed") ?? err;
-        result.reject(failure);
-        settlement.reject(failure);
-        throw failure;
-      }
+    try {
+      delegatedRegistration.attach(this.attachedAdapterFor(instance));
+    } catch (err) {
+      this.activeSubagents.delete(id);
+      delegatedRegistration.release();
+      this.abandonInvocation(id, instance.invocationIndex);
+      const failures: unknown[] = [];
+      await stopPreparedExecution(preparedExecution, id).catch((failure) => failures.push(failure));
+      const failure = combineFailures([err, ...failures], "Subagent delegated registration failed") ?? err;
+      result.reject(failure);
+      settlement.reject(failure);
+      throw failure;
     }
 
     log.debug("subagent spawned", {
@@ -797,21 +797,19 @@ export class SubagentRunner {
       rejectResult: result.reject,
     };
     this.activeSubagents.set(id, instance);
-    if (delegatedRegistration !== null) {
-      try {
-        delegatedRegistration.attach(this.attachedAdapterFor(instance));
-      } catch (err) {
-        this.activeSubagents.delete(id);
-        delegatedRegistration.release();
-        const stopFailures: unknown[] = [];
-        await this.stopAndCollect(instance, stopFailures);
-        this.abandonInvocation(id, instance.invocationIndex);
-        const failure = combineFailures([err, ...stopFailures], "Subagent delegated registration failed") ?? err;
-        result.reject(failure);
-        settlement.reject(failure);
-        this.revivesInProgress.delete(id);
-        throw failure;
-      }
+    try {
+      delegatedRegistration.attach(this.attachedAdapterFor(instance));
+    } catch (err) {
+      this.activeSubagents.delete(id);
+      delegatedRegistration.release();
+      const stopFailures: unknown[] = [];
+      await this.stopAndCollect(instance, stopFailures);
+      this.abandonInvocation(id, instance.invocationIndex);
+      const failure = combineFailures([err, ...stopFailures], "Subagent delegated registration failed") ?? err;
+      result.reject(failure);
+      settlement.reject(failure);
+      this.revivesInProgress.delete(id);
+      throw failure;
     }
     if (onAttached) {
       try {
@@ -876,10 +874,16 @@ export class SubagentRunner {
    * is alive and the next revival can append a fresh invocation.
    */
   private abandonInvocation(id: string, index: number): void {
-    const record = this.delegatedWorkHost.loadRecord(id);
-    const invocation = record?.invocations[index];
-    if (invocation === undefined || invocation.status !== "running") return;
-    this.delegatedWorkHost.closeInvocation(id, index, "interrupted", null, "suppressed");
+    try {
+      const record = this.delegatedWorkHost.loadRecord(id);
+      const invocation = record?.invocations[index];
+      if (invocation === undefined || invocation.status !== "running") return;
+      this.delegatedWorkHost.closeInvocation(id, index, "interrupted", null, "suppressed");
+    } catch (err) {
+      // Cleanup must not mask the failure that triggered it. A record left
+      // `running` is reconciled by `reconcileStartup()` on the next start.
+      log.error("abandon invocation record close failed", { id, index, ...boundedError(err) });
+    }
   }
 
   /**
@@ -1119,7 +1123,13 @@ export class SubagentRunner {
     const instances = [...this.activeSubagents.values()].filter(
       (instance) => instance.delegatedOwnership?.ownershipEpochId === epochId,
     );
-    await Promise.all(instances.map((instance) => collectSettlement(instance, failures)));
+    await Promise.all(instances.map(async (instance) => {
+      if (!instance.settlementStarted) {
+        instance.resolveSettlement();
+        return;
+      }
+      await collectSettlement(instance, failures);
+    }));
     const failure = combineFailures(failures, "Attached subagent quiescence failed");
     if (failure !== null) throw failure;
   }

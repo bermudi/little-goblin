@@ -17,6 +17,7 @@ import { boundedError, log } from "../log.ts";
 import { parseSurfaceId } from "../surface.ts";
 import { VALID_NAME_RE } from "../subagents/validation.ts";
 import {
+  SAFE_RUN_ID_RE,
   delegatedWorkRecordPath,
   delegatedWorkRunDir,
   delegatedWorkRunsRoot,
@@ -25,8 +26,6 @@ import type {
   AttachedDelegatedWorkOwnership,
   DelegatedDeliveryState,
 } from "./types.ts";
-
-const SAFE_RUN_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 const SUBAGENT_STATUSES = ["running", "completed", "cancelled", "error", "interrupted"] as const;
 const DELIVERY_STATES = ["pending", "delivered", "suppressed"] as const;
@@ -86,7 +85,7 @@ const delegatedWorkRecordSchema = z.object({
   name: z.string().nullable(),
   depth: z.number().int().min(1).max(3),
   createdAt: timestampSchema,
-  invocations: z.array(delegatedWorkInvocationSchema),
+  invocations: z.array(delegatedWorkInvocationSchema).min(1),
 }).strict().superRefine((record, ctx) => {
   if (record.kind === "generic-subagent" && record.name !== null) {
     ctx.addIssue({
@@ -110,6 +109,13 @@ const delegatedWorkRecordSchema = z.object({
         code: "custom",
         path: ["invocations", i, "index"],
         message: "invocation indices must be contiguous starting at 0",
+      });
+    }
+    if (invocation.status === "running" && i !== record.invocations.length - 1) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["invocations", i, "status"],
+        message: "only the last invocation may be running",
       });
     }
   }
@@ -393,15 +399,19 @@ export class DelegatedWorkRecordStore {
     deliveryState: DelegatedDeliveryState,
   ): DelegatedWorkRecord {
     const record = this.require(id);
-    const next = this.updateInvocation(record, index, (invocation) => ({
-      ...invocation,
-      deliveryState,
-    }));
+    const next = this.updateInvocation(record, index, (invocation) => {
+      if (invocation.status === "running") {
+        throw new Error(
+          `Cannot set delivery state on invocation ${index} of ${id}: still running`,
+        );
+      }
+      return { ...invocation, deliveryState };
+    });
     writeRecordAtomic(this.recordPath(id), next);
     return next;
   }
 
-  /** List every run id that has a valid record file. Malformed records fail loudly. */
+  /** List every run id whose run directory contains a `record.json` file. Malformed records fail loudly when loaded. */
   listIds(): string[] {
     const root = delegatedWorkRunsRoot(this.home);
     let entries: string[];
@@ -415,10 +425,17 @@ export class DelegatedWorkRecordStore {
 
     const ids: string[] = [];
     for (const entry of entries) {
+      // Only canonical run directories are ids. A stray directory must not
+      // fail startup reconciliation.
+      if (!SAFE_RUN_ID_RE.test(entry)) {
+        log.warn("delegated work run directory skipped: not a canonical run id", { path: join(root, entry) });
+        continue;
+      }
       const path = join(root, entry);
       // Skip non-directory entries. The record file lives inside the run dir.
       try {
         if (!statSync(path).isDirectory()) continue;
+        if (!statSync(join(path, "record.json")).isFile()) continue;
       } catch (err) {
         if (isNodeErrnoException(err) && err.code === "ENOENT") continue;
         throw err;

@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { SubagentRunner } from "../mod.ts";
+import { SubagentRunner, type SubagentPreparation } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
+import {
+  DelegatedWorkHost,
+  asConversationRuntimeId,
+  type DelegatedDeliveryState,
+  type DelegatedWorkOutcome,
+  type DelegatedWorkRecord,
+  type DelegatedWorkStatus,
+} from "../../delegated-work/mod.ts";
 import { topicScopeDir } from "../../memory/paths.ts";
 import { workspacePath } from "../../workspace/paths.ts";
 import {
@@ -27,6 +35,31 @@ import {
   writeRecordAndSession,
   writeSessionFile,
 } from "./support.ts";
+
+class ThrowingCloseInvocationHost extends DelegatedWorkHost {
+  closeInvocationCalls = 0;
+
+  closeInvocation(
+    _runId: string,
+    _index: number,
+    _status: Extract<DelegatedWorkStatus, "completed" | "cancelled" | "error" | "interrupted">,
+    _outcome: DelegatedWorkOutcome | null,
+    _deliveryState: DelegatedDeliveryState,
+  ): never {
+    this.closeInvocationCalls += 1;
+    throw new Error("close invocation failed");
+  }
+}
+
+class ThrowingLoadRecordHost extends DelegatedWorkHost {
+  loadRecordCalls = 0;
+
+  loadRecord(runId: string): DelegatedWorkRecord | null {
+    this.loadRecordCalls += 1;
+    if (this.loadRecordCalls === 1) return super.loadRecord(runId);
+    throw new Error("load record failed");
+  }
+}
 
 describe("SubagentRunner.revive", () => {
   let tmp: string;
@@ -465,5 +498,66 @@ describe("SubagentRunner — revive rejects after dispose", () => {
   it("throws after dispose", async () => {
     await runner.dispose();
     await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, "any-id", "ping")).rejects.toThrow("SubagentRunner is disposed");
+  });
+});
+
+describe("SubagentRunner — abandonInvocation cleanup containment", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+  let host: FakeSubagentHost;
+  let delegatedHost: ThrowingCloseInvocationHost;
+
+  beforeEach(() => {
+    tmp = createTestHome("goblin-abandon-cleanup-");
+    host = new FakeSubagentHost();
+    delegatedHost = new ThrowingCloseInvocationHost(tmp);
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host, undefined, delegatedHost);
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("does not let a throwing closeInvocation mask the original prepare error", async () => {
+    const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
+    await flush();
+    await completeAndAcknowledge(runner, host, handle, "done");
+    writeSessionFile(tmp, handle.id, "2026-01-01T00-00-00.jsonl");
+
+    // Force prepare to fail so the revive enters the abandonInvocation cleanup path.
+    host.prepare = (_plan: SubagentPreparation) => { throw new Error("prepare failed"); };
+
+    await expect(
+      runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "retry"),
+    ).rejects.toThrow("prepare failed");
+
+    const record = readRecord(tmp, handle.id);
+    expect(record.status).toBe("running");
+    expect(record.runtimeId).toBeDefined();
+    expect(runner.delegatedWorkHost.registeredForRuntime(asConversationRuntimeId(record.runtimeId as string))).toBe(0);
+    expect(delegatedHost.closeInvocationCalls).toBe(1);
+  });
+
+  it("does not let a throwing loadRecord mask the original prepare error", async () => {
+    const delegatedHost = new ThrowingLoadRecordHost(tmp);
+    const testRunner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host, undefined, delegatedHost);
+
+    const handle = await testRunner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
+    await flush();
+    await completeAndAcknowledge(testRunner, host, handle, "done");
+    writeSessionFile(tmp, handle.id, "2026-01-01T00-00-00.jsonl");
+
+    // Force prepare to fail so the revive enters the abandonInvocation cleanup path.
+    host.prepare = (_plan: SubagentPreparation) => { throw new Error("prepare failed"); };
+
+    await expect(
+      testRunner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "retry"),
+    ).rejects.toThrow("prepare failed");
+
+    const record = readRecord(tmp, handle.id);
+    expect(record.status).toBe("running");
+    expect(record.runtimeId).toBeDefined();
+    expect(testRunner.delegatedWorkHost.registeredForRuntime(asConversationRuntimeId(record.runtimeId as string))).toBe(0);
+    expect(delegatedHost.loadRecordCalls).toBe(2);
   });
 });

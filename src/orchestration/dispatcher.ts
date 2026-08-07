@@ -833,9 +833,21 @@ export class TurnDispatcher {
     // Fence delegated work immediately after runtime identity is removed.
     // `invalidateRuntime` performs its fence synchronously before returning a
     // promise, so no late generic spawn can cross this boundary.
-    const delegatedInvalidation = runtimeId === undefined
+    let delegatedErr: unknown;
+    let delegatedFailed = false;
+    const delegatedInvalidation: Promise<void> = runtimeId === undefined
       ? Promise.resolve()
-      : this.delegatedWorkHost.invalidateRuntime(runtimeId);
+      : this.delegatedWorkHost
+        .invalidateRuntime(runtimeId)
+        .catch((err: unknown) => {
+          delegatedErr = err;
+          delegatedFailed = true;
+          log.error("delegated work invalidation failed in disposeRunner", {
+            sessionId,
+            runtimeId: runtimeId ?? null,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        });
 
     // Await runner disposal and subagent/external cleanup, but track failure so
     // falsy throws (e.g. `throw undefined` or `throw null`) are still rethrown.
@@ -857,19 +869,7 @@ export class TurnDispatcher {
     // External-agent cleanup remains on its legacy adapter path in this
     // attached-subagent slice. Generic subagents are never enumerated or
     // cancelled here; DelegatedWorkHost owns their runtime invalidation.
-    let delegatedErr: unknown;
-    let delegatedFailed = false;
-    try {
-      await delegatedInvalidation;
-    } catch (err) {
-      delegatedErr = err;
-      delegatedFailed = true;
-      log.error("delegated work invalidation failed in disposeRunner", {
-        sessionId,
-        runtimeId: runtimeId ?? null,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
+    await delegatedInvalidation;
 
     // External-agent cancellation still has its legacy bounded adapter. Do not
     // use a timeout for delegated attached work: timeout is not proof of
@@ -893,6 +893,12 @@ export class TurnDispatcher {
       await Promise.race([externalCancelPromise, timeout]);
     } finally {
       if (timer) clearTimeout(timer);
+      if (disposeFailed && delegatedFailed) {
+        throw new AggregateError(
+          [disposeErr, delegatedErr],
+          "disposeRunner cleanup failed",
+        );
+      }
       if (disposeFailed) throw disposeErr;
       if (delegatedFailed) throw delegatedErr;
     }

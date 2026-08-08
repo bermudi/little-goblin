@@ -409,6 +409,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async setSurfacePreferences(surface: Surface, patch: SurfacePreferencePatch): Promise<PreferenceTransition> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
+      await this.reconcilePendingAssignment();
       const previousModelName = this.settings.getModelName(surface);
       const previousThinkingLevel = this.settings.getThinkingLevel(surface);
 

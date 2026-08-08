@@ -173,11 +173,11 @@ function makeLifecycle(env: ExecutionEnvironment, home: string): Deps {
   return { home, store, bindings, runtimeHost, lifecycle };
 }
 
-function makeFileLifecycle(home: string): Deps {
+function makeFileLifecycle(home: string, settings: SurfaceSettings = fileBasedSettings(home)): Deps {
   const store = new ConversationStore(home);
   const bindings = new InMemoryBindingStore();
   const runtimeHost = new FakeRuntimeHost();
-  const lifecycle = new ConversationLifecycleManager(home, store, bindings, fileBasedSettings(home), runtimeHost);
+  const lifecycle = new ConversationLifecycleManager(home, store, bindings, settings, runtimeHost);
   return { home, store, bindings, runtimeHost, lifecycle };
 }
 
@@ -732,6 +732,69 @@ describe("ConversationLifecycle", () => {
       expect(lifecycle.settings.getThinkingLevel(surface)).toBe("high");
       expect(runtimeHost.disposed).toContain(conversation.id);
       expect(lifecycle.inspect(surface)?.id).toBe(conversation.id);
+    });
+
+    it("replays a pending project assignment before persisting preferences and invalidating", async () => {
+      const settings = fileBasedSettings(tmpDir);
+      const { lifecycle, store, bindings, runtimeHost } = makeFileLifecycle(tmpDir, settings);
+      const surface = dmSurface(1);
+      const key = surfaceId(surface);
+      const prior = await lifecycle.resolveOrStart(surface);
+      runtimeHost.active.add(prior.id);
+      const projectRoot = join(tmpDir, "pending-project");
+      mkdirSync(projectRoot, { recursive: true });
+      const plannedId = store.allocateId();
+      savePendingProjectAssignment(tmpDir, {
+        version: 1,
+        surfaceId: key,
+        previousSessionId: prior.id,
+        plannedSessionId: plannedId,
+        projectRoot,
+      });
+
+      const readModelName = settings.getModelName;
+      const readThinkingLevel = settings.getThinkingLevel;
+      const writePreferences = settings.setPreferences;
+      const observedSettingsCalls: string[] = [];
+      const assertAssignmentReconciled = (operation: string): void => {
+        observedSettingsCalls.push(operation);
+        expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+        expect(bindings.bindings.surfaces[key]).toBe(plannedId);
+        expect(getProjectRoot(tmpDir, surface)).toBe(projectRoot);
+      };
+      settings.getModelName = (observedSurface) => {
+        assertAssignmentReconciled("getModelName");
+        return readModelName(observedSurface);
+      };
+      settings.getThinkingLevel = (observedSurface) => {
+        assertAssignmentReconciled("getThinkingLevel");
+        return readThinkingLevel(observedSurface);
+      };
+      settings.setPreferences = (observedSurface, patch) => {
+        assertAssignmentReconciled("setPreferences");
+        writePreferences(observedSurface, patch);
+      };
+
+      const result = await lifecycle.setSurfacePreferences(surface, {
+        modelName: "poe/SurfaceModel",
+        thinkingLevel: "high",
+      });
+
+      // Each preference read/write observes the reconciled assignment, not
+      // merely the final state after the transition has completed.
+      expect(observedSettingsCalls).toEqual(["getModelName", "getThinkingLevel", "setPreferences"]);
+      expect(loadPendingProjectAssignment(tmpDir)).toBeNull();
+      expect(bindings.bindings.surfaces[key]).toBe(plannedId);
+      expect(getProjectRoot(tmpDir, surface)).toBe(projectRoot);
+      expect(lifecycle.inspect(surface)?.id).toBe(plannedId);
+      // The patch is preserved on the reconciled surface, and invalidation
+      // targets the reconciled assignment: the displaced runtime is quiesced
+      // by the replay, then the planned conversation (no runtime) is
+      // invalidated with a "none" transition.
+      expect(readModelName(surface)).toBe("poe/SurfaceModel");
+      expect(readThinkingLevel(surface)).toBe("high");
+      expect(runtimeHost.disposed).toEqual([prior.id, plannedId]);
+      expect(result.runtime).toBe("none");
     });
 
     it("keeps committed preferences authoritative and reports runtime cleanup failure", async () => {

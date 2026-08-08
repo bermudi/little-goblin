@@ -10,10 +10,18 @@ import type { TurnDispatcher } from "./dispatcher.ts";
  * effects. The invalidation (runner/queue removal) is synchronous; the
  * quiescence (AgentRunner.dispose and subagent/external cleanup) is bounded.
  */
+export interface RuntimeDisposalOptions {
+  /**
+   * Preserve lifecycle-command serialization while invalidating model work.
+   * Commands use binding authority rather than the disposed runner's identity.
+   */
+  readonly preserveCommandQueue?: boolean;
+}
+
 export interface ConversationRuntimeHost {
   /** True when a runner or in-flight creation currently holds this identity. */
   hasRuntime(conversationId: ConversationId): boolean;
-  disposeRuntime(conversationId: ConversationId): Promise<void>;
+  disposeRuntime(conversationId: ConversationId, options?: RuntimeDisposalOptions): Promise<void>;
 }
 
 /**
@@ -29,6 +37,6 @@ export function createTurnDispatcherRuntimeHost(
   const getDispatcher = typeof dispatcher === "function" ? dispatcher : () => dispatcher;
   return {
     hasRuntime: (conversationId) => getDispatcher().hasRuntime(conversationId),
-    disposeRuntime: (conversationId) => getDispatcher().disposeRunner(conversationId),
+    disposeRuntime: (conversationId, options) => getDispatcher().disposeRunner(conversationId, undefined, options),
   };
 }

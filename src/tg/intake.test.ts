@@ -814,7 +814,7 @@ describe("Telegram intake", () => {
   it("orphans a later-deferred command when an earlier /new swaps the runner", async () => {
     // When /new queues before /model, /new swaps out S1's runner before the
     // deferred /model continuation runs. The isCurrent() guard then drops
-    // /model — setModel is not called and no "Switched to" reply arrives.
+    // /model — no "Switched to" reply arrives.
     // This pins the documented behavior so a future change to stale-runner
     // orphaning is intentional.
     const cfg = makeConfig();
@@ -842,14 +842,13 @@ describe("Telegram intake", () => {
     await waitFor(() => replies.at(-1)!.includes("Created new conversation"));
 
     // /new swapped the runner; the stale deferred /model never executed.
-    expect(runners[0]!.setModel).not.toHaveBeenCalled();
     expect(replies.some((r) => r.startsWith("Switched to"))).toBe(false);
   });
 
-  it("runs deferred commands in arrival order when the chain is intact", async () => {
-    // Inverse of the orphan test: when /model queues before /new, the chain
-    // preserves arrival order — /model runs first (S1 still current) and
-    // succeeds, THEN /new runs and creates S2. No command is dropped.
+  it("preserves deferred command arrival order across same-binding runtime invalidation", async () => {
+    // /model invalidates S1's runtime but keeps the binding authoritative.
+    // The later /new therefore remains serialized behind it and executes next;
+    // acknowledged lifecycle commands must not disappear with model work.
     const cfg = makeConfig();
     cfg.favorites = ["poe/GPT-4o"];
     const { intake } = makeHarness(cfg);
@@ -870,12 +869,14 @@ describe("Telegram intake", () => {
     await flushMicrotasks();
 
     slow.resolve();
-    // /model succeeds first, then /new creates the second Conversation.
     await waitFor(() => replies.filter((r) => r.includes("Switched to")).length === 1);
     await waitFor(() => replies.filter((r) => r.includes("Created new conversation")).length === 2);
 
-    expect(runners[0]!.setModel).toHaveBeenCalledTimes(1);
+    expect(runners[0]!.dispose).toHaveBeenCalledTimes(1);
     expect(replies.some((r) => r.includes("Switched to `poe/GPT-4o`"))).toBe(true);
+    expect(replies.findIndex((r) => r.includes("Switched to"))).toBeLessThan(
+      replies.findLastIndex((r) => r.includes("Created new conversation")),
+    );
   });
 
   it("surfaces a deferred command's handler failure as the canned reply", async () => {
@@ -897,10 +898,11 @@ describe("Telegram intake", () => {
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
 
-    // setModel rejects; modelHandler's try/catch converts it to a canned reply.
-    runners[0]!.setModel.mockImplementationOnce(async () => {
+    // Surface preference persistence rejects; modelHandler's try/catch
+    // converts it to a canned reply.
+    intake.lifecycle.setSurfacePreferences = async (_surface, _patch) => {
       throw new Error("provider key rejected");
-    });
+    };
 
     await intake.handleText(message, "/model 1");
     await flushMicrotasks();

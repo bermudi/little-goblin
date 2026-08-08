@@ -284,3 +284,47 @@ export function setThinkingLevel(home: string, surface: Surface, thinkingLevel: 
   saveTopicSettings(home, settings);
   log.info("bound thinkingLevel", { surfaceId: surfaceId(surface), thinkingLevel });
 }
+
+/** Surface-scoped preference patch. A present key with an `undefined` value clears that field. */
+export interface SurfacePreferencePatch {
+  modelName?: string | undefined;
+  thinkingLevel?: ThinkingLevel | undefined;
+}
+
+function hasOwn<K extends string>(value: object, key: K): value is Record<K, unknown> {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+/**
+ * Apply a model/thinking preference patch to a Surface in one atomic settings
+ * write. A key that is present with `undefined` clears that override; an
+ * omitted key leaves the existing value unchanged. Validation fails before any
+ * write, so invalid input never mutates durable state.
+ */
+export function patchSurfaceSettings(home: string, surface: Surface, patch: SurfacePreferencePatch): void {
+  const settings = loadTopicSettings(home);
+
+  updateSurface(settings, surface, (s) => {
+    const next = { ...s };
+    if (hasOwn(patch, "modelName")) {
+      if (patch.modelName !== undefined && (typeof patch.modelName !== "string" || patch.modelName.length === 0)) {
+        throw new Error(`invalid modelName for surface ${surfaceId(surface)}`);
+      }
+      next.modelName = patch.modelName;
+    }
+    if (hasOwn(patch, "thinkingLevel")) {
+      if (patch.thinkingLevel !== undefined && !isValidThinkingLevel(patch.thinkingLevel)) {
+        throw new Error(`invalid thinkingLevel for surface ${surfaceId(surface)}`);
+      }
+      next.thinkingLevel = patch.thinkingLevel;
+    }
+    return next;
+  });
+
+  saveTopicSettings(home, settings);
+  log.info("patched surface preferences", {
+    surfaceId: surfaceId(surface),
+    modelName: hasOwn(patch, "modelName") ? patch.modelName : "(unchanged)",
+    thinkingLevel: hasOwn(patch, "thinkingLevel") ? patch.thinkingLevel : "(unchanged)",
+  });
+}

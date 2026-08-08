@@ -1,9 +1,9 @@
-import type { ConversationState } from "../sessions/mod.ts";
+import type { NameTransition } from "../orchestration/conversation-lifecycle.ts";
 
 export interface NameCommandDeps {
   rawText: string;
-  conversation: ConversationState | null;
-  setTitle: (title: string | undefined) => void;
+  /** Lifecycle-owned current-Conversation status and title mutation. */
+  setTitle: (title: string | undefined) => Promise<NameTransition>;
 }
 
 export type NameCommandResult =
@@ -19,12 +19,17 @@ export function parseSessionName(rawText: string): string | undefined {
   return value === "" ? undefined : value;
 }
 
-export function executeName(deps: NameCommandDeps): NameCommandResult {
-  if (!deps.conversation) {
+export async function executeName(deps: NameCommandDeps): Promise<NameCommandResult> {
+  const title = parseSessionName(deps.rawText);
+  const transition = await deps.setTitle(title);
+  if (transition.kind === "no-session") {
     return { kind: "missing-session", reply: NO_ACTIVE_SESSION_TO_NAME_REPLY };
   }
-  const title = parseSessionName(deps.rawText);
-  if (!title) return { kind: "usage", reply: NAME_USAGE_REPLY };
-  deps.setTitle(title);
-  return { kind: "renamed", reply: `Named conversation \`${deps.conversation.id}\`: ${title}` };
+  if (transition.kind === "missing-title") {
+    return { kind: "usage", reply: NAME_USAGE_REPLY };
+  }
+  return {
+    kind: "renamed",
+    reply: `Named conversation \`${transition.conversation.id}\`: ${transition.conversation.title}`,
+  };
 }

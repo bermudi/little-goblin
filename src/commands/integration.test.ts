@@ -90,6 +90,7 @@ describe("rapid command spam integration", () => {
       setModelName: () => {},
       getThinkingLevel: () => undefined,
       setThinkingLevel: () => {},
+      setPreferences: () => {},
       getSkillPolicy: () => DEFAULT_SKILL_POLICY,
     };
   }
@@ -108,13 +109,8 @@ describe("rapid command spam integration", () => {
     expect(afterNew).not.toBeNull();
     expect(afterNew?.id).toBe(sessionId);
 
-    const conv = lifecycle.inspect(surface);
     const archiveResult = await executeArchive({
-      hasSession: conv !== null,
-      sessionExists: conv !== null && conversationStore.load(conv.id) !== null,
-      archive: async () => {
-        await lifecycle.archive(surface);
-      },
+      archive: () => lifecycle.archive(surface),
     });
     expect(archiveResult.kind).toBe("archived");
 
@@ -144,11 +140,8 @@ describe("rapid command spam integration", () => {
     expect(existsSync(sessionDir(cfg.goblinHome, secondId))).toBe(true);
     expect(lifecycle.inspect(surface)?.id).toBe(secondId);
 
-    const conv = lifecycle.inspect(surface);
     const archiveResult = await executeArchive({
-      hasSession: conv !== null,
-      sessionExists: conv !== null && conversationStore.load(conv.id) !== null,
-      archive: async () => lifecycle.archive(surface),
+      archive: () => lifecycle.archive(surface),
     });
     expect(archiveResult.kind).toBe("archived");
 
@@ -165,10 +158,9 @@ describe("rapid command spam integration", () => {
     });
     const firstId = first.conversation.id;
 
-    const nameResult = executeName({
+    const nameResult = await executeName({
       rawText: "/name ttt",
-      conversation: first.conversation,
-      setTitle: (title) => conversationStore.setTitle(firstId, title),
+      setTitle: (title) => lifecycle.setTitle(surface, title),
     });
     expect(nameResult.kind).toBe("renamed");
 
@@ -198,10 +190,7 @@ describe("rapid command spam integration", () => {
     mkdirSync(projectRoot, { recursive: true });
 
     const projectConv = conversationStore.create(projectEnvironment(projectRoot), "project conv");
-    const compatible = lifecycle.listResumable(surface).map((c) => conversationFor(c));
-    const all = conversationStore.list().map((c) => c);
-    const compatibleIds = new Set(compatible.map((s) => s.id));
-    const incompatible = all.filter((s) => !compatibleIds.has(s.id));
+    const { compatible, incompatible } = await lifecycle.getResumeCandidates(surface);
 
     const result = await executeResume({
       rawText: "/resume project conv",
@@ -232,10 +221,7 @@ describe("rapid command spam integration", () => {
     const displaced = await manager.resolveOrStart(destination);
     setModelName(tmpDir, destination, "poe/DestinationModel");
 
-    const compatible = manager.listResumable(destination).map((c) => c);
-    const all = conversationStore.list().map((c) => c);
-    const compatibleIds = new Set(compatible.map((s) => s.id));
-    const incompatible = all.filter((s) => !compatibleIds.has(s.id));
+    const { compatible, incompatible } = await manager.getResumeCandidates(destination);
 
     const result = await executeResume({
       rawText: `/resume ${target.id}`,
@@ -272,11 +258,7 @@ describe("rapid command spam integration", () => {
     throwingStore.throwOn = conv.id;
 
     const archiveResult = executeArchive({
-      hasSession: true,
-      sessionExists: true,
-      archive: async () => {
-        await manager.archive(surface);
-      },
+      archive: () => manager.archive(surface),
     });
 
     await expect(archiveResult).rejects.toThrow(/archive move failed/);
@@ -311,13 +293,8 @@ describe("rapid command spam integration", () => {
     expect(existsSync(heartbeatPath)).toBe(true);
 
     // /archive clears the binding and moves the conversation directory.
-    const conv = lifecycle.inspect(surface);
     const archiveResult = await executeArchive({
-      hasSession: conv !== null,
-      sessionExists: conv !== null && conversationStore.load(conv.id) !== null,
-      archive: async () => {
-        await lifecycle.archive(surface);
-      },
+      archive: () => lifecycle.archive(surface),
     });
     expect(archiveResult.kind).toBe("archived");
     expect(scheduleStore.getHeartbeat(surface)?.enabled).toBe(true);

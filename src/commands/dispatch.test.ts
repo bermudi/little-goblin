@@ -67,8 +67,6 @@ function makeRunner(streaming = false): AgentRunner {
   return {
     modelName: "poe/GPT-4o",
     compact: mock(async () => ({ tokensBefore: 42_000 })),
-    setModel: mock(async (_name: string) => {}),
-    setThinkingLevel: mock(() => {}),
     getActiveToolNames: mock(() => []),
     skillsLoaded: null,
     contextTokens: null,
@@ -96,11 +94,13 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
   deps: DispatchDeps;
   interrupt: ReturnType<typeof mock>;
   lifecycle: ReturnType<typeof createConversationLifecycle>;
+  runtimeHost: { hasRuntime: (id: string) => boolean; disposeRuntime: (id: string) => Promise<void>; disposed: string[] };
   conversationStore: ConversationStore;
 } {
   const cfg = makeConfig();
   const interrupt = mock(async () => cascade);
-  const runtimeHost = { hasRuntime: () => false, disposeRuntime: async () => {} };
+  let runtimeHost: { hasRuntime: (id: string) => boolean; disposed: string[]; disposeRuntime: (id: string) => Promise<void> };
+  runtimeHost = { hasRuntime: () => false, disposed: [], disposeRuntime: async (id) => { runtimeHost.disposed.push(id); } };
   const lifecycle = createConversationLifecycle(cfg.goblinHome, runtimeHost);
   const conversationStore = new ConversationStore(cfg.goblinHome);
   const surface = dmSurface(123);
@@ -135,10 +135,10 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
     surface,
     interrupt,
     lifecycle,
+    runtimeHost,
     conversationStore,
     deps: {
       lifecycle,
-      conversationStore,
       cfg,
       subagentRunner,
       dispatcher,
@@ -271,16 +271,15 @@ describe("handleCommand", () => {
     expect(result.sideEffects[1]?.kind).toBe("runner-created");
   });
 
-  it("/model switches the model in place without disposing the runner", async () => {
+  it("/model persists the Surface model override and invalidates the current runtime", async () => {
     const harness = makeHarness();
     const session = await createSession(harness);
-    const runner = makeRunner();
-    const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, runner, harness }));
+    harness.runtimeHost.hasRuntime = () => true;
+    const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, harness }));
     expect(result.reply).toContain("Switched to `poe/GPT-4o`");
-    // No dispose/recreate — the model change is applied to the live session
-    // via setModel(), preserving history in the same pi session file.
     expect(result.sideEffects).toEqual([]);
-    expect(runner.setModel).toHaveBeenCalledWith("poe/GPT-4o");
+    expect(harness.lifecycle.settings.getModelName(harness.surface)).toBe("poe/GPT-4o");
+    expect(harness.runtimeHost.disposed).toContain(session.id);
   });
 
   it("/model without a runner only persists the override", async () => {
@@ -299,13 +298,15 @@ describe("handleCommand", () => {
     expect(result.reply).toContain("Favorites:");
   });
 
-  it("/think updates the existing runner without disposing it", async () => {
+  it("/think persists the Surface thinking override and invalidates the current runtime", async () => {
     const harness = makeHarness();
     const session = await createSession(harness);
-    const runner = makeRunner();
-    const result = expectReplied(await dispatch({ command: "/think", rawText: "/think high", session, runner, harness }));
+    harness.runtimeHost.hasRuntime = () => true;
+    const result = expectReplied(await dispatch({ command: "/think", rawText: "/think high", session, harness }));
     expect(result.sideEffects).toEqual([]);
-    expect(runner.setThinkingLevel).toHaveBeenCalledWith("high");
+    expect(result.reply).toContain("Thinking level set to `high`");
+    expect(harness.lifecycle.settings.getThinkingLevel(harness.surface)).toBe("high");
+    expect(harness.runtimeHost.disposed).toContain(session.id);
   });
 
   it("/model without a session persists the Surface model override", async () => {
@@ -673,6 +674,28 @@ describe("handleCommand", () => {
       const runner = makeRunner(false);
       const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, runner, harness }));
       expect(result.tag).toBe("ok");
+    });
+
+    it("/model reports a committed preference with a bounded cleanup warning", async () => {
+      const harness = makeHarness();
+      const original = harness.lifecycle.setSurfacePreferences.bind(harness.lifecycle);
+      harness.lifecycle.setSurfacePreferences = async () => ({
+        modelName: "poe/GPT-4o",
+        runtime: "invalidated",
+        cleanupError: `cleanup failed ${"x".repeat(300)}`,
+      });
+      try {
+        const result = expectReplied(await dispatch({
+          command: "/model",
+          rawText: "/model 1",
+          harness,
+        }));
+        expect(result.tag).toBe("warn");
+        expect(result.reply).toContain("Preference saved, but runtime cleanup reported an error after invalidation");
+        expect(result.reply.length).toBeLessThan(300);
+      } finally {
+        harness.lifecycle.setSurfacePreferences = original;
+      }
     });
 
     it("/new failure is tagged 'error'", async () => {

@@ -3,6 +3,9 @@
  *
  * Shows the current thinking level or sets it for the next turn.
  * Only lists levels supported by the active model.
+ *
+ * Command output carries the validated thinking level; the caller
+ * (registry handler) applies it through `ConversationLifecycle.setSurfacePreferences`.
  */
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -18,8 +21,6 @@ export interface ThinkCommandDeps {
   currentLevel: ThinkingLevel;
   /** Levels supported by the active model (may be fewer than ALL_LEVELS). */
   supportedLevels: readonly ThinkingLevel[];
-  /** Sets (or clears) the Surface-scoped thinking level override. */
-  setThinkingLevel: (level: ThinkingLevel | undefined) => void;
 }
 
 export type ThinkCommandResult =
@@ -62,7 +63,6 @@ export function executeThink(deps: ThinkCommandDeps): ThinkCommandResult {
 
   // Clear override
   if (arg.toLowerCase() === "none" || arg.toLowerCase() === "clear") {
-    deps.setThinkingLevel(undefined);
     return { kind: "cleared", reply: "Thinking level override cleared. Using model default." };
   }
 
@@ -74,6 +74,5 @@ export function executeThink(deps: ThinkCommandDeps): ThinkCommandResult {
     };
   }
 
-  deps.setThinkingLevel(level);
   return { kind: "set", reply: `Thinking level set to \`${level}\``, level };
 }

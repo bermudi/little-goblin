@@ -137,6 +137,7 @@ function createFixture(): RuntimeFixture {
     setModelName: () => {},
     getThinkingLevel: () => undefined,
     setThinkingLevel: () => {},
+    setPreferences: () => {},
     getSkillPolicy: () => DEFAULT_SKILL_POLICY,
   };
 

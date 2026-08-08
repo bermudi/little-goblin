@@ -96,7 +96,7 @@ The legacy disk path remains `state/sessions/<id>/`; path churn has no architect
 
 **TARGET.** A Conversation runtime is ephemeral: one `AgentRunner` plus one serialized prompt queue. It is assembled from the current Conversation and its bound Surface, then invalidated before `/new`, `/resume`, `/archive`, or another authority-changing transition can commit.
 
-A runtime is never routing or persistence identity. Stale runtime work must fail its current-binding check before filesystem writes, Telegram replies, schedule mutation, or model prompts.
+A runtime is never routing or persistence identity. Stale runtime work must fail its current-binding check before filesystem writes, Telegram replies, schedule mutation, or model prompts. Lifecycle commands already acknowledged behind a turn are serialized by current Binding authority rather than stale runner identity, so same-binding preference invalidation preserves their order while a binding change drops them.
 
 ### Execution Environment
 
@@ -259,7 +259,7 @@ The archived `agent-owned-prompt-files` change amended the legacy canon statemen
 
 A Surface owns independent `goblin`, `environment`, and `host` selections. Each source is `all`, `none`, or an explicit selected-name set. Defaults are Goblin all, environment all, host none. The optional policy is persisted in the SurfaceId-keyed topic settings record; absence means the defaults without an eager write. `/new` preserves policy; `/resume` uses destination Surface policy.
 
-`ConversationLifecycle` owns `/skills` inspection, policy mutation, and reload transitions. Inspection is non-creating; mutation and reload resolve the candidate catalog before persistence/invalidation, then invalidate the current runtime through the existing runtime-host seam. Cleanup failure is reported after the durable policy is already authoritative. Runtime construction resolves exact roots from Conversation environment plus destination Surface policy before registering the runner, freezes the resolved manifest, disables Pi ambient skill discovery, and records source/path provenance. It never walks above canonical `projectRoot`, never implicitly loads `~/.pi/agent/skills/` or package skills, and fails on distinct selected files with duplicate names rather than depending on discovery order. Catalog edits take effect on runtime recreation or `/skills reload`.
+`ConversationLifecycle` owns `/skills` inspection, policy mutation, and reload transitions. It also owns atomic Surface model/thinking preference transitions for `/model` and `/think`; commands validate intent but never mutate an `AgentRunner` directly. Inspection is non-creating; mutation and reload resolve the candidate catalog before persistence/invalidation, then invalidate the current runtime through the existing runtime-host seam. Cleanup failure is reported after the durable policy is already authoritative. Runtime construction resolves exact roots from Conversation environment plus destination Surface policy before registering the runner, freezes the resolved manifest, disables Pi ambient skill discovery, and records source/path provenance. It never walks above canonical `projectRoot`, never implicitly loads `~/.pi/agent/skills/` or package skills, and fails on distinct selected files with duplicate names rather than depending on discovery order. Catalog edits take effect on runtime recreation or `/skills reload`.
 
 The operator moved legacy `workspace/skills/` to the Goblin catalog because it historically followed the assistant into every environment. Generic subagents inherit the caller runtime's exact environment and frozen manifest. Named agents use only their canonical isolated `.agents/skills/` catalog; legacy per-agent `skills/` directories are ignored and any deployment move is operator-owned.
 
@@ -459,6 +459,7 @@ One ordered sequence, walked end to end. Historical change names and task counts
 | 5 | `transcript-surface-provenance` | 29 | **archived** | Event-time provenance for history that may move; state version 3; provenance-aware indexing and dreaming |
 | 6 | `conversation-lifecycle` | 48 | **archived** | Surface/Binding/Conversation split; compatible movement; Surface-owned preferences and automation; filesystem state version 4 |
 | 6a | Persistence and runtime-authority closure | authority corruption + pending-assignment fence | **complete** | Fail closed on canonical authority corruption; recover only intent-owned planned directories; require lifecycle authority for every Surface runtime |
+| 6b | Command/lifecycle authority closure | architectural review D1–D2 | **complete** | Commands use complete lifecycle operations; Surface preference writes invalidate runtime authority without direct runner mutation |
 | 7 | `pi-native-skill-layout` | fresh Nospec slice | **implemented** | Native scoped roots; operator-owned one-time move |
 | 8 | `skill-catalog-resolution` | fresh Nospec slice | **implemented** | Explicit catalog roots; `SkillCatalogResolver`; `skillSources` switch dies |
 | 9 | `surface-skill-policy` | fresh Nospec slice | **implemented** | Per-Surface `/skills` selection |
@@ -468,9 +469,9 @@ One ordered sequence, walked end to end. Historical change names and task counts
 | 12 | `delegated-work-ownership` | 36 | **parked** | Remaining durable lifetime, completion delivery, claim/ack/release (record store carved out as 10a) |
 | 13 | `visible-dreaming` | — | **deferred; prior placeholder deleted** | Rewrite against `inner-life`; recover historical notes from Git only if needed |
 
-Steps 1–10a, including attachment intake, agent-owned prompt files, the persistence/runtime-authority closure, native skill layout, catalog resolution, Surface skill policy, subagent skill inheritance, and the delegated-run record store, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
+Steps 1–10a, including attachment intake, agent-owned prompt files, the persistence/runtime-authority and command/lifecycle authority closures, native skill layout, catalog resolution, Surface skill policy, subagent skill inheritance, and the delegated-run record store, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
 
-**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The plainly described next is the command/lifecycle authority closure recorded in `BACKLOG.md`: commands call complete lifecycle operations rather than direct store/runtime mutations. ACP external agents under decision 0044 follows that stabilization repair — capability-scoped Claude/Devin ACP behind the external-agent execution host, abandoning `scratch/external-agents/` in place; remaining parked scope stays deferred until deliberately resumed.
+**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The command/lifecycle authority closure is complete. The plainly described next is ACP external agents under decision 0044 — capability-scoped Claude/Devin ACP behind the external-agent execution host, abandoning `scratch/external-agents/` in place; remaining parked scope stays deferred until deliberately resumed.
 
 ## Feature readiness gate
 

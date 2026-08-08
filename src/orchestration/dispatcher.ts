@@ -31,6 +31,7 @@ import {
   type SkillPolicy,
 } from "../agent/skills/mod.ts";
 import type { SurfaceSettings } from "./conversation-lifecycle.ts";
+import type { RuntimeDisposalOptions } from "./conversation-runtime-host.ts";
 export type { SurfaceSettings };
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
@@ -731,6 +732,27 @@ export class TurnDispatcher {
     );
   }
 
+  /**
+   * Serialize a lifecycle command behind current work without making the
+   * disposed runner its authority. Same-binding runtime invalidation (for
+   * example `/model`) preserves these commands; a binding change still makes
+   * them stale before they can mutate state.
+   */
+  scheduleCommand(
+    conversation: ConversationState,
+    surface: Surface,
+    run: (isCurrent: () => boolean) => Promise<void>,
+    onError: (err: unknown) => Promise<void> | void,
+  ): void {
+    this.schedulePromptById(
+      conversation.id,
+      () => this.surfaceRuntimeAuthority.isCurrentBinding(surface, conversation.id),
+      run,
+      onError,
+      { isPrompt: false },
+    );
+  }
+
   /** Shared queue mechanics; callers supply the lifetime-specific authority check. */
   private schedulePromptById(
     sessionId: string,
@@ -822,7 +844,11 @@ export class TurnDispatcher {
    *   this, the in-flight entry would be cleared and the new creation's
    *   post-capture recheck would discard it.
    */
-  async disposeRunner(sessionId: string, preserveInFlight?: Promise<AgentRunner>): Promise<void> {
+  async disposeRunner(
+    sessionId: string,
+    preserveInFlight?: Promise<AgentRunner>,
+    options?: RuntimeDisposalOptions,
+  ): Promise<void> {
     const prior = this.runners.get(sessionId);
     const runtimeId = this.runnerRuntimeIds.get(sessionId);
     this.runners.delete(sessionId);
@@ -838,8 +864,12 @@ export class TurnDispatcher {
     if (!preserveInFlight || currentInFlight?.promise !== preserveInFlight) {
       this.inFlightCreations.delete(sessionId);
     }
-    this.promptQueues.delete(sessionId);
-    this.promptQueueMeta.delete(sessionId);
+    const pendingQueue = this.promptQueueMeta.get(sessionId);
+    const preserveCommandQueue = options?.preserveCommandQueue === true && pendingQueue?.isPrompt === false;
+    if (!preserveCommandQueue) {
+      this.promptQueues.delete(sessionId);
+      this.promptQueueMeta.delete(sessionId);
+    }
 
     // Fence delegated work immediately after runtime identity is removed.
     // `invalidateRuntime` performs its fence synchronously before returning a

@@ -22,7 +22,6 @@ function makeDeps(
     rawText: "/think",
     currentLevel: "medium",
     supportedLevels: FULL_LEVELS,
-    setThinkingLevel: () => {},
     ...overrides,
   };
 }
@@ -65,32 +64,28 @@ describe("executeThink", () => {
   });
 
   it("sets a valid level", () => {
-    let setLevel: ThinkingLevel | undefined;
     const result = executeThink(
       makeDeps({
         rawText: "/think high",
-        setThinkingLevel: (level) => {
-          setLevel = level;
-        },
       }),
     );
     expect(result.kind).toBe("set");
     expect(result.reply).toBe("Thinking level set to `high`");
-    expect(setLevel).toBe("high");
+    if (result.kind === "set") {
+      expect(result.level).toBe("high");
+    }
   });
 
   it("is case-insensitive", () => {
-    let setLevel: ThinkingLevel | undefined;
     const result = executeThink(
       makeDeps({
         rawText: "/think XHIGH",
-        setThinkingLevel: (level) => {
-          setLevel = level;
-        },
       }),
     );
     expect(result.kind).toBe("set");
-    expect(setLevel).toBe("xhigh");
+    if (result.kind === "set") {
+      expect(result.level).toBe("xhigh");
+    }
   });
 
   it("rejects an unknown level", () => {
@@ -109,30 +104,20 @@ describe("executeThink", () => {
   });
 
   it("clears override with 'clear'", () => {
-    let cleared = false;
     const result = executeThink(
       makeDeps({
         rawText: "/think clear",
-        setThinkingLevel: (level) => {
-          if (level === undefined) cleared = true;
-        },
       }),
     );
     expect(result.kind).toBe("cleared");
-    expect(cleared).toBe(true);
   });
 
   it("clears override with 'none'", () => {
-    let cleared = false;
     const result = executeThink(
       makeDeps({
         rawText: "/think none",
-        setThinkingLevel: (level) => {
-          if (level === undefined) cleared = true;
-        },
       }),
     );
     expect(result.kind).toBe("cleared");
-    expect(cleared).toBe(true);
   });
 });

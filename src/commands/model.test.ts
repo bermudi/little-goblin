@@ -2,7 +2,7 @@
  * Tests for /model command logic.
  */
 
-import { describe, it, expect, mock } from "bun:test";
+import { describe, it, expect } from "bun:test";
 import { executeModel, NO_FAVORITES_REPLY } from "./model.ts";
 import type { Config } from "../config.ts";
 import { resolveModel } from "../agent/models.ts";
@@ -33,23 +33,19 @@ function makeDeps(overrides: Partial<Parameters<typeof executeModel>[0]> = {}): 
     currentModelName: "poe/Claude-Sonnet-4.6",
     currentThinkingLevel: undefined,
     currentResolvedModel: undefined,
-    setModelName: mock(),
     ...overrides,
   };
 }
 
 describe("executeModel", () => {
   it("switches by index even without an active conversation", () => {
-    const setModelName = mock();
     const result = executeModel(makeDeps({
       rawText: "/model 1",
       favorites: ["poe/Claude-Sonnet-4.6"],
       cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
       currentModelName: "poe/Claude-Sonnet-4.6",
-      setModelName,
     }));
     expect(result.kind).toBe("set");
-    expect(setModelName).toHaveBeenCalledWith("poe/Claude-Sonnet-4.6");
   });
 
   it("returns no-favorites when list is empty", () => {
@@ -89,32 +85,26 @@ describe("executeModel", () => {
   });
 
   it("switches by index when @bot suffix is present", () => {
-    const setModelName = mock();
     const result = executeModel(makeDeps({
       rawText: "/model@bermudi_little_goblin_bot 1",
       favorites: ["poe/Claude-Sonnet-4.6"],
       cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
       currentModelName: "poe/Claude-Sonnet-4.6",
-      setModelName,
     }));
     expect(result.kind).toBe("set");
-    expect(setModelName).toHaveBeenCalledWith("poe/Claude-Sonnet-4.6");
   });
 
   it("switches to a valid model by index", () => {
-    const setModelName = mock();
     const result = executeModel(makeDeps({
       rawText: "/model 1",
       favorites: ["poe/Claude-Sonnet-4.6"],
       cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
       currentModelName: "poe/Claude-Sonnet-4.6",
-      setModelName,
     }));
     expect(result.kind).toBe("set");
     if (result.kind === "set") {
       expect(result.modelName).toBe("poe/Claude-Sonnet-4.6");
     }
-    expect(setModelName).toHaveBeenCalledWith("poe/Claude-Sonnet-4.6");
   });
 
   it("rejects out-of-range index", () => {
@@ -160,19 +150,16 @@ describe("executeModel", () => {
   });
 
   it("switches to a valid model by direct id", () => {
-    const setModelName = mock();
     const result = executeModel(makeDeps({
       rawText: "/model poe/Claude-Sonnet-4.6",
       favorites: ["poe/A"],
       cfg: makeConfig(["poe/A"]),
       currentModelName: "poe/A",
-      setModelName,
     }));
     expect(result.kind).toBe("set");
     if (result.kind === "set") {
       expect(result.modelName).toBe("poe/Claude-Sonnet-4.6");
     }
-    expect(setModelName).toHaveBeenCalledWith("poe/Claude-Sonnet-4.6");
   });
 
   it("rejects model without required API key", () => {
@@ -198,49 +185,39 @@ describe("executeModel", () => {
   });
 
   it("clears override with 'none'", () => {
-    const setModelName = mock();
     const result = executeModel(makeDeps({
       rawText: "/model none",
       favorites: ["poe/A"],
       cfg: makeConfig(["poe/A"]),
       currentModelName: "poe/A",
-      setModelName,
     }));
     expect(result.kind).toBe("cleared");
-    expect(setModelName).toHaveBeenCalledWith(undefined);
   });
 
   it("clears override with 'clear'", () => {
-    const setModelName = mock();
     const result = executeModel(makeDeps({
       rawText: "/model clear",
       favorites: ["poe/A"],
       cfg: makeConfig(["poe/A"]),
       currentModelName: "poe/A",
-      setModelName,
     }));
     expect(result.kind).toBe("cleared");
-    expect(setModelName).toHaveBeenCalledWith(undefined);
   });
 
   it("switches to a valid model by direct id even when favorites is empty", () => {
-    const setModelName = mock();
     const result = executeModel(makeDeps({
       rawText: "/model poe/Claude-Sonnet-4.6",
       favorites: [],
       cfg: makeConfig([]),
       currentModelName: "poe/A",
-      setModelName,
     }));
     expect(result.kind).toBe("set");
     if (result.kind === "set") {
       expect(result.modelName).toBe("poe/Claude-Sonnet-4.6");
     }
-    expect(setModelName).toHaveBeenCalledWith("poe/Claude-Sonnet-4.6");
   });
 
   it("surfaces thinking level clamping when switching to a weaker model", () => {
-    const onThinkingLevelClamped = mock();
     const result = executeModel(makeDeps({
       rawText: "/model poe/gemini-2.5-pro",
       favorites: ["poe/gemini-2.5-pro"],
@@ -249,18 +226,15 @@ describe("executeModel", () => {
       // User has an explicit override of xhigh on a Claude model
       currentThinkingLevel: "xhigh",
       currentResolvedModel: undefined,
-      onThinkingLevelClamped,
     }));
     expect(result.kind).toBe("set");
     if (result.kind === "set") {
       expect(result.thinkingClamped).toBeDefined();
       expect(result.reply).toContain("clamped");
     }
-    expect(onThinkingLevelClamped).toHaveBeenCalled();
   });
 
   it("does not surface clamping when levels are compatible", () => {
-    const onThinkingLevelClamped = mock();
     const result = executeModel(makeDeps({
       rawText: "/model poe/Claude-Sonnet-4.6",
       favorites: ["poe/Claude-Sonnet-4.6"],
@@ -268,18 +242,15 @@ describe("executeModel", () => {
       currentModelName: "poe/Claude-Sonnet-4.6",
       currentThinkingLevel: "high",
       currentResolvedModel: undefined,
-      onThinkingLevelClamped,
     }));
     expect(result.kind).toBe("set");
     if (result.kind === "set") {
       expect(result.thinkingClamped).toBeUndefined();
       expect(result.reply).not.toContain("clamped");
     }
-    expect(onThinkingLevelClamped).not.toHaveBeenCalled();
   });
 
   it("clamps when switching from a resolved model with a higher default (no user override)", () => {
-    const onThinkingLevelClamped = mock();
     const currentResolved = resolveModel({ ...makeConfig([]), modelName: "poe/Claude-Sonnet-4.6" });
     const result = executeModel(makeDeps({
       rawText: "/model poe/gemini-2.5-pro",
@@ -288,7 +259,6 @@ describe("executeModel", () => {
       currentModelName: "poe/Claude-Sonnet-4.6",
       currentThinkingLevel: undefined, // no user override — uses model default
       currentResolvedModel: currentResolved, // default is "high"
-      onThinkingLevelClamped,
     }));
     expect(result.kind).toBe("set");
     if (result.kind === "set") {
@@ -296,11 +266,9 @@ describe("executeModel", () => {
       expect(result.thinkingClamped).toBe("off");
       expect(result.reply).toContain("clamped to `off`");
     }
-    expect(onThinkingLevelClamped).toHaveBeenCalledWith("off");
   });
 
   it("does not clamp when both models can't be resolved and there's no override", () => {
-    const onThinkingLevelClamped = mock();
     const result = executeModel(makeDeps({
       rawText: "/model poe/Claude-Sonnet-4.6",
       favorites: ["poe/Claude-Sonnet-4.6"],
@@ -308,18 +276,15 @@ describe("executeModel", () => {
       currentModelName: "poe/Claude-Sonnet-4.6",
       currentThinkingLevel: undefined,
       currentResolvedModel: undefined,
-      onThinkingLevelClamped,
     }));
     expect(result.kind).toBe("set");
     if (result.kind === "set") {
       expect(result.thinkingClamped).toBeUndefined();
       expect(result.reply).not.toContain("clamped");
     }
-    expect(onThinkingLevelClamped).not.toHaveBeenCalled();
   });
 
   it("surfaces clamping on /model clear when default model has lower support", () => {
-    const onThinkingLevelClamped = mock();
     const result = executeModel(makeDeps({
       rawText: "/model clear",
       // Default model in cfg is poe/Claude-Sonnet-4.6 — supports xhigh
@@ -328,12 +293,10 @@ describe("executeModel", () => {
       currentModelName: "poe/Claude-Sonnet-4.6",
       currentThinkingLevel: "high",
       currentResolvedModel: undefined,
-      onThinkingLevelClamped,
     }));
     expect(result.kind).toBe("cleared");
     if (result.kind === "cleared") {
       expect(result.thinkingClamped).toBeUndefined();
     }
-    expect(onThinkingLevelClamped).not.toHaveBeenCalled();
   });
 });

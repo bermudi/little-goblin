@@ -3,7 +3,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Bot, Context } from "grammy";
 import type { Config } from "../config.ts";
 import { boundedError, log } from "../log.ts";
-import type { Surface, ConversationState, ConversationId, ConversationStore } from "../sessions/mod.ts";
+import type { Surface, ConversationState, ConversationId } from "../sessions/mod.ts";
 import { surfaceId } from "../surface.ts";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 
@@ -61,8 +61,6 @@ export type DispatchResult =
 export interface DispatchDeps {
   /** Deep conversation lifecycle; commands mutate bindings through this seam. */
   lifecycle: ConversationLifecycle;
-  /** Canonical conversation store for title/name operations. */
-  conversationStore: ConversationStore;
   subagentRunner: SubagentRunner;
   cfg: Config;
   tryResolveModel: (cfg: Config, modelName: string) => ResolvedModel | undefined;
@@ -101,7 +99,6 @@ export type CommandHandler = (opts: DispatchOpts) => Promise<DispatchResult>;
 
 export type GrammyHandlerFactory = (deps: {
   lifecycle: ConversationLifecycle;
-  conversationStore?: ConversationStore;
 }) => (ctx: Context) => Promise<void>;
 
 // ---------------------------------------------------------------------------
@@ -166,6 +163,12 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function preferenceTransitionReply(reply: string, cleanupError?: string): string {
+  if (cleanupError === undefined) return reply;
+  const detail = boundedError(cleanupError, 160).error;
+  return `${reply}\nPreference saved, but runtime cleanup reported an error after invalidation: ${detail}`;
+}
+
 // ---------------------------------------------------------------------------
 // Handler functions — one per dispatched command. These wrap the existing
 // execute* helpers and carry over the side-effect logic from the former
@@ -217,18 +220,10 @@ const newHandler: CommandHandler = async ({ deps, surface, conversation }) => {
 };
 
 const archiveHandler: CommandHandler = async ({ deps, surface, conversation: activeConversation }) => {
-  const { lifecycle, conversationStore } = deps;
+  const { lifecycle } = deps;
   try {
-    const conversation = activeConversation ? lifecycle.inspect(surface) : null;
-    const hasSession = conversation !== null;
-    const sessionExists = hasSession && conversationStore.load(conversation.id) !== null;
-
     const result = await executeArchive({
-      hasSession,
-      sessionExists,
-      archive: async () => {
-        await lifecycle.archive(surface);
-      },
+      archive: () => lifecycle.archive(surface),
     });
     const tag: SystemTag = result.kind === "archived" ? "ok" : "info";
     return replied(result.reply, [], tag);
@@ -265,16 +260,12 @@ const projectHandler: CommandHandler = async ({ deps, surface, rawText }) => {
   }
 };
 
-const modelHandler: CommandHandler = async ({ deps, surface, existingRunner, rawText }) => {
+const modelHandler: CommandHandler = async ({ deps, surface, rawText }) => {
   const { cfg } = deps;
-  const sideEffects: SideEffect[] = [];
   try {
     const surfaceModelName = deps.lifecycle.settings.getModelName(surface);
     const surfaceThinkingLevel = deps.lifecycle.settings.getThinkingLevel(surface);
-    const currentModelName =
-      existingRunner?.modelName ??
-      surfaceModelName ??
-      cfg.modelName;
+    const currentModelName = surfaceModelName ?? cfg.modelName;
     const currentThinkingLevel = surfaceThinkingLevel;
     const currentResolvedModel = deps.tryResolveModel(cfg, currentModelName);
     const result = executeModel({
@@ -284,43 +275,31 @@ const modelHandler: CommandHandler = async ({ deps, surface, existingRunner, raw
       currentModelName,
       currentThinkingLevel,
       currentResolvedModel,
-      setModelName: (name) => {
-        deps.lifecycle.settings.setModelName(surface, name);
-      },
-      onThinkingLevelClamped: (newLevel) => {
-        deps.lifecycle.settings.setThinkingLevel(surface, newLevel);
-      },
     });
-    if ((result.kind === "set" || result.kind === "cleared") && existingRunner) {
-      const targetName = result.kind === "set" ? result.modelName : cfg.modelName;
-      await existingRunner.setModel(targetName);
-      if (result.thinkingClamped) {
-        try {
-          existingRunner.setThinkingLevel(result.thinkingClamped);
-        } catch {
-          // best-effort: runner may not support the level
-        }
+    if (result.kind === "set" || result.kind === "cleared") {
+      const patch: { modelName?: string | undefined; thinkingLevel?: ThinkingLevel | undefined } = {};
+      patch.modelName = result.kind === "set" ? result.modelName : undefined;
+      if (result.thinkingClamped !== undefined) {
+        patch.thinkingLevel = result.thinkingClamped;
       }
+      const transition = await deps.lifecycle.setSurfacePreferences(surface, patch);
+      const tag: SystemTag = transition.cleanupError ? "warn" : "ok";
+      return replied(preferenceTransitionReply(result.reply, transition.cleanupError), [], tag);
     }
-    const tag: SystemTag = result.kind === "set" || result.kind === "cleared" ? "ok"
-      : result.kind === "no-favorites" || result.kind === "bad-index" || result.kind === "bad-model" ? "warn"
-      : "info";
-    return replied(result.reply, sideEffects, tag);
+    const tag: SystemTag = result.kind === "no-favorites" || result.kind === "bad-index" || result.kind === "bad-model" ? "warn" : "info";
+    return replied(result.reply, [], tag);
   } catch (err) {
     log.error("model failed", { error: String(err), surfaceId: surfaceId(surface) });
     return replied("Failed to switch model. Please try again.", [], "error");
   }
 };
 
-const thinkHandler: CommandHandler = async ({ deps, surface, existingRunner, rawText }) => {
+const thinkHandler: CommandHandler = async ({ deps, surface, rawText }) => {
   const { cfg } = deps;
   try {
     const surfaceModelName = deps.lifecycle.settings.getModelName(surface);
     const surfaceThinkingLevel = deps.lifecycle.settings.getThinkingLevel(surface);
-    const currentModelName =
-      existingRunner?.modelName ??
-      surfaceModelName ??
-      cfg.modelName;
+    const currentModelName = surfaceModelName ?? cfg.modelName;
     const currentResolvedModel = deps.tryResolveModel(cfg, currentModelName);
     const supportedLevels = currentResolvedModel
       ? (getSupportedThinkingLevels(currentResolvedModel.model) as readonly ThinkingLevel[])
@@ -332,19 +311,16 @@ const thinkHandler: CommandHandler = async ({ deps, surface, existingRunner, raw
         currentResolvedModel?.thinkingLevel ??
         "medium",
       supportedLevels,
-      setThinkingLevel: (level) => {
-        deps.lifecycle.settings.setThinkingLevel(surface, level);
-        try {
-          existingRunner?.setThinkingLevel(level);
-        } catch {
-          // best-effort: runner may not support the level
-        }
-      },
     });
-    const thinkTag: SystemTag = result.kind === "set" || result.kind === "cleared" ? "ok"
-      : result.kind === "bad-level" ? "warn"
-      : "info";
-    return replied(result.reply, [], thinkTag);
+    if (result.kind === "set" || result.kind === "cleared") {
+      const patch: { thinkingLevel?: ThinkingLevel | undefined } = {};
+      patch.thinkingLevel = result.kind === "set" ? result.level : undefined;
+      const transition = await deps.lifecycle.setSurfacePreferences(surface, patch);
+      const tag: SystemTag = transition.cleanupError ? "warn" : "ok";
+      return replied(preferenceTransitionReply(result.reply, transition.cleanupError), [], tag);
+    }
+    const tag: SystemTag = result.kind === "bad-level" ? "warn" : "info";
+    return replied(result.reply, [], tag);
   } catch (err) {
     log.error("think failed", { error: String(err), surfaceId: surfaceId(surface) });
     return replied("Failed to set thinking level. Please try again.", [], "error");
@@ -381,16 +357,12 @@ const compactHandler: CommandHandler = async ({ conversation, existingRunner, ra
   }
 };
 
-const nameHandler: CommandHandler = async ({ deps, conversation, rawText }) => {
-  const { conversationStore } = deps;
+const nameHandler: CommandHandler = async ({ deps, conversation, surface, rawText }) => {
+  const { lifecycle } = deps;
   try {
-    const result = executeName({
+    const result = await executeName({
       rawText,
-      conversation,
-      setTitle: (title) => {
-        if (!conversation) return;
-        conversationStore.setTitle(conversation.id, title);
-      },
+      setTitle: (title) => lifecycle.setTitle(surface, title),
     });
     const tag: SystemTag = result.kind === "renamed" ? "ok" : "info";
     return replied(result.reply, [], tag);
@@ -401,13 +373,10 @@ const nameHandler: CommandHandler = async ({ deps, conversation, rawText }) => {
 };
 
 const resumeHandler: CommandHandler = async ({ deps, surface, conversation: activeConversation, rawText }) => {
-  const { lifecycle, conversationStore } = deps;
+  const { lifecycle } = deps;
   const sideEffects: SideEffect[] = [];
   try {
-    const compatible = lifecycle.listResumable(surface);
-    const allResumable = conversationStore.list();
-    const compatibleIds = new Set(compatible.map((c) => c.id));
-    const incompatible = allResumable.filter((c) => !compatibleIds.has(c.id));
+    const { compatible, incompatible } = await lifecycle.getResumeCandidates(surface);
 
     const bindConversation = (conversationId: string): Promise<ConversationState> =>
       lifecycle.resume(surface, conversationId as ConversationId);

@@ -1,47 +1,26 @@
 import { describe, it, expect } from "bun:test";
-import {
-  executeArchive,
-  NO_SESSION_REPLY,
-  ALREADY_ARCHIVED_REPLY,
-  ARCHIVED_REPLY,
-} from "./archive.ts";
+import { executeArchive, NO_SESSION_REPLY, ARCHIVED_REPLY } from "./archive.ts";
 
 describe("executeArchive", () => {
-  it("returns no-session without invoking archive when hasSession is false", async () => {
+  it("returns no-session when the lifecycle archive operation reports no session", async () => {
     let called = 0;
     const result = await executeArchive({
-      hasSession: false,
-      sessionExists: false,
-      archive: () => {
+      archive: async () => {
         called += 1;
+        return { kind: "no-session" };
       },
     });
     expect(result.kind).toBe("no-session");
     expect(result.reply).toBe(NO_SESSION_REPLY);
-    expect(called).toBe(0);
+    expect(called).toBe(1);
   });
 
-  it("returns already-archived without invoking archive when sessionExists is false", async () => {
+  it("returns archived reply on the happy path", async () => {
     let called = 0;
     const result = await executeArchive({
-      hasSession: true,
-      sessionExists: false,
-      archive: () => {
+      archive: async () => {
         called += 1;
-      },
-    });
-    expect(result.kind).toBe("already-archived");
-    expect(result.reply).toBe(ALREADY_ARCHIVED_REPLY);
-    expect(called).toBe(0);
-  });
-
-  it("invokes archive and returns archived reply on the happy path", async () => {
-    let called = 0;
-    const result = await executeArchive({
-      hasSession: true,
-      sessionExists: true,
-      archive: () => {
-        called += 1;
+        return { kind: "archived", conversationId: "0000000000" as import("../sessions/types.ts").ConversationId };
       },
     });
     expect(called).toBe(1);
@@ -52,9 +31,7 @@ describe("executeArchive", () => {
   it("propagates errors from the archive callback", async () => {
     await expect(
       executeArchive({
-        hasSession: true,
-        sessionExists: true,
-        archive: () => {
+        archive: async () => {
           throw new Error("boom");
         },
       }),

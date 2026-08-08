@@ -20,6 +20,7 @@ import {
   getThinkingLevelValidated,
   setModelName,
   setThinkingLevel,
+  patchSurfaceSettings,
 } from "../sessions/topic-settings.ts";
 import { sessionDir, statePath } from "../sessions/paths.ts";
 import { environmentFromProjectRoot, personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
@@ -129,6 +130,7 @@ function staticSettings(env: ExecutionEnvironment): SurfaceSettings {
     setModelName: () => {},
     getThinkingLevel: () => undefined,
     setThinkingLevel: () => {},
+    setPreferences: () => {},
     getSkillPolicy: () => DEFAULT_SKILL_POLICY,
   };
 }
@@ -150,6 +152,7 @@ function fileBasedSettings(home: string): SurfaceSettings {
     setModelName: (surface, modelName) => setModelName(home, surface, modelName),
     getThinkingLevel: (surface) => getThinkingLevelValidated(home, surface),
     setThinkingLevel: (surface, thinkingLevel) => setThinkingLevel(home, surface, thinkingLevel),
+    setPreferences: (surface, patch) => patchSurfaceSettings(home, surface, patch),
     getSkillPolicy: (surface) => getSkillPolicy(home, surface),
   };
 }
@@ -482,11 +485,12 @@ describe("ConversationLifecycle", () => {
   });
 
   describe("archive", () => {
-    it("disposes the runtime, archives the directory, and clears the binding", async () => {
+    it("disposes the runtime, archives the directory, clears the binding, and reports archived", async () => {
       const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
       const conv = await lifecycle.resolveOrStart(surface);
-      await lifecycle.archive(surface);
+      const transition = await lifecycle.archive(surface);
+      expect(transition).toEqual({ kind: "archived", conversationId: conv.id });
       expect(runtimeHost.disposed).toEqual([conv.id]);
       expect(bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBeUndefined();
       expect(store.load(conv.id)).toBeNull();
@@ -510,9 +514,10 @@ describe("ConversationLifecycle", () => {
       expect(store.list()).toHaveLength(1);
     });
 
-    it("throws when no conversation is bound", async () => {
+    it("returns no-session when no conversation is bound", async () => {
       const { lifecycle } = makeLifecycle(personalEnvironment(), tmpDir);
-      await expect(lifecycle.archive(dmSurface(1))).rejects.toThrow(/no active conversation/);
+      const transition = await lifecycle.archive(dmSurface(1));
+      expect(transition).toEqual({ kind: "no-session" });
     });
 
     it("throws without clearing a stale binding", async () => {
@@ -708,6 +713,40 @@ describe("ConversationLifecycle", () => {
       lifecycle.settings.setThinkingLevel(surface, "high");
       expect(lifecycle.settings.getModelName(surface)).toBe("poe/SurfaceModel");
       expect(lifecycle.settings.getThinkingLevel(surface)).toBe("high");
+    });
+
+    it("atomically persists model and thinking preferences and invalidates the current runtime", async () => {
+      const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const conversation = await lifecycle.resolveOrStart(surface);
+      runtimeHost.active.add(conversation.id);
+
+      const result = await lifecycle.setSurfacePreferences(surface, {
+        modelName: "poe/SurfaceModel",
+        thinkingLevel: "high",
+      });
+
+      expect(result.runtime).toBe("invalidated");
+      expect(result.cleanupError).toBeUndefined();
+      expect(lifecycle.settings.getModelName(surface)).toBe("poe/SurfaceModel");
+      expect(lifecycle.settings.getThinkingLevel(surface)).toBe("high");
+      expect(runtimeHost.disposed).toContain(conversation.id);
+      expect(lifecycle.inspect(surface)?.id).toBe(conversation.id);
+    });
+
+    it("keeps committed preferences authoritative and reports runtime cleanup failure", async () => {
+      const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const conversation = await lifecycle.resolveOrStart(surface);
+      runtimeHost.active.add(conversation.id);
+      runtimeHost.throwOnNext = conversation.id;
+
+      const result = await lifecycle.setSurfacePreferences(surface, { thinkingLevel: "xhigh" });
+
+      expect(result.runtime).toBe("invalidated");
+      expect(result.cleanupError).toContain("dispose failed");
+      expect(lifecycle.settings.getThinkingLevel(surface)).toBe("xhigh");
+      expect(runtimeHost.active.has(conversation.id)).toBe(false);
     });
 
     it("inspects an unbound Surface with defaults and does not create history", async () => {

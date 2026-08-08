@@ -12,10 +12,7 @@ import { resolveCommand, resolveTiming, type SideEffect } from "../commands/regi
 import { interruptAndCascade } from "../interrupt.ts";
 import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
 import { MetricsStore } from "../metrics/mod.ts";
-import {
-  ConversationStore,
-  type ConversationState,
-} from "../sessions/mod.ts";
+import { type ConversationState } from "../sessions/mod.ts";
 import { surfaceId, type Surface, type GuestSurface } from "../surface.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from "./attachments.ts";
@@ -357,27 +354,22 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
    * and the runner is idle. The user has already received an instant "Queued."
    * ack; this re-dispatches the command once idle and sends the follow-up reply.
    *
-   * The `isCurrent()` staleness gate makes this a no-op if the runner gets
-   * swapped (e.g. by a `/new` arriving mid-turn) before the deferred work runs.
+   * The `isCurrent()` staleness gate is binding-based: a `/new` or `/resume`
+   * makes later commands stale, while a same-binding runtime invalidation such
+   * as `/model` preserves their acknowledged arrival order.
    */
   function scheduleDeferredCommand(
     message: TelegramIntakeMessage,
     surface: Surface,
     session: ConversationState,
-    runner: AgentRunner,
     rawText: string,
     command: string,
   ): void {
-    dispatcher.schedulePrompt(
+    dispatcher.scheduleCommand(
       session,
-      runner,
+      surface,
       async (isCurrent) => {
         if (!isCurrent()) return;
-        // Re-resolve the runner: a queued `/new` or `/resume` in the same
-        // chain may have swapped it. If it's gone, the turn's session is no
-        // longer bound here, so drop the deferred command.
-        const currentRunner = dispatcher.getRunner(session.id);
-        if (!currentRunner) return;
         const result = await handleCommand({
           command,
           deps: dispatchDeps,
@@ -385,7 +377,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           surface,
 
           conversation: session,
-          existingRunner: currentRunner,
+          existingRunner: dispatcher.getRunner(session.id),
           bot,
         });
         // Queue-timing commands always have a handler, so fallthrough is
@@ -402,7 +394,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         const currentRunner = dispatcher.getRunner(session.id);
         recordAssistantReply(session.id, surface, currentRunner, replyText);
       },
-      { isPrompt: false },
     );
   }
 
@@ -478,7 +469,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
   const dispatchDeps: DispatchDeps = {
     lifecycle,
-    conversationStore: new ConversationStore(cfg.goblinHome),
     subagentRunner,
     cfg,
     tryResolveModel,
@@ -545,8 +535,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       );
       if (timing === "queue" && session && busy) {
         await sendSystemReply(message, "Queued. Will run after this turn.", "queued");
-        const queueRunner = existingRunner ?? await dispatcher.getOrCreateRunner(session, surface);
-        scheduleDeferredCommand(message, surface, session, queueRunner, rawText ?? "", command);
+        scheduleDeferredCommand(message, surface, session, rawText ?? "", command);
         return;
       }
 

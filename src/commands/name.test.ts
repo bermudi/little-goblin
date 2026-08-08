@@ -14,22 +14,21 @@ describe("/name command", () => {
     expect(parseSessionName("/name@goblinbot long running thing")).toBe("long running thing");
   });
 
-  it("requires an active conversation", () => {
-    const result = executeName({
+  it("requires an active conversation", async () => {
+    const result = await executeName({
       rawText: "/name nope",
-      conversation: null,
-      setTitle: () => {},
+      setTitle: async () => ({ kind: "no-session" }),
     });
     expect(result.kind).toBe("missing-session");
   });
 
-  it("sets the conversation title", () => {
+  it("sets the conversation title", async () => {
     let title: string | undefined;
-    const result = executeName({
+    const result = await executeName({
       rawText: "/name memory refactor",
-      conversation,
-      setTitle: (next) => {
+      setTitle: async (next) => {
         title = next;
+        return { kind: "named", conversation: { ...conversation, title: next } };
       },
     });
     expect(result.kind).toBe("renamed");

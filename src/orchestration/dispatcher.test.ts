@@ -206,6 +206,7 @@ function buildDispatcher(
     setModelName: () => {},
     getThinkingLevel: () => surfaceThinkingLevel,
     setThinkingLevel: () => {},
+    setPreferences: () => {},
     getSkillPolicy: () => DEFAULT_SKILL_POLICY,
   };
   const betaSurfaces: Surface[] = [];
@@ -521,6 +522,7 @@ describe("TurnDispatcher async runner creation", () => {
       setModelName: () => {},
       getThinkingLevel: () => undefined,
       setThinkingLevel: () => {},
+      setPreferences: () => {},
       getSkillPolicy: () => opts.surfacePolicy ?? DEFAULT_SKILL_POLICY,
     };
     const createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][] = [];

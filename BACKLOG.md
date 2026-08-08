@@ -14,18 +14,7 @@ Parked scope and open questions. Items graduate only when a deliberate implement
 
 ## Next
 
-**Command/lifecycle authority closure (architectural review D1–D2).** Repair the remaining rule-3 violations before starting another product cycle. Commands express archive existence/status, current-Conversation naming, and resume candidates through complete `ConversationLifecycle` operations; neither command dispatch nor Telegram intake receives a `ConversationStore`. A lifecycle-owned Surface-preference transition persists the validated model/thinking change and invalidates the current runtime through `ConversationRuntimeHost` under the lifecycle transition lock; commands never assemble settings mutation plus `AgentRunner` mutation themselves.
-
-Done means:
-
-- `/archive`, `/name`, and `/resume` retain their observable replies and error cases while their persistence inspection/mutation is lifecycle-owned; resume receives compatible and incompatible candidates from one lifecycle operation.
-- `/model` and `/think` retain their valid/rejected-input behavior, but no command directly invokes `AgentRunner.setModel()` or `.setThinkingLevel()`.
-- Runtime invalidation and its failure behavior are lifecycle-owned, logged with Surface/Conversation identity, and tested; no error is silently treated as a successful setting transition.
-- `DispatchDeps` and Telegram intake no longer construct, accept, or pass a `ConversationStore` for commands.
-
-Verify: focused lifecycle and command-dispatch tests covering the above transitions and cleanup failure; `bun run typecheck`; and a source-boundary check that commands/intake have neither `ConversationStore` command dependencies nor direct runner model/thinking mutations.
-
-**Following product cycle: ACP external agents (decision 0044).** The accepted scope remains the parked `acp-external-agents` entry below. It starts only after the command/lifecycle closure is accepted.
+**ACP external agents (decision 0044).** Replace the current Claude/Devin legacy paths with capability-scoped ACP behind the external-agent execution host. The accepted scope remains the parked `acp-external-agents` entry below: exact-version-pinned Claude ACP, native Devin ACP, completed-context continuation, no interrupted-turn recovery claim, and abandonment of `scratch/external-agents/` in place. Codex transport remains unclassified.
 
 ## Stabilization closure
 
@@ -47,9 +36,11 @@ The deployment entered state version 4 through an operator-approved recoverable 
 
 **Conversation authority seam — complete.** Live paths now carry canonical `ConversationState` plus explicit `Surface` authority; the mixed-lifetime `SessionState`, runtime-session adapters, and Goblin's transitional `SessionManager` facade are removed. Scheduler late binding goes through `ConversationLifecycle.resolveCurrent`, while Surface-free internal runtime persistence is isolated behind `InternalSessionStore`.
 
+**Command/lifecycle authority closure (architectural review D1–D2) — complete.** `/archive`, `/name`, and `/resume` now obtain Conversation status, mutation, and compatibility candidates through complete `ConversationLifecycle` operations; production command dispatch and Telegram intake no longer receive a `ConversationStore`. `/model` and `/think` produce validated preference patches, while the lifecycle atomically persists Surface model/thinking authority and invalidates model work through `ConversationRuntimeHost` under the transition lock. Committed preference changes report bounded cleanup warnings, and same-binding invalidation preserves already-acknowledged lifecycle-command ordering without preserving stale model work.
+
 ### Architectural review closure — 2026-08-07
 
-- **Open and prioritized:** D1/D2 are the single next stabilization repair above.
+- **Closed:** D1/D2 command/lifecycle authority is implemented and verified; ACP external agents is now the plainly described next cycle.
 - **Closed by record coherence:** D3 does not route metrics through `ConversationStore`. Decision 0014 now states the existing split: `ConversationStore` and `InternalSessionStore` own their layout lifetimes, while `MetricsStore` alone reads/appends metric records and may lazily materialize its narrow metrics artifact through `metricsPath`; `AGENTS.md` grants that narrow home-I/O exemption.
 - **Closed as misclassified:** D4 is not a decision-0008 violation. That decision governs `$GOBLIN_HOME` paths; `SkillCatalogResolver` already owns the exact host catalog root required by decision 0034. No `hostSkillsPath()` helper is needed.
 - **Closed by clarified practice:** tmp/rename applies to whole-file replacement; `"wx"` is atomic exclusive creation; append-mode JSONL is append-only logging, not replacement atomicity. The direct append sites are not separate violations on that basis. The onboarding wizard's `console.log` remains the already-tracked deferred CLI-output carve-out; `voice.ts` writes a disposable `tmpdir()` tool input, not durable state.
@@ -60,7 +51,7 @@ The deployment entered state version 4 through an operator-approved recoverable 
 
 Historical unstarted plans live in `specs/parked/`; they are frozen references, not active work. Graduate one only by scouting current code and creating fresh work state when needed; never translate its old task list mechanically.
 
-- **`acp-external-agents`** — protocol classification complete for Claude and Devin under decision 0044; this is the following product cycle after the command/lifecycle authority closure. Exact-version-pinned Claude ACP and native Devin ACP preserve completed context through `resume` and `load` respectively, need no client-hosted filesystem/terminal methods, and cannot recover an interrupted user turn. Legacy `scratch/external-agents/` records are abandoned in place (no migration, no backwards compatibility — same ruling as the delegated-run-records layout break). The frozen proposal remains historical input only: do not carry forward its stale session ownership, scratch storage, constrained-permission assumptions, virtual-terminal scope, unpersisted generic-continuation recovery claim, or PTY fallback for Claude/Devin. Codex transport remains unclassified.
+- **`acp-external-agents`** — protocol classification complete for Claude and Devin under decision 0044; this is the plainly described next cycle. Exact-version-pinned Claude ACP and native Devin ACP preserve completed context through `resume` and `load` respectively, need no client-hosted filesystem/terminal methods, and cannot recover an interrupted user turn. Legacy `scratch/external-agents/` records are abandoned in place (no migration, no backwards compatibility — same ruling as the delegated-run-records layout break). The frozen proposal remains historical input only: do not carry forward its stale session ownership, scratch storage, constrained-permission assumptions, virtual-terminal scope, unpersisted generic-continuation recovery claim, or PTY fallback for Claude/Devin. Codex transport remains unclassified.
 - **`delegated-work-ownership`** — decisions 0036, 0040, 0041, 0044, and 0045 settle ownership, host separation, trust, qualified Claude/Devin protocol capabilities, and the attached subagent record store. Record storage is implemented: one host-owned store at `state/delegated-work/runs/`, append-only invocation log, revival as a new invocation, v5 layout break abandoning legacy subagent trees in place. Remaining parked scope: durable lifetime, pending-completion claim/ack/release, cancellation races beyond the attached fence, and model-selected CWD/invocation/unattended-dangerous profile for external agents rather than extending the current fixed-project/two-profile seam. External-agent records join the store when ACP lands. The frozen proposal's stale migration/reconciliation wording stays dead.
 - **`inner-life`** — decision 0035 is accepted and its lifecycle prerequisite is satisfied; implementation remains parked pending fresh shaping and delivery capacity.
 - **`skill-catalog-resolution`** — implemented. `SkillCatalogResolver` (`src/agent/skills/`) owns exact-root resolution from Conversation environment plus a `SkillPolicy`; `skillSources` is removed with visible rejection; default policy (Goblin all / environment all / host none) wired into runtime construction.

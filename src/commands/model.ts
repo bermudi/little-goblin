@@ -3,6 +3,9 @@
  *
  * Lists favorite models or switches the current Surface to one.
  * Surfaces thinking level clamping when switching models.
+ *
+ * Command output carries the validated model/thinking patch; the caller
+ * (registry handler) applies it through `ConversationLifecycle.setSurfacePreferences`.
  */
 
 import { resolveModel, type ResolvedModel } from "../agent/models.ts";
@@ -24,10 +27,6 @@ export interface ModelCommandDeps {
   currentThinkingLevel: ThinkingLevel | undefined;
   /** Resolved model for the current conversation (needed for thinking level clamp check). */
   currentResolvedModel: ResolvedModel | undefined;
-  /** Sets (or clears) the Surface-scoped model override. */
-  setModelName: (name: string | undefined) => void;
-  /** Called with the clamped thinking level when a model switch changes the effective level. */
-  onThinkingLevelClamped?: (newLevel: ThinkingLevel) => void;
 }
 
 export type ModelCommandResult =
@@ -106,12 +105,6 @@ function switchToModel(
     deps.currentResolvedModel,
   );
 
-  deps.setModelName(modelName);
-
-  if (thinkingClamped) {
-    deps.onThinkingLevelClamped?.(thinkingClamped);
-  }
-
   const reply = thinkingClamped
     ? `Switched to \`${modelName}\`\nThinking level clamped to \`${thinkingClamped}\` (not supported by this model at previous level).`
     : `Switched to \`${modelName}\``;
@@ -133,7 +126,6 @@ export function executeModel(deps: ModelCommandDeps): ModelCommandResult {
   // Clear override — revert to config default model.
   // Check whether the default model supports the current thinking level.
   if (arg.toLowerCase() === "none" || arg.toLowerCase() === "clear") {
-    deps.setModelName(undefined);
     let thinkingClamped: ThinkingLevel | undefined;
     try {
       const defaultResolved = resolveModel(deps.cfg);
@@ -142,9 +134,6 @@ export function executeModel(deps: ModelCommandDeps): ModelCommandResult {
         deps.currentThinkingLevel,
         deps.currentResolvedModel,
       );
-      if (thinkingClamped) {
-        deps.onThinkingLevelClamped?.(thinkingClamped);
-      }
     } catch {
       // Can't resolve default model — skip clamp check.
     }

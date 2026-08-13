@@ -52,6 +52,35 @@ export interface CapturedMemoryContext {
   readonly frozenActiveMemoryBody: string;
 }
 
+/**
+ * Detach and recursively freeze the routing objects in a captured context.
+ * Callers may supply inherited authority objects, so freezing those objects in
+ * place would mutate their owner; the capture owns its cloned immutable copy.
+ */
+export function freezeCapturedMemoryContext(
+  context: CapturedMemoryContext,
+): CapturedMemoryContext {
+  const activeScope = context.authority.activeScope;
+  const topicScope = activeScope.topicScope === "general"
+    ? "general"
+    : Object.freeze({ topicId: activeScope.topicScope.topicId });
+  const frozenActiveScope = Object.freeze({
+    chatId: activeScope.chatId,
+    topicScope,
+  });
+  const authority = Object.freeze({
+    kind: "surface" as const,
+    sourceSurfaceId: context.authority.sourceSurfaceId,
+    activeScope: frozenActiveScope,
+  });
+  const caller = Object.freeze({ ...context.caller }) as MemoryCaller;
+  return Object.freeze({
+    ...context,
+    authority,
+    caller,
+  });
+}
+
 /** Validate the complete Surface before deriving memory authority from it. */
 export function assertSurfaceBackedAuthorityInput(surface: Surface): void {
   surfaceId(surface);
@@ -112,14 +141,14 @@ export async function captureInvocationMemoryContext(
     frozenUserEntry: userEntry,
   });
 
-  return {
+  return freezeCapturedMemoryContext({
     kind: "surface",
     authority,
     caller,
     frozenSummary,
     frozenUserBody: userEntry.body,
     frozenActiveMemoryBody: activeEntry.body,
-  };
+  });
 }
 
 /**

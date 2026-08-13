@@ -21,6 +21,7 @@ import {
   setModelName,
   setThinkingLevel,
   patchSurfaceSettings,
+  getSurfaceRuntimeSettings,
 } from "../sessions/topic-settings.ts";
 import { sessionDir, statePath } from "../sessions/paths.ts";
 import { environmentFromProjectRoot, personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
@@ -32,7 +33,7 @@ import type { AgentRunner } from "../agent/mod.ts";
 import type { Config } from "../config.ts";
 import type { TranscriptWriterContext } from "../sessions/transcript.ts";
 import { DEFAULT_SKILL_POLICY } from "../agent/skills/mod.ts";
-import { goblinSkillsPath, personalEnvironmentSkillsPath } from "../workspace/paths.ts";
+import { goblinSkillsPath, personalEnvironmentSkillsPath, soulMdPath, workspacePath } from "../workspace/paths.ts";
 
 class InMemoryBindingStore implements BindingStore {
   bindings: BindingsFile = { version: 1, surfaces: {} };
@@ -90,7 +91,7 @@ class FakeAgentRunner {
   transcriptWriterContext: TranscriptWriterContext;
 
   constructor(opts: ConstructorParameters<typeof AgentRunner>[0]) {
-    this.memoryContext = opts.memoryContext;
+    this.memoryContext = opts.plan === undefined ? opts.memoryContext : opts.plan.memoryContext;
     this.transcriptWriterContext =
       this.memoryContext.kind === "surface"
         ? { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId }
@@ -126,6 +127,13 @@ class FakeAgentRunner {
 function staticSettings(env: ExecutionEnvironment): SurfaceSettings {
   return {
     effectiveEnvironment: () => env,
+    getRuntimeSettings: () => ({
+      executionEnvironment: env,
+      modelName: undefined,
+      thinkingLevel: undefined,
+      skillPolicy: DEFAULT_SKILL_POLICY,
+      fingerprint: JSON.stringify({ environment: env, policy: DEFAULT_SKILL_POLICY }),
+    }),
     getModelName: () => undefined,
     setModelName: () => {},
     getThinkingLevel: () => undefined,
@@ -148,6 +156,17 @@ function writeSkill(root: string, name: string): void {
 function fileBasedSettings(home: string): SurfaceSettings {
   return {
     effectiveEnvironment: (surface: Surface) => environmentFromProjectRoot(getProjectRoot(home, surface)),
+    getRuntimeSettings: (surface: Surface) => {
+      const settings = getSurfaceRuntimeSettings(home, surface);
+      const executionEnvironment = environmentFromProjectRoot(settings.projectRoot);
+      return {
+        executionEnvironment,
+        modelName: settings.modelName,
+        thinkingLevel: settings.thinkingLevel,
+        skillPolicy: settings.skillPolicy,
+        fingerprint: JSON.stringify({ executionEnvironment, ...settings }),
+      };
+    },
     getModelName: (surface) => getModelName(home, surface),
     setModelName: (surface, modelName) => setModelName(home, surface, modelName),
     getThinkingLevel: (surface) => getThinkingLevelValidated(home, surface),
@@ -1114,6 +1133,8 @@ describe("ConversationLifecycle", () => {
 
     beforeEach(() => {
       runtimeHome = mkdtempSync(join(tmpdir(), "goblin-lifecycle-runtime-"));
+      mkdirSync(workspacePath(runtimeHome), { recursive: true });
+      writeFileSync(soulMdPath(runtimeHome), "test goblin identity\n", "utf-8");
       memoryStore = new MemoryStore(runtimeHome);
     });
 
@@ -1126,7 +1147,11 @@ describe("ConversationLifecycle", () => {
       lifecycle: ConversationLifecycle;
       dispatcher: TurnDispatcher;
     } {
-      const cfg = { goblinHome: runtimeHome } as Config;
+      const cfg = {
+        goblinHome: runtimeHome,
+        modelName: "poe/TestModel",
+        poeApiKey: "test-key",
+      } as Config;
       const subagentRunner = new SubagentRunner(cfg);
       const surfaceSettings = staticSettings(personalEnvironment());
       const store = new ConversationStore(runtimeHome);
@@ -1164,7 +1189,11 @@ describe("ConversationLifecycle", () => {
     }
 
     it("does not let runtime acquisition reopen old authority after a failed project assignment", async () => {
-      const cfg = { goblinHome: runtimeHome } as Config;
+      const cfg = {
+        goblinHome: runtimeHome,
+        modelName: "poe/TestModel",
+        poeApiKey: "test-key",
+      } as Config;
       const surface = dmSurface(1);
       const projectRoot = join(runtimeHome, "project");
       mkdirSync(projectRoot, { recursive: true });
@@ -1214,7 +1243,9 @@ describe("ConversationLifecycle", () => {
       // This is the same dispatcher acquisition used by /queue. It must replay
       // Q before it can register anything, then reject stale P rather than
       // silently reconstructing its personal runtime.
-      await expect(dispatcher.getOrCreateRunner(personalSession, surface)).rejects.toThrow(/binding.*no longer current|binding rotated/);
+      await expect(dispatcher.getOrCreateRunner(personalSession, surface)).rejects.toThrow(
+        /environment mismatch|binding.*no longer current|binding rotated/,
+      );
       expect(dispatcher.getRunner(personal.id)).toBeNull();
       expect(loadPendingProjectAssignment(runtimeHome)).toBeNull();
 

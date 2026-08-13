@@ -42,6 +42,7 @@ export {
   assertSurfaceBackedAuthorityInput,
   captureInvocationMemoryContext,
   captureRuntimeMemoryContext,
+  freezeCapturedMemoryContext,
   type CaptureInvocationMemoryContextArgs,
   type CaptureRuntimeMemoryContextArgs,
   type CapturedMemoryContext,

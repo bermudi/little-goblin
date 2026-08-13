@@ -10,22 +10,17 @@ Parked scope and open questions. Items graduate only when a deliberate implement
 
 ## Now
 
-**Runtime-kernel ownership — implemented and verified.** Before ACP or other product work, the completed inward pass made Conversation runtime ownership constructible without Telegram and removed the nullable lifecycle/dispatcher hookup: a concrete runtime host owns runtime registrations, in-flight construction, queues, and disposal authority; dispatcher construction requires that host; Telegram admission closes before cleanup; and shutdown is single-flight while the host drains admitted queues, construction, and disposal work. Core construction moved out of `tg/intake.ts`, and the orchestration contracts now have one-way dependency direction.
+**Prepared runtime assembly — implemented and verified.** Surface runtime creation now prepares one immutable ephemeral plan before `AgentRunner` construction and registration. It captures coherent Surface settings and Conversation environment, runtime identity, resolved model/thinking, prompt provenance and frozen memory summary, captured memory authority, exact resolved skills, and a closed code-owned current-capability manifest. The existing asynchronous binding checks and synchronous reservation/settings checks remain around every authority-sensitive await. Surface runners consume the plan without lazy model, prompt, or skill rereads; internal runtimes remain structurally unchanged. The credential-bearing plan is neither persisted nor logged.
 
 ## Next
 
-**Prepared runtime assembly.** After runtime ownership is real, shape one immutable Conversation-runtime plan containing the already-authoritative environment, model/thinking selection, prompt, captured memory context, resolved skills, and code-owned capability manifest. Runtime construction must retain authority checkpoints across asynchronous boundaries and commit one coherent plan; it must not replace the existing race-closing checks with one early check.
+**Capability/tool assembly plus a smaller `AgentRunner` facade.** Carry the plan's code-owned capability selection through concrete tool assembly behind one narrow interface, then reduce `AgentRunner` to the execution facade that consumes the assembled runtime. Do not add dynamic discovery or a plugin registry.
 
 ACP external agents remains accepted under decision 0044 but is parked behind this inward solidification pass. Its backend and persistence scope is unchanged.
 
 ## Inward solidification direction
 
-Only **Now** and **Next** are active delivery positions. Later themes remain unshaped backlog direction and must be re-scouted after the preceding cycle lands:
-
-1. code-owned runtime capability assembly and a smaller `AgentRunner` execution facade;
-2. delegated execution-terminal normalization with delivery state kept separate;
-3. one deployment-lifetime owner for startup, admission stop, reconciliation, and idempotent shutdown;
-4. dependency, terminology, and authority-record cleanup sufficient to lift the stabilization gate.
+Only **Now** and **Next** are active delivery positions. Further work must be re-scouted after the named next cycle; no additional implementation theme is active here.
 
 Do not introduce a plugin registry, dynamic tool discovery, SQLite-only persistence, speculative provider interfaces, or a single-check replacement for the dispatcher's asynchronous authority fences as part of this pass.
 

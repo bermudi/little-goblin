@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { AgentRunner } from "./mod.ts";
+import { AgentRunner, type SurfaceAgentRunnerOptions } from "./mod.ts";
+import { prepareTestSurfaceRuntimePlan } from "./runtime-plan.test-support.ts";
 import { dmSurface } from "../surface.ts";
 import { PiAgentBackend } from "./backend.ts";
 import { createFauxPiServices } from "../test/faux-pi-services.ts";
@@ -50,6 +51,28 @@ async function makeMemoryContext(home: string, surface = dmSurface(1)) {
   }
 }
 
+type DirectSurfaceRunnerOptions = Omit<SurfaceAgentRunnerOptions, "plan"> & {
+  surface: ReturnType<typeof dmSurface>;
+  memoryContext: Awaited<ReturnType<typeof makeMemoryContext>>;
+  customTools: ToolDefinition[];
+  executionEnvironment: ReturnType<typeof personalEnvironment> | ReturnType<typeof projectEnvironment>;
+  resolvedModel?: Parameters<typeof prepareTestSurfaceRuntimePlan>[0]["resolvedModel"];
+};
+
+async function makePreparedRunner(options: DirectSurfaceRunnerOptions): Promise<AgentRunner> {
+  const { cfg, sessionId, surface, memoryContext, customTools, executionEnvironment, resolvedModel, ...runnerOptions } = options;
+  const plan = await prepareTestSurfaceRuntimePlan({
+    cfg,
+    conversationId: sessionId,
+    surface,
+    memoryContext,
+    executionEnvironment,
+    customTools,
+    resolvedModel,
+  });
+  return new AgentRunner({ cfg, sessionId, plan, ...runnerOptions });
+}
+
 describe("AgentRunner pi-ai contract", () => {
   let tmpDir: string;
   let faux: ReturnType<typeof registerFauxProvider>;
@@ -90,7 +113,7 @@ describe("AgentRunner pi-ai contract", () => {
 
   async function surfaceRunner(isCurrent: () => boolean): Promise<AgentRunner> {
     const model = faux.getModel() as Model<Api>;
-    return new AgentRunner({
+    return makePreparedRunner({
       cfg: makeConfig(tmpDir),
       sessionId: "abcdef1234",
       surface: dmSurface(1),
@@ -134,7 +157,7 @@ describe("AgentRunner pi-ai contract", () => {
   it("streams a response through the real SDK using the faux provider", async () => {
     const model = faux.getModel() as Model<Api>;
     const memoryContext = await makeMemoryContext(tmpDir);
-    const runner = new AgentRunner({
+    const runner = await makePreparedRunner({
       cfg: makeConfig(tmpDir),
       sessionId: "abcdef1234",
       surface: dmSurface(1),
@@ -252,7 +275,7 @@ describe("AgentRunner pi-ai contract", () => {
     );
 
     const memoryContext = await makeMemoryContext(tmpDir);
-    const runner = new AgentRunner({
+    const runner = await makePreparedRunner({
       cfg: makeConfig(tmpDir),
       sessionId,
       surface: dmSurface(1),
@@ -305,7 +328,7 @@ describe("AgentRunner pi-ai contract", () => {
     );
 
     const memoryContext = await makeMemoryContext(tmpDir);
-    const runner = new AgentRunner({
+    const runner = await makePreparedRunner({
       cfg: makeConfig(tmpDir),
       sessionId,
       surface: dmSurface(1),
@@ -343,7 +366,7 @@ describe("AgentRunner pi-ai contract", () => {
     writeFileSync(historyFile, "not valid json\n", "utf-8");
 
     const memoryContext = await makeMemoryContext(tmpDir);
-    const runner = new AgentRunner({
+    const runner = await makePreparedRunner({
       cfg: makeConfig(tmpDir),
       sessionId,
       surface: dmSurface(1),

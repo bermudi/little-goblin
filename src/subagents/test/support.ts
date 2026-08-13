@@ -10,7 +10,7 @@ import {
   delegatedWorkRunDir,
 } from "../../delegated-work/paths.ts";
 import { piAgentDir } from "../../pi-host.ts";
-import { workspacePath } from "../../workspace/paths.ts";
+import { soulMdPath, workspacePath } from "../../workspace/paths.ts";
 import { personalEnvironment } from "../../sessions/environment.ts";
 import { dmSurface, supergroupSurface, surfaceId, type Surface } from "../../surface.ts";
 import type { GenericSubagentInheritance, SubagentHandle } from "../types.ts";
@@ -254,6 +254,7 @@ export function makeConfig(home: string): Config {
 export function createTestHome(prefix: string): string {
   const home = mkdtempSync(join(tmpdir(), prefix));
   mkdirSync(workspacePath(home), { recursive: true });
+  writeFileSync(soulMdPath(home), "test goblin identity\n", "utf-8");
   mkdirSync(piAgentDir(home), { recursive: true });
   return home;
 }

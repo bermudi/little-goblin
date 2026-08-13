@@ -15,6 +15,7 @@ import { resolveActiveScope, type ActiveScope } from "./scope.ts";
 import {
   assertSurfaceBackedAuthorityInput,
   captureRuntimeMemoryContext,
+  freezeCapturedMemoryContext,
   type CapturedMemoryContext,
   type InternalMemoryContext,
   type SurfaceMemoryAuthority,
@@ -37,6 +38,31 @@ function surfaceAuthority(surface: Surface): SurfaceMemoryAuthority {
 }
 
 describe("runtime memory context — Surface-derived authority", () => {
+  it("detaches and recursively freezes captured routing authority", () => {
+    const originalScope: ActiveScope = { chatId: -100123, topicScope: { topicId: 42 } };
+    const originalCaller = { kind: "named-subagent" as const, name: "scout" };
+    const frozen = freezeCapturedMemoryContext({
+      kind: "surface",
+      authority: {
+        kind: "surface",
+        sourceSurfaceId: surfaceId(topicSurface("supergroup", -100123, 42)),
+        activeScope: originalScope,
+      },
+      caller: originalCaller,
+      frozenSummary: "summary",
+      frozenUserBody: "user",
+      frozenActiveMemoryBody: "active",
+    });
+
+    expect(frozen.authority.activeScope).not.toBe(originalScope);
+    expect(frozen.caller).not.toBe(originalCaller);
+    expect(Object.isFrozen(frozen)).toBe(true);
+    expect(Object.isFrozen(frozen.authority)).toBe(true);
+    expect(Object.isFrozen(frozen.authority.activeScope)).toBe(true);
+    expect(Object.isFrozen(frozen.authority.activeScope.topicScope)).toBe(true);
+    expect(Object.isFrozen(frozen.caller)).toBe(true);
+  });
+
   describe("resolveActiveScope — exhaustive Surface projection", () => {
     it("projects every topic container to the same topic scope shape", () => {
       // Topic containers share the accepted memory key: container kind does

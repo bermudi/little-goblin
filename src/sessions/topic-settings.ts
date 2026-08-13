@@ -188,6 +188,27 @@ function settingsForSurface(settings: TopicSettingsFile, surface: Surface): Topi
   return settings.surfaces[surfaceId(surface)];
 }
 
+/** One validated read of every Surface setting consumed by runtime preparation. */
+export interface SurfaceRuntimeSettingsRecord {
+  readonly projectRoot: string | undefined;
+  readonly modelName: string | undefined;
+  readonly thinkingLevel: ThinkingLevel | undefined;
+  readonly skillPolicy: SkillPolicy;
+}
+
+export function getSurfaceRuntimeSettings(
+  home: string,
+  surface: Surface,
+): SurfaceRuntimeSettingsRecord {
+  const stored = settingsForSurface(loadTopicSettings(home), surface);
+  return {
+    projectRoot: stored?.projectRoot,
+    modelName: stored?.modelName,
+    thinkingLevel: isValidThinkingLevel(stored?.thinkingLevel) ? stored.thinkingLevel : undefined,
+    skillPolicy: cloneSkillPolicy(stored?.skillPolicy ?? DEFAULT_SKILL_POLICY),
+  };
+}
+
 function updateSurface(settings: TopicSettingsFile, surface: Surface, updater: (s: TopicSettings) => TopicSettings): void {
   const key = surfaceId(surface);
   const next = updater(settings.surfaces[key] ?? {});

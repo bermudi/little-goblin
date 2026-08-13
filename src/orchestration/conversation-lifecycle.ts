@@ -8,6 +8,7 @@ import {
   getProjectRoot,
   getModelName,
   getSkillPolicy as getStoredSkillPolicy,
+  getSurfaceRuntimeSettings,
   getThinkingLevelValidated,
   setModelName,
   setSkillPolicy as saveSkillPolicy,
@@ -52,8 +53,18 @@ import {
  * policy for a Surface. These settings survive conversation rotation, resume,
  * and archive; the execution environment itself remains Conversation-owned.
  */
+export interface SurfaceRuntimeSettingsSnapshot {
+  readonly executionEnvironment: ExecutionEnvironment;
+  readonly modelName: string | undefined;
+  readonly thinkingLevel: ThinkingLevel | undefined;
+  readonly skillPolicy: SkillPolicy;
+  readonly fingerprint: string;
+}
+
 export interface SurfaceSettings {
   effectiveEnvironment(surface: Surface): ExecutionEnvironment;
+  /** One coherent validated read for runtime preparation and stale checks. */
+  getRuntimeSettings(surface: Surface): SurfaceRuntimeSettingsSnapshot;
   getModelName(surface: Surface): string | undefined;
   setModelName(surface: Surface, modelName: string | undefined): void;
   getThinkingLevel(surface: Surface): ThinkingLevel | undefined;
@@ -749,6 +760,24 @@ export class FileSurfaceSettings implements SurfaceSettings {
   effectiveEnvironment(surface: Surface): ExecutionEnvironment {
     const root = getProjectRoot(this.home, surface);
     return environmentFromProjectRoot(root);
+  }
+
+  getRuntimeSettings(surface: Surface): SurfaceRuntimeSettingsSnapshot {
+    const stored = getSurfaceRuntimeSettings(this.home, surface);
+    const executionEnvironment = environmentFromProjectRoot(stored.projectRoot);
+    const identity = {
+      executionEnvironment,
+      modelName: stored.modelName ?? null,
+      thinkingLevel: stored.thinkingLevel ?? null,
+      skillPolicy: stored.skillPolicy,
+    };
+    return {
+      executionEnvironment,
+      modelName: stored.modelName,
+      thinkingLevel: stored.thinkingLevel,
+      skillPolicy: stored.skillPolicy,
+      fingerprint: JSON.stringify(identity),
+    };
   }
 
   getModelName(surface: Surface): string | undefined {

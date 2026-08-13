@@ -27,8 +27,9 @@ export interface ConversationRuntimeHostPort {
   disposeRuntime(conversationId: ConversationId, options?: RuntimeDisposalOptions): Promise<void>;
 }
 
-/** Frozen skill identity captured by one runtime generation. */
+/** Frozen settings and skill identity captured by one runtime generation. */
 export interface RuntimeSkillContext {
+  readonly settingsFingerprint: string;
   readonly policyFingerprint: string;
   readonly manifestFingerprint: string | null;
 }
@@ -45,7 +46,8 @@ export interface RuntimeCreation {
   readonly promise: Promise<AgentRunner>;
   readonly completion: Promise<void>;
   readonly surfaceId: SurfaceId;
-  readonly policyFingerprint: string;
+  /** Fingerprint of the complete Surface runtime-settings snapshot. */
+  readonly settingsFingerprint: string;
   resolve(runner: AgentRunner): void;
   reject(error: unknown): void;
   complete(): void;
@@ -194,7 +196,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
   reserveCreation(
     conversationId: ConversationId,
     surfaceId: SurfaceId,
-    policyFingerprint: string,
+    settingsFingerprint: string,
   ): RuntimeCreation {
     this.assertAdmissionOpen();
     // A new candidate generation must be distinguishable from the generation
@@ -216,7 +218,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       promise: control.promise,
       completion: completion.promise,
       surfaceId,
-      policyFingerprint,
+      settingsFingerprint,
       resolve: control.resolve,
       reject: control.reject,
       complete,

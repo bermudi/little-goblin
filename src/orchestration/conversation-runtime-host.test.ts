@@ -40,7 +40,7 @@ function registerRunner(
   host.registerSurfaceRuntime(conversationId, runner, {
     surfaceId: surfaceId(dmSurface(1)),
     runtimeId: asConversationRuntimeId(`runtime-${conversationId}`),
-    skillContext: { policyFingerprint: "test", manifestFingerprint: null },
+    skillContext: { settingsFingerprint: "test-settings", policyFingerprint: "test", manifestFingerprint: null },
   });
 }
 
@@ -147,7 +147,7 @@ describe("ConversationRuntimeHost shutdown", () => {
       {
         surfaceId: surfaceId(dmSurface(1)),
         runtimeId: asConversationRuntimeId("runtime-a"),
-        skillContext: { policyFingerprint: "test", manifestFingerprint: null },
+        skillContext: { settingsFingerprint: "test-settings", policyFingerprint: "test", manifestFingerprint: null },
       },
     )).toThrow(/admission is closed/);
   });
@@ -175,7 +175,7 @@ describe("ConversationRuntimeHost shutdown", () => {
       host.registerSurfaceRuntime("conversation-a", replacementRunner, {
         surfaceId: surfaceId(dmSurface(1)),
         runtimeId: asConversationRuntimeId("runtime-replacement"),
-        skillContext: { policyFingerprint: "replacement-policy", manifestFingerprint: null },
+        skillContext: { settingsFingerprint: "test-settings", policyFingerprint: "replacement-policy", manifestFingerprint: null },
       });
       replacementRegistered = true;
     })();

@@ -265,7 +265,8 @@ function findMostRecentSessionFile(dir: string): string | null {
 // Module under test
 // ---------------------------------------------------------------------------
 
-import { AgentRunner, ModelNotCapableError, type TurnCallbacks } from "./mod.ts";
+import { AgentRunner, ModelNotCapableError, type SurfaceAgentRunnerOptions, type TurnCallbacks } from "./mod.ts";
+import { prepareTestSurfaceRuntimePlan } from "./runtime-plan.test-support.ts";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -311,6 +312,46 @@ function nopCallbacks(): TurnCallbacks {
   };
 }
 
+type DirectSurfaceRunnerOptions = Omit<SurfaceAgentRunnerOptions, "plan"> & {
+  surface: Surface;
+  memoryContext: Awaited<ReturnType<typeof makeMemoryContext>>;
+  customTools: ToolDefinition[];
+  executionEnvironment: ExecutionEnvironment;
+  modelName?: string;
+  thinkingLevel?: Parameters<typeof prepareTestSurfaceRuntimePlan>[0]["thinkingLevel"];
+  resolvedModel?: Parameters<typeof prepareTestSurfaceRuntimePlan>[0]["resolvedModel"];
+  skillPolicy?: Parameters<typeof prepareTestSurfaceRuntimePlan>[0]["skillPolicy"];
+};
+
+async function makePreparedRunner(options: DirectSurfaceRunnerOptions): Promise<AgentRunner> {
+  const {
+    cfg,
+    sessionId,
+    surface,
+    memoryContext,
+    customTools,
+    executionEnvironment,
+    modelName,
+    thinkingLevel,
+    resolvedModel,
+    skillPolicy,
+    ...runnerOptions
+  } = options;
+  const plan = await prepareTestSurfaceRuntimePlan({
+    cfg,
+    conversationId: sessionId,
+    surface,
+    memoryContext,
+    executionEnvironment,
+    customTools,
+    modelName,
+    thinkingLevel,
+    resolvedModel,
+    skillPolicy,
+  });
+  return new AgentRunner({ cfg, sessionId, plan, ...runnerOptions });
+}
+
 async function makeRunner(
   home: string,
   customTools: unknown[] = [],
@@ -331,7 +372,7 @@ async function makeRunner(
     getTopicName,
   });
   store.close();
-  return new AgentRunner({
+  return makePreparedRunner({
     cfg: { ...makeConfig(home), ...(modelName === undefined ? {} : { modelName }), ...configOverrides },
     sessionId: "abcdef1234",
     surface,
@@ -952,6 +993,50 @@ describe("AgentRunner", () => {
   });
 
   describe("Goblin system prompt resource loader", () => {
+    it("initializes a Surface runner only from its prepared prompt, model, and exact skills", async () => {
+      const cfg = makeConfig(tmpDir);
+      const skillDir = join(goblinSkillsPath(tmpDir), "prepared-skill");
+      const skillPath = join(skillDir, "SKILL.md");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(skillPath, "---\nname: prepared-skill\ndescription: prepared\n---\noriginal body\n", "utf-8");
+      const surface = dmSurface(123);
+      const memoryContext = await makeMemoryContext(tmpDir, surface);
+      const plan = await prepareTestSurfaceRuntimePlan({
+        cfg,
+        conversationId: "abcdef1234",
+        surface,
+        memoryContext,
+        executionEnvironment: personalEnvironment(),
+      });
+
+      // Ambient authority changes after preparation must not be observed by
+      // Surface AgentRunner initialization. The plan also owns detached model
+      // metadata rather than aliases into the provider registry.
+      writeFileSync(soulMdPath(tmpDir), "replacement identity\n", "utf-8");
+      rmSync(skillPath);
+      cfg.modelName = "poe/GPT-4o";
+      expect(Object.isFrozen(plan.resolvedModel.model)).toBe(true);
+      expect(Object.isFrozen(plan.resolvedModel.model.input)).toBe(true);
+      expect(Object.isFrozen(plan.resolvedModel.model.cost)).toBe(true);
+
+      const runner = new AgentRunner({
+        cfg,
+        sessionId: "abcdef1234",
+        plan,
+        isCurrent: () => true,
+        backendFactory: (opts) => new FakeAgentBackend(opts),
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const loaderOpts = capturedResourceLoaderArgs[0] as Record<string, unknown>;
+      const backendOpts = capturedCreateArgs[0] as Record<string, unknown>;
+      expect(loaderOpts.systemPrompt).toContain("test goblin identity");
+      expect(loaderOpts.systemPrompt).not.toContain("replacement identity");
+      expect(loaderOpts.additionalSkillPaths).toEqual([skillPath]);
+      expect(backendOpts.model).toBe(plan.resolvedModel.model);
+      expect(backendOpts.thinkingLevel).toBe(plan.thinkingLevel);
+    });
+
     it("passes the constructed system prompt through the resource loader", async () => {
       writeFileSync(agentsMdPath(tmpDir), "deployment operating rules\n", "utf-8");
       const runner = await makeRunner(tmpDir);
@@ -1828,7 +1913,7 @@ describe("AgentRunner", () => {
         store,
       });
       store.close();
-      const runner = new AgentRunner({
+      const runner = await makePreparedRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
         surface: dmSurface(123),
@@ -1870,7 +1955,7 @@ describe("AgentRunner", () => {
         store,
       });
       store.close();
-      const runner = new AgentRunner({
+      const runner = await makePreparedRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
         surface: dmSurface(123),
@@ -1910,7 +1995,7 @@ describe("AgentRunner", () => {
         store,
       });
       store.close();
-      const runner = new AgentRunner({
+      const runner = await makePreparedRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
         surface: dmSurface(123),
@@ -2044,7 +2129,7 @@ describe("AgentRunner", () => {
       };
       const externalAgentRunner = new ExternalAgentRunner(extCfg);
       const memoryContext = await makeMemoryContext(tmpDir);
-      const runner = new AgentRunner({
+      const runner = await makePreparedRunner({
         cfg: extCfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
@@ -2076,7 +2161,7 @@ describe("AgentRunner", () => {
       };
       const externalAgentRunner = new ExternalAgentRunner(extCfg);
       const memoryContext = await makeMemoryContext(tmpDir);
-      const runner = new AgentRunner({
+      const runner = await makePreparedRunner({
         cfg: extCfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
@@ -2107,7 +2192,7 @@ describe("AgentRunner", () => {
         },
       };
       const memoryContext = await makeMemoryContext(tmpDir);
-      const runner = new AgentRunner({
+      const runner = await makePreparedRunner({
         cfg: extCfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
@@ -2148,7 +2233,7 @@ describe("AgentRunner", () => {
         },
       };
       const memoryContext = await makeMemoryContext(tmpDir);
-      const runner = new AgentRunner({
+      const runner = await makePreparedRunner({
         cfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
@@ -2179,7 +2264,7 @@ describe("AgentRunner", () => {
         },
       };
       const memoryContext = await makeMemoryContext(tmpDir);
-      const runner = new AgentRunner({
+      const runner = await makePreparedRunner({
         cfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
@@ -2213,7 +2298,7 @@ describe("AgentRunner", () => {
         },
       };
       const memoryContext = await makeMemoryContext(tmpDir);
-      const runner = new AgentRunner({
+      const runner = await makePreparedRunner({
         cfg,
         sessionId: "abcdef1234",
         surface: dmSurface(123),
@@ -2234,7 +2319,7 @@ describe("AgentRunner", () => {
 
     it("does not register mcp_call or mcp_describe when cfg.mcp is undefined", async () => {
       const memoryContext = await makeMemoryContext(tmpDir);
-      const runner = new AgentRunner({
+      const runner = await makePreparedRunner({
         cfg: makeConfig(tmpDir),
         sessionId: "abcdef1234",
         surface: dmSurface(123),

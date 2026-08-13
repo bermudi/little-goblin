@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { attachmentsPath } from "../workspace/paths.ts";
+import { attachmentsPath, soulMdPath, workspacePath } from "../workspace/paths.ts";
 import type { Bot } from "grammy";
 import type { Config } from "../config.ts";
 import type { AgentRunner } from "../agent/mod.ts";
+import type { PreparedSurfaceRuntimePlan } from "../agent/runtime-plan.ts";
 import { log } from "../log.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
@@ -75,10 +76,15 @@ class MockAgentRunner {
   });
   readonly modelName?: string;
 
-  constructor(opts: { sessionId: string; modelName?: string; memoryContext?: CapturedMemoryContext | InternalMemoryContext }) {
+  constructor(opts: {
+    sessionId: string;
+    plan?: PreparedSurfaceRuntimePlan;
+    modelName?: string;
+    memoryContext?: CapturedMemoryContext | InternalMemoryContext;
+  }) {
     this.sessionId = opts.sessionId;
-    this.modelName = opts.modelName;
-    this.memoryContext = opts.memoryContext ?? {
+    this.modelName = opts.plan?.modelName ?? (opts.plan === undefined ? opts.modelName : undefined);
+    this.memoryContext = opts.plan?.memoryContext ?? (opts.plan === undefined ? opts.memoryContext : undefined) ?? {
       kind: "surface",
       authority: {
         kind: "surface",
@@ -190,6 +196,8 @@ let runners: MockAgentRunner[] = [];
 
 function makeConfig(): Config {
   const goblinHome = mkdtempSync(join(tmpdir(), "goblin-intake-test-"));
+  mkdirSync(workspacePath(goblinHome), { recursive: true });
+  writeFileSync(soulMdPath(goblinHome), "test goblin identity\n", "utf-8");
   dirs.push(goblinHome);
   return {
     botToken: "123:token",
@@ -296,7 +304,7 @@ function registerTestRunner(
   runtimeHost.registerSurfaceRuntime(conversationId, runner, {
     surfaceId: surfaceId(dmSurface(1)),
     runtimeId: DelegatedWorkHost.newRuntimeId(),
-    skillContext: { policyFingerprint: "test", manifestFingerprint: null },
+    skillContext: { settingsFingerprint: "test-settings", policyFingerprint: "test", manifestFingerprint: null },
   });
 }
 
@@ -628,7 +636,7 @@ describe("Telegram intake", () => {
       memoryStore: new MemoryStore(cfg.goblinHome),
       createMessageBuffer: () => ({}) as MessageBuffer,
       createAgentRunner: (opts) => {
-        const runner = new MockAgentRunner({ ...opts, memoryContext: internalContext });
+        const runner = new MockAgentRunner({ sessionId: opts.sessionId, memoryContext: internalContext });
         runners.push(runner);
         return runner as unknown as AgentRunner;
       },

@@ -19,6 +19,11 @@ export type { TurnCallbacks } from "./events.ts";
 import { resolveModel, type ResolvedModel } from "./models.ts";
 import { type GoblinSystemPrompt, buildGoblinSystemPrompt } from "./system-prompt.ts";
 import {
+  hasMainRuntimeCapability,
+  type MainRuntimeCapabilityManifest,
+  type PreparedSurfaceRuntimePlan,
+} from "./runtime-plan.ts";
+import {
   MemoryStore,
   EmbeddingProvider,
   createMemorySearchTool,
@@ -60,15 +65,8 @@ import { agentsMdPath, heartbeatMdPath, soulMdPath } from "../workspace/paths.ts
 interface AgentRunnerOptionsBase {
   cfg: Config;
   sessionId: string;
-  customTools: ToolDefinition[];
   subagentRunner?: SubagentRunner;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
-  /** Immutable execution environment captured at Conversation creation. */
-  executionEnvironment: ExecutionEnvironment;
-  /** Session-scoped model override. Falls back to config default when absent. */
-  modelName?: string;
-  /** Session-scoped thinking level override. Falls back to model default when absent. */
-  thinkingLevel?: ThinkingLevel;
   /**
    * Dreaming pipeline to use for background memory promotion after completed
    * turns. When absent, a default `DreamingPipeline` is constructed from
@@ -91,20 +89,6 @@ interface AgentRunnerOptionsBase {
   /** Shared MCP runner. When present and configured, the agent gets the `mcp_call` and `mcp_describe` tools. */
   mcpRunner?: McpRunner;
   /**
-   * Skill selection policy for this runtime. Defaults to
-   * {@link DEFAULT_SKILL_POLICY} (Goblin all, environment all, host none) when
-   * a caller has no Surface-specific policy.
-   */
-  skillPolicy?: SkillPolicy;
-  /** Frozen catalog result captured by orchestration during runtime creation. */
-  resolvedSkills?: ResolvedSkillSet;
-  /**
-   * Pre-resolved model to use. When present, the runner skips `resolveModel()`
-   * and uses this value directly. Useful for tests that drive the SDK with a
-   * deterministic fake provider.
-   */
-  resolvedModel?: ResolvedModel;
-  /**
    * Factory for the backend. Defaults to the real `PiAgentBackend`. Tests can
    * inject a fake backend to observe calls without constructing the real SDK.
    */
@@ -117,8 +101,8 @@ interface AgentRunnerOptionsBase {
  * required — schedule, subagent, and external-agent tools need it for delivery.
  */
 export interface SurfaceAgentRunnerOptions extends AgentRunnerOptionsBase {
-  memoryContext: CapturedMemoryContext;
-  surface: Surface;
+  /** Complete immutable runtime input prepared before construction. */
+  plan: PreparedSurfaceRuntimePlan;
   /** Mandatory lifecycle authority for every Surface-backed effect. */
   isCurrent: () => boolean;
 }
@@ -131,7 +115,17 @@ export interface SurfaceAgentRunnerOptions extends AgentRunnerOptionsBase {
  */
 export interface InternalAgentRunnerOptions extends AgentRunnerOptionsBase {
   memoryContext: InternalMemoryContext;
+  customTools: ToolDefinition[];
+  /** Immutable environment of the Surface-free internal session. */
+  executionEnvironment: ExecutionEnvironment;
+  modelName?: string;
+  thinkingLevel?: ThinkingLevel;
+  skillPolicy?: SkillPolicy;
+  resolvedSkills?: ResolvedSkillSet;
+  /** Optional deterministic model injection retained for internal runtimes and tests. */
+  resolvedModel?: ResolvedModel;
   surface?: never;
+  plan?: never;
   /** Internal runtimes are explicitly Surface-free and need no binding guard. */
   isCurrent?: never;
 }
@@ -328,6 +322,8 @@ export class AgentRunner {
   private executionEnvironment: ExecutionEnvironment;
   private skillPolicy: SkillPolicy;
   private resolvedSkills: ResolvedSkillSet | null;
+  private readonly preparedPlan: PreparedSurfaceRuntimePlan | null;
+  private readonly capabilityManifest: MainRuntimeCapabilityManifest | null;
   private _modelName: string | undefined;
   private _thinkingLevel: ThinkingLevel | undefined;
   private resolvedModel: ResolvedModel | null = null;
@@ -420,28 +416,35 @@ export class AgentRunner {
   constructor(opts: AgentRunnerOptions) {
     this.cfg = opts.cfg;
     this.sessionId = opts.sessionId;
-    this.surface = opts.surface;
-    this.memoryContext = opts.memoryContext;
+    this.preparedPlan = "plan" in opts && opts.plan !== undefined ? opts.plan : null;
+    this.capabilityManifest = this.preparedPlan?.capabilityManifest ?? null;
+    this.surface = this.preparedPlan?.surface;
+    this.memoryContext = this.preparedPlan !== null
+      ? this.preparedPlan.memoryContext
+      : (opts as InternalAgentRunnerOptions).memoryContext;
     this.transcriptWriterContext =
       this.memoryContext.kind === "surface"
         ? { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId }
         : { kind: "internal" };
-    this.customTools = opts.customTools;
+    this.customTools = this.capabilityManifest === null
+      ? (opts as InternalAgentRunnerOptions).customTools
+      : [...this.capabilityManifest.surfaceTools];
     this.subagentRunner = opts.subagentRunner ?? null;
     this.delegatedRuntimeContext = opts.delegatedRuntimeContext ?? null;
     this.scheduleStore = opts.scheduleStore;
     this.externalAgentRunner = opts.externalAgentRunner ?? null;
     this.mcpRunner = opts.mcpRunner ?? null;
-    this.isCurrent = opts.memoryContext.kind === "surface"
+    this.isCurrent = this.memoryContext.kind === "surface"
       ? (opts as SurfaceAgentRunnerOptions).isCurrent
       : () => true;
     this.getTopicName = opts.getTopicName;
-    this.executionEnvironment = opts.executionEnvironment;
-    this.skillPolicy = cloneSkillPolicy(opts.skillPolicy ?? DEFAULT_SKILL_POLICY);
-    this.resolvedSkills = opts.resolvedSkills ?? null;
-    this._modelName = opts.modelName ?? (opts.resolvedModel ? `${opts.resolvedModel.model.provider}/${opts.resolvedModel.model.id}` : undefined);
-    this._thinkingLevel = opts.thinkingLevel;
-    this.resolvedModel = opts.resolvedModel ?? null;
+    const internal = opts as InternalAgentRunnerOptions;
+    this.executionEnvironment = this.preparedPlan?.executionEnvironment ?? internal.executionEnvironment;
+    this.skillPolicy = cloneSkillPolicy(this.preparedPlan?.skillPolicy ?? internal.skillPolicy ?? DEFAULT_SKILL_POLICY);
+    this.resolvedSkills = this.preparedPlan?.resolvedSkills ?? internal.resolvedSkills ?? null;
+    this._modelName = this.preparedPlan?.modelName ?? internal.modelName ?? (internal.resolvedModel ? `${internal.resolvedModel.model.provider}/${internal.resolvedModel.model.id}` : undefined);
+    this._thinkingLevel = this.preparedPlan?.thinkingLevel ?? internal.thinkingLevel;
+    this.resolvedModel = this.preparedPlan?.resolvedModel ?? internal.resolvedModel ?? null;
     this.metricsStore = new MetricsStore(opts.cfg.goblinHome, this.sessionId);
     this.ownsMemoryStore = opts.memoryStore === undefined;
     this.memoryStore =
@@ -473,21 +476,20 @@ export class AgentRunner {
       this.throwIfAbortedBeforeInit();
 
       const home = this.cfg.goblinHome;
-      const cwd = environmentCwd(this.executionEnvironment, home);
-      const resolvedModel = this.resolvedModel ?? resolveModel({ ...this.cfg, modelName: this._modelName ?? this.cfg.modelName });
+      const cwd = this.preparedPlan?.cwd ?? environmentCwd(this.executionEnvironment, home);
+      const resolvedModel = this.preparedPlan?.resolvedModel ?? this.resolvedModel ?? resolveModel({ ...this.cfg, modelName: this._modelName ?? this.cfg.modelName });
       this.resolvedModel = resolvedModel;
 
-      const goblinSystemPrompt = await this.awaitCurrent(() => buildGoblinSystemPrompt({
+      // Surface runtimes consume the complete prompt and exact skills captured
+      // before construction. Only the structurally unchanged internal path may
+      // use lazy compatibility preparation.
+      const goblinSystemPrompt = this.preparedPlan?.systemPrompt ?? await this.awaitCurrent(() => buildGoblinSystemPrompt({
         home,
         executionEnvironment: this.executionEnvironment,
       }));
       this.goblinSystemPrompt = goblinSystemPrompt;
 
-      // Resolve skill catalogs into a frozen set before building tools and
-      // backend init. Skills are snapshotted at runtime creation (decision
-      // 0034); no ambient pi discovery, no watcher, no per-turn reload. The
-      // spawn/revive subagent tools built below inherit this same manifest.
-      const resolvedSkills = this.resolvedSkills ?? await this.awaitCurrent(() =>
+      const resolvedSkills = this.preparedPlan?.resolvedSkills ?? this.resolvedSkills ?? await this.awaitCurrent(() =>
         resolveSkillSet(this.executionEnvironment, this.skillPolicy, home),
       );
       this.resolvedSkills = resolvedSkills;
@@ -500,15 +502,10 @@ export class AgentRunner {
 
       const tools = await this.awaitCurrent(() => this.buildCustomTools());
 
-      let systemPrompt = goblinSystemPrompt.prompt;
-      // Consume the completed capture — do not reread the store for the frozen
-      // summary or deduplication bodies. The capture was completed before
-      // runner registration; post-capture writes cannot alter it.
-      if (this.memoryContext.kind === "surface") {
+      let systemPrompt = this.preparedPlan?.prompt ?? goblinSystemPrompt.prompt;
+      if (this.preparedPlan === null && this.memoryContext.kind === "surface") {
         const frozenSummary = this.memoryContext.frozenSummary;
-        if (frozenSummary !== null) {
-          systemPrompt = `${systemPrompt}\n\n${frozenSummary}`;
-        }
+        if (frozenSummary !== null) systemPrompt = `${systemPrompt}\n\n${frozenSummary}`;
       }
 
       this.throwIfAbortedBeforeInit();
@@ -537,7 +534,10 @@ export class AgentRunner {
     // Memory tools are registered only for Surface-backed runners. Internal
     // runners (dreaming extraction) use the explicit Surface-free path and
     // receive no ordinary memory tools.
-    if (this.memoryContext.kind === "surface") {
+    if (
+      this.memoryContext.kind === "surface" &&
+      (this.capabilityManifest === null || hasMainRuntimeCapability(this.capabilityManifest, "memory"))
+    ) {
       tools.push(
         createMemorySearchTool({
           store: this.memoryStore,
@@ -549,7 +549,11 @@ export class AgentRunner {
       );
     }
 
-    if (this.scheduleStore && this.surface !== undefined) {
+    if (
+      this.scheduleStore &&
+      this.surface !== undefined &&
+      (this.capabilityManifest === null || hasMainRuntimeCapability(this.capabilityManifest, "scheduling"))
+    ) {
       tools.push(
         createScheduleTurnTool({
           store: this.scheduleStore,
@@ -560,7 +564,11 @@ export class AgentRunner {
       );
     }
 
-    if (this.subagentRunner && this.memoryContext.kind === "surface") {
+    if (
+      this.subagentRunner &&
+      this.memoryContext.kind === "surface" &&
+      (this.capabilityManifest === null || hasMainRuntimeCapability(this.capabilityManifest, "subagents"))
+    ) {
       const { createSpawnSubagentTool, createReviveSubagentTool } = await import("../subagents/tool.ts");
       // Generic subagents inherit this runtime's immutable environment and
       // frozen manifest. init() resolves the latter before building tools.
@@ -596,19 +604,29 @@ export class AgentRunner {
     }
 
     const projectDir = projectRootOf(this.executionEnvironment);
-    if (this.externalAgentRunner && this.cfg.externalAgents?.backends.length && projectDir) {
+    if (
+      this.externalAgentRunner &&
+      projectDir &&
+      (this.capabilityManifest === null
+        ? Boolean(this.cfg.externalAgents?.backends.length)
+        : hasMainRuntimeCapability(this.capabilityManifest, "external-agent"))
+    ) {
       tools.push(
         createExternalAgentTool({
           runner: this.externalAgentRunner,
           sessionId: this.sessionId,
           projectDir,
-          enabledBackends: this.cfg.externalAgents.backends,
+          enabledBackends: this.capabilityManifest?.externalAgentBackends ?? this.cfg.externalAgents!.backends,
           onStatusUpdate: (msg) => this.sendStatusUpdate(msg),
         }),
       );
     }
 
-    if (this.mcpRunner && this.cfg.mcp) {
+    if (
+      this.mcpRunner &&
+      this.cfg.mcp &&
+      (this.capabilityManifest === null || hasMainRuntimeCapability(this.capabilityManifest, "mcp"))
+    ) {
       await this.awaitCurrent(() => this.mcpRunner!.ready);
       tools.push(...createMcpTools(this.mcpRunner));
     }

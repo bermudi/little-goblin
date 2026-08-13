@@ -86,6 +86,13 @@ describe("rapid command spam integration", () => {
   function staticSettings(env: import("../sessions/environment.ts").ExecutionEnvironment): SurfaceSettings {
     return {
       effectiveEnvironment: () => env,
+      getRuntimeSettings: () => ({
+        executionEnvironment: env,
+        modelName: undefined,
+        thinkingLevel: undefined,
+        skillPolicy: DEFAULT_SKILL_POLICY,
+        fingerprint: JSON.stringify({ environment: env, policy: DEFAULT_SKILL_POLICY }),
+      }),
       getModelName: () => undefined,
       setModelName: () => {},
       getThinkingLevel: () => undefined,

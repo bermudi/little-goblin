@@ -7,30 +7,19 @@ import {
   MemoryStore,
   EmbeddingProvider,
   DreamingPipeline,
-  captureRuntimeMemoryContext,
-  type CapturedMemoryContext,
   type InternalMemoryContext,
 } from "../memory/mod.ts";
 import type { ConversationState } from "../sessions/types.ts";
 import { assertInternalSessionState, type InternalSessionState } from "../sessions/internal-session.ts";
-import { parseSurfaceId, surfaceId, type Surface, type SurfaceId } from "../surface.ts";
+import { parseSurfaceId, surfaceId, type Surface } from "../surface.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
-import {
-  DelegatedWorkHost,
-  type ConversationRuntimeId,
-  type DelegatedRuntimeContext,
-} from "../delegated-work/mod.ts";
-import { environmentsEqual } from "../sessions/environment.ts";
-import {
-  resolveSkillSet,
-  skillPolicyFingerprint,
-  type ResolvedSkillSet,
-  type SkillPolicy,
-} from "../agent/skills/mod.ts";
+import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
 import type { SurfaceSettings } from "./conversation-lifecycle.ts";
+import { PreparedRuntimeAssembler } from "./prepared-runtime.ts";
+import type { PreparedSurfaceRuntimePlan } from "../agent/runtime-plan.ts";
 import { ConversationRuntimeHost, type RuntimeDisposalOptions } from "./conversation-runtime-host.ts";
 import type { SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { AttachmentSignal, AttachedWork, CurrentBindingGuard, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
@@ -139,6 +128,7 @@ export class TurnDispatcher {
   private readonly externalAgentRunner: ExternalAgentRunner | undefined;
   private readonly mcpRunner: McpRunner | undefined;
   private readonly surfaceRuntimeAuthority: SurfaceRuntimeAuthority;
+  private readonly runtimeAssembler: PreparedRuntimeAssembler;
 
   constructor(options: TurnDispatcherOptions) {
     this.cfg = options.cfg;
@@ -156,6 +146,19 @@ export class TurnDispatcher {
     this.mcpRunner = options.mcpRunner;
     this.runtimeHost = options.runtimeHost;
     this.surfaceRuntimeAuthority = options.surfaceRuntimeAuthority;
+    this.runtimeAssembler = new PreparedRuntimeAssembler({
+      cfg: this.cfg,
+      surfaceSettings: this.surfaceSettings,
+      surfaceRuntimeAuthority: this.surfaceRuntimeAuthority,
+      runtimeHost: this.runtimeHost,
+      memoryStore: this.memoryStore,
+      getTopicName: this.getTopicName,
+      createSurfaceTools: this.createBetaToolsFn,
+      subagentRunner: this.subagentRunner,
+      scheduleStore: this.scheduleStore,
+      externalAgentRunner: this.externalAgentRunner,
+      mcpRunner: this.mcpRunner,
+    });
   }
 
   /**
@@ -179,59 +182,22 @@ export class TurnDispatcher {
     return this.runtimeHost.hasRuntime(sessionId);
   }
 
-  /**
-   * Construct a new Surface-backed `AgentRunner` from a completed memory
-   * context capture. The caller is responsible for capturing the memory
-   * context before calling this — the runner does not reread the store for
-   * frozen summary or routing authority. Telegram delivery parameters are
-   * derived from the provided `surface`.
-   */
-  createRunner(
-    session: ConversationState,
-    surface: Surface,
-    memoryContext: CapturedMemoryContext,
-    skillPolicy: SkillPolicy = this.surfaceSettings.getSkillPolicy(surface),
-    resolvedSkills?: ResolvedSkillSet,
-    runtimeId: ConversationRuntimeId = DelegatedWorkHost.newRuntimeId(),
-  ): AgentRunner {
+  /** Construct an AgentRunner only from a completed immutable plan. */
+  private createRunner(plan: PreparedSurfaceRuntimePlan): AgentRunner {
     this.runtimeHost.assertAdmissionOpen();
-    if (!this.surfaceRuntimeAuthority.isCurrentBinding(surface, session.id)) {
-      throw new Error(`cannot construct runtime for stale binding: ${surfaceId(surface)} → ${session.id}`);
-    }
-    const surfaceEnv = this.surfaceSettings.effectiveEnvironment(surface);
-    if (!environmentsEqual(session.executionEnvironment, surfaceEnv)) {
-      const sessionEnv = session.executionEnvironment;
-      throw new Error(
-        `environment mismatch: session ${session.id} is ${sessionEnv.kind === "project" ? sessionEnv.projectRoot : sessionEnv.kind}, surface ${surface.kind}:${surface.chatId} is ${surfaceEnv.kind === "project" ? surfaceEnv.projectRoot : surfaceEnv.kind}`,
-      );
-    }
-
-    const betaTools = this.createBetaToolsFn(surface);
-    const expectedSurfaceId = surfaceId(surface);
-    const delegatedRuntimeContext: DelegatedRuntimeContext = {
-      ownerConversationId: session.id,
-      runtimeId,
-      originSurfaceId: expectedSurfaceId,
-      executionEnvironment: session.executionEnvironment,
-    };
-    // Model and thinking authority belongs exclusively to the destination
-    // Surface. Conversation state deliberately carries neither preference.
-    const modelName = this.surfaceSettings.getModelName(surface);
-    const thinkingLevel = this.surfaceSettings.getThinkingLevel(surface);
     let runner!: AgentRunner;
+    const delegatedRuntimeContext: DelegatedRuntimeContext = {
+      ownerConversationId: plan.conversationId,
+      runtimeId: plan.runtimeId,
+      originSurfaceId: plan.surfaceId,
+      executionEnvironment: plan.executionEnvironment,
+    };
     const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
       cfg: this.cfg,
-      sessionId: session.id,
-      surface,
-      memoryContext,
-      customTools: betaTools,
+      sessionId: plan.conversationId,
+      plan,
       subagentRunner: this.subagentRunner,
       getTopicName: this.getTopicName,
-      executionEnvironment: session.executionEnvironment,
-      modelName,
-      thinkingLevel,
-      skillPolicy,
-      resolvedSkills,
       scheduleStore: this.scheduleStore,
       externalAgentRunner: this.externalAgentRunner,
       mcpRunner: this.mcpRunner,
@@ -239,8 +205,8 @@ export class TurnDispatcher {
       embeddingProvider: this.embeddingProvider,
       dreamingPipeline: this.dreamingPipeline,
       isCurrent: () =>
-        this.runtimeHost.isRegisteredRunner(session.id, runner) &&
-        this.surfaceRuntimeAuthority.isCurrentBinding(surface, session.id),
+        this.runtimeHost.isRegisteredRunner(plan.conversationId, runner) &&
+        this.surfaceRuntimeAuthority.isCurrentBinding(plan.surface, plan.conversationId),
     };
     runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
     return runner;
@@ -334,247 +300,97 @@ export class TurnDispatcher {
     return result;
   }
 
-  /**
-   * Return the existing runner for a session, creating one if none exists.
-   * A runner is only reused when it was created for the same surface; if the
-   * conversation has moved, the stale runner is disposed and a new one built
-   * for the destination surface.
-   *
-   * Creation is asynchronous: the memory context capture (frozen summary,
-   * ActiveScope projection, deduplication bodies) must complete before the
-   * runner is registered. Concurrent creation requests for the same
-   * (session, surface) are deduplicated via an in-flight promise — both
-   * callers share one capture and one runner. A concurrent request for a
-   * different surface on the same session overwrites the in-flight entry,
-   * causing the prior creation's post-capture recheck to fail.
-   *
-   * Runtime authority is mandatory: before reusing or creating a runner, the
-   * lifecycle reconciles any pending assignment and proves this Surface still
-   * owns the requested Conversation. After capture it repeats that proof before
-   * registration, so an old `/queue` cannot reopen authority fenced by a
-   * failed `/project` write.
-   */
+  /** Return the current runtime, or prepare and atomically commit one generation. */
   async getOrCreateRunner(session: ConversationState, surface: Surface): Promise<AgentRunner> {
     this.runtimeHost.assertAdmissionOpen();
     if (this.runtimeHost.isInternalRuntime(session.id)) {
       throw new Error(`conversation ${session.id} is reserved by an internal runtime`);
     }
+
     const expectedSurfaceId = surfaceId(surface);
-    const skillPolicy = this.surfaceSettings.getSkillPolicy(surface);
-    const expectedPolicyFingerprint = skillPolicyFingerprint(skillPolicy);
+    const snapshot = this.surfaceSettings.getRuntimeSettings(surface);
     const existing = this.runtimeHost.getRunner(session.id);
     const existingSurfaceId = this.runtimeHost.surfaceIdFor(session.id);
     const existingSkillContext = this.runtimeHost.skillContextFor(session.id);
     if (
       existing &&
       existingSurfaceId === expectedSurfaceId &&
-      existingSkillContext?.policyFingerprint === expectedPolicyFingerprint
+      existingSkillContext?.settingsFingerprint === snapshot.fingerprint
     ) {
       await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
       if (
         this.runtimeHost.isRegisteredRunner(session.id, existing) &&
         this.runtimeHost.surfaceIdFor(session.id) === expectedSurfaceId &&
-        this.runtimeHost.skillContextFor(session.id)?.policyFingerprint === expectedPolicyFingerprint
-      ) {
-        log.debug("reusing runner", {
-          sessionId: session.id,
-          surfaceId: expectedSurfaceId,
-          policyFingerprint: expectedPolicyFingerprint,
-          manifestFingerprint: existingSkillContext?.manifestFingerprint ?? null,
-        });
-        return existing;
-      }
+        this.runtimeHost.skillContextFor(session.id)?.settingsFingerprint === snapshot.fingerprint &&
+        this.surfaceSettings.getRuntimeSettings(surface).fingerprint === snapshot.fingerprint
+      ) return existing;
       return this.getOrCreateRunner(session, surface);
     }
 
-    // Register in-flight identity before the first await. A concurrent
-    // lifecycle disposal must invalidate a creation even while the lifecycle
-    // authority check is reconciling pending state.
-    // A different-surface request overwrites the entry, causing the prior
-    // creation's recheck to fail.
     const inFlight = this.runtimeHost.creationFor(session.id);
     if (
       inFlight &&
       inFlight.surfaceId === expectedSurfaceId &&
-      inFlight.policyFingerprint === expectedPolicyFingerprint
-    ) {
-      return inFlight.promise;
-    }
+      inFlight.settingsFingerprint === snapshot.fingerprint
+    ) return inFlight.promise;
 
     const creation = this.runtimeHost.reserveCreation(
       session.id,
       expectedSurfaceId,
-      expectedPolicyFingerprint,
+      snapshot.fingerprint,
     );
     const creationPromise = creation.promise;
-
-    this.doCreateAndRegisterRunner(
-      session,
-      surface,
-      expectedSurfaceId,
-      expectedPolicyFingerprint,
-      skillPolicy,
-      creationPromise,
-    )
+    this.doCreateAndRegisterRunner(session, surface, snapshot, creation)
       .then(creation.resolve, creation.reject)
-      .finally(() => {
-        this.runtimeHost.finishCreation(session.id, creationPromise, creation);
-      });
-
+      .finally(() => this.runtimeHost.finishCreation(session.id, creationPromise, creation));
     return creationPromise;
   }
 
-  /**
-   * Internal: capture memory context, recheck authority, create the runner,
-   * and register it. Called by {@link getOrCreateRunner} after the in-flight
-   * entry is registered.
-   */
   private async doCreateAndRegisterRunner(
     session: ConversationState,
     surface: Surface,
-    expectedSurfaceId: SurfaceId,
-    expectedPolicyFingerprint: string,
-    skillPolicy: SkillPolicy,
-    creationPromise: Promise<AgentRunner>,
+    snapshot: ReturnType<SurfaceSettings["getRuntimeSettings"]>,
+    creation: ReturnType<ConversationRuntimeHost["reserveCreation"]>,
   ): Promise<AgentRunner> {
-    await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
-    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
-      throw new Error(`stale runtime creation for session ${session.id}: invalidated before capture`);
-    }
-
-    let resolvedSkills: ResolvedSkillSet | undefined;
-    if (typeof this.cfg.goblinHome === "string") {
-      resolvedSkills = await resolveSkillSet(
-        session.executionEnvironment,
-        skillPolicy,
-        this.cfg.goblinHome,
-      );
-      if (resolvedSkills.diagnostics.length > 0) {
-        log.debug("runtime skill catalog diagnostics", {
-          sessionId: session.id,
-          surfaceId: expectedSurfaceId,
-          count: resolvedSkills.diagnostics.length,
-        });
-      }
-    } else {
-      // Some narrow unit fixtures use a partial Config and inject a fake
-      // runner. Production Config always has goblinHome; leave those fixtures
-      // on AgentRunner's lazy compatibility fallback.
-      log.debug("skipping eager skill resolution for partial config", {
-        sessionId: session.id,
-        surfaceId: expectedSurfaceId,
-      });
-    }
-
-    if (skillPolicyFingerprint(this.surfaceSettings.getSkillPolicy(surface)) !== expectedPolicyFingerprint) {
-      throw new Error(`stale runtime creation for session ${session.id}: skill policy changed during resolution`);
-    }
+    let plan: PreparedSurfaceRuntimePlan;
     try {
-      await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
+      plan = await this.runtimeAssembler.prepare(session, surface, creation, snapshot);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `stale runtime creation for session ${session.id}: binding for ${expectedSurfaceId} is no longer current (${message})`,
-      );
-    }
-
-    // The authority check above is async. A lifecycle invalidation can dispose
-    // this creation while it is suspended, so repeat the synchronous identity
-    // checks before disposing any existing runner. A second check immediately
-    // before registration closes the later resurrection window.
-    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
-      throw new Error(
-        `stale runtime creation for session ${session.id}: invalidated before registration`,
-      );
-    }
-    if (skillPolicyFingerprint(this.surfaceSettings.getSkillPolicy(surface)) !== expectedPolicyFingerprint) {
-      throw new Error(
-        `stale runtime creation for session ${session.id}: skill policy changed before registration`,
-      );
-    }
-
-    // Dispose existing runner through the single cleanup seam only after
-    // candidate skill resolution succeeds. The `preserveInFlight` parameter
-    // keeps THIS creation alive while old runner identity is removed.
-    if (this.runtimeHost.hasRunner(session.id)) {
-      await this.disposeRunner(session.id, creationPromise);
-    }
-    // An external lifecycle disposal may have already removed the prior
-    // runner while its cleanup is still draining. A replacement generation
-    // must not commit until that cleanup settles, otherwise a later disposal
-    // could dedup against the stale promise and let the replacement escape.
-    await this.runtimeHost.awaitSettled(session.id);
-
-    let memoryContext: CapturedMemoryContext;
-    try {
-      memoryContext = await captureRuntimeMemoryContext({
-        surface,
-        caller: { kind: "main" },
-        store: this.memoryStore,
-        getTopicName: this.getTopicName,
+      log.error("runtime preparation failed", {
+        conversationId: session.id,
+        surfaceId: surfaceId(surface),
+        ...boundedError(error),
       });
-    } catch (err) {
-      log.error("runtime capture failed", {
-        sessionId: session.id,
-        surfaceId: expectedSurfaceId,
-        ...boundedError(err),
-      });
-      throw new Error("runtime capture failed");
+      throw error;
     }
 
-    // Recheck 1 — in-flight identity: if the runtime host no longer holds
-    // this creation's promise, a disposal or newer (different-surface)
-    // creation invalidated it.
-    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
-      throw new Error(
-        `stale runtime creation for session ${session.id}: invalidated during capture`,
-      );
+    // No await is permitted between this final candidate check, construction,
+    // and registration. Lifecycle invalidation synchronously removes the
+    // reservation, so a stale plan cannot resurrect afterward.
+    if (!this.runtimeHost.isCurrentCreation(session.id, creation.promise)) {
+      throw new Error(`stale runtime creation for conversation ${session.id}: invalidated before registration`);
     }
-
-    // Recheck 2 — lifecycle authority. This can reconcile a pending project
-    // assignment, which may dispose this creation and replace its binding.
-    // It is deliberately mandatory rather than a composition-root callback.
-    try {
-      await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `stale runtime creation for session ${session.id}: binding for ${expectedSurfaceId} is no longer current (${message})`,
-      );
+    if (this.surfaceSettings.getRuntimeSettings(surface).fingerprint !== plan.settingsFingerprint) {
+      throw new Error(`stale runtime creation for conversation ${session.id}: Surface settings changed before registration`);
     }
-
-    // The final authority check is async. Recheck identity and policy in the
-    // same synchronous turn immediately before registration so an invalidation
-    // cannot be followed by resurrection of this old runtime.
-    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
-      throw new Error(
-        `stale runtime creation for session ${session.id}: invalidated before registration`,
-      );
-    }
-    if (skillPolicyFingerprint(this.surfaceSettings.getSkillPolicy(surface)) !== expectedPolicyFingerprint) {
-      throw new Error(
-        `stale runtime creation for session ${session.id}: skill policy changed before registration`,
-      );
-    }
-
-    const runtimeId = DelegatedWorkHost.newRuntimeId();
-    const runner = this.createRunner(
-      session,
-      surface,
-      memoryContext,
-      skillPolicy,
-      resolvedSkills,
-      runtimeId,
-    );
+    const runner = this.createRunner(plan);
     this.runtimeHost.registerSurfaceRuntime(session.id, runner, {
-      surfaceId: expectedSurfaceId,
-      runtimeId,
+      surfaceId: plan.surfaceId,
+      runtimeId: plan.runtimeId,
       skillContext: {
-        policyFingerprint: expectedPolicyFingerprint,
-        manifestFingerprint: resolvedSkills?.fingerprint ?? null,
+        settingsFingerprint: plan.settingsFingerprint,
+        policyFingerprint: plan.policyFingerprint,
+        manifestFingerprint: plan.resolvedSkills.fingerprint,
       },
     });
-    log.debug("created runner for session", { sessionId: session.id, surfaceId: expectedSurfaceId });
+    log.debug("created prepared runner for conversation", {
+      conversationId: session.id,
+      surfaceId: plan.surfaceId,
+      runtimeId: plan.runtimeId,
+      modelName: plan.modelName,
+      manifestFingerprint: plan.resolvedSkills.fingerprint,
+      capabilities: plan.capabilityManifest.capabilities,
+    });
     return runner;
   }
 

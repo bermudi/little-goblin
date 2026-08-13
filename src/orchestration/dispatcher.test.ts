@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { TurnDispatcher } from "./dispatcher.ts";
 import { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
 import type { AttachmentSignal, AttachedWork, SurfaceRuntimeAuthority } from "./dispatcher.ts";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
@@ -201,6 +202,13 @@ function buildDispatcher(
   const surfaceThinkingLevel = opts.surfaceThinkingLevel;
   const surfaceSettings: SurfaceSettings = {
     effectiveEnvironment: (_surface: Surface): ExecutionEnvironment => surfaceEnv,
+    getRuntimeSettings: () => ({
+      executionEnvironment: surfaceEnv,
+      modelName: surfaceModelName,
+      thinkingLevel: surfaceThinkingLevel,
+      skillPolicy: DEFAULT_SKILL_POLICY,
+      fingerprint: JSON.stringify({ surfaceEnv, surfaceModelName, surfaceThinkingLevel, skillPolicy: DEFAULT_SKILL_POLICY }),
+    }),
     getModelName: () => surfaceModelName,
     setModelName: () => {},
     getThinkingLevel: () => surfaceThinkingLevel,
@@ -251,7 +259,7 @@ function registerTestSurfaceRunner(
   runtimeHost.registerSurfaceRuntime(conversationId, runner, {
     surfaceId: surfaceId(dmSurface(1)),
     runtimeId: DelegatedWorkHost.newRuntimeId(),
-    skillContext: { policyFingerprint: "test", manifestFingerprint: null },
+    skillContext: { settingsFingerprint: "test-settings", policyFingerprint: "test", manifestFingerprint: null },
   });
 }
 
@@ -335,23 +343,6 @@ class FakeBindingGuard implements SurfaceRuntimeAuthority {
   }
 }
 
-/** A minimal fake CapturedMemoryContext for tests that exercise dispatcher logic. */
-function fakeCapturedContext(): CapturedMemoryContext {
-  return {
-    kind: "surface",
-    authority: {
-      kind: "surface",
-      sourceSurfaceId: surfaceId(dmSurface(1)),
-      activeScope: { chatId: 1, topicScope: "general" },
-    },
-    caller: { kind: "main" },
-    frozenSummary: null,
-    frozenUserBody: "",
-    frozenActiveMemoryBody: "",
-  };
-}
-
-
 describe("TurnDispatcher runtime host support", () => {
   it("removes runner and queue map entries synchronously before awaiting dispose", async () => {
     const { dispatcher, runtimeHost } = buildDispatcher();
@@ -393,29 +384,9 @@ describe("TurnDispatcher runtime host support", () => {
     await disposePromise;
   });
 
-  it("rejects a stale binding before constructing adapters", () => {
-    const bindings = new Map<string, string>();
-    const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
-      surfaceRuntimeAuthority: mappedRuntimeAuthority(bindings),
-    });
-    const session = makeSession("abc123def0");
 
-    expect(() => dispatcher.createRunner(session, dmSurface(1), fakeCapturedContext())).toThrow(/stale binding/);
-    expect(betaSurfaces).toHaveLength(0);
-    expect(createAgentRunnerCalls).toHaveLength(0);
-  });
 
-  it("rejects an environment mismatch before creating the runner or beta tools", () => {
-    const projectRoot = "/srv/project-a";
-    const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
-      surfaceEnv: projectEnvironment(projectRoot),
-    });
-    const session = makeSession("abc123def0", personalEnvironment());
 
-    expect(() => dispatcher.createRunner(session, dmSurface(1), fakeCapturedContext())).toThrow(/environment mismatch/);
-    expect(betaSurfaces).toHaveLength(0);
-    expect(createAgentRunnerCalls).toHaveLength(0);
-  });
 
   it("creates an internal runner without Surface comparison", () => {
     const projectRoot = "/srv/project-a";
@@ -442,7 +413,9 @@ describe("TurnDispatcher runtime host support", () => {
 
     expect(betaSurfaces).toHaveLength(0);
     expect(createAgentRunnerCalls).toHaveLength(1);
-    expect(createAgentRunnerCalls[0]?.executionEnvironment).toEqual(personalEnvironment());
+    const options = createAgentRunnerCalls[0];
+    if (options === undefined || options.plan !== undefined) throw new Error("expected an internal runtime");
+    expect(options.executionEnvironment).toEqual(personalEnvironment());
   });
 
   it("rejects a Surface-backed session at the internal dispatch boundary", () => {
@@ -471,31 +444,9 @@ describe("TurnDispatcher runtime host support", () => {
       .toThrow(/Surface-backed runtime/);
   });
 
-  it("reads model and thinking exclusively from Surface settings", () => {
-    const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
-      surfaceModelName: "poe/SurfaceModel",
-      surfaceThinkingLevel: "high",
-    });
-    const session = makeSession("abc123def0", personalEnvironment());
 
-    dispatcher.createRunner(session, dmSurface(1), fakeCapturedContext());
 
-    expect(betaSurfaces).toHaveLength(1);
-    expect(createAgentRunnerCalls).toHaveLength(1);
-    expect(createAgentRunnerCalls[0]?.modelName).toBe("poe/SurfaceModel");
-    expect(createAgentRunnerCalls[0]?.thinkingLevel).toBe("high");
-  });
 
-  it("leaves model and thinking unset when Surface settings are absent", () => {
-    const { dispatcher, createAgentRunnerCalls } = buildDispatcher();
-    const session = makeSession("abc123def0", personalEnvironment());
-
-    dispatcher.createRunner(session, dmSurface(1), fakeCapturedContext());
-
-    expect(createAgentRunnerCalls).toHaveLength(1);
-    expect(createAgentRunnerCalls[0]?.modelName).toBeUndefined();
-    expect(createAgentRunnerCalls[0]?.thinkingLevel).toBeUndefined();
-  });
 });
 
 describe("TurnDispatcher async runner creation", () => {
@@ -504,6 +455,8 @@ describe("TurnDispatcher async runner creation", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-dispatch-async-"));
+    mkdirSync(join(tmpDir, "workspace"), { recursive: true });
+    writeFileSync(join(tmpDir, "workspace", "SOUL.md"), "prepared runtime test identity\n", "utf-8");
     memoryStore = new MemoryStore(tmpDir);
   });
 
@@ -519,6 +472,7 @@ describe("TurnDispatcher async runner creation", () => {
       surfacePolicy?: SkillPolicy;
       cfg?: Config;
       delegatedWorkHost?: DelegatedWorkHost;
+      createSurfaceTools?: (surface: Surface) => ToolDefinition[];
     } = {},
   ): {
     dispatcher: TurnDispatcher;
@@ -529,6 +483,13 @@ describe("TurnDispatcher async runner creation", () => {
     const subagentRunner = new FakeSubagentRunner();
     const surfaceSettings: SurfaceSettings = {
       effectiveEnvironment: (_surface: Surface): ExecutionEnvironment => personalEnvironment(),
+      getRuntimeSettings: () => ({
+        executionEnvironment: personalEnvironment(),
+        modelName: undefined,
+        thinkingLevel: undefined,
+        skillPolicy: opts.surfacePolicy ?? DEFAULT_SKILL_POLICY,
+        fingerprint: JSON.stringify({ environment: personalEnvironment(), policy: opts.surfacePolicy ?? DEFAULT_SKILL_POLICY }),
+      }),
       getModelName: () => undefined,
       setModelName: () => {},
       getThinkingLevel: () => undefined,
@@ -539,23 +500,40 @@ describe("TurnDispatcher async runner creation", () => {
     const createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][] = [];
     const createAgentRunner = opts.createAgentRunner ?? ((o) => {
       createAgentRunnerCalls.push(o);
+      const plan = o.plan;
+      if (plan === undefined) throw new Error("expected a prepared Surface runtime plan");
       const runner = new FakeAgentRunner();
       runner.disposeCalled = false;
-      runner.memoryContext = o.memoryContext;
-      runner.genericSubagentInheritance = o.resolvedSkills === undefined
-        ? null
-        : { executionEnvironment: o.executionEnvironment, resolvedSkills: o.resolvedSkills };
-      runner.transcriptWriterContext =
-        o.memoryContext.kind === "surface"
-          ? { kind: "surface", sourceSurfaceId: o.memoryContext.authority.sourceSurfaceId }
-          : { kind: "internal" };
+      runner.memoryContext = plan.memoryContext;
+      runner.genericSubagentInheritance = {
+        executionEnvironment: plan.executionEnvironment,
+        resolvedSkills: plan.resolvedSkills,
+      };
+      runner.transcriptWriterContext = {
+        kind: "surface",
+        sourceSurfaceId: plan.memoryContext.authority.sourceSurfaceId,
+      };
       return runner as unknown as AgentRunner;
     });
     const delegatedWorkHost = opts.delegatedWorkHost ?? new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost;
     const runtimeHost = new ConversationRuntimeHost({ delegatedWorkHost });
 
     const dispatcher = new TurnDispatcher({
-      cfg: opts.cfg ?? ({} as Config),
+      cfg: {
+        botToken: "test-token",
+        allowedTgUserIds: new Set([1]),
+        modelName: "poe/TestModel",
+        poeApiKey: "test-key",
+        openrouterApiKey: "test-key",
+        openaiApiKey: "test-key",
+        anthropicApiKey: "test-key",
+        goblinHome: tmpDir,
+        logLevel: "error",
+        toolVisibility: "standard",
+        voiceName: "en-US-AriaNeural",
+        favorites: [],
+        ...opts.cfg,
+      },
       surfaceSettings,
       subagentRunner: subagentRunner as unknown as SubagentRunner,
       memoryStore,
@@ -569,7 +547,7 @@ describe("TurnDispatcher async runner creation", () => {
         onMessageEnd: () => {},
         onAgentEnd: () => {},
       }),
-      createBetaTools: (_surface: Surface) => [],
+      createBetaTools: opts.createSurfaceTools ?? ((_surface: Surface) => []),
       createAgentRunner,
       surfaceRuntimeAuthority: opts.surfaceRuntimeAuthority ?? permissiveRuntimeAuthority(),
     });
@@ -593,8 +571,59 @@ describe("TurnDispatcher async runner creation", () => {
 
     await dispatcher.getOrCreateRunner(makeSession("abc123def0"), dmSurface(1));
     const opts = createAgentRunnerCalls[0]!;
-    expect(opts.skillPolicy).toEqual(policy);
-    expect(opts.resolvedSkills?.skills.map((skill) => skill.name)).toEqual(["alpha"]);
+    const plan = opts.plan;
+    if (plan === undefined) throw new Error("expected a prepared Surface runtime plan");
+    expect(plan.skillPolicy).toEqual(policy);
+    expect(plan.resolvedSkills.skills.map((skill) => skill.name)).toEqual(["alpha"]);
+    expect(Object.isFrozen(plan)).toBe(true);
+    expect(Object.isFrozen(plan.resolvedSkills)).toBe(true);
+  });
+
+  it("commits one complete ephemeral plan before Surface runner construction", async () => {
+    await memoryStore.add("general", "plan memory fact");
+    const { dispatcher, createAgentRunnerCalls, runtimeHost } = buildAsyncDispatcher();
+    const conversation = makeSession("abc123def0");
+    const surface = dmSurface(1);
+
+    await dispatcher.getOrCreateRunner(conversation, surface);
+
+    const options = createAgentRunnerCalls[0];
+    const plan = options?.plan;
+    if (plan === undefined) throw new Error("expected a prepared Surface runtime plan");
+    expect(plan.conversationId).toBe(conversation.id);
+    expect(plan.surfaceId).toBe(surfaceId(surface));
+    expect(plan.executionEnvironment).toEqual(personalEnvironment());
+    expect(plan.cwd).toBe(join(tmpDir, "workspace"));
+    expect(plan.modelName).toBe("poe/TestModel");
+    expect(plan.thinkingLevel).toBe(plan.resolvedModel.thinkingLevel);
+    expect(plan.systemPrompt.sources).toEqual([join(tmpDir, "workspace", "SOUL.md")]);
+    expect(plan.prompt).toContain("prepared runtime test identity");
+    expect(plan.prompt).toContain("plan memory fact");
+    expect(plan.resolvedSkills.skills).toEqual([]);
+    expect(plan.capabilityManifest.capabilities).toEqual([
+      "pi-file-tools",
+      "memory",
+      "subagents",
+      "prompt-file-notices",
+    ]);
+    expect(plan.capabilityManifest.surfaceTools).toEqual([]);
+    expect(runtimeHost.runtimeIdFor(conversation.id)).toBe(plan.runtimeId);
+    expect(Object.isFrozen(plan)).toBe(true);
+    expect(Object.isFrozen(plan.capabilityManifest)).toBe(true);
+    expect(Object.isFrozen(plan.memoryContext)).toBe(true);
+  });
+
+  it("advertises surface tools only when concrete tools were captured", async () => {
+    const tool = { name: "text_to_speech" } as ToolDefinition;
+    const { dispatcher, createAgentRunnerCalls } = buildAsyncDispatcher({
+      createSurfaceTools: () => [tool],
+    });
+
+    await dispatcher.getOrCreateRunner(makeSession("abc123def0"), dmSurface(1));
+    const plan = createAgentRunnerCalls[0]?.plan;
+    if (plan === undefined) throw new Error("expected a prepared Surface runtime plan");
+    expect(plan.capabilityManifest.capabilities).toContain("surface-tools");
+    expect(plan.capabilityManifest.surfaceTools).toEqual([tool]);
   });
 
   it("getOrCreateRunner is async and returns a runner with a captured memory context", async () => {
@@ -606,11 +635,10 @@ describe("TurnDispatcher async runner creation", () => {
     expect(runner).toBeDefined();
     expect(createAgentRunnerCalls).toHaveLength(1);
     const opts = createAgentRunnerCalls[0]!;
-    expect(opts.memoryContext).toBeDefined();
-    expect(opts.memoryContext.kind).toBe("surface");
-    if (opts.memoryContext.kind === "surface") {
-      expect(opts.memoryContext.frozenSummary).toContain("test fact");
-    }
+    const plan = opts.plan;
+    if (plan === undefined) throw new Error("expected a prepared Surface runtime plan");
+    expect(plan.memoryContext.kind).toBe("surface");
+    expect(plan.memoryContext.frozenSummary).toContain("test fact");
   });
 
   it("deduplicates concurrent creation — two callers share one runner", async () => {
@@ -694,10 +722,67 @@ describe("TurnDispatcher async runner creation", () => {
     // Only Y's runner was created and registered.
     expect(createAgentRunnerCalls).toHaveLength(1);
     const yOpts = createAgentRunnerCalls[0]!;
-    expect(yOpts.memoryContext.kind).toBe("surface");
-    if (yOpts.memoryContext.kind === "surface") {
-      expect(yOpts.memoryContext.authority.sourceSurfaceId).toBe(surfaceId(dmSurface(2)));
-    }
+    const yPlan = yOpts.plan;
+    if (yPlan === undefined) throw new Error("expected a prepared Surface runtime plan");
+    expect(yPlan.memoryContext.authority.sourceSurfaceId).toBe(surfaceId(dmSurface(2)));
+  });
+
+  it("settings recheck discards a candidate changed during an async authority checkpoint", async () => {
+    let fingerprint = "settings:a";
+    let assertionCount = 0;
+    const policy = DEFAULT_SKILL_POLICY;
+    const surfaceSettings: SurfaceSettings = {
+      effectiveEnvironment: () => personalEnvironment(),
+      getRuntimeSettings: () => ({
+        executionEnvironment: personalEnvironment(),
+        modelName: undefined,
+        thinkingLevel: undefined,
+        skillPolicy: policy,
+        fingerprint,
+      }),
+      getModelName: () => undefined,
+      setModelName: () => {},
+      getThinkingLevel: () => undefined,
+      setThinkingLevel: () => {},
+      setPreferences: () => {},
+      getSkillPolicy: () => policy,
+    };
+    const runtimeHost = new ConversationRuntimeHost({
+      delegatedWorkHost: new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost,
+    });
+    const createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][] = [];
+    const dispatcher = new TurnDispatcher({
+      cfg: {
+        goblinHome: tmpDir,
+        modelName: "poe/TestModel",
+        poeApiKey: "test-key",
+      } as Config,
+      surfaceSettings,
+      subagentRunner: new FakeSubagentRunner() as unknown as SubagentRunner,
+      memoryStore,
+      runtimeHost,
+      createMessageBuffer: () => ({
+        onTextDelta: () => {}, onToolStart: () => {}, onToolEnd: () => {},
+        onStatusUpdate: () => {}, onMessageStart: () => {}, onMessageEnd: () => {}, onAgentEnd: () => {},
+      }),
+      createBetaTools: () => [],
+      createAgentRunner: (options) => {
+        createAgentRunnerCalls.push(options);
+        return new FakeAgentRunner() as unknown as AgentRunner;
+      },
+      surfaceRuntimeAuthority: {
+        ...permissiveRuntimeAuthority(),
+        assertCurrentBinding: async () => {
+          assertionCount++;
+          if (assertionCount === 2) fingerprint = "settings:b";
+        },
+      },
+    });
+
+    await expect(dispatcher.getOrCreateRunner(makeSession("abc123def0"), dmSurface(1)))
+      .rejects.toThrow(/Surface settings changed after skill resolution/);
+    expect(createAgentRunnerCalls).toHaveLength(0);
+    expect(runtimeHost.hasRuntime("abc123def0")).toBe(false);
   });
 
   it("binding authority recheck: a stale caller whose binding rotated is discarded", async () => {
@@ -728,7 +813,7 @@ describe("TurnDispatcher async runner creation", () => {
       ...permissiveRuntimeAuthority(),
       assertCurrentBinding: async () => {
         assertCount++;
-        if (assertCount === 2) {
+        if (assertCount === 5) {
           await dispatcher.disposeRunner("abc123def0");
         }
       },
@@ -737,7 +822,7 @@ describe("TurnDispatcher async runner creation", () => {
     dispatcher = built.dispatcher;
     const session = makeSession("abc123def0");
 
-    await expect(dispatcher.getOrCreateRunner(session, dmSurface(1))).rejects.toThrow(/before registration/);
+    await expect(dispatcher.getOrCreateRunner(session, dmSurface(1))).rejects.toThrow(/after prompt capture/);
     expect(built.createAgentRunnerCalls).toHaveLength(0);
     expect(dispatcher.hasRuntime(session.id)).toBe(false);
   });

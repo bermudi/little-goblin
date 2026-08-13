@@ -89,7 +89,7 @@ async function seedScopes(home: string): Promise<void> {
 }
 
 function makeFakeAgentRunner(opts: ConstructorParameters<typeof AgentRunner>[0]): AgentRunner {
-  const capture = assertSurfaceCapture(opts.memoryContext);
+  const capture = assertSurfaceCapture(opts.plan === undefined ? opts.memoryContext : opts.plan.memoryContext);
   return {
     memoryContext: capture,
     genericSubagentInheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
@@ -133,6 +133,13 @@ function createFixture(): RuntimeFixture {
   const memoryStore = new MemoryStore(home);
   const surfaceSettings = {
     effectiveEnvironment: () => personalEnvironment(),
+    getRuntimeSettings: () => ({
+      executionEnvironment: personalEnvironment(),
+      modelName: undefined,
+      thinkingLevel: undefined,
+      skillPolicy: DEFAULT_SKILL_POLICY,
+      fingerprint: JSON.stringify({ environment: personalEnvironment(), policy: DEFAULT_SKILL_POLICY }),
+    }),
     getModelName: () => undefined,
     setModelName: () => {},
     getThinkingLevel: () => undefined,

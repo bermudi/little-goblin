@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type { Context } from "grammy";
 import type { Config } from "./config.ts";
 import { AgentRunner } from "./agent/mod.ts";
+import { freezePreparedSurfaceRuntimePlan } from "./agent/runtime-plan.ts";
 import { PiAgentBackend } from "./agent/backend.ts";
 import { createFauxPiServices } from "./test/faux-pi-services.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -84,6 +85,8 @@ const originalFetch = globalThis.fetch;
 
 function makeConfig(): Config {
   const goblinHome = mkdtempSync(join(tmpdir(), "goblin-bot-test-"));
+  mkdirSync(workspacePath(goblinHome), { recursive: true });
+  writeFileSync(soulMdPath(goblinHome), "test goblin identity\n", "utf-8");
   dirs.push(goblinHome);
   return {
     botToken: "123:token",
@@ -209,17 +212,24 @@ async function makeBotWithRealRunner(cfgPatch: Partial<Config> = {}) {
   currentFaux = faux.unregister;
 
   const built = buildBot(cfg, {
-    createAgentRunner: (opts) =>
-      new AgentRunner({
-        ...opts,
+    createAgentRunner: (opts) => {
+      if (opts.plan === undefined) throw new Error("bot must construct a Surface runtime");
+      const plan = freezePreparedSurfaceRuntimePlan({
+        ...opts.plan,
         modelName: "faux/faux-1",
         resolvedModel: { model: faux.getModel() as Model<Api>, apiKey: "fake-key", thinkingLevel: "medium" },
+        thinkingLevel: "medium",
+      });
+      return new AgentRunner({
+        ...opts,
+        plan,
         backendFactory: (bo) =>
           new PiAgentBackend({
             ...bo,
             deps: { createPiServices: (home) => createFauxPiServices(home, faux) },
           }),
-      }),
+      });
+    },
   });
   const api = makeApi();
   (built.bot as unknown as { botInfo: unknown }).botInfo = { id: 99, is_bot: true, first_name: "Goblin", username: "goblinbot" };

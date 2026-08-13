@@ -167,7 +167,9 @@ describe("SubagentRunner — Surface-derived invocation authority", () => {
     expect(childId).toBeDefined();
     const childInstance = getInstance(runner, childId!);
     expect(childInstance?.authority).toEqual(PARENT_AUTHORITY);
-    expect(childInstance?.authority).toBe(capturedParentCapture!.authority);
+    // Invocation capture now detaches immutable routing authority rather than
+    // sharing the parent's object identity with the child host.
+    expect(childInstance?.authority).not.toBe(capturedParentCapture!.authority);
 
     host.latest().complete("done");
     await execPromise;

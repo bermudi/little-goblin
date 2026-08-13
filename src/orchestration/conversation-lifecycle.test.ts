@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConversationLifecycleManager, reconcileProjectAssignmentAtColdStart } from "./conversation-lifecycle.ts";
 import type { SurfaceSettings, ConversationLifecycle } from "./conversation-lifecycle.ts";
-import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
-import { createTurnDispatcherRuntimeHost } from "./conversation-runtime-host.ts";
+import { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
+import type { ConversationRuntimeHostPort } from "./conversation-runtime-host.ts";
 import { TurnDispatcher, type TurnSink } from "./dispatcher.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import type { BindingStore } from "../sessions/bindings.ts";
@@ -52,7 +52,7 @@ class InMemoryBindingStore implements BindingStore {
   }
 }
 
-class FakeRuntimeHost implements ConversationRuntimeHost {
+class FakeRuntimeHost implements ConversationRuntimeHostPort {
   disposed: ConversationId[] = [];
   active = new Set<ConversationId>();
   throwOnNext: ConversationId | null = null;
@@ -1131,23 +1131,21 @@ describe("ConversationLifecycle", () => {
       const surfaceSettings = staticSettings(personalEnvironment());
       const store = new ConversationStore(runtimeHome);
       const bindings = new InMemoryBindingStore();
-      let dispatcher: TurnDispatcher | undefined;
+      const runtimeHost = new ConversationRuntimeHost({
+        delegatedWorkHost: subagentRunner.delegatedWorkHost,
+      });
       const lifecycle = new ConversationLifecycleManager(
         runtimeHome,
         store,
         bindings,
         surfaceSettings,
-        createTurnDispatcherRuntimeHost(() => {
-          if (dispatcher === undefined) throw new Error("runtime host used before dispatcher construction");
-          return dispatcher;
-        }),
+        runtimeHost,
       );
-      dispatcher = new TurnDispatcher({
+      const dispatcher = new TurnDispatcher({
         cfg,
         surfaceSettings,
         subagentRunner,
         memoryStore,
-        agentRunners: new Map(),
         createMessageBuffer: (): TurnSink => ({
           onTextDelta: () => {},
           onToolStart: () => {},
@@ -1159,6 +1157,7 @@ describe("ConversationLifecycle", () => {
         }),
         createBetaTools: () => [],
         createAgentRunner: (opts) => new FakeAgentRunner(opts) as unknown as AgentRunner,
+        runtimeHost,
         surfaceRuntimeAuthority: lifecycle,
       });
       return { lifecycle, dispatcher };
@@ -1173,23 +1172,21 @@ describe("ConversationLifecycle", () => {
       const bindings = new InMemoryBindingStore();
       const surfaceSettings = fileBasedSettings(runtimeHome);
       const subagentRunner = new SubagentRunner(cfg);
-      let dispatcherRef: TurnDispatcher | null = null;
+      const runtimeHost = new ConversationRuntimeHost({
+        delegatedWorkHost: subagentRunner.delegatedWorkHost,
+      });
       const lifecycle = new ConversationLifecycleManager(
         runtimeHome,
         store,
         bindings,
         surfaceSettings,
-        createTurnDispatcherRuntimeHost(() => {
-          if (dispatcherRef === null) throw new Error("runtime host used before dispatcher construction");
-          return dispatcherRef;
-        }),
+        runtimeHost,
       );
       const dispatcher = new TurnDispatcher({
         cfg,
         surfaceSettings,
         subagentRunner,
         memoryStore,
-        agentRunners: new Map(),
         createMessageBuffer: (): TurnSink => ({
           onTextDelta: () => {},
           onToolStart: () => {},
@@ -1201,9 +1198,9 @@ describe("ConversationLifecycle", () => {
         }),
         createBetaTools: () => [],
         createAgentRunner: (opts) => new FakeAgentRunner(opts) as unknown as AgentRunner,
+        runtimeHost,
         surfaceRuntimeAuthority: lifecycle,
       });
-      dispatcherRef = dispatcher;
 
       const personal = await lifecycle.resolveOrStart(surface);
       const personalSession = personal;

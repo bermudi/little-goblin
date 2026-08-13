@@ -31,8 +31,12 @@ import { isValidConversationId } from "../sessions/conversation.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import { existsSync } from "node:fs";
 import { log } from "../log.ts";
-import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
-import type { AttachmentSignal, AttachedWork, SurfaceRuntimeAuthority } from "./dispatcher.ts";
+import type { ConversationRuntimeHostPort } from "./conversation-runtime-host.ts";
+import type {
+  AttachmentSignal,
+  AttachedWork,
+  SurfaceRuntimeAuthority,
+} from "./surface-runtime-authority.ts";
 import { withLifecycleTransitionLock } from "./lifecycle-transition-lock.ts";
 import type { PreparedProjectAssignment, ProjectAssignmentIntent } from "../sessions/project-assignment.ts";
 import {
@@ -174,7 +178,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   private readonly store: ConversationStore;
   private readonly bindings: BindingStore;
   readonly settings: SurfaceSettings;
-  private readonly runtimeHost: ConversationRuntimeHost;
+  private readonly runtimeHost: ConversationRuntimeHostPort;
   private readonly skillPolicyWriter: SkillPolicyWriter;
 
   constructor(
@@ -182,7 +186,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     store: ConversationStore,
     bindings: BindingStore,
     settings: SurfaceSettings,
-    runtimeHost: ConversationRuntimeHost,
+    runtimeHost: ConversationRuntimeHostPort,
     skillPolicyWriter: SkillPolicyWriter = (surface, policy) => saveSkillPolicy(home, surface, policy),
   ) {
     this.home = home;
@@ -809,7 +813,7 @@ function createAttachmentSignal(): MutableAttachmentSignal {
  */
 export function createConversationLifecycle(
   home: string,
-  runtimeHost: ConversationRuntimeHost,
+  runtimeHost: ConversationRuntimeHostPort,
   settings?: SurfaceSettings,
   skillPolicyWriter?: SkillPolicyWriter,
 ): ConversationLifecycle {

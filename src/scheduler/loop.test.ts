@@ -21,14 +21,18 @@ import type { SchedulerClock, SchedulerConversationLifecycle, SchedulerDispatche
 import { dmSurface, surfaceId, type Surface } from "../surface.ts";
 
 /** Fake dispatcher that records every enqueueScheduledTurn call. */
-function makeFakeDispatcher(): SchedulerDispatcher & {
+function makeFakeDispatcher(admission: { open: boolean } = { open: true }): SchedulerDispatcher & {
   calls: { conversation: ConversationState; surface: Surface; content: string }[];
+  setAdmissionOpen(open: boolean): void;
 } {
   const calls: { conversation: ConversationState; surface: Surface; content: string }[] = [];
   return {
     calls,
+    runtimeAdmissionOpen: () => admission.open,
+    setAdmissionOpen: (open) => { admission.open = open; },
     enqueueScheduledTurn(conversation, surface, content) {
       calls.push({ conversation, surface, content });
+      return true;
     },
   };
 }
@@ -206,6 +210,48 @@ describe("SchedulerLoop", () => {
   });
 
   describe("overlapping ticks", () => {
+    it("does not claim a one-shot when shutdown closes runtime admission during an in-flight tick", async () => {
+      const loc: Surface = dmSurface(100);
+      const conversation = await createSession(loc);
+      const created = store.create({
+        surface: loc,
+        kind: "once",
+        prompt: "must survive shutdown",
+        nextRunAt: new Date(NOW_MS - 1000).toISOString(),
+      });
+
+      let releaseResolution!: (conversation: ConversationState | null) => void;
+      const resolution = new Promise<ConversationState | null>((resolve) => {
+        releaseResolution = resolve;
+      });
+      const inFlightLifecycle: SchedulerConversationLifecycle = {
+        resolveCurrent: () => resolution,
+      };
+      const loop = new SchedulerLoop({
+        store,
+        ...schedulerDependencies(inFlightLifecycle),
+        dispatcher,
+        clock: clock.clock,
+        home: tmpDir,
+      });
+
+      loop.start();
+      const tick = loop.tick();
+      loop.stop();
+      // Runtime admission is deliberately still open: SchedulerLoop.stop()
+      // itself must fence a tick that was already resolving the binding.
+      expect(dispatcher.runtimeAdmissionOpen()).toBe(true);
+      releaseResolution(conversation);
+      await tick;
+
+      expect(dispatcher.calls).toHaveLength(0);
+      const after = store.getForSurface(loc, created.id);
+      expect(after!.enabled).toBe(true);
+      expect(after!.state).toBe("enabled");
+      expect(after!.nextRunAt).toBe(created.nextRunAt);
+      expect(after!.lastRun).toBeUndefined();
+    });
+
     it("does not double-dispatch the same due occurrence", async () => {
       const loc: Surface = dmSurface(100);
       await createSession(loc);
@@ -518,6 +564,7 @@ describe("SchedulerLoop", () => {
 
       // Force a throw from the dispatcher on the first dispatch.
       const throwingDispatcher: SchedulerDispatcher = {
+        runtimeAdmissionOpen: () => true,
         enqueueScheduledTurn: () => {
           throw new Error("boom");
         },
@@ -559,6 +606,7 @@ describe("SchedulerLoop", () => {
       });
 
       const throwingDispatcher: SchedulerDispatcher = {
+        runtimeAdmissionOpen: () => true,
         enqueueScheduledTurn: () => {
           throw new Error("sync boom");
         },
@@ -888,12 +936,14 @@ describe("SchedulerLoop", () => {
       // still run. This makes the test robust to listDue ordering.
       let firstSeen = false;
       const mixedDispatcher: SchedulerDispatcher = {
+        runtimeAdmissionOpen: () => true,
         enqueueScheduledTurn(conversation, surface, content) {
           if (!firstSeen) {
             firstSeen = true;
             throw new Error("boom on first");
           }
           dispatcher.enqueueScheduledTurn(conversation, surface, content);
+          return true;
         },
       };
       const loop = new SchedulerLoop({

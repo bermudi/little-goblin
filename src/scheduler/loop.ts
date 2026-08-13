@@ -138,12 +138,18 @@ const realClock: SchedulerClock = {
  * slice of `TurnDispatcher` the loop needs.
  */
 export interface SchedulerDispatcher {
+  /**
+   * True when the runtime kernel is still accepting work. The scheduler reads
+   * this before claiming a due occurrence so a shutdown in flight cannot
+   * permanently consume a one-shot schedule as though it ran.
+   */
+  runtimeAdmissionOpen(): boolean;
   enqueueScheduledTurn(
     conversation: ConversationState,
     surface: Surface,
     content: string,
     onError?: (err: unknown) => void,
-  ): void;
+  ): boolean;
   enqueueInternalTurn?(
     internalSession: InternalSessionState,
     content: string,
@@ -218,6 +224,9 @@ export class SchedulerLoop {
   private timer: { clear(): void } | null = null;
   private memoryTimers: { clear(): void }[] = [];
   private ticking = false;
+  /** Scheduler-owned claim fence. Unlike timer state, this remains closed even
+   * when stop() races a tick that is already awaiting binding resolution. */
+  private claimsOpen = true;
 
   constructor(options: SchedulerOptions) {
     this.store = options.store;
@@ -238,6 +247,7 @@ export class SchedulerLoop {
   /** Begin ticking. No-op if already started. */
   start(): void {
     if (this.timer) return;
+    this.claimsOpen = true;
     this.timer = this.clock.setInterval(() => {
       void this.tick();
     }, this.tickIntervalMs);
@@ -247,6 +257,7 @@ export class SchedulerLoop {
 
   /** Stop ticking. No-op if not started. Safe to call during shutdown. */
   stop(): void {
+    this.claimsOpen = false;
     if (this.timer) {
       this.timer.clear();
       this.timer = null;
@@ -620,6 +631,23 @@ ${formatted}`;
     // Claim before dispatch. For one-shot this completes/disables; for
     // recurring this advances nextRunAt. If another tick already claimed it,
     // claimDue returns null and we skip.
+    //
+    // Scheduler and runtime admission gates: if shutdown has begun, do NOT
+    // claim — claiming would consume a one-shot occurrence as though it ran.
+    // The scheduler-owned fence is closed synchronously by stop(), including
+    // for a tick already awaiting resolveCurrent(). There is
+    // no await between this check and the dispatch below, so once admission is
+    // open here the enqueue cannot be rejected by a later close in the same
+    // synchronous sequence. The occurrence stays due (enabled) using existing
+    // scheduler semantics; on a normal shutdown the loop is stopping, so this
+    // is the narrow interrupted case rather than a new outcome type.
+    if (!this.claimsOpen || !this.dispatcher.runtimeAdmissionOpen()) {
+      log.info("scheduler skipped due schedule: admission closed", {
+        id: schedule.id,
+        surfaceId: surfaceId(schedule.surface),
+      });
+      return;
+    }
     const claimed = this.store.claimDue(schedule.id, nowIso);
     if (!claimed) return;
 
@@ -639,7 +667,7 @@ ${formatted}`;
     try {
       const isHeartbeat = schedule.kind === "heartbeat";
       const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.surface) : schedule.prompt ?? "";
-      this.dispatcher.enqueueScheduledTurn(conversation, schedule.surface, prompt, (err) => {
+      const admitted = this.dispatcher.enqueueScheduledTurn(conversation, schedule.surface, prompt, (err) => {
         const msg = err instanceof Error ? err.message : String(err);
         this.store.recordRun(schedule.id, {
           at: new Date(this.clock.now()).toISOString(),
@@ -647,6 +675,15 @@ ${formatted}`;
           message: msg,
         });
       });
+      if (!admitted) {
+        // Runtime admission closed between the gate above and enqueue. There
+        // is no await in that span, so this is unreachable in practice; defend
+        // anyway by NOT recording a successful outcome for rejected work.
+        log.error("scheduler dispatch rejected at runtime boundary after claim", {
+          id: schedule.id,
+        });
+        return;
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.store.recordRun(schedule.id, { at: nowIso, outcome: "error", message: msg });

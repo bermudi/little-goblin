@@ -7,6 +7,7 @@
  * adjacent Telegram `message_id`s, trailing-debounced. Historical rationale:
  * `specs/changes/archive/2026-07-09-telegram-text-coalescing/`.
  */
+import { log } from "../log.ts";
 import type { TelegramIntakeMessage } from "./intake.ts";
 
 /** A fragment at or above this length is treated as a likely split first half. */
@@ -83,18 +84,57 @@ export interface TextCoalescerOptions {
 export class TextCoalescer {
   private readonly dispatch: CoalesceDispatch;
   private readonly buffers = new Map<string, BufferEntry>();
+  private readonly activeDispatches = new Set<Promise<void>>();
+  private readonly dispatchFailures: unknown[] = [];
+  private closed = false;
+  private closePromise: Promise<void> | undefined;
 
   constructor(options: TextCoalescerOptions) {
     this.dispatch = options.dispatch;
   }
 
+  /** Observe every admitted dispatch so close can drain it. Only detached
+   * dispatches retain failures for close; returned promises belong to callers. */
+  private dispatchTracked(
+    message: TelegramIntakeMessage,
+    text: string,
+    detached: boolean,
+  ): Promise<void> {
+    let dispatch: Promise<void>;
+    try {
+      dispatch = this.dispatch(message, text);
+    } catch (error) {
+      dispatch = Promise.reject(error);
+    }
+    this.activeDispatches.add(dispatch);
+    const settleSuccess = (): void => {
+      this.activeDispatches.delete(dispatch);
+    };
+    const settleFailure = (error: unknown): void => {
+      this.activeDispatches.delete(dispatch);
+      if (!detached) return;
+      // Rejection is an outcome independent of its reason: Promise.reject()
+      // is still a failure even though the reason is undefined.
+      this.dispatchFailures.push(error);
+      log.error("detached coalescer dispatch failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    void dispatch.then(settleSuccess, settleFailure);
+    return dispatch;
+  }
+
   submit(input: CoalesceInput): Promise<void> | undefined {
+    if (this.closed) {
+      log.info("telegram text dropped after admission closed", { surfaceId: input.key.surfaceId });
+      return;
+    }
     // Commands never buffer. If a buffer is open for the key, flush it first
     // (buffered text reaches intake before the command), then dispatch the
     // command immediately.
     if (input.isCommand) {
       this.flush(input.key);
-      return this.dispatch(input.message, input.text);
+      return this.dispatchTracked(input.message, input.text, false);
     }
 
     const entry = this.buffers.get(keyToString(input.key));
@@ -105,7 +145,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        return this.dispatch(input.message, input.text);
+        return this.dispatchTracked(input.message, input.text, false);
       }
       return;
     }
@@ -129,7 +169,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        return this.dispatch(input.message, input.text);
+        return this.dispatchTracked(input.message, input.text, false);
       }
       return;
     }
@@ -145,7 +185,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        return this.dispatch(input.message, input.text);
+        return this.dispatchTracked(input.message, input.text, false);
       }
       return;
     }
@@ -178,6 +218,39 @@ export class TextCoalescer {
     this.buffers.set(key, entry);
   }
 
+  /**
+   * Stop accepting Telegram text and deliver the fragments already accepted
+   * into coalescing buffers exactly once. New submissions after close are
+   * rejected; buffered fragments are flushed and their dispatches awaited so
+   * shutdown never silently drops user text that was already admitted.
+   * Dispatch failures are logged, not swallowed.
+   */
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.closed = true;
+    this.closePromise = this.closeOnce();
+    return this.closePromise;
+  }
+
+  private async closeOnce(): Promise<void> {
+    const entries = [...this.buffers.values()];
+    for (const entry of entries) clearTimeout(entry.timer);
+    this.buffers.clear();
+    for (const entry of entries) void this.dispatchTracked(entry.message, entry.text, true);
+
+    while (this.activeDispatches.size > 0) {
+      await Promise.allSettled([...this.activeDispatches]);
+    }
+
+    const failures = this.dispatchFailures.splice(0);
+    log.info("telegram text admission closed", {
+      bufferedFragments: entries.length,
+      dispatchFailures: failures.length,
+    });
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Telegram text dispatch failed");
+  }
+
   /** Flush an open buffer for `key`: concatenate buffered fragments with no
    * separator, dispatch using the retained first-fragment message, clear the
    * timer, and delete the entry. No-op when no buffer is open. */
@@ -187,7 +260,7 @@ export class TextCoalescer {
     if (entry === undefined) return;
     clearTimeout(entry.timer);
     this.buffers.delete(k);
-    this.dispatch(entry.message, entry.text);
+    void this.dispatchTracked(entry.message, entry.text, true);
   }
 }
 

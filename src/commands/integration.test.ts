@@ -18,7 +18,7 @@ import { executeName } from "./name.ts";
 import { executeResume } from "./resume.ts";
 import { sessionDir, sessionsDir, surfaceHeartbeatPath } from "../sessions/paths.ts";
 import { createConversationLifecycle, ConversationLifecycleManager, FileSurfaceSettings, type ConversationLifecycle, type SurfaceSettings } from "../orchestration/conversation-lifecycle.ts";
-import type { ConversationRuntimeHost } from "../orchestration/conversation-runtime-host.ts";
+import type { ConversationRuntimeHostPort } from "../orchestration/conversation-runtime-host.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import { FileBindingStore } from "../sessions/bindings.ts";
 import { setModelName } from "../sessions/topic-settings.ts";
@@ -63,7 +63,7 @@ describe("rapid command spam integration", () => {
     return conv;
   }
 
-  class FakeRuntimeHost implements ConversationRuntimeHost {
+  class FakeRuntimeHost implements ConversationRuntimeHostPort {
     disposed: string[] = [];
     hasRuntime(_id: ConversationId): boolean {
       return false;

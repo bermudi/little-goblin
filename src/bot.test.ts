@@ -392,6 +392,14 @@ describe("replyNoActiveSession", () => {
 });
 
 describe("buildBot integration", () => {
+  it("derives runtime delegated-work ownership from the single SubagentRunner host", async () => {
+    const built = await makeBot();
+
+    // buildBot exposes no second DelegatedWorkHost input: composition can only
+    // derive runtime cleanup authority from SubagentRunner's owner.
+    expect(built.runtimeHost.delegatedWorkHost).toBe(built.subagentRunner.delegatedWorkHost);
+  });
+
   it("/new creates a Conversation and replies", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
@@ -404,12 +412,12 @@ describe("buildBot integration", () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
     const conversation = built.lifecycle.inspect(dmSurface(1))!;
-    const prior = built.agentRunners.get(conversation.id)! as unknown as MockAgentRunner;
+    const prior = built.dispatcher.getRunner(conversation.id)! as unknown as MockAgentRunner;
 
     await built.bot.handleUpdate(textUpdate("/archive"));
 
     expect(prior.dispose).toHaveBeenCalled();
-    expect(built.agentRunners.has(conversation.id)).toBe(false);
+    expect(built.dispatcher.hasRunner(conversation.id)).toBe(false);
     expect(built.api.sent.at(-1)).toContain("Conversation archived");
   });
 
@@ -417,19 +425,33 @@ describe("buildBot integration", () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
     const conversation = built.lifecycle.inspect(dmSurface(1))!;
-    const prior = built.agentRunners.get(conversation.id)! as unknown as MockAgentRunner;
+    const prior = built.dispatcher.getRunner(conversation.id)! as unknown as MockAgentRunner;
 
     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
 
     expect(projectRootOf(built.lifecycle.settings.effectiveEnvironment(dmSurface(1)))).toBe(built.cfg.goblinHome);
     expect(prior.dispose).toHaveBeenCalled();
-    expect(built.agentRunners.has(conversation.id)).toBe(false);
+    expect(built.dispatcher.hasRunner(conversation.id)).toBe(false);
   });
 
   it("unknown DM command without active conversation prompts for /new", async () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/foo"));
     expect(built.api.sent).toEqual(["`[info]` No active conversation\\. Use /new to start one\\."]);
+  });
+
+  it("drops Telegram updates after admission closes", async () => {
+    const built = await makeBot();
+    const firstClose = built.closeAdmission();
+    expect(built.closeAdmission()).toBe(firstClose);
+    await firstClose;
+
+    await built.bot.handleUpdate(textUpdate("/new"));
+    await built.bot.handleUpdate(textUpdate("/start"));
+    await built.bot.handleUpdate(textUpdate("hello"));
+
+    expect(built.lifecycle.inspect(dmSurface(1))).toBeNull();
+    expect(built.api.sent).toEqual([]);
   });
 
   it("text messages release the update handler while the runner is busy", async () => {
@@ -668,12 +690,12 @@ describe("buildBot integration", () => {
     const built = await makeBot();
     await built.bot.handleUpdate(textUpdate("/new"));
     const conversation = built.lifecycle.inspect(dmSurface(1))!;
-    const oldRunner = built.agentRunners.get(conversation.id)!;
+    const oldRunner = built.dispatcher.getRunner(conversation.id)!;
 
     await built.bot.handleUpdate(textUpdate(`/resume ${conversation.id}`));
 
     expect((oldRunner as unknown as MockAgentRunner).dispose).not.toHaveBeenCalled();
-    expect(built.agentRunners.get(conversation.id)).toBe(oldRunner);
+    expect(built.dispatcher.getRunner(conversation.id)).toBe(oldRunner);
   });
 
   it("archives orphaned topic memory when Telegram reports topic not found", async () => {

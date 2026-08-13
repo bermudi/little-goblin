@@ -9,6 +9,7 @@ import type { AgentRunner } from "../agent/mod.ts";
 import { log } from "../log.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
+import type { ConversationState } from "../sessions/types.ts";
 import { InternalSessionStore } from "../sessions/internal-session-store.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { dmSurface, guestSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
@@ -16,6 +17,11 @@ import { metricsPath, transcriptPath } from "../sessions/paths.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
+import { createConversationOrchestration } from "../orchestration/composition.ts";
+import type { EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
+import type { ExternalAgentRunner } from "../external-agents/mod.ts";
+import { DelegatedWorkHost } from "../delegated-work/mod.ts";
+import type { TurnSink } from "../orchestration/dispatcher.ts";
 import { SchedulerLoop, type SchedulerClock } from "../scheduler/loop.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import {
@@ -26,6 +32,7 @@ import {
   type TelegramIntakeMessage,
 } from "./intake.ts";
 import type { MessageBuffer } from "./mod.ts";
+import { createTelegramRuntimeAdapters } from "./runtime-adapters.ts";
 import type { GuestReplySink } from "./guest-sink.ts";
 import type { InlineQueryResult } from "@grammyjs/types";
 
@@ -116,10 +123,60 @@ function makeGuestMessage(chatId = 99): {
   return { message, results, rejectNext: (err) => { pendingReject = err; } };
 }
 
+interface TestIntakeOptions {
+  cfg: Config;
+  bot: Bot;
+  subagentRunner: SubagentRunner;
+  memoryStore: MemoryStore;
+  createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
+  embeddingProvider?: EmbeddingProvider;
+  dreamingPipeline?: DreamingPipeline;
+  createMessageBuffer?: (surface: Surface, conversation?: ConversationState) => TurnSink;
+  scheduleStore?: ScheduleStore;
+  externalAgentRunner?: ExternalAgentRunner;
+  delegatedWorkHost?: DelegatedWorkHost;
+}
+
+type TestIntake = ReturnType<typeof createTelegramIntake> & {
+  readonly runtimeHost: ReturnType<typeof createConversationOrchestration>["runtimeHost"];
+};
+
+function createTestIntake(options: TestIntakeOptions): TestIntake {
+  const adapters = createTelegramRuntimeAdapters({
+    cfg: options.cfg,
+    bot: options.bot,
+    memoryStore: options.memoryStore,
+    createMessageBuffer: options.createMessageBuffer,
+  });
+  const orchestration = createConversationOrchestration({
+    cfg: options.cfg,
+    subagentRunner: options.subagentRunner,
+    memoryStore: options.memoryStore,
+    createAgentRunner: options.createAgentRunner,
+    embeddingProvider: options.embeddingProvider,
+    dreamingPipeline: options.dreamingPipeline,
+    createMessageBuffer: adapters.createMessageBuffer,
+    createBetaTools: adapters.createBetaTools,
+    scheduleStore: options.scheduleStore,
+    externalAgentRunner: options.externalAgentRunner,
+  });
+  const intake = createTelegramIntake({
+    cfg: options.cfg,
+    bot: options.bot,
+    subagentRunner: options.subagentRunner,
+    memoryStore: options.memoryStore,
+    dispatcher: orchestration.dispatcher,
+    lifecycle: orchestration.lifecycle,
+    scheduleStore: options.scheduleStore,
+    externalAgentRunner: options.externalAgentRunner,
+  });
+  return Object.assign(intake, { runtimeHost: orchestration.runtimeHost });
+}
+
 interface IntakeHarness {
   cfg: Config;
   conversationStore: ConversationStore;
-  agentRunners: Map<string, AgentRunner>;
+  runtimeHost: ReturnType<typeof createConversationOrchestration>["runtimeHost"];
   intake: ReturnType<typeof createTelegramIntake> & { lifecycle: ConversationLifecycle };
   bot: Bot;
   bufferLocators: Surface[];
@@ -201,16 +258,14 @@ function installVoiceFetch(opts: {
 
 function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new SubagentRunner(cfg)): IntakeHarness {
   const conversationStore = new ConversationStore(cfg.goblinHome);
-  const agentRunners = new Map<string, AgentRunner>();
   const bufferLocators: Surface[] = [];
   const editForumTopic = mock(async () => true);
   const bot = fakeBot(editForumTopic);
-  const intake = createTelegramIntake({
+  const testIntake = createTestIntake({
     cfg,
     bot,
     subagentRunner,
     memoryStore: new MemoryStore(cfg.goblinHome),
-    agentRunners,
     createMessageBuffer: (surface) => {
       bufferLocators.push(surface);
       return {} as MessageBuffer;
@@ -221,7 +276,28 @@ function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new Su
       return runner as unknown as AgentRunner;
     },
   });
-  return { cfg, conversationStore, agentRunners, intake, bot, bufferLocators, editForumTopic, subagentRunner };
+  return {
+    cfg,
+    conversationStore,
+    runtimeHost: testIntake.runtimeHost,
+    intake: testIntake,
+    bot,
+    bufferLocators,
+    editForumTopic,
+    subagentRunner,
+  };
+}
+
+function registerTestRunner(
+  runtimeHost: ReturnType<typeof createConversationOrchestration>["runtimeHost"],
+  conversationId: string,
+  runner: AgentRunner,
+): void {
+  runtimeHost.registerSurfaceRuntime(conversationId, runner, {
+    surfaceId: surfaceId(dmSurface(1)),
+    runtimeId: DelegatedWorkHost.newRuntimeId(),
+    skillContext: { policyFingerprint: "test", manifestFingerprint: null },
+  });
 }
 
 function makeMessage(replies: string[] = [], overrides: Partial<TelegramIntakeMessage> = {}): TelegramIntakeMessage {
@@ -312,7 +388,7 @@ describe("Telegram intake", () => {
   });
 
   it("applies runner-disposing command side effects", async () => {
-    const { cfg, agentRunners, intake } = makeHarness();
+    const { cfg, runtimeHost, intake } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
 
@@ -323,7 +399,7 @@ describe("Telegram intake", () => {
     await intake.handleText(message, "/archive");
 
     expect(firstRunner.dispose).toHaveBeenCalledTimes(1);
-    expect(agentRunners.has(firstConversation.id)).toBe(false);
+    expect(runtimeHost.hasRunner(firstConversation.id)).toBe(false);
     expect(replies.at(-1)).toContain("Conversation archived");
 
     await intake.handleText(message, "/new");
@@ -333,7 +409,7 @@ describe("Telegram intake", () => {
     await intake.handleText(message, `/project ${cfg.goblinHome}`);
 
     expect(secondRunner.dispose).toHaveBeenCalledTimes(1);
-    expect(agentRunners.has(secondConversation.id)).toBe(false);
+    expect(runtimeHost.hasRunner(secondConversation.id)).toBe(false);
     expect(replies.at(-1)).toContain("Project assigned");
   });
 
@@ -542,16 +618,14 @@ describe("Telegram intake", () => {
     // signal that contains only bounded identifiers.
     const cfg = makeConfig();
     const conversationStore = new ConversationStore(cfg.goblinHome);
-    const agentRunners = new Map<string, AgentRunner>();
     const warnSpy = spyOn(log, "warn");
 
     const internalContext: InternalMemoryContext = { kind: "internal", caller: { kind: "internal" } };
-    const intake = createTelegramIntake({
+    const intake = createTestIntake({
       cfg,
       bot: fakeBot(),
       subagentRunner: new SubagentRunner(cfg),
       memoryStore: new MemoryStore(cfg.goblinHome),
-      agentRunners,
       createMessageBuffer: () => ({}) as MessageBuffer,
       createAgentRunner: (opts) => {
         const runner = new MockAgentRunner({ ...opts, memoryContext: internalContext });
@@ -566,8 +640,8 @@ describe("Telegram intake", () => {
 
     await intake.handleText(message, "/new");
     const conversationCount = conversationStore.list().length;
-    const runnerCount = agentRunners.size;
     const conversationId = intake.lifecycle.inspect(dmSurface(1))!.id;
+    const runnerCount = intake.dispatcher.hasRunner(conversationId) ? 1 : 0;
 
     await intake.handlePhoto(message, fakeApi(), ["file-id"], undefined);
     await flushMicrotasks();
@@ -582,7 +656,7 @@ describe("Telegram intake", () => {
 
     // 3. No additional binding lookup or runtime creation occurred.
     expect(conversationStore.list()).toHaveLength(conversationCount);
-    expect(agentRunners.size).toBe(runnerCount);
+    expect(intake.dispatcher.hasRunner(conversationId) ? 1 : 0).toBe(runnerCount);
 
     // 4. The telemetry signal is bounded and contains no reply text.
     const noContextCall = warnSpy.mock.calls.find((call) => call[0] === "no-transcript-writer-context");
@@ -596,6 +670,30 @@ describe("Telegram intake", () => {
     expect("text" in payload).toBe(false);
 
     warnSpy.mockRestore();
+  });
+
+  it("keeps handleText in flight until accepted steering settles", async () => {
+    const { intake } = makeHarness();
+    const message = makeMessage([]);
+    const slow = deferred();
+    const steering = deferred();
+    MockAgentRunner.nextPrompt = async () => { await slow.promise; };
+    MockAgentRunner.nextFollowUp = async () => { await steering.promise; };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    let handled = false;
+    const handling = intake.handleText(message, "steer this").then(() => { handled = true; });
+    await waitFor(() => runners[0]!.followUp.mock.calls.length === 1);
+    expect(runners[0]!.followUp).toHaveBeenCalledWith("[prepared] steer this");
+    expect(handled).toBe(false);
+
+    steering.resolve();
+    await handling;
+    expect(handled).toBe(true);
+    slow.resolve();
   });
 
   it("falls back to a fresh turn when a steer loses the streaming race", async () => {
@@ -773,7 +871,7 @@ describe("Telegram intake", () => {
   });
 
   it("runs /archive directly when a wedged runtime cannot drain its prompt queue", async () => {
-    const { agentRunners, intake } = makeHarness();
+    const { runtimeHost, intake } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
     const pending = deferred();
@@ -801,14 +899,14 @@ describe("Telegram intake", () => {
 
     expect(replies.at(-1)).toBe("`[ok]` Conversation archived\\.");
     expect(runner.dispose).toHaveBeenCalledTimes(1);
-    expect(agentRunners.has(sessionId)).toBe(false);
+    expect(runtimeHost.hasRunner(sessionId)).toBe(false);
     expect(intake.lifecycle.inspect(message.surface!)).toBeNull();
 
     // The original prompt can settle late, but its stale queue cannot revive
     // the archived runtime or append a delayed command reply.
     pending.resolve();
     await flushMicrotasks();
-    expect(agentRunners.has(sessionId)).toBe(false);
+    expect(runtimeHost.hasRunner(sessionId)).toBe(false);
   });
 
   it("orphans a later-deferred command when an earlier /new swaps the runner", async () => {
@@ -1011,7 +1109,7 @@ describe("Telegram intake", () => {
     // before the queued scheduled turn starts. The isCurrent() guard must
     // abort the scheduled turn without producing side effects — the scheduled
     // prompt never reaches the disposed runner.
-    const { intake, agentRunners } = makeHarness();
+    const { intake, runtimeHost } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
     const pending = deferred();
@@ -1032,7 +1130,7 @@ describe("Telegram intake", () => {
 
     // Swap the runner out (as /new does) before the scheduled turn starts.
     await dispatcher.disposeRunner(conversation.id);
-    expect(agentRunners.has(conversation.id)).toBe(false);
+    expect(runtimeHost.hasRunner(conversation.id)).toBe(false);
 
     // Release the in-flight turn. The queued scheduled turn wakes, sees its
     // runner is no longer current, and aborts.
@@ -1050,10 +1148,10 @@ describe("Telegram intake", () => {
     const cfg = makeConfig();
     const subagentRunner = new SubagentRunner(cfg);
 
-    const { agentRunners, intake } = makeHarness(cfg, subagentRunner);
+    const { runtimeHost, intake } = makeHarness(cfg, subagentRunner);
     const dispatcher = intake.dispatcher;
     const runner = new MockAgentRunner({ sessionId: "sess-1" });
-    agentRunners.set("sess-1", runner as unknown as AgentRunner);
+    registerTestRunner(runtimeHost, "sess-1", runner as unknown as AgentRunner);
 
     const cancelBySession = mock(async (_sessionId: string) => {});
     subagentRunner.cancelBySession = cancelBySession as unknown as SubagentRunner["cancelBySession"];
@@ -1062,14 +1160,14 @@ describe("Telegram intake", () => {
 
     expect(cancelBySession).not.toHaveBeenCalled();
     expect(runner.dispose).toHaveBeenCalledTimes(1);
-    expect(agentRunners.has("sess-1")).toBe(false);
+    expect(runtimeHost.hasRunner("sess-1")).toBe(false);
   });
 
   it("disposeRunner rethrows when runner.dispose throws (including falsy values)", async () => {
     const cfg = makeConfig();
     const subagentRunner = new SubagentRunner(cfg);
 
-    const { agentRunners, intake } = makeHarness(cfg, subagentRunner);
+    const { runtimeHost, intake } = makeHarness(cfg, subagentRunner);
     const dispatcher = intake.dispatcher;
 
     // Falsy throw — `if (disposeErr)` alone would swallow this.
@@ -1077,10 +1175,10 @@ describe("Telegram intake", () => {
     falsyRunner.dispose.mockImplementation(() => {
       throw null;
     });
-    agentRunners.set("sess-falsy", falsyRunner as unknown as AgentRunner);
+    registerTestRunner(runtimeHost, "sess-falsy", falsyRunner as unknown as AgentRunner);
 
     await expect(dispatcher.disposeRunner("sess-falsy")).rejects.toBeNull();
-    expect(agentRunners.has("sess-falsy")).toBe(false);
+    expect(runtimeHost.hasRunner("sess-falsy")).toBe(false);
 
     // Real error — must also rethrow.
     const errorRunner = new MockAgentRunner({ sessionId: "sess-err" });
@@ -1088,10 +1186,10 @@ describe("Telegram intake", () => {
     errorRunner.dispose.mockImplementation(() => {
       throw disposeErr;
     });
-    agentRunners.set("sess-err", errorRunner as unknown as AgentRunner);
+    registerTestRunner(runtimeHost, "sess-err", errorRunner as unknown as AgentRunner);
 
     await expect(dispatcher.disposeRunner("sess-err")).rejects.toBe(disposeErr);
-    expect(agentRunners.has("sess-err")).toBe(false);
+    expect(runtimeHost.hasRunner("sess-err")).toBe(false);
   });
 
   it("saves the voice file and prompts with transcript + saved-file note for a personal environment", async () => {
@@ -1450,14 +1548,12 @@ describe("Telegram intake", () => {
 describe("createMessageBuffer factory", () => {
   it("creates a Conversation-scoped MetricsStore for an active Conversation", async () => {
     const cfg = makeConfig();
-    const agentRunners = new Map<string, AgentRunner>();
     const bot = fakeBot();
-    const intake = createTelegramIntake({
+    const intake = createTestIntake({
       cfg,
       bot,
       subagentRunner: new SubagentRunner(cfg),
       memoryStore: new MemoryStore(cfg.goblinHome),
-      agentRunners,
       createAgentRunner: (opts) => {
         const runner = new MockAgentRunner(opts);
         runners.push(runner);
@@ -1495,12 +1591,11 @@ describe("createMessageBuffer factory", () => {
   it("operates without a MetricsStore when no Conversation exists", async () => {
     const cfg = makeConfig();
     const bot = fakeBot();
-    const intake = createTelegramIntake({
+    const intake = createTestIntake({
       cfg,
       bot,
       subagentRunner: new SubagentRunner(cfg),
       memoryStore: new MemoryStore(cfg.goblinHome),
-      agentRunners: new Map<string, AgentRunner>(),
     });
 
     const replies: string[] = [];
@@ -1513,12 +1608,11 @@ describe("createMessageBuffer factory", () => {
   it("createMessageBuffer with no Conversation yields a buffer with no metrics", () => {
     const cfg = makeConfig();
     const bot = fakeBot();
-    const intake = createTelegramIntake({
+    const intake = createTestIntake({
       cfg,
       bot,
       subagentRunner: new SubagentRunner(cfg),
       memoryStore: new MemoryStore(cfg.goblinHome),
-      agentRunners: new Map<string, AgentRunner>(),
     });
 
     const surface = dmSurface(1);

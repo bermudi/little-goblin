@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TurnDispatcher } from "./dispatcher.ts";
+import { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
 import type { AttachmentSignal, AttachedWork, SurfaceRuntimeAuthority } from "./dispatcher.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
@@ -20,7 +21,7 @@ import { dmSurface, surfaceId } from "../surface.ts";
 import type { TranscriptWriterContext } from "../sessions/transcript.ts";
 import { DEFAULT_SKILL_POLICY, type SkillPolicy } from "../agent/skills/mod.ts";
 import type { GenericSubagentInheritance } from "../subagents/mod.ts";
-import type { ConversationRuntimeId, DelegatedWorkHost } from "../delegated-work/mod.ts";
+import { DelegatedWorkHost, type ConversationRuntimeId } from "../delegated-work/mod.ts";
 
 class FakeAgentRunner {
   disposeCalled = false;
@@ -180,7 +181,6 @@ class FakeMemoryStore {
 
 function buildDispatcher(
   opts: {
-    runners?: Map<string, AgentRunner>;
     subagentRunner?: SubagentRunner;
     surfaceEnv?: ExecutionEnvironment;
     surfaceModelName?: string;
@@ -190,12 +190,11 @@ function buildDispatcher(
   } = {},
 ): {
   dispatcher: TurnDispatcher;
-  runners: Map<string, AgentRunner>;
+  runtimeHost: ConversationRuntimeHost;
   subagentRunner: FakeSubagentRunner;
   betaSurfaces: Surface[];
   createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][];
 } {
-  const runners = opts.runners ?? new Map<string, AgentRunner>();
   const subagentRunner = (opts.subagentRunner ?? new FakeSubagentRunner()) as unknown as SubagentRunner;
   const surfaceEnv = opts.surfaceEnv ?? personalEnvironment();
   const surfaceModelName = opts.surfaceModelName;
@@ -216,13 +215,14 @@ function buildDispatcher(
     return o as unknown as AgentRunner;
   });
 
+  const delegatedWorkHost = new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost;
+  const runtimeHost = new ConversationRuntimeHost({ delegatedWorkHost });
   const dispatcher = new TurnDispatcher({
     cfg: {} as Config,
     surfaceSettings,
     subagentRunner,
     memoryStore: new FakeMemoryStore() as unknown as MemoryStore,
-    agentRunners: runners,
-    delegatedWorkHost: new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost,
+    runtimeHost,
     createMessageBuffer: (_surface: Surface, _session?: ConversationState): TurnSink => ({
       onTextDelta: () => {},
       onToolStart: () => {},
@@ -240,7 +240,19 @@ function buildDispatcher(
     surfaceRuntimeAuthority: opts.surfaceRuntimeAuthority ?? permissiveRuntimeAuthority(),
   });
 
-  return { dispatcher, runners, subagentRunner: subagentRunner as unknown as FakeSubagentRunner, betaSurfaces, createAgentRunnerCalls };
+  return { dispatcher, runtimeHost, subagentRunner: subagentRunner as unknown as FakeSubagentRunner, betaSurfaces, createAgentRunnerCalls };
+}
+
+function registerTestSurfaceRunner(
+  runtimeHost: ConversationRuntimeHost,
+  conversationId: string,
+  runner: AgentRunner,
+): void {
+  runtimeHost.registerSurfaceRuntime(conversationId, runner, {
+    surfaceId: surfaceId(dmSurface(1)),
+    runtimeId: DelegatedWorkHost.newRuntimeId(),
+    skillContext: { policyFingerprint: "test", manifestFingerprint: null },
+  });
 }
 
 function makeSession(id: string, env: ExecutionEnvironment = personalEnvironment()): ConversationState {
@@ -342,11 +354,11 @@ function fakeCapturedContext(): CapturedMemoryContext {
 
 describe("TurnDispatcher runtime host support", () => {
   it("removes runner and queue map entries synchronously before awaiting dispose", async () => {
-    const { dispatcher, runners } = buildDispatcher();
+    const { dispatcher, runtimeHost } = buildDispatcher();
     const session = makeSession("abc123def0");
     const runner = new FakeAgentRunner();
     runner.disposeDelayMs = 50;
-    runners.set(session.id, runner as unknown as AgentRunner);
+    registerTestSurfaceRunner(runtimeHost, session.id, runner as unknown as AgentRunner);
 
     expect(dispatcher.hasRunner(session.id)).toBe(true);
     const disposePromise = dispatcher.disposeRunner(session.id);
@@ -358,10 +370,10 @@ describe("TurnDispatcher runtime host support", () => {
   });
 
   it("does not enumerate subagents during runtime disposal", async () => {
-    const { dispatcher, runners, subagentRunner } = buildDispatcher();
+    const { dispatcher, runtimeHost, subagentRunner } = buildDispatcher();
     const session = makeSession("abc123def0");
     const runner = new FakeAgentRunner();
-    runners.set(session.id, runner as unknown as AgentRunner);
+    registerTestSurfaceRunner(runtimeHost, session.id, runner as unknown as AgentRunner);
 
     await dispatcher.disposeRunner(session.id);
     expect(subagentRunner.cancelled).toEqual([]);
@@ -369,11 +381,11 @@ describe("TurnDispatcher runtime host support", () => {
   });
 
   it("does not recreate a disposed runner while dispose is in flight", async () => {
-    const { dispatcher, runners } = buildDispatcher();
+    const { dispatcher, runtimeHost } = buildDispatcher();
     const session = makeSession("abc123def0");
     const runner = new FakeAgentRunner();
     runner.disposeDelayMs = 50;
-    runners.set(session.id, runner as unknown as AgentRunner);
+    registerTestSurfaceRunner(runtimeHost, session.id, runner as unknown as AgentRunner);
 
     const disposePromise = dispatcher.disposeRunner(session.id);
     // Synchronous: the runner is gone before dispose resolves.
@@ -446,14 +458,14 @@ describe("TurnDispatcher runtime host support", () => {
   });
 
   it("rejects reuse of a Surface-backed runner for an internal identity collision", () => {
-    const { dispatcher, runners } = buildDispatcher();
+    const { dispatcher, runtimeHost } = buildDispatcher();
     const internal: InternalSessionState = {
       id: "__internal_test__",
       createdAt: new Date().toISOString(),
       chatId: 0,
       executionEnvironment: personalEnvironment(),
     };
-    runners.set(internal.id, new FakeAgentRunner() as unknown as AgentRunner);
+    registerTestSurfaceRunner(runtimeHost, internal.id, new FakeAgentRunner() as unknown as AgentRunner);
 
     expect(() => dispatcher.enqueueInternalTurn(internal, "test prompt", () => {}, () => {}))
       .toThrow(/Surface-backed runtime/);
@@ -510,11 +522,10 @@ describe("TurnDispatcher async runner creation", () => {
     } = {},
   ): {
     dispatcher: TurnDispatcher;
-    runners: Map<string, AgentRunner>;
+    runtimeHost: ConversationRuntimeHost;
     subagentRunner: FakeSubagentRunner;
     createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][];
   } {
-    const runners = new Map<string, AgentRunner>();
     const subagentRunner = new FakeSubagentRunner();
     const surfaceSettings: SurfaceSettings = {
       effectiveEnvironment: (_surface: Surface): ExecutionEnvironment => personalEnvironment(),
@@ -541,14 +552,14 @@ describe("TurnDispatcher async runner creation", () => {
       return runner as unknown as AgentRunner;
     });
     const delegatedWorkHost = opts.delegatedWorkHost ?? new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost;
+    const runtimeHost = new ConversationRuntimeHost({ delegatedWorkHost });
 
     const dispatcher = new TurnDispatcher({
       cfg: opts.cfg ?? ({} as Config),
       surfaceSettings,
       subagentRunner: subagentRunner as unknown as SubagentRunner,
-      delegatedWorkHost,
       memoryStore,
-      agentRunners: runners,
+      runtimeHost,
       createMessageBuffer: (_surface: Surface, _session?: ConversationState): TurnSink => ({
         onTextDelta: () => {},
         onToolStart: () => {},
@@ -563,7 +574,7 @@ describe("TurnDispatcher async runner creation", () => {
       surfaceRuntimeAuthority: opts.surfaceRuntimeAuthority ?? permissiveRuntimeAuthority(),
     });
 
-    return { dispatcher, runners, subagentRunner, createAgentRunnerCalls };
+    return { dispatcher, runtimeHost, subagentRunner, createAgentRunnerCalls };
   }
 
   it("eagerly freezes the Surface policy and resolved manifest at runtime creation", async () => {
@@ -735,7 +746,7 @@ describe("TurnDispatcher async runner creation", () => {
     // Close the memory store so captureRuntimeMemoryContext rejects when it
     // tries to read. This proves a failed capture leaves no half-created
     // runtime and the in-flight entry is cleared for subsequent creation.
-    const { dispatcher, createAgentRunnerCalls, runners } = buildAsyncDispatcher();
+    const { dispatcher, createAgentRunnerCalls, runtimeHost } = buildAsyncDispatcher();
     const session = makeSession("abc123def0");
 
     // Close the store so the capture's store.read throws.
@@ -743,7 +754,7 @@ describe("TurnDispatcher async runner creation", () => {
 
     await expect(dispatcher.getOrCreateRunner(session, dmSurface(1))).rejects.toThrow();
     expect(createAgentRunnerCalls).toHaveLength(0);
-    expect(runners.has(session.id)).toBe(false);
+    expect(runtimeHost.hasRunner(session.id)).toBe(false);
 
     // Reopen the store and verify a subsequent creation can proceed — the
     // in-flight entry was cleared by the failed creation's finally block.

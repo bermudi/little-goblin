@@ -214,7 +214,9 @@ Deployment
   └── model credentials/catalog
 ```
 
-The dispatcher receives mandatory lifecycle-owned Surface runtime authority at construction. That authority reconciles a pending project assignment before every Surface-backed runtime acquisition and verifies the current Binding/environment both before and after memory capture. Its synchronous check is closed over by the runner, so queued work fails closed after a binding change. Resuming a Conversation on another compatible Surface creates a fresh runtime using destination Surface settings.
+The dispatcher receives mandatory lifecycle-owned Surface runtime authority at construction. It also receives the concrete `ConversationRuntimeHost` mandatorily; it cannot create a second runtime owner. That authority reconciles a pending project assignment before every Surface-backed runtime acquisition and verifies the current Binding/environment both before and after memory capture. Its synchronous check is closed over by the runner, so queued work fails closed after a binding change. Resuming a Conversation on another compatible Surface creates a fresh runtime using destination Surface settings.
+
+The runtime host is also the shutdown fence for ephemeral Conversation work. `closeAdmission()` synchronously rejects new runtime creation, registration, and queue admission. Its idempotent single-flight `disposeAll()` then awaits admitted prompt queues, in-flight construction reservations, active per-runtime disposals, and runner/delegated-work cleanup. The deployment signal path closes Telegram intake and text coalescing, stops scheduler timers, and shares one shutdown promise across repeated signals before it awaits cleanup. Runtime admission also fences any scheduler dispatch that was already in flight.
 
 ## Prompt architecture
 
@@ -471,7 +473,17 @@ One ordered sequence, walked end to end. Historical change names and task counts
 
 Steps 1–10a, including attachment intake, agent-owned prompt files, the persistence/runtime-authority and command/lifecycle authority closures, native skill layout, catalog resolution, Surface skill policy, subagent skill inheritance, and the delegated-run record store, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
 
-**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The command/lifecycle authority closure is complete. The plainly described next is ACP external agents under decision 0044 — capability-scoped Claude/Devin ACP behind the external-agent execution host, abandoning `scratch/external-agents/` in place; remaining parked scope stays deferred until deliberately resumed.
+### Second inward solidification pass
+
+Before ACP or other product work, the implementation returns to the remaining mismatch between the accepted runtime model and its physical module ownership. This pass borrows discipline rather than scale from larger agent systems: prepare authoritative facts before activation, freeze one runtime generation's inputs, and keep execution behind narrow code-owned seams. It does not introduce a gateway, plugin SDK, dynamic tool discovery, SQLite-only persistence, provider registry, or generic channel abstraction.
+
+The delivery order is:
+
+1. **Runtime-kernel ownership — implemented in this cycle.** `ConversationRuntimeHost` now concretely owns runtime registration, in-flight construction, queues, and disposal authority. The composition root constructs it before lifecycle and dispatcher; Telegram intake receives the completed kernel and no longer contains the nullable lifecycle/dispatcher hookup.
+2. **Prepared runtime assembly — plainly described next.** Resolve one immutable runtime plan containing Conversation and Surface authority, Execution Environment, model/thinking selection, prompt, captured memory context, resolved skills, and a code-owned capability manifest before registration. Encapsulate the existing asynchronous authority checkpoints in a candidate/reservation protocol without collapsing them into one unsafe early check.
+3. **Later themes, not active phases.** Narrow capability/tool assembly and the `AgentRunner` facade; normalize delegated execution outcomes separately from delivery; own startup and shutdown as one deployment lifetime; then clean dependency direction, Conversation/Pi-session terminology, and the permanent architecture view. Each theme must be freshly shaped from the code produced by the preceding cycle.
+
+**WIP limit: one implementation phase in progress, one plainly described next.** Runtime-kernel ownership is implemented and verified by the focused orchestration, Telegram, bot, and delegated-authority tests. Prepared runtime assembly is the one named next cycle. ACP external agents remains accepted under decision 0044 but is parked behind this inward pass; its accepted backend and persistence scope is unchanged.
 
 ## Feature readiness gate
 

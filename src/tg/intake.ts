@@ -10,24 +10,17 @@ import { handleCommand, type DispatchDeps } from "../commands/dispatch.ts";
 import { parseCommand } from "../commands/parse.ts";
 import { resolveCommand, resolveTiming, type SideEffect } from "../commands/registry.ts";
 import { interruptAndCascade } from "../interrupt.ts";
-import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
-import { MetricsStore } from "../metrics/mod.ts";
+import { MemoryStore } from "../memory/mod.ts";
 import { type ConversationState } from "../sessions/mod.ts";
 import { surfaceId, type Surface, type GuestSurface } from "../surface.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from "./attachments.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
-import { TurnDispatcher, type PromptContent, type TurnSink } from "../orchestration/dispatcher.ts";
-import { createConversationLifecycle, FileSurfaceSettings } from "../orchestration/conversation-lifecycle.ts";
-import { createTurnDispatcherRuntimeHost } from "../orchestration/conversation-runtime-host.ts";
+import type { TurnDispatcher, PromptContent } from "../orchestration/dispatcher.ts";
+import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
-import type { McpRunner } from "../mcp/mod.ts";
-import type { DelegatedWorkHost } from "../delegated-work/mod.ts";
 
 import { transcribeWithGroq } from "../asr/mod.ts";
-import { MessageBuffer, createTextToSpeechTool } from "./mod.ts";
-import { createSendDocumentTool, createSendPhotoTool, createSendVoiceTool } from "./tools.ts";
-import { isPrivateChat } from "./delivery.ts";
 import { GuestReplySink } from "./guest-sink.ts";
 import { type ReplyOpts, sendSystemReply } from "./format.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
@@ -75,28 +68,13 @@ export interface TelegramIntakeOptions {
   bot: Bot;
   subagentRunner: SubagentRunner;
   memoryStore: MemoryStore;
-  agentRunners: Map<string, AgentRunner>;
-  promptQueues?: Map<string, Promise<void>>;
-  createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
-  /** Shared embedding provider for agent memory stores. */
-  embeddingProvider?: EmbeddingProvider;
-  /** Shared dreaming pipeline for background memory promotion. */
-  dreamingPipeline?: DreamingPipeline;
-  /**
-   * Optional override for the turn-sink factory. Production leaves this unset
-   * and `createTelegramIntake` builds the default `MessageBuffer` factory
-   * (Telegram rendering + the `onTopicNotFound` orphan-archive hook). Tests
-   * inject a fake to observe sink creation without a real `MessageBuffer`.
-   */
-  createMessageBuffer?: (surface: Surface, session?: ConversationState) => TurnSink;
-  /** Shared schedule store for `/schedule`. Wired in Phase 6 (bot.ts). */
+  /** Runtime kernel assembled by the composition root. */
+  dispatcher: TurnDispatcher;
+  lifecycle: ConversationLifecycle;
+  /** Shared schedule store for `/schedule`. */
   scheduleStore?: ScheduleStore;
   /** Shared external agent runner. Wired in Phase 6 (bot.ts). */
   externalAgentRunner?: ExternalAgentRunner;
-  /** Shared MCP runner. Wired in buildBot. */
-  mcpRunner?: McpRunner;
-  /** Shared delegated-work lifecycle host. */
-  delegatedWorkHost?: DelegatedWorkHost;
 }
 
 type ActiveTurn = {
@@ -195,77 +173,20 @@ export function replyNoActiveSession(message: TelegramIntakeMessage, surface: Su
 }
 
 export function createTelegramIntake(options: TelegramIntakeOptions) {
-  const { cfg, bot, subagentRunner, memoryStore, embeddingProvider, dreamingPipeline } = options;
-  // The turn-sink factory: builds a `MessageBuffer` targeting the Telegram
-  // surface for a surface. This rendering logic lived inside the dispatcher
-  // before relocation; it moves here (the Telegram layer) so the dispatcher
-  // stays transport-agnostic. Tests override via `options.createMessageBuffer`.
-  const createMessageBuffer = options.createMessageBuffer ?? ((surface: Surface, session?: ConversationState): TurnSink => {
-    const metrics = session ? new MetricsStore(cfg.goblinHome, session.id) : undefined;
-    return new MessageBuffer(bot, surface, {
-      visibility: cfg.toolVisibility,
-      metrics,
-      drafts: isPrivateChat(surface),
-      onTopicNotFound:
-        surface.kind === "topic"
-          ? async () => {
-              await memoryStore.archiveOrphan(surface.chatId, surface.topicId);
-            }
-          : undefined,
-    });
-  });
-  // Beta tool factory: builds the Telegram-specific tools (voice, photo,
-  // document, TTS) for a chat. The dispatcher does not import from `src/tg/`;
-  // this factory is injected so the Telegram layer owns beta tool creation.
-  const createBetaTools = (surface: Surface) => {
-    if (surface.kind === "guest") {
-      // Guest surfaces do not support normal chat send methods.
-      return [createTextToSpeechTool()];
-    }
-    return [
-      createSendVoiceTool(bot, surface),
-      createSendPhotoTool(bot, surface),
-      createSendDocumentTool(bot, surface),
-      createTextToSpeechTool(),
-    ].filter((t): t is NonNullable<typeof t> => t !== null);
-  };
-  const surfaceSettings = new FileSurfaceSettings(cfg.goblinHome);
+  const { cfg, bot, subagentRunner, memoryStore, dispatcher, lifecycle } = options;
+  let admissionOpen = true;
 
-  // The lifecycle owns runtime authority, while its runtime host delegates to
-  // the dispatcher. Build the lifecycle first through a guarded provider, then
-  // pass that complete authority into the dispatcher constructor. There is no
-  // optional post-construction wiring path: no Surface runtime can exist until
-  // both sides of this composition boundary exist.
-  const dispatcherRef: { current: TurnDispatcher | null } = { current: null };
-  const lifecycle = createConversationLifecycle(
-    cfg.goblinHome,
-    createTurnDispatcherRuntimeHost(() => {
-      if (dispatcherRef.current === null) {
-        throw new Error("conversation runtime host used before dispatcher construction");
-      }
-      return dispatcherRef.current;
-    }),
-    surfaceSettings,
-  );
-  const dispatcher = new TurnDispatcher({
-    cfg,
-    surfaceSettings,
-    subagentRunner,
-    memoryStore,
-    agentRunners: options.agentRunners,
-    promptQueues: options.promptQueues,
-    createAgentRunner: options.createAgentRunner,
-    createMessageBuffer,
-    createBetaTools,
-    scheduleStore: options.scheduleStore,
-    externalAgentRunner: options.externalAgentRunner,
-    mcpRunner: options.mcpRunner,
-    delegatedWorkHost: options.delegatedWorkHost,
-    embeddingProvider,
-    dreamingPipeline,
-    surfaceRuntimeAuthority: lifecycle,
-  });
-  dispatcherRef.current = dispatcher;
+  function closeAdmission(): void {
+    if (!admissionOpen) return;
+    admissionOpen = false;
+    log.info("telegram intake admission closed");
+  }
+
+  function admit(kind: string): boolean {
+    if (admissionOpen) return true;
+    log.info("telegram intake dropped after admission closed", { kind });
+    return false;
+  }
 
   function recordAssistantReply(
     sessionId: string,
@@ -397,21 +318,23 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     );
   }
 
-  function steerOrFallbackToFreshTurn(
+  async function steerOrFallbackToFreshTurn(
     message: TelegramIntakeMessage,
     surface: Surface,
     session: ConversationState,
     runner: AgentRunner,
     text: string,
-  ): void {
-    void runner.followUp(message.prepare(text)).catch((err) => {
+  ): Promise<void> {
+    try {
+      await runner.followUp(message.prepare(text));
+    } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("not streaming")) {
         scheduleFreshTurn(message, surface, session, runner, text, "runner prompt failed (steer race fallback)");
         return;
       }
       log.warn("steer failed", { error: msg, sessionId: session.id });
-    });
+    }
   }
 
   async function resolveActiveTurn(message: TelegramIntakeMessage, kind: string): Promise<ActiveTurn | null> {
@@ -484,6 +407,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   async function handleText(message: TelegramIntakeMessage, rawText: string | undefined): Promise<void> {
+    if (!admit("text")) return;
     const surface = message.surface;
     if (!surface) {
       log.debug("dropping message: no surface");
@@ -578,7 +502,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     }
 
     if (runner.isStreaming) {
-      steerOrFallbackToFreshTurn(message, surface, session, runner, rawText);
+      await steerOrFallbackToFreshTurn(message, surface, session, runner, rawText);
       return;
     }
 
@@ -586,6 +510,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   async function handlePhoto(message: TelegramIntakeMessage, api: Bot["api"], fileIds: string[], caption?: string): Promise<void> {
+    if (!admit("photo")) return;
     const turn = await resolveActiveTurn(message, "photo");
     if (!turn) return;
 
@@ -615,6 +540,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   async function handleDocument(message: TelegramIntakeMessage, api: Bot["api"], doc: TelegramDocumentInput): Promise<void> {
+    if (!admit("document")) return;
     const turn = await resolveActiveTurn(message, "document");
     if (!turn) return;
 
@@ -672,6 +598,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   async function handleVoice(message: TelegramIntakeMessage, api: Bot["api"], voice: TelegramVoiceInput): Promise<void> {
+    if (!admit("voice")) return;
     const turn = await resolveActiveTurn(message, "voice");
     if (!turn) return;
 
@@ -771,6 +698,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   async function handleAudio(message: TelegramIntakeMessage, api: Bot["api"], audio: TelegramAudioInput): Promise<void> {
+    if (!admit("audio")) return;
     const turn = await resolveActiveTurn(message, "audio");
     if (!turn) return;
 
@@ -833,6 +761,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   async function handleTopicDescription(chatId: number | undefined, topicId: number | undefined, name: string | undefined): Promise<void> {
+    if (!admit("topic-description")) return;
     if (chatId === undefined || topicId === undefined || name === undefined) return;
     try {
       await memoryStore.setDescription(
@@ -863,6 +792,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
    * summoner sees nothing, but the bot does not crash.
    */
   async function handleGuestMessage(message: GuestMessage, text: string): Promise<void> {
+    if (!admit("guest")) return;
     const surface = message.surface;
     let conversation: ConversationState;
     try {
@@ -922,6 +852,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     handleAudio,
     handleTopicDescription,
     handleGuestMessage,
+    closeAdmission,
     dispatcher,
     lifecycle,
   };

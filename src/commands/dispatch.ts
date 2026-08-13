@@ -17,8 +17,8 @@ export type { SideEffect, DispatchResult, DispatchDeps, DispatchOpts };
  * this far while a turn is streaming, and they handle their own abort
  * (`/cancel` calls `interruptAndCascade` inside its handler). This function is
  * therefore Telegram-side-effect-free: it returns side effects the caller must
- * apply. It does not mutate the grammy Context, call bot.api.*, touch the
- * agentRunners map, or dispose runners.
+ * apply. It does not mutate the grammy Context, call bot.api.*, touch runtime
+ * registrations, or dispose runners.
  *
  * Returns `{ kind: "fallthrough" }` for unknown commands or grammy-only defs
  * (no handler), so the caller continues to normal agent routing.

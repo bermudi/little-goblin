@@ -31,20 +31,13 @@ import {
   type SkillPolicy,
 } from "../agent/skills/mod.ts";
 import type { SurfaceSettings } from "./conversation-lifecycle.ts";
-import type { RuntimeDisposalOptions } from "./conversation-runtime-host.ts";
+import { ConversationRuntimeHost, type RuntimeDisposalOptions } from "./conversation-runtime-host.ts";
+import type { SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
+export type { AttachmentSignal, AttachedWork, CurrentBindingGuard, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { SurfaceSettings };
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
-
-/** Metadata stored alongside each queued prompt chain entry. */
-interface PromptQueueEntry {
-  /** True for actual prompt turns; false for deferred commands. */
-  isPrompt: boolean;
-}
-
-/** Maximum time `disposeRunner` waits for legacy external-agent cleanup. */
-const DISPOSE_RUNNER_CANCEL_TIMEOUT_MS = 10_000;
 
 /**
  * The opaque sink a turn dispatches through — the subset of `MessageBuffer`
@@ -63,68 +56,13 @@ function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number
   };
 }
 
-/**
- * Signal supplied to work running under {@link CurrentBindingGuard}. The work
- * calls `attached()` once it has acquired the resources it needs from the current
- * binding; the guard releases the lifecycle transition lock at that point. If
- * the work fails before `attached()` is called, it may call `failed(err)` to
- * reject the attachment promise and release the lock.
- */
-export interface AttachmentSignal {
-  /** True once `attached()` or `failed()` has been called. */
-  readonly settled: boolean;
-  attached(): void;
-  failed(err: unknown): void;
-}
-
-/**
- * Non-terminal value returned by work running under {@link CurrentBindingGuard}.
- * The guard releases the transition lock as soon as the work is attached; the
- * caller is responsible for awaiting the terminal `result` after the guard
- * resolves.
- */
-export interface AttachedWork<T> {
-  result: Promise<T>;
-  runner?: AgentRunner;
-}
-
-/**
- * Lifecycle-provided guard that runs work while excluding binding replacement.
- *
- * The implementation is owned by `ConversationLifecycle`; the dispatcher only
- * consumes the seam. The guard verifies that the requested Surface is still bound
- * to the expected conversation before running `fn`, holds the transition
- * exclusion only until the work signals attachment, and then returns an
- * {@link AttachedWork} carrying the terminal result. It never awaits the
- * terminal result under the lock.
- */
-export interface CurrentBindingGuard {
-  withCurrentBinding<T>(
-    surface: Surface,
-    conversationId: string,
-    fn: (signal: AttachmentSignal) => Promise<AttachedWork<T>>,
-  ): Promise<AttachedWork<T>>;
-}
-
-/**
- * Lifecycle-owned authority required for every Surface-backed runtime. The
- * asynchronous acquisition check reconciles pending cross-file transitions;
- * the synchronous check is closed over by AgentRunner so stale work cannot
- * prompt or mutate tools after a binding changes.
- */
-export interface SurfaceRuntimeAuthority extends CurrentBindingGuard {
-  assertCurrentBinding(surface: Surface, conversationId: string): Promise<void>;
-  isCurrentBinding(surface: Surface, conversationId: string): boolean;
-}
-
 export interface TurnDispatcherOptions {
   cfg: Config;
   surfaceSettings: SurfaceSettings;
   subagentRunner: SubagentRunner;
   memoryStore: MemoryStore;
-  agentRunners: Map<string, AgentRunner>;
-  promptQueues?: Map<string, Promise<void>>;
-  promptQueueMeta?: Map<string, PromptQueueEntry>;
+  /** The single owner of runtime state, supplied by the composition root. */
+  runtimeHost: ConversationRuntimeHost;
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
   /**
    * Shared embedding provider for agent memory stores. When present, each
@@ -159,8 +97,6 @@ export interface TurnDispatcherOptions {
   externalAgentRunner?: ExternalAgentRunner;
   /** Shared MCP runner. When present and configured, it is wired into every new `AgentRunner`. */
   mcpRunner?: McpRunner;
-  /** Shared delegated-work policy host. */
-  delegatedWorkHost?: DelegatedWorkHost;
   /**
    * Mandatory lifecycle-owned authority for Surface-backed runtime acquisition,
    * stale-runner checks, and attached subagent revival. Internal runtimes use
@@ -170,10 +106,11 @@ export interface TurnDispatcherOptions {
 }
 
 /**
- * Shared turn dispatcher: owns `AgentRunner` creation, per-session fresh-turn
- * queues, turn-sink creation, and runner disposal. Both Telegram intake and the
- * scheduled-turn scheduler dispatch through this so a due scheduled prompt and
- * a Telegram message serialize through the same per-session chain.
+ * Shared turn dispatcher: owns `AgentRunner` construction and turn execution;
+ * `ConversationRuntimeHost` owns runtime registration, per-Conversation queues,
+ * and disposal. Both Telegram intake and the scheduled-turn scheduler dispatch
+ * through this kernel so a due scheduled prompt and a Telegram message share
+ * the same serialization boundary.
  *
  * The stale-runner guard (`isCurrent()`) is the linchpin: when a runner is
  * swapped (by `/new` or `/resume`) before a queued turn starts, the queued work
@@ -186,27 +123,8 @@ export interface TurnDispatcherOptions {
  * `createMessageBuffer` factory.
  */
 export class TurnDispatcher {
-  private readonly runners: Map<string, AgentRunner>;
-  /** Surface a runner was created for, keyed by session/conversation id. */
-  private readonly runnerSurfaceIds: Map<string, SurfaceId>;
-  /** Stable identity for each Conversation runtime generation. */
-  private readonly runnerRuntimeIds: Map<string, ConversationRuntimeId>;
-  /** Frozen skill-policy and manifest identity captured by each runtime. */
-  private readonly runnerSkillContexts: Map<string, { policyFingerprint: string; manifestFingerprint: string | null }>;
-  /** Compatibility internal runtimes intentionally have no Surface authority. */
-  private readonly internalRunnerIds: Set<string>;
-  /**
-   * In-flight runner creation, keyed by session id. Stores the promise AND
-   * the destination surface id. Deduplicates concurrent creation only for
-   * the same (session, surface) — a request for a different surface overwrites
-   * the entry, causing the prior creation's post-capture recheck to fail.
-   */
-  private readonly inFlightCreations: Map<string, {
-    promise: Promise<AgentRunner>;
-    surfaceId: SurfaceId;
-    policyFingerprint: string;
-  }>;
-  private readonly promptQueues: Map<string, Promise<void>>;
+  /** Concrete owner of runner registration, in-flight creation, and queues. */
+  private readonly runtimeHost: ConversationRuntimeHost;
   private readonly cfg: Config;
   private readonly surfaceSettings: SurfaceSettings;
   private readonly subagentRunner: SubagentRunner;
@@ -217,11 +135,9 @@ export class TurnDispatcher {
   private readonly createMessageBufferFn: (surface: Surface, conversation?: ConversationState) => TurnSink;
   private readonly createBetaToolsFn: (surface: Surface) => ToolDefinition[];
   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
-  private readonly promptQueueMeta: Map<string, PromptQueueEntry>;
   private readonly scheduleStore: ScheduleStore | undefined;
   private readonly externalAgentRunner: ExternalAgentRunner | undefined;
   private readonly mcpRunner: McpRunner | undefined;
-  private readonly delegatedWorkHost: DelegatedWorkHost;
   private readonly surfaceRuntimeAuthority: SurfaceRuntimeAuthority;
 
   constructor(options: TurnDispatcherOptions) {
@@ -231,14 +147,6 @@ export class TurnDispatcher {
     this.memoryStore = options.memoryStore;
     this.embeddingProvider = options.embeddingProvider;
     this.dreamingPipeline = options.dreamingPipeline;
-    this.runners = options.agentRunners;
-    this.runnerSurfaceIds = new Map<string, SurfaceId>();
-    this.runnerRuntimeIds = new Map<string, ConversationRuntimeId>();
-    this.runnerSkillContexts = new Map();
-    this.internalRunnerIds = new Set<string>();
-    this.inFlightCreations = new Map();
-    this.promptQueues = options.promptQueues ?? new Map<string, Promise<void>>();
-    this.promptQueueMeta = options.promptQueueMeta ?? new Map<string, PromptQueueEntry>();
     this.createAgentRunner = options.createAgentRunner;
     this.createMessageBufferFn = options.createMessageBuffer;
     this.createBetaToolsFn = options.createBetaTools;
@@ -246,17 +154,7 @@ export class TurnDispatcher {
     this.scheduleStore = options.scheduleStore;
     this.externalAgentRunner = options.externalAgentRunner;
     this.mcpRunner = options.mcpRunner;
-    const runnerDelegatedWorkHost = options.subagentRunner.delegatedWorkHost;
-    if (
-      options.delegatedWorkHost !== undefined &&
-      runnerDelegatedWorkHost !== undefined &&
-      options.delegatedWorkHost !== runnerDelegatedWorkHost
-    ) {
-      throw new Error("TurnDispatcher and SubagentRunner must share one DelegatedWorkHost");
-    }
-    // The runner is the registration owner; an explicitly supplied host is
-    // only a composition-root assertion/fallback for narrow test doubles.
-    this.delegatedWorkHost = runnerDelegatedWorkHost ?? options.delegatedWorkHost ?? new DelegatedWorkHost(options.cfg.goblinHome);
+    this.runtimeHost = options.runtimeHost;
     this.surfaceRuntimeAuthority = options.surfaceRuntimeAuthority;
   }
 
@@ -265,7 +163,7 @@ export class TurnDispatcher {
    * direct reads of the (now-private) `runners` map.
    */
   getRunner(sessionId: string): AgentRunner | null {
-    return this.runners.get(sessionId) ?? null;
+    return this.runtimeHost.getRunner(sessionId);
   }
 
   /**
@@ -273,12 +171,12 @@ export class TurnDispatcher {
    * `runners.has(...)` reads of the (now-private) map.
    */
   hasRunner(sessionId: string): boolean {
-    return this.runners.has(sessionId);
+    return this.runtimeHost.hasRunner(sessionId);
   }
 
   /** True when a runner or an in-flight runtime construction owns this id. */
   hasRuntime(sessionId: string): boolean {
-    return this.runners.has(sessionId) || this.inFlightCreations.has(sessionId);
+    return this.runtimeHost.hasRuntime(sessionId);
   }
 
   /**
@@ -296,6 +194,7 @@ export class TurnDispatcher {
     resolvedSkills?: ResolvedSkillSet,
     runtimeId: ConversationRuntimeId = DelegatedWorkHost.newRuntimeId(),
   ): AgentRunner {
+    this.runtimeHost.assertAdmissionOpen();
     if (!this.surfaceRuntimeAuthority.isCurrentBinding(surface, session.id)) {
       throw new Error(`cannot construct runtime for stale binding: ${surfaceId(surface)} → ${session.id}`);
     }
@@ -340,7 +239,7 @@ export class TurnDispatcher {
       embeddingProvider: this.embeddingProvider,
       dreamingPipeline: this.dreamingPipeline,
       isCurrent: () =>
-        this.runners.get(session.id) === runner &&
+        this.runtimeHost.isRegisteredRunner(session.id, runner) &&
         this.surfaceRuntimeAuthority.isCurrentBinding(surface, session.id),
     };
     runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
@@ -378,8 +277,8 @@ export class TurnDispatcher {
       surface,
       session.id,
       async (signal) => {
-        const runner = this.runners.get(session.id);
-        if (runner === undefined) {
+        const runner = this.runtimeHost.getRunner(session.id);
+        if (runner === null) {
           throw new Error(
             `no current runner for session ${session.id}; cannot revive subagent '${subagentId}'`,
           );
@@ -456,15 +355,16 @@ export class TurnDispatcher {
    * failed `/project` write.
    */
   async getOrCreateRunner(session: ConversationState, surface: Surface): Promise<AgentRunner> {
-    if (this.internalRunnerIds.has(session.id)) {
+    this.runtimeHost.assertAdmissionOpen();
+    if (this.runtimeHost.isInternalRuntime(session.id)) {
       throw new Error(`conversation ${session.id} is reserved by an internal runtime`);
     }
     const expectedSurfaceId = surfaceId(surface);
     const skillPolicy = this.surfaceSettings.getSkillPolicy(surface);
     const expectedPolicyFingerprint = skillPolicyFingerprint(skillPolicy);
-    const existing = this.runners.get(session.id);
-    const existingSurfaceId = this.runnerSurfaceIds.get(session.id);
-    const existingSkillContext = this.runnerSkillContexts.get(session.id);
+    const existing = this.runtimeHost.getRunner(session.id);
+    const existingSurfaceId = this.runtimeHost.surfaceIdFor(session.id);
+    const existingSkillContext = this.runtimeHost.skillContextFor(session.id);
     if (
       existing &&
       existingSurfaceId === expectedSurfaceId &&
@@ -472,9 +372,9 @@ export class TurnDispatcher {
     ) {
       await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
       if (
-        this.runners.get(session.id) === existing &&
-        this.runnerSurfaceIds.get(session.id) === expectedSurfaceId &&
-        this.runnerSkillContexts.get(session.id)?.policyFingerprint === expectedPolicyFingerprint
+        this.runtimeHost.isRegisteredRunner(session.id, existing) &&
+        this.runtimeHost.surfaceIdFor(session.id) === expectedSurfaceId &&
+        this.runtimeHost.skillContextFor(session.id)?.policyFingerprint === expectedPolicyFingerprint
       ) {
         log.debug("reusing runner", {
           sessionId: session.id,
@@ -492,7 +392,7 @@ export class TurnDispatcher {
     // authority check is reconciling pending state.
     // A different-surface request overwrites the entry, causing the prior
     // creation's recheck to fail.
-    const inFlight = this.inFlightCreations.get(session.id);
+    const inFlight = this.runtimeHost.creationFor(session.id);
     if (
       inFlight &&
       inFlight.surfaceId === expectedSurfaceId &&
@@ -501,17 +401,12 @@ export class TurnDispatcher {
       return inFlight.promise;
     }
 
-    let resolveCreation!: (runner: AgentRunner) => void;
-    let rejectCreation!: (err: unknown) => void;
-    const creationPromise = new Promise<AgentRunner>((resolve, reject) => {
-      resolveCreation = resolve;
-      rejectCreation = reject;
-    });
-    this.inFlightCreations.set(session.id, {
-      promise: creationPromise,
-      surfaceId: expectedSurfaceId,
-      policyFingerprint: expectedPolicyFingerprint,
-    });
+    const creation = this.runtimeHost.reserveCreation(
+      session.id,
+      expectedSurfaceId,
+      expectedPolicyFingerprint,
+    );
+    const creationPromise = creation.promise;
 
     this.doCreateAndRegisterRunner(
       session,
@@ -521,12 +416,9 @@ export class TurnDispatcher {
       skillPolicy,
       creationPromise,
     )
-      .then(resolveCreation, rejectCreation)
+      .then(creation.resolve, creation.reject)
       .finally(() => {
-        const current = this.inFlightCreations.get(session.id);
-        if (current?.promise === creationPromise) {
-          this.inFlightCreations.delete(session.id);
-        }
+        this.runtimeHost.finishCreation(session.id, creationPromise, creation);
       });
 
     return creationPromise;
@@ -546,7 +438,7 @@ export class TurnDispatcher {
     creationPromise: Promise<AgentRunner>,
   ): Promise<AgentRunner> {
     await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
-    if (this.inFlightCreations.get(session.id)?.promise !== creationPromise) {
+    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
       throw new Error(`stale runtime creation for session ${session.id}: invalidated before capture`);
     }
 
@@ -590,7 +482,7 @@ export class TurnDispatcher {
     // this creation while it is suspended, so repeat the synchronous identity
     // checks before disposing any existing runner. A second check immediately
     // before registration closes the later resurrection window.
-    if (this.inFlightCreations.get(session.id)?.promise !== creationPromise) {
+    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
       throw new Error(
         `stale runtime creation for session ${session.id}: invalidated before registration`,
       );
@@ -604,9 +496,14 @@ export class TurnDispatcher {
     // Dispose existing runner through the single cleanup seam only after
     // candidate skill resolution succeeds. The `preserveInFlight` parameter
     // keeps THIS creation alive while old runner identity is removed.
-    if (this.runners.has(session.id)) {
+    if (this.runtimeHost.hasRunner(session.id)) {
       await this.disposeRunner(session.id, creationPromise);
     }
+    // An external lifecycle disposal may have already removed the prior
+    // runner while its cleanup is still draining. A replacement generation
+    // must not commit until that cleanup settles, otherwise a later disposal
+    // could dedup against the stale promise and let the replacement escape.
+    await this.runtimeHost.awaitSettled(session.id);
 
     let memoryContext: CapturedMemoryContext;
     try {
@@ -625,11 +522,10 @@ export class TurnDispatcher {
       throw new Error("runtime capture failed");
     }
 
-    // Recheck 1 — in-flight identity: if the in-flight entry no longer holds
+    // Recheck 1 — in-flight identity: if the runtime host no longer holds
     // this creation's promise, a disposal or newer (different-surface)
     // creation invalidated it.
-    const currentInFlight = this.inFlightCreations.get(session.id);
-    if (currentInFlight?.promise !== creationPromise) {
+    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
       throw new Error(
         `stale runtime creation for session ${session.id}: invalidated during capture`,
       );
@@ -650,7 +546,7 @@ export class TurnDispatcher {
     // The final authority check is async. Recheck identity and policy in the
     // same synchronous turn immediately before registration so an invalidation
     // cannot be followed by resurrection of this old runtime.
-    if (this.inFlightCreations.get(session.id)?.promise !== creationPromise) {
+    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
       throw new Error(
         `stale runtime creation for session ${session.id}: invalidated before registration`,
       );
@@ -670,21 +566,22 @@ export class TurnDispatcher {
       resolvedSkills,
       runtimeId,
     );
-    this.runners.set(session.id, runner);
-    this.runnerSurfaceIds.set(session.id, expectedSurfaceId);
-    this.runnerRuntimeIds.set(session.id, runtimeId);
-    this.runnerSkillContexts.set(session.id, {
-      policyFingerprint: expectedPolicyFingerprint,
-      manifestFingerprint: resolvedSkills?.fingerprint ?? null,
+    this.runtimeHost.registerSurfaceRuntime(session.id, runner, {
+      surfaceId: expectedSurfaceId,
+      runtimeId,
+      skillContext: {
+        policyFingerprint: expectedPolicyFingerprint,
+        manifestFingerprint: resolvedSkills?.fingerprint ?? null,
+      },
     });
     log.debug("created runner for session", { sessionId: session.id, surfaceId: expectedSurfaceId });
     return runner;
   }
 
   private isRunnerCurrent(conversationId: string, runner: AgentRunner): boolean {
-    if (this.runners.get(conversationId) !== runner) return false;
-    if (this.internalRunnerIds.has(conversationId)) return true;
-    const sid = this.runnerSurfaceIds.get(conversationId);
+    if (!this.runtimeHost.isRegisteredRunner(conversationId, runner)) return false;
+    if (this.runtimeHost.isInternalRuntime(conversationId)) return true;
+    const sid = this.runtimeHost.surfaceIdFor(conversationId);
     if (sid === undefined) return false;
     try {
       return this.surfaceRuntimeAuthority.isCurrentBinding(parseSurfaceId(sid), conversationId);
@@ -761,28 +658,7 @@ export class TurnDispatcher {
     onError: (err: unknown) => Promise<void> | void,
     opts: { isPrompt?: boolean } = {},
   ): void {
-    const execute = async (): Promise<void> => {
-      if (!isCurrent()) return;
-      try {
-        await run(isCurrent);
-      } catch (err) {
-        if (!isCurrent()) return;
-        try {
-          await onError(err);
-        } catch (handlerErr) {
-          log.error("prompt error handler failed", { error: String(handlerErr), sessionId });
-        }
-      }
-    };
-    const prior = this.promptQueues.get(sessionId);
-    const current = prior ? prior.then(execute, execute) : execute();
-    const meta: PromptQueueEntry = { isPrompt: opts.isPrompt ?? true };
-    this.promptQueues.set(sessionId, current);
-    this.promptQueueMeta.set(sessionId, meta);
-    void current.finally(() => {
-      if (this.promptQueues.get(sessionId) === current) this.promptQueues.delete(sessionId);
-      if (this.promptQueueMeta.get(sessionId) === meta) this.promptQueueMeta.delete(sessionId);
-    });
+    this.runtimeHost.schedule(sessionId, isCurrent, run, onError, opts);
   }
 
   /**
@@ -791,8 +667,7 @@ export class TurnDispatcher {
    * a command is already pending, so they serialize after it.
    */
   isCommandPending(sessionId: string): boolean {
-    const meta = this.promptQueueMeta.get(sessionId);
-    return meta !== undefined && !meta.isPrompt;
+    return this.runtimeHost.isCommandPending(sessionId);
   }
 
   /**
@@ -803,8 +678,7 @@ export class TurnDispatcher {
    * actually called.
    */
   isPromptPending(sessionId: string): boolean {
-    const meta = this.promptQueueMeta.get(sessionId);
-    return meta !== undefined && meta.isPrompt;
+    return this.runtimeHost.isPromptPending(sessionId);
   }
 
   /**
@@ -820,13 +694,7 @@ export class TurnDispatcher {
    * its subagents may continue doing useful work.
    */
   async cancelPending(sessionId: string): Promise<boolean> {
-    const meta = this.promptQueueMeta.get(sessionId);
-    if (!meta || !meta.isPrompt) return false;
-    const runner = this.getRunner(sessionId);
-    if (runner && !runner.isStreaming) {
-      await runner.abort();
-    }
-    return true;
+    return this.runtimeHost.cancelPending(sessionId);
   }
 
   /**
@@ -834,9 +702,9 @@ export class TurnDispatcher {
    * work for the stale runner aborts via the `isCurrent()` guard. Safe to call
    * when no runner exists (no-op).
    *
-   * Disposes the runner and clears the queue first, then invalidates attached
-   * delegated work through DelegatedWorkHost. External-agent cleanup remains
-   * on its legacy host-specific adapter until that host joins this boundary.
+   * Delegates the complete runtime cleanup boundary to
+   * `ConversationRuntimeHost`: it fences the registration and queue first,
+   * then disposes the runner and awaits delegated/external cleanup.
    *
    * @param preserveInFlight When called from `doCreateAndRegisterRunner` to
    *   dispose an old runner before creating a replacement, pass the new
@@ -849,97 +717,10 @@ export class TurnDispatcher {
     preserveInFlight?: Promise<AgentRunner>,
     options?: RuntimeDisposalOptions,
   ): Promise<void> {
-    const prior = this.runners.get(sessionId);
-    const runtimeId = this.runnerRuntimeIds.get(sessionId);
-    this.runners.delete(sessionId);
-    this.runnerSurfaceIds.delete(sessionId);
-    this.runnerRuntimeIds.delete(sessionId);
-    this.runnerSkillContexts.delete(sessionId);
-    this.internalRunnerIds.delete(sessionId);
-    // Clear the in-flight creation entry unless it matches the creation to
-    // preserve (a replacement disposal). This is the stale-runner guard: a
-    // capture in flight when the runner is disposed fails its post-capture
-    // recheck and is discarded rather than registered.
-    const currentInFlight = this.inFlightCreations.get(sessionId);
-    if (!preserveInFlight || currentInFlight?.promise !== preserveInFlight) {
-      this.inFlightCreations.delete(sessionId);
-    }
-    const pendingQueue = this.promptQueueMeta.get(sessionId);
-    const preserveCommandQueue = options?.preserveCommandQueue === true && pendingQueue?.isPrompt === false;
-    if (!preserveCommandQueue) {
-      this.promptQueues.delete(sessionId);
-      this.promptQueueMeta.delete(sessionId);
-    }
-
-    // Fence delegated work immediately after runtime identity is removed.
-    // `invalidateRuntime` performs its fence synchronously before returning a
-    // promise, so no late generic spawn can cross this boundary.
-    let delegatedErr: unknown;
-    let delegatedFailed = false;
-    const delegatedInvalidation: Promise<void> = runtimeId === undefined
-      ? Promise.resolve()
-      : this.delegatedWorkHost
-        .invalidateRuntime(runtimeId)
-        .catch((err: unknown) => {
-          delegatedErr = err;
-          delegatedFailed = true;
-          log.error("delegated work invalidation failed in disposeRunner", {
-            sessionId,
-            runtimeId: runtimeId ?? null,
-            err: err instanceof Error ? err.message : String(err),
-          });
-        });
-
-    // Await runner disposal and subagent/external cleanup, but track failure so
-    // falsy throws (e.g. `throw undefined` or `throw null`) are still rethrown.
-    let disposeErr: unknown;
-    let disposeFailed = false;
-    if (prior) {
-      try {
-        await prior.dispose();
-      } catch (err) {
-        disposeErr = err;
-        disposeFailed = true;
-        log.error("AgentRunner.dispose failed in disposeRunner", {
-          sessionId,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    // External-agent cleanup remains on its legacy adapter path in this
-    // attached-subagent slice. Generic subagents are never enumerated or
-    // cancelled here; DelegatedWorkHost owns their runtime invalidation.
-    await delegatedInvalidation;
-
-    // External-agent cancellation still has its legacy bounded adapter. Do not
-    // use a timeout for delegated attached work: timeout is not proof of
-    // quiescence.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const externalCancelPromise = this.externalAgentRunner
-      ? this.externalAgentRunner.cancelBySession(sessionId).catch((err) => {
-          log.error("externalAgentRunner.cancelBySession failed in disposeRunner", {
-            sessionId,
-            err: err instanceof Error ? err.message : String(err),
-          });
-        })
-      : Promise.resolve();
-    const timeout = new Promise<void>((resolve) => {
-      timer = setTimeout(() => {
-        log.warn("external-agent cancellation timed out in disposeRunner; continuing side effects", { sessionId });
-        resolve();
-      }, DISPOSE_RUNNER_CANCEL_TIMEOUT_MS);
+    return this.runtimeHost.disposeRuntime(sessionId, {
+      ...options,
+      preserveInFlight,
     });
-    try {
-      await Promise.race([externalCancelPromise, timeout]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-    if (disposeFailed && delegatedFailed) {
-      throw new AggregateError([disposeErr, delegatedErr], "disposeRunner cleanup failed");
-    }
-    if (disposeFailed) throw disposeErr;
-    if (delegatedFailed) throw delegatedErr;
   }
 
   /**
@@ -954,9 +735,10 @@ export class TurnDispatcher {
     onComplete: (text: string) => void,
     onError: (err: unknown) => void,
   ): void {
+    this.runtimeHost.assertAdmissionOpen();
     assertInternalSessionState(session);
-    let runner = this.runners.get(session.id);
-    if (runner && !this.internalRunnerIds.has(session.id)) {
+    let runner = this.runtimeHost.getRunner(session.id);
+    if (runner && !this.runtimeHost.isInternalRuntime(session.id)) {
       throw new Error(`cannot reuse Surface-backed runtime ${session.id} for an internal turn`);
     }
     if (!runner) {
@@ -981,8 +763,7 @@ export class TurnDispatcher {
         executionEnvironment: session.executionEnvironment,
       };
       runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
-      this.runners.set(session.id, runner);
-      this.internalRunnerIds.add(session.id);
+      this.runtimeHost.registerInternalRuntime(session.id, runner);
     }
 
     const captured: string[] = [];
@@ -998,7 +779,7 @@ export class TurnDispatcher {
 
     this.schedulePromptById(
       session.id,
-      () => this.runners.get(session.id) === runner && this.internalRunnerIds.has(session.id),
+      () => this.runtimeHost.isRegisteredRunner(session.id, runner!) && this.runtimeHost.isInternalRuntime(session.id),
       async () => {
         await runner.prompt(content, sink);
         onComplete(captured.join(""));
@@ -1006,6 +787,15 @@ export class TurnDispatcher {
       onError,
       { isPrompt: false },
     );
+  }
+
+  /**
+   * True when the runtime kernel is still accepting new work. The scheduler
+   * reads this before claiming a due occurrence so a shutdown in flight does
+   * not permanently consume a one-shot schedule as though it ran.
+   */
+  runtimeAdmissionOpen(): boolean {
+    return this.runtimeHost.isAdmissionOpen();
   }
 
   /**
@@ -1019,21 +809,29 @@ export class TurnDispatcher {
    * the stale-runner guard checks it at execution time. If no runner exists at
    * enqueue time, the callback creates one via the async `getOrCreateRunner`
    * (memory context capture must complete before registration). This keeps the
-   * method sync and fire-and-forget — the scheduler does not need to await it.
+   * method fire-and-forget — the scheduler does not await the model turn.
+   *
+   * Returns `true` when the runtime queue admitted the turn and `false` when
+   * runtime admission is closed (shutdown). The scheduler must not record a
+   * successful outcome or consume a one-shot occurrence for rejected work.
    */
   enqueueScheduledTurn(
     session: ConversationState,
     surface: Surface,
     content: PromptContent,
     onError?: (err: unknown) => void,
-  ): void {
+  ): boolean {
+    if (!this.runtimeHost.isAdmissionOpen()) {
+      log.info("scheduled turn rejected: runtime admission closed", { sessionId: session.id });
+      return false;
+    }
     const buffer = this.createMessageBuffer(surface, session);
     // Capture the runner reference at enqueue time if one exists. This is the
     // stale-runner guard: if the runner is disposed (e.g. by /new) before the
     // queued scheduled turn starts, the guard aborts the turn without creating
     // a new runner. If no runner exists at enqueue time, the callback creates
     // one via getOrCreateRunner (async capture).
-    const existingRunner = this.runners.get(session.id);
+    const existingRunner = this.runtimeHost.getRunner(session.id);
 
     const execute = async (): Promise<void> => {
       try {
@@ -1065,14 +863,18 @@ export class TurnDispatcher {
 
     // Chain onto the per-session prompt queue so scheduled turns serialize
     // with user turns and deferred commands.
-    const prior = this.promptQueues.get(session.id);
-    const current = prior ? prior.then(execute, execute) : execute();
-    const meta: PromptQueueEntry = { isPrompt: true };
-    this.promptQueues.set(session.id, current);
-    this.promptQueueMeta.set(session.id, meta);
-    void current.finally(() => {
-      if (this.promptQueues.get(session.id) === current) this.promptQueues.delete(session.id);
-      if (this.promptQueueMeta.get(session.id) === meta) this.promptQueueMeta.delete(session.id);
-    });
+    const admitted = this.runtimeHost.schedule(
+      session.id,
+      () => existingRunner === null || this.isRunnerCurrent(session.id, existingRunner),
+      execute,
+      (err) => {
+        onError?.(err);
+      },
+      { isPrompt: true },
+    );
+    if (!admitted) {
+      log.info("scheduled turn rejected at queue admission", { sessionId: session.id });
+    }
+    return admitted;
   }
 }

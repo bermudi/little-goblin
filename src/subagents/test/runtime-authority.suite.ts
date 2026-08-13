@@ -7,7 +7,7 @@ import type { ActiveScope, CapturedMemoryContext, InternalMemoryContext } from "
 import { MemoryStore } from "../../memory/mod.ts";
 import { activeMemoryScopeFor } from "../../memory/scope.ts";
 import { createConversationLifecycle, type ConversationLifecycle } from "../../orchestration/conversation-lifecycle.ts";
-import { createTurnDispatcherRuntimeHost } from "../../orchestration/conversation-runtime-host.ts";
+import { ConversationRuntimeHost } from "../../orchestration/conversation-runtime-host.ts";
 import { TurnDispatcher, type TurnSink } from "../../orchestration/dispatcher.ts";
 import { personalEnvironment } from "../../sessions/environment.ts";
 import { DEFAULT_SKILL_POLICY } from "../../agent/skills/mod.ts";
@@ -173,17 +173,15 @@ function createFixture(): RuntimeFixture {
     ),
   ], undefined, subagentHost);
 
-  let dispatcher: TurnDispatcher | undefined;
-  const lifecycle = createConversationLifecycle(home, createTurnDispatcherRuntimeHost(() => {
-    if (dispatcher === undefined) throw new Error("runtime host used before dispatcher construction");
-    return dispatcher;
-  }), surfaceSettings);
-  dispatcher = new TurnDispatcher({
+  const runtimeHost = new ConversationRuntimeHost({
+    delegatedWorkHost: subagentRunner.delegatedWorkHost,
+  });
+  const lifecycle = createConversationLifecycle(home, runtimeHost, surfaceSettings);
+  const dispatcher = new TurnDispatcher({
     cfg,
     surfaceSettings,
     subagentRunner,
     memoryStore,
-    agentRunners: new Map(),
     createMessageBuffer: (): TurnSink => ({
       onTextDelta: () => {},
       onToolStart: () => {},
@@ -195,6 +193,7 @@ function createFixture(): RuntimeFixture {
     }),
     createBetaTools: () => [],
     createAgentRunner: (opts) => makeFakeAgentRunner(opts),
+    runtimeHost,
     surfaceRuntimeAuthority: lifecycle,
   });
 

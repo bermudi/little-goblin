@@ -21,11 +21,14 @@ import {
   type PromptContent,
   type TelegramIntakeMessage,
 } from "./tg/intake.ts";
+import { createTelegramRuntimeAdapters } from "./tg/runtime-adapters.ts";
 import { ExternalAgentRunner } from "./external-agents/mod.ts";
 import { McpRunner } from "./mcp/mod.ts";
 import { DelegatedWorkHost } from "./delegated-work/mod.ts";
 import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
 import type { ConversationLifecycle } from "./orchestration/conversation-lifecycle.ts";
+import { createConversationOrchestration } from "./orchestration/composition.ts";
+import type { ConversationRuntimeHost } from "./orchestration/conversation-runtime-host.ts";
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -176,9 +179,12 @@ interface BuildBotOptions {
 
 export interface BuiltBot {
   bot: Bot;
+  /** Close Telegram intake and coalescing before runtime teardown. Drains
+   * admitted handlers and flushes buffered text; idempotent and single-flight. */
+  closeAdmission: () => Promise<void>;
   lifecycle: ConversationLifecycle;
+  runtimeHost: ConversationRuntimeHost;
   subagentRunner: SubagentRunner;
-  agentRunners: Map<string, AgentRunner>;
   scheduleStore: ScheduleStore;
   dispatcher: TurnDispatcher;
   externalAgentRunner: ExternalAgentRunner | undefined;
@@ -189,7 +195,6 @@ export interface BuiltBot {
 export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   configureVoice(cfg);
   const bot = new Bot(cfg.botToken);
-  const runners = new Map<string, AgentRunner>();
   const memoryEngine = options.memoryEngine ?? new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
   const memoryStore = memoryEngine.readStore;
   const delegatedWorkHost = new DelegatedWorkHost(cfg.goblinHome);
@@ -209,39 +214,78 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // External agent runner is only created when at least one backend is enabled.
   const externalAgentRunner = cfg.externalAgents?.backends.length ? new ExternalAgentRunner(cfg) : undefined;
   const mcpRunner = cfg.mcp ? new McpRunner(cfg.mcp, cfg.goblinHome) : undefined;
-  const intake = createTelegramIntake({
+  const telegramAdapters = createTelegramRuntimeAdapters({ cfg, bot, memoryStore });
+  const orchestration = createConversationOrchestration({
     cfg,
-    bot,
     subagentRunner,
     memoryStore,
-    agentRunners: runners,
     createAgentRunner: options.createAgentRunner,
+    createMessageBuffer: telegramAdapters.createMessageBuffer,
+    createBetaTools: telegramAdapters.createBetaTools,
     scheduleStore,
     externalAgentRunner,
     mcpRunner,
     embeddingProvider: memoryEngine.embeddingProvider,
     dreamingPipeline: memoryEngine.dreaming,
-    delegatedWorkHost,
+  });
+  const intake = createTelegramIntake({
+    cfg,
+    bot,
+    subagentRunner,
+    memoryStore,
+    dispatcher: orchestration.dispatcher,
+    lifecycle: orchestration.lifecycle,
+    scheduleStore,
+    externalAgentRunner,
   });
 
   // Text coalescer: merges Telegram-split fragments before they reach intake.
   // One instance shared across all message:text handlers, keyed per
   // (chatId, topicId, fromUserId). See src/tg/coalesce.ts.
   //
-  // The dispatch callback returns a promise so `bot.handleUpdate` can await
-  // immediate (non-buffered) dispatches. Rejections are still caught and routed
-  // to log.error explicitly — grammy's bot.catch only sees promises from
-  // awaited handlers, not from setTimeout-flushed dispatches.
+  // The coalescer tracks every dispatch, including timer-originated work, and
+  // propagates failures from its close drain. Immediate handler promises still
+  // flow to grammy's error boundary.
+  let admissionOpen = true;
   const coalescer = new TextCoalescer({
-    dispatch: (msg, text) =>
-      intake.handleText(msg, text).catch((err) => {
-        log.error("handleText failed", {
-          name: err instanceof Error ? err.name : typeof err,
-          message: err instanceof Error ? err.message : String(err),
-        });
-      }),
+    dispatch: (msg, text) => intake.handleText(msg, text),
   });
 
+  // Admission + drain: every update that passes the admission gate is
+  // tracked so shutdown can await the handlers grammy already admitted.
+  // grammy's `bot.stop()` stops the long-poll fetch loop but does not wait
+  // for middleware/handlers that are still running, so we drain explicitly
+  // before tearing down the runtime dependencies those handlers use.
+  const inFlightUpdates = new Set<Promise<unknown>>();
+  let draining = false;
+  function trackAdmitted(downstream: Promise<unknown>): Promise<unknown> {
+    inFlightUpdates.add(downstream);
+    const release = (): void => { inFlightUpdates.delete(downstream); };
+    void downstream.then(release, release);
+    return downstream;
+  }
+  async function drainAdmitted(): Promise<void> {
+    if (draining) return;
+    draining = true;
+    try {
+      // Handlers may settle and register follow-up promises only if they admit
+      // new updates; admission is already closed, so the set only shrinks. Loop
+      // until every admitted handler has settled.
+      while (inFlightUpdates.size > 0) {
+        await Promise.allSettled([...inFlightUpdates]);
+      }
+    } finally {
+      draining = false;
+    }
+  }
+
+  bot.use((_ctx, next) => {
+    if (!admissionOpen) {
+      log.info("Telegram update dropped after admission closed");
+      return Promise.resolve();
+    }
+    return trackAdmitted(next());
+  });
   bot.use(buildAllowlistMiddleware(cfg));
   registerCommands(bot, intake.lifecycle);
 
@@ -364,11 +408,27 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     });
   });
 
+  let admissionClosure: Promise<void> | undefined;
+  const closeAdmission = (): Promise<void> => {
+    if (admissionClosure) return admissionClosure;
+    // Stop admitting new updates synchronously so the middleware gate rejects
+    // anything grammy fetches next. Cache the whole drain so concurrent callers
+    // wait for the same completion or failure.
+    admissionOpen = false;
+    admissionClosure = (async (): Promise<void> => {
+      await drainAdmitted();
+      await coalescer.close();
+      intake.closeAdmission();
+    })();
+    return admissionClosure;
+  };
+
   return {
     bot,
+    closeAdmission,
     lifecycle: intake.lifecycle,
+    runtimeHost: orchestration.runtimeHost,
     subagentRunner,
-    agentRunners: runners,
     scheduleStore,
     dispatcher: intake.dispatcher,
     externalAgentRunner,

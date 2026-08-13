@@ -15,6 +15,12 @@ import type { TelegramIntakeMessage } from "./intake.ts";
 
 // --- helpers ---------------------------------------------------------------
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
 /** A minimal fake `TelegramIntakeMessage` carrying an id so tests can assert
  * which fragment's message was passed on flush (D9). */
 function makeMessage(id: number): TelegramIntakeMessage {
@@ -271,6 +277,84 @@ describe("TextCoalescer — commands", () => {
     coalescer.submit(makeInput("/new", { messageIdFor: 1, messageId: 1, isCommand: true }));
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(dispatchedText(dispatch, 0)).toBe("/new");
+  });
+
+  it("delivers buffered text exactly once and rejects new text after close", async () => {
+    const { coalescer, dispatch } = makeCoalescer();
+    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
+
+    await coalescer.close();
+    coalescer.submit(makeInput("late", { messageIdFor: 2, messageId: 2 }));
+    vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS * 2);
+
+    // Buffered text was flushed exactly once; text submitted after close is dropped.
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatchedText(dispatch, 0)).toBe(textOf(TEXT_SPLIT_THRESHOLD));
+  });
+
+  it("flushes multiple buffered fragments as one merged dispatch on close", async () => {
+    const { coalescer, dispatch } = makeCoalescer();
+    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
+    coalescer.submit(makeInput(textOf(5, "y"), { messageIdFor: 2, messageId: 2 }));
+
+    await coalescer.close();
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatchedText(dispatch, 0)).toBe(textOf(TEXT_SPLIT_THRESHOLD) + textOf(5, "y"));
+  });
+
+  it("does not replay a returned immediate-dispatch failure during later close", async () => {
+    const error = new Error("handled by grammy");
+    const dispatch = mock<CoalesceDispatch>(() => Promise.reject(error));
+    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
+
+    const returned = coalescer.submit(makeInput("short", { messageIdFor: 1, messageId: 1 }));
+    await expect(returned!).rejects.toBe(error);
+    await expect(coalescer.close()).resolves.toBeUndefined();
+  });
+
+  it("surfaces dispatch failures during close without swallowing them", async () => {
+    const error = new Error("boom");
+    const dispatch = mock<CoalesceDispatch>(() => Promise.reject(error));
+    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
+    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
+
+    await expect(coalescer.close()).rejects.toBe(error);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a detached rejection even when its reason is undefined", async () => {
+    const dispatch = mock<CoalesceDispatch>(() => Promise.reject(undefined));
+    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
+    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
+
+    let rejected = false;
+    try {
+      await coalescer.close();
+    } catch (reason) {
+      rejected = true;
+      expect(reason).toBeUndefined();
+    }
+    expect(rejected).toBe(true);
+  });
+
+  it("awaits a timer-flushed dispatch and shares one close promise", async () => {
+    const pending = deferred<void>();
+    const dispatch = mock<CoalesceDispatch>(() => pending.promise);
+    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
+    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
+    vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS);
+
+    const firstClose = coalescer.close();
+    expect(coalescer.close()).toBe(firstClose);
+    let closed = false;
+    void firstClose.then(() => { closed = true; });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    pending.resolve(undefined);
+    await firstClose;
+    expect(closed).toBe(true);
   });
 });
 

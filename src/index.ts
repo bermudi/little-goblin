@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   await memoryEngine.embeddingProvider.reindexIfNeeded();
   await runPreflight(cfg);
   await validateModelAtStartup(cfg, log);
-  const { bot, lifecycle, subagentRunner, agentRunners, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg, { memoryEngine });
+  const { bot, closeAdmission, lifecycle, subagentRunner, runtimeHost, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg, { memoryEngine });
 
   await memoryEngine.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS });
   await externalAgentRunner?.init();
@@ -51,18 +51,50 @@ async function main(): Promise<void> {
   scheduler.start();
 
   // Graceful shutdown. grammy's start() resolves when stop() is called.
-  const shutdown = async (signal: string): Promise<void> => {
-    log.info(`received ${signal}, stopping bot`);
-    // Stop the scheduler first so no new due schedules dispatch during shutdown.
-    scheduler.stop();
-    // Dispose external agents first (cancels running ones).
-    await externalAgentRunner?.dispose();
-    // Dispose subagents first (cancels running ones, releases sessions).
-    await subagentRunner.dispose();
-    // Dispose agent runners (releases pi sessions and awaits reflection).
-    await Promise.all([...agentRunners.values()].map((runner) => runner.dispose()));
-    await bot.stop();
-    process.exit(0);
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (signal: string): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      log.info(`received ${signal}, stopping bot`);
+      const failures: unknown[] = [];
+      const attempt = async (step: string, operation: () => Promise<void>): Promise<void> => {
+        try {
+          await operation();
+        } catch (error) {
+          failures.push(error);
+          log.error("shutdown step failed", {
+            step,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
+
+      // Close both admission fences synchronously before awaiting either drain.
+      // Runtime disposal starts immediately so an active model turn can be
+      // aborted and unblock the Telegram handler that is awaiting it.
+      const telegramDrain = closeAdmission();
+      const runtimeDrain = runtimeHost.disposeAll();
+      scheduler.stop();
+
+      // Stop polling, then await both drains while deployment-wide delegated
+      // hosts remain alive: runner disposal may invoke them.
+      await attempt("telegram polling", () => bot.stop());
+      await attempt("telegram admission", () => telegramDrain);
+      await attempt("conversation runtimes", () => runtimeDrain);
+      await attempt("external agents", async () => {
+        await externalAgentRunner?.dispose();
+      });
+      await attempt("subagents", () => subagentRunner.dispose());
+
+      // Exit 0 only after complete cleanup; any failure is reported to the
+      // supervisor with a non-zero status.
+      if (failures.length > 0) {
+        log.error("shutdown completed with cleanup failures", { count: failures.length });
+        process.exit(1);
+      }
+      process.exit(0);
+    })();
+    return shutdownPromise;
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

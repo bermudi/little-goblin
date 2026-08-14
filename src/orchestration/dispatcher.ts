@@ -444,8 +444,8 @@ export class TurnDispatcher {
     run: (isCurrent: () => boolean) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
     opts: { isPrompt?: boolean } = {},
-  ): void {
-    this.schedulePromptById(
+  ): boolean {
+    return this.schedulePromptById(
       conversation.id,
       () => this.isRunnerCurrent(conversation.id, runner),
       run,
@@ -481,7 +481,7 @@ export class TurnDispatcher {
     isCurrent: () => boolean,
     run: (isCurrent: () => boolean) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
-    opts: { isPrompt?: boolean } = {},
+    opts: { isPrompt?: boolean; onFenced?: () => void } = {},
   ): boolean {
     return this.runtimeHost.schedule(sessionId, isCurrent, run, onError, opts);
   }
@@ -592,6 +592,17 @@ export class TurnDispatcher {
     }
 
     const captured: string[] = [];
+    let settled = false;
+    const complete = (text: string): void => {
+      if (settled) return;
+      settled = true;
+      onComplete(text);
+    };
+    const fail = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      onError(error);
+    };
     const sink: TurnCallbacks = {
       onTextDelta: (text) => captured.push(text),
       onToolStart: () => {},
@@ -602,16 +613,20 @@ export class TurnDispatcher {
       onAgentEnd: () => {},
     };
 
-    this.schedulePromptById(
+    const admitted = this.schedulePromptById(
       session.id,
       () => this.runtimeHost.isRegisteredRunner(session.id, runner!) && this.runtimeHost.isInternalRuntime(session.id),
-      async () => {
+      async (isCurrent) => {
         await runner.prompt(content, sink);
-        onComplete(captured.join(""));
+        if (isCurrent()) complete(captured.join(""));
       },
-      onError,
-      { isPrompt: false },
+      fail,
+      {
+        isPrompt: false,
+        onFenced: () => fail(new Error(`internal runtime turn fenced for ${session.id}`)),
+      },
     );
+    if (!admitted) fail(new Error(`internal runtime turn rejected for ${session.id}`));
   }
 
   /**
@@ -661,31 +676,25 @@ export class TurnDispatcher {
     const started = new Promise<boolean>((resolve) => { resolveStarted = resolve; });
 
     const execute = async (): Promise<void> => {
-      try {
-        let runner: AgentRunner;
-        if (existingRunner) {
-          // Stale-runner guard: if the runner was swapped after enqueue, abort
-          // before producing user-visible side effects.
-          if (!this.isRunnerCurrent(session.id, existingRunner)) return;
-          runner = existingRunner;
-        } else {
-          runner = await this.getOrCreateRunner(session, surface);
-          // Recheck after async creation: if the runner was swapped during
-          // capture, abort.
-          if (!this.isRunnerCurrent(session.id, runner)) return;
-        }
-        if (runner.isAbortTimedOut) {
-          log.warn("scheduled turn dropped: runner is wedged after abort timed out", {
-            sessionId: session.id,
-          });
-          return;
-        }
-        await runner.prompt(content, buffer);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.error("scheduled turn failed", { error: msg, sessionId: session.id });
-        onError?.(err);
+      let runner: AgentRunner;
+      if (existingRunner) {
+        // Stale-runner guard: if the runner was swapped after enqueue, abort
+        // before producing user-visible side effects.
+        if (!this.isRunnerCurrent(session.id, existingRunner)) return;
+        runner = existingRunner;
+      } else {
+        runner = await this.getOrCreateRunner(session, surface);
+        // Recheck after async creation: if the runner was swapped during
+        // capture, abort.
+        if (!this.isRunnerCurrent(session.id, runner)) return;
       }
+      if (runner.isAbortTimedOut) {
+        log.warn("scheduled turn dropped: runner is wedged after abort timed out", {
+          sessionId: session.id,
+        });
+        return;
+      }
+      await runner.prompt(content, buffer);
     };
 
     // Chain onto the per-session prompt queue so scheduled turns serialize

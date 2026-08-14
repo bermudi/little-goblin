@@ -69,7 +69,7 @@ export class PreparedRuntimeAssembler {
     );
     await this.checkpoint(conversation, surface, creation, snapshot, "after skill resolution");
 
-    if (this.options.runtimeHost.hasRuntime(conversation.id)) {
+    if (this.options.runtimeHost.hasRuntime(conversation.id, creation.promise)) {
       await this.options.runtimeHost.disposeRuntime(conversation.id, { preserveInFlight: creation.promise });
     }
     await this.options.runtimeHost.awaitSettled(conversation.id);

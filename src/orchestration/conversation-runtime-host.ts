@@ -23,7 +23,8 @@ export interface RuntimeDisposalOptions {
 
 /** Narrow lifecycle-facing port used by ConversationLifecycle. */
 export interface ConversationRuntimeHostPort {
-  hasRuntime(conversationId: ConversationId): boolean;
+  /** Optionally ignore the caller's own in-flight creation reservation. */
+  hasRuntime(conversationId: ConversationId, excludeCreation?: Promise<AgentRunner>): boolean;
   disposeRuntime(conversationId: ConversationId, options?: RuntimeDisposalOptions): Promise<void>;
 }
 
@@ -176,9 +177,10 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     return this.runners.has(conversationId);
   }
 
-  hasRuntime(conversationId: ConversationId): boolean {
+  hasRuntime(conversationId: ConversationId, excludeCreation?: Promise<AgentRunner>): boolean {
     return this.runners.has(conversationId) ||
-      this.inFlightCreations.has(conversationId) ||
+      (this.inFlightCreations.has(conversationId) &&
+        this.inFlightCreations.get(conversationId)?.promise !== excludeCreation) ||
       (this.pendingDelegatedInvalidations.get(conversationId)?.size ?? 0) > 0;
   }
 
@@ -372,7 +374,12 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     isCurrent: () => boolean,
     run: (isCurrent: () => boolean) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
-    options: { isPrompt?: boolean; onStart?: () => void; onFenced?: () => void } = {},
+    options: {
+      isPrompt?: boolean;
+      onStart?: () => void;
+      /** Settles work that was fenced before or during execution. */
+      onFenced?: () => void;
+    } = {},
   ): boolean {
     if (!this.admissionOpen) {
       log.info("runtime work rejected after admission closed", { conversationId });
@@ -390,11 +397,18 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       }
       started = true;
       options.onStart?.();
-      if (!isCurrent()) return;
+      if (!isCurrent()) {
+        options.onFenced?.();
+        return;
+      }
       try {
         await run(isCurrent);
+        if (!isCurrent()) options.onFenced?.();
       } catch (err) {
-        if (!isCurrent()) return;
+        if (!isCurrent()) {
+          options.onFenced?.();
+          return;
+        }
         try {
           await onError(err);
         } catch (handlerErr) {
@@ -402,6 +416,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
             conversationId,
             error: handlerErr instanceof Error ? handlerErr.message : String(handlerErr),
           });
+          throw handlerErr;
         }
       }
     };
@@ -525,8 +540,12 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     }
 
     const pendingQueueMeta = this.promptQueueMeta.get(conversationId);
+    // A replacement is prepared outside the prompt queue. Keep the existing
+    // chain intact while the old runner is fenced so work admitted before the
+    // replacement cannot run concurrently with work admitted afterward.
+    const preservesCreation = currentCreation?.promise === preserveInFlight;
     const preserveCommandQueue = disposalOptions?.preserveCommandQueue === true && pendingQueueMeta?.isPrompt === false;
-    if (!preserveCommandQueue) {
+    if (!preserveCommandQueue && !preservesCreation) {
       this.promptQueues.delete(conversationId);
       this.promptQueueMeta.delete(conversationId);
     }

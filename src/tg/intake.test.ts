@@ -733,6 +733,32 @@ describe("Telegram intake", () => {
     expect(runners[0]!.prompt.mock.calls[1]![0]).toBe("[prepared] steer this");
   });
 
+  it("admits the steer fallback before releasing Telegram runtime admission", async () => {
+    const { intake } = makeHarness();
+    const message = makeMessage([]);
+    const slow = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
+    };
+    MockAgentRunner.nextFollowUp = async () => {
+      throw new Error("Cannot steer: session is not streaming.");
+    };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    let fallbackAdmittedBeforeRelease = false;
+    const session = intake.lifecycle.inspect(dmSurface(1))!;
+    await intake.handleText(message, "steer this", () => {
+      fallbackAdmittedBeforeRelease = intake.dispatcher.isPromptPending(session.id);
+    });
+
+    expect(fallbackAdmittedBeforeRelease).toBe(true);
+    slow.resolve();
+    await waitFor(() => runners[0]!.prompt.mock.calls.length === 2);
+  });
+
   it("does not fall back when a steer fails for a non-race reason", async () => {
     const { intake } = makeHarness();
     const replies: string[] = [];

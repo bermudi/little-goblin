@@ -719,6 +719,7 @@ ${formatted}`;
       const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.surface) : schedule.prompt ?? "";
       const admission = this.dispatcher.enqueueScheduledTurn(conversation, schedule.surface, prompt, (err) => {
         const msg = err instanceof Error ? err.message : String(err);
+        log.error("scheduled turn failed", { error: msg, id: schedule.id });
         this.store.recordRun(schedule.id, {
           at: new Date(this.clock.now()).toISOString(),
           outcome: "error",

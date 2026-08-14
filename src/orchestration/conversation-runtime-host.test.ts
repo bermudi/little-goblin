@@ -103,6 +103,53 @@ describe("ConversationRuntimeHost shutdown", () => {
     expect(settled).toBe(true);
   });
 
+  it("does not treat the current creation as a prior runtime", () => {
+    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
+    const creation = host.reserveCreation("conversation-a", surfaceId(dmSurface(1)), "test");
+
+    expect(host.hasRuntime("conversation-a")).toBe(true);
+    expect(host.hasRuntime("conversation-a", creation.promise)).toBe(false);
+
+    creation.complete();
+  });
+
+  it("preserves the queue while disposing a prior runtime for its replacement", async () => {
+    const firstFinished = deferred<void>();
+    const secondStarted = deferred<void>();
+    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
+    registerRunner(host, "conversation-a", fakeRunner());
+
+    expect(host.schedule(
+      "conversation-a",
+      () => true,
+      async () => {
+        await firstFinished.promise;
+      },
+      async () => {},
+    )).toBe(true);
+    await Promise.resolve();
+
+    const creation = host.reserveCreation("conversation-a", surfaceId(dmSurface(1)), "replacement");
+    await host.disposeRuntime("conversation-a", { preserveInFlight: creation.promise });
+    expect(host.schedule(
+      "conversation-a",
+      () => true,
+      async () => {
+        secondStarted.resolve(undefined);
+      },
+      async () => {},
+    )).toBe(true);
+
+    let started = false;
+    void secondStarted.promise.then(() => { started = true; });
+    await Promise.resolve();
+    expect(started).toBe(false);
+
+    firstFinished.resolve(undefined);
+    await secondStarted.promise;
+    creation.complete();
+  });
+
   it("disposes a running turn before draining its queue", async () => {
     const turnFinished = deferred<void>();
     let disposeCalls = 0;

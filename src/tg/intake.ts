@@ -229,9 +229,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     content: PromptContent,
     failureLog: string,
     opts?: { replyModelNotCapable?: boolean },
-  ): void {
+  ): boolean {
     const buffer = dispatcher.createMessageBuffer(surface, session);
-    dispatcher.schedulePrompt(
+    return dispatcher.schedulePrompt(
       session,
       runner,
       async (isCurrent) => {
@@ -327,6 +327,59 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     onRuntimeAdmission?: () => void,
   ): Promise<void> {
     const followUp = runner.followUp(message.prepare(text));
+
+    // AgentRunner.followUp() validates streaming asynchronously. Give an
+    // immediate rejection (the steer-vs-fresh-turn race) one event-loop turn
+    // to surface before declaring the Telegram update admitted. Once a steer
+    // has got past that validation, its promise may remain pending until
+    // runtime disposal, so do not wait for it before releasing the barrier.
+    const outcome = await new Promise<
+      { kind: "pending" } | { kind: "fulfilled" } | { kind: "rejected"; error: unknown }
+    >((resolve) => {
+      let settled = false;
+      const settle = (
+        result: { kind: "fulfilled" } | { kind: "rejected"; error: unknown } | { kind: "pending" },
+      ): void => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+      void followUp.then(
+        () => settle({ kind: "fulfilled" }),
+        (error: unknown) => settle({ kind: "rejected", error }),
+      );
+      // A pending follow-up is an accepted steer. The timer is only the
+      // bounded observation window for validation failures that reject
+      // immediately; it does not wait for model work.
+      setTimeout(() => settle({ kind: "pending" }), 0);
+    });
+
+    if (outcome.kind === "rejected") {
+      const msg = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+      if (msg.includes("not streaming")) {
+        const admitted = scheduleFreshTurn(
+          message,
+          surface,
+          session,
+          runner,
+          text,
+          "runner prompt failed (steer race fallback)",
+        );
+        if (!admitted) {
+          log.error("steer race fallback rejected at queue admission", { sessionId: session.id });
+        }
+        // The fallback has now either entered the runtime queue or been
+        // proven impossible. In both cases no pending steer remains to hold
+        // the Telegram barrier.
+        onRuntimeAdmission?.();
+        return;
+      }
+      // This failure is not recoverable by starting a fresh turn, but it has
+      // still reached the same runtime hand-off boundary as a steer.
+      onRuntimeAdmission?.();
+      throw outcome.error;
+    }
+
     // Admission is the synchronous hand-off to the runtime. Do not wait for
     // the model-owned promise: disposal is what unblocks a stalled follow-up.
     onRuntimeAdmission?.();
@@ -335,7 +388,20 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("not streaming")) {
-        scheduleFreshTurn(message, surface, session, runner, text, "runner prompt failed (steer race fallback)");
+        // The normal race is handled above. Preserve the fallback for a
+        // backend that reports the same condition after the bounded
+        // observation window, but surface a shutdown-time rejection.
+        const admitted = scheduleFreshTurn(
+          message,
+          surface,
+          session,
+          runner,
+          text,
+          "runner prompt failed (late steer race fallback)",
+        );
+        if (!admitted) {
+          log.error("late steer race fallback rejected at queue admission", { sessionId: session.id });
+        }
         return;
       }
       log.warn("steer failed", { error: msg, sessionId: session.id });
@@ -479,6 +545,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       // that they will eventually run.
       const runnerIsWedged = existingRunner?.isAbortTimedOut === true;
       if (timing === "queue" && session && runnerIsWedged && !def?.mayRecoverWedgedRuntime) {
+        onRuntimeAdmission?.();
         await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
         return;
       }
@@ -491,14 +558,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       if (timing === "queue" && session && busy) {
         const admitted = scheduleDeferredCommand(message, surface, session, rawText ?? "", command);
         if (admitted) {
+          onRuntimeAdmission?.();
           await sendSystemReply(message, "Queued. Will run after this turn.", "queued");
         } else {
           log.info("deferred command rejected at queue admission", {
             command,
             sessionId: session.id,
           });
+          onRuntimeAdmission?.();
         }
-        onRuntimeAdmission?.();
         return;
       }
 

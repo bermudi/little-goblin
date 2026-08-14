@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  MAX_SKILL_FILE_BYTES,
   MAX_SKILL_SNAPSHOT_ENTRIES,
+  MAX_TOTAL_SKILL_SNAPSHOT_BYTES,
   resolveSkillSet,
   DEFAULT_SKILL_POLICY,
   SkillResolutionError,
@@ -298,6 +300,23 @@ describe("SkillCatalogResolver", () => {
         resolveSkillSet(personalEnvironment(), DEFAULT_SKILL_POLICY, tmpDir),
       ).rejects.toThrow(
         `skill snapshot exceeds ${MAX_SKILL_SNAPSHOT_ENTRIES} entries: ${skillDir}`,
+      );
+    });
+
+    it("caps the aggregate size of individually valid skill snapshots", async () => {
+      const root = goblinSkillsPath(tmpDir);
+      const skillCount = Math.ceil(MAX_TOTAL_SKILL_SNAPSHOT_BYTES / MAX_SKILL_FILE_BYTES) + 1;
+      const resource = Buffer.alloc(MAX_SKILL_FILE_BYTES, 65);
+      for (let index = 0; index < skillCount; index += 1) {
+        const name = `large-skill-${index}`;
+        writeSkill(root, name);
+        writeFileSync(join(root, name, "resource.bin"), resource);
+      }
+
+      await expect(
+        resolveSkillSet(personalEnvironment(), DEFAULT_SKILL_POLICY, tmpDir),
+      ).rejects.toThrow(
+        `skill snapshots exceed ${MAX_TOTAL_SKILL_SNAPSHOT_BYTES} bytes`,
       );
     });
   });

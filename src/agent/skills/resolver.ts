@@ -39,8 +39,12 @@ import {
 export const MAX_SKILL_FILE_BYTES = 1 * 1024 * 1024;
 /** Maximum UTF-8 size of one serialized captured skill directory. */
 export const MAX_SKILL_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+/** Maximum UTF-8 size of all serialized captured skill directories in one plan. */
+export const MAX_TOTAL_SKILL_SNAPSHOT_BYTES = 32 * 1024 * 1024;
 /** Maximum directory entries visited while capturing one skill directory. */
 export const MAX_SKILL_SNAPSHOT_ENTRIES = 4096;
+/** Maximum number of skill directories captured concurrently. */
+export const MAX_SKILL_SNAPSHOT_CONCURRENCY = 4;
 
 /**
  * Map a source to its exact filesystem root(s) for the given environment.
@@ -204,10 +208,7 @@ async function resolveWithEnv(
         : a.source.localeCompare(b.source),
     );
 
-  const snapshottedSkills = await Promise.all(resolvedSkills.map(async (skill) => ({
-    ...skill,
-    snapshot: await captureSkillSnapshot(skill.filePath),
-  })));
+  const snapshottedSkills = await captureSkillSnapshots(resolvedSkills);
 
   const resolvedDiagnostics: ResolvedSkillDiagnostic[] = loaded.diagnostics.map(
     (d: SkillDiagnostic & { source: SkillSource }) => ({
@@ -222,7 +223,66 @@ async function resolveWithEnv(
   return { skills: snapshottedSkills, diagnostics: resolvedDiagnostics, fingerprint };
 }
 
-async function captureSkillSnapshot(filePath: string): Promise<ResolvedSkill["snapshot"]> {
+interface CapturedSkillSnapshot {
+  readonly snapshot: NonNullable<ResolvedSkill["snapshot"]>;
+  readonly bytes: number;
+}
+
+/**
+ * Capture selected skills with both a concurrency limit and an aggregate
+ * serialized-size limit. The pool keeps filesystem and base64 work bounded;
+ * the byte total keeps the resulting runtime plan bounded even when every
+ * individual skill is within its per-skill limit.
+ */
+async function captureSkillSnapshots(
+  skills: readonly ResolvedSkill[],
+): Promise<ResolvedSkill[]> {
+  const captured = new Array<ResolvedSkill | undefined>(skills.length);
+  let nextIndex = 0;
+  let totalBytes = 0;
+  let failed = false;
+  let failure: unknown;
+
+  const captureOne = async (): Promise<void> => {
+    while (!failed) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const skill = skills[index];
+      if (skill === undefined) return;
+
+      try {
+        const result = await captureSkillSnapshot(skill.filePath);
+        if (failed) return;
+        const nextTotalBytes = totalBytes + result.bytes;
+        if (nextTotalBytes > MAX_TOTAL_SKILL_SNAPSHOT_BYTES) {
+          failed = true;
+          failure = new SkillResolutionError(
+            `skill snapshots exceed ${MAX_TOTAL_SKILL_SNAPSHOT_BYTES} bytes`,
+          );
+          return;
+        }
+        totalBytes = nextTotalBytes;
+        captured[index] = { ...skill, snapshot: result.snapshot };
+      } catch (error) {
+        failed = true;
+        failure = error;
+        return;
+      }
+    }
+  };
+
+  const workerCount = Math.min(MAX_SKILL_SNAPSHOT_CONCURRENCY, skills.length);
+  await Promise.all(Array.from({ length: workerCount }, () => captureOne()));
+  if (failed) throw failure;
+  return captured.map((skill) => {
+    if (skill === undefined) {
+      throw new Error("skill snapshot capture completed without a result");
+    }
+    return skill;
+  });
+}
+
+async function captureSkillSnapshot(filePath: string): Promise<CapturedSkillSnapshot> {
   const skillDirectory = dirname(filePath);
   const entryPath = relative(skillDirectory, filePath);
   const files: { relativePath: string; base64: string }[] = [];
@@ -302,8 +362,11 @@ async function captureSkillSnapshot(filePath: string): Promise<ResolvedSkill["sn
   await visit(skillDirectory);
   files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   return {
-    entryPath,
-    files,
+    snapshot: {
+      entryPath,
+      files,
+    },
+    bytes: snapshotBytes,
   };
 }
 

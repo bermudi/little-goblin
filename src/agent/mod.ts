@@ -640,9 +640,14 @@ export class AgentRunner {
    * archive or rebinding.
    */
   async dispose(): Promise<void> {
+    // Fence events synchronously. Pi may deliver callbacks after dispose()
+    // starts, and those callbacks must not write transcripts or metrics.
+    this.eventHandler.close();
+    const failures: unknown[] = [];
     try {
       await this.dreamingPipeline.awaitSettled(this.sessionId);
     } catch (err) {
+      failures.push(err);
       log.error("AgentRunner dreaming pipeline await failed during dispose", {
         sessionId: this.sessionId,
         err: err instanceof Error ? err.message : String(err),
@@ -651,6 +656,7 @@ export class AgentRunner {
     try {
       this.backend.dispose();
     } catch (err) {
+      failures.push(err);
       log.error("AgentRunner dispose failed", {
         sessionId: this.sessionId,
         err: err instanceof Error ? err.message : String(err),
@@ -660,11 +666,14 @@ export class AgentRunner {
       try {
         this.memoryStore.close();
       } catch (err) {
+        failures.push(err);
         log.error("AgentRunner memory store close failed", {
           sessionId: this.sessionId,
           err: err instanceof Error ? err.message : String(err),
         });
       }
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "AgentRunner cleanup failed");
   }
 }

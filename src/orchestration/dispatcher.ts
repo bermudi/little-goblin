@@ -459,8 +459,8 @@ export class TurnDispatcher {
     surface: Surface,
     run: (isCurrent: () => boolean) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
-  ): void {
-    this.schedulePromptById(
+  ): boolean {
+    return this.schedulePromptById(
       conversation.id,
       () => this.surfaceRuntimeAuthority.isCurrentBinding(surface, conversation.id),
       run,
@@ -476,8 +476,8 @@ export class TurnDispatcher {
     run: (isCurrent: () => boolean) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
     opts: { isPrompt?: boolean } = {},
-  ): void {
-    this.runtimeHost.schedule(sessionId, isCurrent, run, onError, opts);
+  ): boolean {
+    return this.runtimeHost.schedule(sessionId, isCurrent, run, onError, opts);
   }
 
   /**

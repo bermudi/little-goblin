@@ -6,8 +6,10 @@
  * recursion, Telegram, or delegated-work ownership.
  */
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, relative, resolve } from "node:path";
 import {
   DefaultResourceLoader,
   SessionManager,
@@ -21,7 +23,7 @@ import {
 import type { Config } from "../config.ts";
 import { dispatchAgentEvent, extractAssistantText, type TurnCallbacks } from "../agent/events.ts";
 import { resolveModel } from "../agent/models.ts";
-import { SkillResolutionError } from "../agent/skills/mod.ts";
+import { SkillResolutionError, type ResolvedSkillSnapshot } from "../agent/skills/mod.ts";
 import { boundedError, log } from "../log.ts";
 import { createPiServices, piAgentDir, type PiServices } from "../pi-host.ts";
 import type { SubagentHistoryTarget } from "./types.ts";
@@ -30,11 +32,18 @@ import { agentsMdPath, heartbeatMdPath, soulMdPath } from "../workspace/paths.ts
 /** Exact persisted history selected by the coordinator. */
 export type SubagentHistory = SubagentHistoryTarget;
 
+export interface GenericSubagentSkillSnapshot {
+  readonly name: string;
+  readonly snapshot: ResolvedSkillSnapshot;
+}
+
 export type SubagentResourcePreparation =
   | {
       readonly kind: "generic";
-      /** Exactly the frozen inherited manifest; no discovery is performed. */
+      /** Legacy/direct path form used when no captured snapshot is available. */
       readonly skillPaths: readonly string[];
+      /** Captured skill bytes; takes precedence over skillPaths when present. */
+      readonly skillSnapshots?: readonly GenericSubagentSkillSnapshot[];
     }
   | {
       readonly kind: "named";
@@ -186,7 +195,21 @@ function clonePreparation(plan: SubagentPreparation): SubagentPreparation {
     history: { ...plan.history },
     resource:
       plan.resource.kind === "generic"
-        ? { kind: "generic", skillPaths: [...plan.resource.skillPaths] }
+        ? {
+            kind: "generic",
+            skillPaths: [...plan.resource.skillPaths],
+            ...(plan.resource.skillSnapshots === undefined
+              ? {}
+              : {
+                  skillSnapshots: plan.resource.skillSnapshots.map((skill) => ({
+                    name: skill.name,
+                    snapshot: {
+                      entryPath: skill.snapshot.entryPath,
+                      files: skill.snapshot.files.map((file) => ({ ...file })),
+                    },
+                  })),
+                }),
+          }
         : { kind: "named", skillsDir: plan.resource.skillsDir },
   };
 }
@@ -274,6 +297,7 @@ class PiSubagentExecution implements SubagentExecution {
   private unsubscribe: (() => void) | null = null;
   private observer: ((message: string) => void) | null = null;
   private completionObserver: (() => void) | null = null;
+  private skillSnapshotDir: string | null = null;
   private latestAssistant: AssistantTerminalInfo | null = null;
   private readonly attemptTexts: string[] = [];
   private currentMessageDelta = "";
@@ -422,13 +446,14 @@ class PiSubagentExecution implements SubagentExecution {
       await services.modelRuntime.setRuntimeApiKey(resolved.model.provider, resolved.apiKey);
       this.throwIfStopped();
 
-      const resourceLoader = await buildResourceLoader(
+      const resource = await buildResourceLoader(
         this.runtime.cfg.goblinHome,
         this.plan,
         invocation.systemPrompt,
         services.settingsManager,
         this.runtime.deps.DefaultResourceLoader,
       );
+      this.skillSnapshotDir = resource.skillSnapshotDir;
       this.throwIfStopped();
 
       const { session } = await this.runtime.deps.createAgentSession({
@@ -440,7 +465,7 @@ class PiSubagentExecution implements SubagentExecution {
         model: resolved.model,
         thinkingLevel: resolved.thinkingLevel,
         customTools: [...invocation.customTools],
-        ...(resourceLoader ? { resourceLoader } : {}),
+        ...(resource.loader ? { resourceLoader: resource.loader } : {}),
       });
       this.session = session;
       this.throwIfStopped();
@@ -722,6 +747,17 @@ class PiSubagentExecution implements SubagentExecution {
         }
       }
 
+      const skillSnapshotDir = this.skillSnapshotDir;
+      this.skillSnapshotDir = null;
+      if (skillSnapshotDir !== null) {
+        try {
+          rmSync(skillSnapshotDir, { recursive: true, force: true });
+        } catch (error) {
+          errors.push(error);
+          log.error("subagent skill snapshot cleanup failed", { ...boundedError(error) });
+        }
+      }
+
       const failure = cleanupError(errors);
       if (failure !== null) throw failure;
     })();
@@ -753,13 +789,38 @@ function deploymentPromptFilePaths(home: string): Set<string> {
   ]);
 }
 
+interface ResourceLoaderResult {
+  readonly loader: ResourceLoader | undefined;
+  readonly skillSnapshotDir: string | null;
+}
+
+function materializeSkillSnapshot(
+  snapshot: ResolvedSkillSnapshot,
+  skillName: string,
+  index: number,
+  root: string,
+): string {
+  const skillDirectory = join(root, `${index}-${skillName}`);
+  mkdirSync(skillDirectory, { recursive: true });
+  for (const file of snapshot.files) {
+    const target = resolve(skillDirectory, file.relativePath);
+    const escaped = relative(skillDirectory, target);
+    if (escaped.startsWith("..")) {
+      throw new SkillResolutionError(`invalid relative path in skill snapshot: ${file.relativePath}`);
+    }
+    mkdirSync(resolve(target, ".."), { recursive: true });
+    writeFileSync(target, Buffer.from(file.base64, "base64"), { flag: "wx" });
+  }
+  return resolve(skillDirectory, snapshot.entryPath);
+}
+
 async function buildResourceLoader(
   home: string,
   plan: SubagentPreparation,
   systemPrompt: string | undefined,
   settingsManager: SettingsManager,
   ResourceLoaderCtor: typeof DefaultResourceLoader,
-): Promise<ResourceLoader | undefined> {
+): Promise<ResourceLoaderResult> {
   const base = {
     cwd: plan.cwd,
     agentDir: piAgentDir(home),
@@ -775,44 +836,63 @@ async function buildResourceLoader(
       ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     });
     await loader.reload();
-    return loader;
+    return { loader, skillSnapshotDir: null };
   }
 
-  const skillPaths = [...plan.resource.skillPaths];
-  const missing: string[] = [];
-  for (const skillPath of skillPaths) {
-    try {
-      const stats = await stat(skillPath);
-      if (!stats.isFile()) {
-        throw new SkillResolutionError(`inherited skill path is not a file: ${skillPath}`);
+  let skillSnapshotDir: string | null = null;
+  try {
+    const skillPaths = plan.resource.skillSnapshots !== undefined
+      ? (() => {
+          skillSnapshotDir = mkdtempSync(join(tmpdir(), "little-goblin-subagent-skills-"));
+          return plan.resource.skillSnapshots.map((skill, index) =>
+            materializeSkillSnapshot(skill.snapshot, skill.name, index, skillSnapshotDir!),
+          );
+        })()
+      : [...plan.resource.skillPaths];
+    const missing: string[] = [];
+    for (const skillPath of skillPaths) {
+      try {
+        const stats = await stat(skillPath);
+        if (!stats.isFile()) {
+          throw new SkillResolutionError(`inherited skill path is not a file: ${skillPath}`);
+        }
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+          missing.push(skillPath);
+          continue;
+        }
+        throw error;
       }
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-        missing.push(skillPath);
-        continue;
-      }
-      throw error;
     }
-  }
-  if (missing.length > 0) {
-    throw new SkillResolutionError(`inherited skill file(s) missing: ${missing.join(", ")}`);
-  }
+    if (missing.length > 0) {
+      throw new SkillResolutionError(`inherited skill file(s) missing: ${missing.join(", ")}`);
+    }
 
-  const deploymentFiles = deploymentPromptFilePaths(home);
-  const loader = new ResourceLoaderCtor({
-    ...base,
-    noSkills: true,
-    additionalSkillPaths: skillPaths,
-    ...(systemPrompt !== undefined ? { systemPrompt } : {}),
-    agentsFilesOverride: ({ agentsFiles }: { agentsFiles: Array<{ path: string; content: string }> }) => ({
-      agentsFiles: agentsFiles.filter((file) => !deploymentFiles.has(resolve(file.path))),
-    }),
-  });
-  await loader.reload();
-  const loadedPaths = new Set(loader.getSkills().skills.map((skill) => resolve(skill.filePath)));
-  const notLoaded = skillPaths.filter((skillPath) => !loadedPaths.has(resolve(skillPath)));
-  if (notLoaded.length > 0) {
-    throw new SkillResolutionError(`inherited skill file(s) failed to load: ${notLoaded.join(", ")}`);
+    const deploymentFiles = deploymentPromptFilePaths(home);
+    const loader = new ResourceLoaderCtor({
+      ...base,
+      noSkills: true,
+      additionalSkillPaths: skillPaths,
+      ...(systemPrompt !== undefined ? { systemPrompt } : {}),
+      agentsFilesOverride: ({ agentsFiles }: { agentsFiles: Array<{ path: string; content: string }> }) => ({
+        agentsFiles: agentsFiles.filter((file) => !deploymentFiles.has(resolve(file.path))),
+      }),
+    });
+    await loader.reload();
+    const loadedPaths = new Set(loader.getSkills().skills.map((skill) => resolve(skill.filePath)));
+    const notLoaded = skillPaths.filter((skillPath) => !loadedPaths.has(resolve(skillPath)));
+    if (notLoaded.length > 0) {
+      throw new SkillResolutionError(`inherited skill file(s) failed to load: ${notLoaded.join(", ")}`);
+    }
+    return { loader, skillSnapshotDir };
+  } catch (error) {
+    if (skillSnapshotDir !== null) {
+      try {
+        rmSync(skillSnapshotDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Pi subagent resource setup failed");
+      }
+    }
+    throw error;
   }
-  return loader;
 }

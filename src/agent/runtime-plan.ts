@@ -163,7 +163,14 @@ export function freezePreparedSurfaceRuntimePlan(
   Object.freeze(plan.systemPrompt.sources);
   Object.freeze(plan.systemPrompt);
   const resolvedModel = deepFrozenClone(plan.resolvedModel);
-  for (const skill of plan.resolvedSkills.skills) Object.freeze(skill);
+  for (const skill of plan.resolvedSkills.skills) {
+    if (skill.snapshot) {
+      for (const file of skill.snapshot.files) Object.freeze(file);
+      Object.freeze(skill.snapshot.files);
+      Object.freeze(skill.snapshot);
+    }
+    Object.freeze(skill);
+  }
   for (const diagnostic of plan.resolvedSkills.diagnostics) Object.freeze(diagnostic);
   Object.freeze(plan.resolvedSkills.skills);
   Object.freeze(plan.resolvedSkills.diagnostics);

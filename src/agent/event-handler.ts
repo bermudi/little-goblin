@@ -170,6 +170,7 @@ function summarizeToolChange(toolName: string, args: EventRecord): string {
  * cannot make a successful file mutation fail.
  */
 export class AgentEventHandler {
+  private closed = false;
   private readonly sessionId: string;
   private readonly goblinHome: string;
   private readonly transcriptWriterContext: TranscriptWriterContext;
@@ -209,6 +210,7 @@ export class AgentEventHandler {
    * Pi does not emit an agent_start/turn_start timestamp.
    */
   beginTurn(callbacks: TurnCallbacks, startedAt: string = new Date().toISOString()): void {
+    if (this.closed) return;
     this.callbacks = callbacks;
     this.accumulatedText = "";
     this.turnStart = startedAt;
@@ -218,15 +220,21 @@ export class AgentEventHandler {
 
   /** Forward a status from a runtime-owned tool while authority remains live. */
   sendStatusUpdate(text: string): void {
-    if (!this.isCurrent()) return;
+    if (this.closed || !this.isCurrent()) return;
     this.callbacks?.onStatusUpdate(text);
+  }
+
+  /** Synchronously fence late backend events before asynchronous cleanup. */
+  close(): void {
+    this.closed = true;
+    this.callbacks = null;
   }
 
   /** Handle one event emitted by the backend. */
   handle(event: AgentSessionEvent): void {
     // Pi may emit late events after lifecycle disposal. Drop every stale event
     // before it can write a transcript, metrics, callback, or tool side effect.
-    if (!this.isCurrent()) return;
+    if (this.closed || !this.isCurrent()) return;
 
     appendTranscriptEntry(
       this.sessionId,
@@ -351,7 +359,7 @@ export class AgentEventHandler {
   }
 
   private sendNotice(text: string): void {
-    if (!this.isCurrent()) return;
+    if (this.closed || !this.isCurrent()) return;
     const send = this.callbacks?.sendNotice;
     if (send === undefined) return;
 

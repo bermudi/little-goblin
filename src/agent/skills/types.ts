@@ -180,6 +180,18 @@ export interface ResolvedSkill {
   readonly name: string;
   /** Canonical absolute path to the SKILL.md file. */
   readonly filePath: string;
+  /** Immutable bytes captured while the runtime plan was prepared. */
+  readonly snapshot?: ResolvedSkillSnapshot;
+}
+
+export interface ResolvedSkillSnapshot {
+  /** Path of the selected skill file relative to its skill directory. */
+  readonly entryPath: string;
+  /** Skill-directory resources, encoded so snapshots remain plain immutable data. */
+  readonly files: readonly {
+    readonly relativePath: string;
+    readonly base64: string;
+  }[];
 }
 
 /**

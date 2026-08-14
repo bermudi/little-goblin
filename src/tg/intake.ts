@@ -285,8 +285,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     session: ConversationState,
     rawText: string,
     command: string,
-  ): void {
-    dispatcher.scheduleCommand(
+  ): boolean {
+    return dispatcher.scheduleCommand(
       session,
       surface,
       async (isCurrent) => {
@@ -458,8 +458,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         (session ? dispatcher.isCommandPending(session.id) : false)
       );
       if (timing === "queue" && session && busy) {
-        await sendSystemReply(message, "Queued. Will run after this turn.", "queued");
-        scheduleDeferredCommand(message, surface, session, rawText ?? "", command);
+        const admitted = scheduleDeferredCommand(message, surface, session, rawText ?? "", command);
+        if (admitted) {
+          await sendSystemReply(message, "Queued. Will run after this turn.", "queued");
+        } else {
+          log.info("deferred command rejected at queue admission", {
+            command,
+            sessionId: session.id,
+          });
+        }
         return;
       }
 

@@ -13,7 +13,8 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
+import { readFile, readdir } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import {
   loadSourcedSkills,
   type Skill,
@@ -196,6 +197,11 @@ async function resolveWithEnv(
         : a.source.localeCompare(b.source),
     );
 
+  const snapshottedSkills = await Promise.all(resolvedSkills.map(async (skill) => ({
+    ...skill,
+    snapshot: await captureSkillSnapshot(skill.filePath),
+  })));
+
   const resolvedDiagnostics: ResolvedSkillDiagnostic[] = loaded.diagnostics.map(
     (d: SkillDiagnostic & { source: SkillSource }) => ({
       source: d.source,
@@ -205,8 +211,39 @@ async function resolveWithEnv(
     }),
   );
 
-  const fingerprint = computeFingerprint(environment, canonicalPolicy, resolvedSkills);
-  return { skills: resolvedSkills, diagnostics: resolvedDiagnostics, fingerprint };
+  const fingerprint = computeFingerprint(environment, canonicalPolicy, snapshottedSkills);
+  return { skills: snapshottedSkills, diagnostics: resolvedDiagnostics, fingerprint };
+}
+
+async function captureSkillSnapshot(filePath: string): Promise<ResolvedSkill["snapshot"]> {
+  const skillDirectory = dirname(filePath);
+  const files: { relativePath: string; base64: string }[] = [];
+
+  async function visit(directory: string): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path);
+        continue;
+      }
+      // Skill resources are ordinary files. Follow file symlinks as the
+      // catalog loader does, but do not recurse through directory symlinks.
+      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+      const relativePath = relative(skillDirectory, path);
+      files.push({
+        relativePath,
+        base64: (await readFile(path)).toString("base64"),
+      });
+    }
+  }
+
+  await visit(skillDirectory);
+  files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return {
+    entryPath: relative(skillDirectory, filePath),
+    files,
+  };
 }
 
 /**

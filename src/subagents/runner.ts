@@ -145,12 +145,32 @@ function preparationFor(
   if (inheritance === null) {
     throw new Error("Generic subagent requires inherited execution and skill authority");
   }
+  const capturedSkills = inheritance.resolvedSkills.skills
+    .filter((skill) => skill.snapshot !== undefined)
+    .map((skill) => {
+      const snapshot = skill.snapshot;
+      if (snapshot === undefined) {
+        throw new Error("captured generic skill snapshot disappeared during preparation");
+      }
+      return { ...skill, snapshot };
+    });
+  const allSkillsCaptured = capturedSkills.length === inheritance.resolvedSkills.skills.length;
   return {
     cwd,
     history,
     resource: {
       kind: "generic",
-      skillPaths: inheritance.resolvedSkills.skills.map((skill) => skill.filePath),
+      skillPaths: allSkillsCaptured
+        ? []
+        : inheritance.resolvedSkills.skills.map((skill) => skill.filePath),
+      ...(allSkillsCaptured && capturedSkills.length > 0
+        ? {
+            skillSnapshots: capturedSkills.map((skill) => ({
+              name: skill.name,
+              snapshot: skill.snapshot,
+            })),
+          }
+        : {}),
     },
   };
 }

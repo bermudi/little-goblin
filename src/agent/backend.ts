@@ -1,5 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, relative, resolve } from "node:path";
 import {
   DefaultResourceLoader,
   SessionManager,
@@ -21,7 +23,7 @@ import { log } from "../log.ts";
 import { createPiServices, findMostRecentCompatiblePiSession, piAgentDir, type PiServices } from "../pi-host.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { ResolvedModel } from "./models.ts";
-import { SkillResolutionError, type ResolvedSkillSet } from "./skills/mod.ts";
+import { SkillResolutionError, type ResolvedSkillSet, type ResolvedSkillSnapshot } from "./skills/mod.ts";
 
 // We intentionally use structural matches for the payload shapes so callers
 // (project notice, memory snapshot) do not need to import pi's internal
@@ -52,9 +54,10 @@ export interface AgentBackendInitArgs {
   systemPrompt: string;
   cwd: string;
   /**
-   * Frozen resolved skill set from SkillCatalogResolver. The backend passes
-   * only the selected skill file paths to pi's DefaultResourceLoader with
-   * `noSkills: true`, so no ambient pi discovery occurs (decision 0034).
+   * Frozen resolved skill set from SkillCatalogResolver. Surface plans carry
+   * immutable skill snapshots; the backend materializes them before passing
+   * paths to Pi with `noSkills: true`, so no live catalog reread or ambient
+   * discovery occurs.
    */
   resolvedSkills: ResolvedSkillSet;
 }
@@ -96,6 +99,27 @@ function normalizeSkillPath(filePath: string): string {
   return resolve(filePath);
 }
 
+function materializeSkillSnapshot(
+  snapshot: ResolvedSkillSnapshot,
+  skillName: string,
+  index: number,
+  root: string,
+): string {
+  const skillDirectory = join(root, `${index}-${skillName}`);
+  mkdirSync(skillDirectory, { recursive: true });
+  for (const file of snapshot.files) {
+    const target = resolve(skillDirectory, file.relativePath);
+    const escaped = relative(skillDirectory, target);
+    if (escaped.startsWith("..")) {
+      throw new SkillResolutionError(`invalid relative path in skill snapshot: ${file.relativePath}`);
+    }
+    const parent = resolve(target, "..");
+    mkdirSync(parent, { recursive: true });
+    writeFileSync(target, Buffer.from(file.base64, "base64"), { flag: "wx" });
+  }
+  return resolve(skillDirectory, snapshot.entryPath);
+}
+
 async function validateSelectedSkillFiles(skillPaths: readonly string[]): Promise<void> {
   const unavailable: string[] = [];
   for (const skillPath of skillPaths) {
@@ -135,6 +159,7 @@ export class PiAgentBackend implements AgentBackend {
   private session: AgentSession | null = null;
   private unsubscribe: (() => void) | null = null;
   private resourceLoader: DefaultResourceLoader | null = null;
+  private skillSnapshotDir: string | null = null;
 
   constructor(opts: PiAgentBackendOptions) {
     this.cfg = opts.cfg;
@@ -169,63 +194,87 @@ export class PiAgentBackend implements AgentBackend {
       ? this.deps.SessionManager.open(recent, piSessionDir, cwd)
       : this.deps.SessionManager.create(cwd, piSessionDir);
 
-    const selectedSkillPaths = resolvedSkills.skills.map((skill) => skill.filePath);
-    await validateSelectedSkillFiles(selectedSkillPaths);
-
-    const resourceLoader = new this.deps.DefaultResourceLoader({
-      cwd,
-      agentDir,
-      settingsManager,
-      systemPrompt,
-      noContextFiles: true,
-      noSkills: true,
-      additionalSkillPaths: selectedSkillPaths,
-    });
-    await resourceLoader.reload();
-
-    const loadedSkillPaths = new Set(
-      resourceLoader.getSkills().skills.map((skill) => normalizeSkillPath(skill.filePath)),
-    );
-    const notLoaded = selectedSkillPaths.filter(
-      (skillPath) => !loadedSkillPaths.has(normalizeSkillPath(skillPath)),
-    );
-    if (notLoaded.length > 0) {
-      throw new SkillResolutionError(
-        `resolved skill file(s) failed to load in Pi: ${notLoaded.join(", ")}`,
+    const snapshots = resolvedSkills.skills.some((skill) => skill.snapshot !== undefined);
+    const snapshotRoot = snapshots ? mkdtempSync(join(tmpdir(), "little-goblin-skills-")) : null;
+    this.skillSnapshotDir = snapshotRoot;
+    try {
+      const selectedSkillPaths = resolvedSkills.skills.map((skill, index) =>
+        skill.snapshot === undefined || snapshotRoot === null
+          ? skill.filePath
+          : materializeSkillSnapshot(skill.snapshot, skill.name, index, snapshotRoot),
       );
+      await validateSelectedSkillFiles(selectedSkillPaths);
+
+      const resourceLoader = new this.deps.DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager,
+        systemPrompt,
+        noContextFiles: true,
+        noSkills: true,
+        additionalSkillPaths: selectedSkillPaths,
+      });
+      await resourceLoader.reload();
+
+      const loadedSkillPaths = new Set(
+        resourceLoader.getSkills().skills.map((skill) => normalizeSkillPath(skill.filePath)),
+      );
+      const notLoaded = selectedSkillPaths.filter(
+        (skillPath) => !loadedSkillPaths.has(normalizeSkillPath(skillPath)),
+      );
+      if (notLoaded.length > 0) {
+        throw new SkillResolutionError(
+          `resolved skill file(s) failed to load in Pi: ${notLoaded.join(", ")}`,
+        );
+      }
+
+      // Pi exposes factory functions for the default tool definitions. Build
+      // those definitions here and override the SDK defaults through its public
+      // `customTools` seam, preserving each factory's schema, prompt metadata,
+      // renderer, and implementation. `noTools: "builtin"` disables only the
+      // unguarded defaults; same-named custom definitions become the active
+      // standard tools.
+      const guardedBuiltIns = [
+        guardBuiltInTool(defineTool(createReadToolDefinition(cwd))),
+        guardBuiltInTool(defineTool(createBashToolDefinition(cwd))),
+        guardBuiltInTool(defineTool(createEditToolDefinition(cwd))),
+        guardBuiltInTool(defineTool(createWriteToolDefinition(cwd))),
+      ];
+
+      const { session } = await this.deps.createAgentSession({
+        cwd,
+        agentDir,
+        modelRuntime,
+        settingsManager,
+        sessionManager,
+        model: resolvedModel.model,
+        thinkingLevel,
+        noTools: "builtin",
+        customTools: [...guardedBuiltIns, ...customTools],
+        resourceLoader,
+      });
+
+      this.session = session;
+      this.resourceLoader = resourceLoader;
+      this.unsubscribe = session.subscribe((event) => {
+        this.onEvent(event);
+      });
+    } catch (error) {
+      const snapshotDir = this.skillSnapshotDir;
+      this.skillSnapshotDir = null;
+      if (snapshotDir !== null) {
+        try {
+          rmSync(snapshotDir, { recursive: true, force: true });
+        } catch (cleanupError) {
+          log.error("AgentBackend initialization skill snapshot cleanup failed", {
+            sessionId: this.sessionId,
+            err: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+          throw new AggregateError([error, cleanupError], "AgentBackend initialization failed");
+        }
+      }
+      throw error;
     }
-
-    // Pi exposes factory functions for the default tool definitions. Build
-    // those definitions here and override the SDK defaults through its public
-    // `customTools` seam, preserving each factory's schema, prompt metadata,
-    // renderer, and implementation. `noTools: "builtin"` disables only the
-    // unguarded defaults; same-named custom definitions become the active
-    // standard tools.
-    const guardedBuiltIns = [
-      guardBuiltInTool(defineTool(createReadToolDefinition(cwd))),
-      guardBuiltInTool(defineTool(createBashToolDefinition(cwd))),
-      guardBuiltInTool(defineTool(createEditToolDefinition(cwd))),
-      guardBuiltInTool(defineTool(createWriteToolDefinition(cwd))),
-    ];
-
-    const { session } = await this.deps.createAgentSession({
-      cwd,
-      agentDir,
-      modelRuntime,
-      settingsManager,
-      sessionManager,
-      model: resolvedModel.model,
-      thinkingLevel,
-      noTools: "builtin",
-      customTools: [...guardedBuiltIns, ...customTools],
-      resourceLoader,
-    });
-
-    this.session = session;
-    this.resourceLoader = resourceLoader;
-    this.unsubscribe = session.subscribe((event) => {
-      this.onEvent(event);
-    });
   }
 
   async sendCustomMessage(message: CustomMessageInput, opts?: { deliverAs?: "nextTurn" }): Promise<void> {
@@ -262,9 +311,11 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   dispose(): void {
+    const failures: unknown[] = [];
     try {
       this.unsubscribe?.();
     } catch (err) {
+      failures.push(err);
       log.error("AgentBackend unsubscribe failed", {
         sessionId: this.sessionId,
         err: err instanceof Error ? err.message : String(err),
@@ -275,6 +326,7 @@ export class PiAgentBackend implements AgentBackend {
     try {
       this.session?.dispose();
     } catch (err) {
+      failures.push(err);
       log.error("AgentBackend session.dispose failed", {
         sessionId: this.sessionId,
         err: err instanceof Error ? err.message : String(err),
@@ -282,6 +334,19 @@ export class PiAgentBackend implements AgentBackend {
     } finally {
       this.session = null;
     }
+    try {
+      if (this.skillSnapshotDir !== null) rmSync(this.skillSnapshotDir, { recursive: true, force: true });
+    } catch (err) {
+      failures.push(err);
+      log.error("AgentBackend skill snapshot cleanup failed", {
+        sessionId: this.sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this.skillSnapshotDir = null;
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "AgentBackend disposal failed");
   }
 
   get isStreaming(): boolean {

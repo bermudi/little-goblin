@@ -69,18 +69,21 @@ async function main(): Promise<void> {
         }
       };
 
-      // Close both admission fences synchronously before awaiting either drain.
-      // Runtime disposal starts immediately so an active model turn can be
-      // aborted and unblock the Telegram handler that is awaiting it.
+      // Close Telegram admission first. Its drain includes the coalescer flush,
+      // so buffered text is admitted into runtime queues while runtime
+      // admission is still open.
       const telegramDrain = closeAdmission();
-      const runtimeDrain = runtimeHost.disposeAll();
-      scheduler.stop();
+      const schedulerDrain = scheduler.stopAndDrain();
 
-      // Stop polling, then await both drains while deployment-wide delegated
-      // hosts remain alive: runner disposal may invoke them.
+      // Stop polling and finish the Telegram coalescer flush before fencing
+      // runtimes. The scheduler drain is already in progress, but must not be
+      // awaited until after runtime disposal: a dreaming turn may need that
+      // disposal to abort its model request.
       await attempt("telegram polling", () => bot.stop());
       await attempt("telegram admission", () => telegramDrain);
+      const runtimeDrain = runtimeHost.disposeAll();
       await attempt("conversation runtimes", () => runtimeDrain);
+      await attempt("scheduler", () => schedulerDrain);
       await attempt("external agents", async () => {
         await externalAgentRunner?.dispose();
       });

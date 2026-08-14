@@ -224,6 +224,10 @@ export class SchedulerLoop {
   private timer: { clear(): void } | null = null;
   private memoryTimers: { clear(): void }[] = [];
   private ticking = false;
+  /** Every timer-originated operation remains here until it settles. */
+  private readonly activeJobs = new Set<Promise<void>>();
+  private stopDrainPromise: Promise<void> | undefined;
+  private memorySchedulingOpen = false;
   /** Scheduler-owned claim fence. Unlike timer state, this remains closed even
    * when stop() races a tick that is already awaiting binding resolution. */
   private claimsOpen = true;
@@ -248,8 +252,9 @@ export class SchedulerLoop {
   start(): void {
     if (this.timer) return;
     this.claimsOpen = true;
+    this.memorySchedulingOpen = true;
     this.timer = this.clock.setInterval(() => {
-      void this.tick();
+      this.trackJob(this.tick());
     }, this.tickIntervalMs);
     this.startMemoryTimers();
     log.info("scheduler started", { tickIntervalMs: this.tickIntervalMs });
@@ -258,6 +263,7 @@ export class SchedulerLoop {
   /** Stop ticking. No-op if not started. Safe to call during shutdown. */
   stop(): void {
     this.claimsOpen = false;
+    this.memorySchedulingOpen = false;
     if (this.timer) {
       this.timer.clear();
       this.timer = null;
@@ -267,6 +273,40 @@ export class SchedulerLoop {
     }
     this.memoryTimers = [];
     log.info("scheduler stopped");
+  }
+
+  /**
+   * Stop future work and wait for every timer callback that was already
+   * admitted. `stop()` remains synchronous for callers that only need the
+   * admission fence; shutdown uses this draining variant.
+   */
+  stopAndDrain(): Promise<void> {
+    if (this.stopDrainPromise) return this.stopDrainPromise;
+    this.stop();
+    this.stopDrainPromise = this.drainJobs();
+    return this.stopDrainPromise;
+  }
+
+  private trackJob(job: Promise<void>): void {
+    this.activeJobs.add(job);
+    const remove = (): void => {
+      this.activeJobs.delete(job);
+    };
+    void job.then(remove, remove);
+  }
+
+  private async drainJobs(): Promise<void> {
+    const failures: unknown[] = [];
+    while (this.activeJobs.size > 0) {
+      const results = await Promise.allSettled([...this.activeJobs]);
+      failures.push(
+        ...results
+          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+          .map((result) => result.reason),
+      );
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "scheduler shutdown failed");
   }
 
   private startMemoryTimers(): void {
@@ -281,9 +321,13 @@ export class SchedulerLoop {
     if (Number.isFinite(this.transcriptSyncIntervalMs)) {
       this.memoryTimers.push(
         this.clock.setInterval(() => {
-          void this.memoryEngine!.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS }).catch((err) => {
-            log.warn("scheduled transcript sync failed", { error: String(err) });
-          });
+          this.trackJob(
+            this.memoryEngine!.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS })
+              .then(() => undefined)
+              .catch((err) => {
+                log.warn("scheduled transcript sync failed", { error: String(err) });
+              }),
+          );
         }, this.transcriptSyncIntervalMs),
       );
     }
@@ -292,7 +336,7 @@ export class SchedulerLoop {
     if (Number.isFinite(this.dreamingLightIntervalMs)) {
       this.memoryTimers.push(
         this.clock.setInterval(() => {
-          void this.runDreamingLightSleep();
+          this.trackJob(this.runDreamingLightSleep());
         }, this.dreamingLightIntervalMs),
       );
     }
@@ -304,9 +348,11 @@ export class SchedulerLoop {
       DEFAULT_REM_LOCAL_TIME,
       this.dreamingRemIntervalMs,
       () => {
-        void this.memoryEngine!.dreaming.runRemSleep().catch((err) => {
-          log.warn("scheduled REM sleep failed", { error: String(err) });
-        });
+        this.trackJob(
+          this.memoryEngine!.dreaming.runRemSleep().catch((err) => {
+            log.warn("scheduled REM sleep failed", { error: String(err) });
+          }),
+        );
       },
     );
 
@@ -314,9 +360,11 @@ export class SchedulerLoop {
       DEFAULT_DEEP_LOCAL_TIME,
       this.dreamingDeepIntervalMs,
       () => {
-        void this.memoryEngine!.dreaming.runDeepSleep().catch((err) => {
-          log.warn("scheduled deep sleep failed", { error: String(err) });
-        });
+        this.trackJob(
+          this.memoryEngine!.dreaming.runDeepSleep().catch((err) => {
+            log.warn("scheduled deep sleep failed", { error: String(err) });
+          }),
+        );
       },
     );
   }
@@ -344,6 +392,7 @@ export class SchedulerLoop {
     let initialTimer = this.clock.setInterval(() => {
       initialTimer.clear();
       fn();
+      if (!this.memorySchedulingOpen) return;
       const repeatTimer = this.clock.setInterval(fn, intervalMs);
       this.memoryTimers.push(repeatTimer);
     }, delay);

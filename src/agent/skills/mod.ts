@@ -22,6 +22,7 @@ export type {
   ResolvedSkill,
   ResolvedSkillDiagnostic,
   ResolvedSkillSet,
+  ResolvedSkillSnapshot,
   SkillName,
   SkillPolicy,
   SkillSource,

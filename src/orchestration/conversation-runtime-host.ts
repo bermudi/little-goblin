@@ -69,6 +69,27 @@ interface Deferred<T> {
   readonly reject: (error: unknown) => void;
 }
 
+class DelegatedInvalidationFailure extends Error {
+  readonly runtimeId: ConversationRuntimeId;
+
+  constructor(runtimeId: ConversationRuntimeId, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "DelegatedInvalidationFailure";
+    this.runtimeId = runtimeId;
+    this.cause = cause;
+  }
+}
+
+function isPendingDelegatedInvalidation(
+  pending: ReadonlyMap<ConversationId, Set<ConversationRuntimeId>>,
+  runtimeId: ConversationRuntimeId,
+): boolean {
+  for (const runtimeIds of pending.values()) {
+    if (runtimeIds.has(runtimeId)) return true;
+  }
+  return false;
+}
+
 function deferred<T>(swallowRejection = false): Deferred<T> {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -78,6 +99,14 @@ function deferred<T>(swallowRejection = false): Deferred<T> {
   });
   if (swallowRejection) promise.catch(() => {});
   return { promise, resolve, reject };
+}
+
+function flattenFailures(error: unknown, failures: unknown[]): void {
+  if (error instanceof AggregateError) {
+    for (const nested of error.errors) flattenFailures(nested, failures);
+    return;
+  }
+  failures.push(error);
 }
 
 /**
@@ -331,11 +360,25 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       }
     };
     const prior = this.promptQueues.get(conversationId);
-    const current = prior ? prior.then(execute, execute) : execute();
+    let current: Promise<void>;
+    let startImmediately: (() => void) | undefined;
+    if (prior) {
+      current = prior.then(execute, execute);
+    } else {
+      // Reserve the queue promise before starting the first entry. This keeps
+      // admission visible to re-entrant code without changing the historical
+      // synchronous start of an idle queue.
+      const control = deferred<void>(true);
+      current = control.promise;
+      startImmediately = (): void => {
+        void execute().then(control.resolve, control.reject);
+      };
+    }
     const meta: PromptQueueEntry = { isPrompt: options.isPrompt ?? true };
     this.promptQueues.set(conversationId, current);
     this.promptQueueMeta.set(conversationId, meta);
     this.queuedWork.add(current);
+    startImmediately?.();
     const remove = (): void => {
       this.queuedWork.delete(current);
       if (this.promptQueues.get(conversationId) === current) this.promptQueues.delete(conversationId);
@@ -463,7 +506,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
         pending?.delete(runtimeId);
         if (pending?.size === 0) this.pendingDelegatedInvalidations.delete(conversationId);
       } catch (error) {
-        delegatedFailures.push(error);
+        delegatedFailures.push(new DelegatedInvalidationFailure(runtimeId, error));
         log.error("delegated work invalidation failed in runtime disposal", {
           conversationId,
           runtimeId,
@@ -491,21 +534,27 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
 
     let externalTimer: ReturnType<typeof setTimeout> | undefined;
     const externalCancellation = this.externalAgentRunner
-      ? this.externalAgentRunner.cancelBySession(conversationId).catch((error: unknown) => {
-          log.error("external-agent cancellation failed in runtime disposal", {
-            conversationId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        })
+      ? this.externalAgentRunner.cancelBySession(conversationId)
       : Promise.resolve();
+    let externalCancellationTimedOut = false;
+    let externalCancellationError: unknown;
+    let externalCancellationFailed = false;
     const timeout = new Promise<void>((resolve) => {
       externalTimer = setTimeout(() => {
+        externalCancellationTimedOut = true;
         log.warn("external-agent cancellation timed out in runtime disposal", { conversationId });
         resolve();
       }, 10_000);
     });
     try {
       await Promise.race([externalCancellation, timeout]);
+    } catch (error) {
+      externalCancellationFailed = true;
+      externalCancellationError = error;
+      log.error("external-agent cancellation failed in runtime disposal", {
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     } finally {
       if (externalTimer !== undefined) clearTimeout(externalTimer);
     }
@@ -513,6 +562,10 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     const failures: unknown[] = [];
     if (runnerFailed) failures.push(runnerError);
     failures.push(...delegatedFailures);
+    if (externalCancellationTimedOut) {
+      failures.push(new Error(`external-agent cancellation timed out for ${conversationId}`));
+    }
+    if (externalCancellationFailed) failures.push(externalCancellationError);
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Conversation runtime cleanup failed");
   }
@@ -544,11 +597,9 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     // queued entries observe stale authority and do not begin during shutdown.
     for (;;) {
       const accepted = await Promise.allSettled([...this.queuedWork]);
-      failures.push(
-        ...accepted
-          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-          .map((result) => result.reason),
-      );
+      for (const result of accepted) {
+        if (result.status === "rejected") flattenFailures(result.reason, failures);
+      }
       if (this.queuedWork.size === 0) break;
     }
 
@@ -557,11 +608,9 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     // only a live-work index, so a fast rejection may have left that map while
     // an unrelated queue was still draining.
     const eagerResults = await Promise.allSettled(eagerDisposals);
-    failures.push(
-      ...eagerResults
-        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-        .map((result) => result.reason),
-    );
+    for (const result of eagerResults) {
+      if (result.status === "rejected") flattenFailures(result.reason, failures);
+    }
 
     // Constructions and physical cleanup can now be fenced and drained. Retry
     // each delegated invalidation left by an earlier failed disposal once in
@@ -585,11 +634,9 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
         ...disposals,
         ...creations.map((creation) => creation.completion),
       ]);
-      failures.push(
-        ...results
-          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-          .map((result) => result.reason),
-      );
+      for (const result of results) {
+        if (result.status === "rejected") flattenFailures(result.reason, failures);
+      }
 
       // Cleanup observers remove settled active disposals and queue entries in
       // promise reactions. Yield once before checking the owner state so the
@@ -607,10 +654,19 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       }
     }
 
-    if (failures.length === 1) {
-      const failure = failures[0];
+    // A delegated invalidation may fail transiently, remain pending, and then
+    // succeed on the bounded retry above. Do not report an error that has been
+    // demonstrably recovered; runner and other cleanup failures remain loud.
+    const reportableFailures = failures.filter((failure) =>
+      !(failure instanceof DelegatedInvalidationFailure) ||
+      isPendingDelegatedInvalidation(this.pendingDelegatedInvalidations, failure.runtimeId)
+    );
+    if (reportableFailures.length === 1) {
+      const failure = reportableFailures[0];
       throw failure instanceof Error ? failure : new Error(String(failure));
     }
-    if (failures.length > 1) throw new AggregateError(failures, "Conversation runtime shutdown failed");
+    if (reportableFailures.length > 1) {
+      throw new AggregateError(reportableFailures, "Conversation runtime shutdown failed");
+    }
   }
 }

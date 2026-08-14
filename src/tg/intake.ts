@@ -326,17 +326,18 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     text: string,
     onRuntimeAdmission?: () => void,
   ): Promise<void> {
+    const followUp = runner.followUp(message.prepare(text));
+    // Admission is the synchronous hand-off to the runtime. Do not wait for
+    // the model-owned promise: disposal is what unblocks a stalled follow-up.
+    onRuntimeAdmission?.();
     try {
-      await runner.followUp(message.prepare(text));
-      onRuntimeAdmission?.();
+      await followUp;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("not streaming")) {
         scheduleFreshTurn(message, surface, session, runner, text, "runner prompt failed (steer race fallback)");
-        onRuntimeAdmission?.();
         return;
       }
-      onRuntimeAdmission?.();
       log.warn("steer failed", { error: msg, sessionId: session.id });
       throw err;
     }
@@ -515,7 +516,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // Interrupt commands deliberately operate on an active runtime. Let
         // shutdown begin after the interrupt has been invoked; waiting for
         // its abort promise would prevent runtime disposal from unblocking it.
-        if (timing === "interrupt") onRuntimeAdmission?.();
+        if (timing === "interrupt" || command === "compact") onRuntimeAdmission?.();
         const result = await commandResult;
         if (result.kind !== "fallthrough") {
           await applySideEffects(result.sideEffects, message);

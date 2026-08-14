@@ -11,10 +11,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
-import { realpathSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { opendir, readFile, stat } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import {
   loadSourcedSkills,
   type Skill,
@@ -34,6 +34,7 @@ import {
   SourceSelection,
   normalizeSkillPolicy,
 } from "./types.ts";
+import { materializeSkillSnapshot } from "./materializer.ts";
 
 /** Maximum raw size of one captured skill resource. */
 export const MAX_SKILL_FILE_BYTES = 1 * 1024 * 1024;
@@ -45,6 +46,11 @@ export const MAX_TOTAL_SKILL_SNAPSHOT_BYTES = 32 * 1024 * 1024;
 export const MAX_SKILL_SNAPSHOT_ENTRIES = 4096;
 /** Maximum number of skill directories captured concurrently. */
 export const MAX_SKILL_SNAPSHOT_CONCURRENCY = 4;
+
+export interface ResolveSkillSetOptions {
+  /** Capture immutable skill-directory bytes for a prepared runtime. */
+  readonly captureSnapshots?: boolean;
+}
 
 /**
  * Map a source to its exact filesystem root(s) for the given environment.
@@ -90,16 +96,19 @@ function applySelection(
  * Missing optional roots are empty catalogs. The same canonical file selected
  * through two roots is deduplicated. Distinct files with the same declared name
  * after policy filtering are an error. A selected name absent from its source
- * is also an error.
+ * is also an error. Snapshot capture is opt-in because internal runtimes keep
+ * their historical lazy, live-path assembly; prepared Surface plans request it
+ * explicitly.
  */
 export async function resolveSkillSet(
   environment: ExecutionEnvironment,
   policy: SkillPolicy = DEFAULT_SKILL_POLICY,
   home: string,
+  options: ResolveSkillSetOptions = {},
 ): Promise<ResolvedSkillSet> {
   const env = new NodeExecutionEnv({ cwd: home });
   try {
-    return await resolveWithEnv(env, environment, policy, home);
+    return await resolveWithEnv(env, environment, policy, home, options);
   } finally {
     await env.cleanup();
   }
@@ -110,6 +119,7 @@ async function resolveWithEnv(
   environment: ExecutionEnvironment,
   policy: SkillPolicy,
   home: string,
+  options: ResolveSkillSetOptions,
 ): Promise<ResolvedSkillSet> {
   const canonicalPolicy = normalizeSkillPolicy(policy);
 
@@ -194,21 +204,26 @@ async function resolveWithEnv(
   // Build the immutable DTO list in stable order: source, then name, then path.
   // Use the realpath for filePath so two paths through a symlink produce the
   // same canonical output, matching the dedup key.
-  const resolvedSkills: ResolvedSkill[] = [...byCanonicalPath.values()]
+  const candidates: ResolvedSkillCandidate[] = [...byCanonicalPath.values()]
     .map((entry) => ({
-      source: entry.source,
-      name: entry.skill.name,
-      filePath: realpathSync(entry.skill.filePath),
+      parsed: entry.skill,
+      resolved: {
+        source: entry.source,
+        name: entry.skill.name,
+        filePath: realpathSync(entry.skill.filePath),
+      },
     }))
     .sort((a, b) =>
-      a.source === b.source
-        ? a.name === b.name
-          ? a.filePath.localeCompare(b.filePath)
-          : a.name.localeCompare(b.name)
-        : a.source.localeCompare(b.source),
+      a.resolved.source === b.resolved.source
+        ? a.resolved.name === b.resolved.name
+          ? a.resolved.filePath.localeCompare(b.resolved.filePath)
+          : a.resolved.name.localeCompare(b.resolved.name)
+        : a.resolved.source.localeCompare(b.resolved.source),
     );
-
-  const snapshottedSkills = await captureSkillSnapshots(resolvedSkills);
+  const resolvedSkills = candidates.map((candidate) => candidate.resolved);
+  const snapshottedSkills = options.captureSnapshots === true
+    ? await captureSkillSnapshots(env, candidates)
+    : resolvedSkills;
 
   const resolvedDiagnostics: ResolvedSkillDiagnostic[] = loaded.diagnostics.map(
     (d: SkillDiagnostic & { source: SkillSource }) => ({
@@ -228,6 +243,11 @@ interface CapturedSkillSnapshot {
   readonly bytes: number;
 }
 
+interface ResolvedSkillCandidate {
+  readonly parsed: Skill;
+  readonly resolved: ResolvedSkill;
+}
+
 /**
  * Capture selected skills with both a concurrency limit and an aggregate
  * serialized-size limit. The pool keeps filesystem and base64 work bounded;
@@ -235,9 +255,10 @@ interface CapturedSkillSnapshot {
  * individual skill is within its per-skill limit.
  */
 async function captureSkillSnapshots(
-  skills: readonly ResolvedSkill[],
+  env: NodeExecutionEnv,
+  candidates: readonly ResolvedSkillCandidate[],
 ): Promise<ResolvedSkill[]> {
-  const captured = new Array<ResolvedSkill | undefined>(skills.length);
+  const captured = new Array<ResolvedSkill | undefined>(candidates.length);
   let nextIndex = 0;
   let totalBytes = 0;
   let failed = false;
@@ -247,11 +268,12 @@ async function captureSkillSnapshots(
     while (!failed) {
       const index = nextIndex;
       nextIndex += 1;
-      const skill = skills[index];
-      if (skill === undefined) return;
+      const candidate = candidates[index];
+      if (candidate === undefined) return;
 
       try {
-        const result = await captureSkillSnapshot(skill.filePath);
+        const result = await captureSkillSnapshot(candidate.resolved.filePath);
+        await verifyCapturedSkill(env, candidate, result.snapshot);
         if (failed) return;
         const nextTotalBytes = totalBytes + result.bytes;
         if (nextTotalBytes > MAX_TOTAL_SKILL_SNAPSHOT_BYTES) {
@@ -262,7 +284,7 @@ async function captureSkillSnapshots(
           return;
         }
         totalBytes = nextTotalBytes;
-        captured[index] = { ...skill, snapshot: result.snapshot };
+        captured[index] = { ...candidate.resolved, snapshot: result.snapshot };
       } catch (error) {
         failed = true;
         failure = error;
@@ -271,7 +293,7 @@ async function captureSkillSnapshots(
     }
   };
 
-  const workerCount = Math.min(MAX_SKILL_SNAPSHOT_CONCURRENCY, skills.length);
+  const workerCount = Math.min(MAX_SKILL_SNAPSHOT_CONCURRENCY, candidates.length);
   await Promise.all(Array.from({ length: workerCount }, () => captureOne()));
   if (failed) throw failure;
   return captured.map((skill) => {
@@ -280,6 +302,37 @@ async function captureSkillSnapshots(
     }
     return skill;
   });
+}
+
+async function verifyCapturedSkill(
+  env: NodeExecutionEnv,
+  candidate: ResolvedSkillCandidate,
+  snapshot: NonNullable<ResolvedSkill["snapshot"]>,
+): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "little-goblin-skill-verify-"));
+  try {
+    const materializedEntry = materializeSkillSnapshot(snapshot, 0, root);
+    const loaded = await loadSourcedSkills<SkillSource>(env, [{
+      path: resolve(root, "0"),
+      source: candidate.resolved.source,
+    }]);
+    const actual = loaded.skills.find(
+      (entry) => resolve(entry.skill.filePath) === resolve(materializedEntry),
+    )?.skill;
+    if (
+      actual === undefined ||
+      actual.name !== candidate.parsed.name ||
+      actual.description !== candidate.parsed.description ||
+      actual.content !== candidate.parsed.content ||
+      actual.disableModelInvocation !== candidate.parsed.disableModelInvocation
+    ) {
+      throw new SkillResolutionError(
+        `selected skill changed while being captured: ${candidate.resolved.filePath}`,
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 async function captureSkillSnapshot(filePath: string): Promise<CapturedSkillSnapshot> {
@@ -342,7 +395,8 @@ async function captureSkillSnapshot(filePath: string): Promise<CapturedSkillSnap
         );
       }
       const base64 = bytes.toString("base64");
-      const serializedFile = JSON.stringify({ relativePath, base64 });
+      const executable = (targetStats.mode & 0o111) !== 0;
+      const serializedFile = JSON.stringify({ relativePath, base64, executable });
       const nextBytes = snapshotBytes +
         (files.length === 0 ? 0 : Buffer.byteLength(",")) +
         Buffer.byteLength(serializedFile);
@@ -355,7 +409,7 @@ async function captureSkillSnapshot(filePath: string): Promise<CapturedSkillSnap
       files.push({
         relativePath,
         base64,
-        executable: (targetStats.mode & 0o111) !== 0,
+        executable,
       });
     }
   }

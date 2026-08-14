@@ -37,5 +37,6 @@ export {
   MAX_TOTAL_SKILL_SNAPSHOT_BYTES,
   resolveSkillSet,
 } from "./resolver.ts";
+export type { ResolveSkillSetOptions } from "./resolver.ts";
 
 export { materializeSkillSnapshot } from "./materializer.ts";

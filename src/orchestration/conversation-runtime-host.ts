@@ -177,7 +177,9 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
   }
 
   hasRuntime(conversationId: ConversationId): boolean {
-    return this.runners.has(conversationId) || this.inFlightCreations.has(conversationId);
+    return this.runners.has(conversationId) ||
+      this.inFlightCreations.has(conversationId) ||
+      (this.pendingDelegatedInvalidations.get(conversationId)?.size ?? 0) > 0;
   }
 
   isAdmissionOpen(): boolean {
@@ -283,6 +285,11 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
         `cannot register runtime for ${conversationId}: a prior-generation disposal is still active`,
       );
     }
+    if ((this.pendingDelegatedInvalidations.get(conversationId)?.size ?? 0) > 0) {
+      throw new Error(
+        `cannot register runtime for ${conversationId}: delegated work invalidation is still pending`,
+      );
+    }
     if (this.runners.has(conversationId)) {
       throw new Error(`Conversation runtime already registered for ${conversationId}`);
     }
@@ -305,6 +312,11 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
         `cannot register internal runtime for ${conversationId}: a prior-generation disposal is still active`,
       );
     }
+    if ((this.pendingDelegatedInvalidations.get(conversationId)?.size ?? 0) > 0) {
+      throw new Error(
+        `cannot register internal runtime for ${conversationId}: delegated work invalidation is still pending`,
+      );
+    }
     if (this.runners.has(conversationId) && !this.internalRunnerIds.has(conversationId)) {
       throw new Error(`cannot reuse Surface-backed runtime ${conversationId} for an internal turn`);
     }
@@ -325,8 +337,33 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     // while it was suspended.
     for (;;) {
       const active = this.activeDisposals.get(conversationId);
-      if (active === undefined || active.size === 0) return;
-      await Promise.all([...active].map((entry) => entry.promise));
+      let activeFailure: unknown;
+      if (active !== undefined && active.size > 0) {
+        try {
+          await Promise.all([...active].map((entry) => entry.promise));
+        } catch (error) {
+          activeFailure = error;
+        }
+      }
+      if ((this.pendingDelegatedInvalidations.get(conversationId)?.size ?? 0) > 0) {
+        // Let the active-disposal rejection observer remove its live entry
+        // before starting the retry path.
+        await Promise.resolve();
+        try {
+          // A prior invalidation may have failed after removing the runner.
+          // Run the same cleanup path again before allowing a replacement.
+          await this.disposeRuntime(conversationId);
+        } catch (error) {
+          if (activeFailure !== undefined) {
+            throw new AggregateError([activeFailure, error], "Conversation runtime cleanup failed");
+          }
+          throw error;
+        }
+        if (activeFailure !== undefined) throw activeFailure;
+        continue;
+      }
+      if (activeFailure !== undefined) throw activeFailure;
+      return;
     }
   }
 

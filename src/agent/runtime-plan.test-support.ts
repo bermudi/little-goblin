@@ -47,7 +47,12 @@ export async function prepareTestSurfaceRuntimePlan(args: {
   const skillPolicy = args.skillPolicy ?? DEFAULT_SKILL_POLICY;
   const modelName = args.modelName ?? args.cfg.modelName;
   const resolvedModel = args.resolvedModel ?? resolveModel({ ...args.cfg, modelName });
-  const resolvedSkills = await resolveSkillSet(args.executionEnvironment, skillPolicy, args.cfg.goblinHome);
+  const resolvedSkills = await resolveSkillSet(
+    args.executionEnvironment,
+    skillPolicy,
+    args.cfg.goblinHome,
+    { captureSnapshots: true },
+  );
   const systemPrompt = await buildGoblinSystemPrompt({
     home: args.cfg.goblinHome,
     executionEnvironment: args.executionEnvironment,

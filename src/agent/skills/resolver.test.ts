@@ -297,7 +297,7 @@ describe("SkillCatalogResolver", () => {
       }
 
       await expect(
-        resolveSkillSet(personalEnvironment(), DEFAULT_SKILL_POLICY, tmpDir),
+        resolveSkillSet(personalEnvironment(), DEFAULT_SKILL_POLICY, tmpDir, { captureSnapshots: true }),
       ).rejects.toThrow(
         `skill snapshot exceeds ${MAX_SKILL_SNAPSHOT_ENTRIES} entries: ${skillDir}`,
       );
@@ -314,7 +314,7 @@ describe("SkillCatalogResolver", () => {
       }
 
       await expect(
-        resolveSkillSet(personalEnvironment(), DEFAULT_SKILL_POLICY, tmpDir),
+        resolveSkillSet(personalEnvironment(), DEFAULT_SKILL_POLICY, tmpDir, { captureSnapshots: true }),
       ).rejects.toThrow(
         `skill snapshots exceed ${MAX_TOTAL_SKILL_SNAPSHOT_BYTES} bytes`,
       );

@@ -739,7 +739,7 @@ ${formatted}`;
         // Do not make a scheduler tick wait behind an unrelated active turn.
         // The admission promise settles when this queue entry reaches the
         // front, or false when shutdown fences it before then.
-        void admission.started.then((started) => {
+        this.trackJob(admission.started.then((started) => {
           if (!started) {
             const restored = this.store.restoreClaim(schedule.id, schedule, claimed);
             log.info("scheduler restored shutdown-fenced occurrence", {
@@ -757,7 +757,7 @@ ${formatted}`;
             message: msg,
           });
           log.error("scheduler admission status failed", { id: schedule.id, error: msg });
-        });
+        }));
       }
       this.store.recordRun(schedule.id, { at: nowIso, outcome: "ok" });
       return;

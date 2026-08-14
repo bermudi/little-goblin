@@ -346,7 +346,7 @@ export class AgentRunner {
       this.goblinSystemPrompt = goblinSystemPrompt;
 
       const resolvedSkills = this.preparedPlan?.resolvedSkills ?? this.resolvedSkills ?? await this.awaitCurrent(() =>
-        resolveSkillSet(this.executionEnvironment, this.skillPolicy, home),
+        resolveSkillSet(this.executionEnvironment, this.skillPolicy, home, { captureSnapshots: false }),
       );
       this.resolvedSkills = resolvedSkills;
       if (resolvedSkills.diagnostics.length > 0) {

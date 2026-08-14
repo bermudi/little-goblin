@@ -20,6 +20,12 @@ import type { ConversationState } from "../sessions/mod.ts";
 import type { SchedulerClock, SchedulerConversationLifecycle, SchedulerDispatcher } from "./loop.ts";
 import { dmSurface, surfaceId, type Surface } from "../surface.ts";
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
 /** Fake dispatcher that records every enqueueScheduledTurn call. */
 function makeFakeDispatcher(admission: { open: boolean } = { open: true }): SchedulerDispatcher & {
   calls: { conversation: ConversationState; surface: Surface; content: string }[];
@@ -286,6 +292,59 @@ describe("SchedulerLoop", () => {
       await Promise.all([loop.tick(), loop.tick()]);
 
       expect(dispatcher.calls).toHaveLength(1);
+    });
+
+    it("waits for and restores an occurrence whose queued turn is fenced", async () => {
+      await createSession(dmSurface(100));
+      const schedule = store.create({
+        surface: dmSurface(100),
+        kind: "once",
+        prompt: "restore me",
+        nextRunAt: new Date(NOW_MS - 1_000).toISOString(),
+      });
+      const started = deferred<boolean>();
+      dispatcher = {
+        ...dispatcher,
+        enqueueScheduledTurn: () => ({ accepted: true, started: started.promise }),
+      };
+      const loop = makeLoop();
+
+      await loop.tick();
+      expect(store.getForSurface(dmSurface(100), schedule.id)!.state).toBe("completed");
+
+      const drain = loop.stopAndDrain();
+      started.resolve(false);
+      await drain;
+
+      const restored = store.getForSurface(dmSurface(100), schedule.id)!;
+      expect(restored.state).toBe("enabled");
+      expect(restored.enabled).toBe(true);
+      expect(restored.nextRunAt).toBe(schedule.nextRunAt);
+    });
+
+    it("reports a failed occurrence restoration through scheduler drain", async () => {
+      await createSession(dmSurface(100));
+      const schedule = store.create({
+        surface: dmSurface(100),
+        kind: "once",
+        prompt: "fail restore",
+        nextRunAt: new Date(NOW_MS - 1_000).toISOString(),
+      });
+      const started = deferred<boolean>();
+      dispatcher = {
+        ...dispatcher,
+        enqueueScheduledTurn: () => ({ accepted: true, started: started.promise }),
+      };
+      store.restoreClaim = () => {
+        throw new Error("restore failed");
+      };
+      const loop = makeLoop();
+
+      await loop.tick();
+      const drain = loop.stopAndDrain();
+      started.resolve(false);
+      await expect(drain).rejects.toThrow("restore failed");
+      expect(store.getForSurface(dmSurface(100), schedule.id)!.state).toBe("completed");
     });
   });
 

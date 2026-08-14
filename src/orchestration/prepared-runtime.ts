@@ -65,10 +65,11 @@ export class PreparedRuntimeAssembler {
       conversation.executionEnvironment,
       skillPolicy,
       this.options.cfg.goblinHome,
+      { captureSnapshots: true },
     );
     await this.checkpoint(conversation, surface, creation, snapshot, "after skill resolution");
 
-    if (this.options.runtimeHost.hasRunner(conversation.id)) {
+    if (this.options.runtimeHost.hasRuntime(conversation.id)) {
       await this.options.runtimeHost.disposeRuntime(conversation.id, { preserveInFlight: creation.promise });
     }
     await this.options.runtimeHost.awaitSettled(conversation.id);

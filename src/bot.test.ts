@@ -521,7 +521,13 @@ describe("buildBot integration", () => {
       steering.resolve();
       prompt.resolve();
     });
-    await built.runtimeHost.disposeAll();
+    // Match the deployment shutdown order: admission reaches the synchronous
+    // runtime hand-off before disposal fences the runner.
+    const runtimeDrain = (async (): Promise<void> => {
+      await built.runtimeAdmission();
+      await built.runtimeHost.disposeAll();
+    })();
+    await runtimeDrain;
     await telegramDrain;
     await handled;
   });

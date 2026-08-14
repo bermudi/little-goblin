@@ -246,6 +246,26 @@ describe("ConversationRuntimeHost shutdown", () => {
     expect(attempts).toBe(2);
   });
 
+  it("blocks replacement registration until pending invalidation is retried", async () => {
+    let attempts = 0;
+    const delegatedWorkHost = {
+      invalidateRuntime: async (): Promise<void> => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("temporary delegated failure");
+      },
+    } as unknown as DelegatedWorkHost;
+    const host = new ConversationRuntimeHost({ delegatedWorkHost });
+    registerRunner(host, "conversation-a", fakeRunner());
+
+    await expect(host.disposeRuntime("conversation-a")).rejects.toThrow("temporary delegated failure");
+    expect(host.hasRuntime("conversation-a")).toBe(true);
+
+    await host.awaitSettled("conversation-a");
+    expect(attempts).toBe(2);
+    expect(host.hasRuntime("conversation-a")).toBe(false);
+    expect(() => registerRunner(host, "conversation-a", fakeRunner())).not.toThrow();
+  });
+
   it("applies a later stronger fence before deduplicating cleanup", async () => {
     const disposed = deferred<void>();
     const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });

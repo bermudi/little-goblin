@@ -186,6 +186,9 @@ export interface BuiltBot {
   /** After `closeAdmission`, wait until buffered text has reached runtime
    * admission, without waiting for the complete prompt or steering handler. */
   bufferedTextAdmission: () => Promise<void>;
+  /** Wait until every admitted update has handed work to the runtime, or has
+   * been proven not to need runtime work. */
+  runtimeAdmission: () => Promise<void>;
   lifecycle: ConversationLifecycle;
   runtimeHost: ConversationRuntimeHost;
   subagentRunner: SubagentRunner;
@@ -261,6 +264,35 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // for middleware/handlers that are still running, so we drain explicitly
   // before tearing down the runtime dependencies those handlers use.
   const inFlightUpdates = new Set<Promise<unknown>>();
+  const inFlightRuntimeAdmissions = new Set<Promise<void>>();
+  interface AdmissionState {
+    released: boolean;
+    handedToCoalescer: boolean;
+    release: () => void;
+  }
+  const admissionStates = new WeakMap<object, AdmissionState>();
+  function beginRuntimeAdmission(): AdmissionState {
+    let resolve!: () => void;
+    const promise = new Promise<void>((res) => { resolve = res; });
+    const state: AdmissionState = {
+      released: false,
+      handedToCoalescer: false,
+      release: () => {},
+    };
+    state.release = (): void => {
+      if (state.released) return;
+      state.released = true;
+      resolve();
+      inFlightRuntimeAdmissions.delete(promise);
+    };
+    inFlightRuntimeAdmissions.add(promise);
+    return state;
+  }
+  async function runtimeAdmission(): Promise<void> {
+    while (inFlightRuntimeAdmissions.size > 0) {
+      await Promise.allSettled([...inFlightRuntimeAdmissions]);
+    }
+  }
   let draining = false;
   function trackAdmitted(downstream: Promise<unknown>): Promise<unknown> {
     inFlightUpdates.add(downstream);
@@ -294,21 +326,47 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
       log.info("Telegram update dropped after admission closed");
       return Promise.resolve();
     }
-    return trackAdmitted(next());
+    const state = beginRuntimeAdmission();
+    state.handedToCoalescer = false;
+    admissionStates.set(_ctx, state);
+    let downstream: Promise<void>;
+    try {
+      downstream = next();
+    } catch (err) {
+      state.release();
+      admissionStates.delete(_ctx);
+      throw err;
+    }
+    void downstream.then(() => {
+      if (!state.handedToCoalescer) state.release();
+      admissionStates.delete(_ctx);
+    }, () => {
+      if (!state.handedToCoalescer) state.release();
+      admissionStates.delete(_ctx);
+    });
+    return trackAdmitted(downstream);
   });
   registerCommands(bot, intake.lifecycle);
 
   bot.on("message:text", async (ctx: Context) => {
+    const admission = admissionStates.get(ctx);
     const message = intakeMessageFromCtx(ctx, intake.lifecycle, cfg);
     // No valid chat → drop, same as the handler did before coalescing.
-    if (!message.surface) return;
+    if (!message.surface) {
+      admission?.release();
+      return;
+    }
     // Telegram always populates `from` on user-originated text messages and
     // `message_id` on Message objects, and the allowlist middleware has already
     // gated this update. Guard defensively anyway so a future invariant shift
     // fails here rather than producing a bogus key.
     const fromId = ctx.from?.id;
     const messageId = ctx.msg?.message_id;
-    if (fromId === undefined || messageId === undefined) return;
+    if (fromId === undefined || messageId === undefined) {
+      admission?.release();
+      return;
+    }
+    if (admission) admission.handedToCoalescer = true;
     await coalescer.submit({
       message,
       text: ctx.msg?.text ?? "",
@@ -325,59 +383,77 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
       // No command in this codebase accepts a >4096-char argument, so this is
       // accepted as a known limitation rather than handled by coalescing.
       isCommand: ctx.msg?.entities?.[0]?.type === "bot_command",
+      onRuntimeAdmission: admission?.release,
     });
   });
 
   bot.on("message:photo", async (ctx: Context) => {
+    const admission = admissionStates.get(ctx);
     const fileIds = ctx.msg?.photo?.map((photo) => photo.file_id) ?? [];
-    await intake.handlePhoto(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, fileIds, ctx.msg?.caption);
+    await intake.handlePhoto(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, fileIds, ctx.msg?.caption, admission?.release);
   });
 
   bot.on("message:document", async (ctx: Context) => {
+    const admission = admissionStates.get(ctx);
     const doc = ctx.msg?.document;
-    if (!doc?.file_id) return;
+    if (!doc?.file_id) {
+      admission?.release();
+      return;
+    }
     await intake.handleDocument(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
       fileId: doc.file_id,
       fileName: doc.file_name,
       mimeType: doc.mime_type,
       caption: ctx.msg?.caption,
-    });
+    }, admission?.release);
   });
 
   bot.on("message:voice", async (ctx: Context) => {
+    const admission = admissionStates.get(ctx);
     const voice = ctx.msg?.voice;
-    if (!voice?.file_id) return;
+    if (!voice?.file_id) {
+      admission?.release();
+      return;
+    }
     await intake.handleVoice(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
       fileId: voice.file_id,
       mimeType: voice.mime_type,
-    });
+    }, admission?.release);
   });
 
   bot.on("message:audio", async (ctx: Context) => {
+    const admission = admissionStates.get(ctx);
     const audio = ctx.msg?.audio;
-    if (!audio?.file_id) return;
+    if (!audio?.file_id) {
+      admission?.release();
+      return;
+    }
     await intake.handleAudio(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
       fileId: audio.file_id,
       fileName: audio.file_name,
       performer: audio.performer,
       title: audio.title,
       caption: ctx.msg?.caption,
-    });
+    }, admission?.release);
   });
 
   bot.on("message:forum_topic_created", async (ctx: Context) => {
+    const admission = admissionStates.get(ctx);
     await intake.handleTopicDescription(
       ctx.chat?.id,
       ctx.msg?.message_thread_id,
       ctx.msg?.forum_topic_created?.name,
+      admission?.release,
     );
   });
 
   bot.on("message:forum_topic_edited", async (ctx: Context) => {
+    const admission = admissionStates.get(ctx);
     await intake.handleTopicDescription(
       ctx.chat?.id,
       ctx.msg?.message_thread_id,
       ctx.msg?.forum_topic_edited?.name,
+      admission?.release,
     );
   });
 
@@ -387,8 +463,12 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // from ctx.guestMessage) — no streaming. Media/caption-only summons are out
   // of scope: we drop them silently with a debug log. See telegram-guest-mode.
   bot.on("guest_message", async (ctx: Context) => {
+    const admission = admissionStates.get(ctx);
     const guestMessage = ctx.guestMessage;
-    if (!guestMessage) return;
+    if (!guestMessage) {
+      admission?.release();
+      return;
+    }
     const text = guestMessage.text;
     if (!text) {
       // Media (photo/document/voice) or caption-only — Non-Goal, drop quietly.
@@ -396,6 +476,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
         chatId: guestMessage.chat?.id,
         hasCaption: "caption" in guestMessage,
       });
+      admission?.release();
       return;
     }
     const cleanedText = prepareUserContent(ctx, text);
@@ -406,6 +487,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
         replyVia: (result) => ctx.answerGuestQuery(result),
       },
       cleanedText,
+      admission?.release,
     );
   });
 
@@ -441,6 +523,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     bot,
     closeAdmission,
     bufferedTextAdmission: () => coalescer.bufferedTextAdmission(),
+    runtimeAdmission,
     lifecycle: intake.lifecycle,
     runtimeHost: orchestration.runtimeHost,
     subagentRunner,

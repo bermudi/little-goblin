@@ -335,7 +335,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     isCurrent: () => boolean,
     run: (isCurrent: () => boolean) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
-    options: { isPrompt?: boolean } = {},
+    options: { isPrompt?: boolean; onStart?: () => void; onFenced?: () => void } = {},
   ): boolean {
     if (!this.admissionOpen) {
       log.info("runtime work rejected after admission closed", { conversationId });
@@ -347,8 +347,12 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       // still fence entries that have not reached the front of the chain. An
       // entry that has started is allowed to drain; this distinction is what
       // keeps shutdown from starting a command after its runtime was fenced.
-      if (!started && !this.admissionOpen) return;
+      if (!started && !this.admissionOpen) {
+        options.onFenced?.();
+        return;
+      }
       started = true;
+      options.onStart?.();
       if (!isCurrent()) return;
       try {
         await run(isCurrent);

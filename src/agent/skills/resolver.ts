@@ -285,7 +285,7 @@ async function captureSkillSnapshots(
 async function captureSkillSnapshot(filePath: string): Promise<CapturedSkillSnapshot> {
   const skillDirectory = dirname(filePath);
   const entryPath = relative(skillDirectory, filePath);
-  const files: { relativePath: string; base64: string }[] = [];
+  const files: { relativePath: string; base64: string; executable: boolean }[] = [];
   // Count the exact JSON representation incrementally. This includes the
   // entry path, file paths, base64 payloads, and JSON separators, rather than
   // budgeting only file contents.
@@ -355,6 +355,7 @@ async function captureSkillSnapshot(filePath: string): Promise<CapturedSkillSnap
       files.push({
         relativePath,
         base64,
+        executable: (targetStats.mode & 0o111) !== 0,
       });
     }
   }

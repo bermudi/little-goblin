@@ -33,6 +33,7 @@ async function main(): Promise<void> {
     bot,
     closeAdmission,
     bufferedTextAdmission,
+    runtimeAdmission,
     lifecycle,
     subagentRunner,
     runtimeHost,
@@ -96,8 +97,12 @@ async function main(): Promise<void> {
       // steering via followUp), and runner disposal is what releases it.
       const runtimeDrain = (async (): Promise<void> => {
         await bufferedAdmission;
+        await runtimeAdmission();
         await runtimeHost.disposeAll();
       })();
+      // Observe rejection immediately: disposal can fail before the ordered
+      // shutdown steps reach the later aggregation below.
+      void runtimeDrain.catch(() => {});
 
       // Stop polling while the independent drains are in progress. The
       // scheduler drain is already in progress, but must not be awaited until

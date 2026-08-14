@@ -26,6 +26,12 @@ import type { SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { AttachmentSignal, AttachedWork, CurrentBindingGuard, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { SurfaceSettings };
 
+export interface ScheduledTurnAdmission {
+  readonly accepted: true;
+  /** Resolves false when shutdown fences the queued entry before it starts. */
+  readonly started: Promise<boolean>;
+}
+
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
 
@@ -630,16 +636,16 @@ export class TurnDispatcher {
    * (memory context capture must complete before registration). This keeps the
    * method fire-and-forget — the scheduler does not await the model turn.
    *
-   * Returns `true` when the runtime queue admitted the turn and `false` when
-   * runtime admission is closed (shutdown). The scheduler must not record a
-   * successful outcome or consume a one-shot occurrence for rejected work.
+   * Returns an admission handle when the runtime queue accepted the turn, or
+   * `false` when runtime admission is closed. The handle reports whether the
+   * queued entry reached execution before shutdown fenced it.
    */
   enqueueScheduledTurn(
     session: ConversationState,
     surface: Surface,
     content: PromptContent,
     onError?: (err: unknown) => void,
-  ): boolean {
+  ): boolean | ScheduledTurnAdmission {
     if (!this.runtimeHost.isAdmissionOpen()) {
       log.info("scheduled turn rejected: runtime admission closed", { sessionId: session.id });
       return false;
@@ -651,6 +657,8 @@ export class TurnDispatcher {
     // a new runner. If no runner exists at enqueue time, the callback creates
     // one via getOrCreateRunner (async capture).
     const existingRunner = this.runtimeHost.getRunner(session.id);
+    let resolveStarted!: (started: boolean) => void;
+    const started = new Promise<boolean>((resolve) => { resolveStarted = resolve; });
 
     const execute = async (): Promise<void> => {
       try {
@@ -689,11 +697,17 @@ export class TurnDispatcher {
       (err) => {
         onError?.(err);
       },
-      { isPrompt: true },
+      {
+        isPrompt: true,
+        onStart: () => resolveStarted(true),
+        onFenced: () => resolveStarted(false),
+      },
     );
     if (!admitted) {
       log.info("scheduled turn rejected at queue admission", { sessionId: session.id });
     }
-    return admitted;
+    return admitted
+      ? { accepted: true, started }
+      : false;
   }
 }

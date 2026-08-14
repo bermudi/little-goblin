@@ -468,10 +468,11 @@ export class ScheduleStore {
    * Atomically claim a due schedule for dispatch. For one-shot schedules the
    * record is marked completed and disabled before dispatch. For recurring
    * and heartbeat schedules the next run is advanced by the interval before
-   * dispatch. Returns the claimed record as it will look after dispatch
-   * starts (the prompt to run is recoverable from the pre-claim record via
+   * dispatch. Returns the claimed record as it will look after queue
+   * admission (the prompt to run is recoverable from the pre-claim record via
    * `getForSurface` if needed), or null if the schedule is no longer
-   * claimable (another tick claimed it, or it was paused/removed).
+   * claimable (another tick claimed it, or it was paused/removed). A
+   * shutdown-fenced queue entry can be undone with `restoreClaim`.
    *
    * `nextNow` is the timestamp used to advance recurring schedules, so tests
    * can inject a deterministic clock.
@@ -504,6 +505,30 @@ export class ScheduleStore {
     }
     this.write(store);
     return s;
+  }
+
+  /**
+   * Undo a claim whose queue entry was fenced before it started. The expected
+   * post-claim record prevents a later user mutation from being overwritten by
+   * shutdown cleanup.
+   */
+  restoreClaim(id: string, original: ScheduledTurn, claimed: ScheduledTurn): boolean {
+    const store = this.read();
+    const current = store.find((s) => s.id === id);
+    if (!current) return false;
+    const stillClaimed = claimed.kind === "once"
+      ? current.state === "completed" && !current.enabled
+      : current.state === claimed.state &&
+        current.enabled === claimed.enabled &&
+        current.nextRunAt === claimed.nextRunAt;
+    if (!stillClaimed) return false;
+
+    current.enabled = true;
+    current.state = "enabled";
+    current.nextRunAt = original.nextRunAt;
+    current.lastRun = original.lastRun;
+    this.write(store);
+    return true;
   }
 
   /**

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   SkillResolutionError,
@@ -43,6 +43,7 @@ export function materializeSkillSnapshot(
     }
     mkdirSync(resolve(target, ".."), { recursive: true });
     writeFileSync(target, Buffer.from(file.base64, "base64"), { flag: "wx" });
+    chmodSync(target, file.executable === true ? 0o755 : 0o644);
   }
 
   if (isAbsolute(snapshot.entryPath)) {

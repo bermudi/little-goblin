@@ -38,6 +38,8 @@ export interface CoalesceInput {
   /** True when the first Telegram entity is `bot_command`. Commands bypass and
    * flush the buffer; they never open one. */
   isCommand: boolean;
+  /** Runtime-admission milestone for the Telegram update that owns this text. */
+  onRuntimeAdmission?: () => void;
 }
 
 /** Callback the coalescer invokes to deliver a merged (or pass-through) message
@@ -73,6 +75,7 @@ interface BufferEntry {
    * delayed by the event loop. */
   lastReceivedAt: number;
   timer: ReturnType<typeof setTimeout>;
+  onRuntimeAdmission?: () => void;
 }
 
 export interface TextCoalescerOptions {
@@ -105,6 +108,7 @@ export class TextCoalescer {
     text: string,
     detached: boolean,
     buffered: boolean,
+    onRuntimeAdmission?: () => void,
   ): Promise<void> {
     let admit: () => void = () => {};
     const bufferedAdmission = buffered
@@ -114,6 +118,7 @@ export class TextCoalescer {
       : undefined;
     if (bufferedAdmission) this.activeBufferedAdmissions.add(bufferedAdmission);
     const markRuntimeAdmission = (): void => {
+      onRuntimeAdmission?.();
       admit();
       if (bufferedAdmission) this.activeBufferedAdmissions.delete(bufferedAdmission);
     };
@@ -149,6 +154,7 @@ export class TextCoalescer {
   submit(input: CoalesceInput): Promise<void> | undefined {
     if (this.closed) {
       log.info("telegram text dropped after admission closed", { surfaceId: input.key.surfaceId });
+      input.onRuntimeAdmission?.();
       return;
     }
     // Commands never buffer. If a buffer is open for the key, flush it first
@@ -156,7 +162,7 @@ export class TextCoalescer {
     // command immediately.
     if (input.isCommand) {
       this.flush(input.key);
-      return this.dispatchTracked(input.message, input.text, false, false);
+      return this.dispatchTracked(input.message, input.text, false, false, input.onRuntimeAdmission);
     }
 
     const entry = this.buffers.get(keyToString(input.key));
@@ -167,7 +173,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        return this.dispatchTracked(input.message, input.text, false, false);
+        return this.dispatchTracked(input.message, input.text, false, false, input.onRuntimeAdmission);
       }
       return;
     }
@@ -191,7 +197,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        return this.dispatchTracked(input.message, input.text, false, false);
+        return this.dispatchTracked(input.message, input.text, false, false, input.onRuntimeAdmission);
       }
       return;
     }
@@ -207,7 +213,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        return this.dispatchTracked(input.message, input.text, false, false);
+        return this.dispatchTracked(input.message, input.text, false, false, input.onRuntimeAdmission);
       }
       return;
     }
@@ -220,6 +226,11 @@ export class TextCoalescer {
     entry.fragmentCount += 1;
     entry.totalChars += input.text.length;
     entry.lastReceivedAt = Date.now();
+    const priorAdmission = entry.onRuntimeAdmission;
+    entry.onRuntimeAdmission = (): void => {
+      priorAdmission?.();
+      input.onRuntimeAdmission?.();
+    };
     entry.timer = setTimeout(() => this.flush(input.key), TEXT_SPLIT_WINDOW_MS);
     return;
   }
@@ -237,6 +248,7 @@ export class TextCoalescer {
       lastReceivedAt: Date.now(),
       timer: setTimeout(() => this.flush(input.key), TEXT_SPLIT_WINDOW_MS),
     };
+    entry.onRuntimeAdmission = input.onRuntimeAdmission;
     this.buffers.set(key, entry);
   }
 
@@ -258,7 +270,9 @@ export class TextCoalescer {
     const entries = [...this.buffers.values()];
     for (const entry of entries) clearTimeout(entry.timer);
     this.buffers.clear();
-    for (const entry of entries) void this.dispatchTracked(entry.message, entry.text, true, true);
+    for (const entry of entries) {
+      void this.dispatchTracked(entry.message, entry.text, true, true, entry.onRuntimeAdmission);
+    }
 
     while (this.activeDispatches.size > 0) {
       await Promise.allSettled([...this.activeDispatches]);
@@ -293,7 +307,7 @@ export class TextCoalescer {
     if (entry === undefined) return;
     clearTimeout(entry.timer);
     this.buffers.delete(k);
-    void this.dispatchTracked(entry.message, entry.text, true, true);
+    void this.dispatchTracked(entry.message, entry.text, true, true, entry.onRuntimeAdmission);
   }
 }
 

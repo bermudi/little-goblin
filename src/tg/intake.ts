@@ -324,24 +324,33 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     session: ConversationState,
     runner: AgentRunner,
     text: string,
+    onRuntimeAdmission?: () => void,
   ): Promise<void> {
     try {
       await runner.followUp(message.prepare(text));
+      onRuntimeAdmission?.();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("not streaming")) {
         scheduleFreshTurn(message, surface, session, runner, text, "runner prompt failed (steer race fallback)");
+        onRuntimeAdmission?.();
         return;
       }
+      onRuntimeAdmission?.();
       log.warn("steer failed", { error: msg, sessionId: session.id });
       throw err;
     }
   }
 
-  async function resolveActiveTurn(message: TelegramIntakeMessage, kind: string): Promise<ActiveTurn | null> {
+  async function resolveActiveTurn(
+    message: TelegramIntakeMessage,
+    kind: string,
+    onRuntimeAdmission?: () => void,
+  ): Promise<ActiveTurn | null> {
     const surface = message.surface;
     if (!surface) {
       log.debug(`dropping ${kind}: no surface`);
+      onRuntimeAdmission?.();
       return null;
     }
 
@@ -352,6 +361,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       conversation = await lifecycle.resolveOrStart(surface);
     } catch (err) {
       log.error(`failed to resolve ${kind}`, { error: String(err), surfaceId: surfaceId(surface) });
+      onRuntimeAdmission?.();
       return null;
     }
     const session = conversation;
@@ -361,8 +371,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       session,
       environment: conversation.executionEnvironment,
       schedule: async (run, failureLog, opts) => {
-        const runner = await dispatcher.getOrCreateRunner(session, surface);
+        let runner: AgentRunner;
+        try {
+          runner = await dispatcher.getOrCreateRunner(session, surface);
+        } catch (err) {
+          onRuntimeAdmission?.();
+          throw err;
+        }
         if (runner.isAbortTimedOut) {
+          onRuntimeAdmission?.();
           sendSystemReply(message, WEDGED_RUNNER_REPLY, "error").catch((err: unknown) => {
             log.error("failed to send wedged runner reply", {
               error: String(err),
@@ -387,6 +404,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             log.error(failureLog, { error: msg, sessionId: session.id });
           },
         );
+        // The queue now owns the update. Downloading media and running the
+        // model may continue until runtime disposal releases it.
+        onRuntimeAdmission?.();
       },
     };
   }
@@ -412,10 +432,14 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     rawText: string | undefined,
     onRuntimeAdmission?: () => void,
   ): Promise<void> {
-    if (!admit("text")) return;
+    if (!admit("text")) {
+      onRuntimeAdmission?.();
+      return;
+    }
     const surface = message.surface;
     if (!surface) {
       log.debug("dropping message: no surface");
+      onRuntimeAdmission?.();
       return;
     }
 
@@ -429,6 +453,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       if (surface.kind !== "guest") {
         replyNoActiveSession(message, surface, "text");
       }
+      onRuntimeAdmission?.();
       return;
     }
 
@@ -472,11 +497,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             sessionId: session.id,
           });
         }
+        onRuntimeAdmission?.();
         return;
       }
 
       try {
-        const result = await handleCommand({
+        const commandResult = handleCommand({
           command,
           deps: dispatchDeps,
           rawText: rawText ?? "",
@@ -486,14 +512,21 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           existingRunner,
           bot,
         });
+        // Interrupt commands deliberately operate on an active runtime. Let
+        // shutdown begin after the interrupt has been invoked; waiting for
+        // its abort promise would prevent runtime disposal from unblocking it.
+        if (timing === "interrupt") onRuntimeAdmission?.();
+        const result = await commandResult;
         if (result.kind !== "fallthrough") {
           await applySideEffects(result.sideEffects, message);
+          onRuntimeAdmission?.();
           if (result.kind === "handled") return;
           await sendSystemReply(message, result.reply, result.tag ?? "ok");
           return;
         }
       } catch (err) {
         log.error("command dispatch failed", { error: String(err), command, sessionId: session?.id });
+        onRuntimeAdmission?.();
         await sendSystemReply(message, "Something went wrong. Please try again.", "error");
         if (session) recordAssistantReply(session.id, surface, existingRunner, "Something went wrong. Please try again.");
         return;
@@ -517,31 +550,43 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     let runner: AgentRunner;
     try {
       runner = await dispatcher.getOrCreateRunner(session, surface);
-    } finally {
-      // The deployment shutdown fence must wait until a coalesced text turn
-      // has reached the runtime admission call. It must not wait for the
-      // complete turn: steering and model work are released by runtime
-      // disposal instead.
+    } catch (error) {
       onRuntimeAdmission?.();
+      throw error;
     }
-    if (!rawText) return;
+    if (!rawText) {
+      onRuntimeAdmission?.();
+      return;
+    }
 
     if (runner.isAbortTimedOut) {
+      onRuntimeAdmission?.();
       await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
       return;
     }
 
     if (runner.isStreaming) {
-      await steerOrFallbackToFreshTurn(message, surface, session, runner, rawText);
+      await steerOrFallbackToFreshTurn(message, surface, session, runner, rawText, onRuntimeAdmission);
       return;
     }
 
     scheduleFreshTurn(message, surface, session, runner, rawText, "runner prompt failed");
+    // The prompt is now queued; model work is released by runtime disposal.
+    onRuntimeAdmission?.();
   }
 
-  async function handlePhoto(message: TelegramIntakeMessage, api: Bot["api"], fileIds: string[], caption?: string): Promise<void> {
-    if (!admit("photo")) return;
-    const turn = await resolveActiveTurn(message, "photo");
+  async function handlePhoto(
+    message: TelegramIntakeMessage,
+    api: Bot["api"],
+    fileIds: string[],
+    caption?: string,
+    onRuntimeAdmission?: () => void,
+  ): Promise<void> {
+    if (!admit("photo")) {
+      onRuntimeAdmission?.();
+      return;
+    }
+    const turn = await resolveActiveTurn(message, "photo", onRuntimeAdmission);
     if (!turn) return;
 
     await turn.schedule(
@@ -569,9 +614,17 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     );
   }
 
-  async function handleDocument(message: TelegramIntakeMessage, api: Bot["api"], doc: TelegramDocumentInput): Promise<void> {
-    if (!admit("document")) return;
-    const turn = await resolveActiveTurn(message, "document");
+  async function handleDocument(
+    message: TelegramIntakeMessage,
+    api: Bot["api"],
+    doc: TelegramDocumentInput,
+    onRuntimeAdmission?: () => void,
+  ): Promise<void> {
+    if (!admit("document")) {
+      onRuntimeAdmission?.();
+      return;
+    }
+    const turn = await resolveActiveTurn(message, "document", onRuntimeAdmission);
     if (!turn) return;
 
     await turn.schedule(
@@ -627,9 +680,17 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     );
   }
 
-  async function handleVoice(message: TelegramIntakeMessage, api: Bot["api"], voice: TelegramVoiceInput): Promise<void> {
-    if (!admit("voice")) return;
-    const turn = await resolveActiveTurn(message, "voice");
+  async function handleVoice(
+    message: TelegramIntakeMessage,
+    api: Bot["api"],
+    voice: TelegramVoiceInput,
+    onRuntimeAdmission?: () => void,
+  ): Promise<void> {
+    if (!admit("voice")) {
+      onRuntimeAdmission?.();
+      return;
+    }
+    const turn = await resolveActiveTurn(message, "voice", onRuntimeAdmission);
     if (!turn) return;
 
     await turn.schedule(
@@ -727,9 +788,17 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     );
   }
 
-  async function handleAudio(message: TelegramIntakeMessage, api: Bot["api"], audio: TelegramAudioInput): Promise<void> {
-    if (!admit("audio")) return;
-    const turn = await resolveActiveTurn(message, "audio");
+  async function handleAudio(
+    message: TelegramIntakeMessage,
+    api: Bot["api"],
+    audio: TelegramAudioInput,
+    onRuntimeAdmission?: () => void,
+  ): Promise<void> {
+    if (!admit("audio")) {
+      onRuntimeAdmission?.();
+      return;
+    }
+    const turn = await resolveActiveTurn(message, "audio", onRuntimeAdmission);
     if (!turn) return;
 
     await turn.schedule(
@@ -790,9 +859,20 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     );
   }
 
-  async function handleTopicDescription(chatId: number | undefined, topicId: number | undefined, name: string | undefined): Promise<void> {
-    if (!admit("topic-description")) return;
-    if (chatId === undefined || topicId === undefined || name === undefined) return;
+  async function handleTopicDescription(
+    chatId: number | undefined,
+    topicId: number | undefined,
+    name: string | undefined,
+    onRuntimeAdmission?: () => void,
+  ): Promise<void> {
+    if (!admit("topic-description")) {
+      onRuntimeAdmission?.();
+      return;
+    }
+    if (chatId === undefined || topicId === undefined || name === undefined) {
+      onRuntimeAdmission?.();
+      return;
+    }
     try {
       await memoryStore.setDescription(
         { topic: { chatId, topicId } },
@@ -804,6 +884,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         topicId,
         error: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      onRuntimeAdmission?.();
     }
   }
 
@@ -821,8 +903,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
    * If `replyVia` itself rejects (expired id), the rejection is swallowed: the
    * summoner sees nothing, but the bot does not crash.
    */
-  async function handleGuestMessage(message: GuestMessage, text: string): Promise<void> {
-    if (!admit("guest")) return;
+  async function handleGuestMessage(
+    message: GuestMessage,
+    text: string,
+    onRuntimeAdmission?: () => void,
+  ): Promise<void> {
+    if (!admit("guest")) {
+      onRuntimeAdmission?.();
+      return;
+    }
     const surface = message.surface;
     let conversation: ConversationState;
     try {
@@ -830,6 +919,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       conversation = await lifecycle.resolveOrStart(surface);
     } catch (err) {
       log.error("guest resolve failed", { error: String(err), surfaceId: surfaceId(surface) });
+      onRuntimeAdmission?.();
       try {
         await message.replyVia(errorArticle());
       } catch (replyErr) {
@@ -838,7 +928,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       return;
     }
     const session = conversation;
-    const runner = await dispatcher.getOrCreateRunner(session, surface);
+    let runner: AgentRunner;
+    try {
+      runner = await dispatcher.getOrCreateRunner(session, surface);
+    } finally {
+      onRuntimeAdmission?.();
+    }
 
     // Busy path: never queue. guest_query_id would expire before a queued turn
     // runs, so reply immediately with a busy fallback to consume the id.
@@ -853,6 +948,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     }
 
     const sink = new GuestReplySink();
+    // Guest turns run directly rather than through the Telegram streaming
+    // queue. The prompt call is the runtime admission boundary.
+    onRuntimeAdmission?.();
     try {
       await runner.prompt(text, sink);
     } catch (err) {

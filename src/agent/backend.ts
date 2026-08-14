@@ -73,7 +73,7 @@ export interface AgentBackend {
   followUp(content: string | (TextContent | ImageContent)[]): Promise<void>;
   abort(): Promise<void>;
   compact(customInstructions?: string): Promise<CompactionResult>;
-  dispose(): void;
+  dispose(): void | Promise<void>;
   isStreaming: boolean;
   isInitialized: boolean;
   getActiveToolNames(): string[] | null;
@@ -101,6 +101,13 @@ function isEnoent(error: unknown): boolean {
 
 function normalizeSkillPath(filePath: string): string {
   return resolve(filePath);
+}
+
+class AgentBackendInitializationCancelled extends Error {
+  constructor() {
+    super("AgentBackend initialization was cancelled by disposal");
+    this.name = "AgentBackendInitializationCancelled";
+  }
 }
 
 async function validateSelectedSkillFiles(skillPaths: readonly string[]): Promise<void> {
@@ -143,6 +150,9 @@ export class PiAgentBackend implements AgentBackend {
   private unsubscribe: (() => void) | null = null;
   private resourceLoader: DefaultResourceLoader | null = null;
   private skillSnapshotDir: string | null = null;
+  private initialization: Promise<void> | undefined;
+  private disposed = false;
+  private disposal: Promise<void> | undefined;
 
   constructor(opts: PiAgentBackendOptions) {
     this.cfg = opts.cfg;
@@ -162,6 +172,22 @@ export class PiAgentBackend implements AgentBackend {
 
   async init(args: AgentBackendInitArgs): Promise<void> {
     if (this.session) return;
+    if (this.disposed) throw new Error("AgentBackend is disposed");
+    if (this.initialization) return this.initialization;
+
+    const initialization = this.initialize(args);
+    this.initialization = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.initialization === initialization) this.initialization = undefined;
+    }
+  }
+
+  private async initialize(args: AgentBackendInitArgs): Promise<void> {
+    let snapshotRoot: string | null = null;
+    let session: AgentSession | null = null;
+    let unsubscribe: (() => void) | null = null;
 
     const home = this.cfg.goblinHome;
     const { resolvedModel, thinkingLevel, customTools, guardBuiltInTool, systemPrompt, cwd, resolvedSkills } = args;
@@ -178,8 +204,7 @@ export class PiAgentBackend implements AgentBackend {
       : this.deps.SessionManager.create(cwd, piSessionDir);
 
     const snapshots = resolvedSkills.skills.some((skill) => skill.snapshot !== undefined);
-    const snapshotRoot = snapshots ? mkdtempSync(join(tmpdir(), "little-goblin-skills-")) : null;
-    this.skillSnapshotDir = snapshotRoot;
+    snapshotRoot = snapshots ? mkdtempSync(join(tmpdir(), "little-goblin-skills-")) : null;
     try {
       const selectedSkillPaths = resolvedSkills.skills.map((skill, index) =>
         skill.snapshot === undefined || snapshotRoot === null
@@ -224,7 +249,7 @@ export class PiAgentBackend implements AgentBackend {
         guardBuiltInTool(defineTool(createWriteToolDefinition(cwd))),
       ];
 
-      const { session } = await this.deps.createAgentSession({
+      const created = await this.deps.createAgentSession({
         cwd,
         agentDir,
         modelRuntime,
@@ -237,24 +262,60 @@ export class PiAgentBackend implements AgentBackend {
         resourceLoader,
       });
 
-      this.session = session;
-      this.resourceLoader = resourceLoader;
-      this.unsubscribe = session.subscribe((event) => {
+      session = created.session;
+      unsubscribe = session.subscribe((event) => {
         this.onEvent(event);
       });
+
+      // Disposal is synchronous as an authority fence. Do not publish a
+      // session or its temporary skill tree after that fence has closed.
+      if (this.disposed) {
+        throw new AgentBackendInitializationCancelled();
+      }
+      this.session = session;
+      this.resourceLoader = resourceLoader;
+      this.unsubscribe = unsubscribe;
+      this.skillSnapshotDir = snapshotRoot;
+      session = null;
+      unsubscribe = null;
+      snapshotRoot = null;
     } catch (error) {
-      const snapshotDir = this.skillSnapshotDir;
-      this.skillSnapshotDir = null;
-      if (snapshotDir !== null) {
+      const failures: unknown[] = [error];
+      if (unsubscribe !== null) {
         try {
-          rmSync(snapshotDir, { recursive: true, force: true });
+          unsubscribe();
         } catch (cleanupError) {
+          failures.push(cleanupError);
+          log.error("AgentBackend initialization unsubscribe cleanup failed", {
+            sessionId: this.sessionId,
+            err: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        }
+      }
+      if (session !== null) {
+        try {
+          session.dispose();
+        } catch (cleanupError) {
+          failures.push(cleanupError);
+          log.error("AgentBackend initialization session cleanup failed", {
+            sessionId: this.sessionId,
+            err: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        }
+      }
+      if (snapshotRoot !== null) {
+        try {
+          rmSync(snapshotRoot, { recursive: true, force: true });
+        } catch (cleanupError) {
+          failures.push(cleanupError);
           log.error("AgentBackend initialization skill snapshot cleanup failed", {
             sessionId: this.sessionId,
             err: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
           });
-          throw new AggregateError([error, cleanupError], "AgentBackend initialization failed");
         }
+      }
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "AgentBackend initialization failed");
       }
       throw error;
     }
@@ -293,41 +354,67 @@ export class PiAgentBackend implements AgentBackend {
     return this.session.compact(customInstructions);
   }
 
-  dispose(): void {
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal;
+    this.disposed = true;
+    const initialization = this.initialization;
+    this.disposal = this.disposeOnce(initialization);
+    return this.disposal;
+  }
+
+  private async disposeOnce(initialization: Promise<void> | undefined): Promise<void> {
     const failures: unknown[] = [];
-    try {
-      this.unsubscribe?.();
-    } catch (err) {
-      failures.push(err);
-      log.error("AgentBackend unsubscribe failed", {
-        sessionId: this.sessionId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      this.unsubscribe = null;
+    if (initialization !== undefined) {
+      try {
+        await initialization;
+      } catch (err) {
+        if (!(err instanceof AgentBackendInitializationCancelled)) failures.push(err);
+      }
     }
-    try {
-      this.session?.dispose();
-    } catch (err) {
-      failures.push(err);
-      log.error("AgentBackend session.dispose failed", {
-        sessionId: this.sessionId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      this.session = null;
+
+    const unsubscribe = this.unsubscribe;
+    this.unsubscribe = null;
+    if (unsubscribe !== null) {
+      try {
+        unsubscribe();
+      } catch (err) {
+        failures.push(err);
+        log.error("AgentBackend unsubscribe failed", {
+          sessionId: this.sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
-    try {
-      if (this.skillSnapshotDir !== null) rmSync(this.skillSnapshotDir, { recursive: true, force: true });
-    } catch (err) {
-      failures.push(err);
-      log.error("AgentBackend skill snapshot cleanup failed", {
-        sessionId: this.sessionId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      this.skillSnapshotDir = null;
+
+    const session = this.session;
+    this.session = null;
+    this.resourceLoader = null;
+    if (session !== null) {
+      try {
+        session.dispose();
+      } catch (err) {
+        failures.push(err);
+        log.error("AgentBackend session.dispose failed", {
+          sessionId: this.sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
+
+    const snapshotDir = this.skillSnapshotDir;
+    this.skillSnapshotDir = null;
+    if (snapshotDir !== null) {
+      try {
+        rmSync(snapshotDir, { recursive: true, force: true });
+      } catch (err) {
+        failures.push(err);
+        log.error("AgentBackend skill snapshot cleanup failed", {
+          sessionId: this.sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "AgentBackend disposal failed");
   }

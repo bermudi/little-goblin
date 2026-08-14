@@ -13,6 +13,7 @@ import type { TranscriptLine } from "../sessions/transcript.ts";
 import type { ScheduledTurn } from "./types.ts";
 import type { ScheduleStore } from "./store.ts";
 import type { InternalSessionId, InternalSessionState } from "../sessions/internal-session.ts";
+import type { ScheduledTurnAdmission } from "../orchestration/dispatcher.ts";
 
 /**
  * Default scheduler tick interval: 60 seconds. Bounds worst-case delivery
@@ -149,7 +150,7 @@ export interface SchedulerDispatcher {
     surface: Surface,
     content: string,
     onError?: (err: unknown) => void,
-  ): boolean;
+  ): boolean | ScheduledTurnAdmission;
   enqueueInternalTurn?(
     internalSession: InternalSessionState,
     content: string,
@@ -716,7 +717,7 @@ ${formatted}`;
     try {
       const isHeartbeat = schedule.kind === "heartbeat";
       const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.surface) : schedule.prompt ?? "";
-      const admitted = this.dispatcher.enqueueScheduledTurn(conversation, schedule.surface, prompt, (err) => {
+      const admission = this.dispatcher.enqueueScheduledTurn(conversation, schedule.surface, prompt, (err) => {
         const msg = err instanceof Error ? err.message : String(err);
         this.store.recordRun(schedule.id, {
           at: new Date(this.clock.now()).toISOString(),
@@ -724,6 +725,7 @@ ${formatted}`;
           message: msg,
         });
       });
+      const admitted = typeof admission === "boolean" ? admission : admission.accepted;
       if (!admitted) {
         // Runtime admission closed between the gate above and enqueue. There
         // is no await in that span, so this is unreachable in practice; defend
@@ -733,6 +735,32 @@ ${formatted}`;
         });
         return;
       }
+      if (typeof admission !== "boolean") {
+        // Do not make a scheduler tick wait behind an unrelated active turn.
+        // The admission promise settles when this queue entry reaches the
+        // front, or false when shutdown fences it before then.
+        void admission.started.then((started) => {
+          if (!started) {
+            const restored = this.store.restoreClaim(schedule.id, schedule, claimed);
+            log.info("scheduler restored shutdown-fenced occurrence", {
+              id: schedule.id,
+              surfaceId: surfaceId(schedule.surface),
+              restored,
+            });
+            return;
+          }
+        }, (err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.store.recordRun(schedule.id, {
+            at: new Date(this.clock.now()).toISOString(),
+            outcome: "error",
+            message: msg,
+          });
+          log.error("scheduler admission status failed", { id: schedule.id, error: msg });
+        });
+      }
+      this.store.recordRun(schedule.id, { at: nowIso, outcome: "ok" });
+      return;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.store.recordRun(schedule.id, { at: nowIso, outcome: "error", message: msg });
@@ -742,7 +770,6 @@ ${formatted}`;
       });
       throw err;
     }
-    this.store.recordRun(schedule.id, { at: nowIso, outcome: "ok" });
   }
 
 }

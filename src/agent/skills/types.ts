@@ -191,6 +191,8 @@ export interface ResolvedSkillSnapshot {
   readonly files: readonly {
     readonly relativePath: string;
     readonly base64: string;
+    /** Whether the source resource had any executable permission bit set. */
+    readonly executable?: boolean;
   }[];
 }
 

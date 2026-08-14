@@ -654,7 +654,7 @@ export class AgentRunner {
       });
     }
     try {
-      this.backend.dispose();
+      await this.backend.dispose();
     } catch (err) {
       failures.push(err);
       log.error("AgentRunner dispose failed", {

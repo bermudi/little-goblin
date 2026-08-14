@@ -137,6 +137,39 @@ describe("ConversationRuntimeHost shutdown", () => {
     expect(host.hasRunner("conversation-a")).toBe(false);
   });
 
+  it("does not start an admitted queued command after shutdown begins", async () => {
+    const turnFinished = deferred<void>();
+    const order: string[] = [];
+    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
+    const runner = fakeRunner(async () => {
+      turnFinished.resolve(undefined);
+    });
+    registerRunner(host, "conversation-a", runner);
+
+    expect(host.schedule(
+      "conversation-a",
+      () => true,
+      async () => {
+        order.push("prompt");
+        await turnFinished.promise;
+      },
+      async () => {},
+    )).toBe(true);
+    expect(host.schedule(
+      "conversation-a",
+      () => true,
+      async () => {
+        order.push("command");
+      },
+      async () => {},
+      { isPrompt: false },
+    )).toBe(true);
+
+    await host.disposeAll();
+
+    expect(order).toEqual(["prompt"]);
+  });
+
   it("rejects runtime registration after admission closes", () => {
     const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
     host.closeAdmission();

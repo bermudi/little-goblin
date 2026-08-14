@@ -407,7 +407,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     await runner.prompt(message.prepare(content), buffer);
   }
 
-  async function handleText(message: TelegramIntakeMessage, rawText: string | undefined): Promise<void> {
+  async function handleText(
+    message: TelegramIntakeMessage,
+    rawText: string | undefined,
+    onRuntimeAdmission?: () => void,
+  ): Promise<void> {
     if (!admit("text")) return;
     const surface = message.surface;
     if (!surface) {
@@ -498,10 +502,28 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     // Ordinary authorized content lazily creates a conversation on any supported
     // surface, including DMs and guest text.
-    const conversation = await lifecycle.resolveOrStart(surface);
+    let conversation: ConversationState;
+    try {
+      conversation = await lifecycle.resolveOrStart(surface);
+    } catch (error) {
+      // No runtime admission is possible after lifecycle resolution fails, but
+      // the shutdown barrier must still be released rather than hanging
+      // forever on a failed dispatch.
+      onRuntimeAdmission?.();
+      throw error;
+    }
     const session = conversation;
 
-    const runner = await dispatcher.getOrCreateRunner(session, surface);
+    let runner: AgentRunner;
+    try {
+      runner = await dispatcher.getOrCreateRunner(session, surface);
+    } finally {
+      // The deployment shutdown fence must wait until a coalesced text turn
+      // has reached the runtime admission call. It must not wait for the
+      // complete turn: steering and model work are released by runtime
+      // disposal instead.
+      onRuntimeAdmission?.();
+    }
     if (!rawText) return;
 
     if (runner.isAbortTimedOut) {

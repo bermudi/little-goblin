@@ -29,7 +29,17 @@ async function main(): Promise<void> {
   await memoryEngine.embeddingProvider.reindexIfNeeded();
   await runPreflight(cfg);
   await validateModelAtStartup(cfg, log);
-  const { bot, closeAdmission, lifecycle, subagentRunner, runtimeHost, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg, { memoryEngine });
+  const {
+    bot,
+    closeAdmission,
+    bufferedTextAdmission,
+    lifecycle,
+    subagentRunner,
+    runtimeHost,
+    scheduleStore,
+    dispatcher,
+    externalAgentRunner,
+  } = buildBot(cfg, { memoryEngine });
 
   await memoryEngine.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS });
   await externalAgentRunner?.init();
@@ -74,17 +84,28 @@ async function main(): Promise<void> {
       // admission is still open.
       const telegramDrain = closeAdmission();
       void telegramDrain.catch(() => {});
+      // Coalesced text dispatches are allowed to finish their lifecycle work
+      // and reach the runtime queue, but shutdown must not wait for their
+      // complete model/steering handlers. Dispose runtimes only after this
+      // narrower barrier has passed.
+      const bufferedAdmission = bufferedTextAdmission();
       const schedulerDrain = scheduler.stopAndDrain();
       void schedulerDrain.catch(() => {});
+      // Start runtime disposal before awaiting either Telegram drain. An
+      // admitted handler may be waiting on a model operation (notably
+      // steering via followUp), and runner disposal is what releases it.
+      const runtimeDrain = (async (): Promise<void> => {
+        await bufferedAdmission;
+        await runtimeHost.disposeAll();
+      })();
 
-      // Stop polling and finish the Telegram coalescer flush before fencing
-      // runtimes. The scheduler drain is already in progress, but must not be
-      // awaited until after runtime disposal: a dreaming turn may need that
-      // disposal to abort its model request.
+      // Stop polling while the independent drains are in progress. The
+      // scheduler drain is already in progress, but must not be awaited until
+      // after runtime disposal: a dreaming turn may need that disposal to
+      // abort its model request.
       await attempt("telegram polling", () => bot.stop());
-      await attempt("telegram admission", () => telegramDrain);
-      const runtimeDrain = runtimeHost.disposeAll();
       await attempt("conversation runtimes", () => runtimeDrain);
+      await attempt("telegram admission", () => telegramDrain);
       await attempt("scheduler", () => schedulerDrain);
       await attempt("external agents", async () => {
         await externalAgentRunner?.dispose();

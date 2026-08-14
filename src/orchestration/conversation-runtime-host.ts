@@ -184,7 +184,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     return this.admissionOpen;
   }
 
-  /** Stop new runtime creation and queued work. Idempotent and synchronous. */
+  /** Stop new runtime creation and not-yet-started queued work. Idempotent and synchronous. */
   closeAdmission(): void {
     if (this.admissionOpen) {
       this.admissionOpen = false;
@@ -341,9 +341,14 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       log.info("runtime work rejected after admission closed", { conversationId });
       return false;
     }
+    let started = false;
     const execute = async (): Promise<void> => {
-      // Admission is decided once, in schedule(). Closing admission prevents
-      // new entries; it must not revoke work already accepted behind a turn.
+      // A queue entry is admitted when schedule() succeeds, but shutdown must
+      // still fence entries that have not reached the front of the chain. An
+      // entry that has started is allowed to drain; this distinction is what
+      // keeps shutdown from starting a command after its runtime was fenced.
+      if (!started && !this.admissionOpen) return;
+      started = true;
       if (!isCurrent()) return;
       try {
         await run(isCurrent);
@@ -576,9 +581,9 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
 
     // Fence every runtime immediately. Shutdown must be able to abort a model
     // turn that would otherwise keep its admitted Telegram handler alive
-    // indefinitely. Queue promises are still drained below, but entries behind
-    // the invalidated generation fail their isCurrent() guard instead of
-    // starting new work during shutdown.
+    // indefinitely. Queue promises are still drained below, but entries that
+    // have not started fail the admission fence instead of starting new work
+    // during shutdown.
     const ids = new Set([
       ...this.runners.keys(),
       ...this.inFlightCreations.keys(),
@@ -595,7 +600,8 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     const observedQueuedWork = new Set<Promise<void>>();
     // Drain accepted queue chains after their runtime generations have been
     // fenced. A currently executing turn is unblocked by runner disposal;
-    // queued entries observe stale authority and do not begin during shutdown.
+    // queued entries observe the admission fence and do not begin during
+    // shutdown.
     for (;;) {
       const queued = [...this.queuedWork];
       const accepted = await Promise.allSettled(queued);

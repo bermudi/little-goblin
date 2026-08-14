@@ -251,6 +251,19 @@ function textUpdate(text: string, fromId = 1, messageId = 1) {
   } as const;
 }
 
+function groupTextUpdate(text: string, messageId = 1) {
+  return {
+    update_id: 7,
+    message: {
+      message_id: messageId,
+      date: 1,
+      chat: { id: -10, type: "group", title: "Test group" },
+      from: { id: 1, is_bot: false, first_name: "Daniel", username: "bermudi" },
+      text,
+    },
+  } as const;
+}
+
 function topicTextUpdate(text: string) {
   return {
     update_id: 4,
@@ -480,6 +493,73 @@ describe("buildBot integration", () => {
       pending.resolve();
       await handled;
     }
+  });
+
+  it("starts runtime disposal before draining an admitted steering request", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+
+    const prompt = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      await prompt.promise;
+    };
+    await built.bot.handleUpdate(textUpdate("slow"));
+    const runner = runnerInstances.at(-1)!;
+    await waitFor(() => runner.isStreaming);
+
+    const steering = deferred();
+    MockAgentRunner.nextFollowUp = async () => {
+      await steering.promise;
+    };
+    const handled = built.bot.handleUpdate(textUpdate("steer", 1, 2));
+    await waitFor(() => runner.followUp.mock.calls.length === 1);
+
+    const telegramDrain = built.closeAdmission();
+    expect(await settlesWithin(telegramDrain, 25)).toBe(false);
+
+    runner.dispose.mockImplementation(() => {
+      steering.resolve();
+      prompt.resolve();
+    });
+    await built.runtimeHost.disposeAll();
+    await telegramDrain;
+    await handled;
+  });
+
+  it("waits for buffered text to reach runtime admission before runtime disposal", async () => {
+    const built = await makeBot();
+    const bufferedText = "x".repeat(TEXT_SPLIT_THRESHOLD);
+    await built.bot.handleUpdate(textUpdate(bufferedText));
+
+    const telegramDrain = built.closeAdmission();
+    const runtimeDrain = (async (): Promise<void> => {
+      await built.bufferedTextAdmission();
+      await built.runtimeHost.disposeAll();
+    })();
+
+    await runtimeDrain;
+    await telegramDrain;
+    expect(runnerInstances).toHaveLength(1);
+  });
+
+  it("does not track a group update while member authorization is pending", async () => {
+    const built = await makeBot();
+    let resolveMemberCount!: (count: number) => void;
+    const memberCount = new Promise<number>((resolve) => {
+      resolveMemberCount = resolve;
+    });
+    built.api.api.getChatMemberCount.mockImplementation(async () => memberCount);
+
+    const handled = built.bot.handleUpdate(groupTextUpdate("hello"));
+    await waitFor(() => built.api.api.getChatMemberCount.mock.calls.length === 1);
+
+    const telegramDrain = built.closeAdmission();
+    expect(await settlesWithin(telegramDrain, 25)).toBe(true);
+
+    resolveMemberCount(5);
+    await handled;
+    expect(runnerInstances).toHaveLength(0);
+    expect(built.api.sent).toEqual([]);
   });
 
   it("/cancel reaches a runner with a pending prompt", async () => {

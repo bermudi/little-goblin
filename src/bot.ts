@@ -179,9 +179,13 @@ interface BuildBotOptions {
 
 export interface BuiltBot {
   bot: Bot;
-  /** Close Telegram intake and coalescing before runtime teardown. Drains
-   * admitted handlers and flushes buffered text; idempotent and single-flight. */
+  /** Close Telegram admission, flush buffered text, and drain admitted
+   * handlers; idempotent and single-flight. Runtime teardown is deliberately
+   * started by the deployment shutdown sequence before this promise is awaited. */
   closeAdmission: () => Promise<void>;
+  /** After `closeAdmission`, wait until buffered text has reached runtime
+   * admission, without waiting for the complete prompt or steering handler. */
+  bufferedTextAdmission: () => Promise<void>;
   lifecycle: ConversationLifecycle;
   runtimeHost: ConversationRuntimeHost;
   subagentRunner: SubagentRunner;
@@ -248,7 +252,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // flow to grammy's error boundary.
   let admissionOpen = true;
   const coalescer = new TextCoalescer({
-    dispatch: (msg, text) => intake.handleText(msg, text),
+    dispatch: (msg, text, onRuntimeAdmission) => intake.handleText(msg, text, onRuntimeAdmission),
   });
 
   // Admission + drain: every update that passes the admission gate is
@@ -279,6 +283,12 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     }
   }
 
+  // Authorization can make an asynchronous Telegram API call (member count
+  // for an allowed user in a group). Do not classify an update as admitted
+  // until that check has completed: otherwise shutdown can drain the tracking
+  // wrapper while the authorization middleware is still waiting, then silently
+  // drop an update that had already passed the wrapper.
+  bot.use(buildAllowlistMiddleware(cfg));
   bot.use((_ctx, next) => {
     if (!admissionOpen) {
       log.info("Telegram update dropped after admission closed");
@@ -286,7 +296,6 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     }
     return trackAdmitted(next());
   });
-  bot.use(buildAllowlistMiddleware(cfg));
   registerCommands(bot, intake.lifecycle);
 
   bot.on("message:text", async (ctx: Context) => {
@@ -412,13 +421,18 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   const closeAdmission = (): Promise<void> => {
     if (admissionClosure) return admissionClosure;
     // Stop admitting new updates synchronously so the middleware gate rejects
-    // anything grammy fetches next. Cache the whole drain so concurrent callers
-    // wait for the same completion or failure.
+    // anything grammy fetches next. Flush the coalescer before closing intake:
+    // buffered text is already admitted and must be allowed to enter intake.
+    // The returned promise may remain pending on runtime work; deployment
+    // shutdown starts runtime disposal before awaiting it.
     admissionOpen = false;
     admissionClosure = (async (): Promise<void> => {
-      await drainAdmitted();
-      await coalescer.close();
-      intake.closeAdmission();
+      try {
+        await coalescer.close();
+      } finally {
+        intake.closeAdmission();
+        await drainAdmitted();
+      }
     })();
     return admissionClosure;
   };
@@ -426,6 +440,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   return {
     bot,
     closeAdmission,
+    bufferedTextAdmission: () => coalescer.bufferedTextAdmission(),
     lifecycle: intake.lifecycle,
     runtimeHost: orchestration.runtimeHost,
     subagentRunner,

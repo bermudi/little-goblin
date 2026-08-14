@@ -794,6 +794,31 @@ describe("Telegram intake", () => {
     expect(replies.at(-1)).toContain("Switched to `poe/GPT-4o`");
   });
 
+  it("does not start a binding-authorized queued command after runtime shutdown", async () => {
+    const cfg = makeConfig();
+    cfg.favorites = ["poe/GPT-4o"];
+    const { intake, runtimeHost } = makeHarness(cfg);
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const slow = deferred();
+    MockAgentRunner.nextPrompt = async () => {
+      if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
+    };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+    await intake.handleText(message, "/model 1");
+    await flushMicrotasks();
+    expect(replies.at(-1)).toBe("`[queued]` Queued\\. Will run after this turn\\.");
+
+    const shutdown = runtimeHost.disposeAll();
+    slow.resolve();
+    await shutdown;
+
+    expect(replies.some((reply) => reply.includes("Switched to"))).toBe(false);
+  });
+
   it("runs an instant-timing command (read-only) while a turn is streaming", async () => {
     // /model with no arg is instant: it lists favorites without touching the turn.
     const cfg = makeConfig();

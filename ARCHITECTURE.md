@@ -483,9 +483,9 @@ The delivery order is:
 
 1. **Runtime-kernel ownership — implemented.** `ConversationRuntimeHost` concretely owns runtime registration, in-flight construction, queues, and disposal authority. The composition root constructs it before lifecycle and dispatcher; Telegram intake receives the completed kernel and no longer contains the nullable lifecycle/dispatcher hookup.
 2. **Prepared runtime assembly — implemented in this cycle.** `PreparedRuntimeAssembler` resolves one immutable ephemeral Surface-runtime plan before runner construction and registration while preserving every asynchronous authority and race-closing checkpoint. Surface `AgentRunner` consumes that plan without lazy model, prompt, or skill rereads; internal runtimes are unchanged.
-3. **Capability/tool assembly plus a smaller `AgentRunner` facade — plainly described next.** Move code-owned capability selection through concrete tool assembly behind a narrow interface, reducing `AgentRunner` to an execution facade without introducing dynamic discovery or a plugin registry.
+3. **Capability/tool assembly plus a smaller `AgentRunner` facade — implemented.** `CapabilityManifestToolSource` owns concrete Surface capability selection and tool assembly behind a narrow interface. `AgentEventHandler` owns transcript writes, metrics, callback dispatch, streamed-text reconciliation, prompt-file notices, and stale-event fencing. `AgentRunner` remains the execution facade for prompt control and runtime authority; no dynamic discovery or plugin registry was introduced.
 
-**WIP limit: one implementation phase in progress, one plainly described next.** Prepared runtime assembly is implemented and verified. Capability/tool assembly plus a smaller `AgentRunner` facade is the one named next cycle. ACP external agents remains accepted under decision 0044 but is parked behind this inward pass; its accepted backend and persistence scope is unchanged.
+**WIP limit: one implementation phase in progress, one plainly described next.** Prepared runtime assembly, capability/tool assembly, and event handling are implemented and verified. ACP external agents is the one named next cycle under decision 0044; its accepted backend and persistence scope is unchanged.
 
 ## Feature readiness gate
 

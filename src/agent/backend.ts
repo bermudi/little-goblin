@@ -7,7 +7,6 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   type CompactionResult,
-  type ModelRuntime,
   type ToolDefinition,
   createBashToolDefinition,
   createEditToolDefinition,
@@ -15,7 +14,7 @@ import {
   createWriteToolDefinition,
   defineTool,
 } from "@earendil-works/pi-coding-agent";
-import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
@@ -67,8 +66,6 @@ export interface AgentBackend {
   followUp(content: string | (TextContent | ImageContent)[]): Promise<void>;
   abort(): Promise<void>;
   compact(customInstructions?: string): Promise<CompactionResult>;
-  setModel(model: Model<Api>, apiKey: string): Promise<void>;
-  setThinkingLevel(level: ThinkingLevel): void;
   dispose(): void;
   isStreaming: boolean;
   isInitialized: boolean;
@@ -138,7 +135,6 @@ export class PiAgentBackend implements AgentBackend {
   private session: AgentSession | null = null;
   private unsubscribe: (() => void) | null = null;
   private resourceLoader: DefaultResourceLoader | null = null;
-  private modelRuntime: ModelRuntime | null = null;
 
   constructor(opts: PiAgentBackendOptions) {
     this.cfg = opts.cfg;
@@ -163,8 +159,6 @@ export class PiAgentBackend implements AgentBackend {
     const { resolvedModel, thinkingLevel, customTools, guardBuiltInTool, systemPrompt, cwd, resolvedSkills } = args;
 
     const { modelRuntime, settingsManager } = await this.deps.createPiServices(home);
-    this.modelRuntime = modelRuntime;
-
     await modelRuntime.setRuntimeApiKey(resolvedModel.model.provider, resolvedModel.apiKey);
 
     const agentDir = this.deps.piAgentDir(home);
@@ -265,17 +259,6 @@ export class PiAgentBackend implements AgentBackend {
   async compact(customInstructions?: string): Promise<CompactionResult> {
     if (!this.session) throw new Error("Session not initialized");
     return this.session.compact(customInstructions);
-  }
-
-  async setModel(model: Model<Api>, apiKey: string): Promise<void> {
-    if (!this.session) return;
-    await this.modelRuntime?.setRuntimeApiKey(model.provider, apiKey);
-    await this.session.setModel(model);
-  }
-
-  setThinkingLevel(level: ThinkingLevel): void {
-    if (!this.session) return;
-    this.session.setThinkingLevel(level);
   }
 
   dispose(): void {

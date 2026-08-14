@@ -39,8 +39,6 @@ const sessionHolder = {
     tokensBefore: 42000,
   })),
   dispose: mock(() => {}),
-  setThinkingLevel: mock((_level: string) => {}),
-  setModel: mock(async (_model: unknown) => {}),
   /** Sequenced call log for asserting ordering across mocks. */
   callOrder: [] as string[],
 
@@ -67,12 +65,6 @@ const sessionHolder = {
       };
     });
     this.dispose = mock(() => {});
-    this.setThinkingLevel = mock((_level: string) => {
-      sessionHolder.callOrder.push("setThinkingLevel");
-    });
-    this.setModel = mock(async (_model: unknown) => {
-      sessionHolder.callOrder.push("setModel");
-    });
   },
 
   emit(event: Record<string, unknown>) {
@@ -100,8 +92,6 @@ const sessionHolder = {
       abort: () => holder.abort(),
       compact: (customInstructions?: string) => holder.compact(customInstructions),
       dispose: () => holder.dispose(),
-      setThinkingLevel: (level: string) => holder.setThinkingLevel(level),
-      setModel: (model: unknown) => holder.setModel(model),
     };
   },
 };
@@ -217,16 +207,6 @@ class FakeAgentBackend implements AgentBackend {
   async compact(customInstructions?: string): Promise<{ summary: string; firstKeptEntryId: string; tokensBefore: number }> {
     if (!this.session) throw new Error("Session not initialized");
     return this.session.compact(customInstructions);
-  }
-
-  async setModel(model: unknown, _apiKey: string): Promise<void> {
-    if (!this.session) return;
-    await this.session.setModel(model);
-  }
-
-  setThinkingLevel(level: string): void {
-    if (!this.session) return;
-    this.session.setThinkingLevel(level);
   }
 
   dispose(): void {
@@ -877,84 +857,6 @@ describe("AgentRunner", () => {
       expect(opts.thinkingLevel).toBe("high");
     });
 
-    it("clears pending thinkingLevel after init so prompt() does not double-apply", async () => {
-      const runner = await makeRunner(tmpDir, [], undefined, undefined, undefined, {}, undefined, "high");
-      await runner.prompt("hello", nopCallbacks());
-
-      // setThinkingLevel should NOT have been called on the session because
-      // the level was already applied during createAgentSession.
-      expect(sessionHolder.setThinkingLevel).not.toHaveBeenCalled();
-    });
-
-    it("applies setThinkingLevel immediately when session is live", async () => {
-      const runner = await makeRunner(tmpDir);
-      await runner.prompt("first", nopCallbacks());
-
-      runner.setThinkingLevel("low");
-      expect(sessionHolder.setThinkingLevel).toHaveBeenCalledWith("low");
-    });
-
-    it("stores a pending override when setThinkingLevel is called before init", async () => {
-      const runner = await makeRunner(tmpDir);
-      runner.setThinkingLevel("xhigh");
-
-      await runner.prompt("hello", nopCallbacks());
-      // The pending override is applied during createAgentSession, not via
-      // session.setThinkingLevel, because init() consumes it before prompt()
-      // checks for a flush.
-      expect(capturedCreateArgs).toHaveLength(1);
-      const opts = capturedCreateArgs[0] as Record<string, unknown>;
-      expect(opts.thinkingLevel).toBe("xhigh");
-      expect(sessionHolder.setThinkingLevel).not.toHaveBeenCalled();
-    });
-
-    it("clearing thinkingLevel resets to model default on a live session", async () => {
-      const runner = await makeRunner(tmpDir);
-      await runner.prompt("hello", nopCallbacks());
-
-      runner.setThinkingLevel(undefined);
-      // The model default for poe/Claude-Sonnet-4.6 is "high"
-      expect(sessionHolder.setThinkingLevel).toHaveBeenCalledWith("high");
-    });
-  });
-
-  describe("setModel (in-place model switch)", () => {
-    beforeEach(() => {
-      capturedCreateArgs = [];
-      sessionHolder.reset();
-    });
-
-    it("delegates to session.setModel() on an initialized runner", async () => {
-      const runner = await makeRunner(tmpDir);
-      await runner.prompt("hello", nopCallbacks());
-
-      await runner.setModel("poe/GPT-4o");
-      expect(sessionHolder.setModel).toHaveBeenCalledTimes(1);
-      expect(runner.modelName).toBe("poe/GPT-4o");
-    });
-
-    it("does not recreate the session when switching models", async () => {
-      const runner = await makeRunner(tmpDir);
-      await runner.prompt("hello", nopCallbacks());
-      expect(capturedCreateArgs).toHaveLength(1);
-
-      await runner.setModel("poe/GPT-4o");
-      // No new createAgentSession call — the switch is in-place.
-      expect(capturedCreateArgs).toHaveLength(1);
-    });
-
-    it("records the override and defers to init when called before first prompt", async () => {
-      const runner = await makeRunner(tmpDir);
-      await runner.setModel("poe/GPT-4o");
-      // Not initialized yet → setModel should NOT have been called on a session.
-      expect(sessionHolder.setModel).not.toHaveBeenCalled();
-      expect(runner.modelName).toBe("poe/GPT-4o");
-
-      await runner.prompt("hello", nopCallbacks());
-      // The deferred model is what init resolves; setModel stays uncalled
-      // because the session was created directly under the new model.
-      expect(sessionHolder.setModel).not.toHaveBeenCalled();
-    });
   });
 
   describe("cwd and piAgentDir paths passed to pi", () => {

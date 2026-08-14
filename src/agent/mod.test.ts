@@ -267,6 +267,7 @@ function findMostRecentSessionFile(dir: string): string | null {
 
 import { AgentRunner, ModelNotCapableError, type SurfaceAgentRunnerOptions, type TurnCallbacks } from "./mod.ts";
 import { prepareTestSurfaceRuntimePlan } from "./runtime-plan.test-support.ts";
+import { CapabilityManifestToolSource } from "./tool-assembly.ts";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -312,7 +313,7 @@ function nopCallbacks(): TurnCallbacks {
   };
 }
 
-type DirectSurfaceRunnerOptions = Omit<SurfaceAgentRunnerOptions, "plan"> & {
+type DirectSurfaceRunnerOptions = Omit<SurfaceAgentRunnerOptions, "plan" | "surfaceToolSource"> & {
   surface: Surface;
   memoryContext: Awaited<ReturnType<typeof makeMemoryContext>>;
   customTools: ToolDefinition[];
@@ -321,6 +322,11 @@ type DirectSurfaceRunnerOptions = Omit<SurfaceAgentRunnerOptions, "plan"> & {
   thinkingLevel?: Parameters<typeof prepareTestSurfaceRuntimePlan>[0]["thinkingLevel"];
   resolvedModel?: Parameters<typeof prepareTestSurfaceRuntimePlan>[0]["resolvedModel"];
   skillPolicy?: Parameters<typeof prepareTestSurfaceRuntimePlan>[0]["skillPolicy"];
+  // Capability deps threaded to the plan fixture (manifest) and the tool source.
+  subagentRunner?: SubagentRunner;
+  scheduleStore?: ScheduleStore;
+  externalAgentRunner?: ExternalAgentRunner;
+  mcpRunner?: McpRunner;
 };
 
 async function makePreparedRunner(options: DirectSurfaceRunnerOptions): Promise<AgentRunner> {
@@ -335,6 +341,10 @@ async function makePreparedRunner(options: DirectSurfaceRunnerOptions): Promise<
     thinkingLevel,
     resolvedModel,
     skillPolicy,
+    subagentRunner,
+    scheduleStore,
+    externalAgentRunner,
+    mcpRunner,
     ...runnerOptions
   } = options;
   const plan = await prepareTestSurfaceRuntimePlan({
@@ -348,8 +358,14 @@ async function makePreparedRunner(options: DirectSurfaceRunnerOptions): Promise<
     thinkingLevel,
     resolvedModel,
     skillPolicy,
+    // Thread the capability deps the runner will receive so the fixture's
+    // manifest advertises only capabilities those deps can assemble.
+    subagentRunner,
+    scheduleStore,
+    externalAgentRunner,
+    mcpRunner,
   });
-  return new AgentRunner({ cfg, sessionId, plan, ...runnerOptions });
+  return new AgentRunner({ cfg, sessionId, plan, surfaceToolSource: new CapabilityManifestToolSource(plan, { subagentRunner, scheduleStore, externalAgentRunner, mcpRunner }), ...runnerOptions });
 }
 
 async function makeRunner(
@@ -1023,6 +1039,7 @@ describe("AgentRunner", () => {
         cfg,
         sessionId: "abcdef1234",
         plan,
+        surfaceToolSource: new CapabilityManifestToolSource(plan, {}),
         isCurrent: () => true,
         backendFactory: (opts) => new FakeAgentBackend(opts),
       });
@@ -2022,6 +2039,55 @@ describe("AgentRunner", () => {
       const tools = opts.customTools as Array<{ name: string }>;
       const names = tools.map((t) => t.name);
       expect(names).not.toContain("schedule_turn");
+    });
+  });
+
+  describe("capability manifest is the runner's sole tool authority", () => {
+    // Pin (a) at the RUNNER level: a capability absent from the manifest must
+    // stay absent even when its store/runner is handed to the tool source. A
+    // rename-only change that restores store-presence gating (instead of
+    // trusting the manifest) fails here — that is the point.
+    it("omits subagent and schedule tools when the manifest does not advertise them, even though the deps are passed", async () => {
+      const subRunner = new SubagentRunner(makeConfig(tmpDir));
+      const scheduleStore = new ScheduleStore(tmpDir);
+      const surface = dmSurface(123);
+      const memoryContext = await makeMemoryContext(tmpDir, surface);
+
+      // Build the plan WITHOUT advertising subagents/scheduling — the fixture
+      // derives the manifest from the deps it is given, so omitting them here
+      // produces a manifest that does not list those capabilities.
+      const plan = await prepareTestSurfaceRuntimePlan({
+        cfg: makeConfig(tmpDir),
+        conversationId: "abcdef1234",
+        surface,
+        memoryContext,
+        executionEnvironment: personalEnvironment(),
+        customTools: [],
+      });
+      // ...but hand the tool source the deps anyway. The divergence is the test:
+      // the source carries the runners, yet the plan's manifest omits them.
+      const runner = new AgentRunner({
+        cfg: makeConfig(tmpDir),
+        sessionId: "abcdef1234",
+        plan,
+        surfaceToolSource: new CapabilityManifestToolSource(plan, {
+          subagentRunner: subRunner,
+          scheduleStore,
+        }),
+        isCurrent: () => true,
+        backendFactory: (opts) => new FakeAgentBackend(opts),
+      });
+      await runner.prompt("hi", nopCallbacks());
+
+      const opts = capturedCreateArgs[0] as Record<string, unknown>;
+      const tools = opts.customTools as Array<{ name: string }>;
+      const names = tools.map((t) => t.name);
+      expect(names).not.toContain("spawn_subagent");
+      expect(names).not.toContain("revive_subagent");
+      expect(names).not.toContain("schedule_turn");
+      // Memory is still advertised, so its tools still appear.
+      expect(names).toContain("memory_search");
+      expect(names).toContain("memory_write");
     });
   });
 

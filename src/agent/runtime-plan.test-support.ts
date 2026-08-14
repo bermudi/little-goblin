@@ -3,12 +3,24 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 import { DelegatedWorkHost } from "../delegated-work/mod.ts";
 import type { CapturedMemoryContext } from "../memory/mod.ts";
-import { environmentCwd, type ExecutionEnvironment } from "../sessions/environment.ts";
+import {
+  environmentCwd,
+  projectRootOf,
+  type ExecutionEnvironment,
+} from "../sessions/environment.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 import { resolveModel, type ResolvedModel } from "./models.ts";
-import { freezePreparedSurfaceRuntimePlan, type PreparedSurfaceRuntimePlan } from "./runtime-plan.ts";
+import {
+  buildMainRuntimeCapabilityManifest,
+  freezePreparedSurfaceRuntimePlan,
+  type PreparedSurfaceRuntimePlan,
+} from "./runtime-plan.ts";
 import { buildGoblinSystemPrompt } from "./system-prompt.ts";
 import { DEFAULT_SKILL_POLICY, resolveSkillSet, skillPolicyFingerprint, type SkillPolicy } from "./skills/mod.ts";
+import type { SubagentRunner } from "../subagents/mod.ts";
+import type { ScheduleStore } from "../scheduler/store.ts";
+import type { ExternalAgentRunner } from "../external-agents/mod.ts";
+import type { McpRunner } from "../mcp/mod.ts";
 
 /** Test-only direct plan builder for AgentRunner unit and SDK contract tests. */
 export async function prepareTestSurfaceRuntimePlan(args: {
@@ -22,6 +34,15 @@ export async function prepareTestSurfaceRuntimePlan(args: {
   thinkingLevel?: ThinkingLevel;
   resolvedModel?: ResolvedModel;
   skillPolicy?: SkillPolicy;
+  /**
+   * Capability-deps the constructed runner will actually receive. The fixture
+   * advertises only capabilities these deps can assemble, mirroring production
+   * so the manifest stays the sole authority for which tools exist.
+   */
+  subagentRunner?: SubagentRunner;
+  scheduleStore?: ScheduleStore;
+  externalAgentRunner?: ExternalAgentRunner;
+  mcpRunner?: McpRunner;
 }): Promise<PreparedSurfaceRuntimePlan> {
   const skillPolicy = args.skillPolicy ?? DEFAULT_SKILL_POLICY;
   const modelName = args.modelName ?? args.cfg.modelName;
@@ -36,6 +57,18 @@ export async function prepareTestSurfaceRuntimePlan(args: {
     : `${systemPrompt.prompt}\n\n${args.memoryContext.frozenSummary}`;
   const policyFingerprint = skillPolicyFingerprint(skillPolicy);
   const surfaceTools = args.customTools ?? [];
+  const externalAgentBackends =
+    args.externalAgentRunner !== undefined &&
+      projectRootOf(args.executionEnvironment) !== undefined
+      ? [...(args.cfg.externalAgents?.backends ?? [])]
+      : [];
+  const capabilityManifest = buildMainRuntimeCapabilityManifest({
+    surfaceTools,
+    hasScheduleStore: args.scheduleStore !== undefined,
+    hasSubagentRunner: args.subagentRunner !== undefined,
+    externalAgentBackends,
+    hasMcp: args.mcpRunner !== undefined && args.cfg.mcp !== undefined,
+  });
   return freezePreparedSurfaceRuntimePlan({
     conversationId: args.conversationId,
     runtimeId: DelegatedWorkHost.newRuntimeId(),
@@ -53,19 +86,6 @@ export async function prepareTestSurfaceRuntimePlan(args: {
     settingsFingerprint: `test:${policyFingerprint}:${modelName}:${args.thinkingLevel ?? "default"}`,
     policyFingerprint,
     resolvedSkills,
-    capabilityManifest: {
-      capabilities: [
-        "pi-file-tools",
-        ...(surfaceTools.length > 0 ? ["surface-tools" as const] : []),
-        "memory",
-        "scheduling",
-        "subagents",
-        "external-agent",
-        "mcp",
-        "prompt-file-notices",
-      ],
-      surfaceTools,
-      externalAgentBackends: [...(args.cfg.externalAgents?.backends ?? [])],
-    },
+    capabilityManifest,
   });
 }

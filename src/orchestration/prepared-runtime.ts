@@ -2,9 +2,8 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { DelegatedWorkHost } from "../delegated-work/mod.ts";
 import {
+  buildMainRuntimeCapabilityManifest,
   freezePreparedSurfaceRuntimePlan,
-  type MainRuntimeCapability,
-  type MainRuntimeCapabilityManifest,
   type PreparedSurfaceRuntimePlan,
 } from "../agent/runtime-plan.ts";
 import { resolveModel } from "../agent/models.ts";
@@ -158,28 +157,19 @@ export class PreparedRuntimeAssembler {
   private buildCapabilityManifest(
     surface: Surface,
     conversation: ConversationState,
-  ): MainRuntimeCapabilityManifest {
-    const surfaceTools = [...this.options.createSurfaceTools(surface)];
-    const capabilities: MainRuntimeCapability[] = [
-      "pi-file-tools",
-      "memory",
-      "subagents",
-      "prompt-file-notices",
-    ];
-    if (surfaceTools.length > 0) capabilities.push("surface-tools");
-    if (this.options.scheduleStore !== undefined) capabilities.push("scheduling");
+  ): ReturnType<typeof buildMainRuntimeCapabilityManifest> {
     const externalAgentBackends =
       this.options.externalAgentRunner !== undefined &&
         projectRootOf(conversation.executionEnvironment) !== undefined
         ? [...(this.options.cfg.externalAgents?.backends ?? [])]
         : [];
-    if (externalAgentBackends.length > 0) capabilities.push("external-agent");
-    if (this.options.mcpRunner !== undefined && this.options.cfg.mcp !== undefined) capabilities.push("mcp");
-    return {
-      capabilities,
-      surfaceTools,
+    return buildMainRuntimeCapabilityManifest({
+      surfaceTools: this.options.createSurfaceTools(surface),
+      hasScheduleStore: this.options.scheduleStore !== undefined,
+      hasSubagentRunner: true,
       externalAgentBackends,
-    };
+      hasMcp: this.options.mcpRunner !== undefined && this.options.cfg.mcp !== undefined,
+    });
   }
 }
 

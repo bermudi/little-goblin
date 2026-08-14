@@ -50,11 +50,102 @@ export interface PreparedSurfaceRuntimePlan {
   readonly capabilityManifest: MainRuntimeCapabilityManifest;
 }
 
-export function hasMainRuntimeCapability(
+/**
+ * Capabilities every Surface capability manifest must advertise. Their behavior
+ * is inherent to a Surface runtime and is not gated on the manifest — backend
+ * file tools (`pi-file-tools`) and prompt-file change notices
+ * (`prompt-file-notices`) are always on — so a coherent manifest must always
+ * list them. {@link assertCapabilityManifestCoherence} enforces this as an
+ * invariant rather than a convention.
+ */
+export const MANDATORY_SURFACE_CAPABILITIES = [
+  "pi-file-tools",
+  "prompt-file-notices",
+] as const satisfies readonly MainRuntimeCapability[];
+
+/**
+ * Assert that a Surface capability manifest is internally coherent before it is
+ * trusted for tool assembly or frozen into a plan:
+ * - every {@link MANDATORY_SURFACE_CAPABILITIES mandatory capability} is present;
+ * - `surface-tools` is advertised iff at least one surface tool was captured;
+ * - `external-agent` is advertised iff at least one backend was captured.
+ *
+ * The assembler trusts a manifest that passes this check, so call it whenever a
+ * manifest is frozen into a plan or consumed for tool assembly.
+ */
+export function assertCapabilityManifestCoherence(
   manifest: MainRuntimeCapabilityManifest,
-  capability: MainRuntimeCapability,
-): boolean {
-  return manifest.capabilities.includes(capability);
+): void {
+  const advertised = (capability: MainRuntimeCapability): boolean =>
+    manifest.capabilities.includes(capability);
+  for (const capability of MANDATORY_SURFACE_CAPABILITIES) {
+    if (!advertised(capability)) {
+      throw new Error(
+        `capability manifest is missing mandatory capability "${capability}"`,
+      );
+    }
+  }
+  if (advertised("surface-tools") !== manifest.surfaceTools.length > 0) {
+    throw new Error(
+      'capability manifest is incoherent: "surface-tools" capability disagrees with the captured surfaceTools array',
+    );
+  }
+  if (advertised("external-agent") !== manifest.externalAgentBackends.length > 0) {
+    throw new Error(
+      'capability manifest is incoherent: "external-agent" capability disagrees with the captured externalAgentBackends array',
+    );
+  }
+}
+
+/**
+ * Inputs that decide which capabilities a Surface runtime advertises.
+ *
+ * Pure presence + data only: no stores, no config objects. Production and the
+ * test fixture both call this so the manifest is the single authority for which
+ * tools exist and is self-consistent with the deps that can assemble them.
+ */
+export interface CapabilityManifestInputs {
+  /** Pre-built Surface-delivered tools (e.g. Telegram beta tools). */
+  readonly surfaceTools: readonly ToolDefinition[];
+  /** Shared schedule store present ⇒ the `scheduling` capability. */
+  readonly hasScheduleStore: boolean;
+  /** Shared subagent runner present ⇒ the `subagents` capability. */
+  readonly hasSubagentRunner: boolean;
+  /**
+   * External-agent backends the runtime may expose. Non-empty only when an
+   * external-agent runner is present AND the conversation runs in a project
+   * execution environment; that gates the `external-agent` capability.
+   */
+  readonly externalAgentBackends: readonly ExternalAgentBackend[];
+  /** MCP runner present AND MCP config enabled ⇒ the `mcp` capability. */
+  readonly hasMcp: boolean;
+}
+
+/**
+ * Build the closed capability manifest from presence flags and pre-built data.
+ * `pi-file-tools`, `memory`, and `prompt-file-notices` are always advertised
+ * (every Surface runtime owns a backend, a memory store, and the notice
+ * behavior); the rest are dep-gated. The capability order is stable so production
+ * logging and tests are deterministic.
+ */
+export function buildMainRuntimeCapabilityManifest(
+  inputs: CapabilityManifestInputs,
+): MainRuntimeCapabilityManifest {
+  const capabilities: MainRuntimeCapability[] = [
+    "pi-file-tools",
+    "memory",
+  ];
+  if (inputs.hasSubagentRunner) capabilities.push("subagents");
+  capabilities.push("prompt-file-notices");
+  if (inputs.surfaceTools.length > 0) capabilities.push("surface-tools");
+  if (inputs.hasScheduleStore) capabilities.push("scheduling");
+  if (inputs.externalAgentBackends.length > 0) capabilities.push("external-agent");
+  if (inputs.hasMcp) capabilities.push("mcp");
+  return {
+    capabilities,
+    surfaceTools: [...inputs.surfaceTools],
+    externalAgentBackends: [...inputs.externalAgentBackends],
+  };
 }
 
 /**
@@ -64,6 +155,7 @@ export function hasMainRuntimeCapability(
 export function freezePreparedSurfaceRuntimePlan(
   plan: PreparedSurfaceRuntimePlan,
 ): PreparedSurfaceRuntimePlan {
+  assertCapabilityManifestCoherence(plan.capabilityManifest);
   Object.freeze(plan.capabilityManifest.capabilities);
   Object.freeze(plan.capabilityManifest.surfaceTools);
   Object.freeze(plan.capabilityManifest.externalAgentBackends);

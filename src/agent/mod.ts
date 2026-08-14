@@ -18,34 +18,24 @@ export { appendAssistantTranscriptEntry } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
 import { resolveModel, type ResolvedModel } from "./models.ts";
 import { type GoblinSystemPrompt, buildGoblinSystemPrompt } from "./system-prompt.ts";
-import {
-  hasMainRuntimeCapability,
-  type MainRuntimeCapabilityManifest,
-  type PreparedSurfaceRuntimePlan,
-} from "./runtime-plan.ts";
+import { type PreparedSurfaceRuntimePlan } from "./runtime-plan.ts";
+import type { SurfaceCustomToolsSource } from "./tool-assembly.ts";
 import {
   MemoryStore,
   EmbeddingProvider,
-  createMemorySearchTool,
-  createMemoryWriteTool,
   formatRelevantMemory,
   type CapturedMemoryContext,
   type InternalMemoryContext,
 } from "../memory/mod.ts";
 import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore, type MetricsUsage, type TurnMetricsEvent } from "../metrics/mod.ts";
-import { type GenericSubagentInheritance, type SubagentRunner } from "../subagents/mod.ts";
+import { type GenericSubagentInheritance } from "../subagents/mod.ts";
 import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
 import { surfaceId, type Surface } from "../surface.ts";
-import type { ScheduleStore } from "../scheduler/store.ts";
-import { createScheduleTurnTool } from "../scheduler/tool.ts";
 import { AgentBackend, AgentBackendOptions, PiAgentBackend } from "./backend.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { TranscriptWriterContext } from "../sessions/transcript.ts";
-import { createExternalAgentTool } from "../external-agents/tool.ts";
-import { McpRunner, createMcpTools } from "../mcp/mod.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
-import { environmentCwd, projectRootOf } from "../sessions/environment.ts";
+import { environmentCwd } from "../sessions/environment.ts";
 import { surfaceHeartbeatPath } from "../sessions/paths.ts";
 import {
   cloneSkillPolicy,
@@ -65,7 +55,6 @@ import { agentsMdPath, heartbeatMdPath, soulMdPath } from "../workspace/paths.ts
 interface AgentRunnerOptionsBase {
   cfg: Config;
   sessionId: string;
-  subagentRunner?: SubagentRunner;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
   /**
    * Dreaming pipeline to use for background memory promotion after completed
@@ -82,12 +71,6 @@ interface AgentRunnerOptionsBase {
   delegatedRuntimeContext?: DelegatedRuntimeContext;
   /** Optional pre-built memory store (tests may inject one). */
   memoryStore?: MemoryStore;
-  /** Shared schedule store. When present, the agent gets the `schedule_turn` tool. */
-  scheduleStore?: ScheduleStore;
-  /** Shared external agent runner. When present and enabled, the agent gets the `external_agent` tool. */
-  externalAgentRunner?: ExternalAgentRunner;
-  /** Shared MCP runner. When present and configured, the agent gets the `mcp_call` and `mcp_describe` tools. */
-  mcpRunner?: McpRunner;
   /**
    * Factory for the backend. Defaults to the real `PiAgentBackend`. Tests can
    * inject a fake backend to observe calls without constructing the real SDK.
@@ -103,6 +86,12 @@ interface AgentRunnerOptionsBase {
 export interface SurfaceAgentRunnerOptions extends AgentRunnerOptionsBase {
   /** Complete immutable runtime input prepared before construction. */
   plan: PreparedSurfaceRuntimePlan;
+  /**
+   * Encapsulates the capability dependency bundle (schedule/subagent/
+   * external-agent/mcp runners plus the manifest) behind one interface. The
+   * runner consumes the assembled tools rather than carrying those deps.
+   */
+  surfaceToolSource: SurfaceCustomToolsSource;
   /** Mandatory lifecycle authority for every Surface-backed effect. */
   isCurrent: () => boolean;
 }
@@ -293,10 +282,9 @@ export class AgentRunner {
   private sessionId: string;
   private surface: Surface | undefined;
   private customTools: ToolDefinition[];
-  private subagentRunner: SubagentRunner | null;
-  private scheduleStore: ScheduleStore | undefined;
-  private externalAgentRunner: ExternalAgentRunner | null;
-  private mcpRunner: McpRunner | null;
+  /** Assembles the Surface custom-tool list from the capability manifest; null
+   * for internal (surface-free) runtimes that use injected tools. */
+  private readonly surfaceToolSource: SurfaceCustomToolsSource | null;
   private isCurrent: () => boolean;
   private backend: AgentBackend;
   private accumulatedText: string = "";
@@ -323,7 +311,6 @@ export class AgentRunner {
   private skillPolicy: SkillPolicy;
   private resolvedSkills: ResolvedSkillSet | null;
   private readonly preparedPlan: PreparedSurfaceRuntimePlan | null;
-  private readonly capabilityManifest: MainRuntimeCapabilityManifest | null;
   private _modelName: string | undefined;
   private _thinkingLevel: ThinkingLevel | undefined;
   private resolvedModel: ResolvedModel | null = null;
@@ -417,7 +404,6 @@ export class AgentRunner {
     this.cfg = opts.cfg;
     this.sessionId = opts.sessionId;
     this.preparedPlan = "plan" in opts && opts.plan !== undefined ? opts.plan : null;
-    this.capabilityManifest = this.preparedPlan?.capabilityManifest ?? null;
     this.surface = this.preparedPlan?.surface;
     this.memoryContext = this.preparedPlan !== null
       ? this.preparedPlan.memoryContext
@@ -426,14 +412,15 @@ export class AgentRunner {
       this.memoryContext.kind === "surface"
         ? { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId }
         : { kind: "internal" };
-    this.customTools = this.capabilityManifest === null
+    // Injected tools for internal runtimes. Surface runtimes assemble their
+    // tools from the capability manifest in init(), so this is empty for them.
+    this.customTools = this.preparedPlan === null
       ? (opts as InternalAgentRunnerOptions).customTools
-      : [...this.capabilityManifest.surfaceTools];
-    this.subagentRunner = opts.subagentRunner ?? null;
+      : [];
+    this.surfaceToolSource = this.preparedPlan !== null
+      ? (opts as SurfaceAgentRunnerOptions).surfaceToolSource
+      : null;
     this.delegatedRuntimeContext = opts.delegatedRuntimeContext ?? null;
-    this.scheduleStore = opts.scheduleStore;
-    this.externalAgentRunner = opts.externalAgentRunner ?? null;
-    this.mcpRunner = opts.mcpRunner ?? null;
     this.isCurrent = this.memoryContext.kind === "surface"
       ? (opts as SurfaceAgentRunnerOptions).isCurrent
       : () => true;
@@ -500,7 +487,26 @@ export class AgentRunner {
         });
       }
 
-      const tools = await this.awaitCurrent(() => this.buildCustomTools());
+      // Surface runtimes obtain their custom tools from the injected tool
+      // source, which encapsulates the capability dependency bundle behind one
+      // interface. Internal runtimes use their injected tools only; they share
+      // this module but not this decision procedure.
+      let tools: ToolDefinition[];
+      if (this.surfaceToolSource !== null) {
+        tools = await this.surfaceToolSource.assemble({
+          memoryStore: this.memoryStore,
+          metricsStore: this.metricsStore,
+          delegatedRuntimeContext: this.delegatedRuntimeContext,
+          genericSubagentInheritance: this.genericSubagentInheritance,
+          resolveTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
+          guardTool: (tool) => this.guardTool(tool),
+          isCurrent: this.isCurrent,
+          sendStatusUpdate: (msg) => this.sendStatusUpdate(msg),
+          awaitCurrent: (op) => this.awaitCurrent(op),
+        });
+      } else {
+        tools = this.customTools.map((tool) => this.guardTool(tool));
+      }
 
       let systemPrompt = this.preparedPlan?.prompt ?? goblinSystemPrompt.prompt;
       if (this.preparedPlan === null && this.memoryContext.kind === "surface") {
@@ -526,112 +532,6 @@ export class AgentRunner {
     } finally {
       this._initInProgress = false;
     }
-  }
-
-  private async buildCustomTools(): Promise<ToolDefinition[]> {
-    const tools: ToolDefinition[] = [...this.customTools];
-
-    // Memory tools are registered only for Surface-backed runners. Internal
-    // runners (dreaming extraction) use the explicit Surface-free path and
-    // receive no ordinary memory tools.
-    if (
-      this.memoryContext.kind === "surface" &&
-      (this.capabilityManifest === null || hasMainRuntimeCapability(this.capabilityManifest, "memory"))
-    ) {
-      tools.push(
-        createMemorySearchTool({
-          store: this.memoryStore,
-          context: this.memoryContext,
-          getTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
-          metrics: this.metricsStore,
-        }),
-        createMemoryWriteTool({ store: this.memoryStore, context: this.memoryContext }),
-      );
-    }
-
-    if (
-      this.scheduleStore &&
-      this.surface !== undefined &&
-      (this.capabilityManifest === null || hasMainRuntimeCapability(this.capabilityManifest, "scheduling"))
-    ) {
-      tools.push(
-        createScheduleTurnTool({
-          store: this.scheduleStore,
-          surface: this.surface,
-          now: () => Date.now(),
-          isCurrent: this.isCurrent,
-        }),
-      );
-    }
-
-    if (
-      this.subagentRunner &&
-      this.memoryContext.kind === "surface" &&
-      (this.capabilityManifest === null || hasMainRuntimeCapability(this.capabilityManifest, "subagents"))
-    ) {
-      const { createSpawnSubagentTool, createReviveSubagentTool } = await import("../subagents/tool.ts");
-      // Generic subagents inherit this runtime's immutable environment and
-      // frozen manifest. init() resolves the latter before building tools.
-      const inheritance = this.genericSubagentInheritance;
-      if (inheritance === null) {
-        throw new Error("generic subagent inheritance unavailable for subagent tools");
-      }
-      // Use delegating wrappers so the tools always forward to the current
-      // turn's MessageBuffer — callbacks change per-prompt().
-      tools.push(
-        createSpawnSubagentTool(
-          this.subagentRunner,
-          0,
-          this.sessionId,
-          this.memoryContext,
-          inheritance,
-          (msg) => this.sendStatusUpdate(msg),
-          undefined,
-          this.delegatedRuntimeContext ?? undefined,
-          undefined,
-        ),
-      );
-      tools.push(
-        createReviveSubagentTool(
-          this.subagentRunner,
-          this.memoryContext,
-          inheritance,
-          (msg) => this.sendStatusUpdate(msg),
-          undefined,
-          this.delegatedRuntimeContext ?? undefined,
-        ),
-      );
-    }
-
-    const projectDir = projectRootOf(this.executionEnvironment);
-    if (
-      this.externalAgentRunner &&
-      projectDir &&
-      (this.capabilityManifest === null
-        ? Boolean(this.cfg.externalAgents?.backends.length)
-        : hasMainRuntimeCapability(this.capabilityManifest, "external-agent"))
-    ) {
-      tools.push(
-        createExternalAgentTool({
-          runner: this.externalAgentRunner,
-          sessionId: this.sessionId,
-          projectDir,
-          enabledBackends: this.capabilityManifest?.externalAgentBackends ?? this.cfg.externalAgents!.backends,
-          onStatusUpdate: (msg) => this.sendStatusUpdate(msg),
-        }),
-      );
-    }
-
-    if (
-      this.mcpRunner &&
-      this.cfg.mcp &&
-      (this.capabilityManifest === null || hasMainRuntimeCapability(this.capabilityManifest, "mcp"))
-    ) {
-      await this.awaitCurrent(() => this.mcpRunner!.ready);
-      tools.push(...createMcpTools(this.mcpRunner));
-    }
-
-    return tools.map((tool) => this.guardTool(tool));
   }
 
   /**

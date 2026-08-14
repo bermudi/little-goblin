@@ -8,6 +8,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { AgentRunner, type SurfaceAgentRunnerOptions } from "./mod.ts";
 import { prepareTestSurfaceRuntimePlan } from "./runtime-plan.test-support.ts";
+import { CapabilityManifestToolSource } from "./tool-assembly.ts";
 import { dmSurface } from "../surface.ts";
 import { PiAgentBackend } from "./backend.ts";
 import { createFauxPiServices } from "../test/faux-pi-services.ts";
@@ -51,7 +52,7 @@ async function makeMemoryContext(home: string, surface = dmSurface(1)) {
   }
 }
 
-type DirectSurfaceRunnerOptions = Omit<SurfaceAgentRunnerOptions, "plan"> & {
+type DirectSurfaceRunnerOptions = Omit<SurfaceAgentRunnerOptions, "plan" | "surfaceToolSource"> & {
   surface: ReturnType<typeof dmSurface>;
   memoryContext: Awaited<ReturnType<typeof makeMemoryContext>>;
   customTools: ToolDefinition[];
@@ -70,7 +71,7 @@ async function makePreparedRunner(options: DirectSurfaceRunnerOptions): Promise<
     customTools,
     resolvedModel,
   });
-  return new AgentRunner({ cfg, sessionId, plan, ...runnerOptions });
+  return new AgentRunner({ cfg, sessionId, plan, surfaceToolSource: new CapabilityManifestToolSource(plan, {}), ...runnerOptions });
 }
 
 describe("AgentRunner pi-ai contract", () => {

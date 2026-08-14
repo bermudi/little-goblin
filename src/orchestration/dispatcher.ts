@@ -20,6 +20,7 @@ import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
 import type { SurfaceSettings } from "./conversation-lifecycle.ts";
 import { PreparedRuntimeAssembler } from "./prepared-runtime.ts";
 import type { PreparedSurfaceRuntimePlan } from "../agent/runtime-plan.ts";
+import { CapabilityManifestToolSource } from "../agent/tool-assembly.ts";
 import { ConversationRuntimeHost, type RuntimeDisposalOptions } from "./conversation-runtime-host.ts";
 import type { SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { AttachmentSignal, AttachedWork, CurrentBindingGuard, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
@@ -196,11 +197,13 @@ export class TurnDispatcher {
       cfg: this.cfg,
       sessionId: plan.conversationId,
       plan,
-      subagentRunner: this.subagentRunner,
+      surfaceToolSource: new CapabilityManifestToolSource(plan, {
+        scheduleStore: this.scheduleStore,
+        subagentRunner: this.subagentRunner,
+        externalAgentRunner: this.externalAgentRunner,
+        mcpRunner: this.mcpRunner,
+      }),
       getTopicName: this.getTopicName,
-      scheduleStore: this.scheduleStore,
-      externalAgentRunner: this.externalAgentRunner,
-      mcpRunner: this.mcpRunner,
       delegatedRuntimeContext,
       embeddingProvider: this.embeddingProvider,
       dreamingPipeline: this.dreamingPipeline,

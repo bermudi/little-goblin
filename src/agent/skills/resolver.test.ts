@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  MAX_SKILL_SNAPSHOT_ENTRIES,
   resolveSkillSet,
   DEFAULT_SKILL_POLICY,
   SkillResolutionError,
@@ -276,6 +277,28 @@ describe("SkillCatalogResolver", () => {
       expect(diag).toBeDefined();
       expect(diag!.source).toBe("goblin");
       expect(diag!.code).toBe("invalid_metadata");
+    });
+  });
+
+  describe("snapshot limits", () => {
+    it("caps the number of visited skill-directory entries", async () => {
+      const root = goblinSkillsPath(tmpDir);
+      const skillDir = join(root, "many-resources");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, "SKILL.md"),
+        "---\nname: many-resources\ndescription: many resources\n---\nbody\n",
+        "utf-8",
+      );
+      for (let index = 0; index < MAX_SKILL_SNAPSHOT_ENTRIES; index += 1) {
+        writeFileSync(join(skillDir, `empty-${index}`), "");
+      }
+
+      await expect(
+        resolveSkillSet(personalEnvironment(), DEFAULT_SKILL_POLICY, tmpDir),
+      ).rejects.toThrow(
+        `skill snapshot exceeds ${MAX_SKILL_SNAPSHOT_ENTRIES} entries: ${skillDir}`,
+      );
     });
   });
 });

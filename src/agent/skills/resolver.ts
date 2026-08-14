@@ -13,7 +13,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { opendir, readFile, stat } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import {
   loadSourcedSkills,
@@ -34,6 +34,13 @@ import {
   SourceSelection,
   normalizeSkillPolicy,
 } from "./types.ts";
+
+/** Maximum raw size of one captured skill resource. */
+export const MAX_SKILL_FILE_BYTES = 1 * 1024 * 1024;
+/** Maximum UTF-8 size of one serialized captured skill directory. */
+export const MAX_SKILL_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+/** Maximum directory entries visited while capturing one skill directory. */
+export const MAX_SKILL_SNAPSHOT_ENTRIES = 4096;
 
 /**
  * Map a source to its exact filesystem root(s) for the given environment.
@@ -217,23 +224,77 @@ async function resolveWithEnv(
 
 async function captureSkillSnapshot(filePath: string): Promise<ResolvedSkill["snapshot"]> {
   const skillDirectory = dirname(filePath);
+  const entryPath = relative(skillDirectory, filePath);
   const files: { relativePath: string; base64: string }[] = [];
+  // Count the exact JSON representation incrementally. This includes the
+  // entry path, file paths, base64 payloads, and JSON separators, rather than
+  // budgeting only file contents.
+  let snapshotBytes = Buffer.byteLength(
+    `{"entryPath":${JSON.stringify(entryPath)},"files":[]}`,
+  );
+  if (snapshotBytes > MAX_SKILL_SNAPSHOT_BYTES) {
+    throw new SkillResolutionError(
+      `skill snapshot exceeds ${MAX_SKILL_SNAPSHOT_BYTES} bytes: ${skillDirectory}`,
+    );
+  }
+  let visitedEntries = 0;
 
   async function visit(directory: string): Promise<void> {
-    const entries = await readdir(directory, { withFileTypes: true });
-    for (const entry of entries) {
+    const handle = await opendir(directory);
+    for await (const entry of handle) {
+      visitedEntries += 1;
+      if (visitedEntries > MAX_SKILL_SNAPSHOT_ENTRIES) {
+        throw new SkillResolutionError(
+          `skill snapshot exceeds ${MAX_SKILL_SNAPSHOT_ENTRIES} entries: ${skillDirectory}`,
+        );
+      }
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
         await visit(path);
         continue;
       }
-      // Skill resources are ordinary files. Follow file symlinks as the
-      // catalog loader does, but do not recurse through directory symlinks.
-      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+      // Skill resources are ordinary files. Resolve symlink targets before
+      // reading so directory links are skipped while file links are copied.
+      let targetStats: Awaited<ReturnType<typeof stat>>;
+      if (entry.isSymbolicLink()) {
+        try {
+          targetStats = await stat(path);
+        } catch (error) {
+          // A broken link is not a usable resource.
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+          throw error;
+        }
+        if (!targetStats.isFile()) continue;
+      } else {
+        if (!entry.isFile()) continue;
+        targetStats = await stat(path);
+      }
+      if (targetStats.size > MAX_SKILL_FILE_BYTES) {
+        throw new SkillResolutionError(
+          `skill resource exceeds ${MAX_SKILL_FILE_BYTES} bytes: ${path}`,
+        );
+      }
       const relativePath = relative(skillDirectory, path);
+      const bytes = await readFile(path);
+      if (bytes.byteLength > MAX_SKILL_FILE_BYTES) {
+        throw new SkillResolutionError(
+          `skill resource exceeds ${MAX_SKILL_FILE_BYTES} bytes: ${path}`,
+        );
+      }
+      const base64 = bytes.toString("base64");
+      const serializedFile = JSON.stringify({ relativePath, base64 });
+      const nextBytes = snapshotBytes +
+        (files.length === 0 ? 0 : Buffer.byteLength(",")) +
+        Buffer.byteLength(serializedFile);
+      if (nextBytes > MAX_SKILL_SNAPSHOT_BYTES) {
+        throw new SkillResolutionError(
+          `skill snapshot exceeds ${MAX_SKILL_SNAPSHOT_BYTES} bytes: ${skillDirectory}`,
+        );
+      }
+      snapshotBytes = nextBytes;
       files.push({
         relativePath,
-        base64: (await readFile(path)).toString("base64"),
+        base64,
       });
     }
   }
@@ -241,7 +302,7 @@ async function captureSkillSnapshot(filePath: string): Promise<ResolvedSkill["sn
   await visit(skillDirectory);
   files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   return {
-    entryPath: relative(skillDirectory, filePath),
+    entryPath,
     files,
   };
 }

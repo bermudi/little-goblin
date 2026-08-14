@@ -592,13 +592,20 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
 
   private async disposeAllOnce(eagerDisposals: readonly Promise<void>[]): Promise<void> {
     const failures: unknown[] = [];
+    const observedQueuedWork = new Set<Promise<void>>();
     // Drain accepted queue chains after their runtime generations have been
     // fenced. A currently executing turn is unblocked by runner disposal;
     // queued entries observe stale authority and do not begin during shutdown.
     for (;;) {
-      const accepted = await Promise.allSettled([...this.queuedWork]);
-      for (const result of accepted) {
-        if (result.status === "rejected") flattenFailures(result.reason, failures);
+      const queued = [...this.queuedWork];
+      const accepted = await Promise.allSettled(queued);
+      for (const [index, result] of accepted.entries()) {
+        const promise = queued[index];
+        if (promise === undefined) continue;
+        if (result.status === "rejected" && !observedQueuedWork.has(promise)) {
+          observedQueuedWork.add(promise);
+          flattenFailures(result.reason, failures);
+        }
       }
       if (this.queuedWork.size === 0) break;
     }

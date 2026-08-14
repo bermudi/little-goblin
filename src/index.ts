@@ -73,7 +73,9 @@ async function main(): Promise<void> {
       // so buffered text is admitted into runtime queues while runtime
       // admission is still open.
       const telegramDrain = closeAdmission();
+      void telegramDrain.catch(() => {});
       const schedulerDrain = scheduler.stopAndDrain();
+      void schedulerDrain.catch(() => {});
 
       // Stop polling and finish the Telegram coalescer flush before fencing
       // runtimes. The scheduler drain is already in progress, but must not be

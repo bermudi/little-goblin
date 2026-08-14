@@ -334,6 +334,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         return;
       }
       log.warn("steer failed", { error: msg, sessionId: session.id });
+      throw err;
     }
   }
 

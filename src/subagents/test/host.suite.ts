@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import type { PiServices } from "../../pi-host.ts";
 import {
   PiSubagentHost,
@@ -272,6 +272,39 @@ describe("PiSubagentHost contract", () => {
     expect(loader.options.noSkills).toBe(true);
     expect(loader.options.additionalSkillPaths).toEqual([skillsDir]);
     expect(loader.options.systemPrompt).toBe("# Researcher");
+
+    sessionHolder.complete();
+    await result;
+  });
+
+  it("materializes malformed skill names under an index-only directory", async () => {
+    const result = new PiSubagentHost(makeConfig(home))
+      .prepare({
+        ...genericPreparation(home),
+        resource: {
+          kind: "generic",
+          skillPaths: [],
+          skillSnapshots: [{
+            name: "UPPER BAD",
+            snapshot: {
+              entryPath: "SKILL.md",
+              files: [{
+                relativePath: "SKILL.md",
+                base64: Buffer.from("---\nname: UPPER BAD\n---\nbody\n").toString("base64"),
+              }],
+            },
+          }],
+        },
+      })
+      .run(invocation());
+    await flush();
+
+    const options = getCapturedCreateArgs()[0] as Record<string, unknown>;
+    const loader = options.resourceLoader as { options: { additionalSkillPaths: string[] } };
+    const pathParts = loader.options.additionalSkillPaths[0]!.split(sep);
+    expect(pathParts.slice(-2)).toEqual(["0", "SKILL.md"]);
+    expect(loader.options.additionalSkillPaths[0]).not.toContain("UPPER BAD");
+    expect(readFileSync(loader.options.additionalSkillPaths[0]!, "utf8")).toContain("UPPER BAD");
 
     sessionHolder.complete();
     await result;

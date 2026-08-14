@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { rmSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import {
   DefaultResourceLoader,
   SessionManager,
@@ -15,7 +15,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
 import { piAgentDir, type PiServices } from "../pi-host.ts";
 import { sessionDir } from "../sessions/paths.ts";
-import type { ResolvedSkillSet } from "./skills/mod.ts";
+import type { ResolvedSkillSet, ResolvedSkillSnapshot } from "./skills/mod.ts";
 import { PiAgentBackend } from "./backend.ts";
 
 let tmpDir: string;
@@ -72,7 +72,7 @@ interface HarnessState {
   loaderOptions: unknown;
 }
 
-function makeHarness(loadedSkillPaths: readonly string[]): {
+function makeHarness(loadedSkillPaths: readonly string[] | null): {
   backend: PiAgentBackend;
   state: HarnessState;
 } {
@@ -84,6 +84,7 @@ function makeHarness(loadedSkillPaths: readonly string[]): {
   const fakeSession = {
     isStreaming: false,
     subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
+    dispose: () => {},
   } as unknown as AgentSession;
 
   class TestResourceLoader {
@@ -96,8 +97,10 @@ function makeHarness(loadedSkillPaths: readonly string[]): {
     }
 
     getSkills(): { skills: Array<{ filePath: string }>; diagnostics: [] } {
+      const options = state.loaderOptions as { additionalSkillPaths?: readonly string[] };
+      const paths = loadedSkillPaths ?? options.additionalSkillPaths ?? [];
       return {
-        skills: loadedSkillPaths.map((filePath) => ({ filePath })),
+        skills: paths.map((filePath) => ({ filePath })),
         diagnostics: [],
       };
     }
@@ -206,5 +209,35 @@ describe("PiAgentBackend skill loading", () => {
     };
     expect(options.noSkills).toBe(true);
     expect(options.additionalSkillPaths).toEqual([]);
+  });
+
+  it("materializes malformed skill names under an index-only directory", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "goblin-backend-test-"));
+    const snapshot: ResolvedSkillSnapshot = {
+      entryPath: "SKILL.md",
+      files: [{
+        relativePath: "SKILL.md",
+        base64: Buffer.from("---\nname: UPPER BAD\n---\nbody\n").toString("base64"),
+      }],
+    };
+    const harness = makeHarness(null);
+
+    await harness.backend.init(makeInitArgs(tmpDir, {
+      skills: [{
+        source: "goblin",
+        name: "UPPER BAD",
+        filePath: join(tmpDir, "catalog", "SKILL.md"),
+        snapshot,
+      }],
+      diagnostics: [],
+      fingerprint: "test-fingerprint",
+    }));
+
+    const options = harness.state.loaderOptions as { additionalSkillPaths: string[] };
+    const pathParts = options.additionalSkillPaths[0]!.split(sep);
+    expect(pathParts.slice(-2)).toEqual(["0", "SKILL.md"]);
+    expect(options.additionalSkillPaths[0]).not.toContain("UPPER BAD");
+    expect(readFileSync(options.additionalSkillPaths[0]!, "utf8")).toContain("UPPER BAD");
+    harness.backend.dispose();
   });
 });

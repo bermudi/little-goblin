@@ -199,6 +199,15 @@ function deepFrozenClone<T>(value: T): T {
 
 function deepFreeze<T>(value: T): T {
   if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
-  for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
+  return deepFreezeSeen(value, new WeakSet<object>());
+}
+
+function deepFreezeSeen<T>(value: T, seen: WeakSet<object>): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    deepFreezeSeen(nested, seen);
+  }
   return Object.freeze(value);
 }

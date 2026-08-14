@@ -6,10 +6,10 @@
  * recursion, Telegram, or delegated-work ownership.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   DefaultResourceLoader,
   SessionManager,
@@ -23,7 +23,11 @@ import {
 import type { Config } from "../config.ts";
 import { dispatchAgentEvent, extractAssistantText, type TurnCallbacks } from "../agent/events.ts";
 import { resolveModel } from "../agent/models.ts";
-import { SkillResolutionError, type ResolvedSkillSnapshot } from "../agent/skills/mod.ts";
+import {
+  materializeSkillSnapshot,
+  SkillResolutionError,
+  type ResolvedSkillSnapshot,
+} from "../agent/skills/mod.ts";
 import { boundedError, log } from "../log.ts";
 import { createPiServices, piAgentDir, type PiServices } from "../pi-host.ts";
 import type { SubagentHistoryTarget } from "./types.ts";
@@ -794,26 +798,6 @@ interface ResourceLoaderResult {
   readonly skillSnapshotDir: string | null;
 }
 
-function materializeSkillSnapshot(
-  snapshot: ResolvedSkillSnapshot,
-  skillName: string,
-  index: number,
-  root: string,
-): string {
-  const skillDirectory = join(root, `${index}-${skillName}`);
-  mkdirSync(skillDirectory, { recursive: true });
-  for (const file of snapshot.files) {
-    const target = resolve(skillDirectory, file.relativePath);
-    const escaped = relative(skillDirectory, target);
-    if (escaped.startsWith("..")) {
-      throw new SkillResolutionError(`invalid relative path in skill snapshot: ${file.relativePath}`);
-    }
-    mkdirSync(resolve(target, ".."), { recursive: true });
-    writeFileSync(target, Buffer.from(file.base64, "base64"), { flag: "wx" });
-  }
-  return resolve(skillDirectory, snapshot.entryPath);
-}
-
 async function buildResourceLoader(
   home: string,
   plan: SubagentPreparation,
@@ -845,7 +829,7 @@ async function buildResourceLoader(
       ? (() => {
           skillSnapshotDir = mkdtempSync(join(tmpdir(), "little-goblin-subagent-skills-"));
           return plan.resource.skillSnapshots.map((skill, index) =>
-            materializeSkillSnapshot(skill.snapshot, skill.name, index, skillSnapshotDir!),
+            materializeSkillSnapshot(skill.snapshot, index, skillSnapshotDir!),
           );
         })()
       : [...plan.resource.skillPaths];

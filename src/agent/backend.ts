@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   DefaultResourceLoader,
   SessionManager,
@@ -23,7 +23,11 @@ import { log } from "../log.ts";
 import { createPiServices, findMostRecentCompatiblePiSession, piAgentDir, type PiServices } from "../pi-host.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { ResolvedModel } from "./models.ts";
-import { SkillResolutionError, type ResolvedSkillSet, type ResolvedSkillSnapshot } from "./skills/mod.ts";
+import {
+  materializeSkillSnapshot,
+  SkillResolutionError,
+  type ResolvedSkillSet,
+} from "./skills/mod.ts";
 
 // We intentionally use structural matches for the payload shapes so callers
 // (project notice, memory snapshot) do not need to import pi's internal
@@ -97,27 +101,6 @@ function isEnoent(error: unknown): boolean {
 
 function normalizeSkillPath(filePath: string): string {
   return resolve(filePath);
-}
-
-function materializeSkillSnapshot(
-  snapshot: ResolvedSkillSnapshot,
-  skillName: string,
-  index: number,
-  root: string,
-): string {
-  const skillDirectory = join(root, `${index}-${skillName}`);
-  mkdirSync(skillDirectory, { recursive: true });
-  for (const file of snapshot.files) {
-    const target = resolve(skillDirectory, file.relativePath);
-    const escaped = relative(skillDirectory, target);
-    if (escaped.startsWith("..")) {
-      throw new SkillResolutionError(`invalid relative path in skill snapshot: ${file.relativePath}`);
-    }
-    const parent = resolve(target, "..");
-    mkdirSync(parent, { recursive: true });
-    writeFileSync(target, Buffer.from(file.base64, "base64"), { flag: "wx" });
-  }
-  return resolve(skillDirectory, snapshot.entryPath);
 }
 
 async function validateSelectedSkillFiles(skillPaths: readonly string[]): Promise<void> {
@@ -201,7 +184,7 @@ export class PiAgentBackend implements AgentBackend {
       const selectedSkillPaths = resolvedSkills.skills.map((skill, index) =>
         skill.snapshot === undefined || snapshotRoot === null
           ? skill.filePath
-          : materializeSkillSnapshot(skill.snapshot, skill.name, index, snapshotRoot),
+          : materializeSkillSnapshot(skill.snapshot, index, snapshotRoot),
       );
       await validateSelectedSkillFiles(selectedSkillPaths);
 

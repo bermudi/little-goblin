@@ -363,9 +363,20 @@ export class AgentEventHandler {
     const send = this.callbacks?.sendNotice;
     if (send === undefined) return;
 
-    let delivery: Promise<void>;
     try {
-      delivery = send(text);
+      Promise.resolve(send(text)).then(
+        () => {
+          // The notice has no compensating action. The current check prevents a
+          // stale delivery from becoming the start of a follow-up chain.
+          if (!this.isCurrent()) return;
+        },
+        (err: unknown) => {
+          log.warn("prompt-file notice failed", {
+            error: err instanceof Error ? err.message : String(err),
+            sessionId: this.sessionId,
+          });
+        },
+      );
     } catch (err) {
       log.warn("prompt-file notice failed", {
         error: err instanceof Error ? err.message : String(err),
@@ -373,19 +384,5 @@ export class AgentEventHandler {
       });
       return;
     }
-
-    delivery.then(
-      () => {
-        // The notice has no compensating action. The current check prevents a
-        // stale delivery from becoming the start of a follow-up chain.
-        if (!this.isCurrent()) return;
-      },
-      (err: unknown) => {
-        log.warn("prompt-file notice failed", {
-          error: err instanceof Error ? err.message : String(err),
-          sessionId: this.sessionId,
-        });
-      },
-    );
   }
 }

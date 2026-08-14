@@ -749,7 +749,7 @@ describe("Telegram intake", () => {
     await intake.handleText(message, "slow");
     await waitFor(() => runners[0]!.isStreaming);
 
-    await intake.handleText(message, "steer this");
+    await expect(intake.handleText(message, "steer this")).rejects.toThrow("session disposed");
     await flushMicrotasks();
 
     expect(runners[0]!.followUp).toHaveBeenCalledTimes(1);

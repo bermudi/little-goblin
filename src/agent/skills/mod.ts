@@ -29,4 +29,11 @@ export type {
   SourceSelection,
 } from "./types.ts";
 
-export { resolveSkillSet } from "./resolver.ts";
+export {
+  MAX_SKILL_FILE_BYTES,
+  MAX_SKILL_SNAPSHOT_ENTRIES,
+  MAX_SKILL_SNAPSHOT_BYTES,
+  resolveSkillSet,
+} from "./resolver.ts";
+
+export { materializeSkillSnapshot } from "./materializer.ts";

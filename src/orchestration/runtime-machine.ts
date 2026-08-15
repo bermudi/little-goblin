@@ -90,16 +90,6 @@ function flattenFailures(error: unknown, failures: unknown[]): void {
   failures.push(error);
 }
 
-function isPendingDelegatedInvalidation(
-  pending: ReadonlyMap<ConversationId, Set<ConversationRuntimeId>>,
-  runtimeId: ConversationRuntimeId,
-): boolean {
-  for (const runtimeIds of pending.values()) {
-    if (runtimeIds.has(runtimeId)) return true;
-  }
-  return false;
-}
-
 // ─── queue ───────────────────────────────────────────────────────────
 
 interface QueueEntry {
@@ -306,7 +296,7 @@ export class RuntimeMachine {
       complete,
     };
     this.creation = creation;
-    this.transitionTo("preparing");
+    this.transitionTo("preparing", "reserveCreation");
     return creation;
   }
 
@@ -352,7 +342,7 @@ export class RuntimeMachine {
     this.runtimeId = registration.runtimeId;
     this.skillContext = registration.skillContext;
     this.isInternal = false;
-    this.transitionTo("active");
+    this.transitionTo("active", "registerSurfaceRuntime");
   }
 
   registerInternalRuntime(runner: AgentRunner): void {
@@ -375,7 +365,7 @@ export class RuntimeMachine {
     this.nextGeneration();
     this.runner = runner;
     this.isInternal = true;
-    this.transitionTo("active");
+    this.transitionTo("active", "registerInternalRuntime");
   }
 
   // ── queue ──────────────────────────────────────────────────────────
@@ -460,8 +450,8 @@ export class RuntimeMachine {
       if (entry.isPrompt && !entry.started && !entry.cancelled) {
         entry.cancelled = true;
         this.queue.splice(i, 1);
-        entry.onFenced?.();
-        entry.onSettled?.();
+        this.safeCallback(entry.onFenced, entry.id);
+        this.safeCallback(entry.onSettled, entry.id);
         entry.resolveSettled();
         this.checkQueueIdle();
         return true;
@@ -503,8 +493,8 @@ export class RuntimeMachine {
         // admission closed. Started entries are allowed to drain.
         if (entry.cancelled || (!entry.started && !this.deps.isAdmissionOpen())) {
           this.queue.shift();
-          entry.onFenced?.();
-          entry.onSettled?.();
+          this.safeCallback(entry.onFenced, entry.id);
+          this.safeCallback(entry.onSettled, entry.id);
           entry.resolveSettled();
           continue;
         }
@@ -512,24 +502,24 @@ export class RuntimeMachine {
         // Commit point: check epoch authority before starting.
         if (!entry.isCurrent()) {
           this.queue.shift();
-          entry.onFenced?.();
-          entry.onSettled?.();
+          this.safeCallback(entry.onFenced, entry.id);
+          this.safeCallback(entry.onSettled, entry.id);
           entry.resolveSettled();
           continue;
         }
 
         entry.started = true;
-        entry.onStart?.();
+        this.safeCallback(entry.onStart, entry.id);
         try {
           await entry.run(entry.isCurrent);
           // Post-await commit point: if the epoch bumped during the await,
           // fence the result.
           if (!entry.isCurrent()) {
-            entry.onFenced?.();
+            this.safeCallback(entry.onFenced, entry.id);
           }
         } catch (err) {
           if (!entry.isCurrent()) {
-            entry.onFenced?.();
+            this.safeCallback(entry.onFenced, entry.id);
           } else {
             try {
               await entry.onError(err);
@@ -542,12 +532,30 @@ export class RuntimeMachine {
           }
         }
         this.queue.shift();
-        entry.onSettled?.();
+        this.safeCallback(entry.onSettled, entry.id);
         entry.resolveSettled();
       }
     } finally {
       this.queueRunning = false;
       this.checkQueueIdle();
+    }
+  }
+
+  /**
+   * Invoke a queue callback, logging and swallowing any throw so a faulty
+   * callback cannot leak a ticket or cause a double-execution by leaving the
+   * entry in an inconsistent state.
+   */
+  private safeCallback(fn: (() => void) | undefined, entryId: number): void {
+    if (!fn) return;
+    try {
+      fn();
+    } catch (error) {
+      log.error("runtime queue callback threw", {
+        conversationId: this.deps.conversationId,
+        entryId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -619,9 +627,9 @@ export class RuntimeMachine {
 
     // The machine goes idle (or stays preparing if the creation is preserved).
     if (preservesCreation) {
-      this.transitionTo("preparing");
+      this.transitionTo("preparing", "invalidate-preserve");
     } else {
-      this.transitionTo("idle");
+      this.transitionTo("idle", "invalidate-drop");
     }
 
     // After fencing, check if a disposal is already in flight for this
@@ -631,6 +639,13 @@ export class RuntimeMachine {
       if (draining.generation === currentGeneration) {
         return draining.promise;
       }
+    }
+
+    // Nothing to drain — the machine was idle with no runner, no creation,
+    // and no pending delegated invalidations. Return a resolved promise
+    // without creating a spurious drain entry.
+    if (priorRunner === undefined && this.pendingDelegatedInvalidations.size === 0) {
+      return Promise.resolve();
     }
 
     // Start physical cleanup as a drain generation.
@@ -666,8 +681,8 @@ export class RuntimeMachine {
         remaining.push(entry);
       } else {
         entry.cancelled = true;
-        entry.onFenced?.();
-        entry.onSettled?.();
+        this.safeCallback(entry.onFenced, entry.id);
+        this.safeCallback(entry.onSettled, entry.id);
         entry.resolveSettled();
       }
     }
@@ -800,10 +815,15 @@ export class RuntimeMachine {
    * reported rather than spun.
    */
   async shutdown(): Promise<void> {
-    // Fence the current generation if any work remains.
-    if (this.runner !== undefined || this.creation !== undefined || this.pendingDelegatedInvalidations.size > 0) {
-      void this.invalidate("shutdown");
-    }
+    // Capture the in-flight creation's completion before invalidating, so
+    // shutdown waits for the caller to finishCreation even after the creation
+    // is fenced.
+    const creationCompletion = this.creation?.completion;
+
+    // Always fence the current generation — the machine may be in
+    // `preparing` with no runner or creation (e.g. a failed registration
+    // left it in preparing after the creation was completed).
+    void this.invalidate("shutdown");
 
     // Drain the queue first: started entries drain, unstarted entries are
     // fenced by the admission check in pump.
@@ -815,17 +835,20 @@ export class RuntimeMachine {
 
     for (;;) {
       const drainPromises = [...this.drain].map((d) => d.promise);
-      const creationCompletion = this.creation?.completion;
 
       // Retry pending delegated invalidations that haven't been attempted.
+      // Only retry when no drain is in flight — a drain in flight already
+      // covers these IDs.
       const retryable = [...this.pendingDelegatedInvalidations].filter(
         (id) => !attemptedPending.has(id),
       );
-      retryable.forEach((id) => attemptedPending.add(id));
 
-      if (retryable.length > 0 && this.runner === undefined && this.drain.size === 0) {
-        // Re-invalidate to retry the pending delegated invalidations.
+      if (retryable.length > 0 && this.drain.size === 0) {
+        // Mark as attempted before re-invalidating so a persistent failure
+        // doesn't spin forever.
+        retryable.forEach((id) => attemptedPending.add(id));
         void this.invalidate("shutdown");
+        continue; // Re-capture drain promises with the new disposal
       }
 
       const promises: Promise<unknown>[] = [...drainPromises];
@@ -850,16 +873,19 @@ export class RuntimeMachine {
       ) {
         break;
       }
+
+      // All retries exhausted but pending invalidations remain — report
+      // them rather than spinning forever.
+      if (retryable.length === 0 && this.drain.size === 0 && this.pendingDelegatedInvalidations.size > 0) {
+        break;
+      }
     }
 
     // Filter out delegated invalidation failures that have been recovered.
     const reportable = failures.filter(
       (f) =>
         !(f instanceof DelegatedInvalidationFailure) ||
-        isPendingDelegatedInvalidation(
-          new Map([[this.deps.conversationId, this.pendingDelegatedInvalidations]]),
-          f.runtimeId,
-        ),
+        this.pendingDelegatedInvalidations.has(f.runtimeId),
     );
     if (reportable.length === 1) {
       throw reportable[0] instanceof Error ? reportable[0] : new Error(String(reportable[0]));
@@ -871,12 +897,12 @@ export class RuntimeMachine {
 
   // ── transition guard ───────────────────────────────────────────────
 
-  private transitionTo(target: MachinePhase): void {
+  private transitionTo(target: MachinePhase, op: TransitionOp): void {
     const source = this.phase;
-    if (!isLegalTransition(source, target)) {
+    if (!isLegalTransition(source, target, op)) {
       throw new Error(
         `illegal runtime machine transition for ${this.deps.conversationId}: ` +
-          `${source} → ${target}`,
+          `${source} → ${target} via ${op}`,
       );
     }
     this.phase = target;
@@ -885,30 +911,63 @@ export class RuntimeMachine {
 
 // ─── transition table ────────────────────────────────────────────────
 
+/** The operation triggering a phase transition. */
+type TransitionOp =
+  | "reserveCreation"
+  | "registerSurfaceRuntime"
+  | "registerInternalRuntime"
+  | "invalidate-preserve"
+  | "invalidate-drop";
+
 /**
  * Legal transition table. Every transition not listed here is illegal and
- * throws with structured identity (conversation + source → target).
+ * throws with structured identity (conversation + source → target via op).
  *
  *   idle      → preparing   reserveCreation
  *   preparing → preparing   reserveCreation (newer generation supersedes)
  *   preparing → active      registerSurfaceRuntime / registerInternalRuntime
  *   idle      → active      registerInternalRuntime
  *   active    → active      registerInternalRuntime (re-register internal)
- *   active    → preparing   invalidate("settings-change", preserveCreation)
- *   active    → idle        invalidate("binding-change" | "shutdown")
- *   preparing → idle        invalidate("binding-change" | "shutdown")
- *   idle      → idle        invalidate (no-op)
+ *   active    → preparing   reserveCreation (replacement) / invalidate-preserve (settings-change)
+ *   active    → idle        invalidate-drop (binding-change | shutdown)
+ *   preparing → idle        invalidate-drop (binding-change | shutdown)
+ *   idle      → idle        invalidate-drop (no-op)
+ *
+ * Notably illegal:
+ *   idle → active via registerSurfaceRuntime (requires a creation first)
+ *   active → active via registerSurfaceRuntime (runner already registered)
+ *   preparing → preparing via invalidate-preserve (no runner to preserve from)
  */
-function isLegalTransition(source: MachinePhase, target: MachinePhase): boolean {
-  // Same-phase is always legal (no-op or re-entry from same state).
+function isLegalTransition(
+  source: MachinePhase,
+  target: MachinePhase,
+  op: TransitionOp,
+): boolean {
+  // Same-phase is legal for re-entry ops.
   if (source === target) return true;
 
   switch (source) {
     case "idle":
-      return target === "preparing" || target === "active";
+      // idle → preparing via reserveCreation
+      // idle → active via registerInternalRuntime only
+      if (target === "preparing") return op === "reserveCreation";
+      if (target === "active") return op === "registerInternalRuntime";
+      return false;
     case "preparing":
-      return target === "active" || target === "idle";
+      // preparing → active via registration
+      // preparing → idle via invalidate-drop
+      if (target === "active") {
+        return op === "registerSurfaceRuntime" || op === "registerInternalRuntime";
+      }
+      if (target === "idle") return op === "invalidate-drop";
+      return false;
     case "active":
-      return target === "preparing" || target === "idle";
+      // active → preparing via reserveCreation (replacement) or invalidate-preserve
+      // active → idle via invalidate-drop
+      if (target === "preparing") {
+        return op === "invalidate-preserve" || op === "reserveCreation";
+      }
+      if (target === "idle") return op === "invalidate-drop";
+      return false;
   }
 }

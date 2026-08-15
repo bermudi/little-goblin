@@ -66,7 +66,13 @@ function makeRegistration(surfaceIdStr = "tg:v1:dm:1"): SurfaceRuntimeRegistrati
 
 function registerSurface(machine: RuntimeMachine, runner?: AgentRunner): AgentRunner {
   const r = runner ?? fakeRunner();
-  machine.registerSurfaceRuntime(r, makeRegistration());
+  // Match the real usage pattern: reserve a creation, then register.
+  const creation = machine.reserveCreation(surfaceId(dmSurface(1)), "test-settings");
+  try {
+    machine.registerSurfaceRuntime(r, makeRegistration());
+  } finally {
+    creation.complete();
+  }
   return r;
 }
 
@@ -537,6 +543,37 @@ describe("RuntimeMachine shutdown", () => {
     await m.shutdown();
     expect(m.currentPhase).toBe("idle");
   });
+
+  it("shutdown terminates and reports failure when delegated invalidation fails persistently", async () => {
+    let attempts = 0;
+    const host = {
+      invalidateRuntime: async (): Promise<void> => {
+        attempts += 1;
+        throw new Error("persistent delegated failure");
+      },
+    } as unknown as DelegatedWorkHost;
+    const m = new RuntimeMachine({
+      conversationId: "conv-x",
+      delegatedWorkHost: host,
+      isAdmissionOpen: () => true,
+    });
+    registerSurface(m);
+
+    // shutdown should retry once, then report the unresolved failure
+    // rather than spinning forever. Both the initial and retry failures
+    // are collected into an AggregateError.
+    let shutdownError: unknown;
+    try {
+      await m.shutdown();
+    } catch (error) {
+      shutdownError = error;
+    }
+    expect(shutdownError).toBeDefined();
+    expect(shutdownError instanceof AggregateError).toBe(true);
+    expect((shutdownError as AggregateError).errors).toHaveLength(2);
+    expect(attempts).toBe(2);
+    expect(m.currentPhase).toBe("idle");
+  });
 });
 
 // ─── seeded interleaving property test ───────────────────────────────
@@ -562,6 +599,8 @@ describe("RuntimeMachine seeded interleaving property test", () => {
     settled: boolean;
     /** The epoch at schedule time. */
     epoch: number;
+    /** Whether the original runner was still registered when run was entered. */
+    runnerRegisteredAtStart: boolean;
   }
 
   /**
@@ -582,7 +621,6 @@ describe("RuntimeMachine seeded interleaving property test", () => {
     // terminate promptly.
     const opCount = 20 + Math.floor(rng() * 30);
     let shutdownCalled = false;
-    let epochAtLastInvalidate = m.epoch;
 
     for (let i = 0; i < opCount; i++) {
       if (shutdownCalled) break;
@@ -597,6 +635,7 @@ describe("RuntimeMachine seeded interleaving property test", () => {
           fenced: false,
           settled: false,
           epoch: m.epoch,
+          runnerRegisteredAtStart: false,
         };
         workRecords.push(record);
         // The isCurrent closure checks if the runner is still registered.
@@ -607,8 +646,13 @@ describe("RuntimeMachine seeded interleaving property test", () => {
             isCurrent,
             async (check) => {
               record.started = true;
-              // The work itself is trivial — it just records execution.
-              // The commit point check happens in the serial executor.
+              // Capture whether the runner is still registered at the
+              // moment run is entered. If the serial executor's commit
+              // point is working, this must be true — the pump checks
+              // isCurrent() before calling run. A promise-chain design
+              // that calls run after the runner is disposed would fail
+              // this check.
+              record.runnerRegisteredAtStart = m.isRegisteredRunner(runner);
               if (check()) {
                 record.executed = true;
               }
@@ -643,7 +687,6 @@ describe("RuntimeMachine seeded interleaving property test", () => {
         } else {
           m.invalidate(reason);
         }
-        epochAtLastInvalidate = m.epoch;
         // Re-register a runner so subsequent admits have a current target.
         // This mimics the lifecycle creating a new runner after invalidation.
         if (m.currentPhase === "idle" && !shutdownCalled) {
@@ -666,18 +709,15 @@ describe("RuntimeMachine seeded interleaving property test", () => {
       await m.shutdown();
     }
 
-    // ─── invariant 1: no work executes after its epoch bumps ───
-    // A work record whose epoch is less than the epoch at the last
-    // invalidation must not have executed. It may have been fenced.
+    // ─── invariant 1: no work enters run after its runner is disposed ───
+    // The serial executor's commit point checks isCurrent() before calling
+    // run. If run is entered, the runner must still be registered. A
+    // promise-chain design that calls run after the runner is disposed
+    // would fail this check — runnerRegisteredAtStart would be false.
     for (const record of workRecords) {
-      if (record.executed && record.epoch < epochAtLastInvalidate) {
-        // The work was scheduled at an older epoch but executed after the
-        // epoch bumped. This is only OK if the runner was re-registered at
-        // the same identity — but we use fakeRunner() for re-registration,
-        // so the isCurrent check would fail. This should never happen.
+      if (record.started && !record.runnerRegisteredAtStart) {
         throw new Error(
-          `trial ${seed}: work ${record.id} executed after epoch bump ` +
-            `(epoch=${record.epoch}, lastInvalidate=${epochAtLastInvalidate})`,
+          `trial ${seed}: work ${record.id} entered run after runner was disposed`,
         );
       }
     }

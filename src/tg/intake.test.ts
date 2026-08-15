@@ -301,11 +301,17 @@ function registerTestRunner(
   conversationId: string,
   runner: AgentRunner,
 ): void {
-  runtimeHost.registerSurfaceRuntime(conversationId, runner, {
-    surfaceId: surfaceId(dmSurface(1)),
-    runtimeId: DelegatedWorkHost.newRuntimeId(),
-    skillContext: { settingsFingerprint: "test-settings", policyFingerprint: "test", manifestFingerprint: null },
-  });
+  // Match the real usage pattern: reserve a creation, then register.
+  const creation = runtimeHost.reserveCreation(conversationId, surfaceId(dmSurface(1)), "test-settings");
+  try {
+    runtimeHost.registerSurfaceRuntime(conversationId, runner, {
+      surfaceId: surfaceId(dmSurface(1)),
+      runtimeId: DelegatedWorkHost.newRuntimeId(),
+      skillContext: { settingsFingerprint: "test-settings", policyFingerprint: "test", manifestFingerprint: null },
+    });
+  } finally {
+    creation.complete();
+  }
 }
 
 function makeMessage(replies: string[] = [], overrides: Partial<TelegramIntakeMessage> = {}): TelegramIntakeMessage {

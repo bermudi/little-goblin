@@ -37,11 +37,17 @@ function registerRunner(
   conversationId: ConversationId,
   runner: AgentRunner,
 ): void {
-  host.registerSurfaceRuntime(conversationId, runner, {
-    surfaceId: surfaceId(dmSurface(1)),
-    runtimeId: asConversationRuntimeId(`runtime-${conversationId}`),
-    skillContext: { settingsFingerprint: "test-settings", policyFingerprint: "test", manifestFingerprint: null },
-  });
+  // Match the real usage pattern: reserve a creation, then register.
+  const creation = host.reserveCreation(conversationId, surfaceId(dmSurface(1)), "test-settings");
+  try {
+    host.registerSurfaceRuntime(conversationId, runner, {
+      surfaceId: surfaceId(dmSurface(1)),
+      runtimeId: asConversationRuntimeId(`runtime-${conversationId}`),
+      skillContext: { settingsFingerprint: "test-settings", policyFingerprint: "test", manifestFingerprint: null },
+    });
+  } finally {
+    creation.complete();
+  }
 }
 
 describe("ConversationRuntimeHost shutdown", () => {

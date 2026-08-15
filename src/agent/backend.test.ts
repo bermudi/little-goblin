@@ -238,6 +238,6 @@ describe("PiAgentBackend skill loading", () => {
     expect(pathParts.slice(-2)).toEqual(["0", "SKILL.md"]);
     expect(options.additionalSkillPaths[0]).not.toContain("UPPER BAD");
     expect(readFileSync(options.additionalSkillPaths[0]!, "utf8")).toContain("UPPER BAD");
-    harness.backend.dispose();
+    await harness.backend.dispose();
   });
 });

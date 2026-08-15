@@ -1023,6 +1023,18 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     let runner: AgentRunner;
     try {
       runner = await dispatcher.getOrCreateRunner(session, surface);
+    } catch (err) {
+      log.error("guest runner creation failed", {
+        error: err instanceof Error ? err.message : String(err),
+        surfaceId: surfaceId(surface),
+        sessionId: session.id,
+      });
+      try {
+        await message.replyVia(errorArticle());
+      } catch (replyErr) {
+        log.warn("guest error reply failed", { error: String(replyErr), surfaceId: surfaceId(surface) });
+      }
+      return;
     } finally {
       onRuntimeAdmission?.();
     }

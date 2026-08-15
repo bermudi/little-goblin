@@ -640,10 +640,18 @@ export class AgentRunner {
    * archive or rebinding.
    */
   async dispose(): Promise<void> {
-    // Fence events synchronously. Pi may deliver callbacks after dispose()
-    // starts, and those callbacks must not write transcripts or metrics.
-    this.eventHandler.close();
     const failures: unknown[] = [];
+    try {
+      // Fence events synchronously. Pi may deliver callbacks after dispose()
+      // starts, and those callbacks must not write transcripts or metrics.
+      this.eventHandler.close();
+    } catch (err) {
+      failures.push(err);
+      log.error("AgentRunner event handler close failed", {
+        sessionId: this.sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
     try {
       await this.dreamingPipeline.awaitSettled(this.sessionId);
     } catch (err) {

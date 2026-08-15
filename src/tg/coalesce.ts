@@ -111,6 +111,7 @@ export class TextCoalescer {
     onRuntimeAdmission?: () => void,
   ): Promise<void> {
     let admit: () => void = () => {};
+    let admitted = false;
     const bufferedAdmission = buffered
       ? new Promise<void>((resolve) => {
         admit = resolve;
@@ -118,6 +119,8 @@ export class TextCoalescer {
       : undefined;
     if (bufferedAdmission) this.activeBufferedAdmissions.add(bufferedAdmission);
     const markRuntimeAdmission = (): void => {
+      if (admitted) return;
+      admitted = true;
       onRuntimeAdmission?.();
       admit();
       if (bufferedAdmission) this.activeBufferedAdmissions.delete(bufferedAdmission);

@@ -10,6 +10,16 @@ export type {
 } from "./surface-runtime-authority.ts";
 import { DelegatedWorkHost, type ConversationRuntimeId } from "../delegated-work/mod.ts";
 import { log } from "../log.ts";
+import {
+  RuntimeMachine,
+  type InvalidationReason,
+  type RuntimeCreation,
+  type RuntimeSkillContext,
+  type SurfaceRuntimeRegistration,
+} from "./runtime-machine.ts";
+
+// Re-export types that callers import from this module.
+export type { RuntimeCreation, RuntimeSkillContext, SurfaceRuntimeRegistration };
 
 /**
  * Preserve lifecycle-command serialization while invalidating model work.
@@ -28,82 +38,6 @@ export interface ConversationRuntimeHostPort {
   disposeRuntime(conversationId: ConversationId, options?: RuntimeDisposalOptions): Promise<void>;
 }
 
-/** Frozen settings and skill identity captured by one runtime generation. */
-export interface RuntimeSkillContext {
-  readonly settingsFingerprint: string;
-  readonly policyFingerprint: string;
-  readonly manifestFingerprint: string | null;
-}
-
-export interface SurfaceRuntimeRegistration {
-  readonly surfaceId: SurfaceId;
-  readonly runtimeId: ConversationRuntimeId;
-  readonly skillContext: RuntimeSkillContext;
-}
-
-/** One in-flight runtime construction reservation. */
-export interface RuntimeCreation {
-  readonly conversationId: ConversationId;
-  readonly promise: Promise<AgentRunner>;
-  readonly completion: Promise<void>;
-  readonly surfaceId: SurfaceId;
-  /** Fingerprint of the complete Surface runtime-settings snapshot. */
-  readonly settingsFingerprint: string;
-  resolve(runner: AgentRunner): void;
-  reject(error: unknown): void;
-  complete(): void;
-}
-
-interface PromptQueueEntry {
-  readonly isPrompt: boolean;
-  started: boolean;
-  cancelled: boolean;
-}
-
-/** One in-flight disposal tagged with the generation it is tearing down. */
-interface ActiveDisposal {
-  readonly generation: number;
-  readonly promise: Promise<void>;
-}
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (error: unknown) => void;
-}
-
-class DelegatedInvalidationFailure extends Error {
-  readonly runtimeId: ConversationRuntimeId;
-
-  constructor(runtimeId: ConversationRuntimeId, cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause));
-    this.name = "DelegatedInvalidationFailure";
-    this.runtimeId = runtimeId;
-    this.cause = cause;
-  }
-}
-
-function isPendingDelegatedInvalidation(
-  pending: ReadonlyMap<ConversationId, Set<ConversationRuntimeId>>,
-  runtimeId: ConversationRuntimeId,
-): boolean {
-  for (const runtimeIds of pending.values()) {
-    if (runtimeIds.has(runtimeId)) return true;
-  }
-  return false;
-}
-
-function deferred<T>(swallowRejection = false): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  if (swallowRejection) promise.catch(() => {});
-  return { promise, resolve, reject };
-}
-
 function flattenFailures(error: unknown, failures: unknown[]): void {
   if (error instanceof AggregateError) {
     for (const nested of error.errors) flattenFailures(nested, failures);
@@ -115,38 +49,18 @@ function flattenFailures(error: unknown, failures: unknown[]): void {
 /**
  * Concrete owner of ephemeral ConversationRuntime state.
  *
- * It owns runner registration, runtime generations, in-flight construction,
- * prompt queues, and cleanup. It does not construct runners or resolve Binding
- * authority; those policies belong to TurnDispatcher and ConversationLifecycle.
+ * The host is a thin coordinator over per-conversation {@link RuntimeMachine}
+ * instances. It owns the process-level admission gate and shutdown promise,
+ * and delegates all per-conversation state (runner, creation, queue, drain
+ * set, generations) to the machine. Public method signatures are unchanged
+ * from the pre-machine design; the machine is an internal refactor that
+ * consolidates the thirteen scattered collections into one coherent owner.
+ *
+ * It does not construct runners or resolve Binding authority; those policies
+ * belong to TurnDispatcher and ConversationLifecycle.
  */
 export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
-  private readonly runners: Map<ConversationId, AgentRunner>;
-  private readonly runnerSurfaceIds = new Map<ConversationId, SurfaceId>();
-  private readonly runnerRuntimeIds = new Map<ConversationId, ConversationRuntimeId>();
-  /** Runtime IDs whose delegated-work fence has not yet succeeded. They remain
-   * retryable after the runner registration itself has been synchronously
-   * invalidated. */
-  private readonly pendingDelegatedInvalidations = new Map<ConversationId, Set<ConversationRuntimeId>>();
-  private readonly runnerSkillContexts = new Map<ConversationId, RuntimeSkillContext>();
-  private readonly internalRunnerIds = new Set<ConversationId>();
-  private readonly inFlightCreations = new Map<ConversationId, RuntimeCreation>();
-  private readonly creationReservations = new Set<RuntimeCreation>();
-  private readonly promptQueues = new Map<ConversationId, Promise<void>>();
-  private readonly promptQueueEntries = new Map<ConversationId, Set<PromptQueueEntry>>();
-  /** Every cleanup still draining, grouped by Conversation. Multiple
-   * generations may overlap when a replacement is invalidated before an older
-   * generation has physically settled. */
-  private readonly activeDisposals = new Map<ConversationId, Set<ActiveDisposal>>();
-  private readonly queuedWork = new Set<Promise<void>>();
-  /**
-   * Monotonic per-Conversation generation counter. Bumped on every runtime
-   * registration or creation reservation so disposal deduplication can tell a
-   * same-generation retry from a new generation that registered while a prior
-   * generation's cleanup was still draining.
-   */
-  private readonly generations = new Map<ConversationId, number>();
-  private admissionOpen = true;
-  private shutdownPromise: Promise<void> | undefined;
+  private readonly machines = new Map<ConversationId, RuntimeMachine>();
   /**
    * The single DelegatedWorkHost for this kernel, exposed so every orchestration
    * component derives delegated-work access from one owner instead of carrying
@@ -154,36 +68,41 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
    */
   readonly delegatedWorkHost: DelegatedWorkHost;
   private readonly externalAgentRunner: ExternalAgentRunner | undefined;
+  private admissionOpen = true;
+  private shutdownPromise: Promise<void> | undefined;
 
   constructor(options: {
     delegatedWorkHost: DelegatedWorkHost;
     externalAgentRunner?: ExternalAgentRunner;
   }) {
-    this.runners = new Map<ConversationId, AgentRunner>();
     this.delegatedWorkHost = options.delegatedWorkHost;
     this.externalAgentRunner = options.externalAgentRunner;
   }
 
-  /** Advance and return the next generation token for a Conversation. */
-  private nextGeneration(conversationId: ConversationId): number {
-    const next = (this.generations.get(conversationId) ?? 0) + 1;
-    this.generations.set(conversationId, next);
-    return next;
+  private machineFor(conversationId: ConversationId): RuntimeMachine {
+    let machine = this.machines.get(conversationId);
+    if (machine === undefined) {
+      machine = new RuntimeMachine({
+        conversationId,
+        delegatedWorkHost: this.delegatedWorkHost,
+        externalAgentRunner: this.externalAgentRunner,
+        isAdmissionOpen: () => this.admissionOpen,
+      });
+      this.machines.set(conversationId, machine);
+    }
+    return machine;
   }
 
   getRunner(conversationId: ConversationId): AgentRunner | null {
-    return this.runners.get(conversationId) ?? null;
+    return this.machines.get(conversationId)?.getRunner() ?? null;
   }
 
   hasRunner(conversationId: ConversationId): boolean {
-    return this.runners.has(conversationId);
+    return this.machines.get(conversationId)?.hasRunner() ?? false;
   }
 
   hasRuntime(conversationId: ConversationId, excludeCreation?: Promise<AgentRunner>): boolean {
-    return this.runners.has(conversationId) ||
-      (this.inFlightCreations.has(conversationId) &&
-        this.inFlightCreations.get(conversationId)?.promise !== excludeCreation) ||
-      (this.pendingDelegatedInvalidations.get(conversationId)?.size ?? 0) > 0;
+    return this.machines.get(conversationId)?.hasRuntime(excludeCreation) ?? false;
   }
 
   isAdmissionOpen(): boolean {
@@ -205,27 +124,27 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
   }
 
   isRegisteredRunner(conversationId: ConversationId, runner: AgentRunner): boolean {
-    return this.runners.get(conversationId) === runner;
+    return this.machines.get(conversationId)?.isRegisteredRunner(runner) ?? false;
   }
 
   isInternalRuntime(conversationId: ConversationId): boolean {
-    return this.internalRunnerIds.has(conversationId);
+    return this.machines.get(conversationId)?.isInternalRuntime() ?? false;
   }
 
   surfaceIdFor(conversationId: ConversationId): SurfaceId | undefined {
-    return this.runnerSurfaceIds.get(conversationId);
+    return this.machines.get(conversationId)?.surfaceIdFor();
   }
 
   runtimeIdFor(conversationId: ConversationId): ConversationRuntimeId | undefined {
-    return this.runnerRuntimeIds.get(conversationId);
+    return this.machines.get(conversationId)?.runtimeIdFor();
   }
 
   skillContextFor(conversationId: ConversationId): RuntimeSkillContext | undefined {
-    return this.runnerSkillContexts.get(conversationId);
+    return this.machines.get(conversationId)?.skillContextFor();
   }
 
   creationFor(conversationId: ConversationId): RuntimeCreation | undefined {
-    return this.inFlightCreations.get(conversationId);
+    return this.machines.get(conversationId)?.getCreation();
   }
 
   reserveCreation(
@@ -234,37 +153,11 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     settingsFingerprint: string,
   ): RuntimeCreation {
     this.assertAdmissionOpen();
-    // A new candidate generation must be distinguishable from the generation
-    // currently being disposed, otherwise a later disposal would dedup against
-    // the stale promise and let this replacement escape fencing.
-    this.nextGeneration(conversationId);
-    const control = deferred<AgentRunner>(true);
-    const completion = deferred<void>();
-    let creation!: RuntimeCreation;
-    const complete = (): void => {
-      completion.resolve(undefined);
-      this.creationReservations.delete(creation);
-      if (this.inFlightCreations.get(conversationId) === creation) {
-        this.inFlightCreations.delete(conversationId);
-      }
-    };
-    creation = {
-      conversationId,
-      promise: control.promise,
-      completion: completion.promise,
-      surfaceId,
-      settingsFingerprint,
-      resolve: control.resolve,
-      reject: control.reject,
-      complete,
-    };
-    this.inFlightCreations.set(conversationId, creation);
-    this.creationReservations.add(creation);
-    return creation;
+    return this.machineFor(conversationId).reserveCreation(surfaceId, settingsFingerprint);
   }
 
   isCurrentCreation(conversationId: ConversationId, promise: Promise<AgentRunner>): boolean {
-    return this.inFlightCreations.get(conversationId)?.promise === promise;
+    return this.machines.get(conversationId)?.isCurrentCreation(promise) ?? false;
   }
 
   finishCreation(
@@ -272,10 +165,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     promise: Promise<AgentRunner>,
     creation: RuntimeCreation,
   ): void {
-    creation.complete();
-    if (this.inFlightCreations.get(conversationId)?.promise === promise) {
-      this.inFlightCreations.delete(conversationId);
-    }
+    this.machines.get(conversationId)?.finishCreation(promise, creation);
   }
 
   registerSurfaceRuntime(
@@ -284,91 +174,16 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     registration: SurfaceRuntimeRegistration,
   ): void {
     this.assertAdmissionOpen();
-    if ((this.activeDisposals.get(conversationId)?.size ?? 0) > 0) {
-      throw new Error(
-        `cannot register runtime for ${conversationId}: a prior-generation disposal is still active`,
-      );
-    }
-    if ((this.pendingDelegatedInvalidations.get(conversationId)?.size ?? 0) > 0) {
-      throw new Error(
-        `cannot register runtime for ${conversationId}: delegated work invalidation is still pending`,
-      );
-    }
-    if (this.runners.has(conversationId)) {
-      throw new Error(`Conversation runtime already registered for ${conversationId}`);
-    }
-    if (this.internalRunnerIds.has(conversationId)) {
-      throw new Error(`Conversation ${conversationId} is reserved by an internal runtime`);
-    }
-    // Commit a new generation only after the caller has drained any prior
-    // cleanup via awaitSettled; the assert above keeps the invariant loud.
-    this.nextGeneration(conversationId);
-    this.runners.set(conversationId, runner);
-    this.runnerSurfaceIds.set(conversationId, registration.surfaceId);
-    this.runnerRuntimeIds.set(conversationId, registration.runtimeId);
-    this.runnerSkillContexts.set(conversationId, registration.skillContext);
+    this.machineFor(conversationId).registerSurfaceRuntime(runner, registration);
   }
 
   registerInternalRuntime(conversationId: ConversationId, runner: AgentRunner): void {
     this.assertAdmissionOpen();
-    if ((this.activeDisposals.get(conversationId)?.size ?? 0) > 0) {
-      throw new Error(
-        `cannot register internal runtime for ${conversationId}: a prior-generation disposal is still active`,
-      );
-    }
-    if ((this.pendingDelegatedInvalidations.get(conversationId)?.size ?? 0) > 0) {
-      throw new Error(
-        `cannot register internal runtime for ${conversationId}: delegated work invalidation is still pending`,
-      );
-    }
-    if (this.runners.has(conversationId) && !this.internalRunnerIds.has(conversationId)) {
-      throw new Error(`cannot reuse Surface-backed runtime ${conversationId} for an internal turn`);
-    }
-    this.nextGeneration(conversationId);
-    this.runners.set(conversationId, runner);
-    this.internalRunnerIds.add(conversationId);
+    this.machineFor(conversationId).registerInternalRuntime(runner);
   }
 
-  /**
-   * Resolve once every in-progress disposal for this Conversation has settled.
-   * A replacement generation awaits this before committing so a runner never
-   * registers while a prior generation's runner/delegated cleanup is draining.
-   */
   async awaitSettled(conversationId: ConversationId): Promise<void> {
-    // Loop: a disposal that completes may reveal another that started against
-    // the same Conversation. Each iteration awaits one active disposal; the
-    // caller's own creation checkpoints handle any invalidation that arrived
-    // while it was suspended.
-    for (;;) {
-      const active = this.activeDisposals.get(conversationId);
-      let activeFailure: unknown;
-      if (active !== undefined && active.size > 0) {
-        try {
-          await Promise.all([...active].map((entry) => entry.promise));
-        } catch (error) {
-          activeFailure = error;
-        }
-      }
-      if ((this.pendingDelegatedInvalidations.get(conversationId)?.size ?? 0) > 0) {
-        // Let the active-disposal rejection observer remove its live entry
-        // before starting the retry path.
-        await Promise.resolve();
-        try {
-          // A prior invalidation may have failed after removing the runner.
-          // Run the same cleanup path again before allowing a replacement.
-          await this.disposeRuntime(conversationId);
-        } catch (error) {
-          if (activeFailure !== undefined) {
-            throw new AggregateError([activeFailure, error], "Conversation runtime cleanup failed");
-          }
-          throw error;
-        }
-        if (activeFailure !== undefined) throw activeFailure;
-        continue;
-      }
-      if (activeFailure !== undefined) throw activeFailure;
-      return;
-    }
+    await this.machines.get(conversationId)?.awaitSettled();
   }
 
   schedule(
@@ -379,9 +194,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     options: {
       isPrompt?: boolean;
       onStart?: () => void;
-      /** Settles work that was fenced before or during execution. */
       onFenced?: () => void;
-      /** Called once the queue entry has settled, regardless of outcome. */
       onSettled?: () => void;
     } = {},
   ): boolean {
@@ -389,389 +202,76 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       log.info("runtime work rejected after admission closed", { conversationId });
       return false;
     }
-    let started = false;
-    const meta: PromptQueueEntry = {
-      isPrompt: options.isPrompt ?? true,
-      started: false,
-      cancelled: false,
-    };
-    const execute = async (): Promise<void> => {
-      // A queue entry is admitted when schedule() succeeds, but shutdown must
-      // still fence entries that have not reached the front of the chain. An
-      // entry that has started is allowed to drain; this distinction is what
-      // keeps shutdown from starting a command after its runtime was fenced.
-      if (!meta.started && meta.cancelled) {
-        options.onFenced?.();
-        return;
-      }
-      if (!started && !this.admissionOpen) {
-        options.onFenced?.();
-        return;
-      }
-      started = true;
-      meta.started = true;
-      if (!isCurrent()) {
-        options.onFenced?.();
-        return;
-      }
-      options.onStart?.();
-      try {
-        await run(isCurrent);
-        if (!isCurrent()) options.onFenced?.();
-      } catch (err) {
-        if (!isCurrent()) {
-          options.onFenced?.();
-          return;
-        }
-        try {
-          await onError(err);
-        } catch (handlerErr) {
-          log.error("runtime queue error handler failed", {
-            conversationId,
-            error: handlerErr instanceof Error ? handlerErr.message : String(handlerErr),
-          });
-          throw handlerErr;
-        }
-      }
-    };
-    const prior = this.promptQueues.get(conversationId);
-    let current: Promise<void>;
-    let startImmediately: (() => void) | undefined;
-    if (prior) {
-      current = prior.then(execute, execute);
-    } else {
-      // Reserve the queue promise before starting the first entry. This keeps
-      // admission visible to re-entrant code without changing the historical
-      // synchronous start of an idle queue.
-      const control = deferred<void>(true);
-      current = control.promise;
-      startImmediately = (): void => {
-        void execute().then(control.resolve, control.reject);
-      };
-    }
-    this.promptQueues.set(conversationId, current);
-    const entries = this.promptQueueEntries.get(conversationId) ?? new Set<PromptQueueEntry>();
-    entries.add(meta);
-    this.promptQueueEntries.set(conversationId, entries);
-    this.queuedWork.add(current);
-    startImmediately?.();
-    const remove = (): void => {
-      this.queuedWork.delete(current);
-      if (this.promptQueues.get(conversationId) === current) this.promptQueues.delete(conversationId);
-      entries.delete(meta);
-      if (entries.size === 0 && this.promptQueueEntries.get(conversationId) === entries) {
-        this.promptQueueEntries.delete(conversationId);
-      }
-      options.onSettled?.();
-    };
-    // Handle both outcomes so a caller that does not await a fire-and-forget
-    // queue cannot create an unhandled rejection while shutdown is draining it.
-    void current.then(remove, remove);
-    return true;
+    return this.machineFor(conversationId).schedule(isCurrent, run, onError, options);
   }
 
   isCommandPending(conversationId: ConversationId): boolean {
-    return [...(this.promptQueueEntries.get(conversationId) ?? [])].some((entry) => !entry.isPrompt);
+    return this.machines.get(conversationId)?.isCommandPending() ?? false;
   }
 
   isPromptPending(conversationId: ConversationId): boolean {
-    return [...(this.promptQueueEntries.get(conversationId) ?? [])].some(
-      (entry) => entry.isPrompt && !entry.started && !entry.cancelled,
-    );
+    return this.machines.get(conversationId)?.isPromptPending() ?? false;
   }
 
   hasPromptWork(conversationId: ConversationId): boolean {
-    return [...(this.promptQueueEntries.get(conversationId) ?? [])].some(
-      (entry) => entry.isPrompt,
-    );
+    return this.machines.get(conversationId)?.hasPromptWork() ?? false;
   }
 
   async cancelPending(conversationId: ConversationId): Promise<boolean> {
-    const entries = this.promptQueueEntries.get(conversationId);
-    const meta = entries === undefined
-      ? undefined
-      : [...entries].reverse().find((entry) => entry.isPrompt && !entry.started && !entry.cancelled);
-    if (!meta) return false;
-    // This entry has not reached the runner, so cancelling it must not abort
-    // the runner. In particular, aborting an uninitialized runner stashes an
-    // abort for its next prompt, poisoning the turn after this cancelled one.
-    meta.cancelled = true;
-    return true;
+    return this.machines.get(conversationId)?.cancelPending() ?? false;
   }
 
   /**
    * Invalidate synchronously, then await runner and external-work cleanup.
    *
-   * Deduplication is generation-aware: a second call for the SAME generation
+   * Maps the legacy `RuntimeDisposalOptions` to the machine's invalidation
+   * reason enum:
+   * - `preserveCommandQueue` or `preserveInFlight` → `settings-change`
+   * - neither → `binding-change`
+   *
+   * Deduplication is generation-aware: a second call for the same generation
    * shares the in-flight disposal promise, but a call made after a newer
-   * generation registered (or reserved a creation) starts a fresh disposal so
-   * the replacement cannot hide behind the prior generation's promise.
+   * generation registered starts a fresh disposal.
    */
   disposeRuntime(
     conversationId: ConversationId,
     disposalOptions?: RuntimeDisposalOptions,
   ): Promise<void> {
-    const currentGeneration = this.generations.get(conversationId) ?? 0;
-
-    // Every caller applies its requested authority fence, even when physical
-    // cleanup for this generation is already in flight. A later stronger call
-    // can therefore revoke a creation or command queue that an earlier call
-    // deliberately preserved.
-    const cleanup = this.fenceRuntime(conversationId, disposalOptions);
-
-    const active = this.activeDisposals.get(conversationId);
-    const existing = active === undefined
-      ? undefined
-      : [...active].find((entry) => entry.generation === currentGeneration);
-    if (existing !== undefined) return existing.promise;
-
-    const disposal = this.disposeRuntimeOnce(conversationId, cleanup);
-    const entry: ActiveDisposal = { generation: currentGeneration, promise: disposal };
-    const entries = active ?? new Set<ActiveDisposal>();
-    entries.add(entry);
-    this.activeDisposals.set(conversationId, entries);
-    const clearActiveDisposal = (): void => {
-      entries.delete(entry);
-      if (entries.size === 0 && this.activeDisposals.get(conversationId) === entries) {
-        this.activeDisposals.delete(conversationId);
-      }
-    };
-    // Keep the returned promise's identity stable for concurrent callers and
-    // handle both outcomes on the cleanup observer so a rejected disposal is
-    // reported to its caller without creating a second unhandled rejection.
-    void disposal.then(clearActiveDisposal, clearActiveDisposal);
-    return disposal;
-  }
-
-  private fenceRuntime(
-    conversationId: ConversationId,
-    disposalOptions?: RuntimeDisposalOptions,
-  ): { runner: AgentRunner | undefined; runtimeIds: ConversationRuntimeId[] } {
-    const prior = this.runners.get(conversationId);
-    const runtimeId = this.runnerRuntimeIds.get(conversationId);
-    if (runtimeId !== undefined) {
-      const pending = this.pendingDelegatedInvalidations.get(conversationId) ?? new Set();
-      pending.add(runtimeId);
-      this.pendingDelegatedInvalidations.set(conversationId, pending);
-    }
-
-    // This is the authority fence. No queued work or late runner event can
-    // observe the old registration after this synchronous section.
-    this.runners.delete(conversationId);
-    this.runnerSurfaceIds.delete(conversationId);
-    this.runnerRuntimeIds.delete(conversationId);
-    this.runnerSkillContexts.delete(conversationId);
-    this.internalRunnerIds.delete(conversationId);
-
-    const currentCreation = this.inFlightCreations.get(conversationId);
+    const machine = this.machineFor(conversationId);
+    const preserveCommandQueue = disposalOptions?.preserveCommandQueue === true;
     const preserveInFlight = disposalOptions?.preserveInFlight;
-    if (!preserveInFlight || currentCreation?.promise !== preserveInFlight) {
-      this.inFlightCreations.delete(conversationId);
-    }
-
-    const pendingQueueEntries = this.promptQueueEntries.get(conversationId);
-    // A replacement is prepared outside the prompt queue. Keep the existing
-    // chain intact while the old runner is fenced so work admitted before the
-    // replacement cannot run concurrently with work admitted afterward.
-    const preservesCreation = preserveInFlight !== undefined &&
-      currentCreation?.promise === preserveInFlight;
-    const preserveCommandQueue = disposalOptions?.preserveCommandQueue === true &&
-      [...(pendingQueueEntries ?? [])].some((entry) => !entry.isPrompt);
-    if (!preserveCommandQueue && !preservesCreation) {
-      this.promptQueues.delete(conversationId);
-      this.promptQueueEntries.delete(conversationId);
-    }
-
-    return {
-      runner: prior,
-      runtimeIds: [...(this.pendingDelegatedInvalidations.get(conversationId) ?? [])],
-    };
-  }
-
-  private async disposeRuntimeOnce(
-    conversationId: ConversationId,
-    cleanup: { runner: AgentRunner | undefined; runtimeIds: ConversationRuntimeId[] },
-  ): Promise<void> {
-    const prior = cleanup.runner;
-    const delegatedFailures: unknown[] = [];
-    // Start delegated fencing immediately, but do not await it before invoking
-    // runner.dispose(): both cleanup boundaries should make progress together.
-    const delegatedInvalidation = Promise.all(cleanup.runtimeIds.map(async (runtimeId) => {
-      try {
-        await this.delegatedWorkHost.invalidateRuntime(runtimeId);
-        const pending = this.pendingDelegatedInvalidations.get(conversationId);
-        pending?.delete(runtimeId);
-        if (pending?.size === 0) this.pendingDelegatedInvalidations.delete(conversationId);
-      } catch (error) {
-        delegatedFailures.push(new DelegatedInvalidationFailure(runtimeId, error));
-        log.error("delegated work invalidation failed in runtime disposal", {
-          conversationId,
-          runtimeId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }));
-
-    let runnerError: unknown;
-    let runnerFailed = false;
-    if (prior) {
-      try {
-        await prior.dispose();
-      } catch (error) {
-        runnerFailed = true;
-        runnerError = error;
-        log.error("AgentRunner.dispose failed in runtime disposal", {
-          conversationId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    await delegatedInvalidation;
-
-    let externalTimer: ReturnType<typeof setTimeout> | undefined;
-    const externalCancellation = this.externalAgentRunner
-      ? this.externalAgentRunner.cancelBySession(conversationId)
-      : Promise.resolve();
-    let externalCancellationTimedOut = false;
-    let externalCancellationError: unknown;
-    let externalCancellationFailed = false;
-    const timeout = new Promise<void>((resolve) => {
-      externalTimer = setTimeout(() => {
-        externalCancellationTimedOut = true;
-        log.warn("external-agent cancellation timed out in runtime disposal", { conversationId });
-        resolve();
-      }, 10_000);
-    });
-    try {
-      await Promise.race([externalCancellation, timeout]);
-    } catch (error) {
-      externalCancellationFailed = true;
-      externalCancellationError = error;
-      log.error("external-agent cancellation failed in runtime disposal", {
-        conversationId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      if (externalTimer !== undefined) clearTimeout(externalTimer);
-    }
-
-    const failures: unknown[] = [];
-    if (runnerFailed) failures.push(runnerError);
-    failures.push(...delegatedFailures);
-    if (externalCancellationTimedOut) {
-      failures.push(new Error(`external-agent cancellation timed out for ${conversationId}`));
-    }
-    if (externalCancellationFailed) failures.push(externalCancellationError);
-    if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) throw new AggregateError(failures, "Conversation runtime cleanup failed");
+    const isSettingsChange = preserveCommandQueue || preserveInFlight !== undefined;
+    const reason: InvalidationReason = isSettingsChange ? "settings-change" : "binding-change";
+    return machine.invalidate(reason, preserveInFlight);
   }
 
   disposeAll(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.closeAdmission();
 
-    // Fence every runtime immediately. Shutdown must be able to abort a model
+    // Fence every machine immediately. Shutdown must be able to abort a model
     // turn that would otherwise keep its admitted Telegram handler alive
-    // indefinitely. Queue promises are still drained below, but entries that
-    // have not started fail the admission fence instead of starting new work
-    // during shutdown.
-    const ids = new Set([
-      ...this.runners.keys(),
-      ...this.inFlightCreations.keys(),
-      ...this.pendingDelegatedInvalidations.keys(),
-    ]);
-    const eagerDisposals = [...ids].map((conversationId) => this.disposeRuntime(conversationId));
+    // indefinitely. Queue entries that have not started fail the admission
+    // fence and do not begin during shutdown.
+    const machineShutdowns = [...this.machines.values()].map((machine) => machine.shutdown());
 
-    this.shutdownPromise = this.disposeAllOnce(eagerDisposals);
+    this.shutdownPromise = this.disposeAllOnce(machineShutdowns);
     return this.shutdownPromise;
   }
 
-  private async disposeAllOnce(eagerDisposals: readonly Promise<void>[]): Promise<void> {
+  private async disposeAllOnce(
+    machineShutdowns: readonly Promise<void>[],
+  ): Promise<void> {
     const failures: unknown[] = [];
-    const observedQueuedWork = new Set<Promise<void>>();
-    // Drain accepted queue chains after their runtime generations have been
-    // fenced. A currently executing turn is unblocked by runner disposal;
-    // queued entries observe the admission fence and do not begin during
-    // shutdown.
-    for (;;) {
-      const queued = [...this.queuedWork];
-      const accepted = await Promise.allSettled(queued);
-      for (const [index, result] of accepted.entries()) {
-        const promise = queued[index];
-        if (promise === undefined) continue;
-        if (result.status === "rejected" && !observedQueuedWork.has(promise)) {
-          observedQueuedWork.add(promise);
-          flattenFailures(result.reason, failures);
-        }
-      }
-      if (this.queuedWork.size === 0) break;
-    }
-
-    // Eager cleanup started before the queue drain so idle runtimes were fenced
-    // synchronously. Retain those exact promises until now: activeDisposals is
-    // only a live-work index, so a fast rejection may have left that map while
-    // an unrelated queue was still draining.
-    const eagerResults = await Promise.allSettled(eagerDisposals);
-    for (const result of eagerResults) {
+    const results = await Promise.allSettled(machineShutdowns);
+    for (const result of results) {
       if (result.status === "rejected") flattenFailures(result.reason, failures);
     }
-
-    // Constructions and physical cleanup can now be fenced and drained. Retry
-    // each delegated invalidation left by an earlier failed disposal once in
-    // this shutdown attempt; persistent failure is reported rather than spun.
-    const attemptedPendingInvalidations = new Set<ConversationId>();
-    for (;;) {
-      const creations = [...this.creationReservations];
-      const retryablePending = [...this.pendingDelegatedInvalidations.keys()].filter(
-        (conversationId) => !attemptedPendingInvalidations.has(conversationId),
-      );
-      retryablePending.forEach((conversationId) => attemptedPendingInvalidations.add(conversationId));
-      const ids = new Set([
-        ...this.runners.keys(),
-        ...this.inFlightCreations.keys(),
-        ...this.activeDisposals.keys(),
-        ...retryablePending,
-        ...creations.map((creation) => creation.conversationId),
-      ]);
-      const disposals = [...ids].map((conversationId) => this.disposeRuntime(conversationId));
-      const results = await Promise.allSettled([
-        ...disposals,
-        ...creations.map((creation) => creation.completion),
-      ]);
-      for (const result of results) {
-        if (result.status === "rejected") flattenFailures(result.reason, failures);
-      }
-
-      // Cleanup observers remove settled active disposals and queue entries in
-      // promise reactions. Yield once before checking the owner state so the
-      // shutdown promise cannot resolve while one of those entries is still
-      // visible as active.
-      await Promise.resolve();
-      if (
-        this.runners.size === 0 &&
-        this.inFlightCreations.size === 0 &&
-        this.creationReservations.size === 0 &&
-        this.activeDisposals.size === 0 &&
-        this.queuedWork.size === 0
-      ) {
-        break;
-      }
+    if (failures.length === 1) {
+      throw failures[0] instanceof Error ? failures[0] : new Error(String(failures[0]));
     }
-
-    // A delegated invalidation may fail transiently, remain pending, and then
-    // succeed on the bounded retry above. Do not report an error that has been
-    // demonstrably recovered; runner and other cleanup failures remain loud.
-    const reportableFailures = failures.filter((failure) =>
-      !(failure instanceof DelegatedInvalidationFailure) ||
-      isPendingDelegatedInvalidation(this.pendingDelegatedInvalidations, failure.runtimeId)
-    );
-    if (reportableFailures.length === 1) {
-      const failure = reportableFailures[0];
-      throw failure instanceof Error ? failure : new Error(String(failure));
-    }
-    if (reportableFailures.length > 1) {
-      throw new AggregateError(reportableFailures, "Conversation runtime shutdown failed");
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Conversation runtime shutdown failed");
     }
   }
 }

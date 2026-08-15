@@ -16,7 +16,7 @@ Parked scope and open questions. Items graduate only when a deliberate implement
 
 ## Next
 
-**ACP external agents.** Shape the accepted decision-0044 backend and persistence scope now that the inward runtime-solidification pass is complete. Do not expand the accepted scope during shaping.
+**Runtime authority consolidation.** Decision 0046 is accepted: one per-conversation runtime machine behind the `ConversationRuntimeHost` port owns admission, generation identity, queueing, and disposal; authority is held as epochs (runtime epoch, binding epoch, process admission epoch) and compared at commit points rather than re-derived at module boundaries; the prompt queue becomes an explicit entry list; shutdown walks one owned phase list. Delivery is five sequential units in `.loop/runtime-authority/QUEUE.md`: machine core, dispatcher epoch tickets, update gate + shutdown coordinator, steer + transactional scheduler admission, regression sweep and records. ACP external agents (decision 0044) follows this cycle with its accepted scope unchanged.
 
 ## Completed inward solidification
 
@@ -24,7 +24,7 @@ The runtime kernel, prepared runtime assembly, capability/tool assembly, and eve
 
 Only **Now** and **Next** are active delivery positions. Further work must be re-scouted after the named next cycle; no additional implementation theme is active here.
 
-Do not introduce a plugin registry, dynamic tool discovery, SQLite-only persistence, speculative provider interfaces, or a single-check replacement for the dispatcher's asynchronous authority fences as part of this pass.
+Do not introduce a plugin registry, dynamic tool discovery, SQLite-only persistence, or speculative provider interfaces. Authority-check consolidation is governed by decision 0046: epochs captured at admission and compared at commit points — not fence removal; the earlier single-check guardrail clause is superseded by that ruling.
 
 ## Stabilization closure
 
@@ -50,7 +50,7 @@ The deployment entered state version 4 through an operator-approved recoverable 
 
 ### Architectural review closure — 2026-08-07
 
-- **Closed:** D1/D2 command/lifecycle authority is implemented and verified. ACP external agents remains the named next cycle, with its accepted scope unchanged.
+- **Closed:** D1/D2 command/lifecycle authority is implemented and verified. Ordering superseded by decision 0046: the runtime-authority-consolidation cycle is next; ACP external agents follows it, with its accepted scope unchanged.
 - **Closed by record coherence:** D3 does not route metrics through `ConversationStore`. Decision 0014 now states the existing split: `ConversationStore` and `InternalSessionStore` own their layout lifetimes, while `MetricsStore` alone reads/appends metric records and may lazily materialize its narrow metrics artifact through `metricsPath`; `AGENTS.md` grants that narrow home-I/O exemption.
 - **Closed as misclassified:** D4 is not a decision-0008 violation. That decision governs `$GOBLIN_HOME` paths; `SkillCatalogResolver` already owns the exact host catalog root required by decision 0034. No `hostSkillsPath()` helper is needed.
 - **Closed by clarified practice:** tmp/rename applies to whole-file replacement; `"wx"` is atomic exclusive creation; append-mode JSONL is append-only logging, not replacement atomicity. The direct append sites are not separate violations on that basis. The onboarding wizard's `console.log` remains the already-tracked deferred CLI-output carve-out; `voice.ts` writes a disposable `tmpdir()` tool input, not durable state.
@@ -61,7 +61,7 @@ The deployment entered state version 4 through an operator-approved recoverable 
 
 Historical unstarted plans live in `specs/parked/`; they are frozen references, not active work. Graduate one only by scouting current code and creating fresh work state when needed; never translate its old task list mechanically.
 
-- **`acp-external-agents`** — protocol classification is complete for Claude and Devin under decision 0044, and delivery is the named next cycle. Exact-version-pinned Claude ACP and native Devin ACP preserve completed context through `resume` and `load` respectively, need no client-hosted filesystem/terminal methods, and cannot recover an interrupted user turn. Legacy `scratch/external-agents/` records are abandoned in place (no migration, no backwards compatibility — same ruling as the delegated-run-records layout break). The frozen proposal remains historical input only: do not carry forward its stale session ownership, scratch storage, constrained-permission assumptions, virtual-terminal scope, unpersisted generic-continuation recovery claim, or PTY fallback for Claude/Devin. Codex transport remains unclassified.
+- **`acp-external-agents`** — protocol classification is complete for Claude and Devin under decision 0044, and delivery follows the runtime-authority-consolidation cycle (decision 0046). Exact-version-pinned Claude ACP and native Devin ACP preserve completed context through `resume` and `load` respectively, need no client-hosted filesystem/terminal methods, and cannot recover an interrupted user turn. Legacy `scratch/external-agents/` records are abandoned in place (no migration, no backwards compatibility — same ruling as the delegated-run-records layout break). The frozen proposal remains historical input only: do not carry forward its stale session ownership, scratch storage, constrained-permission assumptions, virtual-terminal scope, unpersisted generic-continuation recovery claim, or PTY fallback for Claude/Devin. Codex transport remains unclassified.
 - **`delegated-work-ownership`** — decisions 0036, 0040, 0041, 0044, and 0045 settle ownership, host separation, trust, qualified Claude/Devin protocol capabilities, and the attached subagent record store. Record storage is implemented: one host-owned store at `state/delegated-work/runs/`, append-only invocation log, revival as a new invocation, v5 layout break abandoning legacy subagent trees in place. Remaining parked scope: durable lifetime, pending-completion claim/ack/release, cancellation races beyond the attached fence, and model-selected CWD/invocation/unattended-dangerous profile for external agents rather than extending the current fixed-project/two-profile seam. External-agent records join the store when ACP lands. The frozen proposal's stale migration/reconciliation wording stays dead.
 - **`inner-life`** — decision 0035 is accepted and its lifecycle prerequisite is satisfied; implementation remains parked pending fresh shaping and delivery capacity.
 - **`skill-catalog-resolution`** — implemented. `SkillCatalogResolver` (`src/agent/skills/`) owns exact-root resolution from Conversation environment plus a `SkillPolicy`; `skillSources` is removed with visible rejection; default policy (Goblin all / environment all / host none) wired into runtime construction.

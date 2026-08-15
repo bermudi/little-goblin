@@ -492,12 +492,10 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       ? undefined
       : [...entries].reverse().find((entry) => entry.isPrompt && !entry.started && !entry.cancelled);
     if (!meta) return false;
-    // Mark the entry before awaiting abort. If another turn is currently
-    // streaming, abort is intentionally skipped, but this queued prompt must
-    // still be consumed as cancelled when the queue reaches it.
+    // This entry has not reached the runner, so cancelling it must not abort
+    // the runner. In particular, aborting an uninitialized runner stashes an
+    // abort for its next prompt, poisoning the turn after this cancelled one.
     meta.cancelled = true;
-    const runner = this.getRunner(conversationId);
-    if (runner && !runner.isStreaming) await runner.abort();
     return true;
   }
 

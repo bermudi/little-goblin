@@ -723,10 +723,14 @@ export class TurnDispatcher {
         if (!this.isRunnerCurrent(session.id, runner)) return;
       }
       if (runner.isAbortTimedOut) {
-        log.warn("scheduled turn dropped: runner is wedged after abort timed out", {
+        const error = new Error("Scheduled turn dropped: runner is wedged after abort timed out");
+        log.warn(error.message, {
           sessionId: session.id,
         });
-        return;
+        // The scheduler owns durable schedule outcomes through onError. A
+        // silent return here would let its start handle record this dropped
+        // occurrence as successful.
+        throw error;
       }
       await runner.prompt(content, buffer);
     };

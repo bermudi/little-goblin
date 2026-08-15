@@ -267,6 +267,29 @@ function makeSession(id: string, env: ExecutionEnvironment = personalEnvironment
   return { id, createdAt: new Date().toISOString(), executionEnvironment: env };
 }
 
+it("reports a wedged scheduled runner as an error instead of silently dropping it", async () => {
+  const { dispatcher, runtimeHost } = buildDispatcher();
+  const conversation = makeSession("scheduled-wedged");
+  const runner = new FakeAgentRunner();
+  runner._isAbortTimedOut = true;
+  registerTestSurfaceRunner(runtimeHost, conversation.id, runner as unknown as AgentRunner);
+  const errors: unknown[] = [];
+
+  const admission = dispatcher.enqueueScheduledTurn(
+    conversation,
+    dmSurface(1),
+    "scheduled work",
+    (error) => { errors.push(error); },
+  );
+
+  if (typeof admission === "boolean") throw new Error("expected scheduled turn admission handle");
+  expect(await admission.started).toBe(true);
+  await runtimeHost.disposeAll();
+  expect(errors).toHaveLength(1);
+  expect(errors[0]).toBeInstanceOf(Error);
+  expect((errors[0] as Error).message).toContain("runner is wedged");
+});
+
 class FakeBindingGuard implements SurfaceRuntimeAuthority {
   private readonly bindings = new Map<string, string>();
   private tail: Promise<unknown> = Promise.resolve();

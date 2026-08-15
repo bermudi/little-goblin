@@ -322,6 +322,39 @@ describe("SchedulerLoop", () => {
       expect(restored.nextRunAt).toBe(schedule.nextRunAt);
     });
 
+    it("restores a claim when the runtime queue rejects the occurrence", async () => {
+      const surface = dmSurface(100);
+      await createSession(surface);
+      const once = store.create({
+        surface,
+        kind: "once",
+        prompt: "do not consume me",
+        nextRunAt: new Date(NOW_MS - 1_000).toISOString(),
+      });
+      const recurring = store.create({
+        surface,
+        kind: "recurring",
+        prompt: "do not advance me",
+        nextRunAt: new Date(NOW_MS - 1_000).toISOString(),
+        intervalMs: 3_600_000,
+      });
+      dispatcher = {
+        ...dispatcher,
+        enqueueScheduledTurn: () => false,
+      };
+
+      await makeLoop().tick();
+
+      const restoredOnce = store.getForSurface(surface, once.id)!;
+      expect(restoredOnce.state).toBe("enabled");
+      expect(restoredOnce.enabled).toBe(true);
+      expect(restoredOnce.nextRunAt).toBe(once.nextRunAt);
+      const restoredRecurring = store.getForSurface(surface, recurring.id)!;
+      expect(restoredRecurring.state).toBe("enabled");
+      expect(restoredRecurring.enabled).toBe(true);
+      expect(restoredRecurring.nextRunAt).toBe(recurring.nextRunAt);
+    });
+
     it("reports a failed occurrence restoration through scheduler drain", async () => {
       await createSession(dmSurface(100));
       const schedule = store.create({

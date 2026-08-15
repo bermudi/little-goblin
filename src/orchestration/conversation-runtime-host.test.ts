@@ -76,6 +76,27 @@ describe("ConversationRuntimeHost shutdown", () => {
     expect(host.isPromptPending("conversation-a")).toBe(false);
   });
 
+  it("does not abort the runner when cancelling a queued prompt", async () => {
+    const firstFinished = deferred<void>();
+    let abortCalls = 0;
+    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
+    const runner = {
+      dispose: async () => {},
+      abort: async () => { abortCalls += 1; },
+      isStreaming: false,
+    } as unknown as AgentRunner;
+    registerRunner(host, "conversation-a", runner);
+
+    expect(host.schedule("conversation-a", () => true, async () => {
+      await firstFinished.promise;
+    }, async () => {})).toBe(true);
+    expect(host.schedule("conversation-a", () => true, async () => {}, async () => {})).toBe(true);
+
+    expect(await host.cancelPending("conversation-a")).toBe(true);
+    expect(abortCalls).toBe(0);
+    firstFinished.resolve(undefined);
+  });
+
   it("clears fenced queue metadata before the old queue settles", async () => {
     const disposed = deferred<void>();
     const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });

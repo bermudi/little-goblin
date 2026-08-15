@@ -728,11 +728,14 @@ ${formatted}`;
       });
       const admitted = typeof admission === "boolean" ? admission : admission.accepted;
       if (!admitted) {
-        // Runtime admission closed between the gate above and enqueue. There
-        // is no await in that span, so this is unreachable in practice; defend
-        // anyway by NOT recording a successful outcome for rejected work.
-        log.error("scheduler dispatch rejected at runtime boundary after claim", {
+        // Do not consume an occurrence that the runtime queue rejected. This
+        // can happen if its admission fence closed after the pre-claim check:
+        // restore both one-shot completion and recurring advancement.
+        const restored = this.store.restoreClaim(schedule.id, schedule, claimed);
+        log.info("scheduler restored rejected occurrence", {
           id: schedule.id,
+          surfaceId: surfaceId(schedule.surface),
+          restored,
         });
         return;
       }

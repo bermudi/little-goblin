@@ -56,6 +56,8 @@ export interface RuntimeCreation {
 
 interface PromptQueueEntry {
   readonly isPrompt: boolean;
+  started: boolean;
+  cancelled: boolean;
 }
 
 /** One in-flight disposal tagged with the generation it is tearing down. */
@@ -130,7 +132,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
   private readonly inFlightCreations = new Map<ConversationId, RuntimeCreation>();
   private readonly creationReservations = new Set<RuntimeCreation>();
   private readonly promptQueues = new Map<ConversationId, Promise<void>>();
-  private readonly promptQueueMeta = new Map<ConversationId, PromptQueueEntry>();
+  private readonly promptQueueEntries = new Map<ConversationId, Set<PromptQueueEntry>>();
   /** Every cleanup still draining, grouped by Conversation. Multiple
    * generations may overlap when a replacement is invalidated before an older
    * generation has physically settled. */
@@ -379,6 +381,8 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       onStart?: () => void;
       /** Settles work that was fenced before or during execution. */
       onFenced?: () => void;
+      /** Called once the queue entry has settled, regardless of outcome. */
+      onSettled?: () => void;
     } = {},
   ): boolean {
     if (!this.admissionOpen) {
@@ -386,21 +390,31 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       return false;
     }
     let started = false;
+    const meta: PromptQueueEntry = {
+      isPrompt: options.isPrompt ?? true,
+      started: false,
+      cancelled: false,
+    };
     const execute = async (): Promise<void> => {
       // A queue entry is admitted when schedule() succeeds, but shutdown must
       // still fence entries that have not reached the front of the chain. An
       // entry that has started is allowed to drain; this distinction is what
       // keeps shutdown from starting a command after its runtime was fenced.
+      if (!meta.started && meta.cancelled) {
+        options.onFenced?.();
+        return;
+      }
       if (!started && !this.admissionOpen) {
         options.onFenced?.();
         return;
       }
       started = true;
-      options.onStart?.();
+      meta.started = true;
       if (!isCurrent()) {
         options.onFenced?.();
         return;
       }
+      options.onStart?.();
       try {
         await run(isCurrent);
         if (!isCurrent()) options.onFenced?.();
@@ -435,15 +449,20 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
         void execute().then(control.resolve, control.reject);
       };
     }
-    const meta: PromptQueueEntry = { isPrompt: options.isPrompt ?? true };
     this.promptQueues.set(conversationId, current);
-    this.promptQueueMeta.set(conversationId, meta);
+    const entries = this.promptQueueEntries.get(conversationId) ?? new Set<PromptQueueEntry>();
+    entries.add(meta);
+    this.promptQueueEntries.set(conversationId, entries);
     this.queuedWork.add(current);
     startImmediately?.();
     const remove = (): void => {
       this.queuedWork.delete(current);
       if (this.promptQueues.get(conversationId) === current) this.promptQueues.delete(conversationId);
-      if (this.promptQueueMeta.get(conversationId) === meta) this.promptQueueMeta.delete(conversationId);
+      entries.delete(meta);
+      if (entries.size === 0 && this.promptQueueEntries.get(conversationId) === entries) {
+        this.promptQueueEntries.delete(conversationId);
+      }
+      options.onSettled?.();
     };
     // Handle both outcomes so a caller that does not await a fire-and-forget
     // queue cannot create an unhandled rejection while shutdown is draining it.
@@ -452,18 +471,31 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
   }
 
   isCommandPending(conversationId: ConversationId): boolean {
-    const meta = this.promptQueueMeta.get(conversationId);
-    return meta !== undefined && !meta.isPrompt;
+    return [...(this.promptQueueEntries.get(conversationId) ?? [])].some((entry) => !entry.isPrompt);
   }
 
   isPromptPending(conversationId: ConversationId): boolean {
-    const meta = this.promptQueueMeta.get(conversationId);
-    return meta !== undefined && meta.isPrompt;
+    return [...(this.promptQueueEntries.get(conversationId) ?? [])].some(
+      (entry) => entry.isPrompt && !entry.started && !entry.cancelled,
+    );
+  }
+
+  hasPromptWork(conversationId: ConversationId): boolean {
+    return [...(this.promptQueueEntries.get(conversationId) ?? [])].some(
+      (entry) => entry.isPrompt,
+    );
   }
 
   async cancelPending(conversationId: ConversationId): Promise<boolean> {
-    const meta = this.promptQueueMeta.get(conversationId);
-    if (!meta || !meta.isPrompt) return false;
+    const entries = this.promptQueueEntries.get(conversationId);
+    const meta = entries === undefined
+      ? undefined
+      : [...entries].reverse().find((entry) => entry.isPrompt && !entry.started && !entry.cancelled);
+    if (!meta) return false;
+    // Mark the entry before awaiting abort. If another turn is currently
+    // streaming, abort is intentionally skipped, but this queued prompt must
+    // still be consumed as cancelled when the queue reaches it.
+    meta.cancelled = true;
     const runner = this.getRunner(conversationId);
     if (runner && !runner.isStreaming) await runner.abort();
     return true;
@@ -539,15 +571,17 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       this.inFlightCreations.delete(conversationId);
     }
 
-    const pendingQueueMeta = this.promptQueueMeta.get(conversationId);
+    const pendingQueueEntries = this.promptQueueEntries.get(conversationId);
     // A replacement is prepared outside the prompt queue. Keep the existing
     // chain intact while the old runner is fenced so work admitted before the
     // replacement cannot run concurrently with work admitted afterward.
-    const preservesCreation = currentCreation?.promise === preserveInFlight;
-    const preserveCommandQueue = disposalOptions?.preserveCommandQueue === true && pendingQueueMeta?.isPrompt === false;
+    const preservesCreation = preserveInFlight !== undefined &&
+      currentCreation?.promise === preserveInFlight;
+    const preserveCommandQueue = disposalOptions?.preserveCommandQueue === true &&
+      [...(pendingQueueEntries ?? [])].some((entry) => !entry.isPrompt);
     if (!preserveCommandQueue && !preservesCreation) {
       this.promptQueues.delete(conversationId);
-      this.promptQueueMeta.delete(conversationId);
+      this.promptQueueEntries.delete(conversationId);
     }
 
     return {

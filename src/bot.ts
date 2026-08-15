@@ -265,28 +265,47 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // before tearing down the runtime dependencies those handlers use.
   const inFlightUpdates = new Set<Promise<unknown>>();
   const inFlightRuntimeAdmissions = new Set<Promise<void>>();
+  const inFlightAuthorizations = new Set<Promise<void>>();
   interface AdmissionState {
     released: boolean;
     handedToCoalescer: boolean;
+    authorizationReleased: boolean;
     release: () => void;
+    releaseAuthorization: () => void;
   }
   const admissionStates = new WeakMap<object, AdmissionState>();
   function beginRuntimeAdmission(): AdmissionState {
-    let resolve!: () => void;
-    const promise = new Promise<void>((res) => { resolve = res; });
+    let resolveRuntime!: () => void;
+    const runtimePromise = new Promise<void>((res) => { resolveRuntime = res; });
+    let resolveAuthorization!: () => void;
+    const authorizationPromise = new Promise<void>((res) => { resolveAuthorization = res; });
     const state: AdmissionState = {
       released: false,
       handedToCoalescer: false,
+      authorizationReleased: false,
       release: () => {},
+      releaseAuthorization: () => {},
     };
     state.release = (): void => {
       if (state.released) return;
       state.released = true;
-      resolve();
-      inFlightRuntimeAdmissions.delete(promise);
+      resolveRuntime();
+      inFlightRuntimeAdmissions.delete(runtimePromise);
     };
-    inFlightRuntimeAdmissions.add(promise);
+    state.releaseAuthorization = (): void => {
+      if (state.authorizationReleased) return;
+      state.authorizationReleased = true;
+      resolveAuthorization();
+      inFlightAuthorizations.delete(authorizationPromise);
+    };
+    inFlightRuntimeAdmissions.add(runtimePromise);
+    inFlightAuthorizations.add(authorizationPromise);
     return state;
+  }
+  async function drainAuthorizations(): Promise<void> {
+    while (inFlightAuthorizations.size > 0) {
+      await Promise.allSettled([...inFlightAuthorizations]);
+    }
   }
   async function runtimeAdmission(): Promise<void> {
     while (inFlightRuntimeAdmissions.size > 0) {
@@ -315,12 +334,11 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     }
   }
 
-  // Authorization can make an asynchronous Telegram API call (member count
-  // for an allowed user in a group). Do not classify an update as admitted
-  // until that check has completed: otherwise shutdown can drain the tracking
-  // wrapper while the authorization middleware is still waiting, then silently
-  // drop an update that had already passed the wrapper.
-  bot.use(buildAllowlistMiddleware(cfg));
+  // Track updates before authorization. Authorization can make an asynchronous
+  // Telegram API call (member count for an allowed user in a group), and
+  // grammy confirms an update's offset once its middleware settles. A shutdown
+  // must therefore wait for this authorization decision before closing the
+  // coalescer, or an already-fetched update can be lost forever.
   bot.use((_ctx, next) => {
     if (!admissionOpen) {
       log.info("Telegram update dropped after admission closed");
@@ -333,18 +351,29 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     try {
       downstream = next();
     } catch (err) {
+      state.releaseAuthorization();
       state.release();
       admissionStates.delete(_ctx);
       throw err;
     }
     void downstream.then(() => {
+      if (!state.authorizationReleased) state.releaseAuthorization();
       if (!state.handedToCoalescer) state.release();
       admissionStates.delete(_ctx);
     }, () => {
+      if (!state.authorizationReleased) state.releaseAuthorization();
       if (!state.handedToCoalescer) state.release();
       admissionStates.delete(_ctx);
     });
     return trackAdmitted(downstream);
+  });
+  bot.use(buildAllowlistMiddleware(cfg));
+  // Reaching this middleware means allowlist authorization succeeded. A
+  // denied update never reaches it; the outer tracking middleware releases its
+  // authorization barrier when the denial returns.
+  bot.use((_ctx, next) => {
+    admissionStates.get(_ctx)?.releaseAuthorization();
+    return next();
   });
   registerCommands(bot, intake.lifecycle);
 
@@ -510,6 +539,11 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     admissionOpen = false;
     admissionClosure = (async (): Promise<void> => {
       try {
+        // Let updates already inside the authorization middleware finish their
+        // allow/deny decision before closing the coalescer. Otherwise a
+        // delayed member-count lookup can cause an already-fetched update to
+        // be discarded after Telegram has confirmed its offset.
+        await drainAuthorizations();
         await coalescer.close();
       } finally {
         intake.closeAdmission();
@@ -522,7 +556,10 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   return {
     bot,
     closeAdmission,
-    bufferedTextAdmission: () => coalescer.bufferedTextAdmission(),
+    bufferedTextAdmission: async () => {
+      await drainAuthorizations();
+      await coalescer.bufferedTextAdmission();
+    },
     runtimeAdmission,
     lifecycle: intake.lifecycle,
     runtimeHost: orchestration.runtimeHost,

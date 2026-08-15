@@ -129,6 +129,9 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
         prompt,
       );
     },
+    beginReviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) => ({
+      result: dispatcher.reviveSubagent(_surface, _session, id, prompt),
+    }),
   } as unknown as TurnDispatcher;
   return {
     cfg,

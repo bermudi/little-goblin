@@ -116,6 +116,9 @@ async function main(): Promise<void> {
         await externalAgentRunner?.dispose();
       });
       await attempt("subagents", () => subagentRunner.dispose());
+      await attempt("memory engine", async () => {
+        memoryEngine.close();
+      });
 
       // Exit 0 only after complete cleanup; any failure is reported to the
       // supervisor with a non-zero status.

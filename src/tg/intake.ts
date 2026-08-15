@@ -279,14 +279,23 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
    * makes later commands stale, while a same-binding runtime invalidation such
    * as `/model` preserves their acknowledged arrival order.
    */
+  interface DeferredCommandAdmission {
+    readonly accepted: boolean;
+    readonly completed: Promise<void>;
+  }
+
   function scheduleDeferredCommand(
     message: TelegramIntakeMessage,
     surface: Surface,
     session: ConversationState,
     rawText: string,
     command: string,
-  ): boolean {
-    return dispatcher.scheduleCommand(
+  ): DeferredCommandAdmission {
+    let resolveCompleted!: () => void;
+    const completed = new Promise<void>((resolve) => {
+      resolveCompleted = resolve;
+    });
+    const accepted = dispatcher.scheduleCommand(
       session,
       surface,
       async (isCurrent) => {
@@ -315,7 +324,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         const currentRunner = dispatcher.getRunner(session.id);
         recordAssistantReply(session.id, surface, currentRunner, replyText);
       },
+      resolveCompleted,
     );
+    return { accepted, completed };
   }
 
   async function steerOrFallbackToFreshTurn(
@@ -553,13 +564,24 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       const busy = !runnerIsWedged && (
         existingRunner?.isStreaming ||
         existingRunner?.isPrompting ||
+        (session ? dispatcher.hasPromptWork(session.id) : false) ||
         (session ? dispatcher.isCommandPending(session.id) : false)
       );
-      if (timing === "queue" && session && busy) {
+      const recoverWedgedRuntime = timing === "queue" && session !== null &&
+        runnerIsWedged && def?.mayRecoverWedgedRuntime === true;
+      if (timing === "queue" && session && !recoverWedgedRuntime) {
         const admitted = scheduleDeferredCommand(message, surface, session, rawText ?? "", command);
-        if (admitted) {
+        if (admitted.accepted) {
           onRuntimeAdmission?.();
-          await sendSystemReply(message, "Queued. Will run after this turn.", "queued");
+          if (busy) {
+            await sendSystemReply(message, "Queued. Will run after this turn.", "queued");
+          } else {
+            // Even an idle queue owns the command's serialization boundary.
+            // Await its completion so direct commands retain their normal
+            // reply timing; Telegram admission was released above so model
+            // work can still be unblocked by shutdown.
+            await admitted.completed;
+          }
         } else {
           log.info("deferred command rejected at queue admission", {
             command,
@@ -579,6 +601,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
           conversation: session,
           existingRunner,
+          onRuntimeAdmission,
           bot,
         });
         // Interrupt commands deliberately operate on an active runtime. Let

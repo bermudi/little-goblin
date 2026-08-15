@@ -45,6 +45,58 @@ function registerRunner(
 }
 
 describe("ConversationRuntimeHost shutdown", () => {
+  it("marks a queued prompt cancelled while an earlier prompt is running", async () => {
+    const firstFinished = deferred<void>();
+    let secondRuns = 0;
+    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
+
+    expect(host.schedule(
+      "conversation-a",
+      () => true,
+      async () => {
+        await firstFinished.promise;
+      },
+      async () => {},
+    )).toBe(true);
+    expect(host.schedule(
+      "conversation-a",
+      () => true,
+      async () => {
+        secondRuns += 1;
+      },
+      async () => {},
+    )).toBe(true);
+
+    expect(await host.cancelPending("conversation-a")).toBe(true);
+    firstFinished.resolve(undefined);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(secondRuns).toBe(0);
+    expect(host.isPromptPending("conversation-a")).toBe(false);
+  });
+
+  it("clears fenced queue metadata before the old queue settles", async () => {
+    const disposed = deferred<void>();
+    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
+    const runner = fakeRunner(() => disposed.promise);
+    registerRunner(host, "conversation-a", runner);
+
+    expect(host.schedule(
+      "conversation-a",
+      () => true,
+      async () => {},
+      async () => {},
+    )).toBe(true);
+    const disposal = host.disposeRuntime("conversation-a");
+
+    expect(host.hasPromptWork("conversation-a")).toBe(false);
+    expect(host.isPromptPending("conversation-a")).toBe(false);
+
+    disposed.resolve(undefined);
+    await disposal;
+  });
+
   it("closes admission synchronously and waits for active runner disposal", async () => {
     const disposed = deferred<void>();
     let disposeCalls = 0;

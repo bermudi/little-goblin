@@ -283,6 +283,27 @@ describe("SkillCatalogResolver", () => {
   });
 
   describe("snapshot limits", () => {
+    it("rejects directory symlinks instead of silently omitting their resources", async () => {
+      const root = goblinSkillsPath(tmpDir);
+      const skillDir = join(root, "linked-resources");
+      const targetDir = join(tmpDir, "resources");
+      writeSkill(root, "linked-resources");
+      mkdirSync(targetDir, { recursive: true });
+      writeFileSync(join(targetDir, "tool.txt"), "resource\n", "utf-8");
+      try {
+        symlinkSync(targetDir, join(skillDir, "resources"), "dir");
+      } catch (err) {
+        console.warn(`directory symlink test skipped: ${(err as Error).message}`);
+        return;
+      }
+
+      await expect(
+        resolveSkillSet(personalEnvironment(), DEFAULT_SKILL_POLICY, tmpDir, { captureSnapshots: true }),
+      ).rejects.toThrow(
+        `skill snapshot does not support directory symlinks: ${join(skillDir, "resources")}`,
+      );
+    });
+
     it("caps the number of visited skill-directory entries", async () => {
       const root = goblinSkillsPath(tmpDir);
       const skillDir = join(root, "many-resources");

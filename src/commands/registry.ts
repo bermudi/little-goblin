@@ -92,6 +92,8 @@ export interface DispatchOpts {
   surface: Surface;
   conversation: ConversationState | null;
   existingRunner: AgentRunner | null;
+  /** Releases the Telegram update once a long-running command is attached. */
+  onRuntimeAdmission?: () => void;
   bot?: Bot;
 }
 
@@ -423,17 +425,22 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversati
   }
 };
 
-const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversation }) => {
+const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversation, onRuntimeAdmission }) => {
   const args = parseReviveSubagentArgs(rawText);
   if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY, [], "info");
   if (conversation === null || deps.dispatcher === undefined) {
     return replied("No active conversation to revive from.", [], "error");
   }
 
+  let attached = false;
   try {
-    const result = await deps.dispatcher.reviveSubagent(surface, conversation, args.id, args.prompt);
+    const revival = await deps.dispatcher.beginReviveSubagent(surface, conversation, args.id, args.prompt);
+    attached = true;
+    onRuntimeAdmission?.();
+    const result = await revival.result;
     return replied(result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`, [], "ok");
   } catch (err) {
+    if (!attached) onRuntimeAdmission?.();
     log.error("revive failed", { id: args.id, ...boundedError(err) });
     return replied(`Failed to revive subagent \`${args.id}\`.`, [], "error");
   }

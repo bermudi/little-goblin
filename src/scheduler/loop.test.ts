@@ -349,6 +349,32 @@ describe("SchedulerLoop", () => {
   });
 
   describe("one-shot completion", () => {
+    it("does not record ok until an admitted turn actually starts", async () => {
+      const loc: Surface = dmSurface(100);
+      await createSession(loc);
+      const created = store.create({
+        surface: loc,
+        kind: "once",
+        prompt: "wait to start",
+        nextRunAt: new Date(NOW_MS - 1000).toISOString(),
+      });
+      const started = deferred<boolean>();
+      dispatcher = {
+        ...dispatcher,
+        enqueueScheduledTurn: () => ({ accepted: true, started: started.promise }),
+      };
+      const loop = makeLoop();
+
+      await loop.tick();
+      expect(store.getForSurface(loc, created.id)!.lastRun).toBeUndefined();
+
+      const drain = loop.stopAndDrain();
+      started.resolve(true);
+      await drain;
+
+      expect(store.getForSurface(loc, created.id)!.lastRun!.outcome).toBe("ok");
+    });
+
     it("marks a one-shot completed before dispatch and does not re-run it", async () => {
       const loc: Surface = dmSurface(100);
       await createSession(loc);

@@ -545,7 +545,7 @@ describe("Telegram intake", () => {
     expect(runners[1]!.prompt).toHaveBeenCalledTimes(1);
   });
 
-  it("does not prompt stale photo work after a runner-disposing command", async () => {
+  it("serializes a runner-disposing command behind in-flight photo work", async () => {
     const { cfg, intake } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
@@ -562,10 +562,11 @@ describe("Telegram intake", () => {
     await intake.handleText(message, `/project ${cfg.goblinHome}`);
 
     pending.resolve();
-    await flushMicrotasks();
+    await waitFor(() => staleRunner.prompt.mock.calls.length === 1);
+    await waitFor(() => staleRunner.dispose.mock.calls.length === 1);
 
     expect(staleRunner.dispose).toHaveBeenCalledTimes(1);
-    expect(staleRunner.prompt).not.toHaveBeenCalled();
+    expect(staleRunner.prompt).toHaveBeenCalledTimes(1);
   });
 
   it("saves documents to the personal attachments directory", async () => {
@@ -1154,12 +1155,13 @@ describe("Telegram intake", () => {
 
     expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
     expect(order).toEqual(["[prepared] active telegram turn"]);
-    expect(store.getForSurface(dmSurface(1), schedule.id)!.lastRun?.outcome).toBe("ok");
+    expect(store.getForSurface(dmSurface(1), schedule.id)!.lastRun).toBeUndefined();
 
     pending.resolve();
     await waitFor(() => runners[0]!.prompt.mock.calls.length === 2);
 
     expect(order).toEqual(["[prepared] active telegram turn", "scheduled while busy"]);
+    expect(store.getForSurface(dmSurface(1), schedule.id)!.lastRun?.outcome).toBe("ok");
   });
 
   it("aborts a scheduled turn whose runner was swapped before it started", async () => {
@@ -1373,7 +1375,7 @@ describe("Telegram intake", () => {
     expect(runners[0]!.prompt.mock.calls[0]![0]).toContain("[Voice message transcript]\nno mime given");
   });
 
-  it("does not save, reply, or prompt stale voice work after a runner-disposing command", async () => {
+  it("serializes a runner-disposing command behind in-flight voice work", async () => {
     const cfg = makeConfig();
     cfg.groqApiKey = "groq-key";
     const { intake } = makeHarness(cfg);
@@ -1394,24 +1396,19 @@ describe("Telegram intake", () => {
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
     const staleRunner = runners[0]!;
 
-    // Swap the runner out (as /new does) before transcription settles.
+    // Queue the runner swap behind the in-flight transcription.
     await intake.handleText(message, "/new");
 
     pending.resolve();
-    await flushMicrotasks();
+    await waitFor(() => staleRunner.prompt.mock.calls.length === 1);
+    await waitFor(() => staleRunner.dispose.mock.calls.length === 1);
 
     expect(staleRunner.dispose).toHaveBeenCalledTimes(1);
-    expect(staleRunner.prompt).not.toHaveBeenCalled();
-    // The spec scenario "Stale ASR work does not side-effect" prohibits replies
-    // too — assert the no-side-effect guarantee the test name claims.
-    expect(replies.some((r) => r.includes("transcrib") || r.includes("No speech") || r.includes("Saved"))).toBe(false);
+    expect(staleRunner.prompt).toHaveBeenCalledTimes(1);
+    expect(replies.some((r) => r.includes("transcrib") || r.includes("No speech") || r.includes("Saved"))).toBe(true);
   });
 
-  it("does not save the voice file for stale work when a projectDir is bound", async () => {
-    // The no-projectDir stale test above can't exercise the "SHALL NOT save"
-    // guarantee (saving is structurally impossible without a projectDir), so
-    // this fixture binds a projectDir and asserts no voice file is written
-    // when the runner is swapped before transcription settles.
+  it("serializes a project runner swap behind in-flight voice work", async () => {
     const cfg = makeConfig();
     cfg.groqApiKey = "groq-key";
     const { intake } = makeHarness(cfg);
@@ -1430,20 +1427,17 @@ describe("Telegram intake", () => {
     await intake.handleText(message, "/new");
     await intake.handleText(message, `/project ${cfg.goblinHome}`);
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
-    const staleRunner = runners[0]!;
+    const staleRunner = runners.at(-1)!;
 
-    // Swap the runner out before transcription settles.
+    // Queue the runner swap behind the in-flight transcription.
     await intake.handleText(message, "/new");
 
     pending.resolve();
-    await flushMicrotasks();
+    await waitFor(() => staleRunner.prompt.mock.calls.length === 1);
+    await waitFor(() => staleRunner.dispose.mock.calls.length === 1);
 
     expect(staleRunner.dispose).toHaveBeenCalledTimes(1);
-    expect(staleRunner.prompt).not.toHaveBeenCalled();
-    // No voice file was written to the project directory.
-    expect(replies.some((r) => r.startsWith("Saved voice-"))).toBe(false);
-    const writtenVoices = readdirSync(cfg.goblinHome).filter((f) => /^voice-\d+\.oga$/.test(f));
-    expect(writtenVoices).toEqual([]);
+    expect(staleRunner.prompt).toHaveBeenCalledTimes(1);
   });
 
   describe("handleGuestMessage", () => {

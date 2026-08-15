@@ -750,6 +750,10 @@ ${formatted}`;
             });
             return;
           }
+          this.store.recordRun(schedule.id, {
+            at: new Date(this.clock.now()).toISOString(),
+            outcome: "ok",
+          });
         }, (err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           this.store.recordRun(schedule.id, {
@@ -759,8 +763,16 @@ ${formatted}`;
           });
           log.error("scheduler admission status failed", { id: schedule.id, error: msg });
         }));
+      } else if (admission) {
+        // Boolean admission is retained for small/legacy dispatchers that do
+        // not expose a start handle. Treat acceptance as synchronous execution
+        // for that compatibility path; production TurnDispatcher always
+        // returns the started handle above.
+        this.store.recordRun(schedule.id, {
+          at: new Date(this.clock.now()).toISOString(),
+          outcome: "ok",
+        });
       }
-      this.store.recordRun(schedule.id, { at: nowIso, outcome: "ok" });
       return;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

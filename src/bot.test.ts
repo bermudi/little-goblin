@@ -548,7 +548,7 @@ describe("buildBot integration", () => {
     expect(runnerInstances).toHaveLength(1);
   });
 
-  it("does not track a group update while member authorization is pending", async () => {
+  it("drains a fetched group update through member authorization during shutdown", async () => {
     const built = await makeBot();
     let resolveMemberCount!: (count: number) => void;
     const memberCount = new Promise<number>((resolve) => {
@@ -560,9 +560,10 @@ describe("buildBot integration", () => {
     await waitFor(() => built.api.api.getChatMemberCount.mock.calls.length === 1);
 
     const telegramDrain = built.closeAdmission();
-    expect(await settlesWithin(telegramDrain, 25)).toBe(true);
+    expect(await settlesWithin(telegramDrain, 25)).toBe(false);
 
     resolveMemberCount(5);
+    await telegramDrain;
     await handled;
     expect(runnerInstances).toHaveLength(0);
     expect(built.api.sent).toEqual([]);

@@ -22,7 +22,7 @@ import { PreparedRuntimeAssembler } from "./prepared-runtime.ts";
 import type { PreparedSurfaceRuntimePlan } from "../agent/runtime-plan.ts";
 import { CapabilityManifestToolSource } from "../agent/tool-assembly.ts";
 import { ConversationRuntimeHost, type RuntimeDisposalOptions } from "./conversation-runtime-host.ts";
-import type { SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
+import type { AttachedWork, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { AttachmentSignal, AttachedWork, CurrentBindingGuard, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { SurfaceSettings };
 
@@ -237,15 +237,16 @@ export class TurnDispatcher {
    * Throws before `AgentSession` creation when the runner is absent, stale,
    * or Surface-backed capture mismatch.
    *
-   * Throws after completion when the runner was invalidated while the revived
-   * subagent was running — the result is suppressed as stale.
+   * The returned result rejects after completion when the runner was
+   * invalidated while the revived subagent was running; stale output is
+   * suppressed.
    */
-  async reviveSubagent(
+  async beginReviveSubagent(
     surface: Surface,
     session: ConversationState,
     subagentId: string,
     prompt: string,
-  ): Promise<string> {
+  ): Promise<AttachedWork<string>> {
     const expectedSurfaceId = surfaceId(surface);
 
     const attached = await this.surfaceRuntimeAuthority.withCurrentBinding(
@@ -292,11 +293,38 @@ export class TurnDispatcher {
       },
     );
 
-    const result = await attached.result;
-    if (attached.runner === undefined || !this.isRunnerCurrent(session.id, attached.runner)) {
+    return {
+      ...attached,
+      result: this.completeRevivedSubagent(attached.result, attached.runner, session.id, subagentId),
+    };
+  }
+
+  /**
+   * Compatibility wrapper for callers that want the complete revived result.
+   * Command/intake callers use beginReviveSubagent so Telegram admission can
+   * be released at attachment rather than after the subagent finishes.
+   */
+  async reviveSubagent(
+    surface: Surface,
+    session: ConversationState,
+    subagentId: string,
+    prompt: string,
+  ): Promise<string> {
+    const attached = await this.beginReviveSubagent(surface, session, subagentId, prompt);
+    return await attached.result;
+  }
+
+  private async completeRevivedSubagent(
+    resultPromise: Promise<string>,
+    runner: AgentRunner | undefined,
+    sessionId: string,
+    subagentId: string,
+  ): Promise<string> {
+    const result = await resultPromise;
+    if (runner === undefined || !this.isRunnerCurrent(sessionId, runner)) {
       log.warn("revived subagent completed after its runtime was invalidated", {
         subagentId,
-        sessionId: session.id,
+        sessionId,
       });
       throw new Error(`subagent '${subagentId}' completed after its runtime was invalidated`);
     }
@@ -465,13 +493,14 @@ export class TurnDispatcher {
     surface: Surface,
     run: (isCurrent: () => boolean) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
+    onSettled?: () => void,
   ): boolean {
     return this.schedulePromptById(
       conversation.id,
       () => this.surfaceRuntimeAuthority.isCurrentBinding(surface, conversation.id),
       run,
       onError,
-      { isPrompt: false },
+      { isPrompt: false, onSettled },
     );
   }
 
@@ -481,7 +510,7 @@ export class TurnDispatcher {
     isCurrent: () => boolean,
     run: (isCurrent: () => boolean) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
-    opts: { isPrompt?: boolean; onFenced?: () => void } = {},
+    opts: { isPrompt?: boolean; onFenced?: () => void; onSettled?: () => void } = {},
   ): boolean {
     return this.runtimeHost.schedule(sessionId, isCurrent, run, onError, opts);
   }
@@ -504,6 +533,11 @@ export class TurnDispatcher {
    */
   isPromptPending(sessionId: string): boolean {
     return this.runtimeHost.isPromptPending(sessionId);
+  }
+
+  /** True while any prompt queue entry is active or waiting to start. */
+  hasPromptWork(sessionId: string): boolean {
+    return this.runtimeHost.hasPromptWork(sessionId);
   }
 
   /**

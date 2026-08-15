@@ -13,7 +13,7 @@
 import { createHash } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { opendir, readFile, stat } from "node:fs/promises";
+import { open, opendir, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import {
   loadSourcedSkills,
@@ -377,6 +377,11 @@ async function captureSkillSnapshot(filePath: string): Promise<CapturedSkillSnap
           if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
           throw error;
         }
+        if (targetStats.isDirectory()) {
+          throw new SkillResolutionError(
+            `skill snapshot does not support directory symlinks: ${path}`,
+          );
+        }
         if (!targetStats.isFile()) continue;
       } else {
         if (!entry.isFile()) continue;
@@ -388,11 +393,29 @@ async function captureSkillSnapshot(filePath: string): Promise<CapturedSkillSnap
         );
       }
       const relativePath = relative(skillDirectory, path);
-      const bytes = await readFile(path);
-      if (bytes.byteLength > MAX_SKILL_FILE_BYTES) {
-        throw new SkillResolutionError(
-          `skill resource exceeds ${MAX_SKILL_FILE_BYTES} bytes: ${path}`,
-        );
+      const handle = await open(path, "r");
+      let bytes: Buffer;
+      try {
+        const bounded = Buffer.alloc(MAX_SKILL_FILE_BYTES + 1);
+        let bytesRead = 0;
+        while (bytesRead < bounded.byteLength) {
+          const result = await handle.read(
+            bounded,
+            bytesRead,
+            bounded.byteLength - bytesRead,
+            bytesRead,
+          );
+          if (result.bytesRead === 0) break;
+          bytesRead += result.bytesRead;
+        }
+        if (bytesRead > MAX_SKILL_FILE_BYTES) {
+          throw new SkillResolutionError(
+            `skill resource exceeds ${MAX_SKILL_FILE_BYTES} bytes: ${path}`,
+          );
+        }
+        bytes = bounded.subarray(0, bytesRead);
+      } finally {
+        await handle.close();
       }
       const base64 = bytes.toString("base64");
       const executable = (targetStats.mode & 0o111) !== 0;

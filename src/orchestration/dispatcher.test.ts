@@ -756,8 +756,13 @@ describe("TurnDispatcher async runner creation", () => {
     expect(yPlan.memoryContext.authority.sourceSurfaceId).toBe(surfaceId(dmSurface(2)));
   });
 
-  it("settings recheck discards a candidate changed during an async authority checkpoint", async () => {
-    let fingerprint = "settings:a";
+  it("settings invalidation discards a candidate changed during an async authority checkpoint", async () => {
+    // Every settings-mutation path bumps the runtime epoch through lifecycle
+    // invalidation (invalidateSurfaceRuntime → disposeRuntime →
+    // invalidate("settings-change")). This test simulates that path: during
+    // the second binding checkpoint, a settings-change invalidation disposes
+    // the in-flight creation. The epoch ticket captured at preparation start
+    // becomes stale, and the next checkpoint fences the candidate.
     let assertionCount = 0;
     const policy = DEFAULT_SKILL_POLICY;
     const surfaceSettings: SurfaceSettings = {
@@ -767,7 +772,7 @@ describe("TurnDispatcher async runner creation", () => {
         modelName: undefined,
         thinkingLevel: undefined,
         skillPolicy: policy,
-        fingerprint,
+        fingerprint: "settings:a",
       }),
       getModelName: () => undefined,
       setModelName: () => {},
@@ -803,15 +808,144 @@ describe("TurnDispatcher async runner creation", () => {
         ...permissiveRuntimeAuthority(),
         assertCurrentBinding: async () => {
           assertionCount++;
-          if (assertionCount === 2) fingerprint = "settings:b";
+          if (assertionCount === 2) {
+            // Simulate a settings-change invalidation: lifecycle bumps the
+            // epoch and drops the in-flight creation.
+            await runtimeHost.disposeRuntime("abc123def0", { preserveCommandQueue: true });
+          }
         },
       },
     });
 
     await expect(dispatcher.getOrCreateRunner(makeSession("abc123def0"), dmSurface(1)))
-      .rejects.toThrow(/Surface settings changed after skill resolution/);
+      .rejects.toThrow(/stale runtime creation/);
     expect(createAgentRunnerCalls).toHaveLength(0);
     expect(runtimeHost.hasRuntime("abc123def0")).toBe(false);
+  });
+
+  it("creation commit performs no Surface-settings re-read", async () => {
+    // The creation commit path (doCreateAndRegisterRunner) must not re-read
+    // Surface settings. Every settings-mutation path bumps the runtime epoch
+    // through lifecycle invalidation, so isCurrentCreation is sufficient.
+    // This test tracks settings reads and verifies the count does not increase
+    // during the commit phase (after prepare returns, before registration).
+    const policy = DEFAULT_SKILL_POLICY;
+    let settingsReadCount = 0;
+    const surfaceSettings: SurfaceSettings = {
+      effectiveEnvironment: () => personalEnvironment(),
+      getRuntimeSettings: () => {
+        settingsReadCount++;
+        return {
+          executionEnvironment: personalEnvironment(),
+          modelName: undefined,
+          thinkingLevel: undefined,
+          skillPolicy: policy,
+          fingerprint: "settings:a",
+        };
+      },
+      getModelName: () => undefined,
+      setModelName: () => {},
+      getThinkingLevel: () => undefined,
+      setThinkingLevel: () => {},
+      setPreferences: () => {},
+      getSkillPolicy: () => policy,
+    };
+    const runtimeHost = new ConversationRuntimeHost({
+      delegatedWorkHost: new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost,
+    });
+    const createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][] = [];
+    const dispatcher = new TurnDispatcher({
+      cfg: {
+        goblinHome: tmpDir,
+        modelName: "poe/TestModel",
+        poeApiKey: "test-key",
+      } as Config,
+      surfaceSettings,
+      subagentRunner: new FakeSubagentRunner() as unknown as SubagentRunner,
+      memoryStore,
+      runtimeHost,
+      createMessageBuffer: () => ({
+        onTextDelta: () => {}, onToolStart: () => {}, onToolEnd: () => {},
+        onStatusUpdate: () => {}, onMessageStart: () => {}, onMessageEnd: () => {}, onAgentEnd: () => {},
+      }),
+      createBetaTools: () => [],
+      createAgentRunner: (options) => {
+        createAgentRunnerCalls.push(options);
+        return new FakeAgentRunner() as unknown as AgentRunner;
+      },
+      surfaceRuntimeAuthority: permissiveRuntimeAuthority(),
+    });
+
+    // Record the read count after getOrCreateRunner's initial snapshot but
+    // before the commit. The initial snapshot reads once; prepare does not
+    // read settings. The commit (doCreateAndRegisterRunner after prepare)
+    // must not read settings either.
+    const runner = await dispatcher.getOrCreateRunner(makeSession("abc123def0"), dmSurface(1));
+    expect(runner).toBeDefined();
+    expect(createAgentRunnerCalls).toHaveLength(1);
+    // The snapshot at getOrCreateRunner entry reads once. The prepared
+    // runtime no longer reads settings at checkpoints or the final check.
+    // The commit path (doCreateAndRegisterRunner) no longer re-reads
+    // settings. So the total read count should be 1 (the initial snapshot).
+    expect(settingsReadCount).toBe(1);
+  });
+
+  it("same-binding invalidation preserves queued commands while fencing model work", async () => {
+    // A settings-change invalidation (e.g. /model) bumps the runtime epoch
+    // but preserves the binding epoch. Queued lifecycle commands (captured
+    // under the binding epoch) remain current and execute after the turn;
+    // stale model work (captured under the runtime epoch) is fenced.
+    const { dispatcher, runtimeHost } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+
+    const runner = await dispatcher.getOrCreateRunner(session, surface);
+    const fakeRunner = runner as unknown as FakeAgentRunner;
+    fakeRunner.disposeDelayMs = 0;
+
+    // Capture epochs at enqueue time.
+    const runtimeEpoch = runtimeHost.captureEpoch(session.id, "runtime");
+    const bindingEpoch = runtimeHost.captureEpoch(session.id, "binding");
+
+    let commandExecuted = false;
+    let promptExecuted = false;
+
+    // Queue a lifecycle command (binding epoch).
+    dispatcher.scheduleCommand(
+      session,
+      surface,
+      async (isCurrent) => {
+        if (!isCurrent()) return;
+        commandExecuted = true;
+      },
+      () => {},
+    );
+
+    // Queue a prompt (runtime epoch) — this represents stale model work.
+    dispatcher.schedulePrompt(
+      session,
+      runner,
+      async (isCurrent) => {
+        if (!isCurrent()) return;
+        promptExecuted = true;
+      },
+      () => {},
+    );
+
+    // Settings-change invalidation: bumps runtime epoch, preserves binding
+    // epoch, preserves the command queue.
+    await runtimeHost.disposeRuntime(session.id, { preserveCommandQueue: true });
+
+    // The runtime epoch bumped; the binding epoch did not.
+    expect(runtimeHost.isEpochCurrent(session.id, "runtime", runtimeEpoch)).toBe(false);
+    expect(runtimeHost.isEpochCurrent(session.id, "binding", bindingEpoch)).toBe(true);
+
+    // Allow the queue to drain. The command (binding epoch) executes; the
+    // prompt (runtime epoch) is fenced.
+    await runtimeHost.awaitSettled(session.id);
+
+    expect(commandExecuted).toBe(true);
+    expect(promptExecuted).toBe(false);
   });
 
   it("binding authority recheck: a stale caller whose binding rotated is discarded", async () => {

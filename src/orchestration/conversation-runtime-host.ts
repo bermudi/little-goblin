@@ -16,10 +16,11 @@ import {
   type RuntimeCreation,
   type RuntimeSkillContext,
   type SurfaceRuntimeRegistration,
+  type TicketAxis,
 } from "./runtime-machine.ts";
 
 // Re-export types that callers import from this module.
-export type { RuntimeCreation, RuntimeSkillContext, SurfaceRuntimeRegistration };
+export type { RuntimeCreation, RuntimeSkillContext, SurfaceRuntimeRegistration, TicketAxis };
 
 /**
  * Preserve lifecycle-command serialization while invalidating model work.
@@ -158,6 +159,24 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
 
   isCurrentCreation(conversationId: ConversationId, promise: Promise<AgentRunner>): boolean {
     return this.machines.get(conversationId)?.isCurrentCreation(promise) ?? false;
+  }
+
+  /**
+   * Capture the current epoch for one authority axis (decision 0046).
+   * Returns 0 when no machine exists yet — tickets captured before any
+   * runtime registration are stale once the first generation registers.
+   */
+  captureEpoch(conversationId: ConversationId, axis: TicketAxis): number {
+    return this.machines.get(conversationId)?.captureEpoch(axis) ?? 0;
+  }
+
+  /**
+   * True when the captured epoch still matches the current epoch for the
+   * given axis. The single helper used at every commit point in the
+   * dispatcher seam.
+   */
+  isEpochCurrent(conversationId: ConversationId, axis: TicketAxis, epoch: number): boolean {
+    return this.machines.get(conversationId)?.isEpochCurrent(axis, epoch) ?? false;
   }
 
   finishCreation(

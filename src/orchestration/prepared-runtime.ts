@@ -12,18 +12,17 @@ import { cloneSkillPolicy, resolveSkillSet, skillPolicyFingerprint } from "../ag
 import { captureRuntimeMemoryContext, type MemoryStore } from "../memory/mod.ts";
 import { environmentCwd, environmentsEqual, projectRootOf } from "../sessions/environment.ts";
 import type { ConversationState } from "../sessions/types.ts";
-import { parseSurfaceId, surfaceId, type Surface, type SurfaceId } from "../surface.ts";
+import { surfaceId, type Surface, type SurfaceId } from "../surface.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import type { SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 import type { RuntimeCreation, ConversationRuntimeHost } from "./conversation-runtime-host.ts";
-import type { SurfaceRuntimeSettingsSnapshot, SurfaceSettings } from "./conversation-lifecycle.ts";
+import type { SurfaceRuntimeSettingsSnapshot } from "./conversation-lifecycle.ts";
 
 export interface PreparedRuntimeAssemblerOptions {
   readonly cfg: Config;
-  readonly surfaceSettings: SurfaceSettings;
   readonly surfaceRuntimeAuthority: SurfaceRuntimeAuthority;
   readonly runtimeHost: ConversationRuntimeHost;
   readonly memoryStore: MemoryStore;
@@ -53,10 +52,16 @@ export class PreparedRuntimeAssembler {
     if (creation.surfaceId !== expectedSurfaceId || creation.settingsFingerprint !== snapshot.fingerprint) {
       throw new Error(`runtime candidate identity mismatch for conversation ${conversation.id}`);
     }
+    // Capture the runtime epoch at preparation start. Every settings-mutation
+    // path bumps this epoch through lifecycle invalidation
+    // (invalidateSurfaceRuntime → disposeRuntime → invalidate("settings-change")),
+    // so the ticket becomes stale synchronously when settings change during
+    // preparation — no settings re-read is needed at commit points.
+    let epoch = this.options.runtimeHost.captureEpoch(conversation.id, "runtime");
     // Binding authority may replay a pending lifecycle transition. Consult it
     // before rejecting the caller's earlier settings snapshot so recovery can
     // complete and stale Conversation authority can be fenced correctly.
-    await this.checkpoint(conversation, surface, creation, snapshot, "before skill resolution");
+    await this.checkpoint(conversation, surface, creation, epoch, "before skill resolution");
     if (!environmentsEqual(conversation.executionEnvironment, snapshot.executionEnvironment)) {
       throw new Error(`environment mismatch while preparing runtime for conversation ${conversation.id}`);
     }
@@ -67,13 +72,18 @@ export class PreparedRuntimeAssembler {
       this.options.cfg.goblinHome,
       { captureSnapshots: true },
     );
-    await this.checkpoint(conversation, surface, creation, snapshot, "after skill resolution");
+    await this.checkpoint(conversation, surface, creation, epoch, "after skill resolution");
 
     if (this.options.runtimeHost.hasRuntime(conversation.id, creation.promise)) {
       await this.options.runtimeHost.disposeRuntime(conversation.id, { preserveInFlight: creation.promise });
     }
     await this.options.runtimeHost.awaitSettled(conversation.id);
-    await this.checkpoint(conversation, surface, creation, snapshot, "after prior runtime cleanup");
+    // Recapture the epoch after prior-runtime cleanup. The cleanup disposal
+    // bumps the epoch intentionally (it invalidates the prior generation while
+    // preserving this creation); the new epoch is the authoritative baseline
+    // for the remaining commit points.
+    epoch = this.options.runtimeHost.captureEpoch(conversation.id, "runtime");
+    await this.checkpoint(conversation, surface, creation, epoch, "after prior runtime cleanup");
 
     const memoryContext = await captureRuntimeMemoryContext({
       surface,
@@ -81,13 +91,13 @@ export class PreparedRuntimeAssembler {
       store: this.options.memoryStore,
       getTopicName: this.options.getTopicName,
     });
-    await this.checkpoint(conversation, surface, creation, snapshot, "after memory capture");
+    await this.checkpoint(conversation, surface, creation, epoch, "after memory capture");
 
     const systemPrompt = await buildGoblinSystemPrompt({
       home: this.options.cfg.goblinHome,
       executionEnvironment: conversation.executionEnvironment,
     });
-    await this.checkpoint(conversation, surface, creation, snapshot, "after prompt capture");
+    await this.checkpoint(conversation, surface, creation, epoch, "after prompt capture");
 
     const modelName = snapshot.modelName ?? this.options.cfg.modelName;
     const resolvedModel = resolveModel({ ...this.options.cfg, modelName });
@@ -98,7 +108,14 @@ export class PreparedRuntimeAssembler {
       ? systemPrompt.prompt
       : `${systemPrompt.prompt}\n\n${memoryContext.frozenSummary}`;
 
-    this.assertSynchronousCurrent(conversation, creation, snapshot, "before runner construction");
+    // Final no-await triple-check: creation reservation + epoch ticket. No
+    // settings re-read — lifecycle invalidation bumps the epoch synchronously.
+    if (!this.options.runtimeHost.isCurrentCreation(conversation.id, creation.promise)) {
+      throw new Error(`stale runtime creation for conversation ${conversation.id}: invalidated before runner construction`);
+    }
+    if (!this.options.runtimeHost.isEpochCurrent(conversation.id, "runtime", epoch)) {
+      throw new Error(`stale runtime creation for conversation ${conversation.id}: epoch bumped before runner construction`);
+    }
 
     return freezePreparedSurfaceRuntimePlan({
       conversationId: conversation.id,
@@ -121,11 +138,18 @@ export class PreparedRuntimeAssembler {
     });
   }
 
+  /**
+   * One commit-point helper. Reduces the scattered creation/binding/settings
+   * checks to: (1) creation reservation still current, (2) async binding
+   * reconciliation (recovery for a pending lifecycle transition), (3) runtime
+   * epoch ticket still current. No settings re-read — lifecycle invalidation
+   * bumps the epoch synchronously for every settings mutation path.
+   */
   private async checkpoint(
     conversation: ConversationState,
     surface: Surface,
     creation: RuntimeCreation,
-    snapshot: SurfaceRuntimeSettingsSnapshot,
+    epoch: number,
     stage: string,
   ): Promise<void> {
     if (!this.options.runtimeHost.isCurrentCreation(conversation.id, creation.promise)) {
@@ -137,21 +161,8 @@ export class PreparedRuntimeAssembler {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`stale runtime creation for conversation ${conversation.id} ${stage}: ${message}`);
     }
-    this.assertSynchronousCurrent(conversation, creation, snapshot, stage);
-  }
-
-  private assertSynchronousCurrent(
-    conversation: ConversationState,
-    creation: RuntimeCreation,
-    snapshot: SurfaceRuntimeSettingsSnapshot,
-    stage: string,
-  ): void {
-    if (!this.options.runtimeHost.isCurrentCreation(conversation.id, creation.promise)) {
-      throw new Error(`stale runtime creation for conversation ${conversation.id}: invalidated ${stage}`);
-    }
-    const current = this.options.surfaceSettings.getRuntimeSettings(creationSurface(creation));
-    if (current.fingerprint !== snapshot.fingerprint) {
-      throw new Error(`stale runtime creation for conversation ${conversation.id}: Surface settings changed ${stage}`);
+    if (!this.options.runtimeHost.isEpochCurrent(conversation.id, "runtime", epoch)) {
+      throw new Error(`stale runtime creation for conversation ${conversation.id}: epoch bumped ${stage}`);
     }
   }
 
@@ -172,11 +183,4 @@ export class PreparedRuntimeAssembler {
       hasMcp: this.options.mcpRunner !== undefined && this.options.cfg.mcp !== undefined,
     });
   }
-}
-
-function creationSurface(creation: RuntimeCreation): Surface {
-  // RuntimeCreation stores canonical Surface identity specifically so every
-  // stale check reconstructs authority from that identity rather than a caller
-  // convenience object.
-  return parseSurfaceId(creation.surfaceId);
 }

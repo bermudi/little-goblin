@@ -26,6 +26,18 @@ export type InvalidationReason = "settings-change" | "binding-change" | "shutdow
 /** Current generation phase within the machine. */
 export type MachinePhase = "idle" | "preparing" | "active";
 
+/**
+ * Authority axis for an epoch ticket (decision 0046).
+ *
+ * - `"runtime"` — the machine's monotonic generation. Captured by prompts,
+ *   steers, and scheduled turns. Bumped on every registration, creation
+ *   reservation, and invalidation.
+ * - `"binding"` — a separate monotonic counter. Captured by lifecycle
+ *   commands. Bumped only on binding-change and shutdown, so same-binding
+ *   settings invalidation preserves acknowledged command order.
+ */
+export type TicketAxis = "runtime" | "binding";
+
 /** Frozen settings and skill identity captured by one runtime generation. */
 export interface RuntimeSkillContext {
   readonly settingsFingerprint: string;
@@ -166,6 +178,7 @@ export interface RuntimeMachineDeps {
 export class RuntimeMachine {
   // ── generation / phase ──
   private generation = 0;
+  private bindingEpoch = 0;
   private phase: MachinePhase = "idle";
 
   // ── current generation state ──
@@ -215,6 +228,34 @@ export class RuntimeMachine {
   private nextGeneration(): number {
     this.generation += 1;
     return this.generation;
+  }
+
+  // ── epoch tickets (decision 0046) ──────────────────────────────────
+
+  /**
+   * Capture the current epoch for one authority axis. The returned value is
+   * compared by {@link isEpochCurrent} at commit points — before and after
+   * awaits that cross the kernel boundary.
+   *
+   * - `"runtime"`: the machine's monotonic generation. Bumped on every
+   *   registration, creation reservation, and invalidation. Used for prompts,
+   *   steers, and scheduled turns.
+   * - `"binding"`: a separate monotonic counter. Bumped only on
+   *   binding-change and shutdown invalidation. Used for lifecycle commands,
+   *   so same-binding settings invalidation preserves acknowledged command
+   *   order while a binding change drops queued commands.
+   */
+  captureEpoch(axis: TicketAxis): number {
+    return axis === "runtime" ? this.generation : this.bindingEpoch;
+  }
+
+  /**
+   * True when the captured epoch still matches the current epoch for the
+   * given axis. This is the single helper that replaces the scattered
+   * `isCurrent`-flavored authority checks at the dispatcher seam.
+   */
+  isEpochCurrent(axis: TicketAxis, epoch: number): boolean {
+    return this.captureEpoch(axis) === epoch;
   }
 
   // ── runner access ──────────────────────────────────────────────────
@@ -599,6 +640,7 @@ export class RuntimeMachine {
     // an earlier call deliberately preserved.
     const priorRunner = this.runner;
     const priorRuntimeId = this.runtimeId;
+    const hadCreation = this.creation !== undefined;
     const preservesCreation =
       reason === "settings-change" &&
       preserveCreationPromise !== undefined &&
@@ -634,19 +676,50 @@ export class RuntimeMachine {
 
     // After fencing, check if a disposal is already in flight for this
     // generation. If so, share its promise — the fence above has already
-    // applied the stronger semantics.
+    // applied the stronger semantics. Bump the epoch so tickets captured
+    // before the stronger fence become stale.
     for (const draining of this.drain) {
       if (draining.generation === currentGeneration) {
+        this.bumpEpochs(reason);
         return draining.promise;
       }
     }
 
+    // Also deduplicate by runtime identity: a consecutive invalidation
+    // with no new runner but the same pending delegated invalidations is
+    // a re-invocation of the same disposal. The epoch bump from the first
+    // call already fenced stale tickets; the stronger fence above applied
+    // its semantics (dropped creation/queue). Share the in-flight promise.
+    if (priorRunner === undefined && this.pendingDelegatedInvalidations.size > 0) {
+      const pendingIds = [...this.pendingDelegatedInvalidations];
+      for (const draining of this.drain) {
+        if (pendingIds.every((id) => draining.runtimeIds.includes(id))) {
+          this.bumpEpochs(reason);
+          return draining.promise;
+        }
+      }
+    }
+
     // Nothing to drain — the machine was idle with no runner, no creation,
-    // and no pending delegated invalidations. Return a resolved promise
-    // without creating a spurious drain entry.
+    // and no pending delegated invalidations. But the fence above may have
+    // dropped a creation or fenced the queue. Bump the epoch so tickets
+    // captured before the fence become stale, then return without creating
+    // a spurious drain entry.
     if (priorRunner === undefined && this.pendingDelegatedInvalidations.size === 0) {
+      const droppedCreation = hadCreation && !preservesCreation;
+      const fencedQueue = reason !== "settings-change" && this.queue.length > 0;
+      if (droppedCreation || fencedQueue) {
+        this.bumpEpochs(reason);
+      }
       return Promise.resolve();
     }
+
+    // Bump epochs per decision 0046: the runtime epoch bumps on every
+    // invalidation; the binding epoch bumps only on binding-change and
+    // shutdown. Captured tickets from the prior epoch become stale
+    // synchronously — commit-point comparison fences stale work before it
+    // produces side effects.
+    this.bumpEpochs(reason);
 
     // Start physical cleanup as a drain generation.
     const runtimeIds = [...this.pendingDelegatedInvalidations];
@@ -662,6 +735,17 @@ export class RuntimeMachine {
       () => this.drain.delete(draining),
     );
     return disposal;
+  }
+
+  /**
+   * Bump the runtime epoch on every invalidation and the binding epoch only
+   * on binding-change and shutdown (decision 0046).
+   */
+  private bumpEpochs(reason: InvalidationReason): void {
+    this.nextGeneration();
+    if (reason !== "settings-change") {
+      this.bindingEpoch += 1;
+    }
   }
 
   /**

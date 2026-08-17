@@ -210,6 +210,12 @@ describe("resolveModel", () => {
     expect(() => resolveModel(cfg)).toThrow(/OPENCODE_API_KEY/);
   });
 
+  it("clamps the default thinking level to the model's supported set (deepseek-v4-flash)", () => {
+    const r = resolveModel(makeConfig("opencode-go/deepseek-v4-flash"));
+    // deepseek-v4-flash only supports high/max; the "medium" default must clamp to high.
+    expect(r.thinkingLevel).toBe("high");
+  });
+
   // --- thinkingLevelMap inheritance ---
 
   it("inherits thinkingLevelMap from pi-ai registry for poe/gpt-5.5", () => {

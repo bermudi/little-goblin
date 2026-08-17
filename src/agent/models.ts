@@ -14,7 +14,7 @@
  *
  * Extend by adding entries. The registry is explicit — no runtime synthesis.
  */
-import { type Api, type Model, type ThinkingLevelMap } from "@earendil-works/pi-ai";
+import { type Api, type Model, clampThinkingLevel, type ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { getBuiltinModel, getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Config } from "../config.ts";
@@ -497,6 +497,11 @@ export function resolveModel(cfg: Config): ResolvedModel {
   const upstreamMap = resolveThinkingLevelMap(entry.model.id);
   const model = upstreamMap ? { ...entry.model, thinkingLevelMap: upstreamMap } : entry.model;
 
-  return { model, apiKey, thinkingLevel: entry.thinkingLevel ?? "medium" };
+  // The default level is clamped to the model's supported set so the reported
+  // default always matches what a request will actually run at (pi clamps again
+  // at request time; the display and runtime plan must agree with it).
+  const thinkingLevel = clampThinkingLevel(model, entry.thinkingLevel ?? "medium");
+
+  return { model, apiKey, thinkingLevel };
 }
 

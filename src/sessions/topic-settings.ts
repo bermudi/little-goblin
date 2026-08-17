@@ -7,7 +7,7 @@ import { log } from "../log.ts";
 import { cloneSkillPolicy, DEFAULT_SKILL_POLICY, validateSkillPolicy, type SkillPolicy } from "../agent/skills/types.ts";
 import { parseSurfaceId, surfaceId } from "../surface.ts";
 
-const ALL_THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const ALL_THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function isValidThinkingLevel(level: string | undefined): level is ThinkingLevel {
   return level !== undefined && (ALL_THINKING_LEVELS as readonly string[]).includes(level);

@@ -12,6 +12,7 @@ import type { TurnDispatcher } from "../orchestration/dispatcher.ts";
 import { dmSurface, surfaceId, type Surface } from "../surface.ts";
 import type { CapturedMemoryContext } from "../memory/mod.ts";
 import type { ResolvedSkillSet } from "../agent/skills/mod.ts";
+import type { ResolvedModel } from "../agent/models.ts";
 import { MetricsStore, type MetricsEvent, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { AgentRunner } from "../agent/mod.ts";
@@ -324,6 +325,34 @@ describe("handleCommand", () => {
     const result = expectReplied(await dispatch({ command: "/think", rawText: "/think high", harness }));
     expect(result.reply).toContain("Thinking level set to `high`");
     expect(harness.lifecycle.settings.getThinkingLevel(harness.surface)).toBe("high");
+  });
+
+  it("/think list shows the clamped effective level for a model that only supports high/max", async () => {
+    const harness = makeHarness();
+    // Simulate deepseek-v4-flash: default "medium" is unsupported, so the
+    // display must report the effective clamped level and offer real options.
+    harness.deps.tryResolveModel = () => ({
+      apiKey: "k",
+      thinkingLevel: "high",
+      model: {
+        id: "deepseek-v4-flash",
+        name: "DeepSeek V4 Flash",
+        api: "openai-completions",
+        provider: "opencode-go",
+        baseUrl: "https://opencode.ai/zen/go/v1",
+        reasoning: true,
+        thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        maxTokens: 384_000,
+      },
+    } satisfies ResolvedModel);
+    const result = expectReplied(await dispatch({ command: "/think", harness }));
+    expect(result.reply).toContain("Current: `high`");
+    expect(result.reply).toContain("high ✅");
+    expect(result.reply).toContain("max");
+    expect(result.reply).not.toContain("medium");
   });
 
   it("/debug reports diagnostics for active conversations", async () => {

@@ -1,4 +1,4 @@
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Bot, Context } from "grammy";
 import type { Config } from "../config.ts";
@@ -307,12 +307,16 @@ const thinkHandler: CommandHandler = async ({ deps, surface, rawText }) => {
     const supportedLevels = currentResolvedModel
       ? (getSupportedThinkingLevels(currentResolvedModel.model) as readonly ThinkingLevel[])
       : ALL_LEVELS;
+    const requestedLevel = surfaceThinkingLevel ?? currentResolvedModel?.thinkingLevel ?? "medium";
     const result = executeThink({
       rawText,
-      currentLevel:
-        surfaceThinkingLevel ??
-        currentResolvedModel?.thinkingLevel ??
-        "medium",
+      // The "current" level must be one the model actually supports: a stored
+      // override or the model default may name a level the active model cannot
+      // use (pi clamps it to the nearest supported level at request time), so
+      // clamp here for an honest display.
+      currentLevel: currentResolvedModel
+        ? clampThinkingLevel(currentResolvedModel.model, requestedLevel)
+        : requestedLevel,
       supportedLevels,
     });
     if (result.kind === "set" || result.kind === "cleared") {

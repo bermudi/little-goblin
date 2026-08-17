@@ -97,7 +97,7 @@ Send any of these in Telegram:
 | `/name <name>` | Name the active Conversation. |
 | `/project <dir>` | Assign this unassigned Surface to one project environment and start fresh project history. |
 | `/model [index]` | List or switch favorite models. |
-| `/think [level]` | Show or set thinking level (`off` to `xhigh`). |
+| `/think [level]` | Show or set thinking level (`off` to `max`). |
 | `/compact` | Manually compact the active Conversation runtime's context. |
 | `/queue <text>` | Enqueue a follow-up turn. |
 | `/subagents` | List running/persisted subagents. |

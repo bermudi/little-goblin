@@ -38,7 +38,7 @@ All slash commands are available in DMs and in topics where the bot is reachable
 | `/name <name>` | Set a human-readable title for the active Conversation. |
 | `/project <dir>` | Assign an unassigned Surface to one project directory and start fresh project history. It cannot be cleared or switched; use another Surface for another environment. |
 | `/model [index]` | List favorite models or switch one for this Surface. |
-| `/think [level]` | Show or set this Surface's thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). |
+| `/think [level]` | Show or set this Surface's thinking level (`off` to `max`; unsupported levels are clamped to the nearest supported one). |
 | `/compact [instructions]` | Manually compact the active Conversation runtime's context. Handy before a long task. |
 | `/queue <text>` | Enqueue text to run as a fresh turn after the current one finishes. |
 | `/debug` | Dump diagnostics: Conversation ID, model, project root, subagent count, bindings, etc. |

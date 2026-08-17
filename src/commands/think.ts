@@ -12,7 +12,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { parseCommandArg } from "./parse.ts";
 
 /** All known thinking levels in ascending order. */
-export const ALL_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+export const ALL_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export interface ThinkCommandDeps {
   /** The raw command text, e.g. "/think high". */

@@ -1,3 +1,4 @@
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { DelegatedWorkHost } from "../delegated-work/mod.ts";
@@ -101,7 +102,13 @@ export class PreparedRuntimeAssembler {
 
     const modelName = snapshot.modelName ?? this.options.cfg.modelName;
     const resolvedModel = resolveModel({ ...this.options.cfg, modelName });
-    const thinkingLevel = snapshot.thinkingLevel ?? resolvedModel.thinkingLevel;
+    // Clamp the effective level to the resolved model's supported set so the
+    // plan records what a request will actually run at — matching both the
+    // /think display and pi's request-time clamp.
+    const thinkingLevel = clampThinkingLevel(
+      resolvedModel.model,
+      snapshot.thinkingLevel ?? resolvedModel.thinkingLevel,
+    );
     const runtimeId = DelegatedWorkHost.newRuntimeId();
     const capabilityManifest = this.buildCapabilityManifest(surface, conversation);
     const prompt = memoryContext.frozenSummary === null

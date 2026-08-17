@@ -15,6 +15,9 @@ const OFF_ONLY: readonly ThinkingLevel[] = ["off"];
 /** No xhigh — simulates a reasoning model that doesn't support xhigh. */
 const NO_XHIGH: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
+/** High/max only — simulates models like deepseek-v4-flash whose thinkingLevelMap nulls the lower levels. */
+const HIGH_MAX_ONLY: readonly ThinkingLevel[] = ["high", "max"];
+
 function makeDeps(
   overrides: Partial<Parameters<typeof executeThink>[0]> = {},
 ): Parameters<typeof executeThink>[0] {
@@ -39,7 +42,21 @@ describe("executeThink", () => {
     expect(result.reply).toContain("Current: `high`");
     expect(result.reply).toContain("off");
     expect(result.reply).toContain("xhigh");
+    expect(result.reply).toContain("max");
     expect(result.reply).toContain("high ✅");
+  });
+
+  it("ALL_LEVELS covers every upstream ThinkingLevel including max", () => {
+    expect(ALL_LEVELS).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("shows the clamped current level as the selected entry for a high/max-only model", () => {
+    const result = executeThink(makeDeps({ rawText: "/think", currentLevel: "high", supportedLevels: HIGH_MAX_ONLY }));
+    expect(result.kind).toBe("list");
+    expect(result.reply).toContain("Current: `high`");
+    expect(result.reply).toContain("high ✅");
+    expect(result.reply).toContain("max");
+    expect(result.reply).not.toContain("medium");
   });
 
   it("only shows levels supported by the model", () => {

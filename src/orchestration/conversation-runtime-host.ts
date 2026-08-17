@@ -16,8 +16,11 @@ import {
   type RuntimeCreation,
   type RuntimeSkillContext,
   type SurfaceRuntimeRegistration,
+  type SteerOrQueueResult,
   type TicketAxis,
 } from "./runtime-machine.ts";
+
+export type { SteerOrQueueResult };
 
 // Re-export types that callers import from this module.
 export type { RuntimeCreation, RuntimeSkillContext, SurfaceRuntimeRegistration, TicketAxis };
@@ -222,6 +225,22 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       return false;
     }
     return this.machineFor(conversationId).schedule(isCurrent, run, onError, options);
+  }
+
+  /**
+   * Steer-vs-queue in one synchronous machine section. See
+   * {@link RuntimeMachine.steerOrQueue}.
+   */
+  steerOrQueue(
+    conversationId: ConversationId,
+    attach: () => Promise<void>,
+    fallback: {
+      isCurrent: () => boolean;
+      run: (isCurrent: () => boolean) => Promise<void>;
+      onError: (err: unknown) => Promise<void> | void;
+    },
+  ): SteerOrQueueResult {
+    return this.machineFor(conversationId).steerOrQueue(attach, fallback);
   }
 
   isCommandPending(conversationId: ConversationId): boolean {

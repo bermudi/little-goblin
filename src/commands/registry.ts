@@ -42,6 +42,7 @@ import {
 } from "./skills.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
+import type { UpdateHandle } from "../shutdown/mod.ts";
 import type { SystemTag } from "../tg/format.ts";
 
 // ---------------------------------------------------------------------------
@@ -93,7 +94,7 @@ export interface DispatchOpts {
   conversation: ConversationState | null;
   existingRunner: AgentRunner | null;
   /** Releases the Telegram update once a long-running command is attached. */
-  onRuntimeAdmission?: () => void;
+  handle?: UpdateHandle;
   bot?: Bot;
 }
 
@@ -425,7 +426,7 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversati
   }
 };
 
-const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversation, onRuntimeAdmission }) => {
+const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversation, handle }) => {
   const args = parseReviveSubagentArgs(rawText);
   if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY, [], "info");
   if (conversation === null || deps.dispatcher === undefined) {
@@ -436,11 +437,11 @@ const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversat
   try {
     const revival = await deps.dispatcher.beginReviveSubagent(surface, conversation, args.id, args.prompt);
     attached = true;
-    onRuntimeAdmission?.();
+    handle?.releaseRuntimeAdmission();
     const result = await revival.result;
     return replied(result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`, [], "ok");
   } catch (err) {
-    if (!attached) onRuntimeAdmission?.();
+    if (!attached) handle?.releaseRuntimeAdmission();
     log.error("revive failed", { id: args.id, ...boundedError(err) });
     return replied(`Failed to revive subagent \`${args.id}\`.`, [], "error");
   }

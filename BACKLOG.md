@@ -10,21 +10,23 @@ Parked scope and open questions. Items graduate only when a deliberate implement
 
 ## Now
 
+**Runtime authority consolidation — implemented and verified under decision 0046.** One per-conversation `RuntimeMachine` behind the `ConversationRuntimeHost` port owns admission, generation identity, queueing, and disposal. Authority is held as epochs (runtime epoch, binding epoch) and compared at commit points rather than re-derived at module boundaries; the prompt queue is an explicit entry list with a serial executor; `ShutdownCoordinator` walks one owned phase list; `UpdateGate` absorbs process-level admission tracking behind exactly-once handles. Steer-vs-queue is decided synchronously; scheduler claim and enqueue are atomic. The five sequential units in `.loop/runtime-authority/QUEUE.md` (machine core, dispatcher epoch tickets, update gate + shutdown coordinator, steer + transactional scheduler admission, regression sweep and records) are complete.
+
 **Prepared runtime assembly — implemented and verified.** Surface runtime creation now prepares one immutable ephemeral plan before `AgentRunner` construction and registration. It captures coherent Surface settings and Conversation environment, runtime identity, resolved model/thinking, prompt provenance and frozen memory summary, captured memory authority, exact resolved skills, and a closed code-owned current-capability manifest. The existing asynchronous binding checks and synchronous reservation/settings checks remain around every authority-sensitive await. Surface runners consume the plan without lazy model, prompt, or skill rereads; internal runtimes remain structurally unchanged. The credential-bearing plan is neither persisted nor logged.
 
 **Capability/tool assembly and event handling — implemented and verified.** `CapabilityManifestToolSource` owns concrete Surface capability assembly behind one narrow interface, and `AgentEventHandler` owns transcript writes, metrics, callback dispatch, streamed-text reconciliation, prompt-file notices, and stale-event fencing. `AgentRunner` now remains the execution facade for prompt control and runtime authority without dynamic discovery or a plugin registry.
 
 ## Next
 
-**Runtime authority consolidation.** Decision 0046 is accepted: one per-conversation runtime machine behind the `ConversationRuntimeHost` port owns admission, generation identity, queueing, and disposal; authority is held as epochs (runtime epoch, binding epoch, process admission epoch) and compared at commit points rather than re-derived at module boundaries; the prompt queue becomes an explicit entry list; shutdown walks one owned phase list. Delivery is five sequential units in `.loop/runtime-authority/QUEUE.md`: machine core, dispatcher epoch tickets, update gate + shutdown coordinator, steer + transactional scheduler admission, regression sweep and records. ACP external agents (decision 0044) follows this cycle with its accepted scope unchanged.
+**ACP external agents (decision 0044).** Replace the Claude and Devin paths with capability-scoped ACP behind the external-agent execution host: exact-version-pinned `@agentclientprotocol/claude-agent-acp` for Claude and native `devin acp` for Devin. Neither qualified backend needs Goblin-hosted ACP filesystem or terminal capability. External-agent records join the host-owned delegated-run store. Codex transport remains unclassified. The accepted scope is unchanged; this cycle follows runtime authority consolidation.
 
 ## Completed inward solidification
 
-The runtime kernel, prepared runtime assembly, capability/tool assembly, and event handling slices are complete. `AgentRunner` consumes prepared runtime authority and delegates concrete tool and event ownership to narrow modules.
+The runtime kernel, prepared runtime assembly, capability/tool assembly, event handling, and runtime authority consolidation slices are complete. `AgentRunner` consumes prepared runtime authority and delegates concrete tool and event ownership to narrow modules; `RuntimeMachine` holds per-conversation authority as epochs.
 
 Only **Now** and **Next** are active delivery positions. Further work must be re-scouted after the named next cycle; no additional implementation theme is active here.
 
-Do not introduce a plugin registry, dynamic tool discovery, SQLite-only persistence, or speculative provider interfaces. Authority-check consolidation is governed by decision 0046: epochs captured at admission and compared at commit points — not fence removal; the earlier single-check guardrail clause is superseded by that ruling.
+Do not introduce a plugin registry, dynamic tool discovery, SQLite-only persistence, or speculative provider interfaces.
 
 ## Stabilization closure
 

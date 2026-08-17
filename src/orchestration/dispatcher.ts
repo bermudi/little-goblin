@@ -21,7 +21,7 @@ import type { SurfaceSettings } from "./conversation-lifecycle.ts";
 import { PreparedRuntimeAssembler } from "./prepared-runtime.ts";
 import type { PreparedSurfaceRuntimePlan } from "../agent/runtime-plan.ts";
 import { CapabilityManifestToolSource } from "../agent/tool-assembly.ts";
-import { ConversationRuntimeHost, type RuntimeDisposalOptions } from "./conversation-runtime-host.ts";
+import { ConversationRuntimeHost, type RuntimeDisposalOptions, type SteerOrQueueResult } from "./conversation-runtime-host.ts";
 import type { AttachedWork, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { AttachmentSignal, AttachedWork, CurrentBindingGuard, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { SurfaceSettings };
@@ -478,6 +478,25 @@ export class TurnDispatcher {
       onError,
       opts,
     );
+  }
+
+  /**
+   * Attach a follow-up or admit its late-steer fallback in one synchronous
+   * runtime-machine section. Telegram admission must not be released until
+   * this returns — a rejected fallback is already final.
+   */
+  steerOrQueue(
+    conversation: ConversationState,
+    attach: () => Promise<void>,
+    run: (isCurrent: () => boolean) => Promise<void>,
+    onError: (err: unknown) => Promise<void> | void,
+  ): SteerOrQueueResult {
+    const epoch = this.runtimeHost.captureEpoch(conversation.id, "runtime");
+    return this.runtimeHost.steerOrQueue(conversation.id, attach, {
+      isCurrent: () => this.runtimeHost.isEpochCurrent(conversation.id, "runtime", epoch),
+      run,
+      onError,
+    });
   }
 
   /**

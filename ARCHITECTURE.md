@@ -94,9 +94,13 @@ The legacy disk path remains `state/sessions/<id>/`; path churn has no architect
 
 ### Conversation runtime
 
-**TARGET.** A Conversation runtime is ephemeral: one `AgentRunner` plus one serialized prompt queue. It is assembled from the current Conversation and its bound Surface, then invalidated before `/new`, `/resume`, `/archive`, or another authority-changing transition can commit.
+**CURRENT — implemented under decision 0046.** A Conversation runtime is ephemeral: one `AgentRunner` plus one serialized prompt queue, owned by one per-conversation **runtime machine** (`src/orchestration/runtime-machine.ts`) behind the `ConversationRuntimeHost` port. The machine is assembled from the current Conversation and its bound Surface, then invalidated before `/new`, `/resume`, `/archive`, or another authority-changing transition can commit.
 
-A runtime is never routing or persistence identity. Stale runtime work must fail its current-binding check before filesystem writes, Telegram replies, schedule mutation, or model prompts. Lifecycle commands already acknowledged behind a turn are serialized by current Binding authority rather than stale runner identity, so same-binding preference invalidation preserves their order while a binding change drops them.
+The machine is a **current generation** (`idle` / `preparing` / `active`) plus a **drain set** of prior generations whose disposal is still settling. A replacement creation may be reserved while a prior generation drains — the two coexist as distinct generations distinguished by a monotonic **runtime epoch**. Authority is held as epochs and compared at commit points, not re-derived at module boundaries: every admitted work unit captures the epoch of its authority axis (runtime epoch for prompts, steers, and scheduled turns; binding epoch for lifecycle commands) and the serial executor compares it before and after each await. Same-binding settings invalidation preserves acknowledged command order while fencing stale model work; a binding change drops queued commands. Internal runtimes (dreaming) are machines whose tickets are always current until disposed.
+
+The prompt queue is an explicit entry list driven by a serial executor. Cancelling queued work removes the entry and never touches the runner. Illegal machine transitions fail loud with structured identity. Seeded interleaving property tests assert that no work executes after its epoch bumps, no ticket leaks, and shutdown always terminates.
+
+A runtime is never routing or persistence identity. Stale runtime work fails its epoch check before filesystem writes, Telegram replies, schedule mutation, or model prompts.
 
 ### Execution Environment
 
@@ -134,7 +138,7 @@ type ExecutionEnvironment =
 | Current Conversation pointer | Binding |
 | Model history and immutable CWD | Conversation |
 | Transcript, events, metrics, pi history | Conversation |
-| Runner, prompt queue, Telegram sink/tools | Conversation runtime |
+| Runner, prompt queue, Telegram sink/tools | Conversation runtime (RuntimeMachine — CURRENT, decision 0046) |
 | Personal identity and deployment prompts | Deployment workspace |
 | Curated memory entries | Memory store, keyed by active scope |
 | Delegated-run record and cross-run lifecycle | Delegated-work subsystem **(CURRENT store + attached lifetime — decision 0045; remaining durable/completion scope — decision 0036)** |
@@ -167,7 +171,7 @@ ConversationLifecycle (`src/orchestration`)
        ├── ConversationStore
        ├── BindingStore
        ├── SurfaceSettings
-       └── ConversationRuntimeHost
+       └── ConversationRuntimeHost ──► RuntimeMachine (per-conversation)
                      │
                      ▼
 TurnDispatcher ──► AgentRunner / pi backend
@@ -178,6 +182,9 @@ TurnDispatcher ──► AgentRunner / pi backend
                      ├── delegated-agent tools
                      └── Surface-bound Telegram tools
 
+ShutdownCoordinator / UpdateGate (`src/shutdown`)
+       │  one owned phase list; one process-level admission gate
+       ▼
 Persistence adapters ──► path helpers / atomic filesystem operations
 ```
 
@@ -214,11 +221,13 @@ Deployment
   └── model credentials/catalog
 ```
 
-The dispatcher receives mandatory lifecycle-owned Surface runtime authority at construction. It also receives the concrete `ConversationRuntimeHost` mandatorily; it cannot create a second runtime owner. That authority reconciles a pending project assignment before every Surface-backed runtime acquisition. `PreparedRuntimeAssembler` now produces one ephemeral immutable `PreparedSurfaceRuntimePlan` before `AgentRunner` construction: runtime and Surface identity, the Conversation environment/CWD, one coherent Surface settings fingerprint, resolved model and thinking, prompt text plus source provenance and frozen memory summary, captured memory authority, exact resolved skills, and a closed code-owned current-capability manifest. The plan is never persisted and its credential-bearing resolved model is never logged.
+The dispatcher receives mandatory lifecycle-owned Surface runtime authority at construction. It also receives the concrete `ConversationRuntimeHost` mandatorily; it cannot create a second runtime owner. That authority reconciles a pending project assignment before every Surface-backed runtime acquisition. `PreparedRuntimeAssembler` produces one ephemeral immutable `PreparedSurfaceRuntimePlan` before `AgentRunner` construction: runtime and Surface identity, the Conversation environment/CWD, one coherent Surface settings fingerprint, resolved model and thinking, prompt text plus source provenance and frozen memory summary, captured memory authority, exact resolved skills, and a closed code-owned current-capability manifest. The plan is never persisted and its credential-bearing resolved model is never logged.
 
-Preparation retains asynchronous binding and synchronous reservation/settings checks around skill resolution, old-runtime quiescence, memory capture, and prompt reads. A final synchronous no-await section checks the candidate, constructs the Surface runner solely from the plan, and registers that generation. Surface `AgentRunner` initialization does not reread model, prompt files, or skill catalogs; internal runtimes retain their existing lazy assembly path. The runner's synchronous authority closure still makes queued work fail closed after a binding change. Resuming a Conversation on another compatible Surface creates a fresh plan using destination Surface settings.
+Preparation retains asynchronous binding and synchronous reservation/settings checks around skill resolution, old-runtime quiescence, memory capture, and prompt reads. A final synchronous no-await section checks the candidate, constructs the Surface runner solely from the plan, and registers that generation. Surface `AgentRunner` initialization does not reread model, prompt files, or skill catalogs; internal runtimes retain their existing lazy assembly path. The creation commit performs no Surface-settings re-read — every settings-mutation path bumps the runtime epoch through lifecycle invalidation, which synchronously clears the runner, so `isRegisteredRunner` is the authority check. Resuming a Conversation on another compatible Surface creates a fresh plan using destination Surface settings.
 
-The runtime host is also the shutdown fence for ephemeral Conversation work. `closeAdmission()` synchronously rejects new runtime creation, registration, and queue admission. Its idempotent single-flight `disposeAll()` then awaits admitted prompt queues, in-flight construction reservations, active per-runtime disposals, and runner/delegated-work cleanup. The deployment signal path closes Telegram intake and text coalescing, stops scheduler timers, and shares one shutdown promise across repeated signals before it awaits cleanup. Runtime admission also fences any scheduler dispatch that was already in flight.
+**CURRENT — decision 0046 runtime machine.** `ConversationRuntimeHost` is a thin coordinator over per-conversation `RuntimeMachine` instances. The machine owns the current generation (runner, creation reservation, queue, skill context), the drain set of prior generations, and the epoch counters. The host owns the process-level admission gate and shutdown promise. Public method signatures are unchanged from the pre-machine design; the machine is an internal refactor that consolidated thirteen scattered collections into one coherent owner. `schedulePrompt` captures the runtime epoch; `scheduleCommand` captures the binding epoch; `isEpochCurrent(axis, epoch)` is the single helper at every commit point, replacing the scattered `isCurrent`-flavored checks. Steer-vs-queue is decided synchronously from `runner.isStreaming` — the bounded observation window is deleted. Scheduler claim and enqueue are atomic: a rejection structurally restores the claim.
+
+**CURRENT — shutdown coordinator.** `ShutdownCoordinator` (`src/shutdown/coordinator.ts`) owns one ordered phase list (`SHUTDOWN_PHASE_NAMES`): close the Telegram gate, let buffered text reach runtime admission, start runtime disposal before awaiting the Telegram drains, stop polling, then drain subsystems in order. The causal ordering that lived as comments in `index.ts` is now data. `UpdateGate` (`src/shutdown/update-gate.ts`) absorbs the process-level admission tracking — the three in-flight Sets, the per-update WeakMap, intake's `admit`/`closeAdmission`, and the coalescer close coupling — behind one gate with exactly-once handle release. `index.ts`'s shutdown body is one coordinator call. Runtime admission also fences any scheduler dispatch that was already in flight.
 
 ## Prompt architecture
 
@@ -422,7 +431,7 @@ The frozen `pi-native-skill-layout` proposal remains historical input and contai
 | Internal dreaming fake session identity | Borrowed routing/runtime machinery | `inner-life` → future `visible-dreaming` rewrite |
 | Attached/durable work implicit | Rotation may cancel or orphan wrong work | `delegated-work-ownership` |
 | External-agent fixed project CWD and two non-dangerous profiles | Contradicts the accepted fully trusted same-user delegate boundary | model-selected launch context under decision 0041 |
-| `bot.ts`/`tg/intake.ts` orchestration choreography | Shallow seams and duplicated transitions | lifecycle + dispatcher modules |
+| `bot.ts`/`tg/intake.ts` orchestration choreography | Shallow seams and duplicated transitions | ~~Resolved: `ShutdownCoordinator` + `UpdateGate` own the phase list and admission gate; `RuntimeMachine` owns per-conversation authority (decision 0046)~~ |
 
 ## Stabilization dependency graph
 
@@ -442,10 +451,11 @@ telegram-surface-identity ─┬─► immutable-project-environments ───�
 pi-native-skill-layout ─► skill-catalog-resolution ─► surface-skill-policy ─► subagent-skill-inheritance
 
 conversation-lifecycle ─┬─► inner-life ─► visible-dreaming rewrite
-                        └─► delegated-work-ownership ◄─ immutable-project-environments, classified external-host capabilities
+                        ├─► delegated-work-ownership ◄─ immutable-project-environments, classified external-host capabilities
+                        └─► runtime-authority-consolidation (decision 0046) ─► acp-external-agents (decision 0044)
 ```
 
-`conversation-lifecycle` and its four hard prerequisites are implemented; current code and tests own that behavior, while the archived change material preserves delivery provenance. Runtime assembly consumes the captured-memory interface, and user-visible transcript writes consume writer context and event-time provenance. The persistence/runtime-authority hardening slice, Surface skill-policy train, and both halves of subagent skill inheritance are complete.
+`conversation-lifecycle` and its four hard prerequisites are implemented; current code and tests own that behavior, while the archived change material preserves delivery provenance. Runtime assembly consumes the captured-memory interface, and user-visible transcript writes consume writer context and event-time provenance. The persistence/runtime-authority hardening slice, Surface skill-policy train, both halves of subagent skill inheritance, and runtime authority consolidation (decision 0046) are complete.
 
 A temporary "same-Surface resume" mode was rejected because canonical unbound Conversations intentionally persist no previous-Surface authority. Enforcing it would require a second historical-binding store that the target model does not otherwise need. Memory capture and transcript provenance were therefore prerequisites, not runtime feature flags.
 
@@ -469,11 +479,12 @@ One ordered sequence, walked end to end. Historical change names and task counts
 | 9 | `surface-skill-policy` | fresh Nospec slice | **implemented** | Per-Surface `/skills` selection |
 | 10 | `subagent-skill-inheritance` | patch | **implemented** | Generic subagents inherit frozen runtime authority; named agents use isolated pi-native catalogs |
 | 10a | `delegated-run-records` | fresh Nospec cycle | **implemented** | Decision 0045: host-owned store at `state/delegated-work/runs/`; attached subagent records; revival appends invocations; v5 layout break abandons legacy trees in place; startup reconciliation interrupts non-terminal attached invocations |
+| 10b | `runtime-authority-consolidation` | fresh Nospec cycle (5 units) | **implemented** | Decision 0046: per-conversation `RuntimeMachine` behind `ConversationRuntimeHost`; epoch tickets at commit points; explicit entry-list queue; `ShutdownCoordinator` + `UpdateGate`; synchronous steer; atomic scheduler admission |
 | 11 | `inner-life` | 25 | **parked** | Bounded wake/effect authority |
 | 12 | `delegated-work-ownership` | 36 | **parked** | Remaining durable lifetime, completion delivery, claim/ack/release (record store carved out as 10a) |
 | 13 | `visible-dreaming` | — | **deferred; prior placeholder deleted** | Rewrite against `inner-life`; recover historical notes from Git only if needed |
 
-Steps 1–10a, including attachment intake, agent-owned prompt files, the persistence/runtime-authority and command/lifecycle authority closures, native skill layout, catalog resolution, Surface skill policy, subagent skill inheritance, and the delegated-run record store, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
+Steps 1–10b, including attachment intake, agent-owned prompt files, the persistence/runtime-authority and command/lifecycle authority closures, native skill layout, catalog resolution, Surface skill policy, subagent skill inheritance, the delegated-run record store, and runtime authority consolidation, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
 
 ### Second inward solidification pass
 
@@ -484,9 +495,9 @@ The delivery order is:
 1. **Runtime-kernel ownership — implemented.** `ConversationRuntimeHost` concretely owns runtime registration, in-flight construction, queues, and disposal authority. The composition root constructs it before lifecycle and dispatcher; Telegram intake receives the completed kernel and no longer contains the nullable lifecycle/dispatcher hookup.
 2. **Prepared runtime assembly — implemented in this cycle.** `PreparedRuntimeAssembler` resolves one immutable ephemeral Surface-runtime plan before runner construction and registration while preserving every asynchronous authority and race-closing checkpoint. Surface `AgentRunner` consumes that plan without lazy model, prompt, or skill rereads; internal runtimes are unchanged.
 3. **Capability/tool assembly plus a smaller `AgentRunner` facade — implemented.** `CapabilityManifestToolSource` owns concrete Surface capability selection and tool assembly behind a narrow interface. `AgentEventHandler` owns transcript writes, metrics, callback dispatch, streamed-text reconciliation, prompt-file notices, and stale-event fencing. `AgentRunner` remains the execution facade for prompt control and runtime authority; no dynamic discovery or plugin registry was introduced.
-4. **Runtime authority consolidation — accepted by decision 0046, implementation pending.** One per-conversation runtime machine behind the `ConversationRuntimeHost` port owns admission, generation identity, queueing, and disposal. Authority is held as epochs and compared at commit points rather than re-derived at module boundaries; the prompt queue becomes an explicit entry list; shutdown becomes one owned phase list. This supersedes the completed pass's single-check guardrail clause.
+4. **Runtime authority consolidation — implemented under decision 0046.** One per-conversation `RuntimeMachine` behind the `ConversationRuntimeHost` port owns admission, generation identity, queueing, and disposal. Authority is held as epochs (runtime epoch, binding epoch) and compared at commit points rather than re-derived at module boundaries; the prompt queue is an explicit entry list with a serial executor; `ShutdownCoordinator` walks one owned phase list; `UpdateGate` absorbs process-level admission tracking behind exactly-once handles. Steer-vs-queue is decided synchronously; the bounded observation window is deleted. Scheduler claim and enqueue are atomic. The superseded single-check guardrail clause is replaced by the commit-point discipline (decision 0046).
 
-**WIP limit: one implementation phase in progress, one plainly described next.** Prepared runtime assembly, capability/tool assembly, and event handling are implemented and verified. Runtime authority consolidation under decision 0046 is the one named next cycle; ACP external agents follows it under decision 0044 with its accepted backend and persistence scope unchanged.
+**WIP limit: one implementation phase in progress, one plainly described next.** Prepared runtime assembly, capability/tool assembly, event handling, and runtime authority consolidation are implemented and verified. ACP external agents under decision 0044 is the next cycle, with its accepted backend and persistence scope unchanged.
 
 ## Feature readiness gate
 

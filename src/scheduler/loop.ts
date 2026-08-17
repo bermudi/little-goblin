@@ -685,12 +685,12 @@ ${formatted}`;
     // Scheduler and runtime admission gates: if shutdown has begun, do NOT
     // claim — claiming would consume a one-shot occurrence as though it ran.
     // The scheduler-owned fence is closed synchronously by stop(), including
-    // for a tick already awaiting resolveCurrent(). There is
-    // no await between this check and the dispatch below, so once admission is
-    // open here the enqueue cannot be rejected by a later close in the same
-    // synchronous sequence. The occurrence stays due (enabled) using existing
-    // scheduler semantics; on a normal shutdown the loop is stopping, so this
-    // is the narrow interrupted case rather than a new outcome type.
+    // for a tick already awaiting resolveCurrent(). There is no await between
+    // this check and the enqueue below, so once admission is open here the
+    // enqueue cannot be rejected by a later close in the same synchronous
+    // sequence. The occurrence stays due (enabled) using existing scheduler
+    // semantics; on a normal shutdown the loop is stopping, so this is the
+    // narrow interrupted case rather than a new outcome type.
     if (!this.claimsOpen || !this.dispatcher.runtimeAdmissionOpen()) {
       log.info("scheduler skipped due schedule: admission closed", {
         id: schedule.id,
@@ -698,25 +698,38 @@ ${formatted}`;
       });
       return;
     }
+
+    // Resolve the prompt text before claiming so claim + enqueue are atomic:
+    // nothing between them can throw or close admission. A heartbeat resolves
+    // its body from `$GOBLIN_HOME/state/surfaces/<SurfaceId>/HEARTBEAT.md`
+    // (then global, then constant) using the owning Surface; a user schedule
+    // uses its captured prompt. A heartbeat read failure is recorded without
+    // claiming, so the occurrence stays due for the next tick.
+    const isHeartbeat = schedule.kind === "heartbeat";
+    let prompt: string;
+    try {
+      prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.surface) : schedule.prompt ?? "";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.store.recordRun(schedule.id, { at: nowIso, outcome: "error", message: msg });
+      log.error("scheduler prompt resolution failed", {
+        id: schedule.id,
+        error: msg,
+      });
+      throw err;
+    }
+
     const claimed = this.store.claimDue(schedule.id, nowIso);
     if (!claimed) return;
 
-    // The prompt text is decided after binding validation: a heartbeat resolves
-    // its body from `$GOBLIN_HOME/state/surfaces/<SurfaceId>/HEARTBEAT.md`
-    // (then global, then constant) using the owning Surface; a user schedule
-    // uses its captured prompt.
-    //
     // Binding is valid: dispatch the prompt as a fresh turn through the current
     // Conversation runtime. The dispatcher serializes through the per-Conversation
     // queue, so a scheduled turn waits behind any in-flight turn. Async prompt
     // failures are reported via the onError callback (records outcome: "error").
-    // Prompt resolution and a synchronous dispatcher throw both occur after the
-    // claim, so catch, record "error", and re-throw — the per-schedule catch in
-    // tick() logs it, the remaining due schedules in this tick still run, and
-    // future ticks continue.
+    // A synchronous dispatcher throw occurs after the claim, so catch, record
+    // "error", and re-throw — the per-schedule catch in tick() logs it, the
+    // remaining due schedules in this tick still run, and future ticks continue.
     try {
-      const isHeartbeat = schedule.kind === "heartbeat";
-      const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.surface) : schedule.prompt ?? "";
       const admission = this.dispatcher.enqueueScheduledTurn(conversation, schedule.surface, prompt, (err) => {
         const msg = err instanceof Error ? err.message : String(err);
         log.error("scheduled turn failed", { error: msg, id: schedule.id });

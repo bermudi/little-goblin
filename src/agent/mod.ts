@@ -467,8 +467,12 @@ export class AgentRunner {
    *
    * Accepts the same content shape as `prompt`. The bot layer decides
    * steer-vs-queue; the runner only exposes the two primitives.
+   *
+   * Validation is synchronous so a caller can attach the follow-up or
+   * admit a fallback in one section before releasing Telegram admission.
+   * Only the backend hand-off is async.
    */
-  async followUp(content: string | (TextContent | ImageContent)[]): Promise<void> {
+  followUp(content: string | (TextContent | ImageContent)[]): Promise<void> {
     this.assertCurrent();
     if (!this.backend.isInitialized) {
       throw new Error("Cannot steer: session not initialized. Call prompt() first.");
@@ -477,7 +481,7 @@ export class AgentRunner {
       throw new Error("Cannot steer: session is not streaming.");
     }
     const contentForModel = this.normalizeContentForModel(content);
-    await this.awaitCurrent(() => this.backend.followUp(contentForModel));
+    return this.awaitCurrent(() => this.backend.followUp(contentForModel));
   }
 
   private normalizeContentForModel(

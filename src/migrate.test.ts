@@ -97,6 +97,76 @@ describe("runMigrations", () => {
     expect(existsSync(join(home, "state", "delegated-work", "runs"))).toBe(true);
   });
 
+  it("does not replan step 2 against already-canonical Conversation state at version 4", () => {
+    // A v4 home has already been through conversation migration: session
+    // state is the canonical Conversation shape (no chatId). Step 2's
+    // planner reads the legacy session shape and would throw
+    // "malformed legacy shape" if the runner still planned applied steps.
+    const conversationId = "a1b2c3d4e5";
+    const sessionDir = join(home, "state", "sessions", conversationId);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, "state.json"), JSON.stringify({
+      id: conversationId,
+      createdAt: "2026-07-27T10:00:00.000Z",
+      title: "Already migrated",
+      executionEnvironment: { kind: "personal" },
+    }) + "\n");
+    writeFileSync(join(home, "state", "bindings.json"), JSON.stringify({
+      version: 1,
+      surfaces: { "tg:v1:dm:1": conversationId },
+    }) + "\n");
+    writeFileSync(stateVersionPath(home), JSON.stringify({ version: 4 }) + "\n");
+
+    runMigrations(home);
+
+    expect(readStateVersion(home)).toBe(CURRENT_STATE_VERSION);
+    expect(JSON.parse(readFileSync(join(sessionDir, "state.json"), "utf-8"))).toEqual({
+      id: conversationId,
+      createdAt: "2026-07-27T10:00:00.000Z",
+      title: "Already migrated",
+      executionEnvironment: { kind: "personal" },
+    });
+    expect(existsSync(join(home, "state", "delegated-work", "runs"))).toBe(true);
+  });
+
+  it("does not replan earlier steps from intermediate versions 1, 2, or 3", () => {
+    // Intermediate homes already have the filesystem shape later planners
+    // expect. Replanning applied steps would either fail or rewrite them.
+    for (const version of [1, 2, 3] as const) {
+      const versionHome = mkdtempSync(join(tmpdir(), `goblin-migrate-v${version}-`));
+      try {
+        mkdirSync(join(versionHome, "state"), { recursive: true });
+        const conversationId = "b2c3d4e5f6";
+        const sessionDir = join(versionHome, "state", "sessions", conversationId);
+        mkdirSync(sessionDir, { recursive: true });
+        writeFileSync(join(sessionDir, "state.json"), JSON.stringify({
+          id: conversationId,
+          createdAt: "2026-07-27T10:00:00.000Z",
+          chatId: 1,
+          title: `At version ${version}`,
+          executionEnvironment: { kind: "personal" },
+        }) + "\n");
+        writeFileSync(join(versionHome, "state", "bindings.json"), JSON.stringify({
+          version: 1,
+          surfaces: { "tg:v1:dm:1": conversationId },
+        }) + "\n");
+        writeFileSync(stateVersionPath(versionHome), JSON.stringify({ version }) + "\n");
+
+        runMigrations(versionHome);
+
+        expect(readStateVersion(versionHome)).toBe(CURRENT_STATE_VERSION);
+        const after = JSON.parse(readFileSync(join(sessionDir, "state.json"), "utf-8")) as {
+          chatId?: unknown;
+          executionEnvironment: unknown;
+        };
+        expect(after.chatId).toBeUndefined();
+        expect(after.executionEnvironment).toEqual({ kind: "personal" });
+      } finally {
+        rmSync(versionHome, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("is a no-op when already at the current version", () => {
     writeFileSync(stateVersionPath(home), JSON.stringify({ version: CURRENT_STATE_VERSION }));
     runMigrations(home);

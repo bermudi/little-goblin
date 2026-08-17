@@ -25,6 +25,7 @@ import { DelegatedWorkHost } from "../delegated-work/mod.ts";
 import type { TurnSink } from "../orchestration/dispatcher.ts";
 import { SchedulerLoop, type SchedulerClock } from "../scheduler/loop.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
+import { UpdateGate, type UpdateHandle } from "../shutdown/mod.ts";
 import {
   createTelegramIntake,
   replyNoActiveSession,
@@ -60,10 +61,11 @@ class MockAgentRunner {
       this.isPrompting = false;
     }
   });
-  static nextFollowUp?: (content: unknown) => Promise<void>;
+  static nextFollowUp?: (content: unknown) => Promise<void> | void;
 
-  readonly followUp = mock(async (content: unknown) => {
-    await MockAgentRunner.nextFollowUp?.(content);
+  readonly followUp = mock((content: unknown): Promise<void> => {
+    const next = MockAgentRunner.nextFollowUp?.(content);
+    return next ?? Promise.resolve();
   });
   readonly setModel = mock(async (_name: string) => {});
   readonly dispose = mock(() => {});
@@ -166,6 +168,10 @@ function createTestIntake(options: TestIntakeOptions): TestIntake {
     scheduleStore: options.scheduleStore,
     externalAgentRunner: options.externalAgentRunner,
   });
+  const gate = new UpdateGate({
+    closeCoalescer: async () => {},
+    awaitBufferedTextAdmission: async () => {},
+  });
   const intake = createTelegramIntake({
     cfg: options.cfg,
     bot: options.bot,
@@ -175,6 +181,7 @@ function createTestIntake(options: TestIntakeOptions): TestIntake {
     lifecycle: orchestration.lifecycle,
     scheduleStore: options.scheduleStore,
     externalAgentRunner: options.externalAgentRunner,
+    gate,
   });
   return Object.assign(intake, { runtimeHost: orchestration.runtimeHost });
 }
@@ -719,7 +726,7 @@ describe("Telegram intake", () => {
     MockAgentRunner.nextPrompt = async () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
-    MockAgentRunner.nextFollowUp = async () => {
+    MockAgentRunner.nextFollowUp = () => {
       throw new Error("Cannot steer: session is not streaming.");
     };
 
@@ -740,14 +747,14 @@ describe("Telegram intake", () => {
     expect(runners[0]!.prompt.mock.calls[1]![0]).toBe("[prepared] steer this");
   });
 
-  it("admits the steer fallback before releasing Telegram runtime admission", async () => {
+  it("admits the late-steer fallback before releasing Telegram runtime admission", async () => {
     const { intake } = makeHarness();
     const message = makeMessage([]);
     const slow = deferred();
     MockAgentRunner.nextPrompt = async () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
-    MockAgentRunner.nextFollowUp = async () => {
+    MockAgentRunner.nextFollowUp = () => {
       throw new Error("Cannot steer: session is not streaming.");
     };
 
@@ -755,13 +762,20 @@ describe("Telegram intake", () => {
     await intake.handleText(message, "slow");
     await waitFor(() => runners[0]!.isStreaming);
 
-    let fallbackAdmittedBeforeRelease = false;
+    let released = false;
     const session = intake.lifecycle.inspect(dmSurface(1))!;
-    await intake.handleText(message, "steer this", () => {
-      fallbackAdmittedBeforeRelease = intake.dispatcher.isPromptPending(session.id);
-    });
+    const handle: UpdateHandle = {
+      releaseRuntimeAdmission: () => {
+        // One machine section either attached the follow-up or admitted the
+        // fallback. Shutdown must not observe a released handle with neither.
+        released = true;
+        expect(intake.dispatcher.isPromptPending(session.id)).toBe(true);
+      },
+    };
+    await intake.handleText(message, "steer this", handle);
 
-    expect(fallbackAdmittedBeforeRelease).toBe(true);
+    expect(released).toBe(true);
+    expect(intake.dispatcher.isPromptPending(session.id)).toBe(true);
     slow.resolve();
     await waitFor(() => runners[0]!.prompt.mock.calls.length === 2);
   });
@@ -774,7 +788,7 @@ describe("Telegram intake", () => {
     MockAgentRunner.nextPrompt = async () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
-    MockAgentRunner.nextFollowUp = async () => {
+    MockAgentRunner.nextFollowUp = () => {
       throw new Error("session disposed");
     };
 

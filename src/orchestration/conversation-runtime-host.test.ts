@@ -149,6 +149,17 @@ describe("ConversationRuntimeHost shutdown", () => {
       /admission is closed/,
     );
     expect(host.schedule("conversation-a", () => true, async () => {}, async () => {})).toBe(false);
+    expect(host.steerOrQueue(
+      "conversation-a",
+      () => {
+        throw new Error("Cannot steer: session is not streaming.");
+      },
+      {
+        isCurrent: () => true,
+        run: async () => {},
+        onError: async () => {},
+      },
+    )).toEqual({ kind: "rejected" });
 
     let settled = false;
     void shutdown.then(() => {

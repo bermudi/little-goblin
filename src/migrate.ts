@@ -53,7 +53,11 @@ interface SurfaceMigrationStep {
 interface EnvironmentMigrationStep {
   readonly version: number;
   readonly roots: string[];
-  plan(home: string, step1Plan: SurfaceMigrationPlan): ExecutionEnvironmentPlan;
+  plan(
+    home: string,
+    bindings?: SurfaceMigrationPlan["bindings"],
+    settings?: SurfaceMigrationPlan["settings"],
+  ): ExecutionEnvironmentPlan;
   apply(home: string, plan: ExecutionEnvironmentPlan): void;
 }
 
@@ -69,10 +73,10 @@ interface ConversationMigrationStep {
   readonly roots: string[];
   plan(
     home: string,
-    bindings: SurfaceMigrationPlan["bindings"],
-    settings: SurfaceMigrationPlan["settings"],
-    environments: ExecutionEnvironmentPlan,
-    schedules: SurfaceMigrationPlan["schedules"],
+    bindings?: SurfaceMigrationPlan["bindings"],
+    settings?: SurfaceMigrationPlan["settings"],
+    environments?: ExecutionEnvironmentPlan,
+    schedules?: SurfaceMigrationPlan["schedules"],
   ): ConversationMigrationPlan;
   apply(home: string, plan: ConversationMigrationPlan): void;
 }
@@ -143,8 +147,8 @@ const SURFACE_STEP: SurfaceMigrationStep = {
 const ENVIRONMENT_STEP: EnvironmentMigrationStep = {
   version: 2,
   roots: STEP_2_ROOTS,
-  plan: (home: string, step1Plan: SurfaceMigrationPlan) =>
-    planExecutionEnvironments(home, step1Plan.bindings, step1Plan.settings),
+  plan: (home: string, bindings?, settings?) =>
+    planExecutionEnvironments(home, bindings, settings),
   apply: applyExecutionEnvironments,
 };
 
@@ -162,7 +166,7 @@ const CONVERSATION_STEP: ConversationMigrationStep = {
     planConversationMigration(
       home,
       bindings,
-      environments.topicSettings ?? settings,
+      environments?.topicSettings ?? settings,
       environments,
       schedules ?? undefined,
     ),
@@ -187,20 +191,28 @@ export function runMigrations(home: string): void {
     return;
   }
 
-  // Preflight: plan every pending step in order. Step 2 consumes the projected
-  // bindings and topic settings produced by step 1, so no persisted input is
-  // mutated during planning. Any planning failure aborts before backup.
-  const step1Plan = SURFACE_STEP.plan(home);
-  const step2Plan = ENVIRONMENT_STEP.plan(home, step1Plan);
-  const step3Plan = TRANSCRIPT_STEP.plan(home);
-  const step4Plan = CONVERSATION_STEP.plan(
-    home,
-    step1Plan.bindings,
-    step1Plan.settings,
-    step2Plan,
-    step1Plan.schedules,
-  );
-  const step5Plan = DELEGATED_WORK_STEP.plan(home);
+  // Preflight: plan only pending steps. Earlier steps' plan functions read
+  // the filesystem shape they expect to transform, which is incompatible with
+  // data already transformed by later steps. Since migration is sequential,
+  // a step is pending only when current < step.version. When a pending step
+  // depends on an already-applied step's projected output, pass undefined so
+  // the plan function loads canonical inputs from disk (the dependency
+  // already wrote its output to the filesystem).
+  const step1Plan = current < 1 ? SURFACE_STEP.plan(home) : null;
+  const step2Plan = current < 2
+    ? ENVIRONMENT_STEP.plan(home, step1Plan?.bindings, step1Plan?.settings)
+    : null;
+  const step3Plan = current < 3 ? TRANSCRIPT_STEP.plan(home) : null;
+  const step4Plan = current < 4
+    ? CONVERSATION_STEP.plan(
+        home,
+        step1Plan?.bindings,
+        step1Plan?.settings,
+        step2Plan ?? undefined,
+        step1Plan?.schedules,
+      )
+    : null;
+  const step5Plan = current < 5 ? DELEGATED_WORK_STEP.plan(home) : null;
 
   const rootsToSnapshot = new Set<string>();
   if (current < 1) {
@@ -225,27 +237,27 @@ export function runMigrations(home: string): void {
 
   if (current < 1) {
     log.info("running migration step", { step: 1 });
-    SURFACE_STEP.apply(home, step1Plan);
+    SURFACE_STEP.apply(home, step1Plan!);
     writeStateVersion(home, 1);
   }
   if (current < 2) {
     log.info("running migration step", { step: 2 });
-    ENVIRONMENT_STEP.apply(home, step2Plan);
+    ENVIRONMENT_STEP.apply(home, step2Plan!);
     writeStateVersion(home, 2);
   }
   if (current < 3) {
     log.info("running migration step", { step: 3 });
-    TRANSCRIPT_STEP.apply(home, step3Plan);
+    TRANSCRIPT_STEP.apply(home, step3Plan!);
     writeStateVersion(home, 3);
   }
   if (current < 4) {
     log.info("running migration step", { step: 4 });
-    CONVERSATION_STEP.apply(home, step4Plan);
+    CONVERSATION_STEP.apply(home, step4Plan!);
     writeStateVersion(home, 4);
   }
   if (current < 5) {
     log.info("running migration step", { step: 5 });
-    DELEGATED_WORK_STEP.apply(home, step5Plan);
+    DELEGATED_WORK_STEP.apply(home, step5Plan!);
     writeStateVersion(home, 5);
   }
 

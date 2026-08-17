@@ -10,6 +10,7 @@ import { runPreflight } from "./preflight.ts";
 import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
 import { ConversationStore, InternalSessionStore } from "./sessions/mod.ts";
 import { reconcileProjectAssignmentAtColdStart } from "./orchestration/conversation-lifecycle.ts";
+import { ShutdownCoordinator } from "./shutdown/mod.ts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -31,9 +32,7 @@ async function main(): Promise<void> {
   await validateModelAtStartup(cfg, log);
   const {
     bot,
-    closeAdmission,
-    bufferedTextAdmission,
-    runtimeAdmission,
+    gate,
     lifecycle,
     subagentRunner,
     runtimeHost,
@@ -61,69 +60,27 @@ async function main(): Promise<void> {
   });
   scheduler.start();
 
-  // Graceful shutdown. grammy's start() resolves when stop() is called.
+  // Graceful shutdown. The coordinator owns the phase list; index.ts's
+  // shutdown body is one call. grammy's start() resolves when stop() is
+  // called inside the coordinator's "stop-telegram-polling" phase.
+  const coordinator = new ShutdownCoordinator({
+    gate,
+    stopTelegramPolling: () => bot.stop(),
+    drainBufferedText: () => gate.bufferedTextAdmission(),
+    drainRuntimeAdmission: () => gate.runtimeAdmission(),
+    disposeRuntimes: () => runtimeHost.disposeAll(),
+    drainScheduler: () => scheduler.stopAndDrain(),
+    disposeExternalAgents: async () => { await externalAgentRunner?.dispose(); },
+    disposeSubagents: () => subagentRunner.dispose(),
+    closeMemoryEngine: async () => { memoryEngine.close(); },
+  });
   let shutdownPromise: Promise<void> | undefined;
   const shutdown = (signal: string): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
-      log.info(`received ${signal}, stopping bot`);
-      const failures: unknown[] = [];
-      const attempt = async (step: string, operation: () => Promise<void>): Promise<void> => {
-        try {
-          await operation();
-        } catch (error) {
-          failures.push(error);
-          log.error("shutdown step failed", {
-            step,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      };
-
-      // Close Telegram admission first. Its drain includes the coalescer flush,
-      // so buffered text is admitted into runtime queues while runtime
-      // admission is still open.
-      const telegramDrain = closeAdmission();
-      void telegramDrain.catch(() => {});
-      // Coalesced text dispatches are allowed to finish their lifecycle work
-      // and reach the runtime queue, but shutdown must not wait for their
-      // complete model/steering handlers. Dispose runtimes only after this
-      // narrower barrier has passed.
-      const bufferedAdmission = bufferedTextAdmission();
-      const schedulerDrain = scheduler.stopAndDrain();
-      void schedulerDrain.catch(() => {});
-      // Start runtime disposal before awaiting either Telegram drain. An
-      // admitted handler may be waiting on a model operation (notably
-      // steering via followUp), and runner disposal is what releases it.
-      const runtimeDrain = (async (): Promise<void> => {
-        await bufferedAdmission;
-        await runtimeAdmission();
-        await runtimeHost.disposeAll();
-      })();
-      // Observe rejection immediately: disposal can fail before the ordered
-      // shutdown steps reach the later aggregation below.
-      void runtimeDrain.catch(() => {});
-
-      // Stop polling while the independent drains are in progress. The
-      // scheduler drain is already in progress, but must not be awaited until
-      // after runtime disposal: a dreaming turn may need that disposal to
-      // abort its model request.
-      await attempt("telegram polling", () => bot.stop());
-      await attempt("conversation runtimes", () => runtimeDrain);
-      await attempt("telegram admission", () => telegramDrain);
-      await attempt("scheduler", () => schedulerDrain);
-      await attempt("external agents", async () => {
-        await externalAgentRunner?.dispose();
-      });
-      await attempt("subagents", () => subagentRunner.dispose());
-      await attempt("memory engine", async () => {
-        memoryEngine.close();
-      });
-
-      // Exit 0 only after complete cleanup; any failure is reported to the
-      // supervisor with a non-zero status.
-      if (failures.length > 0) {
-        log.error("shutdown completed with cleanup failures", { count: failures.length });
+      const result = await coordinator.shutdown(signal);
+      if (!result.ok) {
+        log.error("shutdown completed with cleanup failures", { count: result.failures });
         process.exit(1);
       }
       process.exit(0);

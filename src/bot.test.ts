@@ -465,8 +465,8 @@ describe("buildBot integration", () => {
 
   it("drops Telegram updates after admission closes", async () => {
     const built = await makeBot();
-    const firstClose = built.closeAdmission();
-    expect(built.closeAdmission()).toBe(firstClose);
+    const firstClose = built.gate.closeAdmission();
+    expect(built.gate.closeAdmission()).toBe(firstClose);
     await firstClose;
 
     await built.bot.handleUpdate(textUpdate("/new"));
@@ -514,7 +514,7 @@ describe("buildBot integration", () => {
     const handled = built.bot.handleUpdate(textUpdate("steer", 1, 2));
     await waitFor(() => runner.followUp.mock.calls.length === 1);
 
-    const telegramDrain = built.closeAdmission();
+    const telegramDrain = built.gate.closeAdmission();
     expect(await settlesWithin(telegramDrain, 25)).toBe(false);
 
     runner.dispose.mockImplementation(() => {
@@ -524,7 +524,7 @@ describe("buildBot integration", () => {
     // Match the deployment shutdown order: admission reaches the synchronous
     // runtime hand-off before disposal fences the runner.
     const runtimeDrain = (async (): Promise<void> => {
-      await built.runtimeAdmission();
+      await built.gate.runtimeAdmission();
       await built.runtimeHost.disposeAll();
     })();
     await runtimeDrain;
@@ -537,9 +537,9 @@ describe("buildBot integration", () => {
     const bufferedText = "x".repeat(TEXT_SPLIT_THRESHOLD);
     await built.bot.handleUpdate(textUpdate(bufferedText));
 
-    const telegramDrain = built.closeAdmission();
+    const telegramDrain = built.gate.closeAdmission();
     const runtimeDrain = (async (): Promise<void> => {
-      await built.bufferedTextAdmission();
+      await built.gate.bufferedTextAdmission();
       await built.runtimeHost.disposeAll();
     })();
 
@@ -559,7 +559,7 @@ describe("buildBot integration", () => {
     const handled = built.bot.handleUpdate(groupTextUpdate("hello"));
     await waitFor(() => built.api.api.getChatMemberCount.mock.calls.length === 1);
 
-    const telegramDrain = built.closeAdmission();
+    const telegramDrain = built.gate.closeAdmission();
     expect(await settlesWithin(telegramDrain, 25)).toBe(false);
 
     resolveMemberCount(5);

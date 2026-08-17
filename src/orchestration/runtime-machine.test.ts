@@ -323,6 +323,86 @@ describe("RuntimeMachine queue and serial executor", () => {
     expect(m.schedule(() => true, async () => {}, async () => {})).toBe(false);
   });
 
+  it("admits a late-steer fallback before returning when attach throws not-streaming", () => {
+    const m = makeMachine();
+    registerSurface(m);
+    const firstFinished = deferred<void>();
+    m.schedule(() => true, async () => { await firstFinished.promise; }, async () => {});
+
+    const decision = m.steerOrQueue(
+      () => {
+        throw new Error("Cannot steer: session is not streaming.");
+      },
+      {
+        isCurrent: () => true,
+        run: async () => {},
+        onError: async () => {},
+      },
+    );
+
+    expect(decision).toEqual({ kind: "queued" });
+    expect(m.isPromptPending()).toBe(true);
+    firstFinished.resolve(undefined);
+  });
+
+  it("rejects a late-steer fallback when admission is already closed", () => {
+    let open = true;
+    const m = new RuntimeMachine({
+      conversationId: "conv-steer",
+      delegatedWorkHost: fakeDelegatedWorkHost(),
+      isAdmissionOpen: () => open,
+    });
+    registerSurface(m);
+    open = false;
+
+    const decision = m.steerOrQueue(
+      () => {
+        throw new Error("Cannot steer: session is not streaming.");
+      },
+      {
+        isCurrent: () => true,
+        run: async () => {},
+        onError: async () => {},
+      },
+    );
+
+    expect(decision).toEqual({ kind: "rejected" });
+    expect(m.isPromptPending()).toBe(false);
+  });
+
+  it("returns the follow-up promise when attach succeeds", async () => {
+    const m = makeMachine();
+    const attached = deferred<void>();
+    const decision = m.steerOrQueue(
+      () => attached.promise,
+      {
+        isCurrent: () => true,
+        run: async () => {},
+        onError: async () => {},
+      },
+    );
+    expect(decision.kind).toBe("steered");
+    if (decision.kind !== "steered") throw new Error("expected steered");
+    attached.resolve(undefined);
+    await decision.followUp;
+    expect(m.isPromptPending()).toBe(false);
+  });
+
+  it("propagates non-race attach failures without queueing", () => {
+    const m = makeMachine();
+    expect(() => m.steerOrQueue(
+      () => {
+        throw new Error("session disposed");
+      },
+      {
+        isCurrent: () => true,
+        run: async () => {},
+        onError: async () => {},
+      },
+    )).toThrow("session disposed");
+    expect(m.isPromptPending()).toBe(false);
+  });
+
   it("fences unstarted entries on binding-change invalidation", async () => {
     const m = makeMachine();
     const firstFinished = deferred<void>();

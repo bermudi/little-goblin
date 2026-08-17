@@ -355,6 +355,57 @@ describe("SchedulerLoop", () => {
       expect(restoredRecurring.nextRunAt).toBe(recurring.nextRunAt);
     });
 
+    it("restores a claim when admission closes between the pre-check and enqueue", async () => {
+      // The pre-check passes (runtimeAdmissionOpen() is true), but the
+      // dispatcher's enqueue observes a closed admission and rejects. The
+      // claim must be restored so the occurrence stays due — the manual
+      // restore is the single structural path that covers this race.
+      const surface = dmSurface(100);
+      await createSession(surface);
+      const once = store.create({
+        surface,
+        kind: "once",
+        prompt: "survive admission race",
+        nextRunAt: new Date(NOW_MS - 1_000).toISOString(),
+      });
+      const recurring = store.create({
+        surface,
+        kind: "recurring",
+        prompt: "survive admission race",
+        nextRunAt: new Date(NOW_MS - 1_000).toISOString(),
+        intervalMs: 3_600_000,
+      });
+
+      let preCheckObservedOpen = false;
+      const racingDispatcher: SchedulerDispatcher = {
+        runtimeAdmissionOpen: () => {
+          preCheckObservedOpen = true;
+          return true;
+        },
+        enqueueScheduledTurn: () => {
+          // Simulate admission closing at the enqueue boundary — after the
+          // pre-check returned true but before the queue accepts the turn.
+          return false;
+        },
+      };
+      dispatcher = racingDispatcher as unknown as typeof dispatcher;
+
+      await makeLoop().tick();
+
+      expect(preCheckObservedOpen).toBe(true);
+
+      const restoredOnce = store.getForSurface(surface, once.id)!;
+      expect(restoredOnce.state).toBe("enabled");
+      expect(restoredOnce.enabled).toBe(true);
+      expect(restoredOnce.nextRunAt).toBe(once.nextRunAt);
+      expect(restoredOnce.lastRun).toBeUndefined();
+
+      const restoredRecurring = store.getForSurface(surface, recurring.id)!;
+      expect(restoredRecurring.state).toBe("enabled");
+      expect(restoredRecurring.enabled).toBe(true);
+      expect(restoredRecurring.nextRunAt).toBe(recurring.nextRunAt);
+    });
+
     it("reports a failed occurrence restoration through scheduler drain", async () => {
       await createSession(dmSurface(100));
       const schedule = store.create({
@@ -1018,13 +1069,15 @@ describe("SchedulerLoop", () => {
       expect(dispatched).not.toContain("[heartbeat]");
       expect(dispatched).toEqual(["deploy reminder"]);
 
-      // The heartbeat was claimed before prompt resolution, so it advanced to
-      // its next run. The failure is nevertheless persisted as the occurrence's
-      // last-run status rather than silently disappearing.
+      // Prompt resolution happens before the claim, so a heartbeat read
+      // failure does NOT advance or complete the schedule — it stays due for
+      // the next tick. The failure is persisted as the occurrence's last-run
+      // status rather than silently disappearing.
       const afterHeartbeat = store.getForSurface(heartbeatLoc, heartbeat.id)!;
       expect(afterHeartbeat.kind).toBe("heartbeat");
-      expect(new Date(afterHeartbeat.nextRunAt).getTime()).toBeGreaterThan(NOW_MS);
       expect(afterHeartbeat.enabled).toBe(true);
+      expect(afterHeartbeat.state).toBe("enabled");
+      expect(afterHeartbeat.nextRunAt).toBe(heartbeat.nextRunAt);
       expect(afterHeartbeat.lastRun).toMatchObject({ outcome: "error" });
     });
 

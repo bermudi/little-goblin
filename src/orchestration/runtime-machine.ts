@@ -38,6 +38,12 @@ export type MachinePhase = "idle" | "preparing" | "active";
  */
 export type TicketAxis = "runtime" | "binding";
 
+/** Outcome of {@link RuntimeMachine.steerOrQueue}. */
+export type SteerOrQueueResult =
+  | { kind: "steered"; followUp: Promise<void> }
+  | { kind: "queued" }
+  | { kind: "rejected" };
+
 /** Frozen settings and skill identity captured by one runtime generation. */
 export interface RuntimeSkillContext {
   readonly settingsFingerprint: string;
@@ -458,6 +464,43 @@ export class RuntimeMachine {
     this.ensureQueueIdlePromise();
     void this.pump();
     return true;
+  }
+
+  /**
+   * Decide steer-vs-queue in one synchronous section.
+   *
+   * If `attach()` succeeds, the follow-up is attached to the current
+   * generation and the returned promise is the backend hand-off. If
+   * `attach()` throws because the runner is no longer streaming, the
+   * fallback is admitted onto the serial executor before this method
+   * returns. Either way, Telegram admission may be released after the
+   * call — shutdown cannot observe a released handle with neither a
+   * follow-up nor a queued fallback.
+   *
+   * Other `attach()` throws propagate. Admission-closed fallback enqueue
+   * returns `{ kind: "rejected" }` so the caller can log without racing
+   * a later queue attempt.
+   */
+  steerOrQueue(
+    attach: () => Promise<void>,
+    fallback: {
+      isCurrent: () => boolean;
+      run: (isCurrent: () => boolean) => Promise<void>;
+      onError: (err: unknown) => Promise<void> | void;
+    },
+  ): SteerOrQueueResult {
+    let followUp: Promise<void>;
+    try {
+      followUp = attach();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("not streaming")) throw err;
+      if (!this.schedule(fallback.isCurrent, fallback.run, fallback.onError)) {
+        return { kind: "rejected" };
+      }
+      return { kind: "queued" };
+    }
+    return { kind: "steered", followUp };
   }
 
   isCommandPending(): boolean {

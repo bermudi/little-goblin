@@ -29,6 +29,7 @@ import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
 import type { ConversationLifecycle } from "./orchestration/conversation-lifecycle.ts";
 import { createConversationOrchestration } from "./orchestration/composition.ts";
 import type { ConversationRuntimeHost } from "./orchestration/conversation-runtime-host.ts";
+import { UpdateGate, type AdmissionHandle } from "./shutdown/mod.ts";
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -179,16 +180,11 @@ interface BuildBotOptions {
 
 export interface BuiltBot {
   bot: Bot;
-  /** Close Telegram admission, flush buffered text, and drain admitted
-   * handlers; idempotent and single-flight. Runtime teardown is deliberately
-   * started by the deployment shutdown sequence before this promise is awaited. */
-  closeAdmission: () => Promise<void>;
-  /** After `closeAdmission`, wait until buffered text has reached runtime
-   * admission, without waiting for the complete prompt or steering handler. */
-  bufferedTextAdmission: () => Promise<void>;
-  /** Wait until every admitted update has handed work to the runtime, or has
-   * been proven not to need runtime work. */
-  runtimeAdmission: () => Promise<void>;
+  /** Process-level update gate. Owns admission tracking, the coalescer close
+   * coupling, and the three drain barriers. The shutdown coordinator calls
+   * `gate.closeAdmission()`, `gate.bufferedTextAdmission()`, and
+   * `gate.runtimeAdmission()` in the documented phase order. */
+  gate: UpdateGate;
   lifecycle: ConversationLifecycle;
   runtimeHost: ConversationRuntimeHost;
   subagentRunner: SubagentRunner;
@@ -235,6 +231,18 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     embeddingProvider: memoryEngine.embeddingProvider,
     dreamingPipeline: memoryEngine.dreaming,
   });
+  // Process-level update gate. Absorbs the admission tracking, drain
+  // barriers, and coalescer close coupling that previously lived as local
+  // state in this closure. The coalescer callbacks are wired through mutable
+  // bindings so the gate can be constructed before the coalescer exists
+  // (breaking the gate ↔ intake ↔ coalescer construction cycle).
+  let coalescerClose = async (): Promise<void> => {};
+  let coalescerBufferedAdmission = async (): Promise<void> => {};
+  const gate = new UpdateGate({
+    closeCoalescer: () => coalescerClose(),
+    awaitBufferedTextAdmission: () => coalescerBufferedAdmission(),
+  });
+
   const intake = createTelegramIntake({
     cfg,
     bot,
@@ -244,6 +252,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     lifecycle: orchestration.lifecycle,
     scheduleStore,
     externalAgentRunner,
+    gate,
   });
 
   // Text coalescer: merges Telegram-split fragments before they reach intake.
@@ -253,86 +262,11 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // The coalescer tracks every dispatch, including timer-originated work, and
   // propagates failures from its close drain. Immediate handler promises still
   // flow to grammy's error boundary.
-  let admissionOpen = true;
   const coalescer = new TextCoalescer({
-    dispatch: (msg, text, onRuntimeAdmission) => intake.handleText(msg, text, onRuntimeAdmission),
+    dispatch: (msg, text, handle) => intake.handleText(msg, text, handle),
   });
-
-  // Admission + drain: every update that passes the admission gate is
-  // tracked so shutdown can await the handlers grammy already admitted.
-  // grammy's `bot.stop()` stops the long-poll fetch loop but does not wait
-  // for middleware/handlers that are still running, so we drain explicitly
-  // before tearing down the runtime dependencies those handlers use.
-  const inFlightUpdates = new Set<Promise<unknown>>();
-  const inFlightRuntimeAdmissions = new Set<Promise<void>>();
-  const inFlightAuthorizations = new Set<Promise<void>>();
-  interface AdmissionState {
-    released: boolean;
-    handedToCoalescer: boolean;
-    authorizationReleased: boolean;
-    release: () => void;
-    releaseAuthorization: () => void;
-  }
-  const admissionStates = new WeakMap<object, AdmissionState>();
-  function beginRuntimeAdmission(): AdmissionState {
-    let resolveRuntime!: () => void;
-    const runtimePromise = new Promise<void>((res) => { resolveRuntime = res; });
-    let resolveAuthorization!: () => void;
-    const authorizationPromise = new Promise<void>((res) => { resolveAuthorization = res; });
-    const state: AdmissionState = {
-      released: false,
-      handedToCoalescer: false,
-      authorizationReleased: false,
-      release: () => {},
-      releaseAuthorization: () => {},
-    };
-    state.release = (): void => {
-      if (state.released) return;
-      state.released = true;
-      resolveRuntime();
-      inFlightRuntimeAdmissions.delete(runtimePromise);
-    };
-    state.releaseAuthorization = (): void => {
-      if (state.authorizationReleased) return;
-      state.authorizationReleased = true;
-      resolveAuthorization();
-      inFlightAuthorizations.delete(authorizationPromise);
-    };
-    inFlightRuntimeAdmissions.add(runtimePromise);
-    inFlightAuthorizations.add(authorizationPromise);
-    return state;
-  }
-  async function drainAuthorizations(): Promise<void> {
-    while (inFlightAuthorizations.size > 0) {
-      await Promise.allSettled([...inFlightAuthorizations]);
-    }
-  }
-  async function runtimeAdmission(): Promise<void> {
-    while (inFlightRuntimeAdmissions.size > 0) {
-      await Promise.allSettled([...inFlightRuntimeAdmissions]);
-    }
-  }
-  let draining = false;
-  function trackAdmitted(downstream: Promise<unknown>): Promise<unknown> {
-    inFlightUpdates.add(downstream);
-    const release = (): void => { inFlightUpdates.delete(downstream); };
-    void downstream.then(release, release);
-    return downstream;
-  }
-  async function drainAdmitted(): Promise<void> {
-    if (draining) return;
-    draining = true;
-    try {
-      // Handlers may settle and register follow-up promises only if they admit
-      // new updates; admission is already closed, so the set only shrinks. Loop
-      // until every admitted handler has settled.
-      while (inFlightUpdates.size > 0) {
-        await Promise.allSettled([...inFlightUpdates]);
-      }
-    } finally {
-      draining = false;
-    }
-  }
+  coalescerClose = (): Promise<void> => coalescer.close();
+  coalescerBufferedAdmission = (): Promise<void> => coalescer.bufferedTextAdmission();
 
   // Track updates before authorization. Authorization can make an asynchronous
   // Telegram API call (member count for an allowed user in a group), and
@@ -340,49 +274,38 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // must therefore wait for this authorization decision before closing the
   // coalescer, or an already-fetched update can be lost forever.
   bot.use((_ctx, next) => {
-    if (!admissionOpen) {
+    if (!gate.isOuterOpen()) {
       log.info("Telegram update dropped after admission closed");
       return Promise.resolve();
     }
-    const state = beginRuntimeAdmission();
-    state.handedToCoalescer = false;
-    admissionStates.set(_ctx, state);
+    const handle: AdmissionHandle = gate.beginUpdate(_ctx);
     let downstream: Promise<void>;
     try {
       downstream = next();
     } catch (err) {
-      state.releaseAuthorization();
-      state.release();
-      admissionStates.delete(_ctx);
+      handle.releaseAuthorization();
+      handle.releaseRuntimeAdmission();
       throw err;
     }
-    void downstream.then(() => {
-      if (!state.authorizationReleased) state.releaseAuthorization();
-      if (!state.handedToCoalescer) state.release();
-      admissionStates.delete(_ctx);
-    }, () => {
-      if (!state.authorizationReleased) state.releaseAuthorization();
-      if (!state.handedToCoalescer) state.release();
-      admissionStates.delete(_ctx);
-    });
-    return trackAdmitted(downstream);
+    gate.settleUpdate(_ctx, downstream);
+    return gate.trackAdmitted(downstream);
   });
   bot.use(buildAllowlistMiddleware(cfg));
   // Reaching this middleware means allowlist authorization succeeded. A
   // denied update never reaches it; the outer tracking middleware releases its
   // authorization barrier when the denial returns.
   bot.use((_ctx, next) => {
-    admissionStates.get(_ctx)?.releaseAuthorization();
+    gate.handleFor(_ctx)?.releaseAuthorization();
     return next();
   });
   registerCommands(bot, intake.lifecycle);
 
   bot.on("message:text", async (ctx: Context) => {
-    const admission = admissionStates.get(ctx);
+    const handle = gate.handleFor(ctx);
     const message = intakeMessageFromCtx(ctx, intake.lifecycle, cfg);
     // No valid chat → drop, same as the handler did before coalescing.
     if (!message.surface) {
-      admission?.release();
+      handle?.releaseRuntimeAdmission();
       return;
     }
     // Telegram always populates `from` on user-originated text messages and
@@ -392,10 +315,10 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     const fromId = ctx.from?.id;
     const messageId = ctx.msg?.message_id;
     if (fromId === undefined || messageId === undefined) {
-      admission?.release();
+      handle?.releaseRuntimeAdmission();
       return;
     }
-    if (admission) admission.handedToCoalescer = true;
+    if (handle) handle.markHandedToCoalescer();
     await coalescer.submit({
       message,
       text: ctx.msg?.text ?? "",
@@ -412,21 +335,21 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
       // No command in this codebase accepts a >4096-char argument, so this is
       // accepted as a known limitation rather than handled by coalescing.
       isCommand: ctx.msg?.entities?.[0]?.type === "bot_command",
-      onRuntimeAdmission: admission?.release,
+      handle,
     });
   });
 
   bot.on("message:photo", async (ctx: Context) => {
-    const admission = admissionStates.get(ctx);
+    const handle = gate.handleFor(ctx);
     const fileIds = ctx.msg?.photo?.map((photo) => photo.file_id) ?? [];
-    await intake.handlePhoto(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, fileIds, ctx.msg?.caption, admission?.release);
+    await intake.handlePhoto(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, fileIds, ctx.msg?.caption, handle);
   });
 
   bot.on("message:document", async (ctx: Context) => {
-    const admission = admissionStates.get(ctx);
+    const handle = gate.handleFor(ctx);
     const doc = ctx.msg?.document;
     if (!doc?.file_id) {
-      admission?.release();
+      handle?.releaseRuntimeAdmission();
       return;
     }
     await intake.handleDocument(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
@@ -434,27 +357,27 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
       fileName: doc.file_name,
       mimeType: doc.mime_type,
       caption: ctx.msg?.caption,
-    }, admission?.release);
+    }, handle);
   });
 
   bot.on("message:voice", async (ctx: Context) => {
-    const admission = admissionStates.get(ctx);
+    const handle = gate.handleFor(ctx);
     const voice = ctx.msg?.voice;
     if (!voice?.file_id) {
-      admission?.release();
+      handle?.releaseRuntimeAdmission();
       return;
     }
     await intake.handleVoice(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
       fileId: voice.file_id,
       mimeType: voice.mime_type,
-    }, admission?.release);
+    }, handle);
   });
 
   bot.on("message:audio", async (ctx: Context) => {
-    const admission = admissionStates.get(ctx);
+    const handle = gate.handleFor(ctx);
     const audio = ctx.msg?.audio;
     if (!audio?.file_id) {
-      admission?.release();
+      handle?.releaseRuntimeAdmission();
       return;
     }
     await intake.handleAudio(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
@@ -463,26 +386,26 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
       performer: audio.performer,
       title: audio.title,
       caption: ctx.msg?.caption,
-    }, admission?.release);
+    }, handle);
   });
 
   bot.on("message:forum_topic_created", async (ctx: Context) => {
-    const admission = admissionStates.get(ctx);
+    const handle = gate.handleFor(ctx);
     await intake.handleTopicDescription(
       ctx.chat?.id,
       ctx.msg?.message_thread_id,
       ctx.msg?.forum_topic_created?.name,
-      admission?.release,
+      handle,
     );
   });
 
   bot.on("message:forum_topic_edited", async (ctx: Context) => {
-    const admission = admissionStates.get(ctx);
+    const handle = gate.handleFor(ctx);
     await intake.handleTopicDescription(
       ctx.chat?.id,
       ctx.msg?.message_thread_id,
       ctx.msg?.forum_topic_edited?.name,
-      admission?.release,
+      handle,
     );
   });
 
@@ -492,10 +415,10 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // from ctx.guestMessage) — no streaming. Media/caption-only summons are out
   // of scope: we drop them silently with a debug log. See telegram-guest-mode.
   bot.on("guest_message", async (ctx: Context) => {
-    const admission = admissionStates.get(ctx);
+    const handle = gate.handleFor(ctx);
     const guestMessage = ctx.guestMessage;
     if (!guestMessage) {
-      admission?.release();
+      handle?.releaseRuntimeAdmission();
       return;
     }
     const text = guestMessage.text;
@@ -505,7 +428,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
         chatId: guestMessage.chat?.id,
         hasCaption: "caption" in guestMessage,
       });
-      admission?.release();
+      handle?.releaseRuntimeAdmission();
       return;
     }
     const cleanedText = prepareUserContent(ctx, text);
@@ -516,7 +439,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
         replyVia: (result) => ctx.answerGuestQuery(result),
       },
       cleanedText,
-      admission?.release,
+      handle,
     );
   });
 
@@ -528,39 +451,9 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     });
   });
 
-  let admissionClosure: Promise<void> | undefined;
-  const closeAdmission = (): Promise<void> => {
-    if (admissionClosure) return admissionClosure;
-    // Stop admitting new updates synchronously so the middleware gate rejects
-    // anything grammy fetches next. Flush the coalescer before closing intake:
-    // buffered text is already admitted and must be allowed to enter intake.
-    // The returned promise may remain pending on runtime work; deployment
-    // shutdown starts runtime disposal before awaiting it.
-    admissionOpen = false;
-    admissionClosure = (async (): Promise<void> => {
-      try {
-        // Let updates already inside the authorization middleware finish their
-        // allow/deny decision before closing the coalescer. Otherwise a
-        // delayed member-count lookup can cause an already-fetched update to
-        // be discarded after Telegram has confirmed its offset.
-        await drainAuthorizations();
-        await coalescer.close();
-      } finally {
-        intake.closeAdmission();
-        await drainAdmitted();
-      }
-    })();
-    return admissionClosure;
-  };
-
   return {
     bot,
-    closeAdmission,
-    bufferedTextAdmission: async () => {
-      await drainAuthorizations();
-      await coalescer.bufferedTextAdmission();
-    },
-    runtimeAdmission,
+    gate,
     lifecycle: intake.lifecycle,
     runtimeHost: orchestration.runtimeHost,
     subagentRunner,

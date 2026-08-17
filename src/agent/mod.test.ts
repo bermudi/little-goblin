@@ -541,7 +541,9 @@ describe("AgentRunner", () => {
       current = false;
       sessionHolder.streaming = true;
 
-      await expect(runner.followUp("stale steer")).rejects.toThrow(/no longer current/);
+      expect(() => {
+        void runner.followUp("stale steer");
+      }).toThrow(/no longer current/);
       await expect(runner.compact()).rejects.toThrow(/no longer current/);
       expect(sessionHolder.followUp).not.toHaveBeenCalled();
       expect(sessionHolder.compact).not.toHaveBeenCalled();
@@ -1043,14 +1045,18 @@ describe("AgentRunner", () => {
       const runner = await makeRunner(tmpDir);
       await runner.prompt("first", nopCallbacks());
 
-      await expect(runner.followUp("redirect")).rejects.toThrow("Cannot steer: session is not streaming.");
+      expect(() => {
+        void runner.followUp("redirect");
+      }).toThrow("Cannot steer: session is not streaming.");
       expect(sessionHolder.followUp).not.toHaveBeenCalled();
     });
 
     it("throws when session not yet initialized", async () => {
       const runner = await makeRunner(tmpDir);
 
-      await expect(runner.followUp("redirect")).rejects.toThrow("session not initialized");
+      expect(() => {
+        void runner.followUp("redirect");
+      }).toThrow("session not initialized");
       expect(sessionHolder.followUp).not.toHaveBeenCalled();
     });
 
@@ -1059,7 +1065,9 @@ describe("AgentRunner", () => {
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
 
-      await expect(runner.followUp([image])).rejects.toBeInstanceOf(ModelNotCapableError);
+      expect(() => {
+        void runner.followUp([image]);
+      }).toThrow(ModelNotCapableError);
       expect(sessionHolder.followUp).not.toHaveBeenCalled();
     });
 
@@ -1118,7 +1126,9 @@ describe("AgentRunner", () => {
 
       // A dead turn cannot be steered — consistent with the getter
       // reporting the runner as not streaming.
-      await expect(runner.followUp("redirect")).rejects.toThrow("Cannot steer: session is not streaming.");
+      expect(() => {
+        void runner.followUp("redirect");
+      }).toThrow("Cannot steer: session is not streaming.");
       expect(sessionHolder.followUp).not.toHaveBeenCalled();
     });
   });

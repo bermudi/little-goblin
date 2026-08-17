@@ -9,6 +9,7 @@
  */
 import { log } from "../log.ts";
 import type { TelegramIntakeMessage } from "./intake.ts";
+import type { UpdateHandle } from "../shutdown/mod.ts";
 
 /** A fragment at or above this length is treated as a likely split first half. */
 export const TEXT_SPLIT_THRESHOLD = 4000;
@@ -38,8 +39,9 @@ export interface CoalesceInput {
   /** True when the first Telegram entity is `bot_command`. Commands bypass and
    * flush the buffer; they never open one. */
   isCommand: boolean;
-  /** Runtime-admission milestone for the Telegram update that owns this text. */
-  onRuntimeAdmission?: () => void;
+  /** Handle for the Telegram update that owns this text. The coalescer
+   * releases it when the merged message reaches runtime admission. */
+  handle?: UpdateHandle;
 }
 
 /** Callback the coalescer invokes to deliver a merged (or pass-through) message
@@ -47,7 +49,7 @@ export interface CoalesceInput {
 export type CoalesceDispatch = (
   message: TelegramIntakeMessage,
   text: string,
-  onRuntimeAdmission: () => void,
+  handle: UpdateHandle | undefined,
 ) => Promise<void>;
 
 interface BufferEntry {
@@ -75,7 +77,9 @@ interface BufferEntry {
    * delayed by the event loop. */
   lastReceivedAt: number;
   timer: ReturnType<typeof setTimeout>;
-  onRuntimeAdmission?: () => void;
+  /** Handles for every fragment in this buffer, released in order when the
+   * merged message reaches runtime admission. */
+  handles: UpdateHandle[];
 }
 
 export interface TextCoalescerOptions {
@@ -102,45 +106,54 @@ export class TextCoalescer {
   }
 
   /** Observe every admitted dispatch so close can drain it. Only detached
-   * dispatches retain failures for close; returned promises belong to callers. */
+   * dispatches retain failures for close; returned promises belong to callers.
+   *
+   * The coalescer wraps the incoming handle(s) in a tracking handle that
+   * resolves `bufferedAdmission` on release, so intake sees a single
+   * {@link UpdateHandle} and calls `releaseRuntimeAdmission()` at the runtime
+   * hand-off boundary. The settle paths also call it as a safety net — the
+   * handle's idempotency guarantees exactly-once release. */
   private dispatchTracked(
     message: TelegramIntakeMessage,
     text: string,
     detached: boolean,
     buffered: boolean,
-    onRuntimeAdmission?: () => void,
+    handles: UpdateHandle[],
   ): Promise<void> {
     let admit: () => void = () => {};
-    let admitted = false;
+    let released = false;
     const bufferedAdmission = buffered
       ? new Promise<void>((resolve) => {
         admit = resolve;
       })
       : undefined;
     if (bufferedAdmission) this.activeBufferedAdmissions.add(bufferedAdmission);
-    const markRuntimeAdmission = (): void => {
-      if (admitted) return;
-      admitted = true;
-      onRuntimeAdmission?.();
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      for (const h of handles) h.releaseRuntimeAdmission();
       admit();
       if (bufferedAdmission) this.activeBufferedAdmissions.delete(bufferedAdmission);
     };
+    // The handle intake receives: a single wrapper whose release triggers
+    // all fragment handles and the buffered-admission promise.
+    const dispatchHandle: UpdateHandle = { releaseRuntimeAdmission: release };
     let dispatch: Promise<void>;
     try {
-      dispatch = this.dispatch(message, text, markRuntimeAdmission);
+      dispatch = this.dispatch(message, text, dispatchHandle);
     } catch (error) {
-      markRuntimeAdmission();
+      release();
       dispatch = Promise.reject(error);
     }
     this.activeDispatches.add(dispatch);
     const settleSuccess = (): void => {
       // A dispatch implementation that does not expose an earlier admission
       // point still must not leave the shutdown barrier pending forever.
-      markRuntimeAdmission();
+      release();
       this.activeDispatches.delete(dispatch);
     };
     const settleFailure = (error: unknown): void => {
-      markRuntimeAdmission();
+      release();
       this.activeDispatches.delete(dispatch);
       if (!detached) return;
       // Rejection is an outcome independent of its reason: Promise.reject()
@@ -157,7 +170,7 @@ export class TextCoalescer {
   submit(input: CoalesceInput): Promise<void> | undefined {
     if (this.closed) {
       log.info("telegram text dropped after admission closed", { surfaceId: input.key.surfaceId });
-      input.onRuntimeAdmission?.();
+      input.handle?.releaseRuntimeAdmission();
       return;
     }
     // Commands never buffer. If a buffer is open for the key, flush it first
@@ -165,7 +178,7 @@ export class TextCoalescer {
     // command immediately.
     if (input.isCommand) {
       this.flush(input.key);
-      return this.dispatchTracked(input.message, input.text, false, false, input.onRuntimeAdmission);
+      return this.dispatchTracked(input.message, input.text, false, false, input.handle ? [input.handle] : []);
     }
 
     const entry = this.buffers.get(keyToString(input.key));
@@ -176,7 +189,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        return this.dispatchTracked(input.message, input.text, false, false, input.onRuntimeAdmission);
+        return this.dispatchTracked(input.message, input.text, false, false, input.handle ? [input.handle] : []);
       }
       return;
     }
@@ -200,7 +213,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        return this.dispatchTracked(input.message, input.text, false, false, input.onRuntimeAdmission);
+        return this.dispatchTracked(input.message, input.text, false, false, input.handle ? [input.handle] : []);
       }
       return;
     }
@@ -216,7 +229,7 @@ export class TextCoalescer {
       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
         this.open(input);
       } else {
-        return this.dispatchTracked(input.message, input.text, false, false, input.onRuntimeAdmission);
+        return this.dispatchTracked(input.message, input.text, false, false, input.handle ? [input.handle] : []);
       }
       return;
     }
@@ -229,11 +242,7 @@ export class TextCoalescer {
     entry.fragmentCount += 1;
     entry.totalChars += input.text.length;
     entry.lastReceivedAt = Date.now();
-    const priorAdmission = entry.onRuntimeAdmission;
-    entry.onRuntimeAdmission = (): void => {
-      priorAdmission?.();
-      input.onRuntimeAdmission?.();
-    };
+    if (input.handle) entry.handles.push(input.handle);
     entry.timer = setTimeout(() => this.flush(input.key), TEXT_SPLIT_WINDOW_MS);
     return;
   }
@@ -250,8 +259,8 @@ export class TextCoalescer {
       totalChars: input.text.length,
       lastReceivedAt: Date.now(),
       timer: setTimeout(() => this.flush(input.key), TEXT_SPLIT_WINDOW_MS),
+      handles: input.handle ? [input.handle] : [],
     };
-    entry.onRuntimeAdmission = input.onRuntimeAdmission;
     this.buffers.set(key, entry);
   }
 
@@ -274,7 +283,7 @@ export class TextCoalescer {
     for (const entry of entries) clearTimeout(entry.timer);
     this.buffers.clear();
     for (const entry of entries) {
-      void this.dispatchTracked(entry.message, entry.text, true, true, entry.onRuntimeAdmission);
+      void this.dispatchTracked(entry.message, entry.text, true, true, entry.handles);
     }
 
     while (this.activeDispatches.size > 0) {
@@ -310,7 +319,7 @@ export class TextCoalescer {
     if (entry === undefined) return;
     clearTimeout(entry.timer);
     this.buffers.delete(k);
-    void this.dispatchTracked(entry.message, entry.text, true, true, entry.onRuntimeAdmission);
+    void this.dispatchTracked(entry.message, entry.text, true, true, entry.handles);
   }
 }
 

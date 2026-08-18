@@ -70,6 +70,13 @@ export interface ScheduledTurn {
   /** Provenance: who created the schedule. Absent/legacy records read as "user". */
   source?: "user" | "agent";
   lastRun?: LastRunStatus;
+  /**
+   * Monotonic claim revision. `claimDue` increments it; `restoreClaim`
+   * restores only when the on-disk revision still matches the claim it
+   * issued. Optional so legacy records remain readable without a
+   * state-version bump.
+   */
+  claimRevision?: number;
 }
 
 /**
@@ -93,6 +100,8 @@ export interface PersistedScheduledTurn {
   /** Provenance: who created the schedule. Absent/legacy records read as "user". */
   source?: "user" | "agent";
   lastRun?: LastRunStatus;
+  /** Optional claim revision; absent on legacy records. */
+  claimRevision?: number;
 }
 
 /**

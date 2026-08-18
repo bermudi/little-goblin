@@ -448,6 +448,7 @@ export class ScheduleStore {
 
     s.state = state;
     s.enabled = state === "enabled";
+    s.claimRevision = (s.claimRevision ?? 0) + 1;
     this.write(store);
     return s;
   }
@@ -503,19 +504,22 @@ export class ScheduleStore {
         s.nextRunAt = new Date(nextMs).toISOString();
       }
     }
+    s.claimRevision = (s.claimRevision ?? 0) + 1;
     this.write(store);
     return s;
   }
 
   /**
-   * Undo a claim whose queue entry was fenced before it started. The expected
-   * post-claim record prevents a later user mutation from being overwritten by
-   * shutdown cleanup.
+   * Undo a claim whose queue entry was fenced before it started. Restore only
+   * the exact claim this occurrence issued: the persisted revision must still
+   * match. A later pause→resume that returns the same visible state is a new
+   * revision and must not rewind `nextRunAt`.
    */
   restoreClaim(id: string, original: ScheduledTurn, claimed: ScheduledTurn): boolean {
     const store = this.read();
     const current = store.find((s) => s.id === id);
     if (!current) return false;
+    if ((current.claimRevision ?? 0) !== (claimed.claimRevision ?? 0)) return false;
     const stillClaimed = claimed.kind === "once"
       ? current.state === "completed" && !current.enabled
       : current.state === claimed.state &&

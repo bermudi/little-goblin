@@ -72,7 +72,10 @@ interface HarnessState {
   loaderOptions: unknown;
 }
 
-function makeHarness(loadedSkillPaths: readonly string[] | null): {
+function makeHarness(
+  loadedSkillPaths: readonly string[] | null,
+  createSessionImpl?: () => Promise<Awaited<ReturnType<typeof createAgentSession>>>,
+): {
   backend: PiAgentBackend;
   state: HarnessState;
 } {
@@ -108,6 +111,7 @@ function makeHarness(loadedSkillPaths: readonly string[] | null): {
 
   const createSession = async () => {
     state.createSessionCalls += 1;
+    if (createSessionImpl) return createSessionImpl();
     return { session: fakeSession } as Awaited<ReturnType<typeof createAgentSession>>;
   };
   const sessionManager = {
@@ -134,6 +138,21 @@ function makeHarness(loadedSkillPaths: readonly string[] | null): {
   });
   return { backend, state };
 }
+
+describe("PiAgentBackend disposal", () => {
+  it("does not report an initialization failure as a disposal failure", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "goblin-backend-dispose-"));
+    const initError = new Error("pi session failed");
+    const { backend } = makeHarness(null, async () => {
+      throw initError;
+    });
+
+    const init = backend.init(makeInitArgs(tmpDir, makeResolvedSkills([])));
+    const dispose = backend.dispose();
+    await expect(init).rejects.toBe(initError);
+    await expect(dispose).resolves.toBeUndefined();
+  });
+});
 
 describe("PiAgentBackend skill loading", () => {
   it("rejects a selected skill that is missing before Pi reload", async () => {

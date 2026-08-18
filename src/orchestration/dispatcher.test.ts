@@ -1247,6 +1247,72 @@ describe("TurnDispatcher async runner creation", () => {
     expect(subagentRunner.acknowledged).toHaveLength(0);
   });
 
+  it("reviveSubagent captures epoch under the binding guard, not after it releases", async () => {
+    await memoryStore.add("general", "test fact");
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+    const guard = new FakeBindingGuard();
+    guard.bind(surface, session.id);
+    const { dispatcher, runtimeHost, subagentRunner } = buildAsyncDispatcher({
+      surfaceRuntimeAuthority: guard,
+      delegatedWorkHost: new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost,
+    });
+    const original = await dispatcher.getOrCreateRunner(session, surface);
+
+    let finishRevive!: () => void;
+    subagentRunner.revive = async (
+      parentCapture,
+      inheritance,
+      id,
+      prompt,
+      _onStatusUpdate,
+      onAttached,
+    ) => {
+      subagentRunner.lastReviveArgs = { parentCapture, inheritance, id, prompt };
+      onAttached?.();
+      return new Promise((resolve) => {
+        finishRevive = () => resolve("stale result");
+      });
+    };
+
+    const revivePromise = dispatcher.reviveSubagent(surface, session, "sub-1", "follow-up");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(guard.lockReleases).toBe(1);
+
+    await dispatcher.disposeRunner(session.id);
+    const replacement = await dispatcher.getOrCreateRunner(session, surface);
+    expect(runtimeHost.isRegisteredRunner(session.id, replacement)).toBe(true);
+    expect(runtimeHost.isRegisteredRunner(session.id, original)).toBe(false);
+
+    finishRevive();
+    await expect(revivePromise).rejects.toThrow(/completed after its runtime was invalidated/);
+    expect(subagentRunner.acknowledged).toHaveLength(0);
+  });
+
+  it("prompts a cold scheduled turn after creating the first runner", async () => {
+    const prompted: unknown[] = [];
+    const { dispatcher, runtimeHost } = buildAsyncDispatcher({
+      createAgentRunner: (options) => {
+        const plan = options.plan;
+        if (plan === undefined) throw new Error("expected a prepared Surface runtime plan");
+        const runner = new FakeAgentRunner();
+        runner.memoryContext = plan.memoryContext;
+        runner.prompt = async (content) => { prompted.push(content); };
+        return runner as unknown as AgentRunner;
+      },
+    });
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+
+    const admission = dispatcher.enqueueScheduledTurn(session, surface, "cold scheduled");
+    if (typeof admission === "boolean") throw new Error("expected scheduled turn admission handle");
+
+    expect(await admission.started).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(prompted).toEqual(["cold scheduled"]);
+    expect(runtimeHost.hasRunner(session.id)).toBe(true);
+  });
+
   it("captures an early delegated invalidation rejection while runner dispose is pending and rethrows it", async () => {
     const delegatedWorkHost = new FakeDelegatedWorkHost();
     delegatedWorkHost.invalidateRuntimeRejectWith = new Error("invalidation failed");

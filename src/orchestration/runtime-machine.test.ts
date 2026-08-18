@@ -574,6 +574,60 @@ describe("RuntimeMachine drain set", () => {
     await first;
     creation.complete();
   });
+
+  it("counts an active drain as runtime state after delegated invalidation finishes", async () => {
+    const runnerDisposed = deferred<void>();
+    const delegatedFinished = deferred<void>();
+    const host = {
+      invalidateRuntime: async (): Promise<void> => {
+        delegatedFinished.resolve(undefined);
+        await runnerDisposed.promise;
+      },
+    } as unknown as DelegatedWorkHost;
+    const m = new RuntimeMachine({
+      conversationId: "conv-x",
+      delegatedWorkHost: host,
+      isAdmissionOpen: () => true,
+    });
+    registerSurface(m, fakeRunner(() => runnerDisposed.promise));
+
+    const first = m.invalidate("binding-change");
+    await delegatedFinished.promise;
+    expect(m.hasRuntime()).toBe(true);
+
+    let secondSettled = false;
+    const second = m.invalidate("binding-change");
+    void second.then(() => { secondSettled = true; });
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+
+    runnerDisposed.resolve(undefined);
+    await first;
+    await second;
+    expect(m.hasRuntime()).toBe(false);
+  });
+
+  it("shutdown waits for a superseded creation reservation", async () => {
+    const m = makeMachine();
+    const first = m.reserveCreation(surfaceId(dmSurface(1)), "first");
+    const second = m.reserveCreation(surfaceId(dmSurface(1)), "second");
+    expect(m.isCurrentCreation(first.promise)).toBe(false);
+    expect(m.isCurrentCreation(second.promise)).toBe(true);
+
+    const shutdown = m.shutdown();
+    let settled = false;
+    void shutdown.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    second.complete();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    first.complete();
+    await shutdown;
+    expect(settled).toBe(true);
+  });
 });
 
 // ─── internal runtimes ───────────────────────────────────────────────

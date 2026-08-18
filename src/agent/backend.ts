@@ -364,11 +364,15 @@ export class PiAgentBackend implements AgentBackend {
 
   private async disposeOnce(initialization: Promise<void> | undefined): Promise<void> {
     const failures: unknown[] = [];
+    // Await initialization only to sequence cleanup after setup. An
+    // initialization failure was already reported on the init path; do not
+    // rethrow it as a disposal failure when acquired resources cleaned up.
     if (initialization !== undefined) {
       try {
         await initialization;
-      } catch (err) {
-        if (!(err instanceof AgentBackendInitializationCancelled)) failures.push(err);
+      } catch {
+        // Initialization failed or was cancelled. Cleanup below still runs
+        // for any resources that were published before the failure.
       }
     }
 

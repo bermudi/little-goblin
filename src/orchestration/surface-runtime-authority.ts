@@ -13,6 +13,8 @@ export interface AttachmentSignal {
 export interface AttachedWork<T> {
   result: Promise<T>;
   runner?: AgentRunner;
+  /** Runtime epoch captured under the binding guard, when the caller holds one. */
+  epoch?: number;
 }
 
 /** Lifecycle guard that excludes Binding replacement until work is attached. */

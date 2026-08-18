@@ -273,6 +273,12 @@ export class TurnDispatcher {
           );
         }
 
+        // Capture the runtime epoch while the binding guard still excludes
+        // lifecycle replacement. After the lock is released, a concurrent
+        // invalidation can bump the epoch and a later capture would adopt
+        // the replacement generation.
+        const epoch = this.runtimeHost.captureEpoch(session.id, "runtime");
+
         const result = this.subagentRunner.revive(
           runner.memoryContext,
           runner.genericSubagentInheritance,
@@ -292,13 +298,19 @@ export class TurnDispatcher {
           }
         });
 
-        return { result, runner };
+        return { result, runner, epoch };
       },
     );
 
     return {
       ...attached,
-      result: this.completeRevivedSubagent(attached.result, attached.runner, session.id, subagentId),
+      result: this.completeRevivedSubagent(
+        attached.result,
+        attached.runner,
+        attached.epoch,
+        session.id,
+        subagentId,
+      ),
     };
   }
 
@@ -320,15 +332,22 @@ export class TurnDispatcher {
   private async completeRevivedSubagent(
     resultPromise: Promise<string>,
     runner: AgentRunner | undefined,
+    epoch: number | undefined,
     sessionId: string,
     subagentId: string,
   ): Promise<string> {
-    // Capture the runtime epoch at attachment. Lifecycle invalidation bumps
-    // the epoch synchronously, so a revived subagent that completes after its
-    // runtime was invalidated sees a stale ticket here.
-    const epoch = this.runtimeHost.captureEpoch(sessionId, "runtime");
+    // Authority was captured under the binding guard. Lifecycle invalidation
+    // bumps the epoch synchronously, so a revived subagent that completes
+    // after its runtime was invalidated sees a stale ticket here. The saved
+    // runner must also still be the registered generation — a replacement
+    // that happens to share the captured epoch must not accept this result.
     const result = await resultPromise;
-    if (runner === undefined || !this.runtimeHost.isEpochCurrent(sessionId, "runtime", epoch)) {
+    if (
+      runner === undefined ||
+      epoch === undefined ||
+      !this.runtimeHost.isEpochCurrent(sessionId, "runtime", epoch) ||
+      !this.runtimeHost.isRegisteredRunner(sessionId, runner)
+    ) {
       log.warn("revived subagent completed after its runtime was invalidated", {
         subagentId,
         sessionId,
@@ -732,16 +751,26 @@ export class TurnDispatcher {
 
     const execute = async (): Promise<void> => {
       let runner: AgentRunner;
+      let currentEpoch = epoch;
       if (existingRunner) {
         // Stale-runner guard: if the runner was swapped after enqueue, abort
         // before producing user-visible side effects.
-        if (!this.runtimeHost.isEpochCurrent(session.id, "runtime", epoch)) return;
+        if (!this.runtimeHost.isEpochCurrent(session.id, "runtime", currentEpoch)) return;
         runner = existingRunner;
       } else {
         runner = await this.getOrCreateRunner(session, surface);
-        // Recheck after async creation: if the runner was swapped during
-        // capture, abort.
-        if (!this.runtimeHost.isEpochCurrent(session.id, "runtime", epoch)) return;
+        // Cold start: no runner existed at enqueue, so creation is the
+        // intended first generation. Adopt that generation's epoch and
+        // confirm the created runner is still registered before prompting.
+        // Checking the pre-creation epoch here always fails because
+        // reserveCreation / registerSurfaceRuntime bump it.
+        currentEpoch = this.runtimeHost.captureEpoch(session.id, "runtime");
+        if (
+          !this.runtimeHost.isEpochCurrent(session.id, "runtime", currentEpoch) ||
+          !this.runtimeHost.isRegisteredRunner(session.id, runner)
+        ) {
+          return;
+        }
       }
       if (runner.isAbortTimedOut) {
         const error = new Error("Scheduled turn dropped: runner is wedged after abort timed out");

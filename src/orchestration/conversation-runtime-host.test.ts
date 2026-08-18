@@ -173,6 +173,26 @@ describe("ConversationRuntimeHost shutdown", () => {
     expect(settled).toBe(true);
   });
 
+  it("shutdown waits for a superseded construction reservation", async () => {
+    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
+    const first = host.reserveCreation("conversation-a", surfaceId(dmSurface(1)), "first");
+    const second = host.reserveCreation("conversation-a", surfaceId(dmSurface(1)), "second");
+
+    const shutdown = host.disposeAll();
+    let settled = false;
+    void shutdown.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    second.complete();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    first.complete();
+    await shutdown;
+    expect(settled).toBe(true);
+  });
+
   it("waits for a runtime construction reservation to finish", async () => {
     const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
     const creation = host.reserveCreation("conversation-a", surfaceId(dmSurface(1)), "test");
@@ -352,14 +372,17 @@ describe("ConversationRuntimeHost shutdown", () => {
     await Promise.resolve();
 
     // c: A second invalidation targets the replacement generation while the
-    // old generation is still disposing.
-    await host.disposeRuntime("conversation-a");
+    // old generation is still disposing. It must fence the replacement
+    // immediately; it may also join the leftover drain rather than return
+    // before the original runner is disposed.
+    const secondDisposal = host.disposeRuntime("conversation-a");
     expect(host.isCurrentCreation("conversation-a", replacement.promise)).toBe(false);
 
     // d: Releasing old cleanup must not let the invalidated replacement escape
     // its creation fence and register afterward.
     oldRunnerDisposed.resolve(undefined);
     await oldDisposal;
+    await secondDisposal;
     await replacementAttempt;
 
     expect(replacementRegistered).toBe(false);

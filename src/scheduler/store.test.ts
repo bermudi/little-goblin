@@ -395,6 +395,48 @@ describe("ScheduleStore", () => {
       expect(first).not.toBeNull();
       expect(second).toBeNull();
     });
+
+    it("restoreClaim refuses a pause-resume that recreates the claimed visible state", () => {
+      const created = store.create({
+        surface: LOC,
+        kind: "recurring",
+        prompt: "x",
+        nextRunAt: PAST_ISO,
+        intervalMs: 3_600_000,
+      });
+      const original = { ...created };
+      const claimed = store.claimDue(created.id, NOW_ISO);
+      expect(claimed).not.toBeNull();
+      const advancedNext = claimed!.nextRunAt;
+
+      store.pause(LOC, created.id);
+      store.resume(LOC, created.id);
+      const afterResume = store.getForSurface(LOC, created.id)!;
+      expect(afterResume.state).toBe("enabled");
+      expect(afterResume.enabled).toBe(true);
+      expect(afterResume.nextRunAt).toBe(advancedNext);
+
+      expect(store.restoreClaim(created.id, original, claimed!)).toBe(false);
+      expect(store.getForSurface(LOC, created.id)!.nextRunAt).toBe(advancedNext);
+    });
+
+    it("restoreClaim still undoes an unchanged claim", () => {
+      const created = store.create({
+        surface: LOC,
+        kind: "recurring",
+        prompt: "x",
+        nextRunAt: PAST_ISO,
+        intervalMs: 3_600_000,
+      });
+      const original = { ...created };
+      const claimed = store.claimDue(created.id, NOW_ISO);
+      expect(claimed).not.toBeNull();
+
+      expect(store.restoreClaim(created.id, original, claimed!)).toBe(true);
+      const restored = store.getForSurface(LOC, created.id)!;
+      expect(restored.state).toBe("enabled");
+      expect(restored.nextRunAt).toBe(original.nextRunAt);
+    });
   });
 
   describe("recordRun", () => {

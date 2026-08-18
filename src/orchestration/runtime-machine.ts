@@ -213,6 +213,12 @@ export class RuntimeMachine {
   // ── drain set (overlapping generations) ──
   private drain = new Set<DrainingGeneration>();
   private pendingDelegatedInvalidations = new Set<ConversationRuntimeId>();
+  /**
+   * Every outstanding creation reservation, including ones superseded by a
+   * later `reserveCreation`. Shutdown waits for the complete set so an older
+   * preparation cannot continue after dependent services begin closing.
+   */
+  private outstandingCreations = new Set<RuntimeCreation>();
 
   private readonly deps: RuntimeMachineDeps;
 
@@ -284,12 +290,16 @@ export class RuntimeMachine {
 
   /**
    * True when the conversation has a registered runner, an in-flight creation
-   * (excluding the given one), or pending delegated invalidations. Used by
-   * the host's `hasRuntime` port method.
+   * (excluding the given one), an active drain, or pending delegated
+   * invalidations. Used by the host's `hasRuntime` port method.
+   *
+   * Active drains count as runtime state so a later disposal cannot return
+   * immediately while an earlier `runner.dispose()` is still settling.
    */
   hasRuntime(excludeCreation?: Promise<AgentRunner>): boolean {
     if (this.runner !== undefined) return true;
     if (this.creation !== undefined && this.creation.promise !== excludeCreation) return true;
+    if (this.drain.size > 0) return true;
     if (this.pendingDelegatedInvalidations.size > 0) return true;
     return false;
   }
@@ -342,6 +352,7 @@ export class RuntimeMachine {
       reject: control.reject,
       complete,
     };
+    this.outstandingCreations.add(creation);
     this.creation = creation;
     this.transitionTo("preparing", "reserveCreation");
     return creation;
@@ -353,6 +364,7 @@ export class RuntimeMachine {
 
   finishCreation(promise: Promise<AgentRunner>, creation: RuntimeCreation): void {
     creation.complete();
+    this.outstandingCreations.delete(creation);
     if (this.creation?.promise === promise) {
       this.creation = undefined;
     }
@@ -728,19 +740,16 @@ export class RuntimeMachine {
       }
     }
 
-    // Also deduplicate by runtime identity: a consecutive invalidation
-    // with no new runner but the same pending delegated invalidations is
-    // a re-invocation of the same disposal. The epoch bump from the first
-    // call already fenced stale tickets; the stronger fence above applied
-    // its semantics (dropped creation/queue). Share the in-flight promise.
-    if (priorRunner === undefined && this.pendingDelegatedInvalidations.size > 0) {
-      const pendingIds = [...this.pendingDelegatedInvalidations];
-      for (const draining of this.drain) {
-        if (pendingIds.every((id) => draining.runtimeIds.includes(id))) {
-          this.bumpEpochs(reason);
-          return draining.promise;
-        }
-      }
+    // Also join any still-active drain for this conversation. Delegated
+    // invalidation can finish (clearing pending IDs) while `runner.dispose()`
+    // is still blocked; a later disposal must wait rather than return idle.
+    // Share the existing drain promise so same-generation callers keep
+    // identity, and do not start a second physical cleanup.
+    if (priorRunner === undefined && this.drain.size > 0) {
+      this.bumpEpochs(reason);
+      const leftover = [...this.drain];
+      if (leftover.length === 1) return leftover[0]!.promise;
+      return Promise.all(leftover.map((entry) => entry.promise)).then(() => undefined);
     }
 
     // Nothing to drain — the machine was idle with no runner, no creation,
@@ -942,10 +951,10 @@ export class RuntimeMachine {
    * reported rather than spun.
    */
   async shutdown(): Promise<void> {
-    // Capture the in-flight creation's completion before invalidating, so
-    // shutdown waits for the caller to finishCreation even after the creation
-    // is fenced.
-    const creationCompletion = this.creation?.completion;
+    // Capture every outstanding creation's completion before invalidating.
+    // A second reservation overwrites `this.creation`; shutdown must still
+    // wait for superseded preparations to finishCreation.
+    const creationCompletions = [...this.outstandingCreations].map((creation) => creation.completion);
 
     // Always fence the current generation — the machine may be in
     // `preparing` with no runner or creation (e.g. a failed registration
@@ -978,8 +987,7 @@ export class RuntimeMachine {
         continue; // Re-capture drain promises with the new disposal
       }
 
-      const promises: Promise<unknown>[] = [...drainPromises];
-      if (creationCompletion) promises.push(creationCompletion);
+      const promises: Promise<unknown>[] = [...drainPromises, ...creationCompletions];
 
       if (promises.length > 0) {
         const results = await Promise.allSettled(promises);

@@ -6,6 +6,7 @@ import {
   DelegatedWorkRecordStore,
   assertSafeRunId,
   parseDelegatedWorkRecord,
+  type DelegatedWorkStatus,
 } from "./store.ts";
 import { delegatedWorkRecordPath, delegatedWorkRunsRoot } from "./paths.ts";
 import { log } from "../log.ts";
@@ -26,7 +27,17 @@ function ownership(runtimeId: string) {
   };
 }
 
-function makeInvocation(index: number, status: string, completedAt: string | null = null): Record<string, unknown> {
+function makeInvocation(
+  index: number,
+  status: DelegatedWorkStatus,
+  completedAt: string | null = null,
+): Record<string, unknown> {
+  const outcome =
+    status === "completed"
+      ? { kind: "success", text: "done" }
+      : status === "error"
+        ? { kind: "error", errorMessage: "failed" }
+        : null;
   return {
     index,
     ownerConversationId: "conversation-a",
@@ -36,8 +47,8 @@ function makeInvocation(index: number, status: string, completedAt: string | nul
     originSurfaceId: surfaceId(dmSurface(1)),
     executionEnvironment: personalEnvironment(),
     status,
-    outcome: status === "running" ? null : { kind: "success", text: "done" },
-    deliveryState: status === "running" ? "pending" : "delivered",
+    outcome,
+    deliveryState: status === "running" ? "pending" : status === "completed" ? "delivered" : "suppressed",
     startedAt: baseTimestamp,
     completedAt,
   };
@@ -165,22 +176,23 @@ describe("DelegatedWorkRecordStore", () => {
     expect(record.invocations[0]?.outcome).toEqual({ kind: "success", text: "x" });
   });
 
-  it("updates delivery state for every terminal status", () => {
-    const terminalStatuses = ["completed", "cancelled", "error", "interrupted"] as const;
-    for (const status of terminalStatuses) {
+  it("rejects delivery changes that contradict a terminal status", () => {
+    const suppressedStatuses = ["cancelled", "error", "interrupted"] as const;
+    for (const status of suppressedStatuses) {
       const runId = `run-terminal-${status}`;
       store.createRecord(runId, "generic-subagent", null, 1, ownership("runtime-1"));
       store.closeInvocation(
         runId,
         0,
         status,
-        status === "completed" ? { kind: "success", text: "x" } : null,
-        "pending",
+        status === "error" ? { kind: "error", errorMessage: "failed" } : null,
+        "suppressed",
       );
 
-      const record = store.setDeliveryState(runId, 0, "delivered");
-      expect(record.invocations[0]?.deliveryState).toBe("delivered");
-      expect(record.invocations[0]?.status).toBe(status);
+      expect(() => store.setDeliveryState(runId, 0, "delivered")).toThrow(
+        `${status} invocation delivery must remain suppressed`,
+      );
+      expect(store.load(runId)?.invocations[0]?.deliveryState).toBe("suppressed");
     }
   });
 
@@ -306,6 +318,61 @@ describe("parseDelegatedWorkRecord", () => {
         "test-path",
       ),
     ).toThrow(/only the last invocation may be running/);
+  });
+
+  it("rejects contradictory lifecycle fields", () => {
+    const cases: Array<{
+      id: string;
+      invocation: Record<string, unknown>;
+      message: string;
+    }> = [
+      {
+        id: "run-running-outcome",
+        invocation: {
+          ...makeInvocation(0, "running"),
+          outcome: { kind: "success", text: "impossible" },
+        },
+        message: "running invocations must not have an outcome",
+      },
+      {
+        id: "run-completed-error",
+        invocation: {
+          ...makeInvocation(0, "completed", baseTimestamp),
+          outcome: { kind: "error", errorMessage: "wrong outcome" },
+        },
+        message: "completed invocations require a success outcome",
+      },
+      {
+        id: "run-error-delivered",
+        invocation: {
+          ...makeInvocation(0, "error", baseTimestamp),
+          deliveryState: "delivered",
+        },
+        message: "error invocation delivery must remain suppressed",
+      },
+      {
+        id: "run-cancelled-outcome",
+        invocation: {
+          ...makeInvocation(0, "cancelled", baseTimestamp),
+          outcome: { kind: "success", text: "impossible" },
+        },
+        message: "cancelled invocations must not have an outcome",
+      },
+      {
+        id: "run-terminal-without-time",
+        invocation: makeInvocation(0, "interrupted"),
+        message: "terminal invocations require a completion timestamp",
+      },
+    ];
+
+    for (const testCase of cases) {
+      expect(() =>
+        parseDelegatedWorkRecord(
+          makeRecord(testCase.id, [testCase.invocation]),
+          "test-path",
+        )
+      ).toThrow(testCase.message);
+    }
   });
 
   it("accepts a record with a single running invocation", () => {

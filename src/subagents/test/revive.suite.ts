@@ -5,12 +5,8 @@ import { SubagentRunner, type SubagentPreparation } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import {
   DelegatedWorkHost,
-  DelegatedWorkRecordStore,
   asConversationRuntimeId,
-  type DelegatedDeliveryState,
-  type DelegatedWorkOutcome,
   type DelegatedWorkRecord,
-  type DelegatedWorkStatus,
 } from "../../delegated-work/mod.ts";
 import { topicScopeDir } from "../../memory/paths.ts";
 import { workspacePath } from "../../workspace/paths.ts";
@@ -37,18 +33,15 @@ import {
   writeSessionFile,
 } from "./support.ts";
 
-class ThrowingCloseInvocationHost extends DelegatedWorkHost {
-  closeInvocationCalls = 0;
+class ThrowingInterruptHost extends DelegatedWorkHost {
+  interruptInvocationCalls = 0;
 
-  closeInvocation(
+  interruptInvocation(
     _runId: string,
     _index: number,
-    _status: Extract<DelegatedWorkStatus, "completed" | "cancelled" | "error" | "interrupted">,
-    _outcome: DelegatedWorkOutcome | null,
-    _deliveryState: DelegatedDeliveryState,
   ): never {
-    this.closeInvocationCalls += 1;
-    throw new Error("close invocation failed");
+    this.interruptInvocationCalls += 1;
+    throw new Error("interrupt invocation failed");
   }
 }
 
@@ -506,12 +499,12 @@ describe("SubagentRunner — abandonInvocation cleanup containment", () => {
   let tmp: string;
   let runner: SubagentRunner;
   let host: FakeSubagentHost;
-  let delegatedHost: ThrowingCloseInvocationHost;
+  let delegatedHost: ThrowingInterruptHost;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-abandon-cleanup-");
     host = new FakeSubagentHost();
-    delegatedHost = new ThrowingCloseInvocationHost(tmp);
+    delegatedHost = new ThrowingInterruptHost(tmp);
     runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host, undefined, delegatedHost);
   });
 
@@ -519,7 +512,7 @@ describe("SubagentRunner — abandonInvocation cleanup containment", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("does not let a throwing closeInvocation mask the original prepare error", async () => {
+  it("does not let a throwing interrupt transition mask the original prepare error", async () => {
     const handle = await runner.spawn({ prompt: "first", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
     await completeAndAcknowledge(runner, host, handle, "done");
@@ -536,7 +529,7 @@ describe("SubagentRunner — abandonInvocation cleanup containment", () => {
     expect(record.status).toBe("running");
     expect(record.runtimeId).toBeDefined();
     expect(runner.delegatedWorkHost.registeredForRuntime(asConversationRuntimeId(record.runtimeId as string))).toBe(0);
-    expect(delegatedHost.closeInvocationCalls).toBe(1);
+    expect(delegatedHost.interruptInvocationCalls).toBe(1);
   });
 
   it("does not let a throwing loadRecord mask the original prepare error", async () => {
@@ -575,37 +568,25 @@ describe("SubagentRunner — shared delegated-work host", () => {
   });
 
   it("reconciles once across multiple SubagentRunner instances that share the same host", () => {
-    class CountingRecordStore extends DelegatedWorkRecordStore {
-      listIdsCalls = 0;
-      closeInvocationCalls = 0;
-      listIds(): string[] {
-        this.listIdsCalls += 1;
-        return super.listIds();
-      }
-      closeInvocation(
-        ...args: Parameters<DelegatedWorkRecordStore["closeInvocation"]>
-      ): ReturnType<DelegatedWorkRecordStore["closeInvocation"]> {
-        this.closeInvocationCalls += 1;
-        return super.closeInvocation(...args);
-      }
-    }
-
     const id = "shared-reconcile-aaaaaaaa-0000-0000-0000-000000000001";
     const record = validRecord(id, {}, "running", null, "pending");
     writeRecordAndSession(tmp, id, record, undefined);
 
-    const store = new CountingRecordStore(tmp);
-    const delegatedHost = new DelegatedWorkHost(tmp, store);
+    const delegatedHost = new DelegatedWorkHost(tmp);
     const subagentHost = new FakeSubagentHost();
     const cfg = makeConfig(tmp);
 
+    expect(delegatedHost.loadRecord(id)?.invocations[0]?.status).toBe("interrupted");
+
+    // Simulate a record becoming non-terminal after the deployment-owned host
+    // has completed its one startup pass. Constructing runners with that same
+    // host must not trigger reconciliation again.
+    writeRecordAndSession(tmp, id, record, undefined);
     new SubagentRunner(cfg, undefined, undefined, subagentHost, undefined, delegatedHost);
     new SubagentRunner(cfg, undefined, undefined, subagentHost, undefined, delegatedHost);
 
     const loaded = delegatedHost.loadRecord(id);
     expect(loaded).not.toBeNull();
-    expect(loaded!.invocations[0]!.status).toBe("interrupted");
-    expect(store.listIdsCalls).toBe(1);
-    expect(store.closeInvocationCalls).toBe(1);
+    expect(loaded!.invocations[0]!.status).toBe("running");
   });
 });

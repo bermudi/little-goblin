@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DelegatedWorkRecordStore } from "../../delegated-work/store.ts";
 import {
   delegatedWorkRecordPath,
   delegatedWorkRunDir,
@@ -56,11 +55,9 @@ describe("Delegated work record store boundary", () => {
   let tmp: string;
   let runner: SubagentRunner;
   let host: FakeSubagentHost;
-  let store: DelegatedWorkRecordStore;
 
   beforeEach(() => {
     tmp = createTestHome("goblin-delegated-record-boundary-");
-    store = new DelegatedWorkRecordStore(tmp);
     host = new FakeSubagentHost();
     runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
   });
@@ -152,7 +149,7 @@ describe("Delegated work record store boundary", () => {
     const path = delegatedWorkRecordPath(tmp, id);
     writeRecord(path, validRecord("different-id"));
 
-    expect(() => store.load(id)).toThrow(/record id does not match/);
+    expect(() => runner.delegatedWorkHost.loadRecord(id)).toThrow(/record id does not match/);
   });
 
   it("rejects a generic record with a non-null name", () => {
@@ -160,7 +157,7 @@ describe("Delegated work record store boundary", () => {
     const path = delegatedWorkRecordPath(tmp, id);
     writeRecord(path, validRecord(id, { name: "writer" }));
 
-    expect(() => store.load(id)).toThrow(/generic-subagent records must have name = null/);
+    expect(() => runner.delegatedWorkHost.loadRecord(id)).toThrow(/generic-subagent records must have name = null/);
   });
 
   it("rejects a named record without a valid name", () => {
@@ -168,7 +165,7 @@ describe("Delegated work record store boundary", () => {
     const path = delegatedWorkRecordPath(tmp, id);
     writeRecord(path, validRecord(id, { kind: "named-subagent", name: null }));
 
-    expect(() => store.load(id)).toThrow(/named-subagent records must have a valid agent name/);
+    expect(() => runner.delegatedWorkHost.loadRecord(id)).toThrow(/named-subagent records must have a valid agent name/);
   });
 
   it("rejects non-contiguous invocation indices", () => {
@@ -182,7 +179,7 @@ describe("Delegated work record store boundary", () => {
       ],
     }));
 
-    expect(() => store.load(id)).toThrow(/invocation indices must be contiguous/);
+    expect(() => runner.delegatedWorkHost.loadRecord(id)).toThrow(/invocation indices must be contiguous/);
   });
 
   it("does not reconstruct a missing or corrupt record during cancellation", async () => {
@@ -216,10 +213,10 @@ describe("Delegated work record store boundary", () => {
       writeRecord(delegatedWorkRecordPath(tmp, id), validRecord(id));
     }
 
-    expect(store.listIds()).toEqual(["run-a", "run-b"]);
+    expect(runner.delegatedWorkHost.listRecordIds()).toEqual(["run-a", "run-b"]);
   });
 
   it("returns null for a missing record", () => {
-    expect(store.load("no-such-run")).toBeNull();
+    expect(runner.delegatedWorkHost.loadRecord("no-such-run")).toBeNull();
   });
 });

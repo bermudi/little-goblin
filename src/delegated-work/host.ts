@@ -6,10 +6,9 @@ import type { ConversationId } from "../sessions/types.ts";
 import {
   DelegatedWorkRecordStore,
   parseDelegatedWorkRecord,
+  type DelegatedWorkInvocation,
   type DelegatedWorkKind,
-  type DelegatedWorkOutcome,
   type DelegatedWorkRecord,
-  type DelegatedWorkStatus,
 } from "./store.ts";
 import {
   asConversationRuntimeId,
@@ -17,7 +16,6 @@ import {
   type AttachedWorkAdapter,
   type AttachedWorkRegistration,
   type ConversationRuntimeId,
-  type DelegatedDeliveryState,
 } from "./types.ts";
 
 /** A rejected registration cannot be mistaken for a run that was cancelled. */
@@ -104,11 +102,12 @@ export class DelegatedWorkHost {
   private readonly invalidations = new Map<ConversationRuntimeId, Promise<void>>();
   /** Explicit cancellation fences an epoch without invalidating its runtime. */
   private readonly cancelledEpochs = new Set<string>();
-  readonly recordStore: DelegatedWorkRecordStore;
+  /** Filesystem implementation; all callers use this host's lifecycle API. */
+  private readonly recordStore: DelegatedWorkRecordStore;
   private reconciled = false;
 
-  constructor(home: string, recordStore?: DelegatedWorkRecordStore) {
-    this.recordStore = recordStore ?? new DelegatedWorkRecordStore(home);
+  constructor(home: string) {
+    this.recordStore = new DelegatedWorkRecordStore(home);
     this.reconcileStartup();
   }
 
@@ -339,24 +338,85 @@ export class DelegatedWorkHost {
     return this.recordStore.appendInvocation(runId, ownership);
   }
 
-  /** Close an invocation with a terminal status, outcome, and delivery state. */
-  closeInvocation(
-    runId: string,
-    index: number,
-    status: Extract<DelegatedWorkStatus, "completed" | "cancelled" | "error" | "interrupted">,
-    outcome: DelegatedWorkOutcome | null,
-    deliveryState: DelegatedDeliveryState,
-  ): DelegatedWorkRecord {
-    return this.recordStore.closeInvocation(runId, index, status, outcome, deliveryState);
+  /** Return the run directory where the execution host keeps kind-specific state. */
+  runDir(runId: string): string {
+    return this.recordStore.runDir(runId);
   }
 
-  /** Update delivery state for an already-terminal invocation. */
-  setDeliveryState(
+  /** Close a successfully settled invocation; delivery remains explicitly pending. */
+  completeInvocation(runId: string, index: number, text: string): DelegatedWorkRecord {
+    return this.recordStore.closeInvocation(
+      runId,
+      index,
+      "completed",
+      { kind: "success", text },
+      "pending",
+    );
+  }
+
+  /** Close an execution failure. Failed work is never automatically delivered. */
+  failInvocation(runId: string, index: number, errorMessage: string): DelegatedWorkRecord {
+    return this.recordStore.closeInvocation(
+      runId,
+      index,
+      "error",
+      { kind: "error", errorMessage },
+      "suppressed",
+    );
+  }
+
+  /** Close work cancelled by its owner or by runtime invalidation. */
+  cancelInvocation(runId: string, index: number): DelegatedWorkRecord {
+    return this.recordStore.closeInvocation(runId, index, "cancelled", null, "suppressed");
+  }
+
+  /** Mark a started-but-never-executed invocation interrupted. */
+  interruptInvocation(runId: string, index: number): DelegatedWorkRecord {
+    return this.recordStore.closeInvocation(runId, index, "interrupted", null, "suppressed");
+  }
+
+  /** Suppress a terminal result whose owning runtime can no longer accept it. */
+  suppressDelivery(runId: string, index: number): DelegatedWorkRecord {
+    const { record, invocation } = this.requireInvocation(runId, index);
+    if (invocation.status === "running") {
+      throw new Error(`Cannot suppress delivery for invocation ${index} of ${runId}: still running`);
+    }
+    if (invocation.deliveryState === "suppressed") return record;
+    if (invocation.deliveryState === "delivered") {
+      throw new Error(
+        `Cannot suppress delivery for invocation ${index} of ${runId}: already delivered`,
+      );
+    }
+    return this.recordStore.setDeliveryState(runId, index, "suppressed");
+  }
+
+  /** Acknowledge that the blocking caller accepted the terminal result. */
+  acknowledgeDelivery(runId: string, index: number): DelegatedWorkRecord {
+    const { record, invocation } = this.requireInvocation(runId, index);
+    if (invocation.status !== "completed") {
+      throw new Error(
+        `Cannot acknowledge delivery for invocation ${index} of ${runId}: status is ${invocation.status}`,
+      );
+    }
+    if (invocation.deliveryState === "delivered") return record;
+    if (invocation.deliveryState !== "pending") {
+      throw new Error(
+        `Cannot acknowledge delivery for invocation ${index} of ${runId}: delivery is ${invocation.deliveryState}`,
+      );
+    }
+    return this.recordStore.setDeliveryState(runId, index, "delivered");
+  }
+
+  private requireInvocation(
     runId: string,
     index: number,
-    deliveryState: DelegatedDeliveryState,
-  ): DelegatedWorkRecord {
-    return this.recordStore.setDeliveryState(runId, index, deliveryState);
+  ): { record: DelegatedWorkRecord; invocation: DelegatedWorkInvocation } {
+    const record = this.recordStore.require(runId);
+    const invocation = record.invocations[index];
+    if (invocation === undefined) {
+      throw new Error(`Invocation index ${index} out of bounds for record ${runId}`);
+    }
+    return { record, invocation };
   }
 
   /** Load a record if it exists; malformed records fail loudly. */
@@ -383,7 +443,7 @@ export class DelegatedWorkHost {
         if (record === null) continue;
         const lastInvocation = record.invocations.at(-1);
         if (lastInvocation !== undefined && lastInvocation.status === "running") {
-          this.recordStore.closeInvocation(id, lastInvocation.index, "interrupted", null, "suppressed");
+          this.interruptInvocation(id, lastInvocation.index);
         }
       } catch (error) {
         log.error("delegated work startup reconciliation skipped a run", {

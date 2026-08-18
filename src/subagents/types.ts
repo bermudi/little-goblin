@@ -12,7 +12,6 @@ import type {
   AttachedWorkRegistration,
   DelegatedDeliveryState,
   DelegatedRuntimeContext,
-  DelegatedWorkRecordStore,
 } from "../delegated-work/mod.ts";
 import type { SubagentExecution } from "./host.ts";
 
@@ -188,8 +187,6 @@ export interface SubagentInstance {
   spawnedBy: string | null;
   /** Absolute path to the run directory holding `record.json` and session files. */
   dir: string;
-  /** Host-owned record store for this subagent's durable lifecycle. */
-  recordStore: DelegatedWorkRecordStore;
   /** Index of the current invocation in the record's append-only log. */
   invocationIndex: number;
   /** Exact new/open history target selected by the coordinator. */

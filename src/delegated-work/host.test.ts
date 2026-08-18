@@ -212,6 +212,40 @@ describe("DelegatedWorkHost", () => {
     expect(invocation.deliveryState).toBe("delivered");
   });
 
+  it("enforces delivery transitions at the host boundary", () => {
+    const host = new DelegatedWorkHost(tempHome());
+
+    host.createAttachedRecord(
+      "delivery-pending",
+      "generic-subagent",
+      null,
+      1,
+      ownership("runtime-pending"),
+    );
+    expect(() => host.acknowledgeDelivery("delivery-pending", 0)).toThrow(
+      "status is running",
+    );
+
+    host.completeInvocation("delivery-pending", 0, "done");
+    host.suppressDelivery("delivery-pending", 0);
+    expect(() => host.acknowledgeDelivery("delivery-pending", 0)).toThrow(
+      "delivery is suppressed",
+    );
+
+    host.createAttachedRecord(
+      "delivery-accepted",
+      "generic-subagent",
+      null,
+      1,
+      ownership("runtime-accepted"),
+    );
+    host.completeInvocation("delivery-accepted", 0, "done");
+    host.acknowledgeDelivery("delivery-accepted", 0);
+    expect(() => host.suppressDelivery("delivery-accepted", 0)).toThrow(
+      "already delivered",
+    );
+  });
+
   it("continues startup reconciliation when one record is malformed", () => {
     const home = tempHome();
     const badRunId = "recon-bad-0000-0000-0000-000000000001";

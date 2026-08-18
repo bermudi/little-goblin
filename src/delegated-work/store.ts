@@ -104,18 +104,83 @@ const delegatedWorkRecordSchema = z.object({
   for (let i = 0; i < record.invocations.length; i++) {
     const invocation = record.invocations[i];
     if (invocation === undefined) continue;
+    const invocationPath = ["invocations", i] as const;
     if (invocation.index !== i) {
       ctx.addIssue({
         code: "custom",
-        path: ["invocations", i, "index"],
+        path: [...invocationPath, "index"],
         message: "invocation indices must be contiguous starting at 0",
       });
     }
     if (invocation.status === "running" && i !== record.invocations.length - 1) {
       ctx.addIssue({
         code: "custom",
-        path: ["invocations", i, "status"],
+        path: [...invocationPath, "status"],
         message: "only the last invocation may be running",
+      });
+    }
+    if (invocation.status === "running") {
+      if (invocation.outcome !== null) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...invocationPath, "outcome"],
+          message: "running invocations must not have an outcome",
+        });
+      }
+      if (invocation.deliveryState !== "pending") {
+        ctx.addIssue({
+          code: "custom",
+          path: [...invocationPath, "deliveryState"],
+          message: "running invocations must have pending delivery",
+        });
+      }
+      if (invocation.completedAt !== null) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...invocationPath, "completedAt"],
+          message: "running invocations must not have a completion timestamp",
+        });
+      }
+      continue;
+    }
+
+    if (invocation.completedAt === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: [...invocationPath, "completedAt"],
+        message: "terminal invocations require a completion timestamp",
+      });
+    }
+    if (invocation.status === "completed") {
+      if (invocation.outcome?.kind !== "success") {
+        ctx.addIssue({
+          code: "custom",
+          path: [...invocationPath, "outcome"],
+          message: "completed invocations require a success outcome",
+        });
+      }
+      continue;
+    }
+    if (invocation.status === "error") {
+      if (invocation.outcome?.kind !== "error") {
+        ctx.addIssue({
+          code: "custom",
+          path: [...invocationPath, "outcome"],
+          message: "errored invocations require an error outcome",
+        });
+      }
+    } else if (invocation.outcome !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: [...invocationPath, "outcome"],
+        message: `${invocation.status} invocations must not have an outcome`,
+      });
+    }
+    if (invocation.deliveryState !== "suppressed") {
+      ctx.addIssue({
+        code: "custom",
+        path: [...invocationPath, "deliveryState"],
+        message: `${invocation.status} invocation delivery must remain suppressed`,
       });
     }
   }

@@ -422,13 +422,13 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     expect(instance.status).toBe("completed");
     expect(instance.deliveryState).toBe("pending");
 
-    const recordStore = instance.recordStore;
-    const originalSetDeliveryState = recordStore.setDeliveryState.bind(recordStore);
+    const delegatedHost = fx.subagentRunner.delegatedWorkHost;
+    const originalSuppressDelivery = delegatedHost.suppressDelivery.bind(delegatedHost);
     let calls = 0;
-    recordStore.setDeliveryState = (id, index, deliveryState) => {
+    delegatedHost.suppressDelivery = (id, index) => {
       calls += 1;
       if (calls === 1) throw new Error("disk full");
-      return originalSetDeliveryState(id, index, deliveryState);
+      return originalSuppressDelivery(id, index);
     };
 
     const failures: unknown[] = [];

@@ -13,9 +13,9 @@ import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { CapturedMemoryContext } from "../memory/mod.ts";
 import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
+import { boundedError, log } from "../log.ts";
 import { RuntimeFenceError, type GenericSubagentInheritance, type SubagentRunner } from "./mod.ts";
 import { listNamedAgents } from "./paths.ts";
-import { log, boundedError } from "../log.ts";
 
 /** Default timeout for subagent execution (10 minutes). */
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -24,9 +24,7 @@ function safeAcknowledgeDelivery(runner: SubagentRunner, id: string): void {
   try {
     runner.acknowledgeDelivery(id);
   } catch (err) {
-    if (err instanceof RuntimeFenceError) {
-      throw err;
-    }
+    if (err instanceof RuntimeFenceError) throw err;
     log.error("subagent delivery acknowledgement failed", { id, ...boundedError(err) });
   }
 }

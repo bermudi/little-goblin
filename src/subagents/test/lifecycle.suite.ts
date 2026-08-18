@@ -68,7 +68,7 @@ describe("SubagentRunner.cancel", () => {
     expect(host.latest().stopCalls).toBe(1);
   });
 
-  it("retains host registration when closeInvocation fails, allowing a later invalidation retry", async () => {
+  it("retains host registration when cancellation persistence fails, allowing a later invalidation retry", async () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
 
@@ -77,13 +77,13 @@ describe("SubagentRunner.cancel", () => {
     const runtimeId = instance!.delegatedOwnership!.runtimeId;
     expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(1);
 
-    const recordStore = instance!.recordStore;
-    const originalCloseInvocation = recordStore.closeInvocation.bind(recordStore);
+    const delegatedHost = runner.delegatedWorkHost;
+    const originalCancelInvocation = delegatedHost.cancelInvocation.bind(delegatedHost);
     let closeCalls = 0;
-    recordStore.closeInvocation = (id, index, status, outcome, deliveryState, completedAt) => {
+    delegatedHost.cancelInvocation = (id, index) => {
       closeCalls += 1;
       if (closeCalls === 1) throw new Error("disk full");
-      return originalCloseInvocation(id, index, status, outcome, deliveryState, completedAt);
+      return originalCancelInvocation(id, index);
     };
 
     await expect(runner.cancel(handle.id)).rejects.toThrow("disk full");
@@ -93,8 +93,8 @@ describe("SubagentRunner.cancel", () => {
     let diskRecord = readRecord(tmp, handle.id);
     expect(diskRecord.status).toBe("running");
 
-    // Restore the record store and retry via runtime invalidation.
-    recordStore.closeInvocation = originalCloseInvocation;
+    // Restore the host boundary and retry via runtime invalidation.
+    delegatedHost.cancelInvocation = originalCancelInvocation;
     await runner.delegatedWorkHost.invalidateRuntime(runtimeId);
 
     expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(0);
@@ -235,7 +235,7 @@ describe("SubagentRunner — prune terminal instances", () => {
     // Complete the parent while the child is still running.
     const aInst = (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(a.id);
     expect(aInst).toBeDefined();
-    markCompleted(aInst!);
+    markCompleted(aInst!, runner.delegatedWorkHost);
     runner.acknowledgeDelivery(a.id);
 
     // Spawning a third subagent triggers pruneTerminal(). The completed
@@ -255,7 +255,7 @@ describe("SubagentRunner — prune terminal instances", () => {
     // one references it as a parent).
     const bInst = (runner as unknown as { activeSubagents: Map<string, SubagentInstance> }).activeSubagents.get(b.id);
     expect(bInst).toBeDefined();
-    markCompleted(bInst!);
+    markCompleted(bInst!, runner.delegatedWorkHost);
     runner.acknowledgeDelivery(b.id);
 
     const d = await runner.spawn({ prompt: "d", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
@@ -575,7 +575,7 @@ describe("SubagentRunner.cancelBySession", () => {
 
     const aInst = getInstance(a.id);
     expect(aInst).toBeDefined();
-    markCompleted(aInst!);
+    markCompleted(aInst!, runner.delegatedWorkHost);
 
     await runner.cancelBySession("session-abc");
 
@@ -595,7 +595,7 @@ describe("SubagentRunner.cancelBySession", () => {
 
     const aInst = getInstance(a.id);
     expect(aInst).toBeDefined();
-    markCompleted(aInst!);
+    markCompleted(aInst!, runner.delegatedWorkHost);
 
     await runner.cancelBySession("session-abc");
 

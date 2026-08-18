@@ -259,7 +259,7 @@ describe("SubagentRunner — parent status guard", () => {
       parent.id,
     );
     expect(parentInst).toBeDefined();
-    markCompleted(parentInst!);
+    markCompleted(parentInst!, runner.delegatedWorkHost);
 
     await expect(
       runner.spawn({

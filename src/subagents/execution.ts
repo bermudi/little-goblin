@@ -17,6 +17,7 @@ import {
 import { boundedError, log } from "../log.ts";
 import type { SubagentInvocation } from "./host.ts";
 import type { AttachedDelegatedWorkOwnership, DelegatedRuntimeContext } from "../delegated-work/mod.ts";
+import type { DelegatedWorkHost } from "../delegated-work/host.ts";
 import type { GenericSubagentInheritance, SubagentInstance } from "./types.ts";
 
 /**
@@ -44,6 +45,7 @@ export class SubagentTerminalError extends Error {
 /** Dependencies owned by the coordinator, not by the Pi host. */
 export interface ExecutionDeps {
   memoryStore: MemoryStore;
+  delegatedWorkHost: DelegatedWorkHost;
   buildTools: (
     depth: number,
     sessionId: string,
@@ -110,7 +112,7 @@ export async function runInstance(
   if (failure !== null) {
     if (instance.status === "running") {
       try {
-        markErrored(instance, failure);
+        markErrored(instance, deps.delegatedWorkHost, failure);
       } catch (persistenceFailure) {
         if (persistenceFailure instanceof SubagentTerminalError && closeFailure === undefined) {
           throw persistenceFailure;
@@ -127,7 +129,7 @@ export async function runInstance(
     // A runtime fence must never be converted into a successful delivery.
     if (instance.runtimeFenced && !instance.completionClaimed) {
       try {
-        markCancelled(instance);
+        markCancelled(instance, deps.delegatedWorkHost);
       } catch (persistenceFailure) {
         throw combineFailures(
           [
@@ -140,7 +142,7 @@ export async function runInstance(
       throw new Error(`Subagent '${instance.id}' was fenced before completion was claimed`);
     }
     instance.completionClaimed = true;
-    markCompleted(instance, text ?? "");
+    markCompleted(instance, deps.delegatedWorkHost, text ?? "");
   }
   return text ?? "";
 }
@@ -288,7 +290,11 @@ function systemPromptFor(
  * raised after cleanup so callers cannot report a successful run with stale
  * metadata.
  */
-export function markCompleted(instance: SubagentInstance, text = ""): void {
+export function markCompleted(
+  instance: SubagentInstance,
+  delegatedWorkHost: DelegatedWorkHost,
+  text = "",
+): void {
   if (instance.status !== "running") {
     log.debug("markCompleted skipped: instance already terminal", {
       id: instance.id,
@@ -304,13 +310,7 @@ export function markCompleted(instance: SubagentInstance, text = ""): void {
   let persistenceFailed = false;
   let persistenceError: unknown;
   try {
-    instance.recordStore.closeInvocation(
-      instance.id,
-      instance.invocationIndex,
-      "completed",
-      { kind: "success", text },
-      deliveryState,
-    );
+    delegatedWorkHost.completeInvocation(instance.id, instance.invocationIndex, text);
   } catch (err) {
     persistenceFailed = true;
     persistenceError = err;
@@ -333,7 +333,11 @@ export function markCompleted(instance: SubagentInstance, text = ""): void {
  * Mark the subagent as errored. The execution error remains the primary
  * failure; a durable-transition failure is combined in SubagentTerminalError.
  */
-export function markErrored(instance: SubagentInstance, err: unknown): void {
+export function markErrored(
+  instance: SubagentInstance,
+  delegatedWorkHost: DelegatedWorkHost,
+  err: unknown,
+): void {
   if (instance.status !== "running") {
     log.debug("markErrored skipped: instance already terminal", {
       id: instance.id,
@@ -345,13 +349,7 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
   let persistenceFailed = false;
   let persistenceError: unknown;
   try {
-    instance.recordStore.closeInvocation(
-      instance.id,
-      instance.invocationIndex,
-      "error",
-      { kind: "error", errorMessage },
-      "suppressed",
-    );
+    delegatedWorkHost.failInvocation(instance.id, instance.invocationIndex, errorMessage);
   } catch (persistErr) {
     persistenceFailed = true;
     persistenceError = persistErr;
@@ -369,7 +367,7 @@ export function markErrored(instance: SubagentInstance, err: unknown): void {
  * Persist a runtime-fenced invocation as cancelled, not error.
  * Runtime invalidation is a lifecycle cancellation, not an execution failure.
  */
-export function markCancelled(instance: SubagentInstance): void {
+export function markCancelled(instance: SubagentInstance, delegatedWorkHost: DelegatedWorkHost): void {
   if (instance.status !== "running") {
     log.debug("markCancelled skipped: instance already terminal", {
       id: instance.id,
@@ -380,13 +378,7 @@ export function markCancelled(instance: SubagentInstance): void {
   let persistenceFailed = false;
   let persistenceError: unknown;
   try {
-    instance.recordStore.closeInvocation(
-      instance.id,
-      instance.invocationIndex,
-      "cancelled",
-      null,
-      "suppressed",
-    );
+    delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
   } catch (err) {
     persistenceFailed = true;
     persistenceError = err;

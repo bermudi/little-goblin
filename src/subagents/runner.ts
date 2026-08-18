@@ -55,7 +55,6 @@ import {
   teardownInstance,
 } from "./execution.ts";
 import { findSessionFile } from "./meta.ts";
-import { assertSafeRunId } from "../delegated-work/mod.ts";
 import { loadNamedAgent, NamedAgentNotFoundError } from "./named-agents.ts";
 import { VALID_NAME_RE } from "./validation.ts";
 import { namedAgentDir } from "./paths.ts";
@@ -514,7 +513,6 @@ export class SubagentRunner {
       spawnedAt,
       spawnedBy,
       dir: runDir,
-      recordStore: this.delegatedWorkHost.recordStore,
       invocationIndex: 0,
       history,
       initialPrompt: options.prompt,
@@ -604,10 +602,6 @@ export class SubagentRunner {
       throw new Error("SubagentRunner is disposed");
     }
 
-    // The id enters filesystem path construction below and may originate from
-    // a model tool call. Reject traversal and malformed segments first.
-    assertSafeRunId(id);
-
     // Guard against concurrent revive() of the same subagent ID.
     if (this.revivesInProgress.has(id)) {
       throw new Error("Subagent revive already in progress");
@@ -663,7 +657,7 @@ export class SubagentRunner {
       );
     }
 
-    const runDir = this.delegatedWorkHost.recordStore.runDir(id);
+    const runDir = this.delegatedWorkHost.runDir(id);
 
     // Find the persisted session file inside the subagent's run directory.
     const sessionFile = findSessionFile(runDir);
@@ -799,7 +793,6 @@ export class SubagentRunner {
       spawnedAt: record.createdAt,
       spawnedBy: null,
       dir: runDir,
-      recordStore: this.delegatedWorkHost.recordStore,
       invocationIndex: revivedRecord.invocations.length - 1,
       history,
       initialPrompt: prompt,
@@ -905,7 +898,7 @@ export class SubagentRunner {
       const record = this.delegatedWorkHost.loadRecord(id);
       const invocation = record?.invocations[index];
       if (invocation === undefined || invocation.status !== "running") return;
-      this.delegatedWorkHost.closeInvocation(id, index, "interrupted", null, "suppressed");
+      this.delegatedWorkHost.interruptInvocation(id, index);
     } catch (err) {
       // Cleanup must not mask the failure that triggered it. A record left
       // `running` is reconciled by `reconcileStartup()` on the next start.
@@ -997,19 +990,9 @@ export class SubagentRunner {
         await this.stopAndCollect(instance, targetFailures, "attached subagent cleanup retry failed");
         try {
           if (instance.status === "cancelled") {
-            instance.recordStore.closeInvocation(
-              instance.id,
-              instance.invocationIndex,
-              "cancelled",
-              null,
-              "suppressed",
-            );
+            this.delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
           } else {
-            instance.recordStore.setDeliveryState(
-              instance.id,
-              instance.invocationIndex,
-              "suppressed",
-            );
+            this.delegatedWorkHost.suppressDelivery(instance.id, instance.invocationIndex);
           }
         } catch (error) {
           targetFailures.push(error);
@@ -1027,13 +1010,7 @@ export class SubagentRunner {
         const targetFailures: unknown[] = [];
         await this.stopAndCollect(instance, targetFailures, "attached subagent stop failed");
         try {
-          instance.recordStore.closeInvocation(
-            instance.id,
-            instance.invocationIndex,
-            "cancelled",
-            null,
-            "suppressed",
-          );
+          this.delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
         } catch (error) {
           targetFailures.push(error);
           log.error("attached subagent cancellation record failed", {
@@ -1060,11 +1037,7 @@ export class SubagentRunner {
     if (instance.deliveryState !== "pending") return;
     let persisted = true;
     try {
-      instance.recordStore.setDeliveryState(
-        instance.id,
-        instance.invocationIndex,
-        "suppressed",
-      );
+      this.delegatedWorkHost.suppressDelivery(instance.id, instance.invocationIndex);
       instance.deliveryState = "suppressed";
     } catch (error) {
       persisted = false;
@@ -1095,11 +1068,7 @@ export class SubagentRunner {
     if (instance.runtimeFenced) {
       throw new RuntimeFenceError(id);
     }
-    instance.recordStore.setDeliveryState(
-      instance.id,
-      instance.invocationIndex,
-      "delivered",
-    );
+    this.delegatedWorkHost.acknowledgeDelivery(instance.id, instance.invocationIndex);
     instance.deliveryState = "delivered";
     teardownInstance(instance);
     log.debug("subagent delivery acknowledged", { id });
@@ -1249,13 +1218,7 @@ export class SubagentRunner {
     await this.stopAndCollect(instance, failures, "subagent execution stop failed during cancel");
 
     try {
-      instance.recordStore.closeInvocation(
-        instance.id,
-        instance.invocationIndex,
-        "cancelled",
-        null,
-        "suppressed",
-      );
+      this.delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
     } catch (err) {
       failures.push(err);
       log.error("cancel record close failed — disk state may be stale", {
@@ -1339,13 +1302,7 @@ export class SubagentRunner {
         await this.stopAndCollect(instance, failures, "cancelBySession execution stop failed");
 
         try {
-          instance.recordStore.closeInvocation(
-            instance.id,
-            instance.invocationIndex,
-            "cancelled",
-            null,
-            "suppressed",
-          );
+          this.delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
         } catch (err) {
           failures.push(err);
           log.error("cancelBySession record close failed", {
@@ -1400,13 +1357,7 @@ export class SubagentRunner {
           instance.rejectResult(new Error("Subagent was cancelled"));
           await this.stopAndCollect(instance, failures, "dispose execution stop failed");
           try {
-            instance.recordStore.closeInvocation(
-              instance.id,
-              instance.invocationIndex,
-              "cancelled",
-              null,
-              "suppressed",
-            );
+            this.delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
           } catch (err) {
             failures.push(err);
             log.error("dispose record close failed", {
@@ -1533,7 +1484,7 @@ export class SubagentRunner {
 
     if (instance.status === "running") {
       try {
-        markErrored(instance, failure);
+        markErrored(instance, this.delegatedWorkHost, failure);
       } catch (terminalError) {
         throw combineFailures([failure, terminalError], "Subagent startup transition failed") ?? terminalError;
       }
@@ -1558,6 +1509,7 @@ export class SubagentRunner {
           )
           : [],
       memoryStore,
+      delegatedWorkHost: this.delegatedWorkHost,
     };
   }
 }

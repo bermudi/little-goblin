@@ -4,23 +4,17 @@ export {
   DelegatedWorkRuntimeInvalidatedError,
 } from "./host.ts";
 export {
-  DelegatedWorkRecordError,
-  DelegatedWorkRecordNotFoundError,
-  DelegatedWorkRecordStore,
-  assertSafeRunId,
-  parseDelegatedWorkRecord,
-  writeRecordAtomic,
-  type DelegatedWorkInvocation,
-  type DelegatedWorkKind,
-  type DelegatedWorkOutcome,
-  type DelegatedWorkRecord,
-  type DelegatedWorkStatus,
-} from "./store.ts";
-export {
   delegatedWorkRecordPath,
   delegatedWorkRunDir,
   delegatedWorkRunsRoot,
 } from "./paths.ts";
+export type {
+  DelegatedWorkInvocation,
+  DelegatedWorkKind,
+  DelegatedWorkOutcome,
+  DelegatedWorkRecord,
+  DelegatedWorkStatus,
+} from "./store.ts";
 export {
   asConversationRuntimeId,
   type AttachedDelegatedWorkOwnership,

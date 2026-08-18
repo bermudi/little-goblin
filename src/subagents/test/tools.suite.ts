@@ -109,24 +109,23 @@ describe("spawn_subagent tool", () => {
     );
   });
 
-  it("preserves the resolved result when acknowledgeDelivery fails with a non-fence error", async () => {
+  it("preserves the resolved result when acknowledgement persistence fails", async () => {
     const { createSpawnSubagentTool } = await import("../tool.ts");
     const tool = createSpawnSubagentTool(runner, 0, "sess-1", DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE);
 
     const execPromise = tool.execute("tc-1", { prompt: "go" }, undefined, undefined, {} as never);
     await flush();
 
-    const recordStore = runner.delegatedWorkHost.recordStore;
-    const originalSetDeliveryState = recordStore.setDeliveryState.bind(recordStore);
-    recordStore.setDeliveryState = (id, index, deliveryState) => {
-      if (deliveryState === "delivered") throw new Error("disk full");
-      return originalSetDeliveryState(id, index, deliveryState);
+    const delegatedHost = runner.delegatedWorkHost;
+    delegatedHost.acknowledgeDelivery = (id, index) => {
+      throw new Error(`disk full: ${id}/${index}`);
     };
 
     host.latest().complete("Done!");
 
     const result = await execPromise;
     expect(result.content).toEqual([{ type: "text", text: "Done!" }]);
+    expect(getInstance(runner, runner.list()[0]!.id)?.deliveryState).toBe("pending");
   });
 
   it("propagates a runtime-fence acknowledgeDelivery failure", async () => {
@@ -222,7 +221,7 @@ describe("revive_subagent tool", () => {
     ).rejects.toThrow("Subagent not found");
   });
 
-  it("preserves the resolved result when acknowledgeDelivery fails with a non-fence error", async () => {
+  it("preserves the resolved revival result when acknowledgement persistence fails", async () => {
     const handle = await runner.spawn({
       prompt: "first",
       authority: DEFAULT_AUTHORITY,
@@ -245,17 +244,16 @@ describe("revive_subagent tool", () => {
     );
     await flush();
 
-    const recordStore = runner.delegatedWorkHost.recordStore;
-    const originalSetDeliveryState = recordStore.setDeliveryState.bind(recordStore);
-    recordStore.setDeliveryState = (id, index, deliveryState) => {
-      if (deliveryState === "delivered") throw new Error("disk full");
-      return originalSetDeliveryState(id, index, deliveryState);
+    const delegatedHost = runner.delegatedWorkHost;
+    delegatedHost.acknowledgeDelivery = (id, index) => {
+      throw new Error(`disk full: ${id}/${index}`);
     };
 
     host.latest().complete("Revived!");
 
     const result = await execPromise;
     expect(result.content).toEqual([{ type: "text", text: "Revived!" }]);
+    expect(getInstance(runner, handle.id)?.deliveryState).toBe("pending");
   });
 
   it("propagates a runtime-fence acknowledgeDelivery failure", async () => {

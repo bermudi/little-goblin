@@ -751,24 +751,17 @@ export class TurnDispatcher {
 
     const execute = async (): Promise<void> => {
       let runner: AgentRunner;
-      let currentEpoch = epoch;
       if (existingRunner) {
         // Stale-runner guard: if the runner was swapped after enqueue, abort
         // before producing user-visible side effects.
-        if (!this.runtimeHost.isEpochCurrent(session.id, "runtime", currentEpoch)) return;
+        if (!this.runtimeHost.isEpochCurrent(session.id, "runtime", epoch)) return;
         runner = existingRunner;
       } else {
         runner = await this.getOrCreateRunner(session, surface);
-        // Cold start: no runner existed at enqueue, so creation is the
-        // intended first generation. Adopt that generation's epoch and
-        // confirm the created runner is still registered before prompting.
-        // Checking the pre-creation epoch here always fails because
-        // reserveCreation / registerSurfaceRuntime bump it.
-        currentEpoch = this.runtimeHost.captureEpoch(session.id, "runtime");
-        if (
-          !this.runtimeHost.isEpochCurrent(session.id, "runtime", currentEpoch) ||
-          !this.runtimeHost.isRegisteredRunner(session.id, runner)
-        ) {
+        // Cold start: confirm the created runner is still registered before
+        // prompting. The runner itself is the generation authority; an epoch
+        // recapture is redundant because registration is what bumps the epoch.
+        if (!this.runtimeHost.isRegisteredRunner(session.id, runner)) {
           return;
         }
       }

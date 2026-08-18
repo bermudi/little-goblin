@@ -763,18 +763,20 @@ describe("Telegram intake", () => {
     await waitFor(() => runners[0]!.isStreaming);
 
     let released = false;
+    let promptPendingAtRelease: boolean | undefined;
     const session = intake.lifecycle.inspect(dmSurface(1))!;
     const handle: UpdateHandle = {
       releaseRuntimeAdmission: () => {
-        // One machine section either attached the follow-up or admitted the
-        // fallback. Shutdown must not observe a released handle with neither.
+        // Record that the release ran and capture the observed state; any
+        // assertion here would mask failures thrown by steerOrFallbackToFreshTurn.
         released = true;
-        expect(intake.dispatcher.isPromptPending(session.id)).toBe(true);
+        promptPendingAtRelease = intake.dispatcher.isPromptPending(session.id);
       },
     };
     await intake.handleText(message, "steer this", handle);
 
     expect(released).toBe(true);
+    expect(promptPendingAtRelease).toBe(true);
     expect(intake.dispatcher.isPromptPending(session.id)).toBe(true);
     slow.resolve();
     await waitFor(() => runners[0]!.prompt.mock.calls.length === 2);

@@ -254,7 +254,13 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         await dispatcher.disposeRunner(effect.conversationId);
       } else if (effect.kind === "queue-prompt") {
         const queueRunner = await dispatcher.getOrCreateRunner(effect.conversation, effect.surface);
-        scheduleFreshTurn(message, effect.surface, effect.conversation, queueRunner, effect.text, "queued prompt failed");
+        const admitted = scheduleFreshTurn(message, effect.surface, effect.conversation, queueRunner, effect.text, "queued prompt failed");
+        if (!admitted) {
+          log.error("queued prompt rejected at queue admission", { sessionId: effect.conversation.id });
+          await sendSystemReply(message, "Queued prompt was dropped: shutdown in progress.", "error").catch((err: unknown) => {
+            log.error("failed to send queued prompt drop reply", { error: String(err), sessionId: effect.conversation.id });
+          });
+        }
       }
     }
   }
@@ -410,7 +416,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           });
           return;
         }
-        dispatcher.schedulePrompt(
+        const admitted = dispatcher.schedulePrompt(
           session,
           runner,
           async (isCurrent) => {
@@ -426,6 +432,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             log.error(failureLog, { error: msg, sessionId: session.id });
           },
         );
+        if (!admitted) {
+          log.error("media prompt rejected at queue admission", { sessionId: session.id });
+          handle?.releaseRuntimeAdmission();
+          return;
+        }
         // The queue now owns the update. Downloading media and running the
         // model may continue until runtime disposal releases it.
         handle?.releaseRuntimeAdmission();
@@ -551,7 +562,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // Interrupt commands deliberately operate on an active runtime. Let
         // shutdown begin after the interrupt has been invoked; waiting for
         // its abort promise would prevent runtime disposal from unblocking it.
-        if (timing === "interrupt" || command === "compact") handle?.releaseRuntimeAdmission();
+        // `/compact` is queue-timing but releases early here for the no-session
+        // path: there is no active runtime to unblock, but releasing early is
+        // harmless and keeps the handle settled before the command result.
+        if (timing === "interrupt" || command === "/compact") handle?.releaseRuntimeAdmission();
         const result = await commandResult;
         if (result.kind !== "fallthrough") {
           await applySideEffects(result.sideEffects, message);
@@ -606,7 +620,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       return;
     }
 
-    scheduleFreshTurn(message, surface, session, runner, rawText, "runner prompt failed");
+    const admitted = scheduleFreshTurn(message, surface, session, runner, rawText, "runner prompt failed");
+    if (!admitted) {
+      log.error("runner prompt rejected at queue admission", { sessionId: session.id });
+      handle?.releaseRuntimeAdmission();
+      return;
+    }
     // The prompt is now queued; model work is released by runtime disposal.
     handle?.releaseRuntimeAdmission();
   }

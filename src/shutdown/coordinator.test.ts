@@ -121,6 +121,37 @@ describe("ShutdownCoordinator", () => {
     expect(result.ok).toBe(false);
     expect(result.failures).toBe(2);
   });
+
+  it("continues runtime disposal after buffered-text drain rejects", async () => {
+    // A buffered-text drain rejection must not skip runtime disposal. The
+    // buffered-text failure is reported as its own phase, and disposal still
+    // runs — both failures are counted separately.
+    const gate = new UpdateGate({
+      closeCoalescer: async () => {},
+      awaitBufferedTextAdmission: async () => {},
+    });
+
+    let disposeRuntimesCalled = false;
+    const coordinator = new ShutdownCoordinator({
+      gate,
+      stopTelegramPolling: async () => {},
+      drainBufferedText: async () => { throw new Error("buffered text failed"); },
+      drainRuntimeAdmission: async () => {},
+      disposeRuntimes: async () => {
+        disposeRuntimesCalled = true;
+        throw new Error("disposal failed");
+      },
+      drainScheduler: async () => {},
+      disposeExternalAgents: async () => {},
+      disposeSubagents: async () => {},
+      closeMemoryEngine: async () => {},
+    });
+
+    const result = await coordinator.shutdown("SIGTERM");
+    expect(disposeRuntimesCalled).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.failures).toBe(2);
+  });
 });
 
 describe("UpdateGate", () => {
@@ -164,20 +195,19 @@ describe("UpdateGate", () => {
 
     const ctx = {};
     const handle = gate.beginUpdate(ctx);
-    let releaseCount = 0;
-    const originalRelease = handle.releaseRuntimeAdmission.bind(handle);
-    handle.releaseRuntimeAdmission = (): void => {
-      releaseCount++;
-      originalRelease();
-    };
 
-    // Multiple calls are idempotent.
+    // Observe the gate's internal in-flight runtime-admission set: it holds
+    // the one promise from beginUpdate and is emptied by the first release.
+    const inFlightRuntimeAdmissions = (gate as unknown as { inFlightRuntimeAdmissions: Set<Promise<void>> }).inFlightRuntimeAdmissions;
+    expect(inFlightRuntimeAdmissions.size).toBe(1);
+
+    // Multiple calls are idempotent: the set size drops to zero exactly once.
     handle.releaseRuntimeAdmission();
     handle.releaseRuntimeAdmission();
     handle.releaseRuntimeAdmission();
-    expect(releaseCount).toBe(3); // wrapper called 3 times
-    // But the gate's internal state is released exactly once: runtimeAdmission
-    // drains immediately.
+    expect(inFlightRuntimeAdmissions.size).toBe(0);
+
+    // The public runtime-admission barrier must also be drained.
     await gate.runtimeAdmission();
   });
 

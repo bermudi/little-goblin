@@ -23,6 +23,9 @@ export const MAX_FRAGMENTS = 12;
 /** Hard cap on total concatenated chars; reaching it forces an immediate flush. */
 export const MAX_TOTAL_CHARS = 50_000;
 
+/** Maximum number of detached dispatch failures retained for close. */
+export const DISPATCH_FAILURE_RETENTION_CAP = 100;
+
 /** Bucket key: canonical surface identity + sender. Splits from different
  * senders, different surfaces, or different topic containers never merge. */
 export interface CoalesceKey {
@@ -98,6 +101,7 @@ export class TextCoalescer {
   private readonly activeDispatches = new Set<Promise<void>>();
   private readonly activeBufferedAdmissions = new Set<Promise<void>>();
   private readonly dispatchFailures: unknown[] = [];
+  private totalDispatchFailures = 0;
   private closed = false;
   private closePromise: Promise<void> | undefined;
 
@@ -159,6 +163,10 @@ export class TextCoalescer {
       // Rejection is an outcome independent of its reason: Promise.reject()
       // is still a failure even though the reason is undefined.
       this.dispatchFailures.push(error);
+      this.totalDispatchFailures++;
+      if (this.dispatchFailures.length > DISPATCH_FAILURE_RETENTION_CAP) {
+        this.dispatchFailures.splice(0, this.dispatchFailures.length - DISPATCH_FAILURE_RETENTION_CAP);
+      }
       log.error("detached coalescer dispatch failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -294,6 +302,7 @@ export class TextCoalescer {
     log.info("telegram text admission closed", {
       bufferedFragments: entries.length,
       dispatchFailures: failures.length,
+      totalDispatchFailures: this.totalDispatchFailures,
     });
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Telegram text dispatch failed");

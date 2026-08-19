@@ -142,6 +142,10 @@ Historical unstarted plans live in `specs/parked/`; they are frozen references, 
 - **Move the poe/openai-completions image-content hack out of content normalization.** `agent/mod.ts` injects a "What do you see in this image?" text part for one provider/api combo. Provider-specific behavior belongs in a strategy, not in a generic normalize step.
   - **`console.log` in `onboard.ts`.** Technically violates the no-`console.log` guardrail, but it's an interactive CLI wizard where stdout is the right channel. Resolve with an explicit carve-out comment (or a thin `prompt`/`say` wrapper) rather than routing through `src/log.ts`.
 
+## Noted latent
+
+- **Dispatcher failed-settlement has no delivery fallback.** In `admitImmediateTurn` (`orchestration/dispatcher.ts:526-545`), the work callback wraps every async throw path in try/catch and routes failures through `startDelivery(() => delivery.failure(error))`. But the queue pump's `onError` classifies a failed settlement as `{ kind: "failed" }` with no delivery promise; the guest handler logs the error (`tg/intake.ts:1087-1095`) but sends no reply, so a `guest_query_id` can expire silently. Currently unreachable because every throw path in the callback is guarded, but the gap is structural: if the callback ever grows an unguarded throw, the failed-settlement path needs a delivery fallback. Revisit when the dispatcher/intake seam is migrated; do not extend the callback without closing it.
+
 ## Open Questions
 
 - **Dynamic Poe model resolution — shelved (using Poe less).** Replace static Poe model entries with dynamic resolution from Poe's `GET /v1/models` catalog: accurate `input` modalities (so non-vision models don't crash on image sends), `contextWindow`, `maxTokens`, and `cost`. Goblin already fetches the catalog at startup for validation and throws it away. Reopen when Poe becomes a primary provider again; until then the static registry is tolerable. Original proposal in git history.

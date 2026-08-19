@@ -36,18 +36,23 @@ Immediate/no-wait runtime work SHALL use one transport-neutral machine admission
 
 Telegram update admission settlement SHALL be owned by `UpdateGate`, not by
 callers holding a release capability. `UpdateGate.runUpdate<T>` SHALL execute
-each update boundary and consume an `AdmissionResult<T>` returned by the
-authoritative runtime/delegated-run admission or attachment operation; Telegram
-adapters SHALL NOT manufacture a decision. The gate records exactly one
-structural decision: work was handed off to a conversation runtime or delegated
-run, it was structurally rejected (`closed`, `busy`, `fenced`, or generic
-`rejected`), or it completed without runtime work. The decision is recorded at
-the authoritative admission or attachment commit; its separately tracked
-completion may await steering, one-shot Telegram delivery, or delegated work
-without holding the runtime-admission drain. A throw before a decision becomes
-a failed-before-decision terminal gate state, releases the gate safety net, and
-propagates; a later completion failure does not rewrite an already recorded
-decision. Repeated internal finalization is idempotent, but missing or
+each update boundary and consume an `AdmissionResult<T>` whose authority is
+partitioned: runtime/delegated-run admission or attachment operations
+authoritatively report handoff or structural rejection (`busy`, `fenced`, or
+generic `rejected`); the gate authoritatively reports its own closure
+(`closed`); the local adapter authoritatively reports `completed` for parsing
+or other work it owns with no runtime operation (malformed updates,
+topic-description changes, unknown commands, and like no-runtime paths).
+Adapters may map structural results but SHALL NOT invent handoff or rejection
+outcomes. The gate records exactly one structural decision per update: work
+was handed off to a conversation runtime or delegated run, it was structurally
+rejected, or it completed without runtime work. The decision is recorded at
+the authoritative admission, attachment, or adapter commit; its separately
+tracked completion may await steering, one-shot Telegram delivery, or delegated
+work without holding the runtime-admission drain. A throw before a decision
+becomes a failed-before-decision terminal gate state, releases the gate safety
+net, and propagates; a later completion failure does not rewrite an already
+recorded decision. Repeated internal finalization is idempotent, but missing or
 contradictory decisions fail loud. Coalesced text transfers gate-private claims
 into one buffer; one merged structural decision settles the entire claim group
 atomically. No string parsing determines a rejection classification.
@@ -67,7 +72,7 @@ bounded cycle.
 
 ## Consequences
 
-The recurring bug classes become structurally impossible or trivially visible: cancel can no longer reach a runner, admission release can no longer leak (a handle settles exactly once through one gate), promise-chain splicing disappears, and shutdown ordering becomes testable data instead of comment archaeology. The machine's transitions are enumerable, so seeded interleaving tests can assert what prose cannot: no work executes after its epoch bumps, no ticket leaks, shutdown always terminates.
+The recurring bug classes become structurally impossible or trivially visible: cancel can no longer reach a runner, admission settlement can no longer leak (one terminal decision settles per gate-owned claim, and repeated internal finalization is idempotent), promise-chain splicing disappears, and shutdown ordering becomes testable data instead of comment archaeology. The machine's transitions are enumerable, so seeded interleaving tests can assert what prose cannot: no work executes after its epoch bumps, no ticket leaks, shutdown always terminates.
 
 The cost concentrates in test migration, not production code: roughly 6,200 lines of choreography tests across five suites pin current behavior, and each suite's intent must survive the reduction of scattered checks to epoch commits. The expected net effect on production code is deletion — drains, meta flags, retry loops, and the steer observation window go away.
 

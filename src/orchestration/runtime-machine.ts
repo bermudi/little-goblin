@@ -38,6 +38,44 @@ export type MachinePhase = "idle" | "preparing" | "active";
  */
 export type TicketAxis = "runtime" | "binding";
 
+/** Closed declaration of the authority a queued work unit needs. */
+export type WorkIntent =
+  | { readonly kind: "current-runtime"; readonly runner: AgentRunner }
+  | { readonly kind: "binding" }
+  | { readonly kind: "internal-runtime"; readonly runner: AgentRunner }
+  | { readonly kind: "bootstrap" };
+
+/** Machine-generated authority passed to admitted work for await boundaries. */
+export interface WorkAuthority {
+  /** True while the ticket created at admission still owns effects. */
+  isCurrent(): boolean;
+  /** Adopt the machine's current registration for bootstrap work. */
+  adoptCurrentRunner(runner: AgentRunner): boolean;
+}
+
+/** Transport-neutral immediate runtime work context. */
+export interface ImmediateRuntimeWorkContext {
+  readonly authority: WorkAuthority;
+  /** Runner held at admission, or null when bootstrap creation is required. */
+  readonly runnerAtAdmission: AgentRunner | null;
+}
+
+export type ImmediateWorkExecutionResult =
+  | { readonly kind: "completed" }
+  | { readonly kind: "fenced" };
+
+export type ImmediateWorkSettlement =
+  | { readonly kind: "completed" }
+  | { readonly kind: "fenced" }
+  | { readonly kind: "failed"; readonly error: unknown };
+
+/** Synchronous admission classification for work that must never queue-wait. */
+export type ImmediateWorkAdmission =
+  | { readonly kind: "accepted"; readonly settlement: Promise<ImmediateWorkSettlement> }
+  | { readonly kind: "busy" }
+  | { readonly kind: "closed" }
+  | { readonly kind: "fenced" };
+
 /** Outcome of {@link RuntimeMachine.steerOrQueue}. */
 export type SteerOrQueueResult =
   | { kind: "steered"; followUp: Promise<void> }
@@ -58,6 +96,19 @@ export interface SurfaceRuntimeRegistration {
 }
 
 /** One in-flight runtime construction reservation. */
+export class RuntimeCreationCancelledError extends Error {
+  readonly conversationId: ConversationId;
+
+  constructor(conversationId: ConversationId) {
+    super(
+      `stale runtime creation for conversation ${conversationId}: ` +
+        "binding/runtime authority is no longer current (cancelled)",
+    );
+    this.name = "RuntimeCreationCancelledError";
+    this.conversationId = conversationId;
+  }
+}
+
 export interface RuntimeCreation {
   readonly conversationId: ConversationId;
   readonly promise: Promise<AgentRunner>;
@@ -67,6 +118,10 @@ export interface RuntimeCreation {
   readonly settingsFingerprint: string;
   resolve(runner: AgentRunner): void;
   reject(error: unknown): void;
+  /** Fence the candidate and release preparation awaits cooperatively. */
+  cancel(): void;
+  /** Race one preparation await against machine-owned cancellation. */
+  race<T>(operation: Promise<T>): Promise<T>;
   complete(): void;
 }
 
@@ -110,17 +165,24 @@ function flattenFailures(error: unknown, failures: unknown[]): void {
 
 // ─── queue ───────────────────────────────────────────────────────────
 
+interface QueueAuthority {
+  readonly intent: WorkIntent["kind"];
+  readonly queueEpoch: number;
+  readonly bindingEpoch?: number;
+  runtimeEpoch?: number;
+  runner?: AgentRunner;
+  settled: boolean;
+}
+
 interface QueueEntry {
   readonly id: number;
   readonly isPrompt: boolean;
   started: boolean;
   cancelled: boolean;
-  /** Queue epoch captured at schedule time. Entries from a fenced epoch are
-   * invisible to the `hasPromptWork` / `isPromptPending` / `isCommandPending`
-   * accessors. */
-  readonly queueEpoch: number;
-  readonly isCurrent: () => boolean;
-  readonly run: (isCurrent: () => boolean) => Promise<void>;
+  /** Machine-held ticket captured synchronously from the declared intent. */
+  readonly authority: QueueAuthority;
+  readonly context: WorkAuthority;
+  readonly run: (authority: WorkAuthority) => Promise<void>;
   readonly onError: (err: unknown) => Promise<void> | void;
   readonly onStart?: () => void;
   readonly onFenced?: () => void;
@@ -159,11 +221,10 @@ export interface RuntimeMachineDeps {
  * replacement creation may be reserved while a prior generation drains — the
  * two coexist as distinct generations distinguished by monotonic epoch.
  *
- * Authority is held as the `generation` field (the runtime epoch). Every
- * admitted work unit captures the epoch at admission; the serial executor
- * compares it at the commit point before and after the work's await. This is
- * the `assertCurrent` / `awaitCurrent` discipline generalized to the kernel
- * boundary.
+ * Queue authority is created from a closed work intent and held by the
+ * machine. The serial executor compares it at commit points before and after
+ * the work's await, while admitted work receives a generated context for its
+ * own effect-boundary checks.
  *
  * Legal transitions (every other transition throws):
  *
@@ -177,9 +238,9 @@ export interface RuntimeMachineDeps {
  *   preparing → idle        invalidate("binding-change" | "shutdown")
  *   idle      → idle        invalidate (no-op)
  *
- * Internal runtimes (dreaming) are machines whose tickets are always current
- * until disposed: `isInternal` is set at registration and the epoch ticket
- * check is skipped for internal work.
+ * Internal work captures one internal registration. Replacing an internal
+ * runner advances the generation, fences prior tickets, and keeps the prior
+ * runner in the drain set until disposal settles.
  */
 export class RuntimeMachine {
   // ── generation / phase ──
@@ -212,6 +273,9 @@ export class RuntimeMachine {
 
   // ── drain set (overlapping generations) ──
   private drain = new Set<DrainingGeneration>();
+  /** Disposal failures from synchronous internal replacement have no direct
+   * awaiter, so retain them until awaitSettled/shutdown reports them. */
+  private pendingReplacementDrainFailures = new Set<unknown>();
   private pendingDelegatedInvalidations = new Set<ConversationRuntimeId>();
   /**
    * Every outstanding creation reservation, including ones superseded by a
@@ -245,27 +309,14 @@ export class RuntimeMachine {
   // ── epoch tickets (decision 0046) ──────────────────────────────────
 
   /**
-   * Capture the current epoch for one authority axis. The returned value is
-   * compared by {@link isEpochCurrent} at commit points — before and after
-   * awaits that cross the kernel boundary.
-   *
-   * - `"runtime"`: the machine's monotonic generation. Bumped on every
-   *   registration, creation reservation, and invalidation. Used for prompts,
-   *   steers, and scheduled turns.
-   * - `"binding"`: a separate monotonic counter. Bumped only on
-   *   binding-change and shutdown invalidation. Used for lifecycle commands,
-   *   so same-binding settings invalidation preserves acknowledged command
-   *   order while a binding change drops queued commands.
+   * Raw epoch access retained for non-queue creation and attachment authority.
+   * Queue admission must declare a {@link WorkIntent} instead.
    */
   captureEpoch(axis: TicketAxis): number {
     return axis === "runtime" ? this.generation : this.bindingEpoch;
   }
 
-  /**
-   * True when the captured epoch still matches the current epoch for the
-   * given axis. This is the single helper that replaces the scattered
-   * `isCurrent`-flavored authority checks at the dispatcher seam.
-   */
+  /** Compare raw non-queue creation/attachment authority. */
   isEpochCurrent(axis: TicketAxis, epoch: number): boolean {
     return this.captureEpoch(axis) === epoch;
   }
@@ -332,15 +383,23 @@ export class RuntimeMachine {
     if (!this.deps.isAdmissionOpen()) {
       throw new Error("conversation runtime admission is closed");
     }
+    this.creation?.cancel();
     this.nextGeneration();
     const control = deferred<AgentRunner>(true);
     const completion = deferred<void>();
+    const cancellation = deferred<never>(true);
+    let cancellationError: RuntimeCreationCancelledError | undefined;
     let creation!: RuntimeCreation;
     const complete = (): void => {
       completion.resolve(undefined);
       if (this.creation === creation) {
         this.creation = undefined;
       }
+    };
+    const cancel = (): void => {
+      if (cancellationError !== undefined) return;
+      cancellationError = new RuntimeCreationCancelledError(this.deps.conversationId);
+      cancellation.reject(cancellationError);
     };
     creation = {
       conversationId: this.deps.conversationId,
@@ -350,6 +409,17 @@ export class RuntimeMachine {
       settingsFingerprint,
       resolve: control.resolve,
       reject: control.reject,
+      cancel,
+      race: <T>(operation: Promise<T>): Promise<T> => {
+        if (cancellationError !== undefined) {
+          void operation.catch(() => {});
+          return Promise.reject(cancellationError);
+        }
+        // Promise.race installs handlers on `operation`; if cancellation wins,
+        // a later underlying rejection remains observed and cannot resume this
+        // preparation toward registration.
+        return Promise.race([operation, cancellation.promise]);
+      },
       complete,
     };
     this.outstandingCreations.add(creation);
@@ -408,7 +478,8 @@ export class RuntimeMachine {
     if (!this.deps.isAdmissionOpen()) {
       throw new Error("conversation runtime admission is closed");
     }
-    if (this.drain.size > 0) {
+    const replacingInternal = this.runner !== undefined && this.isInternal;
+    if (this.drain.size > 0 && !replacingInternal) {
       throw new Error(
         `cannot register internal runtime for ${this.deps.conversationId}: a prior-generation disposal is still active`,
       );
@@ -421,6 +492,17 @@ export class RuntimeMachine {
     if (this.runner !== undefined && !this.isInternal) {
       throw new Error(`cannot reuse Surface-backed runtime ${this.deps.conversationId} for an internal turn`);
     }
+
+    const priorRunner = replacingInternal ? this.runner : undefined;
+    const priorGeneration = this.generation;
+    if (priorRunner !== undefined && priorRunner !== runner) {
+      // An active→active internal replacement installs the new generation
+      // immediately, but the old generation remains machine-owned until its
+      // runner disposal settles. Disposing first also releases a blocked old
+      // prompt so the serial queue can observe its fenced ticket and drain.
+      this.startDrainingGeneration(priorGeneration, priorRunner, [], true);
+    }
+
     this.nextGeneration();
     this.runner = runner;
     this.isInternal = true;
@@ -429,19 +511,73 @@ export class RuntimeMachine {
 
   // ── queue ──────────────────────────────────────────────────────────
 
+  private createQueueAuthority(intent: WorkIntent): {
+    authority: QueueAuthority;
+    context: WorkAuthority;
+  } {
+    const authority: QueueAuthority = {
+      intent: intent.kind,
+      queueEpoch: this.queueEpoch,
+      bindingEpoch: intent.kind === "binding" || intent.kind === "bootstrap"
+        ? this.bindingEpoch
+        : undefined,
+      runtimeEpoch: intent.kind === "current-runtime" || intent.kind === "internal-runtime"
+        ? this.generation
+        : undefined,
+      runner: intent.kind === "current-runtime" || intent.kind === "internal-runtime"
+        ? intent.runner
+        : undefined,
+      settled: false,
+    };
+    const context: WorkAuthority = {
+      isCurrent: () => this.isQueueAuthorityCurrent(authority),
+      adoptCurrentRunner: (runner) => this.adoptCurrentRunner(authority, runner),
+    };
+    return { authority, context };
+  }
+
+  private isQueueAuthorityCurrent(authority: QueueAuthority): boolean {
+    if (authority.settled || authority.queueEpoch !== this.queueEpoch) return false;
+    switch (authority.intent) {
+      case "binding":
+        return authority.bindingEpoch === this.bindingEpoch;
+      case "bootstrap":
+        if (authority.bindingEpoch !== this.bindingEpoch) return false;
+        return authority.runner === undefined || (
+          authority.runtimeEpoch === this.generation && authority.runner === this.runner
+        );
+      case "current-runtime":
+        return authority.runtimeEpoch === this.generation && authority.runner === this.runner;
+      case "internal-runtime":
+        return this.isInternal &&
+          authority.runtimeEpoch === this.generation && authority.runner === this.runner;
+    }
+  }
+
+  private adoptCurrentRunner(authority: QueueAuthority, runner: AgentRunner): boolean {
+    if (authority.intent !== "bootstrap") {
+      throw new Error(`cannot adopt a runner for ${authority.intent} work`);
+    }
+    if (!this.isQueueAuthorityCurrent(authority) || this.runner !== runner) return false;
+    authority.runner = runner;
+    authority.runtimeEpoch = this.generation;
+    return true;
+  }
+
+  private settleEntry(entry: QueueEntry): void {
+    if (entry.authority.settled) return;
+    entry.authority.settled = true;
+    this.safeCallback(entry.onSettled, entry.id);
+    entry.resolveSettled();
+  }
+
   /**
-   * Enqueue work onto the serial executor. Returns `false` when admission is
-   * closed; the work is not enqueued.
-   *
-   * The queue is an explicit entry list. Cancelling a queued entry removes it
-   * from the list — the serial executor never reaches it and the runner is
-   * never touched. This is structurally impossible to reach the runner on
-   * cancel, unlike the old promise-chain where a cancelled entry's execute
-   * function still ran.
+   * Enqueue work onto the serial executor. The machine synchronously turns the
+   * closed intent into held authority before the entry becomes visible.
    */
   schedule(
-    isCurrent: () => boolean,
-    run: (isCurrent: () => boolean) => Promise<void>,
+    intent: WorkIntent,
+    run: (authority: WorkAuthority) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
     options: {
       isPrompt?: boolean;
@@ -457,13 +593,14 @@ export class RuntimeMachine {
       return false;
     }
     const settledControl = deferred<void>(true);
+    const held = this.createQueueAuthority(intent);
     const entry: QueueEntry = {
       id: this.queueEntryIdCounter++,
       isPrompt: options.isPrompt ?? true,
       started: false,
       cancelled: false,
-      queueEpoch: this.queueEpoch,
-      isCurrent,
+      authority: held.authority,
+      context: held.context,
       run,
       onError,
       onStart: options.onStart,
@@ -476,6 +613,48 @@ export class RuntimeMachine {
     this.ensureQueueIdlePromise();
     void this.pump();
     return true;
+  }
+
+  /**
+   * Admit runtime work only when the serial executor is idle. The occupancy
+   * check, warm/cold authority selection, and entry installation are one
+   * synchronous machine section, so concurrent callers cannot both observe
+   * idle and accepted work never waits behind prompts or commands.
+   */
+  admitImmediateRuntimeWork(
+    run: (context: ImmediateRuntimeWorkContext) => Promise<ImmediateWorkExecutionResult>,
+  ): ImmediateWorkAdmission {
+    if (!this.deps.isAdmissionOpen()) return { kind: "closed" };
+    if (this.queueRunning || this.queue.length > 0) return { kind: "busy" };
+    if (this.isInternal) return { kind: "fenced" };
+
+    const runnerAtAdmission = this.runner ?? null;
+    const intent: WorkIntent = runnerAtAdmission === null
+      ? { kind: "bootstrap" }
+      : { kind: "current-runtime", runner: runnerAtAdmission };
+    const settlementControl = deferred<ImmediateWorkSettlement>(true);
+    let classified = false;
+    let executionResult: ImmediateWorkExecutionResult | undefined;
+    const classify = (settlement: ImmediateWorkSettlement): void => {
+      if (classified) return;
+      classified = true;
+      settlementControl.resolve(settlement);
+    };
+
+    const admitted = this.schedule(
+      intent,
+      async (authority) => {
+        executionResult = await run({ authority, runnerAtAdmission });
+      },
+      (error) => classify({ kind: "failed", error }),
+      {
+        isPrompt: true,
+        onFenced: () => classify({ kind: "fenced" }),
+        onSettled: () => classify(executionResult ?? { kind: "completed" }),
+      },
+    );
+    if (!admitted) return { kind: "closed" };
+    return { kind: "accepted", settlement: settlementControl.promise };
   }
 
   /**
@@ -496,8 +675,8 @@ export class RuntimeMachine {
   steerOrQueue(
     attach: () => Promise<void>,
     fallback: {
-      isCurrent: () => boolean;
-      run: (isCurrent: () => boolean) => Promise<void>;
+      intent: WorkIntent;
+      run: (authority: WorkAuthority) => Promise<void>;
       onError: (err: unknown) => Promise<void> | void;
     },
   ): SteerOrQueueResult {
@@ -507,7 +686,7 @@ export class RuntimeMachine {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes("not streaming")) throw err;
-      if (!this.schedule(fallback.isCurrent, fallback.run, fallback.onError)) {
+      if (!this.schedule(fallback.intent, fallback.run, fallback.onError)) {
         return { kind: "rejected" };
       }
       return { kind: "queued" };
@@ -516,14 +695,16 @@ export class RuntimeMachine {
   }
 
   isCommandPending(): boolean {
-    return this.queue.some((entry) => !entry.isPrompt && entry.queueEpoch === this.queueEpoch);
+    return this.queue.some((entry) =>
+      !entry.isPrompt && entry.authority.queueEpoch === this.queueEpoch
+    );
   }
 
   isPromptPending(): boolean {
     return this.queue.some(
       (entry) =>
         entry.isPrompt &&
-        entry.queueEpoch === this.queueEpoch &&
+        entry.authority.queueEpoch === this.queueEpoch &&
         !entry.started &&
         !entry.cancelled,
     );
@@ -531,7 +712,7 @@ export class RuntimeMachine {
 
   hasPromptWork(): boolean {
     return this.queue.some(
-      (entry) => entry.isPrompt && entry.queueEpoch === this.queueEpoch,
+      (entry) => entry.isPrompt && entry.authority.queueEpoch === this.queueEpoch,
     );
   }
 
@@ -547,8 +728,7 @@ export class RuntimeMachine {
         entry.cancelled = true;
         this.queue.splice(i, 1);
         this.safeCallback(entry.onFenced, entry.id);
-        this.safeCallback(entry.onSettled, entry.id);
-        entry.resolveSettled();
+        this.settleEntry(entry);
         this.checkQueueIdle();
         return true;
       }
@@ -590,31 +770,27 @@ export class RuntimeMachine {
         if (entry.cancelled || (!entry.started && !this.deps.isAdmissionOpen())) {
           this.queue.shift();
           this.safeCallback(entry.onFenced, entry.id);
-          this.safeCallback(entry.onSettled, entry.id);
-          entry.resolveSettled();
+          this.settleEntry(entry);
           continue;
         }
 
-        // Commit point: check epoch authority before starting.
-        if (!entry.isCurrent()) {
+        // Commit point: check machine-held authority before starting.
+        if (!this.isQueueAuthorityCurrent(entry.authority)) {
           this.queue.shift();
           this.safeCallback(entry.onFenced, entry.id);
-          this.safeCallback(entry.onSettled, entry.id);
-          entry.resolveSettled();
+          this.settleEntry(entry);
           continue;
         }
 
         entry.started = true;
         this.safeCallback(entry.onStart, entry.id);
         try {
-          await entry.run(entry.isCurrent);
-          // Post-await commit point: if the epoch bumped during the await,
-          // fence the result.
-          if (!entry.isCurrent()) {
+          await entry.run(entry.context);
+          if (!this.isQueueAuthorityCurrent(entry.authority)) {
             this.safeCallback(entry.onFenced, entry.id);
           }
         } catch (err) {
-          if (!entry.isCurrent()) {
+          if (!this.isQueueAuthorityCurrent(entry.authority)) {
             this.safeCallback(entry.onFenced, entry.id);
           } else {
             try {
@@ -628,8 +804,7 @@ export class RuntimeMachine {
           }
         }
         this.queue.shift();
-        this.safeCallback(entry.onSettled, entry.id);
-        entry.resolveSettled();
+        this.settleEntry(entry);
       }
     } finally {
       this.queueRunning = false;
@@ -713,6 +888,7 @@ export class RuntimeMachine {
     this.isInternal = false;
 
     if (!preservesCreation) {
+      this.creation?.cancel();
       this.creation = undefined;
     }
 
@@ -775,16 +951,29 @@ export class RuntimeMachine {
 
     // Start physical cleanup as a drain generation.
     const runtimeIds = [...this.pendingDelegatedInvalidations];
-    const disposal = this.disposeGeneration(priorRunner, runtimeIds);
-    const draining: DrainingGeneration = {
-      generation: currentGeneration,
-      promise: disposal,
-      runtimeIds,
-    };
+    return this.startDrainingGeneration(currentGeneration, priorRunner, runtimeIds);
+  }
+
+  private startDrainingGeneration(
+    generation: number,
+    runner: AgentRunner | undefined,
+    runtimeIds: ConversationRuntimeId[],
+    retainUnobservedFailure = false,
+  ): Promise<void> {
+    if ([...this.drain].some((entry) => entry.generation === generation)) {
+      throw new Error(
+        `cannot drain runtime generation ${generation} twice for ${this.deps.conversationId}`,
+      );
+    }
+    const disposal = this.disposeGeneration(runner, runtimeIds);
+    const draining: DrainingGeneration = { generation, promise: disposal, runtimeIds };
     this.drain.add(draining);
     void disposal.then(
       () => this.drain.delete(draining),
-      () => this.drain.delete(draining),
+      (error) => {
+        this.drain.delete(draining);
+        if (retainUnobservedFailure) this.pendingReplacementDrainFailures.add(error);
+      },
     );
     return disposal;
   }
@@ -813,13 +1002,12 @@ export class RuntimeMachine {
     for (const entry of this.queue) {
       if (entry.started) {
         // Started entries drain; they are kept in the queue but are
-        // invisible to accessors because their queueEpoch is now stale.
+        // invisible to accessors because their authority epoch is now stale.
         remaining.push(entry);
       } else {
         entry.cancelled = true;
         this.safeCallback(entry.onFenced, entry.id);
-        this.safeCallback(entry.onSettled, entry.id);
-        entry.resolveSettled();
+        this.settleEntry(entry);
       }
     }
     this.queue = remaining;
@@ -938,7 +1126,16 @@ export class RuntimeMachine {
         if (activeFailure !== undefined) throw activeFailure;
         continue;
       }
-      if (activeFailure !== undefined) throw activeFailure;
+      if (activeFailure !== undefined) {
+        this.pendingReplacementDrainFailures.delete(activeFailure);
+        throw activeFailure;
+      }
+      if (this.pendingReplacementDrainFailures.size > 0) {
+        const failures = [...this.pendingReplacementDrainFailures];
+        this.pendingReplacementDrainFailures.clear();
+        if (failures.length === 1) throw failures[0];
+        throw new AggregateError(failures, "Conversation runtime cleanup failed");
+      }
       return;
     }
   }
@@ -992,7 +1189,10 @@ export class RuntimeMachine {
       if (promises.length > 0) {
         const results = await Promise.allSettled(promises);
         for (const result of results) {
-          if (result.status === "rejected") flattenFailures(result.reason, failures);
+          if (result.status === "rejected") {
+            this.pendingReplacementDrainFailures.delete(result.reason);
+            flattenFailures(result.reason, failures);
+          }
         }
       }
 
@@ -1015,6 +1215,9 @@ export class RuntimeMachine {
         break;
       }
     }
+
+    failures.push(...this.pendingReplacementDrainFailures);
+    this.pendingReplacementDrainFailures.clear();
 
     // Filter out delegated invalidation failures that have been recovered.
     const reportable = failures.filter(

@@ -12,18 +12,35 @@ import { DelegatedWorkHost, type ConversationRuntimeId } from "../delegated-work
 import { log } from "../log.ts";
 import {
   RuntimeMachine,
+  type ImmediateRuntimeWorkContext,
+  type ImmediateWorkAdmission,
+  type ImmediateWorkExecutionResult,
+  type ImmediateWorkSettlement,
   type InvalidationReason,
   type RuntimeCreation,
   type RuntimeSkillContext,
   type SurfaceRuntimeRegistration,
   type SteerOrQueueResult,
   type TicketAxis,
+  type WorkAuthority,
+  type WorkIntent,
 } from "./runtime-machine.ts";
 
 export type { SteerOrQueueResult };
 
 // Re-export types that callers import from this module.
-export type { RuntimeCreation, RuntimeSkillContext, SurfaceRuntimeRegistration, TicketAxis };
+export type {
+  ImmediateRuntimeWorkContext,
+  ImmediateWorkAdmission,
+  ImmediateWorkExecutionResult,
+  ImmediateWorkSettlement,
+  RuntimeCreation,
+  RuntimeSkillContext,
+  SurfaceRuntimeRegistration,
+  TicketAxis,
+  WorkAuthority,
+  WorkIntent,
+};
 
 /**
  * Preserve lifecycle-command serialization while invalidating model work.
@@ -55,10 +72,10 @@ function flattenFailures(error: unknown, failures: unknown[]): void {
  *
  * The host is a thin coordinator over per-conversation {@link RuntimeMachine}
  * instances. It owns the process-level admission gate and shutdown promise,
- * and delegates all per-conversation state (runner, creation, queue, drain
- * set, generations) to the machine. Public method signatures are unchanged
- * from the pre-machine design; the machine is an internal refactor that
- * consolidates the thirteen scattered collections into one coherent owner.
+ * and delegates all per-conversation state (runner, creation, queue, work
+ * authority, drain set, generations) to the machine. Queue methods accept
+ * only closed work intents; executable authority policy remains inside the
+ * machine.
  *
  * It does not construct runners or resolve Binding authority; those policies
  * belong to TurnDispatcher and ConversationLifecycle.
@@ -165,19 +182,14 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
   }
 
   /**
-   * Capture the current epoch for one authority axis (decision 0046).
-   * Returns 0 when no machine exists yet — tickets captured before any
-   * runtime registration are stale once the first generation registers.
+   * Raw epoch access for non-queue creation and attachment authority.
+   * Queue callers declare a WorkIntent instead.
    */
   captureEpoch(conversationId: ConversationId, axis: TicketAxis): number {
     return this.machines.get(conversationId)?.captureEpoch(axis) ?? 0;
   }
 
-  /**
-   * True when the captured epoch still matches the current epoch for the
-   * given axis. The single helper used at every commit point in the
-   * dispatcher seam.
-   */
+  /** Compare raw non-queue creation/attachment authority. */
   isEpochCurrent(conversationId: ConversationId, axis: TicketAxis, epoch: number): boolean {
     return this.machines.get(conversationId)?.isEpochCurrent(axis, epoch) ?? false;
   }
@@ -210,8 +222,8 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
 
   schedule(
     conversationId: ConversationId,
-    isCurrent: () => boolean,
-    run: (isCurrent: () => boolean) => Promise<void>,
+    intent: WorkIntent,
+    run: (authority: WorkAuthority) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
     options: {
       isPrompt?: boolean;
@@ -224,7 +236,15 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       log.info("runtime work rejected after admission closed", { conversationId });
       return false;
     }
-    return this.machineFor(conversationId).schedule(isCurrent, run, onError, options);
+    return this.machineFor(conversationId).schedule(intent, run, onError, options);
+  }
+
+  admitImmediateRuntimeWork(
+    conversationId: ConversationId,
+    run: (context: ImmediateRuntimeWorkContext) => Promise<ImmediateWorkExecutionResult>,
+  ): ImmediateWorkAdmission {
+    if (!this.admissionOpen) return { kind: "closed" };
+    return this.machineFor(conversationId).admitImmediateRuntimeWork(run);
   }
 
   /**
@@ -235,8 +255,8 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     conversationId: ConversationId,
     attach: () => Promise<void>,
     fallback: {
-      isCurrent: () => boolean;
-      run: (isCurrent: () => boolean) => Promise<void>;
+      intent: WorkIntent;
+      run: (authority: WorkAuthority) => Promise<void>;
       onError: (err: unknown) => Promise<void> | void;
     },
   ): SteerOrQueueResult {

@@ -545,7 +545,9 @@ describe("buildBot integration", () => {
 
     await runtimeDrain;
     await telegramDrain;
-    expect(runnerInstances).toHaveLength(1);
+    // Buffered cold text reaches machine bootstrap admission before disposal;
+    // shutdown may cancel preparation before constructing a stale runner.
+    expect(runnerInstances).toHaveLength(0);
   });
 
   it("drains a fetched group update through member authorization during shutdown", async () => {

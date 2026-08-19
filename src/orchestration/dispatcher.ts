@@ -21,16 +21,41 @@ import type { SurfaceSettings } from "./conversation-lifecycle.ts";
 import { PreparedRuntimeAssembler } from "./prepared-runtime.ts";
 import type { PreparedSurfaceRuntimePlan } from "../agent/runtime-plan.ts";
 import { CapabilityManifestToolSource } from "../agent/tool-assembly.ts";
-import { ConversationRuntimeHost, type RuntimeDisposalOptions, type SteerOrQueueResult } from "./conversation-runtime-host.ts";
+import {
+  ConversationRuntimeHost,
+  type ImmediateWorkAdmission,
+  type ImmediateWorkExecutionResult,
+  type ImmediateWorkSettlement,
+  type RuntimeDisposalOptions,
+  type SteerOrQueueResult,
+  type WorkAuthority,
+  type WorkIntent,
+} from "./conversation-runtime-host.ts";
 import type { AttachedWork, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { AttachmentSignal, AttachedWork, CurrentBindingGuard, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { SurfaceSettings };
+
+type CurrentRuntimeWorkIntent = Extract<WorkIntent, { kind: "current-runtime" }>;
 
 export interface ScheduledTurnAdmission {
   readonly accepted: true;
   /** Resolves false when shutdown fences the queued entry before it starts. */
   readonly started: Promise<boolean>;
 }
+
+export interface ImmediateTurnDelivery {
+  readonly success: () => Promise<void>;
+  readonly failure: (error: unknown) => Promise<void>;
+}
+
+export type ImmediateTurnSettlement = ImmediateWorkSettlement & {
+  /** Delivery starts at the final authority commit but is not runtime-owned. */
+  readonly delivery?: Promise<void>;
+};
+
+export type ImmediateTurnAdmission =
+  | { readonly kind: "accepted"; readonly settlement: Promise<ImmediateTurnSettlement> }
+  | Exclude<ImmediateWorkAdmission, { kind: "accepted" }>;
 
 /** Prompt content accepted by a runner: a string or multimodal parts. */
 export type PromptContent = string | (TextContent | ImageContent)[];
@@ -473,26 +498,106 @@ export class TurnDispatcher {
   }
 
   /**
-   * Enqueue `run` on the per-session serial executor so work serializes. The
-   * `isCurrent()` callback lets `run` detect that its runtime epoch has
-   * bumped (by `/new`/`/resume` or a settings invalidation) and abort before
-   * side effects. `onError` handles errors that escape `run`, gated by the
-   * same staleness check.
-   *
-   * This is the single serialization point shared by `/queue`, media prompts,
-   * deferred commands, and scheduled turns.
+   * Admit a no-wait turn through one machine-owned occupancy and authority
+   * boundary. Delivery callbacks are transport-neutral and run only after a
+   * final current-authority check.
    */
+  admitImmediateTurn(
+    conversation: ConversationState,
+    surface: Surface,
+    content: PromptContent,
+    sink: TurnSink,
+    delivery: ImmediateTurnDelivery,
+  ): ImmediateTurnAdmission {
+    let deliveryPromise: Promise<void> | undefined;
+    const startDelivery = (start: () => Promise<void>): void => {
+      try {
+        deliveryPromise = start();
+      } catch (error) {
+        deliveryPromise = Promise.reject(error);
+      }
+      // Runtime settlement must not await transport I/O, but the promise stays
+      // observed until the admitted handler awaits it after releasing runtime
+      // admission.
+      void deliveryPromise.catch(() => {});
+    };
+
+    const admission = this.runtimeHost.admitImmediateRuntimeWork(
+      conversation.id,
+      async ({ authority, runnerAtAdmission }): Promise<ImmediateWorkExecutionResult> => {
+        let runner = runnerAtAdmission;
+        if (runner === null) {
+          try {
+            runner = await this.getOrCreateRunner(conversation, surface);
+          } catch (error) {
+            if (!authority.isCurrent()) return { kind: "fenced" };
+            startDelivery(() => delivery.failure(error));
+            return { kind: "completed" };
+          }
+          if (!authority.adoptCurrentRunner(runner)) return { kind: "fenced" };
+        }
+
+        if (!authority.isCurrent()) return { kind: "fenced" };
+        try {
+          await runner.prompt(content, sink);
+        } catch (error) {
+          if (!authority.isCurrent()) return { kind: "fenced" };
+          startDelivery(() => delivery.failure(error));
+          return { kind: "completed" };
+        }
+
+        if (!authority.isCurrent()) return { kind: "fenced" };
+        startDelivery(delivery.success);
+        return { kind: "completed" };
+      },
+    );
+    if (admission.kind !== "accepted") return admission;
+    return {
+      kind: "accepted",
+      settlement: admission.settlement.then((settlement) => ({
+        ...settlement,
+        ...(deliveryPromise === undefined ? {} : { delivery: deliveryPromise }),
+      })),
+    };
+  }
+
+  /**
+   * Install cold ordinary work before asynchronous runtime preparation. The
+   * bootstrap ticket owns the queue position and must adopt the runner before
+   * caller effects or prompting.
+   */
+  scheduleBootstrapTurn(
+    conversation: ConversationState,
+    surface: Surface,
+    run: (runner: AgentRunner, authority: WorkAuthority) => Promise<void>,
+    onError: (error: unknown) => Promise<void> | void,
+    opts: { isPrompt?: boolean } = {},
+  ): boolean {
+    return this.runtimeHost.schedule(
+      conversation.id,
+      { kind: "bootstrap" },
+      async (authority) => {
+        const runner = await this.getOrCreateRunner(conversation, surface);
+        if (!authority.adoptCurrentRunner(runner)) return;
+        if (!authority.isCurrent()) return;
+        await run(runner, authority);
+      },
+      onError,
+      opts,
+    );
+  }
+
+  /** Enqueue work tied to the runner that is current at admission. */
   schedulePrompt(
     conversation: ConversationState,
-    _runner: AgentRunner,
-    run: (isCurrent: () => boolean) => Promise<void>,
+    intent: CurrentRuntimeWorkIntent,
+    run: (authority: WorkAuthority) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
     opts: { isPrompt?: boolean } = {},
   ): boolean {
-    const epoch = this.runtimeHost.captureEpoch(conversation.id, "runtime");
-    return this.schedulePromptById(
+    return this.runtimeHost.schedule(
       conversation.id,
-      () => this.runtimeHost.isEpochCurrent(conversation.id, "runtime", epoch),
+      intent,
       run,
       onError,
       opts,
@@ -506,13 +611,13 @@ export class TurnDispatcher {
    */
   steerOrQueue(
     conversation: ConversationState,
+    intent: CurrentRuntimeWorkIntent,
     attach: () => Promise<void>,
-    run: (isCurrent: () => boolean) => Promise<void>,
+    run: (authority: WorkAuthority) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
   ): SteerOrQueueResult {
-    const epoch = this.runtimeHost.captureEpoch(conversation.id, "runtime");
     return this.runtimeHost.steerOrQueue(conversation.id, attach, {
-      isCurrent: () => this.runtimeHost.isEpochCurrent(conversation.id, "runtime", epoch),
+      intent,
       run,
       onError,
     });
@@ -527,29 +632,17 @@ export class TurnDispatcher {
   scheduleCommand(
     conversation: ConversationState,
     _surface: Surface,
-    run: (isCurrent: () => boolean) => Promise<void>,
+    run: (authority: WorkAuthority) => Promise<void>,
     onError: (err: unknown) => Promise<void> | void,
     onSettled?: () => void,
   ): boolean {
-    const epoch = this.runtimeHost.captureEpoch(conversation.id, "binding");
-    return this.schedulePromptById(
+    return this.runtimeHost.schedule(
       conversation.id,
-      () => this.runtimeHost.isEpochCurrent(conversation.id, "binding", epoch),
+      { kind: "binding" },
       run,
       onError,
       { isPrompt: false, onSettled },
     );
-  }
-
-  /** Shared queue mechanics; callers supply the lifetime-specific authority check. */
-  private schedulePromptById(
-    sessionId: string,
-    isCurrent: () => boolean,
-    run: (isCurrent: () => boolean) => Promise<void>,
-    onError: (err: unknown) => Promise<void> | void,
-    opts: { isPrompt?: boolean; onFenced?: () => void; onSettled?: () => void } = {},
-  ): boolean {
-    return this.runtimeHost.schedule(sessionId, isCurrent, run, onError, opts);
   }
 
   /**
@@ -582,12 +675,10 @@ export class TurnDispatcher {
    * This is the complement to `isPromptPending`: it reaches a turn that has
    * been scheduled through `schedulePrompt` but has not yet started streaming,
    * so `runner.isStreaming` is still false and `interruptAndCascade` would not
-   * abort it. The runner's `abort()` is invoked; the agent runner uses this
-   * signal to abort a turn before it starts (see `AgentRunner.abort`).
-   * Returns true when a pending prompt was found and canceled.
-   *
-   * Note: this does not cascade to subagents. The session remains alive and
-   * its subagents may continue doing useful work.
+   * abort it. `RuntimeMachine` removes and settles the queued entry without
+   * touching `AgentRunner` or cascading to subagents. Returns true when a
+   * pending prompt was found and canceled. The session remains alive and its
+   * subagents may continue doing useful work.
    */
   async cancelPending(sessionId: string): Promise<boolean> {
     return this.runtimeHost.cancelPending(sessionId);
@@ -684,13 +775,12 @@ export class TurnDispatcher {
       onAgentEnd: () => {},
     };
 
-    const internalEpoch = this.runtimeHost.captureEpoch(session.id, "runtime");
-    const admitted = this.schedulePromptById(
+    const admitted = this.runtimeHost.schedule(
       session.id,
-      () => this.runtimeHost.isEpochCurrent(session.id, "runtime", internalEpoch) && this.runtimeHost.isInternalRuntime(session.id),
-      async (isCurrent) => {
+      { kind: "internal-runtime", runner },
+      async (authority) => {
         await runner.prompt(content, sink);
-        if (isCurrent()) complete(captured.join(""));
+        if (authority.isCurrent()) complete(captured.join(""));
       },
       fail,
       {
@@ -738,33 +828,22 @@ export class TurnDispatcher {
       return false;
     }
     const buffer = this.createMessageBuffer(surface, session);
-    // Capture the runner reference and runtime epoch at enqueue time. The
-    // epoch ticket is the stale-runner guard: if the runner is disposed (e.g.
-    // by /new) before the queued scheduled turn starts, the epoch bumps and
-    // the guard aborts the turn without creating a new runner. If no runner
-    // exists at enqueue time, the callback creates one via getOrCreateRunner
-    // (async capture) and rechecks the epoch before prompting.
+    // Warm work is tied to the registered runtime at admission. Cold work
+    // starts with bootstrap binding/queue authority and must adopt the runner
+    // that creation actually registered before model or visible effects.
     const existingRunner = this.runtimeHost.getRunner(session.id);
-    const epoch = this.runtimeHost.captureEpoch(session.id, "runtime");
     let resolveStarted!: (started: boolean) => void;
     const started = new Promise<boolean>((resolve) => { resolveStarted = resolve; });
 
-    const execute = async (): Promise<void> => {
+    const execute = async (authority: WorkAuthority): Promise<void> => {
       let runner: AgentRunner;
       if (existingRunner) {
-        // Stale-runner guard: if the runner was swapped after enqueue, abort
-        // before producing user-visible side effects.
-        if (!this.runtimeHost.isEpochCurrent(session.id, "runtime", epoch)) return;
         runner = existingRunner;
       } else {
         runner = await this.getOrCreateRunner(session, surface);
-        // Cold start: confirm the created runner is still registered before
-        // prompting. The runner itself is the generation authority; an epoch
-        // recapture is redundant because registration is what bumps the epoch.
-        if (!this.runtimeHost.isRegisteredRunner(session.id, runner)) {
-          return;
-        }
+        if (!authority.adoptCurrentRunner(runner)) return;
       }
+      if (!authority.isCurrent()) return;
       if (runner.isAbortTimedOut) {
         const error = new Error("Scheduled turn dropped: runner is wedged after abort timed out");
         log.warn(error.message, {
@@ -782,7 +861,9 @@ export class TurnDispatcher {
     // with user turns and deferred commands.
     const admitted = this.runtimeHost.schedule(
       session.id,
-      () => existingRunner === null || this.runtimeHost.isEpochCurrent(session.id, "runtime", epoch),
+      existingRunner === null
+        ? { kind: "bootstrap" }
+        : { kind: "current-runtime", runner: existingRunner },
       execute,
       (err) => {
         onError?.(err);

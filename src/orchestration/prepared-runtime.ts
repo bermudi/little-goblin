@@ -67,18 +67,20 @@ export class PreparedRuntimeAssembler {
       throw new Error(`environment mismatch while preparing runtime for conversation ${conversation.id}`);
     }
     const skillPolicy = cloneSkillPolicy(snapshot.skillPolicy);
-    const resolvedSkills = await resolveSkillSet(
+    const resolvedSkills = await creation.race(resolveSkillSet(
       conversation.executionEnvironment,
       skillPolicy,
       this.options.cfg.goblinHome,
       { captureSnapshots: true },
-    );
+    ));
     await this.checkpoint(conversation, surface, creation, epoch, "after skill resolution");
 
     if (this.options.runtimeHost.hasRuntime(conversation.id, creation.promise)) {
-      await this.options.runtimeHost.disposeRuntime(conversation.id, { preserveInFlight: creation.promise });
+      await creation.race(
+        this.options.runtimeHost.disposeRuntime(conversation.id, { preserveInFlight: creation.promise }),
+      );
     }
-    await this.options.runtimeHost.awaitSettled(conversation.id);
+    await creation.race(this.options.runtimeHost.awaitSettled(conversation.id));
     // Recapture the epoch after prior-runtime cleanup. The cleanup disposal
     // bumps the epoch intentionally (it invalidates the prior generation while
     // preserving this creation); the new epoch is the authoritative baseline
@@ -86,18 +88,18 @@ export class PreparedRuntimeAssembler {
     epoch = this.options.runtimeHost.captureEpoch(conversation.id, "runtime");
     await this.checkpoint(conversation, surface, creation, epoch, "after prior runtime cleanup");
 
-    const memoryContext = await captureRuntimeMemoryContext({
+    const memoryContext = await creation.race(captureRuntimeMemoryContext({
       surface,
       caller: { kind: "main" },
       store: this.options.memoryStore,
       getTopicName: this.options.getTopicName,
-    });
+    }));
     await this.checkpoint(conversation, surface, creation, epoch, "after memory capture");
 
-    const systemPrompt = await buildGoblinSystemPrompt({
+    const systemPrompt = await creation.race(buildGoblinSystemPrompt({
       home: this.options.cfg.goblinHome,
       executionEnvironment: conversation.executionEnvironment,
-    });
+    }));
     await this.checkpoint(conversation, surface, creation, epoch, "after prompt capture");
 
     const modelName = snapshot.modelName ?? this.options.cfg.modelName;
@@ -163,7 +165,9 @@ export class PreparedRuntimeAssembler {
       throw new Error(`stale runtime creation for conversation ${conversation.id}: invalidated ${stage}`);
     }
     try {
-      await this.options.surfaceRuntimeAuthority.assertCurrentBinding(surface, conversation.id);
+      await creation.race(
+        this.options.surfaceRuntimeAuthority.assertCurrentBinding(surface, conversation.id),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`stale runtime creation for conversation ${conversation.id} ${stage}: ${message}`);

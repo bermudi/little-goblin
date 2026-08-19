@@ -23,6 +23,19 @@ import type { TranscriptWriterContext } from "../sessions/transcript.ts";
 import { DEFAULT_SKILL_POLICY, type SkillPolicy } from "../agent/skills/mod.ts";
 import type { GenericSubagentInheritance } from "../subagents/mod.ts";
 import { DelegatedWorkHost, type ConversationRuntimeId } from "../delegated-work/mod.ts";
+import { ShutdownCoordinator, UpdateGate } from "../shutdown/mod.ts";
+
+async function settlesWithin(promise: Promise<unknown>, timeoutMs = 1_000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`operation did not settle within ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 class FakeAgentRunner {
   disposeCalled = false;
@@ -584,6 +597,18 @@ describe("TurnDispatcher async runner creation", () => {
     return { dispatcher, runtimeHost, subagentRunner, createAgentRunnerCalls };
   }
 
+  function immediateSink(): TurnSink {
+    return {
+      onTextDelta: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onStatusUpdate: () => {},
+      onMessageStart: () => {},
+      onMessageEnd: () => {},
+      onAgentEnd: () => {},
+    };
+  }
+
   it("eagerly freezes the Surface policy and resolved manifest at runtime creation", async () => {
     const skillPath = join(tmpDir, ".agents", "skills", "alpha", "SKILL.md");
     mkdirSync(join(tmpDir, ".agents", "skills", "alpha"), { recursive: true });
@@ -914,8 +939,8 @@ describe("TurnDispatcher async runner creation", () => {
     dispatcher.scheduleCommand(
       session,
       surface,
-      async (isCurrent) => {
-        if (!isCurrent()) return;
+      async (authority) => {
+        if (!authority.isCurrent()) return;
         commandExecuted = true;
       },
       () => {},
@@ -924,9 +949,9 @@ describe("TurnDispatcher async runner creation", () => {
     // Queue a prompt (runtime epoch) — this represents stale model work.
     dispatcher.schedulePrompt(
       session,
-      runner,
-      async (isCurrent) => {
-        if (!isCurrent()) return;
+      { kind: "current-runtime", runner },
+      async (authority) => {
+        if (!authority.isCurrent()) return;
         promptExecuted = true;
       },
       () => {},
@@ -1289,7 +1314,7 @@ describe("TurnDispatcher async runner creation", () => {
     expect(subagentRunner.acknowledged).toHaveLength(0);
   });
 
-  it("prompts a cold scheduled turn after creating the first runner", async () => {
+  it("creates, adopts, and delivers a cold immediate turn", async () => {
     const prompted: unknown[] = [];
     const { dispatcher, runtimeHost } = buildAsyncDispatcher({
       createAgentRunner: (options) => {
@@ -1303,14 +1328,300 @@ describe("TurnDispatcher async runner creation", () => {
     });
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
+    let success = 0;
+    let failure = 0;
+
+    const admission = dispatcher.admitImmediateTurn(
+      session,
+      surface,
+      "cold immediate",
+      immediateSink(),
+      {
+        success: async () => { success += 1; },
+        failure: async () => { failure += 1; },
+      },
+    );
+    expect(admission.kind).toBe("accepted");
+    if (admission.kind !== "accepted") throw new Error("expected accepted admission");
+    const settlement = await admission.settlement;
+    expect(settlement.kind).toBe("completed");
+    await settlement.delivery;
+    expect(prompted).toEqual(["cold immediate"]);
+    expect(success).toBe(1);
+    expect(failure).toBe(0);
+    expect(runtimeHost.hasRunner(session.id)).toBe(true);
+  });
+
+  it("classifies a current cold construction failure for one error delivery", async () => {
+    const { dispatcher } = buildAsyncDispatcher({
+      createAgentRunner: () => { throw new Error("construction failed"); },
+    });
+    const session = makeSession("abc123def0");
+    let success = 0;
+    let failure = 0;
+    const admission = dispatcher.admitImmediateTurn(
+      session,
+      dmSurface(1),
+      "cold failure",
+      immediateSink(),
+      {
+        success: async () => { success += 1; },
+        failure: async (error) => {
+          expect(error).toBeInstanceOf(Error);
+          failure += 1;
+        },
+      },
+    );
+    if (admission.kind !== "accepted") throw new Error("expected accepted admission");
+
+    const settlement = await admission.settlement;
+    expect(settlement.kind).toBe("completed");
+    await settlement.delivery;
+    expect(success).toBe(0);
+    expect(failure).toBe(1);
+  });
+
+  it("settles runtime work before an unresolved immediate delivery", async () => {
+    const { dispatcher, runtimeHost } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    let resolveDelivery!: () => void;
+    const deliveryDone = new Promise<void>((resolve) => { resolveDelivery = resolve; });
+    let deliveryCalls = 0;
+    const admission = dispatcher.admitImmediateTurn(
+      session,
+      dmSurface(1),
+      "delivery pending",
+      immediateSink(),
+      {
+        success: () => {
+          deliveryCalls += 1;
+          return deliveryDone;
+        },
+        failure: async () => {},
+      },
+    );
+    if (admission.kind !== "accepted") throw new Error("expected accepted admission");
+
+    const settlement = await admission.settlement;
+    expect(settlement.kind).toBe("completed");
+    expect(deliveryCalls).toBe(1);
+    expect(settlement.delivery).toBe(deliveryDone);
+    await settlesWithin(runtimeHost.disposeAll());
+
+    let delivered = false;
+    void settlement.delivery?.then(() => { delivered = true; });
+    await Promise.resolve();
+    expect(delivered).toBe(false);
+    resolveDelivery();
+    await settlement.delivery;
+  });
+
+  it("cancels unresolved cold preparation so coordinator disposal can start and finish", async () => {
+    let preparationStarted!: () => void;
+    const preparationDidStart = new Promise<void>((resolve) => { preparationStarted = resolve; });
+    let rejectPreparation!: (error: unknown) => void;
+    const preparationBlock = new Promise<void>((_resolve, reject) => { rejectPreparation = reject; });
+    const authority: SurfaceRuntimeAuthority = {
+      ...permissiveRuntimeAuthority(),
+      assertCurrentBinding: async () => {
+        preparationStarted();
+        await preparationBlock;
+      },
+    };
+    const { dispatcher, runtimeHost, createAgentRunnerCalls } = buildAsyncDispatcher({
+      surfaceRuntimeAuthority: authority,
+    });
+    const session = makeSession("abc123def0");
+    let ran = false;
+    expect(dispatcher.scheduleBootstrapTurn(
+      session,
+      dmSurface(1),
+      async () => { ran = true; },
+      async () => {},
+    )).toBe(true);
+    await preparationDidStart;
+
+    const gate = new UpdateGate({
+      closeCoalescer: async () => {},
+      awaitBufferedTextAdmission: async () => {},
+    });
+    const handle = gate.beginUpdate({});
+    handle.releaseAuthorization();
+    handle.releaseRuntimeAdmission();
+    let disposalStarted = false;
+    const coordinator = new ShutdownCoordinator({
+      gate,
+      stopTelegramPolling: async () => {},
+      drainBufferedText: () => gate.bufferedTextAdmission(),
+      drainRuntimeAdmission: () => gate.runtimeAdmission(),
+      disposeRuntimes: async () => {
+        disposalStarted = true;
+        await runtimeHost.disposeAll();
+      },
+      drainScheduler: async () => {},
+      disposeExternalAgents: async () => {},
+      disposeSubagents: async () => {},
+      closeMemoryEngine: async () => {},
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      let result: Awaited<ReturnType<ShutdownCoordinator["shutdown"]>> | undefined;
+      await settlesWithin(coordinator.shutdown("SIGTERM").then((value) => { result = value; }));
+      expect(result).toEqual({ ok: true, failures: 0 });
+      expect(disposalStarted).toBe(true);
+      expect(ran).toBe(false);
+      expect(createAgentRunnerCalls).toHaveLength(0);
+
+      rejectPreparation(new Error("late detached preparation failure"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("fences cold immediate work invalidated during runner acquisition", async () => {
+    const { dispatcher, runtimeHost } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    let success = 0;
+    let failure = 0;
+    const admission = dispatcher.admitImmediateTurn(
+      session,
+      dmSurface(1),
+      "cold stale",
+      immediateSink(),
+      {
+        success: async () => { success += 1; },
+        failure: async () => { failure += 1; },
+      },
+    );
+    if (admission.kind !== "accepted") throw new Error("expected accepted admission");
+
+    await runtimeHost.disposeRuntime(session.id);
+    expect(await admission.settlement).toEqual({ kind: "fenced" });
+    expect(success).toBe(0);
+    expect(failure).toBe(0);
+  });
+
+  it("suppresses warm success when invalidated after prompt completion but before delivery", async () => {
+    const { dispatcher, runtimeHost } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+    const runner = await dispatcher.getOrCreateRunner(session, surface);
+    let resolvePrompt!: () => void;
+    const promptDone = new Promise<void>((resolve) => { resolvePrompt = resolve; });
+    (runner as unknown as FakeAgentRunner).prompt = async () => { await promptDone; };
+    let success = 0;
+    let failure = 0;
+    const admission = dispatcher.admitImmediateTurn(
+      session,
+      surface,
+      "warm",
+      immediateSink(),
+      {
+        success: async () => { success += 1; },
+        failure: async () => { failure += 1; },
+      },
+    );
+    if (admission.kind !== "accepted") throw new Error("expected accepted admission");
+
+    resolvePrompt();
+    const invalidation = runtimeHost.disposeRuntime(session.id);
+    await invalidation;
+    expect(await admission.settlement).toEqual({ kind: "fenced" });
+    expect(success).toBe(0);
+    expect(failure).toBe(0);
+  });
+
+  it("suppresses a stale warm prompt error after mid-prompt invalidation", async () => {
+    const { dispatcher, runtimeHost } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+    const runner = await dispatcher.getOrCreateRunner(session, surface);
+    let rejectPrompt!: (error: unknown) => void;
+    const promptDone = new Promise<void>((_resolve, reject) => { rejectPrompt = reject; });
+    (runner as unknown as FakeAgentRunner).prompt = async () => { await promptDone; };
+    let success = 0;
+    let failure = 0;
+    const admission = dispatcher.admitImmediateTurn(
+      session,
+      surface,
+      "warm error",
+      immediateSink(),
+      {
+        success: async () => { success += 1; },
+        failure: async () => { failure += 1; },
+      },
+    );
+    if (admission.kind !== "accepted") throw new Error("expected accepted admission");
+
+    const invalidation = runtimeHost.disposeRuntime(session.id);
+    rejectPrompt(new Error("stale model failure"));
+    await invalidation;
+    expect(await admission.settlement).toEqual({ kind: "fenced" });
+    expect(success).toBe(0);
+    expect(failure).toBe(0);
+  });
+
+  it("prompts a cold scheduled turn after creating the first runner", async () => {
+    const prompted: unknown[] = [];
+    let resolvePrompted!: () => void;
+    const promptCalled = new Promise<void>((resolve) => { resolvePrompted = resolve; });
+    const { dispatcher, runtimeHost } = buildAsyncDispatcher({
+      createAgentRunner: (options) => {
+        const plan = options.plan;
+        if (plan === undefined) throw new Error("expected a prepared Surface runtime plan");
+        const runner = new FakeAgentRunner();
+        runner.memoryContext = plan.memoryContext;
+        runner.prompt = async (content) => {
+          prompted.push(content);
+          resolvePrompted();
+        };
+        return runner as unknown as AgentRunner;
+      },
+    });
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
 
     const admission = dispatcher.enqueueScheduledTurn(session, surface, "cold scheduled");
     if (typeof admission === "boolean") throw new Error("expected scheduled turn admission handle");
 
     expect(await admission.started).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await promptCalled;
     expect(prompted).toEqual(["cold scheduled"]);
     expect(runtimeHost.hasRunner(session.id)).toBe(true);
+  });
+
+  it("keeps a warm scheduled turn tied to its admission runtime", async () => {
+    const prompted: unknown[] = [];
+    const { dispatcher, runtimeHost } = buildAsyncDispatcher();
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+    const runner = await dispatcher.getOrCreateRunner(session, surface);
+    (runner as unknown as FakeAgentRunner).prompt = async (content) => {
+      prompted.push(content);
+    };
+
+    let releaseBlocker!: () => void;
+    const blocker = new Promise<void>((resolve) => { releaseBlocker = resolve; });
+    expect(runtimeHost.schedule(
+      session.id,
+      { kind: "binding" },
+      async () => { await blocker; },
+      async () => {},
+    )).toBe(true);
+
+    const admission = dispatcher.enqueueScheduledTurn(session, surface, "warm scheduled");
+    if (typeof admission === "boolean") throw new Error("expected scheduled turn admission handle");
+    await runtimeHost.disposeRuntime(session.id, { preserveCommandQueue: true });
+    releaseBlocker();
+
+    expect(await admission.started).toBe(false);
+    await runtimeHost.awaitSettled(session.id);
+    expect(prompted).toEqual([]);
   });
 
   it("captures an early delegated invalidation rejection while runner dispose is pending and rethrows it", async () => {

@@ -50,6 +50,27 @@ function registerRunner(
   }
 }
 
+describe("ConversationRuntimeHost immediate runtime admission", () => {
+  it("forwards atomic accepted, busy, and closed classifications", async () => {
+    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
+    const release = deferred<void>();
+    const first = host.admitImmediateRuntimeWork("conversation-a", async () => {
+      await release.promise;
+      return { kind: "completed" };
+    });
+    expect(first.kind).toBe("accepted");
+    expect(host.admitImmediateRuntimeWork("conversation-a", async () => ({ kind: "completed" })))
+      .toEqual({ kind: "busy" });
+
+    release.resolve(undefined);
+    if (first.kind !== "accepted") throw new Error("expected accepted admission");
+    expect(await first.settlement).toEqual({ kind: "completed" });
+    host.closeAdmission();
+    expect(host.admitImmediateRuntimeWork("conversation-b", async () => ({ kind: "completed" })))
+      .toEqual({ kind: "closed" });
+  });
+});
+
 describe("ConversationRuntimeHost shutdown", () => {
   it("marks a queued prompt cancelled while an earlier prompt is running", async () => {
     const firstFinished = deferred<void>();
@@ -58,7 +79,7 @@ describe("ConversationRuntimeHost shutdown", () => {
 
     expect(host.schedule(
       "conversation-a",
-      () => true,
+      { kind: "binding" },
       async () => {
         await firstFinished.promise;
       },
@@ -66,7 +87,7 @@ describe("ConversationRuntimeHost shutdown", () => {
     )).toBe(true);
     expect(host.schedule(
       "conversation-a",
-      () => true,
+      { kind: "binding" },
       async () => {
         secondRuns += 1;
       },
@@ -93,10 +114,10 @@ describe("ConversationRuntimeHost shutdown", () => {
     } as unknown as AgentRunner;
     registerRunner(host, "conversation-a", runner);
 
-    expect(host.schedule("conversation-a", () => true, async () => {
+    expect(host.schedule("conversation-a", { kind: "binding" }, async () => {
       await firstFinished.promise;
     }, async () => {})).toBe(true);
-    expect(host.schedule("conversation-a", () => true, async () => {}, async () => {})).toBe(true);
+    expect(host.schedule("conversation-a", { kind: "binding" }, async () => {}, async () => {})).toBe(true);
 
     expect(await host.cancelPending("conversation-a")).toBe(true);
     expect(abortCalls).toBe(0);
@@ -111,7 +132,7 @@ describe("ConversationRuntimeHost shutdown", () => {
 
     expect(host.schedule(
       "conversation-a",
-      () => true,
+      { kind: "binding" },
       async () => {},
       async () => {},
     )).toBe(true);
@@ -148,14 +169,14 @@ describe("ConversationRuntimeHost shutdown", () => {
     expect(() => host.registerInternalRuntime("conversation-c", fakeRunner())).toThrow(
       /admission is closed/,
     );
-    expect(host.schedule("conversation-a", () => true, async () => {}, async () => {})).toBe(false);
+    expect(host.schedule("conversation-a", { kind: "binding" }, async () => {}, async () => {})).toBe(false);
     expect(host.steerOrQueue(
       "conversation-a",
       () => {
         throw new Error("Cannot steer: session is not streaming.");
       },
       {
-        isCurrent: () => true,
+        intent: { kind: "binding" },
         run: async () => {},
         onError: async () => {},
       },
@@ -231,7 +252,7 @@ describe("ConversationRuntimeHost shutdown", () => {
 
     expect(host.schedule(
       "conversation-a",
-      () => true,
+      { kind: "binding" },
       async () => {
         await firstFinished.promise;
       },
@@ -243,7 +264,7 @@ describe("ConversationRuntimeHost shutdown", () => {
     await host.disposeRuntime("conversation-a", { preserveInFlight: creation.promise });
     expect(host.schedule(
       "conversation-a",
-      () => true,
+      { kind: "binding" },
       async () => {
         secondStarted.resolve(undefined);
       },
@@ -273,7 +294,7 @@ describe("ConversationRuntimeHost shutdown", () => {
 
     expect(host.schedule(
       "conversation-a",
-      () => host.isRegisteredRunner("conversation-a", runner),
+      { kind: "current-runtime", runner },
       async () => {
         order.push("first");
         await turnFinished.promise;
@@ -282,7 +303,7 @@ describe("ConversationRuntimeHost shutdown", () => {
     )).toBe(true);
     expect(host.schedule(
       "conversation-a",
-      () => host.isRegisteredRunner("conversation-a", runner),
+      { kind: "current-runtime", runner },
       async () => { order.push("second"); },
       async () => {},
     )).toBe(true);
@@ -305,7 +326,7 @@ describe("ConversationRuntimeHost shutdown", () => {
 
     expect(host.schedule(
       "conversation-a",
-      () => true,
+      { kind: "binding" },
       async () => {
         order.push("prompt");
         await turnFinished.promise;
@@ -314,7 +335,7 @@ describe("ConversationRuntimeHost shutdown", () => {
     )).toBe(true);
     expect(host.schedule(
       "conversation-a",
-      () => true,
+      { kind: "binding" },
       async () => {
         order.push("command");
       },
@@ -451,7 +472,7 @@ describe("ConversationRuntimeHost shutdown", () => {
     registerRunner(host, "conversation-queued", queuedRunner);
     expect(host.schedule(
       "conversation-queued",
-      () => host.isRegisteredRunner("conversation-queued", queuedRunner),
+      { kind: "current-runtime", runner: queuedRunner },
       () => queued.promise,
       async () => {},
     )).toBe(true);

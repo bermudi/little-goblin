@@ -18,6 +18,7 @@ import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from 
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { TurnDispatcher, PromptContent } from "../orchestration/dispatcher.ts";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
+import type { WorkAuthority } from "../orchestration/conversation-runtime-host.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 
 import { transcribeWithGroq } from "../asr/mod.ts";
@@ -86,7 +87,7 @@ type ActiveTurn = {
   session: ConversationState;
   environment: ExecutionEnvironment;
   schedule: (
-    run: (runner: AgentRunner, isCurrent: () => boolean) => Promise<void>,
+    run: (runner: AgentRunner, authority: WorkAuthority) => Promise<void>,
     failureLog: string,
     opts?: { replyModelNotCapable?: boolean },
   ) => Promise<void>;
@@ -224,9 +225,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const buffer = dispatcher.createMessageBuffer(surface, session);
     return dispatcher.schedulePrompt(
       session,
-      runner,
-      async (isCurrent) => {
-        if (!isCurrent()) return;
+      { kind: "current-runtime", runner },
+      async (authority) => {
+        if (!authority.isCurrent()) return;
         await runner.prompt(message.prepare(content), buffer);
       },
       async (err) => {
@@ -272,7 +273,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
    * and the runner is idle. The user has already received an instant "Queued."
    * ack; this re-dispatches the command once idle and sends the follow-up reply.
    *
-   * The `isCurrent()` staleness gate is binding-based: a `/new` or `/resume`
+   * The machine-held binding authority gate is binding-based: a `/new` or `/resume`
    * makes later commands stale, while a same-binding runtime invalidation such
    * as `/model` preserves their acknowledged arrival order.
    */
@@ -295,8 +296,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const accepted = dispatcher.scheduleCommand(
       session,
       surface,
-      async (isCurrent) => {
-        if (!isCurrent()) return;
+      async (authority) => {
+        if (!authority.isCurrent()) return;
         const result = await handleCommand({
           command,
           deps: dispatchDeps,
@@ -342,9 +343,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     try {
       decision = dispatcher.steerOrQueue(
         session,
+        { kind: "current-runtime", runner },
         () => runner.followUp(message.prepare(text)),
-        async (isCurrent) => {
-          if (!isCurrent()) return;
+        async (authority) => {
+          if (!authority.isCurrent()) return;
           const buffer = dispatcher.createMessageBuffer(surface, session);
           await runner.prompt(message.prepare(text), buffer);
         },
@@ -399,46 +401,69 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       session,
       environment: conversation.executionEnvironment,
       schedule: async (run, failureLog, opts) => {
-        let runner: AgentRunner;
-        try {
-          runner = await dispatcher.getOrCreateRunner(session, surface);
-        } catch (err) {
-          handle?.releaseRuntimeAdmission();
-          throw err;
-        }
-        if (runner.isAbortTimedOut) {
-          handle?.releaseRuntimeAdmission();
-          sendSystemReply(message, WEDGED_RUNNER_REPLY, "error").catch((err: unknown) => {
-            log.error("failed to send wedged runner reply", {
-              error: String(err),
-              sessionId: session.id,
-            });
-          });
-          return;
-        }
-        const admitted = dispatcher.schedulePrompt(
-          session,
-          runner,
-          async (isCurrent) => {
-            await run(runner, isCurrent);
-          },
-          async (err) => {
-            if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
-              await sendSystemReply(message, err.message, "error");
-              recordAssistantReply(session.id, surface, runner, err.message);
-              return;
+        let admittedRunner: AgentRunner | undefined;
+        const execute = async (runner: AgentRunner, authority: WorkAuthority): Promise<void> => {
+          admittedRunner = runner;
+          if (runner.isAbortTimedOut) {
+            if (!authority.isCurrent()) return;
+            await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
+            return;
+          }
+          await run(runner, authority);
+        };
+        const onError = async (err: unknown): Promise<void> => {
+          if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
+            await sendSystemReply(message, err.message, "error");
+            if (admittedRunner !== undefined) {
+              recordAssistantReply(session.id, surface, admittedRunner, err.message);
             }
-            const msg = err instanceof Error ? err.message : String(err);
-            log.error(failureLog, { error: msg, sessionId: session.id });
-          },
-        );
+            return;
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          log.error(failureLog, { error: msg, sessionId: session.id });
+        };
+
+        const existingRunner = dispatcher.getRunner(session.id);
+        let admitted: boolean;
+        if (existingRunner === null) {
+          admitted = dispatcher.scheduleBootstrapTurn(
+            session,
+            surface,
+            execute,
+            onError,
+          );
+        } else {
+          let runner: AgentRunner;
+          try {
+            runner = await dispatcher.getOrCreateRunner(session, surface);
+          } catch (err) {
+            handle?.releaseRuntimeAdmission();
+            throw err;
+          }
+          if (runner.isAbortTimedOut) {
+            handle?.releaseRuntimeAdmission();
+            sendSystemReply(message, WEDGED_RUNNER_REPLY, "error").catch((err: unknown) => {
+              log.error("failed to send wedged runner reply", {
+                error: String(err),
+                sessionId: session.id,
+              });
+            });
+            return;
+          }
+          admitted = dispatcher.schedulePrompt(
+            session,
+            { kind: "current-runtime", runner },
+            (authority) => execute(runner, authority),
+            onError,
+          );
+        }
         if (!admitted) {
           log.error("media prompt rejected at queue admission", { sessionId: session.id });
           handle?.releaseRuntimeAdmission();
           return;
         }
-        // The queue now owns the update. Downloading media and running the
-        // model may continue until runtime disposal releases it.
+        // The machine owns cold preparation and work before the update barrier
+        // is released; shutdown can now fence/cancel either phase.
         handle?.releaseRuntimeAdmission();
       },
     };
@@ -597,16 +622,48 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     }
     const session = conversation;
 
+    if (!rawText) {
+      handle?.releaseRuntimeAdmission();
+      return;
+    }
+
+    const existingRunner = dispatcher.getRunner(session.id);
+    if (existingRunner === null) {
+      const admitted = dispatcher.scheduleBootstrapTurn(
+        session,
+        surface,
+        async (runner, authority) => {
+          if (runner.isAbortTimedOut) {
+            if (!authority.isCurrent()) return;
+            await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
+            return;
+          }
+          if (!authority.isCurrent()) return;
+          const buffer = dispatcher.createMessageBuffer(surface, session);
+          await runner.prompt(message.prepare(rawText), buffer);
+        },
+        async (error) => {
+          log.error("runner prompt failed", {
+            error: error instanceof Error ? error.message : String(error),
+            sessionId: session.id,
+          });
+        },
+      );
+      if (!admitted) {
+        log.error("runner prompt rejected at queue admission", { sessionId: session.id });
+        handle?.releaseRuntimeAdmission();
+        return;
+      }
+      handle?.releaseRuntimeAdmission();
+      return;
+    }
+
     let runner: AgentRunner;
     try {
       runner = await dispatcher.getOrCreateRunner(session, surface);
     } catch (error) {
       handle?.releaseRuntimeAdmission();
       throw error;
-    }
-    if (!rawText) {
-      handle?.releaseRuntimeAdmission();
-      return;
     }
 
     if (runner.isAbortTimedOut) {
@@ -645,9 +702,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     if (!turn) return;
 
     await turn.schedule(
-      async (runner, isCurrent) => {
+      async (runner, authority) => {
         const photo = await downloadPhoto(api, fileIds, cfg.botToken);
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         if (!photo) {
           const replyText = "Sorry, I couldn't download that image.";
           await sendSystemReply(message, replyText, "error");
@@ -661,7 +718,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         }
         content.push({ type: "image", data: photo.data, mimeType: photo.mimeType });
 
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         await runPrompt(message, turn.surface, runner, turn.session, content);
       },
       "runner photo prompt failed",
@@ -683,9 +740,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     if (!turn) return;
 
     await turn.schedule(
-      async (runner, isCurrent) => {
+      async (runner, authority) => {
         const raw = await downloadFileBytes(api, doc.fileId, cfg.botToken);
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         if (!raw) {
           const replyText = "Sorry, I couldn't download that file.";
           await sendSystemReply(message, replyText, "error");
@@ -696,12 +753,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         const desiredName = doc.fileName || "attachment";
         let saved: SavedAttachment;
         try {
-          if (!isCurrent()) return;
+          if (!authority.isCurrent()) return;
           saved = saveAttachment(turn.environment, cfg.goblinHome, desiredName, raw);
         } catch (err) {
           if (err instanceof UnsafeAttachmentNameError) {
             const replyText = "Rejected: unsafe filename.";
-            if (isCurrent()) {
+            if (authority.isCurrent()) {
               await sendSystemReply(message, replyText, "warn");
               recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
             }
@@ -712,7 +769,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             fileName: desiredName,
             sessionId: turn.session.id,
           });
-          if (isCurrent()) {
+          if (authority.isCurrent()) {
             const replyText = `Failed to save ${desiredName}.`;
             await sendSystemReply(message, replyText, "error");
             recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
@@ -720,7 +777,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           return;
         }
 
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         await sendSystemReply(message, `Saved ${saved.relativePath}.`, "ok");
 
         const escapedPath = saved.relativePath.replace(/`/g, "'");
@@ -728,7 +785,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           ? `${doc.caption}\n\n[File \`${escapedPath}\` saved.]`
           : `User uploaded \`${escapedPath}\`.`;
 
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         await runPrompt(message, turn.surface, runner, turn.session, promptText);
       },
       "runner document prompt failed",
@@ -749,12 +806,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     if (!turn) return;
 
     await turn.schedule(
-      async (runner, isCurrent) => {
+      async (runner, authority) => {
         // Groq ASR setup gate: missing key fails at use time with a clear
         // message rather than at startup. Checked inside the scheduled task so
         // the reply respects the stale-runner guard and stays non-blocking.
         if (!cfg.groqApiKey) {
-          if (!isCurrent()) return;
+          if (!authority.isCurrent()) return;
           const replyText = "Groq ASR is not configured. Add a Groq API key to transcribe voice messages.";
           await sendSystemReply(message, replyText, "warn");
           recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
@@ -764,9 +821,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // One download serves both ASR and optional project-file saving, so a
         // failure here short-circuits before either side effect.
         const raw = await downloadFileBytes(api, voice.fileId, cfg.botToken);
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         if (!raw) {
-          if (isCurrent()) {
+          if (authority.isCurrent()) {
             const replyText = "Sorry, I couldn't download that voice message.";
             await sendSystemReply(message, replyText, "error");
             recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
@@ -783,12 +840,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           model: cfg.asrModel ?? "whisper-large-v3-turbo",
           apiKey: cfg.groqApiKey,
         });
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
 
         if (!asrResult.ok) {
           // Transport/API failure only; the sanitized error carries no secrets.
           log.warn("voice transcription failed", { error: asrResult.error, sessionId: turn.session.id });
-          if (isCurrent()) {
+          if (authority.isCurrent()) {
             const replyText = "Sorry, I couldn't transcribe that voice message.";
             await sendSystemReply(message, replyText, "error");
             recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
@@ -799,7 +856,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // Intake owns the semantic empty-text check: a successful HTTP response
         // with no speech is not an ASR failure.
         if (asrResult.text.length === 0) {
-          if (isCurrent()) {
+          if (authority.isCurrent()) {
             const replyText = "No speech was detected in that voice message.";
             await sendSystemReply(message, replyText, "info");
             recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
@@ -814,7 +871,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
         let saved: SavedAttachment;
         try {
-          if (!isCurrent()) return;
+          if (!authority.isCurrent()) return;
           saved = saveAttachment(turn.environment, cfg.goblinHome, desiredName, raw);
         } catch (err) {
           log.error("failed to save voice attachment", {
@@ -822,7 +879,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             fileName: desiredName,
             sessionId: turn.session.id,
           });
-          if (isCurrent()) {
+          if (authority.isCurrent()) {
             const replyText = `Failed to save ${desiredName}.`;
             await sendSystemReply(message, replyText, "error");
             recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
@@ -830,13 +887,13 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           return;
         }
 
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         await sendSystemReply(message, `Saved ${saved.relativePath}.`, "ok");
 
         const escapedPath = saved.relativePath.replace(/`/g, "'");
         const promptText = `[Voice message transcript]\n${asrResult.text}\n\n[Voice file \`${escapedPath}\` saved.]`;
 
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         await runPrompt(message, turn.surface, runner, turn.session, promptText);
       },
       "runner voice prompt failed",
@@ -857,9 +914,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     if (!turn) return;
 
     await turn.schedule(
-      async (runner, isCurrent) => {
+      async (runner, authority) => {
         const raw = await downloadFileBytes(api, audio.fileId, cfg.botToken);
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         if (!raw) {
           const replyText = "Sorry, I couldn't download that audio file.";
           await sendSystemReply(message, replyText, "error");
@@ -875,12 +932,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
         let saved: SavedAttachment;
         try {
-          if (!isCurrent()) return;
+          if (!authority.isCurrent()) return;
           saved = saveAttachment(turn.environment, cfg.goblinHome, desiredName, raw);
         } catch (err) {
           if (err instanceof UnsafeAttachmentNameError) {
             const replyText = "Rejected: unsafe filename.";
-            if (isCurrent()) {
+            if (authority.isCurrent()) {
               await sendSystemReply(message, replyText, "warn");
               recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
             }
@@ -891,7 +948,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             fileName: desiredName,
             sessionId: turn.session.id,
           });
-          if (isCurrent()) {
+          if (authority.isCurrent()) {
             const replyText = `Failed to save ${desiredName}.`;
             await sendSystemReply(message, replyText, "error");
             recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
@@ -899,7 +956,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           return;
         }
 
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         await sendSystemReply(message, `Saved ${saved.relativePath}.`, "ok");
 
         const escapedPath = saved.relativePath.replace(/`/g, "'");
@@ -907,7 +964,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           ? `${audio.caption}\n\n[Audio file \`${escapedPath}\` saved.]`
           : `User uploaded audio \`${escapedPath}\`.`;
 
-        if (!isCurrent()) return;
+        if (!authority.isCurrent()) return;
         await runPrompt(message, turn.surface, runner, turn.session, promptText);
       },
       "runner audio prompt failed",
@@ -945,18 +1002,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   /**
-   * Handle a guest summon: resolve (auto-create) a guest session keyed on the
-   * foreign chat id, run the agent to completion against a non-streaming sink,
-   * and reply exactly once via `message.replyVia`. The `text` arrives already
-   * mention-stripped and sender-prefixed from the bot.ts adapter.
-   *
-   * The `guest_query_id` lives inside `replyVia`'s closure (built by the
-   * adapter as `(result) => ctx.answerGuestQuery(result)`); this function never
-   * names or extracts it. `replyVia` is single-use and short-lived — if the
-   * runner is busy we reply immediately with a busy fallback so the id is
-   * consumed before expiry rather than queueing a turn that would outlive it.
-   * If `replyVia` itself rejects (expired id), the rejection is swallowed: the
-   * summoner sees nothing, but the bot does not crash.
+   * Resolve guest Surface binding and hand one immediate/no-wait turn to the
+   * runtime kernel. Telegram retains only the opaque one-shot reply mapping;
+   * runner occupancy, authority, prompting, and settlement stay behind the
+   * dispatcher/machine boundary.
    */
   async function handleGuestMessage(
     message: GuestMessage,
@@ -968,74 +1017,84 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       return;
     }
     const surface = message.surface;
+    let replyAttempted = false;
+    const replyOnce = async (result: InlineQueryResult, failureLog: string): Promise<void> => {
+      if (replyAttempted) return;
+      replyAttempted = true;
+      try {
+        await message.replyVia(result);
+      } catch (error) {
+        log.warn(failureLog, { error: String(error), surfaceId: surfaceId(surface) });
+      }
+    };
+
     let conversation: ConversationState;
     try {
-      // Guest text is ordinary authorized content; lazily start a conversation.
       conversation = await lifecycle.resolveOrStart(surface);
-    } catch (err) {
-      log.error("guest resolve failed", { error: String(err), surfaceId: surfaceId(surface) });
+    } catch (error) {
+      log.error("guest resolve failed", { error: String(error), surfaceId: surfaceId(surface) });
       handle?.releaseRuntimeAdmission();
-      try {
-        await message.replyVia(errorArticle());
-      } catch (replyErr) {
-        log.warn("guest error reply failed", { error: String(replyErr), surfaceId: surfaceId(surface) });
-      }
-      return;
-    }
-    const session = conversation;
-    let runner: AgentRunner;
-    try {
-      runner = await dispatcher.getOrCreateRunner(session, surface);
-    } catch (err) {
-      log.error("guest runner creation failed", {
-        error: err instanceof Error ? err.message : String(err),
-        surfaceId: surfaceId(surface),
-        sessionId: session.id,
-      });
-      try {
-        await message.replyVia(errorArticle());
-      } catch (replyErr) {
-        log.warn("guest error reply failed", { error: String(replyErr), surfaceId: surfaceId(surface) });
-      }
-      return;
-    } finally {
-      handle?.releaseRuntimeAdmission();
-    }
-
-    // Busy path: never queue. guest_query_id would expire before a queued turn
-    // runs, so reply immediately with a busy fallback to consume the id.
-    if (runner.isStreaming) {
-      log.debug("guest summon dropped: runner busy", { surfaceId: surfaceId(surface), sessionId: session.id });
-      try {
-        await message.replyVia(busyArticle());
-      } catch (err) {
-        log.warn("guest busy reply failed", { error: String(err), surfaceId: surfaceId(surface) });
-      }
+      await replyOnce(errorArticle(), "guest error reply failed");
       return;
     }
 
     const sink = new GuestReplySink();
-    // Guest turns run directly rather than through the Telegram streaming
-    // queue. The prompt call is the runtime admission boundary.
-    handle?.releaseRuntimeAdmission();
+    let admission: ReturnType<TurnDispatcher["admitImmediateTurn"]>;
     try {
-      await runner.prompt(text, sink);
-    } catch (err) {
-      log.warn("guest turn failed", { error: String(err), surfaceId: surfaceId(surface), sessionId: session.id });
-      try {
-        await message.replyVia(errorArticle());
-      } catch (replyErr) {
-        log.warn("guest error reply failed", { error: String(replyErr), surfaceId: surfaceId(surface) });
-      }
+      admission = dispatcher.admitImmediateTurn(
+        conversation,
+        surface,
+        text,
+        sink,
+        {
+          success: () => replyOnce(article(sink.text || "(no response)"), "guest reply failed"),
+          failure: async (error) => {
+            log.warn("guest turn failed", {
+              error: error instanceof Error ? error.message : String(error),
+              surfaceId: surfaceId(surface),
+              sessionId: conversation.id,
+            });
+            await replyOnce(errorArticle(), "guest error reply failed");
+          },
+        },
+      );
+    } catch (error) {
+      log.error("guest runtime admission failed", {
+        error: error instanceof Error ? error.message : String(error),
+        surfaceId: surfaceId(surface),
+        sessionId: conversation.id,
+      });
+      handle?.releaseRuntimeAdmission();
+      await replyOnce(errorArticle(), "guest error reply failed");
       return;
     }
 
-    try {
-      await message.replyVia(article(sink.text || "(no response)"));
-    } catch (err) {
-      // Expired guest_query_id or other Telegram failure — swallow so the bot
-      // does not crash. The summoner sees nothing; inherent to the one-shot API.
-      log.warn("guest reply failed", { error: String(err), surfaceId: surfaceId(surface) });
+    handle?.releaseRuntimeAdmission();
+    switch (admission.kind) {
+      case "accepted": {
+        const settlement = await admission.settlement;
+        if (settlement.kind === "failed") {
+          log.error("accepted guest runtime work failed", {
+            error: settlement.error instanceof Error
+              ? settlement.error.message
+              : String(settlement.error),
+            surfaceId: surfaceId(surface),
+            sessionId: conversation.id,
+          });
+        }
+        if (settlement.delivery !== undefined) await settlement.delivery;
+        return;
+      }
+      case "busy":
+        log.debug("guest summon dropped: runtime busy", {
+          surfaceId: surfaceId(surface),
+          sessionId: conversation.id,
+        });
+        await replyOnce(busyArticle(), "guest busy reply failed");
+        return;
+      case "closed":
+      case "fenced":
+        return;
     }
   }
 

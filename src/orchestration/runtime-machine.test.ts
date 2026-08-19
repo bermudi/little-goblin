@@ -11,6 +11,7 @@ import {
   RuntimeMachine,
   type InvalidationReason,
   type SurfaceRuntimeRegistration,
+  type WorkIntent,
 } from "./runtime-machine.ts";
 
 // ─── helpers ─────────────────────────────────────────────────────────
@@ -29,6 +30,18 @@ function deferred<T>(): Deferred<T> {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+async function settlesWithin(promise: Promise<void>, timeoutMs = 1_000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`operation did not settle within ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function fakeRunner(dispose: () => Promise<void> = async () => {}): AgentRunner {
@@ -278,9 +291,9 @@ describe("RuntimeMachine queue and serial executor", () => {
   it("processes entries in order", async () => {
     const m = makeMachine();
     const order: string[] = [];
-    m.schedule(() => true, async () => { order.push("first"); }, async () => {});
-    m.schedule(() => true, async () => { order.push("second"); }, async () => {});
-    m.schedule(() => true, async () => { order.push("third"); }, async () => {});
+    m.schedule({ kind: "binding" }, async () => { order.push("first"); }, async () => {});
+    m.schedule({ kind: "binding" }, async () => { order.push("second"); }, async () => {});
+    m.schedule({ kind: "binding" }, async () => { order.push("third"); }, async () => {});
     await m.queueSettled();
     expect(order).toEqual(["first", "second", "third"]);
   });
@@ -297,8 +310,8 @@ describe("RuntimeMachine queue and serial executor", () => {
 
     const firstFinished = deferred<void>();
     let secondRan = false;
-    m.schedule(() => true, async () => { await firstFinished.promise; }, async () => {});
-    m.schedule(() => true, async () => { secondRan = true; }, async () => {});
+    m.schedule({ kind: "binding" }, async () => { await firstFinished.promise; }, async () => {});
+    m.schedule({ kind: "binding" }, async () => { secondRan = true; }, async () => {});
 
     expect(m.cancelPending()).toBe(true);
     expect(abortCalls).toBe(0);
@@ -320,21 +333,21 @@ describe("RuntimeMachine queue and serial executor", () => {
       isAdmissionOpen: () => open,
     });
     open = false;
-    expect(m.schedule(() => true, async () => {}, async () => {})).toBe(false);
+    expect(m.schedule({ kind: "binding" }, async () => {}, async () => {})).toBe(false);
   });
 
   it("admits a late-steer fallback before returning when attach throws not-streaming", () => {
     const m = makeMachine();
     registerSurface(m);
     const firstFinished = deferred<void>();
-    m.schedule(() => true, async () => { await firstFinished.promise; }, async () => {});
+    m.schedule({ kind: "binding" }, async () => { await firstFinished.promise; }, async () => {});
 
     const decision = m.steerOrQueue(
       () => {
         throw new Error("Cannot steer: session is not streaming.");
       },
       {
-        isCurrent: () => true,
+        intent: { kind: "binding" },
         run: async () => {},
         onError: async () => {},
       },
@@ -360,7 +373,7 @@ describe("RuntimeMachine queue and serial executor", () => {
         throw new Error("Cannot steer: session is not streaming.");
       },
       {
-        isCurrent: () => true,
+        intent: { kind: "binding" },
         run: async () => {},
         onError: async () => {},
       },
@@ -376,7 +389,7 @@ describe("RuntimeMachine queue and serial executor", () => {
     const decision = m.steerOrQueue(
       () => attached.promise,
       {
-        isCurrent: () => true,
+        intent: { kind: "binding" },
         run: async () => {},
         onError: async () => {},
       },
@@ -395,7 +408,7 @@ describe("RuntimeMachine queue and serial executor", () => {
         throw new Error("session disposed");
       },
       {
-        isCurrent: () => true,
+        intent: { kind: "binding" },
         run: async () => {},
         onError: async () => {},
       },
@@ -408,9 +421,9 @@ describe("RuntimeMachine queue and serial executor", () => {
     const firstFinished = deferred<void>();
     let secondRan = false;
     let secondFenced = false;
-    m.schedule(() => true, async () => { await firstFinished.promise; }, async () => {});
+    m.schedule({ kind: "binding" }, async () => { await firstFinished.promise; }, async () => {});
     m.schedule(
-      () => true,
+      { kind: "binding" },
       async () => { secondRan = true; },
       async () => {},
       { onFenced: () => { secondFenced = true; } },
@@ -425,15 +438,15 @@ describe("RuntimeMachine queue and serial executor", () => {
     expect(secondFenced).toBe(true);
   });
 
-  it("preserves queue on settings-change invalidation", async () => {
+  it("preserves binding-authority commands on settings-change invalidation", async () => {
     const m = makeMachine();
-    const runner = registerSurface(m);
+    registerSurface(m);
     const firstFinished = deferred<void>();
     // Schedule a long-running prompt so the command stays queued behind it.
-    m.schedule(() => true, async () => { await firstFinished.promise; }, async () => {});
+    m.schedule({ kind: "binding" }, async () => { await firstFinished.promise; }, async () => {});
     let commandRan = false;
     m.schedule(
-      () => m.isRegisteredRunner(runner),
+      { kind: "binding" },
       async () => { commandRan = true; },
       async () => {},
       { isPrompt: false },
@@ -447,35 +460,41 @@ describe("RuntimeMachine queue and serial executor", () => {
 
     firstFinished.resolve(undefined);
     await m.queueSettled();
-    // After the first prompt finishes, the command runs but is fenced because
-    // the old runner was disposed (isCurrent returns false).
-    expect(commandRan).toBe(false);
+    // Binding authority survives same-binding runtime replacement.
+    expect(commandRan).toBe(true);
     creation.complete();
   });
 
-  it("calls onFenced when isCurrent returns false before starting", async () => {
+  it("fences work whose declared runtime is not current before starting", async () => {
     const m = makeMachine();
+    registerSurface(m);
+    const staleRunner = fakeRunner();
     const firstFinished = deferred<void>();
-    let fenced = false;
-    m.schedule(() => true, async () => { await firstFinished.promise; }, async () => {});
+    let fenced = 0;
+    let settled = 0;
+    m.schedule({ kind: "binding" }, async () => { await firstFinished.promise; }, async () => {});
     m.schedule(
-      () => false,
+      { kind: "current-runtime", runner: staleRunner },
       async () => {},
       async () => {},
-      { onFenced: () => { fenced = true; } },
+      {
+        onFenced: () => { fenced += 1; },
+        onSettled: () => { settled += 1; },
+      },
     );
     firstFinished.resolve(undefined);
     await m.queueSettled();
-    expect(fenced).toBe(true);
+    expect(fenced).toBe(1);
+    expect(settled).toBe(1);
   });
 
-  it("calls onFenced when isCurrent becomes false during execution", async () => {
+  it("calls onFenced when machine-held authority becomes stale during execution", async () => {
     const m = makeMachine();
     const runner = registerSurface(m);
     const midTurn = deferred<void>();
     let fenced = false;
     m.schedule(
-      () => m.isRegisteredRunner(runner),
+      { kind: "current-runtime", runner },
       async () => { await midTurn.promise; },
       async () => {},
       { onFenced: () => { fenced = true; } },
@@ -486,6 +505,108 @@ describe("RuntimeMachine queue and serial executor", () => {
     midTurn.resolve(undefined);
     await m.queueSettled();
     expect(fenced).toBe(true);
+  });
+});
+
+describe("RuntimeMachine immediate runtime admission", () => {
+  it("atomically accepts one idle cold turn and classifies a concurrent turn busy", async () => {
+    const m = makeMachine();
+    const started = deferred<void>();
+    const release = deferred<void>();
+    let runnerAtAdmission: AgentRunner | null | undefined;
+    const first = m.admitImmediateRuntimeWork(async (context) => {
+      runnerAtAdmission = context.runnerAtAdmission;
+      started.resolve(undefined);
+      await release.promise;
+      return { kind: "completed" };
+    });
+    const second = m.admitImmediateRuntimeWork(async () => ({ kind: "completed" }));
+
+    expect(first.kind).toBe("accepted");
+    expect(second).toEqual({ kind: "busy" });
+    await started.promise;
+    expect(runnerAtAdmission).toBeNull();
+    release.resolve(undefined);
+    if (first.kind !== "accepted") throw new Error("expected accepted admission");
+    expect(await first.settlement).toEqual({ kind: "completed" });
+  });
+
+  it("reports busy for any active prompt or command entry", async () => {
+    for (const isPrompt of [true, false]) {
+      const m = makeMachine();
+      const release = deferred<void>();
+      m.schedule(
+        { kind: "binding" },
+        async () => { await release.promise; },
+        async () => {},
+        { isPrompt },
+      );
+      expect(m.admitImmediateRuntimeWork(async () => ({ kind: "completed" })))
+        .toEqual({ kind: "busy" });
+      release.resolve(undefined);
+      await m.queueSettled();
+    }
+  });
+
+  it("holds a warm admission to its runner and fences it after invalidation", async () => {
+    const m = makeMachine();
+    const runner = registerSurface(m);
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const admission = m.admitImmediateRuntimeWork(async (context) => {
+      expect(context.runnerAtAdmission).toBe(runner);
+      started.resolve(undefined);
+      await release.promise;
+      return { kind: "completed" };
+    });
+    if (admission.kind !== "accepted") throw new Error("expected accepted admission");
+    await started.promise;
+    const invalidation = m.invalidate("binding-change");
+    release.resolve(undefined);
+    await invalidation;
+    expect(await admission.settlement).toEqual({ kind: "fenced" });
+  });
+
+  it("settles explicit fences and current failures structurally", async () => {
+    const m = makeMachine();
+    const explicitlyFenced = m.admitImmediateRuntimeWork(async () => ({ kind: "fenced" }));
+    if (explicitlyFenced.kind !== "accepted") throw new Error("expected accepted admission");
+    expect(await explicitlyFenced.settlement).toEqual({ kind: "fenced" });
+
+    const failure = new Error("immediate failure");
+    const failed = m.admitImmediateRuntimeWork(async () => { throw failure; });
+    if (failed.kind !== "accepted") throw new Error("expected accepted admission");
+    expect(await failed.settlement).toEqual({ kind: "failed", error: failure });
+  });
+
+  it("returns closed or fenced without installing work", () => {
+    const closed = makeMachine("closed", false);
+    expect(closed.admitImmediateRuntimeWork(async () => ({ kind: "completed" })))
+      .toEqual({ kind: "closed" });
+
+    const internal = makeMachine("internal");
+    internal.registerInternalRuntime(fakeRunner());
+    expect(internal.admitImmediateRuntimeWork(async () => ({ kind: "completed" })))
+      .toEqual({ kind: "fenced" });
+  });
+
+  it("bounds shutdown while accepted immediate work is blocked", async () => {
+    const releasedByDispose = deferred<void>();
+    const runner = fakeRunner(async () => { releasedByDispose.resolve(undefined); });
+    const m = makeMachine();
+    registerSurface(m, runner);
+    const started = deferred<void>();
+    const admission = m.admitImmediateRuntimeWork(async () => {
+      started.resolve(undefined);
+      await releasedByDispose.promise;
+      return { kind: "completed" };
+    });
+    if (admission.kind !== "accepted") throw new Error("expected accepted admission");
+    await started.promise;
+
+    await settlesWithin(m.shutdown());
+    expect(await admission.settlement).toEqual({ kind: "fenced" });
+    expect(m.currentPhase).toBe("idle");
   });
 });
 
@@ -633,17 +754,117 @@ describe("RuntimeMachine drain set", () => {
 // ─── internal runtimes ───────────────────────────────────────────────
 
 describe("RuntimeMachine internal runtimes", () => {
-  it("internal runtime tickets are always current until disposed", async () => {
+  it("replacing an internal registration fences tickets from the prior registration", async () => {
     const m = makeMachine();
-    m.registerInternalRuntime(fakeRunner());
-    expect(m.isInternalRuntime()).toBe(true);
+    const prior = fakeRunner();
+    m.registerInternalRuntime(prior);
+    const release = deferred<void>();
+    let priorFenced = false;
+    m.schedule(
+      { kind: "internal-runtime", runner: prior },
+      async () => { await release.promise; },
+      async () => {},
+      { onFenced: () => { priorFenced = true; } },
+    );
+    await Promise.resolve();
 
-    // An internal runtime can be re-registered (e.g. for a new dreaming turn)
-    m.registerInternalRuntime(fakeRunner());
-    expect(m.isInternalRuntime()).toBe(true);
+    const replacement = fakeRunner();
+    m.registerInternalRuntime(replacement);
+    release.resolve(undefined);
+    await m.queueSettled();
 
-    await m.invalidate("shutdown");
-    expect(m.isInternalRuntime()).toBe(false);
+    expect(priorFenced).toBe(true);
+    expect(m.isRegisteredRunner(replacement)).toBe(true);
+  });
+
+  it("disposes replaced and current internal runners so blocked work and shutdown terminate", async () => {
+    const m = makeMachine();
+    const promptStarted = deferred<void>();
+    const disposedA = deferred<void>();
+    let disposeA = 0;
+    let disposeB = 0;
+    let fenced = 0;
+    let settled = 0;
+    let postFenceEffects = 0;
+
+    const runnerA = {
+      prompt: async (): Promise<void> => {
+        promptStarted.resolve(undefined);
+        await disposedA.promise;
+      },
+      dispose: async (): Promise<void> => {
+        disposeA += 1;
+        disposedA.resolve(undefined);
+      },
+    } as unknown as AgentRunner;
+    const runnerB = {
+      dispose: async (): Promise<void> => { disposeB += 1; },
+    } as unknown as AgentRunner;
+
+    m.registerInternalRuntime(runnerA);
+    m.schedule(
+      { kind: "internal-runtime", runner: runnerA },
+      async (authority) => {
+        await runnerA.prompt("blocked", {} as never);
+        if (authority.isCurrent()) postFenceEffects += 1;
+      },
+      async () => {},
+      {
+        onFenced: () => { fenced += 1; },
+        onSettled: () => { settled += 1; },
+      },
+    );
+    await promptStarted.promise;
+
+    m.registerInternalRuntime(runnerB);
+    expect(m.isRegisteredRunner(runnerB)).toBe(true);
+
+    await settlesWithin(m.shutdown());
+    expect(disposeA).toBe(1);
+    expect(disposeB).toBe(1);
+    expect(postFenceEffects).toBe(0);
+    expect(fenced).toBe(1);
+    expect(settled).toBe(1);
+    expect(m.currentPhase).toBe("idle");
+  });
+
+  it("reports a replaced internal runner disposal failure during shutdown", async () => {
+    const m = makeMachine();
+    const cleanupFailure = new Error("internal replacement cleanup failed");
+    m.registerInternalRuntime(fakeRunner(async () => { throw cleanupFailure; }));
+    m.registerInternalRuntime(fakeRunner());
+
+    await expect(m.shutdown()).rejects.toThrow("internal replacement cleanup failed");
+  });
+
+  it("bootstrap authority survives creation and adopts the registered runner", async () => {
+    const m = makeMachine();
+    const creationStarted = deferred<void>();
+    const runnerReady = deferred<void>();
+    let adopted = false;
+    let currentAfterAdoption = false;
+
+    m.schedule(
+      { kind: "bootstrap" },
+      async (authority) => {
+        creationStarted.resolve(undefined);
+        await runnerReady.promise;
+        const runner = m.getRunner();
+        if (runner === null) throw new Error("runner not registered");
+        adopted = authority.adoptCurrentRunner(runner);
+        currentAfterAdoption = authority.isCurrent();
+      },
+      async () => {},
+    );
+    await creationStarted.promise;
+
+    const runner = fakeRunner();
+    registerSurface(m, runner);
+    runnerReady.resolve(undefined);
+    await m.queueSettled();
+
+    expect(adopted).toBe(true);
+    expect(currentAfterAdoption).toBe(true);
   });
 });
 
@@ -653,7 +874,7 @@ describe("RuntimeMachine shutdown", () => {
   it("terminates after draining all work", async () => {
     const m = makeMachine();
     registerSurface(m, fakeRunner());
-    m.schedule(() => true, async () => {}, async () => {});
+    m.schedule({ kind: "binding" }, async () => {}, async () => {});
 
     await m.shutdown();
     expect(m.hasRunner()).toBe(false);
@@ -665,8 +886,8 @@ describe("RuntimeMachine shutdown", () => {
     const firstFinished = deferred<void>();
     const order: string[] = [];
     registerSurface(m, fakeRunner(async () => { firstFinished.resolve(undefined); }));
-    m.schedule(() => true, async () => { order.push("first"); await firstFinished.promise; }, async () => {});
-    m.schedule(() => true, async () => { order.push("second"); }, async () => {});
+    m.schedule({ kind: "binding" }, async () => { order.push("first"); await firstFinished.promise; }, async () => {});
+    m.schedule({ kind: "binding" }, async () => { order.push("second"); }, async () => {});
 
     await m.shutdown();
     expect(order).toEqual(["first"]);
@@ -725,168 +946,216 @@ describe("RuntimeMachine seeded interleaving property test", () => {
     };
   }
 
-  interface WorkRecord {
-    readonly id: number;
-    started: boolean;
-    executed: boolean;
-    fenced: boolean;
-    settled: boolean;
-    /** The epoch at schedule time. */
-    epoch: number;
-    /** Whether the original runner was still registered when run was entered. */
-    runnerRegisteredAtStart: boolean;
+  interface ControlledGate {
+    readonly promise: Promise<void>;
+    readonly release: () => void;
+    readonly isReleased: () => boolean;
   }
 
-  /**
-   * Run one randomized trial. The machine starts with a registered runner so
-   * that `isCurrent` closures can reference it. Operations are applied in a
-   * random order. Invariants are checked at the end.
-   */
+  function controlledGate(): ControlledGate {
+    const control = deferred<void>();
+    let released = false;
+    return {
+      promise: control.promise,
+      release: () => {
+        if (released) return;
+        released = true;
+        control.resolve(undefined);
+      },
+      isReleased: () => released,
+    };
+  }
+
+  interface TrackedRunner {
+    readonly runner: AgentRunner;
+    readonly gate: ControlledGate;
+    disposeCalls: number;
+  }
+
+  function trackedRunner(): TrackedRunner {
+    const gate = controlledGate();
+    let tracked!: TrackedRunner;
+    const runner = {
+      dispose: async () => {
+        tracked.disposeCalls += 1;
+        gate.release();
+      },
+    } as unknown as AgentRunner;
+    tracked = { runner, gate, disposeCalls: 0 };
+    return tracked;
+  }
+
+  interface WorkRecord {
+    readonly intent: WorkIntent["kind"];
+    readonly settledPromise: Promise<void>;
+    readonly startedPromise: Promise<void>;
+    runCount: number;
+    fencedCount: number;
+    settledCount: number;
+    errorCount: number;
+    effects: number;
+    staleAfterAwait: boolean;
+    adopted: boolean;
+  }
+
   async function runTrial(seed: number): Promise<void> {
     const rng = mulberry32(seed);
     const m = makeMachine(`trial-${seed}`);
-    const runner = registerSurface(m);
+    const runners: TrackedRunner[] = [];
+    const manualGates: ControlledGate[] = [];
+    const records: WorkRecord[] = [];
+    const seenIntents = new Set<WorkIntent["kind"]>();
 
-    const workRecords: WorkRecord[] = [];
-    let workIdCounter = 0;
-    const pendingSettled: Promise<void>[] = [];
+    const createAndTrackRunner = (): TrackedRunner => {
+      const tracked = trackedRunner();
+      runners.push(tracked);
+      return tracked;
+    };
 
-    // The runner's dispose resolves immediately — we want shutdown to
-    // terminate promptly.
-    const opCount = 20 + Math.floor(rng() * 30);
-    let shutdownCalled = false;
+    let current = createAndTrackRunner();
+    m.registerInternalRuntime(current.runner);
 
-    for (let i = 0; i < opCount; i++) {
-      if (shutdownCalled) break;
+    const admit = (kind: WorkIntent["kind"]): WorkRecord => {
+      const settledControl = deferred<void>();
+      const startedControl = deferred<void>();
+      const manualGate = kind === "binding" ? controlledGate() : undefined;
+      if (manualGate !== undefined) manualGates.push(manualGate);
+      const admissionRunner = current;
+      const intent: WorkIntent = kind === "binding" || kind === "bootstrap"
+        ? { kind }
+        : { kind, runner: admissionRunner.runner };
+      const record: WorkRecord = {
+        intent: kind,
+        settledPromise: settledControl.promise,
+        startedPromise: startedControl.promise,
+        runCount: 0,
+        fencedCount: 0,
+        settledCount: 0,
+        errorCount: 0,
+        effects: 0,
+        staleAfterAwait: false,
+        adopted: false,
+      };
+      records.push(record);
+      seenIntents.add(kind);
+
+      const admitted = m.schedule(
+        intent,
+        async (authority) => {
+          record.runCount += 1;
+          startedControl.resolve(undefined);
+          let gate: ControlledGate;
+          if (kind === "bootstrap") {
+            const registered = m.getRunner();
+            const runnerAtStart = runners.find((candidate) => candidate.runner === registered);
+            if (runnerAtStart === undefined) return;
+            record.adopted = authority.adoptCurrentRunner(runnerAtStart.runner);
+            if (!record.adopted) return;
+            gate = runnerAtStart.gate;
+          } else if (kind === "binding") {
+            gate = manualGate!;
+          } else {
+            gate = admissionRunner.gate;
+          }
+          await gate.promise;
+          if (authority.isCurrent()) {
+            record.effects += 1;
+          } else {
+            record.staleAfterAwait = true;
+          }
+        },
+        async () => { record.errorCount += 1; },
+        {
+          onFenced: () => { record.fencedCount += 1; },
+          onSettled: () => {
+            record.settledCount += 1;
+            settledControl.resolve(undefined);
+          },
+        },
+      );
+      if (!admitted) throw new Error(`trial ${seed}: admission unexpectedly closed`);
+      return record;
+    };
+
+    const intentOrder: WorkIntent["kind"][] = [
+      "current-runtime",
+      "binding",
+      "internal-runtime",
+      "bootstrap",
+    ];
+    let nextIntent = 0;
+
+    for (let i = 0; i < 36; i++) {
       const roll = rng();
-      if (roll < 0.45) {
-        // admit
-        const id = workIdCounter++;
-        const record: WorkRecord = {
-          id,
-          started: false,
-          executed: false,
-          fenced: false,
-          settled: false,
-          epoch: m.epoch,
-          runnerRegisteredAtStart: false,
-        };
-        workRecords.push(record);
-        // The isCurrent closure checks if the runner is still registered.
-        // After invalidation, the runner is fenced, so isCurrent returns false.
-        const isCurrent = (): boolean => m.isRegisteredRunner(runner);
-        const settledPromise = new Promise<void>((resolve) => {
-          const admitted = m.schedule(
-            isCurrent,
-            async (check) => {
-              record.started = true;
-              // Capture whether the runner is still registered at the
-              // moment run is entered. If the serial executor's commit
-              // point is working, this must be true — the pump checks
-              // isCurrent() before calling run. A promise-chain design
-              // that calls run after the runner is disposed would fail
-              // this check.
-              record.runnerRegisteredAtStart = m.isRegisteredRunner(runner);
-              if (check()) {
-                record.executed = true;
-              }
-            },
-            async () => {},
-            {
-              onFenced: () => { record.fenced = true; },
-              onSettled: () => { record.settled = true; resolve(undefined); },
-            },
-          );
-          if (!admitted) {
-            // Admission closed — the work was rejected.
-            record.fenced = true;
-            record.settled = true;
-            resolve(undefined);
-          }
-        });
-        pendingSettled.push(settledPromise);
-      } else if (roll < 0.60) {
-        // cancel
+      if (roll < 0.52) {
+        admit(intentOrder[nextIntent % intentOrder.length]!);
+        nextIntent += 1;
+        await Promise.resolve();
+      } else if (roll < 0.64) {
         m.cancelPending();
-      } else if (roll < 0.85) {
-        // invalidate
-        const reasonRoll = rng();
-        const reason: InvalidationReason =
-          reasonRoll < 0.4 ? "settings-change" : reasonRoll < 0.8 ? "binding-change" : "shutdown";
-        if (reason === "shutdown") {
-          // Can't close admission on the machine directly — the host does that.
-          // Simulate by just using binding-change here; shutdown is tested
-          // separately via the shutdown op.
-          m.invalidate("binding-change");
-        } else {
-          m.invalidate(reason);
-        }
-        // Re-register a runner so subsequent admits have a current target.
-        // This mimics the lifecycle creating a new runner after invalidation.
-        if (m.currentPhase === "idle" && !shutdownCalled) {
-          try {
-            registerSurface(m, fakeRunner());
-          } catch {
-            // A prior disposal may still be draining — skip re-registration.
-          }
-        }
+      } else if (roll < 0.76) {
+        const replacement = createAndTrackRunner();
+        m.registerInternalRuntime(replacement.runner);
+        current = replacement;
+        await Promise.resolve();
+      } else if (roll < 0.86) {
+        current.gate.release();
+      } else if (roll < 0.92) {
+        const gate = manualGates.find((candidate) => !candidate.isReleased());
+        gate?.release();
       } else {
-        // shutdown
-        shutdownCalled = true;
+        const reason: InvalidationReason = rng() < 0.5 ? "settings-change" : "binding-change";
+        await m.invalidate(reason);
+        await m.awaitSettled();
+        const replacement = createAndTrackRunner();
+        m.registerInternalRuntime(replacement.runner);
+        current = replacement;
       }
     }
 
-    // Wait for all queued work to settle.
-    await Promise.all(pendingSettled);
-
-    if (shutdownCalled) {
-      await m.shutdown();
+    // Ensure every authority class participates even for an unusually sparse
+    // random admission sequence.
+    for (const kind of intentOrder) {
+      if (!seenIntents.has(kind)) admit(kind);
     }
 
-    // ─── invariant 1: no work enters run after its runner is disposed ───
-    // The serial executor's commit point checks isCurrent() before calling
-    // run. If run is entered, the runner must still be registered. A
-    // promise-chain design that calls run after the runner is disposed
-    // would fail this check — runnerRegisteredAtStart would be false.
-    for (const record of workRecords) {
-      if (record.started && !record.runnerRegisteredAtStart) {
-        throw new Error(
-          `trial ${seed}: work ${record.id} entered run after runner was disposed`,
-        );
-      }
-    }
+    // Settle the randomized phase, then inspect all callback and effect
+    // invariants before constructing a dedicated outstanding shutdown race.
+    for (const gate of manualGates) gate.release();
+    for (const tracked of runners) tracked.gate.release();
+    await settlesWithin(Promise.all(records.map((record) => record.settledPromise)).then(() => {}));
 
-    // ─── invariant 2: no ticket leaks ───
-    // Every scheduled work record must have settled.
-    for (const record of workRecords) {
-      if (!record.settled) {
-        throw new Error(`trial ${seed}: work ${record.id} did not settle (ticket leak)`);
-      }
-    }
+    const finalRunner = createAndTrackRunner();
+    m.registerInternalRuntime(finalRunner.runner);
+    current = finalRunner;
+    const outstanding = admit("internal-runtime");
+    await outstanding.startedPromise;
 
-    // ─── invariant 3: shutdown terminates ───
-    // If shutdown was called, the machine must be idle after.
-    if (shutdownCalled) {
-      if (m.currentPhase !== "idle") {
-        throw new Error(
-          `trial ${seed}: machine not idle after shutdown (phase=${m.currentPhase})`,
-        );
-      }
-      if (m.hasRunner()) {
-        throw new Error(`trial ${seed}: runner still registered after shutdown`);
+    // Shutdown begins while work is blocked. Disposing the current runner is
+    // what releases that work; the bounded await proves shutdown owns both
+    // the runner and queue lifetime rather than relying on pre-settled tests.
+    await settlesWithin(m.shutdown());
+
+    for (const record of records) {
+      expect(record.runCount).toBeLessThanOrEqual(1);
+      expect(record.fencedCount).toBeLessThanOrEqual(1);
+      expect(record.settledCount).toBe(1);
+      expect(record.errorCount).toBe(0);
+      expect(record.effects).toBeLessThanOrEqual(1);
+      if (record.staleAfterAwait) expect(record.effects).toBe(0);
+      if (record.intent === "bootstrap" && !record.adopted) {
+        expect(record.effects).toBe(0);
       }
     }
+    for (const tracked of runners) {
+      expect(tracked.disposeCalls).toBe(1);
+    }
+    expect(m.currentPhase).toBe("idle");
+    expect(m.hasRunner()).toBe(false);
   }
 
-  it("upholds invariants across 100 seeded trials", async () => {
-    for (let seed = 1; seed <= 100; seed++) {
-      await runTrial(seed);
-    }
-  });
-
-  it("upholds invariants across 50 more seeds with higher invalidation rate", async () => {
-    // This is a separate test to exercise different random sequences.
-    for (let seed = 1001; seed <= 1050; seed++) {
+  it("upholds held-authority invariants across 50 seeded asynchronous trials", async () => {
+    for (let seed = 1; seed <= 50; seed++) {
       await runTrial(seed);
     }
   });

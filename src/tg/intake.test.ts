@@ -500,6 +500,53 @@ describe("Telegram intake", () => {
     expect(replies).toEqual([]);
   });
 
+  it("installs cold text bootstrap work before releasing runtime admission", async () => {
+    const { intake, runtimeHost } = makeHarness();
+    const promptBlock = deferred();
+    MockAgentRunner.nextPrompt = async () => { await promptBlock.promise; };
+    let releases = 0;
+    const handle: UpdateHandle = {
+      releaseRuntimeAdmission: () => { releases += 1; },
+    };
+    const message = makeMessage();
+
+    await intake.handleText(message, "cold text", handle);
+    const conversation = intake.lifecycle.inspect(dmSurface(1));
+    expect(conversation).not.toBeNull();
+    expect(releases).toBe(1);
+    expect(runtimeHost.hasPromptWork(conversation!.id)).toBe(true);
+
+    promptBlock.resolve();
+    await waitFor(() => runners[0]?.prompt.mock.calls.length === 1);
+    await waitFor(() => !runtimeHost.hasPromptWork(conversation!.id));
+  });
+
+  it("installs cold media bootstrap work before releasing runtime admission", async () => {
+    const { intake, runtimeHost } = makeHarness();
+    const downloadBlock = deferred();
+    globalThis.fetch = mock(async () => {
+      await downloadBlock.promise;
+      return new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-length": "3" },
+      });
+    }) as unknown as typeof fetch;
+    let releases = 0;
+    const handle: UpdateHandle = {
+      releaseRuntimeAdmission: () => { releases += 1; },
+    };
+    const message = makeMessage();
+
+    await intake.handlePhoto(message, fakeApi(), ["photo"], "cold media", handle);
+    const conversation = intake.lifecycle.inspect(dmSurface(1));
+    expect(conversation).not.toBeNull();
+    expect(releases).toBe(1);
+    expect(runtimeHost.hasPromptWork(conversation!.id)).toBe(true);
+
+    downloadBlock.resolve();
+    await waitFor(() => runners[0]?.prompt.mock.calls.length === 1);
+    await waitFor(() => !runtimeHost.hasPromptWork(conversation!.id));
+  });
+
   it("writes assistant transcript with the destination surface id after a cross-surface resume", async () => {
     const { cfg, intake } = makeHarness();
     const replies1: string[] = [];
@@ -541,7 +588,7 @@ describe("Telegram intake", () => {
     const message2 = makeMessage(replies2, { surface: dmSurface(2) });
 
     await intake.handleText(message1, "first");
-    await waitFor(() => runners[0]!.isStreaming);
+    await waitFor(() => runners[0]?.isStreaming ?? false);
 
     await intake.handleText(message2, "second");
     await waitFor(() => runners[1]?.prompt?.mock?.calls?.length === 1);
@@ -1473,6 +1520,7 @@ describe("Telegram intake", () => {
       };
 
       await intake.handleGuestMessage(message, "[prepared] hi");
+      await waitFor(() => results.length === 1);
 
       expect(runners).toHaveLength(1);
       expect(results).toHaveLength(1);
@@ -1491,6 +1539,7 @@ describe("Telegram intake", () => {
       };
 
       await intake.handleGuestMessage(message, "raw guest text");
+      await waitFor(() => captured !== undefined);
 
       expect(captured).toBe("raw guest text");
       expect(results[0]!.type).toBe("article");
@@ -1503,10 +1552,45 @@ describe("Telegram intake", () => {
       MockAgentRunner.nextPrompt = async () => {};
 
       await intake.handleGuestMessage(message, "hi");
+      await waitFor(() => results.length === 1);
 
       expect(results).toHaveLength(1);
       const article = results[0] as { type: "article"; input_message_content: { message_text: string } };
       expect(article.input_message_content.message_text).toBe("(no response)");
+    });
+
+    it("installs cold admission before release and classifies a concurrent pre-stream guest busy", async () => {
+      const { intake } = makeHarness();
+      const pending = deferred();
+      MockAgentRunner.nextPrompt = async (_content, buffer) => {
+        (buffer as GuestReplySink).onTextDelta("first done");
+        await pending.promise;
+      };
+      let releases = 0;
+      const handle: UpdateHandle = {
+        releaseRuntimeAdmission: () => { releases += 1; },
+      };
+      const firstGuest = makeGuestMessage();
+
+      const first = intake.handleGuestMessage(firstGuest.message, "first", handle);
+      await waitFor(() => releases === 1);
+      expect(releases).toBe(1);
+      expect(firstGuest.results).toHaveLength(0);
+
+      const secondGuest = makeGuestMessage();
+      await intake.handleGuestMessage(secondGuest.message, "second");
+      expect(secondGuest.results).toHaveLength(1);
+      const busy = secondGuest.results[0] as {
+        type: "article";
+        input_message_content: { message_text: string };
+      };
+      expect(busy.input_message_content.message_text).toContain("already thinking");
+
+      pending.resolve();
+      await first;
+      await waitFor(() => firstGuest.results.length === 1);
+      expect(runners).toHaveLength(1);
+      expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
     });
 
     it("sends a busy fallback without prompting when the runner is streaming", async () => {
@@ -1529,7 +1613,46 @@ describe("Telegram intake", () => {
 
       pending.resolve();
       await first;
+      await waitFor(() => !(runners[0]?.isStreaming ?? true));
       await flushMicrotasks();
+    });
+
+    it("releases a closed admission classification without replying", async () => {
+      const { intake, runtimeHost } = makeHarness();
+      runtimeHost.closeAdmission();
+      const guest = makeGuestMessage();
+      let releases = 0;
+      const handle: UpdateHandle = {
+        releaseRuntimeAdmission: () => { releases += 1; },
+      };
+
+      await intake.handleGuestMessage(guest.message, "closed", handle);
+
+      expect(releases).toBe(1);
+      expect(guest.results).toHaveLength(0);
+      expect(runners).toHaveLength(0);
+    });
+
+    it("releases a fenced classification without replying", async () => {
+      const { intake, runtimeHost } = makeHarness();
+      const conversation = await intake.lifecycle.resolveOrStart(guestSurface(99));
+      runtimeHost.registerInternalRuntime(
+        conversation.id,
+        new MockAgentRunner({
+          sessionId: conversation.id,
+          memoryContext: { kind: "internal", caller: { kind: "internal" } },
+        }) as unknown as AgentRunner,
+      );
+      const guest = makeGuestMessage();
+      let releases = 0;
+      const handle: UpdateHandle = {
+        releaseRuntimeAdmission: () => { releases += 1; },
+      };
+
+      await intake.handleGuestMessage(guest.message, "fenced", handle);
+
+      expect(releases).toBe(1);
+      expect(guest.results).toHaveLength(0);
     });
 
     it("replies with the error fallback when prompt rejects", async () => {
@@ -1538,6 +1661,7 @@ describe("Telegram intake", () => {
       MockAgentRunner.nextPrompt = async () => { throw new Error("model down"); };
 
       await intake.handleGuestMessage(message, "hi");
+      await waitFor(() => results.length === 1);
 
       expect(results).toHaveLength(1);
       const article = results[0] as { type: "article"; input_message_content: { message_text: string } };
@@ -1554,7 +1678,41 @@ describe("Telegram intake", () => {
 
       // Must not throw — the expired id is an inherent limitation.
       await expect(intake.handleGuestMessage(message, "hi")).resolves.toBeUndefined();
+      await waitFor(() => runners[0]?.prompt.mock.calls.length === 1);
+      await waitFor(() => !(runners[0]?.isStreaming ?? true));
       expect(results).toHaveLength(0);
+    });
+
+    it("keeps unresolved delivery update-owned while runtime shutdown completes", async () => {
+      const { intake, runtimeHost } = makeHarness();
+      const deliveryStarted = deferred();
+      const deliveryDone = deferred();
+      const results: InlineQueryResult[] = [];
+      const message: GuestMessage = {
+        surface: guestSurface(99),
+        replyVia: async (result) => {
+          results.push(result);
+          deliveryStarted.resolve();
+          await deliveryDone.promise;
+        },
+      };
+      MockAgentRunner.nextPrompt = async (_content, buffer) => {
+        (buffer as GuestReplySink).onTextDelta("delivery pending");
+      };
+
+      const handler = intake.handleGuestMessage(message, "hi");
+      await deliveryStarted.promise;
+      await runtimeHost.disposeAll();
+
+      let handlerSettled = false;
+      void handler.then(() => { handlerSettled = true; });
+      await Promise.resolve();
+      expect(handlerSettled).toBe(false);
+      expect(results).toHaveLength(1);
+
+      deliveryDone.resolve();
+      await handler;
+      expect(handlerSettled).toBe(true);
     });
 
     it("swallows a replyVia rejection on the error-fallback path too", async () => {
@@ -1564,6 +1722,8 @@ describe("Telegram intake", () => {
       MockAgentRunner.nextPrompt = async () => { throw new Error("turn failed"); };
 
       await expect(intake.handleGuestMessage(message, "hi")).resolves.toBeUndefined();
+      await waitFor(() => runners[0]?.prompt.mock.calls.length === 1);
+      await waitFor(() => !(runners[0]?.isStreaming ?? true));
       expect(results).toHaveLength(0);
     });
 
@@ -1573,6 +1733,7 @@ describe("Telegram intake", () => {
       MockAgentRunner.nextPrompt = async () => {};
 
       await intake.handleGuestMessage(message, "first");
+      await waitFor(() => results.length === 1);
 
       // A guest binding for chat 7777 now exists.
       expect(intake.lifecycle.inspect(guestSurface(7777))).not.toBeNull();
@@ -1587,11 +1748,15 @@ describe("Telegram intake", () => {
         (buffer as GuestReplySink).onTextDelta("ack");
       };
 
-      await intake.handleGuestMessage(makeGuestMessage(7777).message, "first");
+      const firstGuest = makeGuestMessage(7777);
+      await intake.handleGuestMessage(firstGuest.message, "first");
+      await waitFor(() => firstGuest.results.length === 1);
       const firstConversation = intake.lifecycle.inspect(guestSurface(7777));
       expect(firstConversation).not.toBeNull();
 
-      await intake.handleGuestMessage(makeGuestMessage(7777).message, "second");
+      const secondGuest = makeGuestMessage(7777);
+      await intake.handleGuestMessage(secondGuest.message, "second");
+      await waitFor(() => secondGuest.results.length === 1);
       const secondConversation = intake.lifecycle.inspect(guestSurface(7777));
 
       expect(secondConversation!.id).toBe(firstConversation!.id);
@@ -1609,8 +1774,12 @@ describe("Telegram intake", () => {
       };
 
       await intake.handleGuestMessage(message, "a");
-      await intake.handleGuestMessage(makeGuestMessage().message, "b");
+      await waitFor(() => results.length === 1);
+      const second = makeGuestMessage();
+      await intake.handleGuestMessage(second.message, "b");
+      await waitFor(() => second.results.length === 1);
 
+      results.push(...second.results);
       const ids = results.map((r) => (r as { id: string }).id);
       expect(new Set(ids).size).toBe(ids.length);
       for (const r of results) {

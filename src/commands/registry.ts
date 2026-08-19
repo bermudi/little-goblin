@@ -42,7 +42,7 @@ import {
 } from "./skills.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
-import type { UpdateHandle } from "../shutdown/mod.ts";
+import { runtimeAdmission, type RuntimeAdmissionResult } from "../shutdown/mod.ts";
 import type { SystemTag } from "../tg/format.ts";
 
 // ---------------------------------------------------------------------------
@@ -54,10 +54,15 @@ export type SideEffect =
   | { kind: "runner-disposed"; conversationId: string }
   | { kind: "queue-prompt"; conversation: ConversationState; surface: Surface; text: string };
 
-export type DispatchResult =
+export type CommandCompletionResult =
   | { kind: "replied"; reply: string; tag?: SystemTag; sideEffects: SideEffect[] }
   | { kind: "handled"; sideEffects: SideEffect[] }
   | { kind: "fallthrough" };
+
+export type DispatchResult = CommandCompletionResult | {
+  kind: "admission";
+  admission: RuntimeAdmissionResult<CommandCompletionResult>;
+};
 
 export interface DispatchDeps {
   /** Deep conversation lifecycle; commands mutate bindings through this seam. */
@@ -93,8 +98,6 @@ export interface DispatchOpts {
   surface: Surface;
   conversation: ConversationState | null;
   existingRunner: AgentRunner | null;
-  /** Releases the Telegram update once a long-running command is attached. */
-  handle?: UpdateHandle;
   bot?: Bot;
 }
 
@@ -158,7 +161,7 @@ export interface CommandDef {
 // Helpers shared by handlers
 // ---------------------------------------------------------------------------
 
-function replied(reply: string, sideEffects: SideEffect[] = [], tag?: SystemTag): DispatchResult {
+function replied(reply: string, sideEffects: SideEffect[] = [], tag?: SystemTag): CommandCompletionResult {
   return { kind: "replied", reply, sideEffects, tag };
 }
 
@@ -185,26 +188,32 @@ const cancelHandler: CommandHandler = async ({ deps, conversation, existingRunne
   // If there is a queued-but-not-yet-started prompt (e.g. a coalescer flush
   // that has scheduled but not yet started), cancel it first so the reply
   // reflects the work that was actually stopped.
-  const cancelledPending = conversation
-    ? await deps.dispatcher?.cancelPending(conversation.id)
-    : false;
-  const cascade = await deps.interruptAndCascade(
-    existingRunner,
-    deps.subagentRunner,
-    DEFAULT_CASCADE_TIMEOUT_MS,
-    conversation?.id ?? null,
-    deps.externalAgentRunner,
-  );
-  if (cancelledPending) cascade.attemptedMain = true;
-  const tag: SystemTag = cascade.wedgedMain
-    ? "error"
-    : cascade.attemptedMain || cascade.attemptedSubagents > 0 || cascade.attemptedExternalAgents > 0
-    ? "ok"
-    : "info";
-  return replied(cancelReply({
-    cascade,
-    cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
-  }), [], tag);
+  const completion = (async (): Promise<CommandCompletionResult> => {
+    const cancelledPending = conversation
+      ? await deps.dispatcher?.cancelPending(conversation.id)
+      : false;
+    const cascade = await deps.interruptAndCascade(
+      existingRunner,
+      deps.subagentRunner,
+      DEFAULT_CASCADE_TIMEOUT_MS,
+      conversation?.id ?? null,
+      deps.externalAgentRunner,
+    );
+    if (cancelledPending) cascade.attemptedMain = true;
+    const tag: SystemTag = cascade.wedgedMain
+      ? "error"
+      : cascade.attemptedMain || cascade.attemptedSubagents > 0 || cascade.attemptedExternalAgents > 0
+      ? "ok"
+      : "info";
+    return replied(cancelReply({
+      cascade,
+      cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
+    }), [], tag);
+  })();
+  return {
+    kind: "admission",
+    admission: runtimeAdmission.handoff(completion),
+  };
 };
 
 const newHandler: CommandHandler = async ({ deps, surface, conversation }) => {
@@ -430,24 +439,35 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversati
   }
 };
 
-const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversation, handle }) => {
+const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversation }) => {
   const args = parseReviveSubagentArgs(rawText);
   if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY, [], "info");
   if (conversation === null || deps.dispatcher === undefined) {
     return replied("No active conversation to revive from.", [], "error");
   }
 
-  let attached = false;
-  try {
-    const revival = await deps.dispatcher.beginReviveSubagent(surface, conversation, args.id, args.prompt);
-    attached = true;
-    handle?.releaseRuntimeAdmission();
-    const result = await revival.result;
-    return replied(result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`, [], "ok");
-  } catch (err) {
-    if (!attached) handle?.releaseRuntimeAdmission();
-    log.error("revive failed", { id: args.id, ...boundedError(err) });
-    return replied(`Failed to revive subagent \`${args.id}\`.`, [], "error");
+  const attachment = await deps.dispatcher.admitReviveSubagent(
+    surface,
+    conversation,
+    args.id,
+    args.prompt,
+  );
+  const completion = attachment.completion.then(
+    (result) => replied(
+      result === "" ? `Revived subagent \`${args.id}\`.` : `Revived subagent \`${args.id}\`:\n${result}`,
+      [],
+      "ok",
+    ),
+    (err: unknown) => {
+      log.error("revive failed", { id: args.id, ...boundedError(err) });
+      return replied(`Failed to revive subagent \`${args.id}\`.`, [], "error");
+    },
+  );
+  switch (attachment.kind) {
+    case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(completion) };
+    case "busy": return { kind: "admission", admission: runtimeAdmission.busy(completion) };
+    case "fenced": return { kind: "admission", admission: runtimeAdmission.fenced(completion) };
+    case "rejected": return { kind: "admission", admission: runtimeAdmission.rejected(completion) };
   }
 };
 

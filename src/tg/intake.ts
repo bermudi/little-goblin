@@ -16,7 +16,11 @@ import { surfaceId, type Surface, type GuestSurface } from "../surface.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from "./attachments.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
-import type { TurnDispatcher, PromptContent } from "../orchestration/dispatcher.ts";
+import {
+  RuntimeAdmissionFailedBeforeDecisionError,
+  type TurnDispatcher,
+  type PromptContent,
+} from "../orchestration/dispatcher.ts";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 import type { WorkAuthority } from "../orchestration/conversation-runtime-host.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
@@ -25,7 +29,12 @@ import { transcribeWithGroq } from "../asr/mod.ts";
 import { GuestReplySink } from "./guest-sink.ts";
 import { type ReplyOpts, sendSystemReply } from "./format.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
-import type { UpdateHandle, UpdateGate } from "../shutdown/mod.ts";
+import {
+  completed,
+  runtimeAdmission,
+  type AdmissionResult,
+  type RuntimeAdmissionResult,
+} from "../shutdown/mod.ts";
 
 export type { PromptContent };
 
@@ -77,9 +86,6 @@ export interface TelegramIntakeOptions {
   scheduleStore?: ScheduleStore;
   /** Shared external agent runner. Wired in Phase 6 (bot.ts). */
   externalAgentRunner?: ExternalAgentRunner;
-  /** Process-level update gate that owns admission tracking and the
-   * coalescer close coupling. Replaces intake's local admission flag. */
-  gate: UpdateGate;
 }
 
 type ActiveTurn = {
@@ -90,7 +96,7 @@ type ActiveTurn = {
     run: (runner: AgentRunner, authority: WorkAuthority) => Promise<void>,
     failureLog: string,
     opts?: { replyModelNotCapable?: boolean },
-  ) => Promise<void>;
+  ) => Promise<AdmissionResult<void>>;
 };
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -168,17 +174,31 @@ async function downloadPhoto(
   return downloadFile(api, largest, botToken);
 }
 
-export function replyNoActiveSession(message: TelegramIntakeMessage, surface: Surface, kind: string): void {
-  if (surface.kind === "dm") {
-    sendSystemReply(message, "No active conversation. Use /new to start one.", "info").catch((err: unknown) => {
-      log.error("failed to send conversation prompt", { error: String(err), surfaceId: surfaceId(surface) });
-    });
-  }
+export function replyNoActiveSession(
+  message: TelegramIntakeMessage,
+  surface: Surface,
+  kind: string,
+): Promise<void> {
   log.debug(`dropping ${kind}: no conversation`, { surfaceId: surfaceId(surface) });
+  if (surface.kind !== "dm") return Promise.resolve();
+  return sendSystemReply(
+    message,
+    "No active conversation. Use /new to start one.",
+    "info",
+    { propagateErrors: true },
+  ).catch(
+    (err: unknown) => {
+      log.error("failed to send conversation prompt", {
+        error: String(err),
+        surfaceId: surfaceId(surface),
+      });
+      throw err;
+    },
+  );
 }
 
 export function createTelegramIntake(options: TelegramIntakeOptions) {
-  const { cfg, bot, subagentRunner, memoryStore, dispatcher, lifecycle, gate } = options;
+  const { cfg, bot, subagentRunner, memoryStore, dispatcher, lifecycle } = options;
 
   function recordAssistantReply(
     sessionId: string,
@@ -247,23 +267,31 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
    * semantics stay identical: create runners, dispose runners (severing their
    * prompt queue chain), or enqueue a fresh prompt.
    */
-  async function applySideEffects(sideEffects: SideEffect[], message: TelegramIntakeMessage): Promise<void> {
+  async function applySideEffects(
+    sideEffects: SideEffect[],
+    message: TelegramIntakeMessage,
+  ): Promise<RuntimeAdmissionResult<void> | null> {
+    let runtimeResult: RuntimeAdmissionResult<void> | null = null;
     for (const effect of sideEffects) {
       if (effect.kind === "runner-created") {
         await dispatcher.getOrCreateRunner(effect.conversation, effect.surface);
       } else if (effect.kind === "runner-disposed") {
         await dispatcher.disposeRunner(effect.conversationId);
       } else if (effect.kind === "queue-prompt") {
+        if (runtimeResult !== null) {
+          throw new Error("command attempted more than one runtime admission");
+        }
         const queueRunner = await dispatcher.getOrCreateRunner(effect.conversation, effect.surface);
         const admitted = scheduleFreshTurn(message, effect.surface, effect.conversation, queueRunner, effect.text, "queued prompt failed");
         if (!admitted) {
           log.error("queued prompt rejected at queue admission", { sessionId: effect.conversation.id });
-          await sendSystemReply(message, "Queued prompt was dropped: shutdown in progress.", "error").catch((err: unknown) => {
-            log.error("failed to send queued prompt drop reply", { error: String(err), sessionId: effect.conversation.id });
-          });
+          runtimeResult = runtimeAdmission.rejected(undefined);
+        } else {
+          runtimeResult = runtimeAdmission.handoff(undefined);
         }
       }
     }
+    return runtimeResult;
   }
 
   /**
@@ -308,10 +336,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           existingRunner: dispatcher.getRunner(session.id),
           bot,
         });
-        // Queue-timing commands always have a handler, so fallthrough is
-        // impossible here — but narrow for the typechecker regardless.
+        // Queue-timing commands cannot attach delegated work.
         if (result.kind === "fallthrough") return;
-        await applySideEffects(result.sideEffects, message);
+        if (result.kind === "admission") {
+          throw new Error(`queue-timing command ${command} returned delegated admission`);
+        }
+        const sideEffectAdmission = await applySideEffects(result.sideEffects, message);
+        if (sideEffectAdmission !== null) {
+          throw new Error(`queue-timing command ${command} attempted nested runtime admission`);
+        }
         if (result.kind === "replied") await sendSystemReply(message, result.reply, result.tag ?? "ok");
       },
       async (err) => {
@@ -327,60 +360,47 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     return { accepted, completed };
   }
 
-  async function steerOrFallbackToFreshTurn(
+  function steerOrFallbackToFreshTurn(
     message: TelegramIntakeMessage,
     surface: Surface,
     session: ConversationState,
     runner: AgentRunner,
     text: string,
-    handle?: UpdateHandle,
-  ): Promise<void> {
-    // One synchronous machine section either attaches the follow-up or
-    // admits the late-steer fallback. Telegram admission is released only
-    // after that decision, so shutdown cannot observe a released handle
-    // with neither a follow-up nor a queued fallback.
-    let decision: ReturnType<TurnDispatcher["steerOrQueue"]>;
-    try {
-      decision = dispatcher.steerOrQueue(
-        session,
-        { kind: "current-runtime", runner },
-        () => runner.followUp(message.prepare(text)),
-        async (authority) => {
-          if (!authority.isCurrent()) return;
-          const buffer = dispatcher.createMessageBuffer(surface, session);
-          await runner.prompt(message.prepare(text), buffer);
-        },
-        async (err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          log.error("runner prompt failed (late steer race fallback)", { error: msg, sessionId: session.id });
-        },
-      );
-    } finally {
-      handle?.releaseRuntimeAdmission();
-    }
+  ): RuntimeAdmissionResult<void> {
+    const decision = dispatcher.steerOrQueue(
+      session,
+      { kind: "current-runtime", runner },
+      () => runner.followUp(message.prepare(text)),
+      async (authority) => {
+        if (!authority.isCurrent()) return;
+        const buffer = dispatcher.createMessageBuffer(surface, session);
+        await runner.prompt(message.prepare(text), buffer);
+      },
+      async (err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error("runner prompt failed (late steer race fallback)", { error: msg, sessionId: session.id });
+      },
+    );
     if (decision.kind === "rejected") {
       log.error("late steer race fallback rejected at queue admission", { sessionId: session.id });
-      return;
+      return runtimeAdmission.rejected(undefined);
     }
-    if (decision.kind === "queued") return;
-    try {
-      await decision.followUp;
-    } catch (err) {
+    if (decision.kind === "queued") return runtimeAdmission.handoff(undefined);
+    const completion = decision.followUp.catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn("steer failed", { error: msg, sessionId: session.id });
       throw err;
-    }
+    });
+    return runtimeAdmission.handoff(completion);
   }
 
   async function resolveActiveTurn(
     message: TelegramIntakeMessage,
     kind: string,
-    handle?: UpdateHandle,
   ): Promise<ActiveTurn | null> {
     const surface = message.surface;
     if (!surface) {
       log.debug(`dropping ${kind}: no surface`);
-      handle?.releaseRuntimeAdmission();
       return null;
     }
 
@@ -391,7 +411,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       conversation = await lifecycle.resolveOrStart(surface);
     } catch (err) {
       log.error(`failed to resolve ${kind}`, { error: String(err), surfaceId: surfaceId(surface) });
-      handle?.releaseRuntimeAdmission();
       return null;
     }
     const session = conversation;
@@ -434,26 +453,19 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
               onError,
             );
           } catch (err) {
-            handle?.releaseRuntimeAdmission();
             throw err;
           }
         } else {
-          let runner: AgentRunner;
-          try {
-            runner = await dispatcher.getOrCreateRunner(session, surface);
-          } catch (err) {
-            handle?.releaseRuntimeAdmission();
-            throw err;
-          }
+          const runner = await dispatcher.getOrCreateRunner(session, surface);
           if (runner.isAbortTimedOut) {
-            handle?.releaseRuntimeAdmission();
-            sendSystemReply(message, WEDGED_RUNNER_REPLY, "error").catch((err: unknown) => {
+            const completion = sendSystemReply(message, WEDGED_RUNNER_REPLY, "error").catch((err: unknown) => {
               log.error("failed to send wedged runner reply", {
                 error: String(err),
                 sessionId: session.id,
               });
+              throw err;
             });
-            return;
+            return completed(completion);
           }
           admitted = dispatcher.schedulePrompt(
             session,
@@ -464,12 +476,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         }
         if (!admitted) {
           log.error("media prompt rejected at queue admission", { sessionId: session.id });
-          handle?.releaseRuntimeAdmission();
-          return;
+          return runtimeAdmission.rejected(undefined);
         }
-        // The machine owns cold preparation and work before the update barrier
-        // is released; shutdown can now fence/cancel either phase.
-        handle?.releaseRuntimeAdmission();
+        return runtimeAdmission.handoff(undefined);
       },
     };
   }
@@ -493,59 +502,31 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   async function handleText(
     message: TelegramIntakeMessage,
     rawText: string | undefined,
-    handle?: UpdateHandle,
-  ): Promise<void> {
-    if (!gate.admit("text")) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
+  ): Promise<AdmissionResult<void>> {
     const surface = message.surface;
     if (!surface) {
       log.debug("dropping message: no surface");
-      handle?.releaseRuntimeAdmission();
-      return;
+      return completed(undefined);
     }
 
     const command = parseCommand(rawText);
     const def = command !== null ? resolveCommand(command) : null;
-    // Avoid creating a conversation for unknown slash commands when no
-    // conversation is bound. Plain text, /new, and known commands are each
-    // responsible for their own behavior.
     const existingConversation = lifecycle.inspect(surface);
     if (!existingConversation && command !== null && command !== "/new" && def === null) {
-      if (surface.kind !== "guest") {
-        replyNoActiveSession(message, surface, "text");
-      }
-      handle?.releaseRuntimeAdmission();
-      return;
+      const delivery = surface.kind === "guest"
+        ? Promise.resolve()
+        : replyNoActiveSession(message, surface, "text");
+      return completed(delivery);
     }
 
     if (command !== null) {
-      // Commands, status reads, and scheduler-related interactions inspect the
-      // current binding without creating history.
-      const session = existingConversation ? existingConversation : null;
+      const session = existingConversation ?? null;
       const existingRunner = session ? dispatcher.getRunner(session.id) : null;
       const timing = resolveTiming(def, rawText ?? "");
-
-      // Queue-timing commands defer behind an in-flight turn so the runner is
-      // idle when they mutate state (model switch, project rebind, archive,
-      // compact, etc.). They also defer behind a prompt that has already started
-      // (isPrompting), e.g. a coalescer-flushed prompt whose handleText has
-      // already called runner.prompt, and behind any already-deferred command.
-      //
-      // An abort-timed-out runtime is different: its prompt cannot be used as
-      // a queue owner because it may never settle. Only registry-declared
-      // lifecycle recovery commands may bypass it; they synchronously
-      // invalidate the runtime before changing durable authority. Other
-      // queue-timing commands return the recovery guidance instead of lying
-      // that they will eventually run.
       const runnerIsWedged = existingRunner?.isAbortTimedOut === true;
       if (timing === "queue" && session && runnerIsWedged && !def?.mayRecoverWedgedRuntime) {
-        handle?.releaseRuntimeAdmission();
-        await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
-        return;
+        return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
       }
-      // Interrupt-timing (/cancel) and instant-timing commands run immediately.
       const busy = !runnerIsWedged && (
         existingRunner?.isStreaming ||
         existingRunner?.isPrompting ||
@@ -556,146 +537,135 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         runnerIsWedged && def?.mayRecoverWedgedRuntime === true;
       if (timing === "queue" && session && !recoverWedgedRuntime) {
         const admitted = scheduleDeferredCommand(message, surface, session, rawText ?? "", command);
-        if (admitted.accepted) {
-          handle?.releaseRuntimeAdmission();
-          if (busy) {
-            await sendSystemReply(message, "Queued. Will run after this turn.", "queued");
-          } else {
-            // Even an idle queue owns the command's serialization boundary.
-            // Await its completion so direct commands retain their normal
-            // reply timing; Telegram admission was released above so model
-            // work can still be unblocked by shutdown.
-            await admitted.completed;
-          }
-        } else {
-          log.info("deferred command rejected at queue admission", {
-            command,
-            sessionId: session.id,
-          });
-          handle?.releaseRuntimeAdmission();
+        if (!admitted.accepted) {
+          log.info("deferred command rejected at queue admission", { command, sessionId: session.id });
+          return runtimeAdmission.rejected(undefined);
         }
-        return;
+        const completion = busy
+          ? sendSystemReply(message, "Queued. Will run after this turn.", "queued")
+          : admitted.completed;
+        return runtimeAdmission.handoff(completion);
       }
 
       try {
-        const commandResult = handleCommand({
+        const commandResult = await handleCommand({
           command,
           deps: dispatchDeps,
           rawText: rawText ?? "",
           surface,
-
           conversation: session,
           existingRunner,
-          handle,
           bot,
         });
-        // Interrupt commands deliberately operate on an active runtime. Let
-        // shutdown begin after the interrupt has been invoked; waiting for
-        // its abort promise would prevent runtime disposal from unblocking it.
-        // `/compact` is queue-timing but releases early here for the no-session
-        // path: there is no active runtime to unblock, but releasing early is
-        // harmless and keeps the handle settled before the command result.
-        if (timing === "interrupt" || command === "/compact") handle?.releaseRuntimeAdmission();
-        const result = await commandResult;
-        if (result.kind !== "fallthrough") {
-          await applySideEffects(result.sideEffects, message);
-          handle?.releaseRuntimeAdmission();
-          if (result.kind === "handled") return;
-          await sendSystemReply(message, result.reply, result.tag ?? "ok");
-          return;
+        const finishCommand = async (
+          result: Exclude<typeof commandResult, { kind: "admission" }>,
+        ): Promise<AdmissionResult<void>> => {
+          if (result.kind === "fallthrough") return completed(undefined);
+          const sideEffectAdmission = await applySideEffects(result.sideEffects, message);
+          const queueRejected = sideEffectAdmission?.kind === "rejected" &&
+            result.sideEffects.some((effect) => effect.kind === "queue-prompt");
+          const delivery = sideEffectAdmission?.completion.then(async () => {
+            if (queueRejected) {
+              await sendSystemReply(
+                message,
+                "Queued prompt was dropped: shutdown in progress.",
+                "error",
+              );
+              return;
+            }
+            if (result.kind === "replied") {
+              await sendSystemReply(message, result.reply, result.tag ?? "ok");
+            }
+          }) ?? (
+            result.kind === "replied"
+              ? sendSystemReply(message, result.reply, result.tag ?? "ok")
+              : Promise.resolve()
+          );
+          if (sideEffectAdmission !== null) {
+            switch (sideEffectAdmission.kind) {
+              case "handoff": return runtimeAdmission.handoff(delivery);
+              case "busy": return runtimeAdmission.busy(delivery);
+              case "fenced": return runtimeAdmission.fenced(delivery);
+              case "rejected": return runtimeAdmission.rejected(delivery);
+            }
+          }
+          return completed(delivery);
+        };
+        if (commandResult.kind === "admission") {
+          const completion = commandResult.admission.completion.then(async (result) => {
+            const finished = await finishCommand(result);
+            if (finished.kind !== "completed") {
+              throw new Error("admitted command attempted a second runtime admission");
+            }
+            await finished.completion;
+          });
+          switch (commandResult.admission.kind) {
+            case "handoff": return runtimeAdmission.handoff(completion);
+            case "busy": return runtimeAdmission.busy(completion);
+            case "fenced": return runtimeAdmission.fenced(completion);
+            case "rejected": return runtimeAdmission.rejected(completion);
+          }
+        }
+        if (commandResult.kind !== "fallthrough") {
+          return await finishCommand(commandResult);
         }
       } catch (err) {
+        if (err instanceof RuntimeAdmissionFailedBeforeDecisionError) throw err;
         log.error("command dispatch failed", { error: String(err), command, sessionId: session?.id });
-        handle?.releaseRuntimeAdmission();
-        await sendSystemReply(message, "Something went wrong. Please try again.", "error");
-        if (session) recordAssistantReply(session.id, surface, existingRunner, "Something went wrong. Please try again.");
-        return;
+        const replyText = "Something went wrong. Please try again.";
+        const delivery = sendSystemReply(message, replyText, "error").then(() => {
+          if (session) recordAssistantReply(session.id, surface, existingRunner, replyText);
+        });
+        return completed(delivery);
       }
     }
 
-    // Ordinary authorized content lazily creates a conversation on any supported
-    // surface, including DMs and guest text.
-    let conversation: ConversationState;
-    try {
-      conversation = await lifecycle.resolveOrStart(surface);
-    } catch (error) {
-      // No runtime admission is possible after lifecycle resolution fails, but
-      // the shutdown barrier must still be released rather than hanging
-      // forever on a failed dispatch.
-      handle?.releaseRuntimeAdmission();
-      throw error;
-    }
+    const conversation = await lifecycle.resolveOrStart(surface);
     const session = conversation;
-
-    if (!rawText) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
+    if (!rawText) return completed(undefined);
 
     const existingRunner = dispatcher.getRunner(session.id);
     if (existingRunner === null) {
-      let admitted: boolean;
-      try {
-        admitted = dispatcher.scheduleBootstrapTurn(
-          session,
-          surface,
-          async (runner, authority) => {
-            if (runner.isAbortTimedOut) {
-              if (!authority.isCurrent()) return;
-              await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
-              return;
-            }
-            if (!authority.isCurrent()) return;
-            const buffer = dispatcher.createMessageBuffer(surface, session);
-            await runner.prompt(message.prepare(rawText), buffer);
-          },
-          async (error) => {
-            log.error("runner prompt failed", {
-              error: error instanceof Error ? error.message : String(error),
-              sessionId: session.id,
-            });
-          },
-        );
-      } catch (err) {
-        handle?.releaseRuntimeAdmission();
-        throw err;
-      }
+      const admitted = dispatcher.scheduleBootstrapTurn(
+        session,
+        surface,
+        async (runner, authority) => {
+          if (runner.isAbortTimedOut) {
+            if (authority.isCurrent()) await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
+            return;
+          }
+          if (!authority.isCurrent()) return;
+          const buffer = dispatcher.createMessageBuffer(surface, session);
+          await runner.prompt(message.prepare(rawText), buffer);
+        },
+        async (error) => {
+          log.error("runner prompt failed", {
+            error: error instanceof Error ? error.message : String(error),
+            sessionId: session.id,
+          });
+        },
+      );
       if (!admitted) {
         log.error("runner prompt rejected at queue admission", { sessionId: session.id });
-        handle?.releaseRuntimeAdmission();
-        return;
+        return runtimeAdmission.rejected(undefined);
       }
-      handle?.releaseRuntimeAdmission();
-      return;
+      return runtimeAdmission.handoff(undefined);
     }
 
-    let runner: AgentRunner;
-    try {
-      runner = await dispatcher.getOrCreateRunner(session, surface);
-    } catch (error) {
-      handle?.releaseRuntimeAdmission();
-      throw error;
-    }
-
+    const runner = await dispatcher.getOrCreateRunner(session, surface);
     if (runner.isAbortTimedOut) {
-      handle?.releaseRuntimeAdmission();
-      await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
-      return;
+      return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
     }
-
     if (runner.isStreaming) {
-      await steerOrFallbackToFreshTurn(message, surface, session, runner, rawText, handle);
-      return;
+      return steerOrFallbackToFreshTurn(message, surface, session, runner, rawText);
     }
 
     const admitted = scheduleFreshTurn(message, surface, session, runner, rawText, "runner prompt failed");
     if (!admitted) {
       log.error("runner prompt rejected at queue admission", { sessionId: session.id });
-      handle?.releaseRuntimeAdmission();
-      return;
+      return runtimeAdmission.rejected(undefined);
     }
-    // The prompt is now queued; model work is released by runtime disposal.
-    handle?.releaseRuntimeAdmission();
+    return runtimeAdmission.handoff(undefined);
   }
 
   async function handlePhoto(
@@ -703,16 +673,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     api: Bot["api"],
     fileIds: string[],
     caption?: string,
-    handle?: UpdateHandle,
-  ): Promise<void> {
-    if (!gate.admit("photo")) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
-    const turn = await resolveActiveTurn(message, "photo", handle);
-    if (!turn) return;
+  ): Promise<AdmissionResult<void>> {
+    const turn = await resolveActiveTurn(message, "photo");
+    if (!turn) return completed(undefined);
 
-    await turn.schedule(
+    return turn.schedule(
       async (runner, authority) => {
         const photo = await downloadPhoto(api, fileIds, cfg.botToken);
         if (!authority.isCurrent()) return;
@@ -741,16 +706,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     message: TelegramIntakeMessage,
     api: Bot["api"],
     doc: TelegramDocumentInput,
-    handle?: UpdateHandle,
-  ): Promise<void> {
-    if (!gate.admit("document")) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
-    const turn = await resolveActiveTurn(message, "document", handle);
-    if (!turn) return;
+  ): Promise<AdmissionResult<void>> {
+    const turn = await resolveActiveTurn(message, "document");
+    if (!turn) return completed(undefined);
 
-    await turn.schedule(
+    return turn.schedule(
       async (runner, authority) => {
         const raw = await downloadFileBytes(api, doc.fileId, cfg.botToken);
         if (!authority.isCurrent()) return;
@@ -807,16 +767,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     message: TelegramIntakeMessage,
     api: Bot["api"],
     voice: TelegramVoiceInput,
-    handle?: UpdateHandle,
-  ): Promise<void> {
-    if (!gate.admit("voice")) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
-    const turn = await resolveActiveTurn(message, "voice", handle);
-    if (!turn) return;
+  ): Promise<AdmissionResult<void>> {
+    const turn = await resolveActiveTurn(message, "voice");
+    if (!turn) return completed(undefined);
 
-    await turn.schedule(
+    return turn.schedule(
       async (runner, authority) => {
         // Groq ASR setup gate: missing key fails at use time with a clear
         // message rather than at startup. Checked inside the scheduled task so
@@ -915,16 +870,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     message: TelegramIntakeMessage,
     api: Bot["api"],
     audio: TelegramAudioInput,
-    handle?: UpdateHandle,
-  ): Promise<void> {
-    if (!gate.admit("audio")) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
-    const turn = await resolveActiveTurn(message, "audio", handle);
-    if (!turn) return;
+  ): Promise<AdmissionResult<void>> {
+    const turn = await resolveActiveTurn(message, "audio");
+    if (!turn) return completed(undefined);
 
-    await turn.schedule(
+    return turn.schedule(
       async (runner, authority) => {
         const raw = await downloadFileBytes(api, audio.fileId, cfg.botToken);
         if (!authority.isCurrent()) return;
@@ -986,15 +936,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     chatId: number | undefined,
     topicId: number | undefined,
     name: string | undefined,
-    handle?: UpdateHandle,
-  ): Promise<void> {
-    if (!gate.admit("topic-description")) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
+  ): Promise<AdmissionResult<void>> {
     if (chatId === undefined || topicId === undefined || name === undefined) {
-      handle?.releaseRuntimeAdmission();
-      return;
+      return completed(undefined);
     }
     try {
       await memoryStore.setDescription(
@@ -1007,9 +951,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         topicId,
         error: err instanceof Error ? err.message : String(err),
       });
-    } finally {
-      handle?.releaseRuntimeAdmission();
     }
+    return completed(undefined);
   }
 
   /**
@@ -1021,12 +964,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   async function handleGuestMessage(
     message: GuestMessage,
     text: string,
-    handle?: UpdateHandle,
-  ): Promise<void> {
-    if (!gate.admit("guest")) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
+  ): Promise<AdmissionResult<void>> {
     const surface = message.surface;
     let replyAttempted = false;
     const replyOnce = async (result: InlineQueryResult, failureLog: string): Promise<void> => {
@@ -1044,15 +982,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       conversation = await lifecycle.resolveOrStart(surface);
     } catch (error) {
       log.error("guest resolve failed", { error: String(error), surfaceId: surfaceId(surface) });
-      handle?.releaseRuntimeAdmission();
-      await replyOnce(errorArticle(), "guest error reply failed");
-      return;
+      return completed(replyOnce(errorArticle(), "guest error reply failed"));
     }
 
     const sink = new GuestReplySink();
-    let admission: ReturnType<TurnDispatcher["admitImmediateTurn"]>;
-    try {
-      admission = dispatcher.admitImmediateTurn(
+    const admission = dispatcher.admitImmediateTurn(
         conversation,
         surface,
         text,
@@ -1069,43 +1003,33 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           },
         },
       );
-    } catch (error) {
-      log.error("guest runtime admission failed", {
-        error: error instanceof Error ? error.message : String(error),
-        surfaceId: surfaceId(surface),
-        sessionId: conversation.id,
-      });
-      handle?.releaseRuntimeAdmission();
-      await replyOnce(errorArticle(), "guest error reply failed");
-      return;
-    }
 
-    handle?.releaseRuntimeAdmission();
     switch (admission.kind) {
       case "accepted": {
-        const settlement = await admission.settlement;
-        if (settlement.kind === "failed") {
-          log.error("accepted guest runtime work failed", {
-            error: settlement.error instanceof Error
-              ? settlement.error.message
-              : String(settlement.error),
-            surfaceId: surfaceId(surface),
-            sessionId: conversation.id,
-          });
-        }
-        if (settlement.delivery !== undefined) await settlement.delivery;
-        return;
+        const completion = admission.settlement.then(async (settlement) => {
+          if (settlement.kind === "failed") {
+            log.error("accepted guest runtime work failed", {
+              error: settlement.error instanceof Error
+                ? settlement.error.message
+                : String(settlement.error),
+              surfaceId: surfaceId(surface),
+              sessionId: conversation.id,
+            });
+          }
+          if (settlement.delivery !== undefined) await settlement.delivery;
+        });
+        return runtimeAdmission.handoff(completion);
       }
       case "busy":
         log.debug("guest summon dropped: runtime busy", {
           surfaceId: surfaceId(surface),
           sessionId: conversation.id,
         });
-        await replyOnce(busyArticle(), "guest busy reply failed");
-        return;
-      case "closed":
+        return runtimeAdmission.busy(replyOnce(busyArticle(), "guest busy reply failed"));
+      case "rejected":
+        return runtimeAdmission.rejected(undefined);
       case "fenced":
-        return;
+        return runtimeAdmission.fenced(undefined);
     }
   }
 

@@ -1445,9 +1445,6 @@ describe("TurnDispatcher async runner creation", () => {
       closeCoalescer: async () => {},
       awaitBufferedTextAdmission: async () => {},
     });
-    const handle = gate.beginUpdate({});
-    handle.releaseAuthorization();
-    handle.releaseRuntimeAdmission();
     let disposalStarted = false;
     const coordinator = new ShutdownCoordinator({
       gate,

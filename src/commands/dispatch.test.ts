@@ -25,6 +25,7 @@ import {
   REVIVE_SUBAGENT_USAGE_REPLY,
 } from "./subagents.ts";
 import { handleCommand, type DispatchDeps, type DispatchOpts, type DispatchResult } from "./dispatch.ts";
+import { runtimeAdmission } from "../shutdown/mod.ts";
 
 const EMPTY_RESOLVED_SKILL_SET: ResolvedSkillSet = {
   skills: [],
@@ -133,6 +134,8 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
     beginReviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) => ({
       result: dispatcher.reviveSubagent(_surface, _session, id, prompt),
     }),
+    admitReviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) =>
+      runtimeAdmission.handoff(dispatcher.reviveSubagent(_surface, _session, id, prompt)),
   } as unknown as TurnDispatcher;
   return {
     cfg,
@@ -185,6 +188,21 @@ function expectReplied(result: DispatchResult): Extract<DispatchResult, { kind: 
   return result as Extract<DispatchResult, { kind: "replied" }>;
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+async function expectAdmissionReplied(
+  result: DispatchResult,
+): Promise<Extract<DispatchResult, { kind: "replied" }>> {
+  expect(result.kind).toBe("admission");
+  if (result.kind !== "admission") throw new Error("expected command admission");
+  expect(result.admission.kind).toBe("handoff");
+  return expectReplied(await result.admission.completion);
+}
+
 describe("handleCommand", () => {
   it("inspects skills without creating a conversation", async () => {
     const harness = makeHarness();
@@ -214,7 +232,9 @@ describe("handleCommand", () => {
     const harness = makeHarness(cascade);
     const session = await createSession(harness);
     const runner = makeRunner(true); // streaming → cascade attempts the main runner
-    const result = expectReplied(await dispatch({ command: "/cancel", session, runner, harness }));
+    const result = await expectAdmissionReplied(
+      await dispatch({ command: "/cancel", session, runner, harness }),
+    );
 
     expect(result.reply).toBe(cancelReply({ cascade, cascadeTimeoutMs: 5_000 }));
     expect(result.sideEffects).toEqual([]);
@@ -225,11 +245,30 @@ describe("handleCommand", () => {
   it("replies to /cancel without a session (no cascade attempted)", async () => {
     const cascade = baseCascade();
     const harness = makeHarness(cascade);
-    const result = expectReplied(await dispatch({ command: "/cancel", harness }));
+    const result = await expectAdmissionReplied(await dispatch({ command: "/cancel", harness }));
     expect(result.reply).toBe("Nothing to cancel.");
     // Still invokes the cascade (with null session id) — but nothing was running,
     // so the reply reflects "Nothing to cancel."
     expect(harness.interrupt).toHaveBeenCalledWith(null, expect.any(Object), 5_000, null, undefined);
+  });
+
+  it("/cancel hands off before the abort cascade settles", async () => {
+    const harness = makeHarness();
+    const pending = deferred<CascadeResult>();
+    harness.interrupt.mockImplementation(async () => await pending.promise);
+
+    const result = await dispatch({ command: "/cancel", harness });
+    expect(result.kind).toBe("admission");
+    if (result.kind !== "admission") throw new Error("expected command admission");
+    expect(result.admission.kind).toBe("handoff");
+
+    let completed = false;
+    void result.admission.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    pending.resolve(baseCascade());
+    expect(expectReplied(await result.admission.completion).reply).toBe("Nothing to cancel.");
   });
 
   it("/new with a prior session disposes prior and creates a new runner", async () => {
@@ -487,7 +526,11 @@ describe("handleCommand", () => {
     const harness = makeHarness(baseCascade(), subagentRunner);
     const session = await createSession(harness);
 
-    const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive abc inspect again", session, harness }));
+    const admission = await dispatch({ command: "/revive", rawText: "/revive abc inspect again", session, harness });
+    expect(admission.kind).toBe("admission");
+    if (admission.kind !== "admission") throw new Error("expected revival admission");
+    expect(admission.admission.kind).toBe("handoff");
+    const result = expectReplied(await admission.admission.completion);
     expect(result.reply).toBe("Revived subagent `abc`:\ndone");
     const calls = revive.mock.calls as unknown as unknown[][];
     expect(calls.length).toBe(1);
@@ -517,7 +560,10 @@ describe("handleCommand", () => {
     const harness = makeHarness(baseCascade(), subagentRunner);
     const session = await createSession(harness);
 
-    const result = expectReplied(await dispatch({ command: "/revive", rawText: "/revive missing try again", session, harness }));
+    const admission = await dispatch({ command: "/revive", rawText: "/revive missing try again", session, harness });
+    expect(admission.kind).toBe("admission");
+    if (admission.kind !== "admission") throw new Error("expected revival admission");
+    const result = expectReplied(await admission.admission.completion);
     expect(result.reply).toBe("Failed to revive subagent `missing`.");
   });
 
@@ -630,7 +676,7 @@ describe("handleCommand", () => {
   it("/cancel appends cascade timeout suffixes when subagents time out", async () => {
     const cascade = baseCascade({ attemptedSubagents: 1, timedOutSubagents: 1 });
     const harness = makeHarness(cascade);
-    const result = expectReplied(await dispatch({ command: "/cancel", harness }));
+    const result = await expectAdmissionReplied(await dispatch({ command: "/cancel", harness }));
     expect(result.reply).toContain(formatCascadeTimeoutSuffix(cascade, 5_000));
   });
 
@@ -652,7 +698,7 @@ describe("handleCommand", () => {
 
     it("/cancel 'Nothing to cancel.' is tagged 'info'", async () => {
       const harness = makeHarness();
-      const result = expectReplied(await dispatch({ command: "/cancel", harness }));
+      const result = await expectAdmissionReplied(await dispatch({ command: "/cancel", harness }));
       expect(result.tag).toBe("info");
     });
 
@@ -661,14 +707,16 @@ describe("handleCommand", () => {
       const harness = makeHarness(cascade);
       const session = await createSession(harness);
       const runner = makeRunner(true);
-      const result = expectReplied(await dispatch({ command: "/cancel", session, runner, harness }));
+      const result = await expectAdmissionReplied(
+        await dispatch({ command: "/cancel", session, runner, harness }),
+      );
       expect(result.tag).toBe("ok");
     });
 
     it("/cancel when main is wedged is tagged 'error'", async () => {
       const cascade = baseCascade({ attemptedMain: true, wedgedMain: true });
       const harness = makeHarness(cascade);
-      const result = expectReplied(await dispatch({ command: "/cancel", harness }));
+      const result = await expectAdmissionReplied(await dispatch({ command: "/cancel", harness }));
       expect(result.tag).toBe("error");
     });
 

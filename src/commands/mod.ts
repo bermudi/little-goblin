@@ -1,5 +1,6 @@
 import type { Bot } from "grammy";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
+import { completed, type UpdateGate } from "../shutdown/mod.ts";
 import { COMMAND_REGISTRY } from "./registry.ts";
 
 /**
@@ -14,10 +15,15 @@ import { COMMAND_REGISTRY } from "./registry.ts";
 export function registerCommands(
   bot: Bot,
   lifecycle: ConversationLifecycle,
+  gate: UpdateGate,
 ): void {
   for (const def of COMMAND_REGISTRY) {
     if (def.grammyHandler) {
-      bot.command(def.name, def.grammyHandler({ lifecycle }));
+      const handler = def.grammyHandler({ lifecycle });
+      bot.command(def.name, (ctx) => gate.runUpdate(
+        ctx,
+        () => completed(handler(ctx)),
+      ));
     }
   }
 }

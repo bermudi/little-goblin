@@ -12,11 +12,12 @@ import {
 import type { ConversationState } from "../sessions/types.ts";
 import { assertInternalSessionState, type InternalSessionState } from "../sessions/internal-session.ts";
 import { surfaceId, type Surface } from "../surface.ts";
-import { SubagentRunner } from "../subagents/mod.ts";
+import { SubagentReviveRejectedError, SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
+import { runtimeAdmission, type RuntimeAdmissionResult } from "../shutdown/mod.ts";
 import type { SurfaceSettings } from "./conversation-lifecycle.ts";
 import { PreparedRuntimeAssembler } from "./prepared-runtime.ts";
 import type { PreparedSurfaceRuntimePlan } from "../agent/runtime-plan.ts";
@@ -36,6 +37,14 @@ export type { AttachmentSignal, AttachedWork, CurrentBindingGuard, SurfaceRuntim
 export type { SurfaceSettings };
 
 type CurrentRuntimeWorkIntent = Extract<WorkIntent, { kind: "current-runtime" }>;
+
+export class RuntimeAdmissionFailedBeforeDecisionError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "RuntimeAdmissionFailedBeforeDecisionError";
+    this.cause = cause;
+  }
+}
 
 export interface ScheduledTurnAdmission {
   readonly accepted: true;
@@ -283,7 +292,7 @@ export class TurnDispatcher {
       async (signal) => {
         const runner = this.runtimeHost.getRunner(session.id);
         if (runner === null) {
-          throw new Error(
+          throw new SubagentReviveRejectedError(
             `no current runner for session ${session.id}; cannot revive subagent '${subagentId}'`,
           );
         }
@@ -339,11 +348,25 @@ export class TurnDispatcher {
     };
   }
 
-  /**
-   * Compatibility wrapper for callers that want the complete revived result.
-   * Command/intake callers use beginReviveSubagent so Telegram admission can
-   * be released at attachment rather than after the subagent finishes.
-   */
+  /** Authoritatively classify delegated-run attachment for update settlement. */
+  async admitReviveSubagent(
+    surface: Surface,
+    session: ConversationState,
+    subagentId: string,
+    prompt: string,
+  ): Promise<RuntimeAdmissionResult<string>> {
+    try {
+      const attached = await this.beginReviveSubagent(surface, session, subagentId, prompt);
+      return runtimeAdmission.handoff(attached.result);
+    } catch (error) {
+      if (error instanceof SubagentReviveRejectedError) {
+        return runtimeAdmission.rejected(Promise.reject(error));
+      }
+      throw new RuntimeAdmissionFailedBeforeDecisionError(error);
+    }
+  }
+
+  /** Compatibility wrapper for non-admission callers that want the result. */
   async reviveSubagent(
     surface: Surface,
     session: ConversationState,

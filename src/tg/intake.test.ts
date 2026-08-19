@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { attachmentsPath, soulMdPath, workspacePath } from "../workspace/paths.ts";
 import type { Bot } from "grammy";
 import type { Config } from "../config.ts";
-import type { AgentRunner } from "../agent/mod.ts";
+import { RunnerNotStreamingError, type AgentRunner } from "../agent/mod.ts";
 import type { PreparedSurfaceRuntimePlan } from "../agent/runtime-plan.ts";
 import { log } from "../log.ts";
 import { MemoryStore } from "../memory/mod.ts";
@@ -22,10 +22,12 @@ import { createConversationOrchestration } from "../orchestration/composition.ts
 import type { EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import { DelegatedWorkHost } from "../delegated-work/mod.ts";
-import type { TurnSink } from "../orchestration/dispatcher.ts";
+import {
+  RuntimeAdmissionFailedBeforeDecisionError,
+  type TurnSink,
+} from "../orchestration/dispatcher.ts";
 import { SchedulerLoop, type SchedulerClock } from "../scheduler/loop.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
-import { UpdateGate, type UpdateHandle } from "../shutdown/mod.ts";
 import {
   createTelegramIntake,
   replyNoActiveSession,
@@ -168,10 +170,6 @@ function createTestIntake(options: TestIntakeOptions): TestIntake {
     scheduleStore: options.scheduleStore,
     externalAgentRunner: options.externalAgentRunner,
   });
-  const gate = new UpdateGate({
-    closeCoalescer: async () => {},
-    awaitBufferedTextAdmission: async () => {},
-  });
   const intake = createTelegramIntake({
     cfg: options.cfg,
     bot: options.bot,
@@ -181,7 +179,6 @@ function createTestIntake(options: TestIntakeOptions): TestIntake {
     lifecycle: orchestration.lifecycle,
     scheduleStore: options.scheduleStore,
     externalAgentRunner: options.externalAgentRunner,
-    gate,
   });
   return Object.assign(intake, { runtimeHost: orchestration.runtimeHost });
 }
@@ -417,7 +414,8 @@ describe("Telegram intake", () => {
     const firstConversation = intake.lifecycle.inspect(dmSurface(1))!;
     const firstRunner = runners[0]!;
 
-    await intake.handleText(message, "/archive");
+    const archive = await intake.handleText(message, "/archive");
+    await archive.completion;
 
     expect(firstRunner.dispose).toHaveBeenCalledTimes(1);
     expect(runtimeHost.hasRunner(firstConversation.id)).toBe(false);
@@ -427,7 +425,8 @@ describe("Telegram intake", () => {
     const secondConversation = intake.lifecycle.inspect(dmSurface(1))!;
     const secondRunner = runners.at(-1)!;
 
-    await intake.handleText(message, `/project ${cfg.goblinHome}`);
+    const project = await intake.handleText(message, `/project ${cfg.goblinHome}`);
+    await project.completion;
 
     expect(secondRunner.dispose).toHaveBeenCalledTimes(1);
     expect(runtimeHost.hasRunner(secondConversation.id)).toBe(false);
@@ -459,12 +458,130 @@ describe("Telegram intake", () => {
     expect(runners[0]!.prompt.mock.calls[1]![0]).toBe("[prepared] later");
   });
 
-  it("replies for no-session DMs but not topic-scoped no-session drops", () => {
+  it("/queue returns handoff while its acknowledgement delivery is blocked", async () => {
+    const { intake } = makeHarness();
+    await intake.handleText(makeMessage(), "/new");
+    const delivery = deferred();
+    const deliveryStarted = deferred();
+    const message = makeMessage([], {
+      reply: async () => {
+        deliveryStarted.resolve();
+        await delivery.promise;
+      },
+    });
+
+    const admission = await intake.handleText(message, "/queue later");
+    expect(admission.kind).toBe("handoff");
+    await deliveryStarted.promise;
+    let completed = false;
+    void admission.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    delivery.resolve();
+    await admission.completion;
+  });
+
+  it("/queue reports runtime rejection without also acknowledging Running", async () => {
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    await intake.handleText(message, "/new");
+    replies.length = 0;
+    const schedule = spyOn(intake.dispatcher, "schedulePrompt").mockReturnValue(false);
+
+    const admission = await intake.handleText(message, "/queue dropped");
+
+    expect(admission.kind).toBe("rejected");
+    await admission.completion;
+    expect(replies).toEqual([
+      "`[error]` Queued prompt was dropped: shutdown in progress\\.",
+    ]);
+    schedule.mockRestore();
+  });
+
+  it("returns completed before a normal command reply delivery settles", async () => {
+    const { intake } = makeHarness();
+    const delivery = deferred();
+    const deliveryStarted = deferred();
+    const message = makeMessage([], {
+      reply: async () => {
+        deliveryStarted.resolve();
+        await delivery.promise;
+      },
+    });
+
+    const admission = await intake.handleText(message, "/help");
+    expect(admission.kind).toBe("completed");
+    await deliveryStarted.promise;
+    let completed = false;
+    void admission.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    delivery.resolve();
+    await admission.completion;
+  });
+
+  it("keeps a rejected normal command reply after the completed decision", async () => {
+    const { intake } = makeHarness();
+    const message = makeMessage([], {
+      reply: async () => { throw new Error("Telegram unavailable"); },
+    });
+
+    const admission = await intake.handleText(message, "/help");
+
+    expect(admission.kind).toBe("completed");
+    await expect(admission.completion).resolves.toBeUndefined();
+  });
+
+  it("returns completed before an unexpected-command error reply settles", async () => {
+    const { intake, subagentRunner } = makeHarness();
+    subagentRunner.list = (() => {
+      throw new Error("list failed");
+    }) as SubagentRunner["list"];
+    const delivery = deferred();
+    const deliveryStarted = deferred();
+    const message = makeMessage([], {
+      reply: async () => {
+        deliveryStarted.resolve();
+        await delivery.promise;
+      },
+    });
+
+    const admission = await intake.handleText(message, "/subagents");
+    expect(admission.kind).toBe("completed");
+    await deliveryStarted.promise;
+    let completed = false;
+    void admission.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    delivery.resolve();
+    await admission.completion;
+  });
+
+  it("keeps a rejected command-error reply after the completed decision", async () => {
+    const { intake, subagentRunner } = makeHarness();
+    subagentRunner.list = (() => {
+      throw new Error("list failed");
+    }) as SubagentRunner["list"];
+    const message = makeMessage([], {
+      reply: async () => { throw new Error("Telegram unavailable"); },
+    });
+
+    const admission = await intake.handleText(message, "/subagents");
+
+    expect(admission.kind).toBe("completed");
+    await expect(admission.completion).resolves.toBeUndefined();
+  });
+
+  it("replies for no-session DMs but not topic-scoped no-session drops", async () => {
     const dmReplies: string[] = [];
     const topicReplies: string[] = [];
 
-    replyNoActiveSession(makeMessage(dmReplies), dmSurface(1), "message");
-    replyNoActiveSession(makeMessage(topicReplies), topicSurface("supergroup", 1, 42), "message");
+    await replyNoActiveSession(makeMessage(dmReplies), dmSurface(1), "message");
+    await replyNoActiveSession(makeMessage(topicReplies), topicSurface("supergroup", 1, 42), "message");
 
     expect(dmReplies).toEqual(["`[info]` No active conversation\\. Use /new to start one\\."]);
     expect(topicReplies).toEqual([]);
@@ -504,16 +621,12 @@ describe("Telegram intake", () => {
     const { intake, runtimeHost } = makeHarness();
     const promptBlock = deferred();
     MockAgentRunner.nextPrompt = async () => { await promptBlock.promise; };
-    let releases = 0;
-    const handle: UpdateHandle = {
-      releaseRuntimeAdmission: () => { releases += 1; },
-    };
     const message = makeMessage();
 
-    await intake.handleText(message, "cold text", handle);
+    const admission = await intake.handleText(message, "cold text");
     const conversation = intake.lifecycle.inspect(dmSurface(1));
     expect(conversation).not.toBeNull();
-    expect(releases).toBe(1);
+    expect(admission.kind).toBe("handoff");
     expect(runtimeHost.hasPromptWork(conversation!.id)).toBe(true);
 
     promptBlock.resolve();
@@ -530,16 +643,12 @@ describe("Telegram intake", () => {
         headers: { "content-length": "3" },
       });
     }) as unknown as typeof fetch;
-    let releases = 0;
-    const handle: UpdateHandle = {
-      releaseRuntimeAdmission: () => { releases += 1; },
-    };
     const message = makeMessage();
 
-    await intake.handlePhoto(message, fakeApi(), ["photo"], "cold media", handle);
+    const admission = await intake.handlePhoto(message, fakeApi(), ["photo"], "cold media");
     const conversation = intake.lifecycle.inspect(dmSurface(1));
     expect(conversation).not.toBeNull();
-    expect(releases).toBe(1);
+    expect(admission.kind).toBe("handoff");
     expect(runtimeHost.hasPromptWork(conversation!.id)).toBe(true);
 
     downloadBlock.resolve();
@@ -554,14 +663,9 @@ describe("Telegram intake", () => {
     const { intake } = makeHarness();
     const scheduleSpy = spyOn(intake.dispatcher, "scheduleBootstrapTurn");
     scheduleSpy.mockImplementation(() => { throw new Error("bootstrap admission failed"); });
-    let releases = 0;
-    const handle: UpdateHandle = {
-      releaseRuntimeAdmission: () => { releases += 1; },
-    };
     const message = makeMessage();
 
-    await expect(intake.handleText(message, "cold text", handle)).rejects.toThrow("bootstrap admission failed");
-    expect(releases).toBe(1);
+    await expect(intake.handleText(message, "cold text")).rejects.toThrow("bootstrap admission failed");
     scheduleSpy.mockRestore();
   });
 
@@ -569,15 +673,10 @@ describe("Telegram intake", () => {
     const { intake } = makeHarness();
     const scheduleSpy = spyOn(intake.dispatcher, "scheduleBootstrapTurn");
     scheduleSpy.mockImplementation(() => { throw new Error("bootstrap admission failed"); });
-    let releases = 0;
-    const handle: UpdateHandle = {
-      releaseRuntimeAdmission: () => { releases += 1; },
-    };
     const message = makeMessage();
 
-    await expect(intake.handlePhoto(message, fakeApi(), ["photo"], "cold media", handle))
+    await expect(intake.handlePhoto(message, fakeApi(), ["photo"], "cold media"))
       .rejects.toThrow("bootstrap admission failed");
-    expect(releases).toBe(1);
     scheduleSpy.mockRestore();
   });
 
@@ -775,7 +874,7 @@ describe("Telegram intake", () => {
     warnSpy.mockRestore();
   });
 
-  it("keeps handleText in flight until accepted steering settles", async () => {
+  it("returns the steering decision before its completion settles", async () => {
     const { intake } = makeHarness();
     const message = makeMessage([]);
     const slow = deferred();
@@ -787,15 +886,18 @@ describe("Telegram intake", () => {
     await intake.handleText(message, "slow");
     await waitFor(() => runners[0]!.isStreaming);
 
-    let handled = false;
-    const handling = intake.handleText(message, "steer this").then(() => { handled = true; });
+    const admission = await intake.handleText(message, "steer this");
     await waitFor(() => runners[0]!.followUp.mock.calls.length === 1);
     expect(runners[0]!.followUp).toHaveBeenCalledWith("[prepared] steer this");
-    expect(handled).toBe(false);
+    expect(admission.kind).toBe("handoff");
+    let completed = false;
+    void admission.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
 
     steering.resolve();
-    await handling;
-    expect(handled).toBe(true);
+    await admission.completion;
+    expect(completed).toBe(true);
     slow.resolve();
   });
 
@@ -808,7 +910,7 @@ describe("Telegram intake", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
     MockAgentRunner.nextFollowUp = () => {
-      throw new Error("Cannot steer: session is not streaming.");
+      throw new RunnerNotStreamingError();
     };
 
     await intake.handleText(message, "/new");
@@ -836,28 +938,17 @@ describe("Telegram intake", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
     MockAgentRunner.nextFollowUp = () => {
-      throw new Error("Cannot steer: session is not streaming.");
+      throw new RunnerNotStreamingError();
     };
 
     await intake.handleText(message, "/new");
     await intake.handleText(message, "slow");
     await waitFor(() => runners[0]!.isStreaming);
 
-    let released = false;
-    let promptPendingAtRelease: boolean | undefined;
     const session = intake.lifecycle.inspect(dmSurface(1))!;
-    const handle: UpdateHandle = {
-      releaseRuntimeAdmission: () => {
-        // Record that the release ran and capture the observed state; any
-        // assertion here would mask failures thrown by steerOrFallbackToFreshTurn.
-        released = true;
-        promptPendingAtRelease = intake.dispatcher.isPromptPending(session.id);
-      },
-    };
-    await intake.handleText(message, "steer this", handle);
+    const admission = await intake.handleText(message, "steer this");
 
-    expect(released).toBe(true);
-    expect(promptPendingAtRelease).toBe(true);
+    expect(admission.kind).toBe("handoff");
     expect(intake.dispatcher.isPromptPending(session.id)).toBe(true);
     slow.resolve();
     await waitFor(() => runners[0]!.prompt.mock.calls.length === 2);
@@ -989,8 +1080,9 @@ describe("Telegram intake", () => {
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
 
-    await intake.handleText(message, "/cancel");
-    await flushMicrotasks();
+    const admission = await intake.handleText(message, "/cancel");
+    expect(admission.kind).toBe("handoff");
+    await admission.completion;
 
     // /cancel aborted the turn (MockAgentRunner.abort flips streaming false)
     // and replied — no "Queued." ack.
@@ -1000,6 +1092,59 @@ describe("Telegram intake", () => {
 
     slow.resolve();
     await flushMicrotasks();
+  });
+
+  it("/cancel allows runtime disposal to start while its abort cascade is pending", async () => {
+    const { intake, runtimeHost } = makeHarness();
+    const message = makeMessage();
+    const slow = deferred();
+    const abortGate = deferred();
+    MockAgentRunner.nextPrompt = async () => { await slow.promise; };
+
+    await intake.handleText(message, "/new");
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+    runners[0]!.abort.mockImplementation(async () => {
+      await abortGate.promise;
+      runners[0]!.streaming = false;
+    });
+
+    const admission = await intake.handleText(message, "/cancel");
+    expect(admission.kind).toBe("handoff");
+    let cancellationCompleted = false;
+    void admission.completion.then(() => { cancellationCompleted = true; });
+
+    const disposal = runtimeHost.disposeAll();
+    await waitFor(() => runners[0]!.dispose.mock.calls.length === 1);
+    expect(cancellationCompleted).toBe(false);
+
+    abortGate.resolve();
+    slow.resolve();
+    await admission.completion;
+    await disposal;
+  });
+
+  it("/cancel keeps reply delivery in its handoff completion", async () => {
+    const { intake } = makeHarness();
+    const delivery = deferred();
+    const deliveryStarted = deferred();
+    const message = makeMessage([], {
+      reply: async () => {
+        deliveryStarted.resolve();
+        await delivery.promise;
+      },
+    });
+
+    const admission = await intake.handleText(message, "/cancel");
+    expect(admission.kind).toBe("handoff");
+    await deliveryStarted.promise;
+    let completed = false;
+    void admission.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    delivery.resolve();
+    await admission.completion;
   });
 
   it("replies with recovery instructions when the runner is wedged", async () => {
@@ -1019,18 +1164,63 @@ describe("Telegram intake", () => {
 
     // A second /cancel no longer lies with "Nothing to cancel.";
     // it reports the wedged state and points to recovery commands.
-    await intake.handleText(message, "/cancel");
-    await flushMicrotasks();
+    const cancelAdmission = await intake.handleText(message, "/cancel");
+    expect(cancelAdmission.kind).toBe("handoff");
+    await cancelAdmission.completion;
     expect(replies.at(-1)).toContain("wedged after a previous abort timed out");
     expect(replies.at(-1)).toContain("/new or /archive");
 
-    // A new user message while wedged is not silently queued/dropped.
-    await intake.handleText(message, "what about now");
-    await flushMicrotasks();
+    // No machine admission occurs for text or media once the existing runner
+    // is already known wedged, so both are adapter-local completions.
+    const textAdmission = await intake.handleText(message, "what about now");
+    expect(textAdmission.kind).toBe("completed");
+    await textAdmission.completion;
+    expect(replies.at(-1)).toBe("`[error]` A previous turn is wedged after a failed abort\\. Use /new or /archive to recover\\.");
+
+    const mediaAdmission = await intake.handlePhoto(message, fakeApi(), ["photo"]);
+    expect(mediaAdmission.kind).toBe("completed");
+    await mediaAdmission.completion;
     expect(replies.at(-1)).toBe("`[error]` A previous turn is wedged after a failed abort\\. Use /new or /archive to recover\\.");
 
     pending.resolve();
     await flushMicrotasks();
+  });
+
+  it("propagates revival attachment failure before any admission decision", async () => {
+    const { intake } = makeHarness();
+    const message = makeMessage();
+    await intake.handleText(message, "/new");
+    const failure = new RuntimeAdmissionFailedBeforeDecisionError(new Error("attachment failed"));
+    const admit = spyOn(intake.dispatcher, "admitReviveSubagent").mockRejectedValue(failure);
+
+    await expect(intake.handleText(message, "/revive abc try again")).rejects.toBe(failure);
+    admit.mockRestore();
+  });
+
+  it("classifies a missing /revive target as rejected and delivers the failure reply", async () => {
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    await intake.handleText(message, "/new");
+
+    const admission = await intake.handleText(message, "/revive missing try again");
+
+    expect(admission.kind).toBe("rejected");
+    await admission.completion;
+    expect(replies.at(-1)).toBe("`[error]` Failed to revive subagent `missing`\\.");
+  });
+
+  it("classifies /revive without a current runner as rejected with the failure reply", async () => {
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    await intake.lifecycle.resolveOrStart(dmSurface(1));
+
+    const admission = await intake.handleText(message, "/revive missing try again");
+
+    expect(admission.kind).toBe("rejected");
+    await admission.completion;
+    expect(replies).toEqual(["`[error]` Failed to revive subagent `missing`\\."]);
   });
 
   it("runs /archive directly when a wedged runtime cannot drain its prompt queue", async () => {
@@ -1055,7 +1245,9 @@ describe("Telegram intake", () => {
 
     // A queue-timing command that cannot repair the runtime must not receive
     // a false queued acknowledgement.
-    await intake.handleText(message, "/compact");
+    const compactAdmission = await intake.handleText(message, "/compact");
+    expect(compactAdmission.kind).toBe("completed");
+    await compactAdmission.completion;
     expect(replies.at(-1)).toBe("`[error]` A previous turn is wedged after a failed abort\\. Use /new or /archive to recover\\.");
 
     await intake.handleText(message, "/archive");
@@ -1528,7 +1720,8 @@ describe("Telegram intake", () => {
     }) as unknown as typeof fetch;
 
     await intake.handleText(message, "/new");
-    await intake.handleText(message, `/project ${cfg.goblinHome}`);
+    const project = await intake.handleText(message, `/project ${cfg.goblinHome}`);
+    await project.completion;
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
     const staleRunner = runners.at(-1)!;
 
@@ -1600,15 +1793,10 @@ describe("Telegram intake", () => {
         (buffer as GuestReplySink).onTextDelta("first done");
         await pending.promise;
       };
-      let releases = 0;
-      const handle: UpdateHandle = {
-        releaseRuntimeAdmission: () => { releases += 1; },
-      };
       const firstGuest = makeGuestMessage();
 
-      const first = intake.handleGuestMessage(firstGuest.message, "first", handle);
-      await waitFor(() => releases === 1);
-      expect(releases).toBe(1);
+      const first = await intake.handleGuestMessage(firstGuest.message, "first");
+      expect(first.kind).toBe("handoff");
       expect(firstGuest.results).toHaveLength(0);
 
       const secondGuest = makeGuestMessage();
@@ -1621,7 +1809,7 @@ describe("Telegram intake", () => {
       expect(busy.input_message_content.message_text).toContain("already thinking");
 
       pending.resolve();
-      await first;
+      await first.completion;
       await waitFor(() => firstGuest.results.length === 1);
       expect(runners).toHaveLength(1);
       expect(runners[0]!.prompt).toHaveBeenCalledTimes(1);
@@ -1651,18 +1839,57 @@ describe("Telegram intake", () => {
       await flushMicrotasks();
     });
 
-    it("releases a closed admission classification without replying", async () => {
+    it("returns completed before a guest resolution-error reply settles", async () => {
+      const { intake } = makeHarness();
+      intake.lifecycle.resolveOrStart = async () => {
+        throw new Error("binding store unavailable");
+      };
+      const delivery = deferred();
+      const deliveryStarted = deferred();
+      const message: GuestMessage = {
+        surface: guestSurface(99),
+        replyVia: async () => {
+          deliveryStarted.resolve();
+          await delivery.promise;
+        },
+      };
+
+      const admission = await intake.handleGuestMessage(message, "hi");
+      expect(admission.kind).toBe("completed");
+      await deliveryStarted.promise;
+      let completed = false;
+      void admission.completion.then(() => { completed = true; });
+      await Promise.resolve();
+      expect(completed).toBe(false);
+
+      delivery.resolve();
+      await admission.completion;
+    });
+
+    it("keeps a rejected guest resolution-error reply after the completed decision", async () => {
+      const { intake } = makeHarness();
+      intake.lifecycle.resolveOrStart = async () => {
+        throw new Error("binding store unavailable");
+      };
+      const message: GuestMessage = {
+        surface: guestSurface(99),
+        replyVia: async () => { throw new Error("guest_query_id expired"); },
+      };
+
+      const admission = await intake.handleGuestMessage(message, "hi");
+
+      expect(admission.kind).toBe("completed");
+      await expect(admission.completion).resolves.toBeUndefined();
+    });
+
+    it("maps runtime-host closure to generic rejection without replying", async () => {
       const { intake, runtimeHost } = makeHarness();
       runtimeHost.closeAdmission();
       const guest = makeGuestMessage();
-      let releases = 0;
-      const handle: UpdateHandle = {
-        releaseRuntimeAdmission: () => { releases += 1; },
-      };
 
-      await intake.handleGuestMessage(guest.message, "closed", handle);
+      const admission = await intake.handleGuestMessage(guest.message, "closed");
 
-      expect(releases).toBe(1);
+      expect(admission.kind).toBe("rejected");
       expect(guest.results).toHaveLength(0);
       expect(runners).toHaveLength(0);
     });
@@ -1678,14 +1905,10 @@ describe("Telegram intake", () => {
         }) as unknown as AgentRunner,
       );
       const guest = makeGuestMessage();
-      let releases = 0;
-      const handle: UpdateHandle = {
-        releaseRuntimeAdmission: () => { releases += 1; },
-      };
 
-      await intake.handleGuestMessage(guest.message, "fenced", handle);
+      const admission = await intake.handleGuestMessage(guest.message, "fenced");
 
-      expect(releases).toBe(1);
+      expect(admission.kind).toBe("fenced");
       expect(guest.results).toHaveLength(0);
     });
 
@@ -1711,7 +1934,8 @@ describe("Telegram intake", () => {
       };
 
       // Must not throw — the expired id is an inherent limitation.
-      await expect(intake.handleGuestMessage(message, "hi")).resolves.toBeUndefined();
+      const admission = await intake.handleGuestMessage(message, "hi");
+      await expect(admission.completion).resolves.toBeUndefined();
       await waitFor(() => runners[0]?.prompt.mock.calls.length === 1);
       await waitFor(() => !(runners[0]?.isStreaming ?? true));
       expect(results).toHaveLength(0);
@@ -1734,19 +1958,20 @@ describe("Telegram intake", () => {
         (buffer as GuestReplySink).onTextDelta("delivery pending");
       };
 
-      const handler = intake.handleGuestMessage(message, "hi");
+      const admission = await intake.handleGuestMessage(message, "hi");
+      expect(admission.kind).toBe("handoff");
       await deliveryStarted.promise;
       await runtimeHost.disposeAll();
 
-      let handlerSettled = false;
-      void handler.then(() => { handlerSettled = true; });
+      let completionSettled = false;
+      void admission.completion.then(() => { completionSettled = true; });
       await Promise.resolve();
-      expect(handlerSettled).toBe(false);
+      expect(completionSettled).toBe(false);
       expect(results).toHaveLength(1);
 
       deliveryDone.resolve();
-      await handler;
-      expect(handlerSettled).toBe(true);
+      await admission.completion;
+      expect(completionSettled).toBe(true);
     });
 
     it("swallows a replyVia rejection on the error-fallback path too", async () => {
@@ -1755,7 +1980,8 @@ describe("Telegram intake", () => {
       rejectNext(new Error("expired"));
       MockAgentRunner.nextPrompt = async () => { throw new Error("turn failed"); };
 
-      await expect(intake.handleGuestMessage(message, "hi")).resolves.toBeUndefined();
+      const admission = await intake.handleGuestMessage(message, "hi");
+      await expect(admission.completion).resolves.toBeUndefined();
       await waitFor(() => runners[0]?.prompt.mock.calls.length === 1);
       await waitFor(() => !(runners[0]?.isStreaming ?? true));
       expect(results).toHaveLength(0);
@@ -1864,6 +2090,43 @@ describe("createMessageBuffer factory", () => {
     const raw = readFileSync(metricsPath(cfg.goblinHome, conversation!.id), "utf-8").trim();
     const events = raw.split("\n").map((line) => JSON.parse(line));
     expect(events.some((e) => e.type === "telegram" && e.op === "sendMessage" && e.channel === "status")).toBe(true);
+  });
+
+  it("tracks unknown-command prompt delivery as adapter completion", async () => {
+    const { intake } = makeHarness();
+    const delivery = deferred();
+    const message = makeMessage([], {
+      reply: async () => { await delivery.promise; },
+    });
+
+    const admission = await intake.handleText(message, "/unknown");
+    expect(admission.kind).toBe("completed");
+    let settled = false;
+    void admission.completion.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    delivery.resolve();
+    await admission.completion;
+    expect(settled).toBe(true);
+  });
+
+  it("surfaces rejected unknown-command prompt delivery", async () => {
+    const { intake } = makeHarness();
+    const failure = new Error("Telegram unavailable");
+    const errorSpy = spyOn(log, "error").mockImplementation(() => {});
+    const message = makeMessage([], {
+      reply: async () => { throw failure; },
+    });
+
+    const admission = await intake.handleText(message, "/unknown");
+    expect(admission.kind).toBe("completed");
+    await expect(admission.completion).rejects.toBe(failure);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "failed to send conversation prompt",
+      expect.objectContaining({ error: "Error: Telegram unavailable" }),
+    );
+    errorSpy.mockRestore();
   });
 
   it("operates without a MetricsStore when no Conversation exists", async () => {

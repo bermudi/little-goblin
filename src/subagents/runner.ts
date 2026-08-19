@@ -93,6 +93,14 @@ export type SubagentMemoryStoreFactory = (
   embeddingProvider?: EmbeddingProvider,
 ) => MemoryStore;
 
+/** Expected user-facing refusal to start a revived invocation. */
+export class SubagentReviveRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SubagentReviveRejectedError";
+  }
+}
+
 /** Thrown when a completed subagent delivery is rejected by runtime invalidation. */
 export class RuntimeFenceError extends Error {
   readonly subagentId: string;
@@ -604,13 +612,13 @@ export class SubagentRunner {
 
     // Guard against concurrent revive() of the same subagent ID.
     if (this.revivesInProgress.has(id)) {
-      throw new Error("Subagent revive already in progress");
+      throw new SubagentReviveRejectedError("Subagent revive already in progress");
     }
 
     // Reject if this subagent is already active and running.
     const existing = this.activeSubagents.get(id);
     if (existing !== undefined && existing.status === "running") {
-      throw new Error("Subagent is already running");
+      throw new SubagentReviveRejectedError("Subagent is already running");
     }
 
     this.revivesInProgress.add(id);
@@ -641,7 +649,7 @@ export class SubagentRunner {
     }
     if (record === null) {
       this.revivesInProgress.delete(id);
-      throw new Error("Subagent not found");
+      throw new SubagentReviveRejectedError("Subagent not found");
     }
 
     const role: SubagentRole = record.kind === "generic-subagent" ? "generic" : "named";
@@ -663,7 +671,7 @@ export class SubagentRunner {
     const sessionFile = findSessionFile(runDir);
     if (sessionFile === null) {
       this.revivesInProgress.delete(id);
-      throw new Error(`Subagent not found`);
+      throw new SubagentReviveRejectedError("Subagent not found");
     }
 
     // Revival is a new invocation: it inherits the reviving parent runtime's
@@ -741,7 +749,9 @@ export class SubagentRunner {
       } catch (err) {
         this.revivesInProgress.delete(id);
         if (err instanceof NamedAgentNotFoundError) {
-          throw new Error(`Named agent '${displayName}' definition missing; cannot revive`);
+          throw new SubagentReviveRejectedError(
+            `Named agent '${displayName}' definition missing; cannot revive`,
+          );
         }
         throw err;
       }

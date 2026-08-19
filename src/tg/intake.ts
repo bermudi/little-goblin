@@ -426,12 +426,17 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         const existingRunner = dispatcher.getRunner(session.id);
         let admitted: boolean;
         if (existingRunner === null) {
-          admitted = dispatcher.scheduleBootstrapTurn(
-            session,
-            surface,
-            execute,
-            onError,
-          );
+          try {
+            admitted = dispatcher.scheduleBootstrapTurn(
+              session,
+              surface,
+              execute,
+              onError,
+            );
+          } catch (err) {
+            handle?.releaseRuntimeAdmission();
+            throw err;
+          }
         } else {
           let runner: AgentRunner;
           try {
@@ -629,26 +634,32 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     const existingRunner = dispatcher.getRunner(session.id);
     if (existingRunner === null) {
-      const admitted = dispatcher.scheduleBootstrapTurn(
-        session,
-        surface,
-        async (runner, authority) => {
-          if (runner.isAbortTimedOut) {
+      let admitted: boolean;
+      try {
+        admitted = dispatcher.scheduleBootstrapTurn(
+          session,
+          surface,
+          async (runner, authority) => {
+            if (runner.isAbortTimedOut) {
+              if (!authority.isCurrent()) return;
+              await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
+              return;
+            }
             if (!authority.isCurrent()) return;
-            await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
-            return;
-          }
-          if (!authority.isCurrent()) return;
-          const buffer = dispatcher.createMessageBuffer(surface, session);
-          await runner.prompt(message.prepare(rawText), buffer);
-        },
-        async (error) => {
-          log.error("runner prompt failed", {
-            error: error instanceof Error ? error.message : String(error),
-            sessionId: session.id,
-          });
-        },
-      );
+            const buffer = dispatcher.createMessageBuffer(surface, session);
+            await runner.prompt(message.prepare(rawText), buffer);
+          },
+          async (error) => {
+            log.error("runner prompt failed", {
+              error: error instanceof Error ? error.message : String(error),
+              sessionId: session.id,
+            });
+          },
+        );
+      } catch (err) {
+        handle?.releaseRuntimeAdmission();
+        throw err;
+      }
       if (!admitted) {
         log.error("runner prompt rejected at queue admission", { sessionId: session.id });
         handle?.releaseRuntimeAdmission();

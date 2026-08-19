@@ -547,6 +547,40 @@ describe("Telegram intake", () => {
     await waitFor(() => !runtimeHost.hasPromptWork(conversation!.id));
   });
 
+  it("releases runtime admission when cold text bootstrap admission throws", async () => {
+    // Containment patch: scheduleBootstrapTurn can throw synchronously
+    // (e.g. runtime host rejects). The shutdown barrier must be released
+    // rather than hanging on an admission no code can release.
+    const { intake } = makeHarness();
+    const scheduleSpy = spyOn(intake.dispatcher, "scheduleBootstrapTurn");
+    scheduleSpy.mockImplementation(() => { throw new Error("bootstrap admission failed"); });
+    let releases = 0;
+    const handle: UpdateHandle = {
+      releaseRuntimeAdmission: () => { releases += 1; },
+    };
+    const message = makeMessage();
+
+    await expect(intake.handleText(message, "cold text", handle)).rejects.toThrow("bootstrap admission failed");
+    expect(releases).toBe(1);
+    scheduleSpy.mockRestore();
+  });
+
+  it("releases runtime admission when cold media bootstrap admission throws", async () => {
+    const { intake } = makeHarness();
+    const scheduleSpy = spyOn(intake.dispatcher, "scheduleBootstrapTurn");
+    scheduleSpy.mockImplementation(() => { throw new Error("bootstrap admission failed"); });
+    let releases = 0;
+    const handle: UpdateHandle = {
+      releaseRuntimeAdmission: () => { releases += 1; },
+    };
+    const message = makeMessage();
+
+    await expect(intake.handlePhoto(message, fakeApi(), ["photo"], "cold media", handle))
+      .rejects.toThrow("bootstrap admission failed");
+    expect(releases).toBe(1);
+    scheduleSpy.mockRestore();
+  });
+
   it("writes assistant transcript with the destination surface id after a cross-surface resume", async () => {
     const { cfg, intake } = makeHarness();
     const replies1: string[] = [];

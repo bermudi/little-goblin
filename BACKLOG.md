@@ -10,17 +10,17 @@ Parked scope and open questions. Items graduate only when a deliberate implement
 
 ## Now
 
-**Concentrate Telegram admission settlement — approved under decision 0046.** `UpdateGate.runUpdate<T>` will execute update boundaries and consume an `AdmissionResult<T>` whose authority is partitioned, rather than exposing caller-released handles. Runtime/delegated-run admission or attachment operations authoritatively report handoff or structural rejection (`busy`, `fenced`, `rejected`); the gate authoritatively reports its own closure (`closed`); the local adapter authoritatively reports `completed` for parsing or other work it owns with no runtime operation (malformed updates, topic-description changes, unknown commands, and like no-runtime paths). Adapters may map structural results but must not invent handoff or rejection outcomes. Completion remains separately tracked so steering, one-shot delivery, and revival never block runtime disposal. Coalesced text transfers gate-private claims and settles each merged group atomically. A pre-decision throw becomes a failed-before-decision terminal gate state; missing or contradictory decisions fail loud, while only repeated internal finalization is idempotent. This cycle preserves Telegram behavior, persisted state, and shutdown ordering; it does not reopen process-level authority.
+**ACP external agents (decision 0044).** Replace the Claude and Devin paths with capability-scoped ACP behind the external-agent execution host: exact-version-pinned `@agentclientprotocol/claude-agent-acp` for Claude and native `devin acp` for Devin. Neither qualified backend needs Goblin-hosted ACP filesystem or terminal capability. External-agent records join the host-owned delegated-run store. Codex transport remains unclassified.
 
 ## Next
 
-**ACP external agents (decision 0044).** The ACP cycle follows settlement concentration. Replace the Claude and Devin paths with capability-scoped ACP behind the external-agent execution host: exact-version-pinned `@agentclientprotocol/claude-agent-acp` for Claude and native `devin acp` for Devin. Neither qualified backend needs Goblin-hosted ACP filesystem or terminal capability. External-agent records join the host-owned delegated-run store. Codex transport remains unclassified.
+No second implementation cycle is active. Re-scout after the ACP carve rather than promoting parked scope speculatively.
 
 ## Completed inward solidification
 
-The runtime kernel, prepared runtime assembly, capability/tool assembly, event handling, runtime authority consolidation, machine-held work authority, and guest runtime admission slices are complete. `AgentRunner` consumes prepared runtime authority and delegates concrete tool and event ownership to narrow modules; `RuntimeMachine` owns per-conversation queue tickets created from closed work intents.
+The runtime kernel, prepared runtime assembly, capability/tool assembly, event handling, runtime authority consolidation, machine-held work authority, guest runtime admission, and Telegram admission settlement concentration slices are complete. `AgentRunner` consumes prepared runtime authority and delegates concrete tool and event ownership to narrow modules; `RuntimeMachine` owns per-conversation queue tickets created from closed work intents; `UpdateGate.runUpdate<T>` owns typed Telegram settlement with structural decision and completion lifetimes kept separate.
 
-Only **Now** and **Next** are active delivery positions. Further work must be re-scouted after the named next cycle; no additional implementation theme is active here.
+Only **Now** and **Next** are active delivery positions. Further work must be re-scouted after the current cycle; no additional implementation theme is active here.
 
 Do not introduce a plugin registry, dynamic tool discovery, SQLite-only persistence, or speculative provider interfaces.
 

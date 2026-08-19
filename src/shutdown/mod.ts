@@ -1,4 +1,15 @@
-export { UpdateGate, type UpdateHandle, type AdmissionHandle, type UpdateGateCoalescerCallbacks } from "./update-gate.ts";
+export {
+  UpdateGate,
+  completed,
+  runtimeAdmission,
+  type AdmissionKind,
+  type AdmissionResult,
+  type RuntimeAdmissionResult,
+  type AdapterAdmissionResult,
+  type UpdateClaim,
+  type TransferredAdmission,
+  type UpdateGateCoalescerCallbacks,
+} from "./update-gate.ts";
 export {
   ShutdownCoordinator,
   SHUTDOWN_PHASE_NAMES,

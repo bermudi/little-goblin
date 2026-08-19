@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { AgentRunner } from "../agent/mod.ts";
+import { RunnerNotStreamingError, type AgentRunner } from "../agent/mod.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
 import {
@@ -344,7 +344,7 @@ describe("RuntimeMachine queue and serial executor", () => {
 
     const decision = m.steerOrQueue(
       () => {
-        throw new Error("Cannot steer: session is not streaming.");
+        throw new RunnerNotStreamingError();
       },
       {
         intent: { kind: "binding" },
@@ -370,7 +370,7 @@ describe("RuntimeMachine queue and serial executor", () => {
 
     const decision = m.steerOrQueue(
       () => {
-        throw new Error("Cannot steer: session is not streaming.");
+        throw new RunnerNotStreamingError();
       },
       {
         intent: { kind: "binding" },
@@ -579,10 +579,10 @@ describe("RuntimeMachine immediate runtime admission", () => {
     expect(await failed.settlement).toEqual({ kind: "failed", error: failure });
   });
 
-  it("returns closed or fenced without installing work", () => {
+  it("returns rejected or fenced without installing work", () => {
     const closed = makeMachine("closed", false);
     expect(closed.admitImmediateRuntimeWork(async () => ({ kind: "completed" })))
-      .toEqual({ kind: "closed" });
+      .toEqual({ kind: "rejected" });
 
     const internal = makeMachine("internal");
     internal.registerInternalRuntime(fakeRunner());

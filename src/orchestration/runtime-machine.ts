@@ -1,4 +1,4 @@
-import type { AgentRunner } from "../agent/mod.ts";
+import { RunnerNotStreamingError, type AgentRunner } from "../agent/mod.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import type { SurfaceId } from "../surface.ts";
@@ -73,7 +73,7 @@ export type ImmediateWorkSettlement =
 export type ImmediateWorkAdmission =
   | { readonly kind: "accepted"; readonly settlement: Promise<ImmediateWorkSettlement> }
   | { readonly kind: "busy" }
-  | { readonly kind: "closed" }
+  | { readonly kind: "rejected" }
   | { readonly kind: "fenced" };
 
 /** Outcome of {@link RuntimeMachine.steerOrQueue}. */
@@ -624,7 +624,7 @@ export class RuntimeMachine {
   admitImmediateRuntimeWork(
     run: (context: ImmediateRuntimeWorkContext) => Promise<ImmediateWorkExecutionResult>,
   ): ImmediateWorkAdmission {
-    if (!this.deps.isAdmissionOpen()) return { kind: "closed" };
+    if (!this.deps.isAdmissionOpen()) return { kind: "rejected" };
     if (this.queueRunning || this.queue.length > 0) return { kind: "busy" };
     if (this.isInternal) return { kind: "fenced" };
 
@@ -653,7 +653,7 @@ export class RuntimeMachine {
         onSettled: () => classify(executionResult ?? { kind: "completed" }),
       },
     );
-    if (!admitted) return { kind: "closed" };
+    if (!admitted) return { kind: "rejected" };
     return { kind: "accepted", settlement: settlementControl.promise };
   }
 
@@ -684,8 +684,7 @@ export class RuntimeMachine {
     try {
       followUp = attach();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes("not streaming")) throw err;
+      if (!(err instanceof RunnerNotStreamingError)) throw err;
       if (!this.schedule(fallback.intent, fallback.run, fallback.onError)) {
         return { kind: "rejected" };
       }

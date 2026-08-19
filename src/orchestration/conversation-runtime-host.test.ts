@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { AgentRunner } from "../agent/mod.ts";
+import { RunnerNotStreamingError, type AgentRunner } from "../agent/mod.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
 import {
@@ -51,7 +51,7 @@ function registerRunner(
 }
 
 describe("ConversationRuntimeHost immediate runtime admission", () => {
-  it("forwards atomic accepted, busy, and closed classifications", async () => {
+  it("forwards atomic accepted, busy, and rejected classifications", async () => {
     const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
     const release = deferred<void>();
     const first = host.admitImmediateRuntimeWork("conversation-a", async () => {
@@ -67,7 +67,7 @@ describe("ConversationRuntimeHost immediate runtime admission", () => {
     expect(await first.settlement).toEqual({ kind: "completed" });
     host.closeAdmission();
     expect(host.admitImmediateRuntimeWork("conversation-b", async () => ({ kind: "completed" })))
-      .toEqual({ kind: "closed" });
+      .toEqual({ kind: "rejected" });
   });
 });
 
@@ -173,7 +173,7 @@ describe("ConversationRuntimeHost shutdown", () => {
     expect(host.steerOrQueue(
       "conversation-a",
       () => {
-        throw new Error("Cannot steer: session is not streaming.");
+        throw new RunnerNotStreamingError();
       },
       {
         intent: { kind: "binding" },

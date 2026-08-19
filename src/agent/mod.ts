@@ -142,6 +142,15 @@ function extractPromptText(content: string | (TextContent | ImageContent)[]): st
     .join("\n");
 }
 
+/** Structural late-steer race; callers may queue fallback work without
+ * parsing an error message. */
+export class RunnerNotStreamingError extends Error {
+  constructor() {
+    super("Cannot steer: session is not streaming.");
+    this.name = "RunnerNotStreamingError";
+  }
+}
+
 /**
  * AgentRunner wraps a pi AgentSession for a single goblin session.
  * Manages lazy initialization and event dispatch.
@@ -478,7 +487,7 @@ export class AgentRunner {
       throw new Error("Cannot steer: session not initialized. Call prompt() first.");
     }
     if (!this.isStreaming) {
-      throw new Error("Cannot steer: session is not streaming.");
+      throw new RunnerNotStreamingError();
     }
     const contentForModel = this.normalizeContentForModel(content);
     return this.awaitCurrent(() => this.backend.followUp(contentForModel));

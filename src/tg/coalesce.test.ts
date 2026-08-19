@@ -12,6 +12,7 @@ import {
 import { dmSurface, surfaceId, topicSurface } from "../surface.ts";
 import type { PromptContent } from "./intake.ts";
 import type { TelegramIntakeMessage } from "./intake.ts";
+import { completed, runtimeAdmission, UpdateGate, type AdmissionResult } from "../shutdown/mod.ts";
 
 // --- helpers ---------------------------------------------------------------
 
@@ -56,10 +57,37 @@ function textOf(n: number, label = "x"): string {
   return label.repeat(n);
 }
 
-function makeCoalescer(): { coalescer: TextCoalescer; dispatch: ReturnType<typeof mock> } {
-  const dispatch = mock<CoalesceDispatch>(() => Promise.resolve());
-  const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
-  return { coalescer, dispatch };
+class TestCoalescer {
+  readonly gate = new UpdateGate({
+    closeCoalescer: async () => {},
+    awaitBufferedTextAdmission: async () => {},
+  });
+  private readonly coalescer: TextCoalescer;
+
+  constructor(dispatch: CoalesceDispatch) {
+    this.coalescer = new TextCoalescer({ dispatch, gate: this.gate });
+  }
+
+  submit(input: CoalesceInput): Promise<void | undefined> {
+    return this.gate.runUpdate<void>((claim) => this.coalescer.submit(input, claim));
+  }
+
+  close(): Promise<void> {
+    return this.coalescer.close();
+  }
+
+  bufferedTextAdmission(): Promise<void> {
+    return this.coalescer.bufferedTextAdmission();
+  }
+}
+
+function testCoalescer(dispatch: CoalesceDispatch): TestCoalescer {
+  return new TestCoalescer(dispatch);
+}
+
+function makeCoalescer(): { coalescer: TestCoalescer; dispatch: ReturnType<typeof mock> } {
+  const dispatch = mock<CoalesceDispatch>(() => Promise.resolve(completed(undefined)));
+  return { coalescer: testCoalescer(dispatch as unknown as CoalesceDispatch), dispatch };
 }
 
 /** Return the text (2nd arg) dispatched on the `n`-th call (0-indexed),
@@ -284,7 +312,8 @@ describe("TextCoalescer — commands", () => {
     coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
 
     await coalescer.close();
-    coalescer.submit(makeInput("late", { messageIdFor: 2, messageId: 2 }));
+    expect(() => coalescer.submit(makeInput("late", { messageIdFor: 2, messageId: 2 })))
+      .toThrow("text coalescer received update after close");
     vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS * 2);
 
     // Buffered text was flushed exactly once; text submitted after close is dropped.
@@ -303,20 +332,51 @@ describe("TextCoalescer — commands", () => {
     expect(dispatchedText(dispatch, 0)).toBe(textOf(TEXT_SPLIT_THRESHOLD) + textOf(5, "y"));
   });
 
+  it("settles every fragment in a merged group with one structural result", async () => {
+    const decision = deferred<AdmissionResult<void>>();
+    const dispatch = mock<CoalesceDispatch>(() => decision.promise);
+    const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
+    await coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageId: 1 }));
+    await coalescer.submit(makeInput("tail", { messageId: 2 }));
+
+    let drained = false;
+    void coalescer.gate.runtimeAdmission().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS);
+    decision.resolve(runtimeAdmission.handoff(undefined));
+    await coalescer.gate.runtimeAdmission();
+    expect(drained).toBe(true);
+    await coalescer.close();
+  });
+
   it("does not replay a returned immediate-dispatch failure during later close", async () => {
     const error = new Error("handled by grammy");
     const dispatch = mock<CoalesceDispatch>(() => Promise.reject(error));
-    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
+    const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
 
     const returned = coalescer.submit(makeInput("short", { messageIdFor: 1, messageId: 1 }));
     await expect(returned!).rejects.toBe(error);
     await expect(coalescer.close()).resolves.toBeUndefined();
   });
 
+  it("fails transferred claims when a buffered result is malformed", async () => {
+    const dispatch = mock<CoalesceDispatch>(async () => undefined as never);
+    const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
+    await coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageId: 1 }));
+
+    vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS);
+    await coalescer.gate.runtimeAdmission();
+    await expect(coalescer.close()).rejects.toThrow(
+      "without an admission decision",
+    );
+  });
+
   it("surfaces dispatch failures during close without swallowing them", async () => {
     const error = new Error("boom");
     const dispatch = mock<CoalesceDispatch>(() => Promise.reject(error));
-    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
+    const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
     coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
 
     await expect(coalescer.close()).rejects.toBe(error);
@@ -325,7 +385,7 @@ describe("TextCoalescer — commands", () => {
 
   it("retains a detached rejection even when its reason is undefined", async () => {
     const dispatch = mock<CoalesceDispatch>(() => Promise.reject(undefined));
-    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
+    const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
     coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
 
     let rejected = false;
@@ -339,9 +399,9 @@ describe("TextCoalescer — commands", () => {
   });
 
   it("awaits a timer-flushed dispatch and shares one close promise", async () => {
-    const pending = deferred<void>();
+    const pending = deferred<AdmissionResult<void>>();
     const dispatch = mock<CoalesceDispatch>(() => pending.promise);
-    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
+    const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
     coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
     vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS);
 
@@ -352,7 +412,7 @@ describe("TextCoalescer — commands", () => {
     await Promise.resolve();
     expect(closed).toBe(false);
 
-    pending.resolve(undefined);
+    pending.resolve(completed(undefined));
     await firstClose;
     expect(closed).toBe(true);
   });

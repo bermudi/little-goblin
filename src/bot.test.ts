@@ -12,7 +12,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { replyNoActiveSession, buildBot } from "./bot.ts";
-import { dmSurface, topicSurface } from "./surface.ts";
+import { dmSurface, supergroupSurface, topicSurface } from "./surface.ts";
 import { projectRootOf } from "./sessions/environment.ts";
 import { MemoryStore } from "./memory/store.ts";
 import { metricsPath } from "./sessions/paths.ts";
@@ -251,13 +251,17 @@ function textUpdate(text: string, fromId = 1, messageId = 1) {
   } as const;
 }
 
-function groupTextUpdate(text: string, messageId = 1) {
+function groupTextUpdate(
+  text: string,
+  messageId = 1,
+  chatType: "group" | "supergroup" = "group",
+) {
   return {
     update_id: 7,
     message: {
       message_id: messageId,
       date: 1,
-      chat: { id: -10, type: "group", title: "Test group" },
+      chat: { id: -10, type: chatType, title: "Test group" },
       from: { id: 1, is_bot: false, first_name: "Daniel", username: "bermudi" },
       text,
     },
@@ -396,20 +400,20 @@ afterEach(() => {
 });
 
 describe("replyNoActiveSession", () => {
-  it("replies in DMs without a session", () => {
+  it("replies in DMs without a session", async () => {
     const reply = mock(async () => ({}));
     const ctx = { reply } as unknown as Context;
-    replyNoActiveSession(ctx, dmSurface(1), "text");
+    await replyNoActiveSession(ctx, dmSurface(1), "text");
     expect(reply).toHaveBeenCalledWith(
       "`[info]` No active conversation\\. Use /new to start one\\.",
       { disable_notification: true, parse_mode: "MarkdownV2" },
     );
   });
 
-  it("does not reply in topics without a session", () => {
+  it("does not reply in topics without a session", async () => {
     const reply = mock(async () => ({}));
     const ctx = { reply } as unknown as Context;
-    replyNoActiveSession(ctx, topicSurface("supergroup", 1, 42), "text");
+    await replyNoActiveSession(ctx, topicSurface("supergroup", 1, 42), "text");
     expect(reply).not.toHaveBeenCalled();
   });
 });
@@ -569,6 +573,35 @@ describe("buildBot integration", () => {
     await handled;
     expect(runnerInstances).toHaveLength(0);
     expect(built.api.sent).toEqual([]);
+  });
+
+  it("admits an allowed fetched group update after close starts before disposal", async () => {
+    const built = await makeBot();
+    let resolveMemberCount!: (count: number) => void;
+    const memberCount = new Promise<number>((resolve) => {
+      resolveMemberCount = resolve;
+    });
+    built.api.api.getChatMemberCount.mockImplementation(async () => memberCount);
+    const prompt = deferred();
+    MockAgentRunner.nextPrompt = async () => { await prompt.promise; };
+
+    const handled = built.bot.handleUpdate(groupTextUpdate("hello", 1, "supergroup"));
+    await waitFor(() => built.api.api.getChatMemberCount.mock.calls.length === 1);
+
+    const telegramDrain = built.gate.closeAdmission();
+    expect(await settlesWithin(telegramDrain, 25)).toBe(false);
+
+    resolveMemberCount(2);
+    await built.gate.bufferedTextAdmission();
+    await built.gate.runtimeAdmission();
+    const conversation = built.lifecycle.inspect(supergroupSurface(-10));
+    expect(conversation).not.toBeNull();
+    expect(built.runtimeHost.hasPromptWork(conversation!.id)).toBe(true);
+
+    prompt.resolve();
+    await built.runtimeHost.disposeAll();
+    await telegramDrain;
+    await handled;
   });
 
   it("/cancel reaches a runner with a pending prompt", async () => {

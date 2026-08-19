@@ -29,7 +29,7 @@ import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
 import type { ConversationLifecycle } from "./orchestration/conversation-lifecycle.ts";
 import { createConversationOrchestration } from "./orchestration/composition.ts";
 import type { ConversationRuntimeHost } from "./orchestration/conversation-runtime-host.ts";
-import { UpdateGate, type AdmissionHandle } from "./shutdown/mod.ts";
+import { UpdateGate, completed } from "./shutdown/mod.ts";
 
 /**
  * Tool factory that equips spawned subagents with spawn_subagent
@@ -158,8 +158,8 @@ function intakeMessageFromCtx(
  * Only pings the user in DMs — in topics, we silently drop to avoid
  * spamming every topic in a forum with the same prompt. Always logs.
  */
-export function replyNoActiveSession(ctx: Context, surface: Surface, kind: string): void {
-  replyNoActiveSessionForMessage({
+export function replyNoActiveSession(ctx: Context, surface: Surface, kind: string): Promise<void> {
+  return replyNoActiveSessionForMessage({
     surface,
     reply: wrapReply(async (text, opts) => {
       await ctx.reply(text, opts as Record<string, unknown> | undefined);
@@ -231,11 +231,9 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     embeddingProvider: memoryEngine.embeddingProvider,
     dreamingPipeline: memoryEngine.dreaming,
   });
-  // Process-level update gate. Absorbs the admission tracking, drain
-  // barriers, and coalescer close coupling that previously lived as local
-  // state in this closure. The coalescer callbacks are wired through mutable
-  // bindings so the gate can be constructed before the coalescer exists
-  // (breaking the gate ↔ intake ↔ coalescer construction cycle).
+  // Process-level update gate. Owns authorization, typed settlement, drain
+  // barriers, and coalescer close coupling. The callbacks are wired through
+  // mutable bindings because the gate is constructed before the coalescer.
   let coalescerClose = async (): Promise<void> => {};
   let coalescerBufferedAdmission = async (): Promise<void> => {};
   const gate = new UpdateGate({
@@ -252,7 +250,6 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     lifecycle: orchestration.lifecycle,
     scheduleStore,
     externalAgentRunner,
-    gate,
   });
 
   // Text coalescer: merges Telegram-split fragments before they reach intake.
@@ -263,185 +260,115 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // propagates failures from its close drain. Immediate handler promises still
   // flow to grammy's error boundary.
   const coalescer = new TextCoalescer({
-    dispatch: (msg, text, handle) => intake.handleText(msg, text, handle),
+    dispatch: (msg, text) => intake.handleText(msg, text),
+    gate,
   });
   coalescerClose = (): Promise<void> => coalescer.close();
   coalescerBufferedAdmission = (): Promise<void> => coalescer.bufferedTextAdmission();
 
-  // Track updates before authorization. Authorization can make an asynchronous
-  // Telegram API call (member count for an allowed user in a group), and
-  // grammy confirms an update's offset once its middleware settles. A shutdown
-  // must therefore wait for this authorization decision before closing the
-  // coalescer, or an already-fetched update can be lost forever.
-  bot.use((_ctx, next) => {
-    if (!gate.isOuterOpen()) {
-      log.info("Telegram update dropped after admission closed");
-      return Promise.resolve();
-    }
-    const handle: AdmissionHandle = gate.beginUpdate(_ctx);
-    let downstream: Promise<void>;
-    try {
-      downstream = next();
-    } catch (err) {
-      handle.releaseAuthorization();
-      handle.releaseRuntimeAdmission();
-      throw err;
-    }
-    gate.settleUpdate(_ctx, downstream);
-    return gate.trackAdmitted(downstream);
-  });
+  // Authorization and update settlement have distinct lifetimes. An update
+  // already inside allowlist authorization may still commit to the inner gate
+  // after outer admission closes.
+  bot.use((ctx, next) => gate.runAuthorization(ctx, next));
   bot.use(buildAllowlistMiddleware(cfg));
-  // Reaching this middleware means allowlist authorization succeeded. A
-  // denied update never reaches it; the outer tracking middleware releases its
-  // authorization barrier when the denial returns.
-  bot.use((_ctx, next) => {
-    gate.handleFor(_ctx)?.releaseAuthorization();
+  bot.use((ctx, next) => {
+    gate.commitAuthorization(ctx);
     return next();
   });
-  registerCommands(bot, intake.lifecycle);
+  registerCommands(bot, intake.lifecycle, gate);
 
-  bot.on("message:text", async (ctx: Context) => {
-    const handle = gate.handleFor(ctx);
+  bot.on("message:text", (ctx: Context) => gate.runUpdate<void>(ctx, (claim) => {
     const message = intakeMessageFromCtx(ctx, intake.lifecycle, cfg);
-    // No valid chat → drop, same as the handler did before coalescing.
-    if (!message.surface) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
-    // Telegram always populates `from` on user-originated text messages and
-    // `message_id` on Message objects, and the allowlist middleware has already
-    // gated this update. Guard defensively anyway so a future invariant shift
-    // fails here rather than producing a bogus key.
+    if (!message.surface) return completed(undefined);
     const fromId = ctx.from?.id;
     const messageId = ctx.msg?.message_id;
-    if (fromId === undefined || messageId === undefined) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
-    if (handle) handle.markHandedToCoalescer();
-    await coalescer.submit({
+    if (fromId === undefined || messageId === undefined) return completed(undefined);
+    return coalescer.submit({
       message,
       text: ctx.msg?.text ?? "",
-      key: {
-        surfaceId: message.surface ? surfaceId(message.surface) : "unknown",
-        fromUserId: fromId,
-      },
+      key: { surfaceId: surfaceId(message.surface), fromUserId: fromId },
       messageId,
-      // The first entity being bot_command means this is a slash command.
-      // Commands bypass the coalescer (and flush any pending buffer first) —
-      // so a slash command whose ARGUMENT exceeds Telegram's 4096-char limit
-      // will be split, with the first fragment dispatched immediately as a
-      // (truncated) command and the rest treated as a separate text turn.
-      // No command in this codebase accepts a >4096-char argument, so this is
-      // accepted as a known limitation rather than handled by coalescing.
       isCommand: ctx.msg?.entities?.[0]?.type === "bot_command",
-      handle,
-    });
-  });
+    }, claim);
+  }));
 
-  bot.on("message:photo", async (ctx: Context) => {
-    const handle = gate.handleFor(ctx);
+  bot.on("message:photo", (ctx: Context) => gate.runUpdate(ctx, () => {
     const fileIds = ctx.msg?.photo?.map((photo) => photo.file_id) ?? [];
-    await intake.handlePhoto(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, fileIds, ctx.msg?.caption, handle);
-  });
+    return intake.handlePhoto(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, fileIds, ctx.msg?.caption);
+  }));
 
-  bot.on("message:document", async (ctx: Context) => {
-    const handle = gate.handleFor(ctx);
+  bot.on("message:document", (ctx: Context) => gate.runUpdate(ctx, () => {
     const doc = ctx.msg?.document;
-    if (!doc?.file_id) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
-    await intake.handleDocument(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
+    if (!doc?.file_id) return completed(undefined);
+    return intake.handleDocument(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
       fileId: doc.file_id,
       fileName: doc.file_name,
       mimeType: doc.mime_type,
       caption: ctx.msg?.caption,
-    }, handle);
-  });
+    });
+  }));
 
-  bot.on("message:voice", async (ctx: Context) => {
-    const handle = gate.handleFor(ctx);
+  bot.on("message:voice", (ctx: Context) => gate.runUpdate(ctx, () => {
     const voice = ctx.msg?.voice;
-    if (!voice?.file_id) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
-    await intake.handleVoice(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
+    if (!voice?.file_id) return completed(undefined);
+    return intake.handleVoice(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
       fileId: voice.file_id,
       mimeType: voice.mime_type,
-    }, handle);
-  });
+    });
+  }));
 
-  bot.on("message:audio", async (ctx: Context) => {
-    const handle = gate.handleFor(ctx);
+  bot.on("message:audio", (ctx: Context) => gate.runUpdate(ctx, () => {
     const audio = ctx.msg?.audio;
-    if (!audio?.file_id) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
-    await intake.handleAudio(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
+    if (!audio?.file_id) return completed(undefined);
+    return intake.handleAudio(intakeMessageFromCtx(ctx, intake.lifecycle, cfg), ctx.api, {
       fileId: audio.file_id,
       fileName: audio.file_name,
       performer: audio.performer,
       title: audio.title,
       caption: ctx.msg?.caption,
-    }, handle);
-  });
+    });
+  }));
 
-  bot.on("message:forum_topic_created", async (ctx: Context) => {
-    const handle = gate.handleFor(ctx);
-    await intake.handleTopicDescription(
+  bot.on("message:forum_topic_created", (ctx: Context) => gate.runUpdate(ctx, () =>
+    intake.handleTopicDescription(
       ctx.chat?.id,
       ctx.msg?.message_thread_id,
       ctx.msg?.forum_topic_created?.name,
-      handle,
-    );
-  });
+    )
+  ));
 
-  bot.on("message:forum_topic_edited", async (ctx: Context) => {
-    const handle = gate.handleFor(ctx);
-    await intake.handleTopicDescription(
+  bot.on("message:forum_topic_edited", (ctx: Context) => gate.runUpdate(ctx, () =>
+    intake.handleTopicDescription(
       ctx.chat?.id,
       ctx.msg?.message_thread_id,
       ctx.msg?.forum_topic_edited?.name,
-      handle,
-    );
-  });
+    )
+  ));
 
-  // Guest Mode (Bot API 10.0): a @mention in a chat the bot is NOT a member of.
-  // The allowlist middleware gates these by summoner before this handler runs.
-  // Reply is one-shot via ctx.answerGuestQuery (it auto-reads guest_query_id
-  // from ctx.guestMessage) — no streaming. Media/caption-only summons are out
-  // of scope: we drop them silently with a debug log. See telegram-guest-mode.
-  bot.on("guest_message", async (ctx: Context) => {
-    const handle = gate.handleFor(ctx);
+  bot.on("guest_message", (ctx: Context) => gate.runUpdate(ctx, () => {
     const guestMessage = ctx.guestMessage;
-    if (!guestMessage) {
-      handle?.releaseRuntimeAdmission();
-      return;
-    }
+    if (!guestMessage) return completed(undefined);
     const text = guestMessage.text;
     if (!text) {
-      // Media (photo/document/voice) or caption-only — Non-Goal, drop quietly.
       log.debug("dropping guest_message: no text", {
         chatId: guestMessage.chat?.id,
         hasCaption: "caption" in guestMessage,
       });
-      handle?.releaseRuntimeAdmission();
-      return;
+      return completed(undefined);
     }
-    const cleanedText = prepareUserContent(ctx, text);
-    const surface = guestSurface(guestMessage.chat.id);
-    await intake.handleGuestMessage(
+    return intake.handleGuestMessage(
       {
-        surface,
+        surface: guestSurface(guestMessage.chat.id),
         replyVia: (result) => ctx.answerGuestQuery(result),
       },
-      cleanedText,
-      handle,
+      prepareUserContent(ctx, text),
     );
-  });
+  }));
+
+  // Authorized but unsupported Telegram updates are local completions. This
+  // fallback makes the one-decision invariant explicit instead of relying on
+  // a settle safety net.
+  bot.use((ctx) => gate.runUpdate(ctx, () => completed(undefined)));
 
   bot.catch((err) => {
     log.error("bot error", {

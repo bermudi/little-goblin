@@ -9,7 +9,12 @@
  */
 import { log } from "../log.ts";
 import type { TelegramIntakeMessage } from "./intake.ts";
-import type { UpdateHandle } from "../shutdown/mod.ts";
+import type {
+  AdmissionResult,
+  TransferredAdmission,
+  UpdateClaim,
+  UpdateGate,
+} from "../shutdown/mod.ts";
 
 /** A fragment at or above this length is treated as a likely split first half. */
 export const TEXT_SPLIT_THRESHOLD = 4000;
@@ -42,18 +47,14 @@ export interface CoalesceInput {
   /** True when the first Telegram entity is `bot_command`. Commands bypass and
    * flush the buffer; they never open one. */
   isCommand: boolean;
-  /** Handle for the Telegram update that owns this text. The coalescer
-   * releases it when the merged message reaches runtime admission. */
-  handle?: UpdateHandle;
 }
 
 /** Callback the coalescer invokes to deliver a merged (or pass-through) message
- * to intake. Same signature as `intake.handleText`. */
+ * to intake. It returns the authoritative structural result for the group. */
 export type CoalesceDispatch = (
   message: TelegramIntakeMessage,
   text: string,
-  handle: UpdateHandle | undefined,
-) => Promise<void>;
+) => Promise<AdmissionResult<void>>;
 
 interface BufferEntry {
   /** The first fragment's message — retained at open time and passed to
@@ -80,13 +81,14 @@ interface BufferEntry {
    * delayed by the event loop. */
   lastReceivedAt: number;
   timer: ReturnType<typeof setTimeout>;
-  /** Handles for every fragment in this buffer, released in order when the
-   * merged message reaches runtime admission. */
-  handles: UpdateHandle[];
+  /** Gate-owned fragment claims. One merged result settles the whole group in
+   * one synchronous loop; no fragment can observe a different decision. */
+  claims: UpdateClaim<void>[];
 }
 
 export interface TextCoalescerOptions {
   dispatch: CoalesceDispatch;
+  gate: UpdateGate;
 }
 
 /**
@@ -97,9 +99,10 @@ export interface TextCoalescerOptions {
  */
 export class TextCoalescer {
   private readonly dispatch: CoalesceDispatch;
+  private readonly gate: UpdateGate;
   private readonly buffers = new Map<string, BufferEntry>();
   private readonly activeDispatches = new Set<Promise<void>>();
-  private readonly activeBufferedAdmissions = new Set<Promise<void>>();
+  private readonly activeBufferedAdmissions = new Set<Promise<AdmissionResult<void>>>();
   private readonly dispatchFailures: unknown[] = [];
   private totalDispatchFailures = 0;
   private closed = false;
@@ -107,61 +110,53 @@ export class TextCoalescer {
 
   constructor(options: TextCoalescerOptions) {
     this.dispatch = options.dispatch;
+    this.gate = options.gate;
   }
 
-  /** Observe every admitted dispatch so close can drain it. Only detached
-   * dispatches retain failures for close; returned promises belong to callers.
-   *
-   * The coalescer wraps the incoming handle(s) in a tracking handle that
-   * resolves `bufferedAdmission` on release, so intake sees a single
-   * {@link UpdateHandle} and calls `releaseRuntimeAdmission()` at the runtime
-   * hand-off boundary. The settle paths also call it as a safety net — the
-   * handle's idempotency guarantees exactly-once release. */
+  /** Observe a dispatch at both lifetimes: the structural result settles all
+   * buffered claims, while its completion remains drainable independently. */
   private dispatchTracked(
     message: TelegramIntakeMessage,
     text: string,
     detached: boolean,
     buffered: boolean,
-    handles: UpdateHandle[],
-  ): Promise<void> {
-    let admit: () => void = () => {};
-    let released = false;
-    const bufferedAdmission = buffered
-      ? new Promise<void>((resolve) => {
-        admit = resolve;
-      })
-      : undefined;
-    if (bufferedAdmission) this.activeBufferedAdmissions.add(bufferedAdmission);
-    const release = (): void => {
-      if (released) return;
-      released = true;
-      for (const h of handles) h.releaseRuntimeAdmission();
-      admit();
-      if (bufferedAdmission) this.activeBufferedAdmissions.delete(bufferedAdmission);
-    };
-    // The handle intake receives: a single wrapper whose release triggers
-    // all fragment handles and the buffered-admission promise.
-    const dispatchHandle: UpdateHandle = { releaseRuntimeAdmission: release };
-    let dispatch: Promise<void>;
+    claims: UpdateClaim<void>[],
+  ): Promise<AdmissionResult<void>> {
+    let decision: Promise<AdmissionResult<void>>;
     try {
-      dispatch = this.dispatch(message, text, dispatchHandle);
+      decision = this.dispatch(message, text);
     } catch (error) {
-      release();
-      dispatch = Promise.reject(error);
+      decision = Promise.reject(error);
     }
-    this.activeDispatches.add(dispatch);
-    const settleSuccess = (): void => {
-      // A dispatch implementation that does not expose an earlier admission
-      // point still must not leave the shutdown barrier pending forever.
-      release();
-      this.activeDispatches.delete(dispatch);
+    if (buffered) this.activeBufferedAdmissions.add(decision);
+
+    const settleClaims = (admissionResult: AdmissionResult<void>): AdmissionResult<void> => {
+      if (buffered) this.activeBufferedAdmissions.delete(decision);
+      try {
+        this.gate.settleTransferred(claims, admissionResult);
+      } catch (error) {
+        // A malformed or contradictory group result is failed-before-decision
+        // for every claim that did not already reach a terminal state.
+        this.gate.failUndecidedTransferred(claims, error);
+        throw error;
+      }
+      return admissionResult;
     };
-    const settleFailure = (error: unknown): void => {
-      release();
-      this.activeDispatches.delete(dispatch);
+    const rejectClaims = (error: unknown): never => {
+      if (buffered) this.activeBufferedAdmissions.delete(decision);
+      this.gate.failTransferred(claims, error);
+      throw error;
+    };
+    const settledDecision = decision.then(settleClaims, rejectClaims);
+    void decision.catch(() => {});
+    void settledDecision.catch(() => {});
+
+    const completion = settledDecision.then((admissionResult) => admissionResult.completion);
+    this.activeDispatches.add(completion);
+    const finish = (): void => { this.activeDispatches.delete(completion); };
+    const retainFailure = (error: unknown): void => {
+      finish();
       if (!detached) return;
-      // Rejection is an outcome independent of its reason: Promise.reject()
-      // is still a failure even though the reason is undefined.
       this.dispatchFailures.push(error);
       this.totalDispatchFailures++;
       if (this.dispatchFailures.length > DISPATCH_FAILURE_RETENTION_CAP) {
@@ -171,93 +166,66 @@ export class TextCoalescer {
         error: error instanceof Error ? error.message : String(error),
       });
     };
-    void dispatch.then(settleSuccess, settleFailure);
-    return dispatch;
+    void completion.then(finish, retainFailure);
+    return settledDecision;
   }
 
-  submit(input: CoalesceInput): Promise<void> | undefined {
+  submit(
+    input: CoalesceInput,
+    claim: UpdateClaim<void>,
+  ): Promise<AdmissionResult<void>> | TransferredAdmission<void> {
     if (this.closed) {
-      log.info("telegram text dropped after admission closed", { surfaceId: input.key.surfaceId });
-      input.handle?.releaseRuntimeAdmission();
-      return;
+      throw new Error(`text coalescer received update after close for ${input.key.surfaceId}`);
     }
     // Commands never buffer. If a buffer is open for the key, flush it first
     // (buffered text reaches intake before the command), then dispatch the
     // command immediately.
     if (input.isCommand) {
       this.flush(input.key);
-      return this.dispatchTracked(input.message, input.text, false, false, input.handle ? [input.handle] : []);
+      return this.dispatchTracked(input.message, input.text, false, false, []);
     }
 
     const entry = this.buffers.get(keyToString(input.key));
-
-    // No open buffer for this key: open one if the fragment is long enough,
-    // otherwise pass through immediately with no added latency.
     if (entry === undefined) {
-      if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
-        this.open(input);
-      } else {
-        return this.dispatchTracked(input.message, input.text, false, false, input.handle ? [input.handle] : []);
-      }
-      return;
+      return input.text.length >= TEXT_SPLIT_THRESHOLD
+        ? this.open(input, claim)
+        : this.dispatchTracked(input.message, input.text, false, false, []);
     }
 
-    // Buffer is open. Decide append vs flush-then-handle on adjacency and
-    // wall-clock window. A fragment is adjacent only if its message_id is
-    // exactly one greater than the last buffered id AND it arrived within the
-    // 1200 ms wall-clock window from the prior fragment. The wall-clock check
-    // prevents a late fragment from extending the window when the setTimeout
-    // callback has not yet fired.
     const isAdjacent =
       input.messageId === entry.lastMessageId + 1 &&
       Date.now() - entry.lastReceivedAt <= TEXT_SPLIT_WINDOW_MS;
 
     if (!isAdjacent) {
-      // Non-adjacent (gap > 1, non-monotonic / duplicate, or window elapsed):
-      // the open buffer and the incoming message are not fragments of one
-      // logical message.
       this.flush(input.key);
-      // Re-evaluate the incoming fragment as if fresh.
-      if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
-        this.open(input);
-      } else {
-        return this.dispatchTracked(input.message, input.text, false, false, input.handle ? [input.handle] : []);
-      }
-      return;
+      return input.text.length >= TEXT_SPLIT_THRESHOLD
+        ? this.open(input, claim)
+        : this.dispatchTracked(input.message, input.text, false, false, []);
     }
 
-    // Adjacent. Honor hard caps before appending: if appending would cross a
-    // cap, flush the current buffer first, then re-evaluate the incoming as
-    // fresh.
     if (
       entry.fragmentCount + 1 > MAX_FRAGMENTS ||
       entry.totalChars + input.text.length > MAX_TOTAL_CHARS
     ) {
       this.flush(input.key);
-      if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
-        this.open(input);
-      } else {
-        return this.dispatchTracked(input.message, input.text, false, false, input.handle ? [input.handle] : []);
-      }
-      return;
+      return input.text.length >= TEXT_SPLIT_THRESHOLD
+        ? this.open(input, claim)
+        : this.dispatchTracked(input.message, input.text, false, false, []);
     }
 
-    // Append: clear + restart the timer, update text/ids/counts. The retained
-    // first-fragment `message` is never overwritten.
     clearTimeout(entry.timer);
     entry.text += input.text;
     entry.lastMessageId = input.messageId;
     entry.fragmentCount += 1;
     entry.totalChars += input.text.length;
     entry.lastReceivedAt = Date.now();
-    if (input.handle) entry.handles.push(input.handle);
+    entry.claims.push(claim);
     entry.timer = setTimeout(() => this.flush(input.key), TEXT_SPLIT_WINDOW_MS);
-    return;
+    return this.gate.transferUpdate(claim);
   }
 
-  /** Open a new buffer for `input`'s key, capturing its message as the
-   * retained first-fragment message. Starts the trailing debounce. */
-  private open(input: CoalesceInput): void {
+  /** Open a new buffer and transfer this update's opaque claim into it. */
+  private open(input: CoalesceInput, claim: UpdateClaim<void>): TransferredAdmission<void> {
     const key = keyToString(input.key);
     const entry: BufferEntry = {
       message: input.message,
@@ -267,9 +235,10 @@ export class TextCoalescer {
       totalChars: input.text.length,
       lastReceivedAt: Date.now(),
       timer: setTimeout(() => this.flush(input.key), TEXT_SPLIT_WINDOW_MS),
-      handles: input.handle ? [input.handle] : [],
+      claims: [claim],
     };
     this.buffers.set(key, entry);
+    return this.gate.transferUpdate(claim);
   }
 
   /**
@@ -291,7 +260,7 @@ export class TextCoalescer {
     for (const entry of entries) clearTimeout(entry.timer);
     this.buffers.clear();
     for (const entry of entries) {
-      void this.dispatchTracked(entry.message, entry.text, true, true, entry.handles);
+      void this.dispatchTracked(entry.message, entry.text, true, true, entry.claims);
     }
 
     while (this.activeDispatches.size > 0) {
@@ -328,7 +297,7 @@ export class TextCoalescer {
     if (entry === undefined) return;
     clearTimeout(entry.timer);
     this.buffers.delete(k);
-    void this.dispatchTracked(entry.message, entry.text, true, true, entry.handles);
+    void this.dispatchTracked(entry.message, entry.text, true, true, entry.claims);
   }
 }
 

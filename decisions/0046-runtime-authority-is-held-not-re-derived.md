@@ -9,6 +9,11 @@ builds_on: [0032, 0033]
 
 # 0046: Runtime Authority Is Held, Not Re-Derived at Every Boundary
 
+> **Amendment (2026-08-19):** Telegram admission settlement is also
+> concentrated in `UpdateGate`. The approved next carve replaces
+> caller-released update handles with `UpdateGate.runUpdate<T>`, which consumes
+> an authoritative `AdmissionResult<T>` structural decision as specified below.
+
 ## Context
 
 Eight consecutive fix commits (5646970…99fc1cd) repaired the same two failure modes at the runtime boundary: work silently lost across an await, and work reaching the wrong runtime generation. Admission is guarded by four independent flags — Telegram tracking in `bot.ts`, intake's `admit(kind)`, `ConversationRuntimeHost.admissionOpen`, and the scheduler's `claimsOpen` — each with its own bookkeeping: three in-flight Sets plus a per-update WeakMap in `bot.ts`, thirteen live-state collections in the host, and roughly sixty `isCurrent`-flavored authority checks spread across nine modules. `TurnDispatcher.getOrCreateRunner` re-checks identity around five named checkpoints plus a final no-await triple check; the prompt queue is a spliced promise chain whose cancellation once reached the runner and poisoned the next turn; shutdown ordering lives as comments in `index.ts`.
@@ -29,6 +34,24 @@ The prompt queue SHALL be an explicit entry list driven by a serial executor. Ca
 
 Immediate/no-wait runtime work SHALL use one transport-neutral machine admission path. In one synchronous section the machine checks all queue occupancy, selects cold bootstrap or warm current-runtime authority, and either installs an accepted entry or returns an explicit busy, closed, or fenced classification. Immediate work never waits behind prompts or commands. Accepted work uses the ordinary queue settlement, fencing, drain, and shutdown lifetime; cold work adopts the current registered runner before prompt or delivery, while warm work remains tied to the runner held at admission. Ordinary cold text and media install the same machine-owned bootstrap ticket before asynchronous preparation. Invalidating a RuntimeCreation cooperatively cancels each preparation await: any underlying detached promise remains rejection-observed and cannot reach registration. Transport adapters may provide sinks and delivery closures but do not inspect runner occupancy or coordinate prompting. One-shot delivery is initiated synchronously only after the final authority commit; its observed network promise is returned with settlement and remains UpdateGate/update-handler work, not queue or runtime-disposal work.
 
+Telegram update admission settlement SHALL be owned by `UpdateGate`, not by
+callers holding a release capability. `UpdateGate.runUpdate<T>` SHALL execute
+each update boundary and consume an `AdmissionResult<T>` returned by the
+authoritative runtime/delegated-run admission or attachment operation; Telegram
+adapters SHALL NOT manufacture a decision. The gate records exactly one
+structural decision: work was handed off to a conversation runtime or delegated
+run, it was structurally rejected (`closed`, `busy`, `fenced`, or generic
+`rejected`), or it completed without runtime work. The decision is recorded at
+the authoritative admission or attachment commit; its separately tracked
+completion may await steering, one-shot Telegram delivery, or delegated work
+without holding the runtime-admission drain. A throw before a decision becomes
+a failed-before-decision terminal gate state, releases the gate safety net, and
+propagates; a later completion failure does not rewrite an already recorded
+decision. Repeated internal finalization is idempotent, but missing or
+contradictory decisions fail loud. Coalesced text transfers gate-private claims
+into one buffer; one merged structural decision settles the entire claim group
+atomically. No string parsing determines a rejection classification.
+
 Cancelling queued work removes the entry and SHALL NOT touch the runner. The machine SHALL express overlapping generations — a replacement reserved while a prior generation's disposal still drains — as a current generation plus a drain set, not a flat state enum.
 
 Process shutdown SHALL be one owned phase list in one coordinator: close the Telegram gate, drain buffered text to runtime admission, start runtime disposal before awaiting the Telegram drains, then stop polling and drain subsystems in order. The causal ordering that today lives in `index.ts` comments becomes data.
@@ -37,7 +60,10 @@ Scope: this assumes one process and event-loop serialization; no cross-process c
 
 Supersession: the second inward-solidification guardrail clause "a single-check replacement for the dispatcher's asynchronous authority fences" is superseded in full by this decision's commit-point discipline. The rest of that guardrail — no plugin registry, no dynamic tool discovery, no SQLite-only persistence, no speculative provider interfaces — stands.
 
-Sequencing: this seam, including machine-held work authority and guest runtime admission, consolidates before ACP lands under decision 0044. ACP is the next bounded cycle.
+Sequencing: this seam, including machine-held work authority, guest runtime
+admission, and Telegram admission settlement concentration, consolidates
+before ACP lands under decision 0044. Settlement concentration is the next
+bounded cycle.
 
 ## Consequences
 

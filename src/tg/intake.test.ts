@@ -679,6 +679,33 @@ describe("Telegram intake", () => {
     expect(replies).toEqual([]);
   });
 
+  it("propagates lifecycle resolution failures for every media handler", async () => {
+    const { intake } = makeHarness();
+    const failure = new Error("binding state corrupt");
+    const resolveOrStart = mock(async () => { throw failure; });
+    (intake.lifecycle as unknown as { resolveOrStart: typeof resolveOrStart }).resolveOrStart =
+      resolveOrStart;
+    const fetchSpy = mock(async () => new Response(new Uint8Array([1])));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const api = fakeApi();
+
+    const attempts = [
+      () => intake.handlePhoto(message, api, ["photo"], "caption"),
+      () => intake.handleDocument(message, api, { fileId: "document", fileName: "doc.txt" }),
+      () => intake.handleVoice(message, api, { fileId: "voice" }),
+      () => intake.handleAudio(message, api, { fileId: "audio", fileName: "audio.mp3" }),
+    ];
+    for (const attempt of attempts) {
+      await expect(attempt()).rejects.toBe(failure);
+    }
+
+    expect(resolveOrStart).toHaveBeenCalledTimes(4);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(replies).toEqual([]);
+  });
+
   it("installs cold text bootstrap work before releasing runtime admission", async () => {
     const { intake, runtimeHost } = makeHarness();
     const promptBlock = deferred();

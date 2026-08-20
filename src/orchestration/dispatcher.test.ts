@@ -24,7 +24,10 @@ import type { TurnSink, SurfaceSettings } from "./dispatcher.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
 import type { TranscriptWriterContext } from "../sessions/transcript.ts";
 import { DEFAULT_SKILL_POLICY, type SkillPolicy } from "../agent/skills/mod.ts";
-import type { GenericSubagentInheritance } from "../subagents/mod.ts";
+import {
+  SubagentCancellationRejectedError,
+  type GenericSubagentInheritance,
+} from "../subagents/mod.ts";
 import { DelegatedWorkHost, type ConversationRuntimeId } from "../delegated-work/mod.ts";
 import { ShutdownCoordinator, UpdateGate } from "../shutdown/mod.ts";
 import { BindingFencedError } from "./conversation-lifecycle.ts";
@@ -100,6 +103,9 @@ class FakeSubagentRunner {
     prompt: string;
     onStatusUpdate?: (msg: string) => void;
   } | null = null;
+  beginCancelCalls: { id: string; ownerConversationId?: string }[] = [];
+  beginCancelError: unknown;
+  beginCancelCompletion: Promise<void> = Promise.resolve();
 
   cancelBySession(sessionId: string): Promise<void> {
     this.cancelled.push(sessionId);
@@ -116,6 +122,12 @@ class FakeSubagentRunner {
 
   cancel(_id: string): Promise<void> {
     return Promise.resolve();
+  }
+
+  beginCancel(id: string, ownerConversationId?: string): Promise<void> {
+    this.beginCancelCalls.push({ id, ownerConversationId });
+    if (this.beginCancelError !== undefined) throw this.beginCancelError;
+    return this.beginCancelCompletion;
   }
 
   revive(
@@ -1754,6 +1766,7 @@ describe("TurnDispatcher rejected admission settlement", () => {
   function buildDispatcher(): {
     dispatcher: TurnDispatcher;
     runtimeHost: ConversationRuntimeHost;
+    subagentRunner: FakeSubagentRunner;
   } {
     const delegatedWorkHost = new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost;
     const runtimeHost = new ConversationRuntimeHost({ delegatedWorkHost });
@@ -1812,18 +1825,22 @@ describe("TurnDispatcher rejected admission settlement", () => {
       },
       surfaceRuntimeAuthority: permissiveRuntimeAuthority(),
     });
-    return { dispatcher, runtimeHost };
+    return { dispatcher, runtimeHost, subagentRunner };
   }
 
-  it("admitRuntimeWork does not invoke the work callback when admission is closed", async () => {
+  it("admitConversationControl does not invoke the work callback when admission is closed", async () => {
     const { dispatcher, runtimeHost } = buildDispatcher();
     await runtimeHost.disposeAll();
 
     let workCalled = false;
-    const admission = dispatcher.admitRuntimeWork(async () => {
+    const admission = dispatcher.admitConversationControl(
+      dmSurface(1),
+      makeSession("abc123def0"),
+      async () => {
       workCalled = true;
       return "result" as unknown as void;
-    });
+      },
+    );
 
     expect(admission.kind).toBe("rejected");
     expect(workCalled).toBe(false);
@@ -1831,17 +1848,68 @@ describe("TurnDispatcher rejected admission settlement", () => {
     await expect(admission.completion).resolves.toBeUndefined();
   });
 
-  it("admitRuntimeWork invokes the work callback when admission is open", async () => {
+  it("admitConversationControl invokes the work callback when admission is open", async () => {
     const { dispatcher } = buildDispatcher();
 
     let workCalled = false;
-    const admission = dispatcher.admitRuntimeWork(async () => {
-      workCalled = true;
-    });
+    const admission = dispatcher.admitConversationControl(
+      dmSurface(1),
+      makeSession("abc123def0"),
+      async () => {
+        workCalled = true;
+      },
+    );
 
     expect(admission.kind).toBe("handoff");
     expect(workCalled).toBe(true);
     await admission.completion;
+  });
+
+  it("admitCancelSubagent lets delegated work reject before handoff", async () => {
+    const { dispatcher, subagentRunner } = buildDispatcher();
+    subagentRunner.beginCancelError =
+      new SubagentCancellationRejectedError("Subagent not found");
+
+    const session = makeSession("abc123def0");
+    const admission = dispatcher.admitCancelSubagent(dmSurface(1), session, "missing");
+
+    expect(admission.kind).toBe("rejected");
+    await expect(admission.completion).rejects.toThrow("Subagent not found");
+    expect(subagentRunner.beginCancelCalls).toEqual([{
+      id: "missing",
+      ownerConversationId: session.id,
+    }]);
+  });
+
+  it("admitCancelSubagent keeps handoff when claimed cleanup later fails", async () => {
+    const { dispatcher, subagentRunner } = buildDispatcher();
+    const failure = new Error("stop failed");
+    subagentRunner.beginCancelCompletion = Promise.reject(failure);
+
+    const admission = dispatcher.admitCancelSubagent(
+      dmSurface(1),
+      makeSession("abc123def0"),
+      "claimed",
+    );
+
+    expect(admission.kind).toBe("handoff");
+    await expect(admission.completion).rejects.toBe(failure);
+  });
+
+  it("admitCancelSubagent fences delivery when binding changes during cleanup", async () => {
+    const { dispatcher, runtimeHost, subagentRunner } = buildDispatcher();
+    let finishCleanup!: () => void;
+    subagentRunner.beginCancelCompletion = new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    });
+    const session = makeSession("abc123def0");
+
+    const admission = dispatcher.admitCancelSubagent(dmSurface(1), session, "claimed");
+    expect(admission.kind).toBe("handoff");
+    await runtimeHost.disposeRuntime(session.id);
+    finishCleanup();
+
+    await expect(admission.completion).rejects.toBeInstanceOf(BindingFencedError);
   });
 
   it("admitGetOrCreateRunner rejected completion settles and getOrCreateRunner throws", async () => {

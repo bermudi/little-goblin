@@ -158,6 +158,37 @@ describe("ShutdownCoordinator", () => {
     expect(result.ok).toBe(false);
     expect(result.failures).toBe(2);
   });
+
+  it("starts runtime disposal before awaiting runtime admission or stopping polling", async () => {
+    const gate = new UpdateGate({
+      closeCoalescer: async () => {},
+      awaitBufferedTextAdmission: async () => {},
+    });
+    let releaseAdmission!: () => void;
+    const admissionDrain = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+    const events: string[] = [];
+    const coordinator = new ShutdownCoordinator({
+      gate,
+      stopTelegramPolling: async () => { events.push("stop"); },
+      drainBufferedText: async () => { events.push("buffered"); },
+      drainRuntimeAdmission: () => {
+        events.push("runtime-admission");
+        return admissionDrain;
+      },
+      disposeRuntimes: async () => { events.push("dispose"); },
+      drainScheduler: async () => {},
+      disposeExternalAgents: async () => {},
+      disposeSubagents: async () => {},
+      closeMemoryEngine: async () => {},
+    });
+
+    const shutdown = coordinator.shutdown("SIGTERM");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events).toEqual(["buffered", "dispose", "runtime-admission", "stop"]);
+    releaseAdmission();
+    expect((await shutdown).ok).toBe(true);
+  });
 });
 
 describe("UpdateGate", () => {

@@ -590,6 +590,46 @@ describe("RuntimeMachine immediate runtime admission", () => {
       .toEqual({ kind: "fenced" });
   });
 
+  it("holds binding control authority across awaits and fences it on binding change", async () => {
+    const m = makeMachine();
+    const release = deferred<void>();
+    let currentAfterAwait = true;
+    const admission = m.admitBindingControlWork(async (authority) => {
+      expect(authority.isCurrent()).toBe(true);
+      await release.promise;
+      currentAfterAwait = authority.isCurrent();
+    });
+    expect(admission.kind).toBe("accepted");
+
+    const invalidation = m.invalidate("binding-change");
+    release.resolve(undefined);
+    await invalidation;
+    if (admission.kind !== "accepted") throw new Error("expected accepted control work");
+    await admission.completion;
+    expect(currentAfterAwait).toBe(false);
+  });
+
+  it("starts binding control work during an active prompt and preserves it across settings changes", async () => {
+    const m = makeMachine();
+    const queueRelease = deferred<void>();
+    const controlRelease = deferred<void>();
+    m.schedule({ kind: "binding" }, async () => { await queueRelease.promise; }, async () => {});
+
+    let authorityCurrent = false;
+    const admission = m.admitBindingControlWork(async (authority) => {
+      await controlRelease.promise;
+      authorityCurrent = authority.isCurrent();
+    });
+    expect(admission.kind).toBe("accepted");
+    await m.invalidate("settings-change");
+    controlRelease.resolve(undefined);
+    if (admission.kind !== "accepted") throw new Error("expected accepted control work");
+    await admission.completion;
+    expect(authorityCurrent).toBe(true);
+    queueRelease.resolve(undefined);
+    await m.queueSettled();
+  });
+
   it("bounds shutdown while accepted immediate work is blocked", async () => {
     const releasedByDispose = deferred<void>();
     const runner = fakeRunner(async () => { releasedByDispose.resolve(undefined); });

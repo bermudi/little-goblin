@@ -13,6 +13,7 @@ import type { ConversationState } from "../sessions/types.ts";
 import { assertInternalSessionState, type InternalSessionState } from "../sessions/internal-session.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 import {
+  SubagentCancellationRejectedError,
   SubagentReviveBusyError,
   SubagentReviveRejectedError,
   SubagentRunner,
@@ -781,7 +782,7 @@ export class TurnDispatcher {
    * pending prompt was found and canceled. The session remains alive and its
    * subagents may continue doing useful work.
    */
-  async cancelPending(sessionId: string): Promise<boolean> {
+  cancelPending(sessionId: string): boolean {
     return this.runtimeHost.cancelPending(sessionId);
   }
 
@@ -801,13 +802,71 @@ export class TurnDispatcher {
    * cancellation or runner work may start from a closed gate. The rejected
    * completion settles immediately so the gate drain cannot hang.
    */
-  admitRuntimeWork<T>(
-    work: () => Promise<T>,
+  admitConversationControl<T>(
+    surface: Surface,
+    conversation: ConversationState,
+    work: (authority: WorkAuthority) => Promise<T>,
   ): RuntimeAdmissionResult<T> {
-    if (!this.runtimeHost.isAdmissionOpen()) {
-      return runtimeAdmission.rejected(undefined as unknown as T);
+    if (!this.surfaceRuntimeAuthority.isCurrentBinding(surface, conversation.id)) {
+      return runtimeAdmission.fenced(undefined as unknown as T);
     }
-    return runtimeAdmission.handoff(work());
+    try {
+      const admission = this.runtimeHost.admitBindingControlWork(conversation.id, work);
+      switch (admission.kind) {
+        case "accepted": return runtimeAdmission.handoff(admission.completion);
+        case "closed": return runtimeAdmission.rejected(undefined as unknown as T);
+        case "fenced": return runtimeAdmission.fenced(undefined as unknown as T);
+      }
+    } catch (error) {
+      throw new RuntimeAdmissionFailedBeforeDecisionError(error);
+    }
+  }
+
+  /** Delegated-work-owned cancellation classification and synchronous claim. */
+  admitCancelSubagent(
+    surface: Surface,
+    conversation: ConversationState,
+    id: string,
+  ): RuntimeAdmissionResult<void> {
+    if (!this.surfaceRuntimeAuthority.isCurrentBinding(surface, conversation.id)) {
+      return runtimeAdmission.fenced(undefined);
+    }
+    try {
+      const admission = this.runtimeHost.admitBindingControlWork(
+        conversation.id,
+        (authority) => {
+          if (!authority.isCurrent()) {
+            throw new BindingFencedError(surfaceId(surface), conversation.id, null);
+          }
+          const completion = this.subagentRunner.beginCancel(id, conversation.id);
+          const assertStillCurrent = (): void => {
+            if (!authority.isCurrent()) {
+              throw new BindingFencedError(surfaceId(surface), conversation.id, null);
+            }
+          };
+          return completion.then(
+            () => { assertStillCurrent(); },
+            (error: unknown) => {
+              assertStillCurrent();
+              throw error;
+            },
+          );
+        },
+      );
+      switch (admission.kind) {
+        case "accepted": return runtimeAdmission.handoff(admission.completion);
+        case "closed": return runtimeAdmission.rejected(undefined);
+        case "fenced": return runtimeAdmission.fenced(undefined);
+      }
+    } catch (error) {
+      if (error instanceof SubagentCancellationRejectedError) {
+        return runtimeAdmission.rejected(Promise.reject(error));
+      }
+      if (error instanceof BindingFencedError) {
+        return runtimeAdmission.fenced(Promise.reject(error));
+      }
+      throw new RuntimeAdmissionFailedBeforeDecisionError(error);
+    }
   }
 
   /**

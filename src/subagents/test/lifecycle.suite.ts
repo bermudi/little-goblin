@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, rmSync } from "node:fs";
-import { SubagentRunner } from "../mod.ts";
+import { SubagentCancellationRejectedError, SubagentRunner } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import { markCompleted, SubagentTerminalError } from "../execution.ts";
 import type { SubagentInstance } from "../types.ts";
@@ -35,6 +35,11 @@ describe("SubagentRunner.cancel", () => {
 
   it("throws 'Subagent not found' for unknown id", async () => {
     await expect(runner.cancel("nonexistent")).rejects.toThrow("Subagent not found");
+  });
+
+  it("rejects an unknown cancellation synchronously before delegated handoff", () => {
+    expect(() => runner.beginCancel("nonexistent"))
+      .toThrow(SubagentCancellationRejectedError);
   });
 
   it("calls session.abort() and updates status to cancelled", async () => {

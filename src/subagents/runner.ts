@@ -101,6 +101,14 @@ export class SubagentReviveRejectedError extends Error {
   }
 }
 
+/** Expected delegated-work refusal before a cancellation has been claimed. */
+export class SubagentCancellationRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SubagentCancellationRejectedError";
+  }
+}
+
 /** Expected contention refusal while another invocation owns the subagent. */
 export class SubagentReviveBusyError extends Error {
   readonly subagentId: string;
@@ -1191,44 +1199,44 @@ export class SubagentRunner {
    * Cancel an active subagent. The runner owns the policy and metadata
    * transition; the host receives only the Pi stop mechanism.
    */
-  async cancel(id: string, ownerConversationId?: string): Promise<void> {
+  cancel(id: string, ownerConversationId?: string): Promise<void> {
+    try {
+      return this.beginCancel(id, ownerConversationId);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  /**
+   * Validate ownership and claim cancellation synchronously. Once this
+   * returns, later cleanup failures cannot rewrite the accepted handoff.
+   */
+  beginCancel(id: string, ownerConversationId?: string): Promise<void> {
     const instance = this.activeSubagents.get(id);
     if (instance === undefined) {
-      throw new Error("Subagent not found");
+      throw new SubagentCancellationRejectedError("Subagent not found");
     }
     if (
       ownerConversationId !== undefined &&
       instance.delegatedOwnership?.ownerConversationId !== ownerConversationId
     ) {
-      throw new Error("Subagent not found");
+      throw new SubagentCancellationRejectedError("Subagent not found");
     }
     if (instance.status !== "running") {
       if (instance.status === "completed" && instance.deliveryState === "pending") {
         const failures: unknown[] = [];
         this.suppressPendingDelivery(instance, failures);
         const failure = combineFailures(failures, "Subagent delivery cancellation failed");
-        if (failure !== null) throw failure;
+        if (failure !== null) return Promise.reject(failure);
       }
-      return;
+      return Promise.resolve();
     }
 
     // A host success reservation wins over cancellation, but the operation
     // still waits for final cleanup/metadata outcome so it cannot report a
     // false quiescent success.
     if (instance.completionClaimed) {
-      const failures: unknown[] = [];
-      try {
-        await waitWithTimeout(instance.result, CANCEL_COMPLETION_TIMEOUT_MS, () =>
-          new Error("Subagent completion wait timed out during cancel"));
-      } catch (err) {
-        failures.push(err);
-      }
-      if ((instance.status as SubagentStatus) === "completed" && instance.deliveryState === "pending") {
-        this.suppressPendingDelivery(instance, failures);
-      }
-      const failure = combineFailures(failures, "Subagent cancellation failed");
-      if (failure !== null) throw failure;
-      return;
+      return this.finishClaimedCancellation(instance);
     }
 
     // Claim cancellation synchronously so a terminal Pi event cannot win
@@ -1237,6 +1245,28 @@ export class SubagentRunner {
     instance.status = "cancelled";
     instance.deliveryState = "suppressed";
     instance.rejectResult(new Error("Subagent was cancelled"));
+    return this.finishCancellationCleanup(instance, id);
+  }
+
+  private async finishClaimedCancellation(instance: SubagentInstance): Promise<void> {
+    const failures: unknown[] = [];
+    try {
+      await waitWithTimeout(instance.result, CANCEL_COMPLETION_TIMEOUT_MS, () =>
+        new Error("Subagent completion wait timed out during cancel"));
+    } catch (err) {
+      failures.push(err);
+    }
+    if ((instance.status as SubagentStatus) === "completed" && instance.deliveryState === "pending") {
+      this.suppressPendingDelivery(instance, failures);
+    }
+    const failure = combineFailures(failures, "Subagent cancellation failed");
+    if (failure !== null) throw failure;
+  }
+
+  private async finishCancellationCleanup(
+    instance: SubagentInstance,
+    id: string,
+  ): Promise<void> {
     const failures: unknown[] = [];
     await this.stopAndCollect(instance, failures, "subagent execution stop failed during cancel");
 

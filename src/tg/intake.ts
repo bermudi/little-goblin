@@ -442,13 +442,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     // Photos, documents, voice, and audio are ordinary authorized content:
     // lazily create a conversation on the surface, just like text.
-    let conversation: ConversationState;
-    try {
-      conversation = await lifecycle.resolveOrStart(surface);
-    } catch (err) {
-      log.error(`failed to resolve ${kind}`, { error: String(err), surfaceId: surfaceId(surface) });
-      return null;
-    }
+    const conversation = await lifecycle.resolveOrStart(surface);
     const session = conversation;
 
     return {
@@ -648,8 +642,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // record the structural handoff synchronously and carry the disposal
         // and replacement in the completion (decision 0046). Awaiting the
         // lifecycle call directly would hold the runtime-admission drain while
-        // disposal runs, so recovery is wrapped in admitRuntimeWork.
-        return dispatcher.admitRuntimeWork(async () => {
+        // disposal runs, so recovery uses machine-held Binding authority.
+        return dispatcher.admitConversationControl(surface, session, async (authority) => {
+          if (!authority.isCurrent()) return;
           const commandResult = await handleCommand({
             command,
             deps: dispatchDeps,
@@ -660,6 +655,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             bot,
           });
           if (commandResult.kind === "fallthrough") return;
+          // /new and /archive deliberately rotate their own Binding. Other
+          // recovery work must still hold the captured Binding authority
+          // before committing command completion effects.
+          if (!authority.isCurrent() && def?.name !== "new" && def?.name !== "archive") return;
           if (commandResult.kind === "admission") {
             const resolved = await commandResult.admission.completion;
             const finished = await finishCommand(

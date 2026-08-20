@@ -135,10 +135,21 @@ export class ShutdownCoordinator {
     // 4: Runtime disposal starts after buffered text reaches runtime
     // admission. Started before the Telegram drains are awaited so a
     // handler blocked on followUp steering is released by disposal.
+    await bufferedTextAttempt;
+    // Start disposal before polling stops or the Telegram admission drain is
+    // awaited. Disposal is what releases handlers blocked on a runner.
+    const disposal = this.options.disposeRuntimes();
+    void disposal.catch(() => {});
     const runtimeDrain = (async (): Promise<void> => {
-      await bufferedTextAttempt;
-      await this.options.drainRuntimeAdmission();
-      await this.options.disposeRuntimes();
+      const [admissionResult, disposalResult] = await Promise.allSettled([
+        this.options.drainRuntimeAdmission(),
+        disposal,
+      ]);
+      const failures: unknown[] = [];
+      if (admissionResult.status === "rejected") failures.push(admissionResult.reason);
+      if (disposalResult.status === "rejected") failures.push(disposalResult.reason);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Runtime shutdown drain failed");
     })();
     void runtimeDrain.catch(() => {});
 

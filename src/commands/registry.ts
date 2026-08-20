@@ -5,12 +5,16 @@ import type { Config } from "../config.ts";
 import { boundedError, log } from "../log.ts";
 import type { Surface, ConversationState, ConversationId } from "../sessions/mod.ts";
 import { surfaceId } from "../surface.ts";
-import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
+import {
+  BindingFencedError,
+  type ConversationLifecycle,
+} from "../orchestration/conversation-lifecycle.ts";
 
 import type { AgentRunner } from "../agent/mod.ts";
 import type { ResolvedModel } from "../agent/models.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import type { TurnDispatcher } from "../orchestration/dispatcher.ts";
+import type { WorkAuthority } from "../orchestration/conversation-runtime-host.ts";
 import { projectRootOf } from "../sessions/environment.ts";
 import { DEFAULT_CASCADE_TIMEOUT_MS, interruptAndCascade } from "../interrupt.ts";
 import { generateDiagnostics } from "../diagnostics.ts";
@@ -81,12 +85,8 @@ export interface DispatchDeps {
    * The `/schedule` handler returns a usage reply when this is absent.
    */
   scheduleStore?: ScheduleStore;
-  /**
-   * Turn dispatcher, used by `/cancel` to cancel a queued-but-not-yet-started
-   * prompt before it starts streaming. Optional for callers that only test
-   * command handling in isolation.
-   */
-  dispatcher?: TurnDispatcher;
+  /** Runtime/delegated-work authority owner for command admissions. */
+  dispatcher: TurnDispatcher;
   /**
    * External agent runner, used by `/cancel` to cascade-cancels external runs
    * owned by the session. Optional for callers that test command handling in
@@ -195,7 +195,7 @@ function preferenceTransitionReply(reply: string, cleanupError?: string): string
 // dispatch.ts switch verbatim.
 // ---------------------------------------------------------------------------
 
-const cancelHandler: CommandHandler = async ({ deps, conversation, existingRunner }) => {
+const cancelHandler: CommandHandler = async ({ deps, surface, conversation, existingRunner }) => {
   // /cancel is the sole interrupter: it aborts the in-flight turn itself,
   // rather than relying on a dispatch pre-check. The cascade result drives
   // the honest reply ("Cancelled." vs "Nothing to cancel." vs timeout suffix).
@@ -208,38 +208,42 @@ const cancelHandler: CommandHandler = async ({ deps, conversation, existingRunne
   // performs when no conversation id is supplied (interrupt.ts:142-146).
   if (conversation === null) return replied("Nothing to cancel.", [], "info");
   // The admission classification and the start of cancellation work are one
-  // atomic step: admitRuntimeWork invokes the callback synchronously when
+  // atomic step: admitConversationControl invokes the callback synchronously when
   // admission is open, and does not invoke it when rejected. A rejected
   // admission starts no cancellation dependency (decision 0046).
-  const runCancellation = async (): Promise<CommandCompletionResult> => {
-    const cancelledPending = conversation
-      ? await deps.dispatcher?.cancelPending(conversation.id)
-      : false;
-    const cascade = await deps.interruptAndCascade(
+  const runCancellation = (authority: WorkAuthority): Promise<CommandCompletionResult> => {
+    if (!authority.isCurrent()) return Promise.resolve(noopCommandCompletion());
+    const cancelledPending = deps.dispatcher.cancelPending(conversation.id);
+    return deps.interruptAndCascade(
       existingRunner,
       deps.subagentRunner,
       DEFAULT_CASCADE_TIMEOUT_MS,
-      conversation?.id ?? null,
+      conversation.id,
       deps.externalAgentRunner,
-    );
-    if (cancelledPending) cascade.attemptedMain = true;
-    const tag: SystemTag = cascade.wedgedMain
-      ? "error"
-      : cascade.attemptedMain || cascade.attemptedSubagents > 0 || cascade.attemptedExternalAgents > 0
-      ? "ok"
-      : "info";
-    return replied(cancelReply({
-      cascade,
-      cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
-    }), [], tag);
+    ).then((cascade) => {
+      if (!authority.isCurrent()) return noopCommandCompletion();
+      if (cancelledPending) cascade.attemptedMain = true;
+      const tag: SystemTag = cascade.wedgedMain
+        ? "error"
+        : cascade.attemptedMain || cascade.attemptedSubagents > 0 || cascade.attemptedExternalAgents > 0
+        ? "ok"
+        : "info";
+      return replied(cancelReply({
+        cascade,
+        cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
+      }), [], tag);
+    });
   };
-  const admission = deps.dispatcher
-    ? deps.dispatcher.admitRuntimeWork(runCancellation)
-    : runtimeAdmission.handoff(runCancellation());
+  const admission = deps.dispatcher.admitConversationControl(surface, conversation, runCancellation);
   switch (admission.kind) {
     case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(admission.completion) };
     case "busy": return { kind: "admission", admission: runtimeAdmission.busy(admission.completion) };
-    case "fenced": return { kind: "admission", admission: runtimeAdmission.fenced(admission.completion) };
+    case "fenced": return {
+      kind: "admission",
+      admission: runtimeAdmission.fenced(
+        admission.completion.then(noopCommandCompletion, noopCommandCompletion),
+      ),
+    };
     case "rejected": return {
       kind: "admission",
       admission: runtimeAdmission.rejected(
@@ -461,35 +465,45 @@ const subagentsHandler: CommandHandler = async ({ deps, conversation }) => {
   return replied(formatSubagentsList(infos), [], "info");
 };
 
-const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversation }) => {
+const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, surface, conversation }) => {
   const id = parseSubagentId(rawText);
   if (id === null) return replied(CANCEL_SUBAGENT_USAGE_REPLY, [], "info");
   if (conversation === null) return replied("No active conversation.", [], "info");
   // Delegated cancellation is classified by the dispatcher (runtime host);
   // the command maps the result and attaches reply delivery (decision 0046).
-  // admitRuntimeWork invokes the callback synchronously when admission is
+  // The conversation-control admission invokes cancellation synchronously when admission is
   // open and does not invoke it when rejected, so a closed gate starts no
   // subagent cancellation.
-  const runCancellation = () => deps.subagentRunner.cancel(id, conversation.id).then(
+  const admission = deps.dispatcher.admitCancelSubagent(surface, conversation, id);
+  const cancellationCompletion = admission.completion.then(
     () => replied(`Cancelled subagent \`${id}\`.`, [], "ok"),
     (err: unknown) => {
+      if (err instanceof BindingFencedError) return noopCommandCompletion();
       const message = errorMessage(err);
       log.error("cancel_subagent failed", { id, error: message });
       return replied(`Failed to cancel subagent \`${id}\`: ${message}`, [], "error");
     },
   );
-  const admission = deps.dispatcher
-    ? deps.dispatcher.admitRuntimeWork(runCancellation)
-    : runtimeAdmission.handoff(runCancellation());
   switch (admission.kind) {
-    case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(admission.completion) };
-    case "busy": return { kind: "admission", admission: runtimeAdmission.busy(admission.completion) };
-    case "fenced": return { kind: "admission", admission: runtimeAdmission.fenced(admission.completion) };
-    case "rejected": return {
+    case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(cancellationCompletion) };
+    case "busy": return { kind: "admission", admission: runtimeAdmission.busy(cancellationCompletion) };
+    case "fenced": return {
       kind: "admission",
-      admission: runtimeAdmission.rejected(
+      admission: runtimeAdmission.fenced(
         admission.completion.then(noopCommandCompletion, noopCommandCompletion),
       ),
+    };
+    case "rejected": return {
+      kind: "admission",
+      admission: runtimeAdmission.rejected(admission.completion.then(
+        noopCommandCompletion,
+        (err: unknown) => {
+          if (err instanceof BindingFencedError) return noopCommandCompletion();
+          const message = errorMessage(err);
+          log.error("cancel_subagent failed", { id, error: message });
+          return replied(`Failed to cancel subagent \`${id}\`: ${message}`, [], "error");
+        },
+      )),
     };
   }
 };
@@ -497,7 +511,7 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversati
 const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversation }) => {
   const args = parseReviveSubagentArgs(rawText);
   if (args === null) return replied(REVIVE_SUBAGENT_USAGE_REPLY, [], "info");
-  if (conversation === null || deps.dispatcher === undefined) {
+  if (conversation === null) {
     return replied("No active conversation to revive from.", [], "error");
   }
 

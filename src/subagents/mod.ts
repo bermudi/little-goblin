@@ -16,6 +16,7 @@
 
 export {
   SubagentRunner,
+  SubagentCancellationRejectedError,
   SubagentReviveBusyError,
   SubagentReviveRejectedError,
   RuntimeFenceError,

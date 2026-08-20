@@ -76,6 +76,12 @@ export type ImmediateWorkAdmission =
   | { readonly kind: "closed" }
   | { readonly kind: "fenced" };
 
+/** Synchronous admission for non-queued work governed by Binding authority. */
+export type BindingControlAdmission<T> =
+  | { readonly kind: "accepted"; readonly completion: Promise<T> }
+  | { readonly kind: "closed" }
+  | { readonly kind: "fenced" };
+
 /** Outcome of {@link RuntimeMachine.steerOrQueue}. */
 export type SteerOrQueueResult =
   | { kind: "steered"; followUp: Promise<void> }
@@ -655,6 +661,33 @@ export class RuntimeMachine {
     );
     if (!admitted) return { kind: "closed" };
     return { kind: "accepted", settlement: settlementControl.promise };
+  }
+
+  /**
+   * Admit interrupt/lifecycle control work without waiting behind the prompt
+   * queue. The callback starts in the same synchronous section that captures
+   * Binding authority. It must use the held authority at later commit points.
+   */
+  admitBindingControlWork<T>(
+    run: (authority: WorkAuthority) => Promise<T>,
+  ): BindingControlAdmission<T> {
+    if (!this.deps.isAdmissionOpen()) return { kind: "closed" };
+    const held = this.createQueueAuthority({ kind: "binding" });
+    if (!held.context.isCurrent()) return { kind: "fenced" };
+
+    let completion: Promise<T>;
+    try {
+      completion = run(held.context);
+    } catch (error) {
+      held.authority.settled = true;
+      throw error;
+    }
+    return {
+      kind: "accepted",
+      completion: completion.finally(() => {
+        held.authority.settled = true;
+      }),
+    };
   }
 
   /**

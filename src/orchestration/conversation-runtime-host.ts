@@ -12,6 +12,7 @@ import { DelegatedWorkHost, type ConversationRuntimeId } from "../delegated-work
 import { log } from "../log.ts";
 import {
   RuntimeMachine,
+  type BindingControlAdmission,
   type ImmediateRuntimeWorkContext,
   type ImmediateWorkAdmission,
   type ImmediateWorkExecutionResult,
@@ -30,6 +31,7 @@ export type { SteerOrQueueResult };
 
 // Re-export types that callers import from this module.
 export type {
+  BindingControlAdmission,
   ImmediateRuntimeWorkContext,
   ImmediateWorkAdmission,
   ImmediateWorkExecutionResult,
@@ -247,6 +249,14 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     return this.machineFor(conversationId).admitImmediateRuntimeWork(run);
   }
 
+  admitBindingControlWork<T>(
+    conversationId: ConversationId,
+    run: (authority: WorkAuthority) => Promise<T>,
+  ): BindingControlAdmission<T> {
+    if (!this.admissionOpen) return { kind: "closed" };
+    return this.machineFor(conversationId).admitBindingControlWork(run);
+  }
+
   /**
    * Steer-vs-queue in one synchronous machine section. See
    * {@link RuntimeMachine.steerOrQueue}.
@@ -275,7 +285,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     return this.machines.get(conversationId)?.hasPromptWork() ?? false;
   }
 
-  async cancelPending(conversationId: ConversationId): Promise<boolean> {
+  cancelPending(conversationId: ConversationId): boolean {
     return this.machines.get(conversationId)?.cancelPending() ?? false;
   }
 

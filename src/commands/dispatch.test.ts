@@ -16,7 +16,11 @@ import type { ResolvedModel } from "../agent/models.ts";
 import { MetricsStore, type MetricsEvent, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import type { AgentRunner } from "../agent/mod.ts";
-import type { SubagentInfo, SubagentRunner } from "../subagents/mod.ts";
+import {
+  SubagentCancellationRejectedError,
+  type SubagentInfo,
+  type SubagentRunner,
+} from "../subagents/mod.ts";
 import { cancelReply, formatCascadeTimeoutSuffix } from "./cancel.ts";
 import { HELP_REPLY } from "./help.ts";
 import {
@@ -79,12 +83,14 @@ function makeRunner(streaming = false): AgentRunner {
   } as unknown as AgentRunner;
 }
 
-type SubagentRunnerStub = Pick<SubagentRunner, "list" | "cancel" | "revive">;
+type SubagentRunnerStub = Pick<SubagentRunner, "list" | "cancel" | "beginCancel" | "revive">;
 
 function makeSubagentRunner(overrides: Partial<SubagentRunnerStub> = {}): SubagentRunner {
+  const cancel = overrides.cancel ?? mock(async () => {});
   return {
     list: mock(() => []),
-    cancel: mock(async () => {}),
+    cancel,
+    beginCancel: overrides.beginCancel ?? cancel,
     revive: mock(async () => "revived response"),
     ...overrides,
   } as unknown as SubagentRunner;
@@ -107,7 +113,7 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
   const conversationStore = new ConversationStore(cfg.goblinHome);
   const surface = dmSurface(123);
   const dispatcher: TurnDispatcher = {
-    cancelPending: mock(async () => false),
+    cancelPending: mock(() => false),
     reviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) => {
       const parentCapture: CapturedMemoryContext = {
         kind: "surface",
@@ -136,7 +142,21 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
     }),
     admitReviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) =>
       runtimeAdmission.handoff(dispatcher.reviveSubagent(_surface, _session, id, prompt)),
-    admitRuntimeWork: <T>(work: () => Promise<T>) => runtimeAdmission.handoff(work()),
+    admitConversationControl: <T>(
+      _surface: Surface,
+      _conversation: ConversationState,
+      work: (authority: { isCurrent(): boolean; adoptCurrentRunner(): boolean }) => Promise<T>,
+    ) => runtimeAdmission.handoff(work({
+      isCurrent: () => true,
+      adoptCurrentRunner: () => false,
+    })),
+    admitCancelSubagent: (_surface: Surface, conversation: ConversationState, id: string) => {
+      try {
+        return runtimeAdmission.handoff(subagentRunner.beginCancel(id, conversation.id));
+      } catch (error) {
+        return runtimeAdmission.rejected(Promise.reject(error));
+      }
+    },
   } as unknown as TurnDispatcher;
   return {
     cfg,
@@ -280,9 +300,8 @@ describe("handleCommand", () => {
     const harness = makeHarness();
     const session = await createSession(harness);
     (harness.deps.dispatcher as unknown as {
-      admitRuntimeWork: <T>(work: () => Promise<T>) => unknown;
-    }).admitRuntimeWork = <T>(_work: () => Promise<T>) =>
-      runtimeAdmission.rejected(undefined as unknown as T);
+      admitConversationControl: () => unknown;
+    }).admitConversationControl = () => runtimeAdmission.rejected(undefined);
 
     const result = await dispatch({ command: "/cancel", session, harness });
     expect(result.kind).toBe("admission");
@@ -303,9 +322,8 @@ describe("handleCommand", () => {
     });
     harness.deps.subagentRunner = subagentRunner;
     (harness.deps.dispatcher as unknown as {
-      admitRuntimeWork: <T>(work: () => Promise<T>) => unknown;
-    }).admitRuntimeWork = <T>(_work: () => Promise<T>) =>
-      runtimeAdmission.rejected(undefined as unknown as T);
+      admitCancelSubagent: () => unknown;
+    }).admitCancelSubagent = () => runtimeAdmission.rejected(undefined);
 
     const result = await dispatch({
       command: "/cancel_subagent",
@@ -319,6 +337,33 @@ describe("handleCommand", () => {
     const completion = await result.admission.completion;
     expect(completion.kind).toBe("handled");
     expect(subagentRunner.cancel).not.toHaveBeenCalled();
+  });
+
+  it("maps fenced cancellation admissions to no-op completions", async () => {
+    const harness = makeHarness();
+    const session = await createSession(harness);
+    (harness.deps.dispatcher as unknown as {
+      admitConversationControl: () => unknown;
+      admitCancelSubagent: () => unknown;
+    }).admitConversationControl = () => runtimeAdmission.fenced(undefined);
+    (harness.deps.dispatcher as unknown as {
+      admitCancelSubagent: () => unknown;
+    }).admitCancelSubagent = () => runtimeAdmission.fenced(undefined);
+
+    const cancel = await dispatch({ command: "/cancel", session, harness });
+    if (cancel.kind !== "admission") throw new Error("expected command admission");
+    expect(cancel.admission.kind).toBe("fenced");
+    expect((await cancel.admission.completion).kind).toBe("handled");
+
+    const subagent = await dispatch({
+      command: "/cancel_subagent",
+      rawText: "/cancel_subagent abc",
+      session,
+      harness,
+    });
+    if (subagent.kind !== "admission") throw new Error("expected command admission");
+    expect(subagent.admission.kind).toBe("fenced");
+    expect((await subagent.admission.completion).kind).toBe("handled");
   });
 
   it("/new with a prior session disposes prior and creates a new runner", async () => {
@@ -580,7 +625,9 @@ describe("handleCommand", () => {
 
   it("surfaces cancel_subagent failures", async () => {
     const subagentRunner = makeSubagentRunner({
-      cancel: mock(async () => { throw new Error("Subagent not found"); }),
+      beginCancel: mock(() => {
+        throw new SubagentCancellationRejectedError("Subagent not found");
+      }),
     });
     const harness = makeHarness(baseCascade(), subagentRunner);
     const session = await createSession(harness);
@@ -595,7 +642,7 @@ describe("handleCommand", () => {
     if (admission.kind !== "admission") throw new Error("expected runtime admission");
     // /cancel_subagent classification is owned by the dispatcher (runtime host),
     // not the adapter (decision 0046).
-    expect(admission.admission.kind).toBe("handoff");
+    expect(admission.admission.kind).toBe("rejected");
     const result = expectReplied(await admission.admission.completion);
     expect(result.reply).toBe("Failed to cancel subagent `missing`: Subagent not found");
   });

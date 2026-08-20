@@ -491,6 +491,47 @@ describe("TextCoalescer — commands", () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
+  it("retains independent groups that reject with the same reason object", async () => {
+    const failure = new Error("shared rejection");
+    const dispatch = mock<CoalesceDispatch>(() =>
+      Promise.resolve(runtimeAdmission.handoff(Promise.reject(failure)))
+    );
+    let coalescer!: TextCoalescer;
+    const gate = new UpdateGate({
+      closeCoalescer: async () => { await coalescer.close(); },
+      awaitBufferedTextAdmission: async () => { await coalescer.bufferedTextAdmission(); },
+    });
+    coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch, gate });
+
+    for (const [index, fromUserId] of [100, 200].entries()) {
+      const ctx = { index };
+      const key: CoalesceKey = { surfaceId: surfaceId(dmSurface(1)), fromUserId };
+      await gate.runAuthorization(ctx, async () => {
+        gate.commitAuthorization(ctx);
+        await gate.runCoalescedUpdate<void>(ctx, (claim) =>
+          coalescer.submit(
+            makeInput(textOf(TEXT_SPLIT_THRESHOLD), {
+              messageId: index + 1,
+              messageIdFor: index + 1,
+              key,
+            }),
+            claim,
+          ),
+        );
+      });
+    }
+
+    let thrown: unknown;
+    try {
+      await gate.closeAdmission();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors).toEqual([failure, failure]);
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
   it("bounds detached failure retention and reports the total at close", async () => {
     const logSpy = spyOn(log, "error").mockImplementation(() => {});
     const errorCount = 105;

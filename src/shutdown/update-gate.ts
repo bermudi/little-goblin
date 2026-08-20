@@ -95,6 +95,8 @@ type ClaimTerminal<T> =
 
 interface ClaimState<T> {
   phase: "pending" | "transferred";
+  /** Exactly one detached claim reports a coalesced group's failure. */
+  detachedFailureReporter?: boolean;
   terminal?: ClaimTerminal<T>;
   readonly terminalPromise: Promise<ClaimTerminal<T>>;
   resolveTerminal(terminal: ClaimTerminal<T>): void;
@@ -133,7 +135,6 @@ export class UpdateGate {
    * total for observability.
    */
   private readonly detachedFailures: unknown[] = [];
-  private readonly detachedFailureSeen = new Set<unknown>();
   private detachedFailureCount = 0;
 
   constructor(private readonly coalescerCallbacks: UpdateGateCoalescerCallbacks) {}
@@ -328,29 +329,27 @@ export class UpdateGate {
       Promise<AdmissionResult<T>>,
   ): Promise<T | undefined> {
     let transferred = false;
+    let transferredState: ClaimState<T> | undefined;
     const boundary = this.runUpdate<T>(ctx, (claim) => {
       const outcome = execute(claim);
       if (!(outcome instanceof Promise)) {
         transferred = this.transfers.get(outcome as object) === claim as object;
+        if (transferred) transferredState = this.stateFor(claim);
       }
       return outcome;
     });
     if (!transferred) return boundary;
     void boundary.catch((error: unknown) => {
-      // Rejection is an outcome independent of its reason: Promise.reject()
-      // is still a failure even though the reason may be undefined. Retain
-      // the failure so drainAdmitted can reject during gate close. A merged
-      // group shares one underlying completion, so the same failure object
-      // is observed once per fragment; deduplicate by identity and bound
-      // the buffer to restore the previous retention discipline.
+      // Group identity is gate-owned; rejection values are not identities.
+      // Exactly one claim is designated as the reporter when its group is
+      // settled, so equal Error/string/undefined values from independent
+      // groups remain independent failures.
+      if (transferredState?.detachedFailureReporter !== true) return;
       this.detachedFailureCount++;
-      if (this.detachedFailureSeen.has(error)) return;
       if (this.detachedFailures.length >= MAX_DETACHED_FAILURES) {
-        const removed = this.detachedFailures.shift()!;
-        this.detachedFailureSeen.delete(removed);
+        this.detachedFailures.shift();
       }
       this.detachedFailures.push(error);
-      this.detachedFailureSeen.add(error);
       log.error("detached Telegram update failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -392,6 +391,7 @@ export class UpdateGate {
         throw new Error("Telegram claim received contradictory decisions");
       }
     }
+    this.designateDetachedFailureReporter(states);
     for (const state of states) {
       this.settleClaim(state, { kind: "decision", decision: admissionResult });
     }
@@ -409,6 +409,7 @@ export class UpdateGate {
         throw new Error("Telegram claim failed after a structural decision");
       }
     }
+    this.designateDetachedFailureReporter(states);
     for (const state of states) {
       this.settleClaim(state, { kind: "failed-before-decision", error });
     }
@@ -420,11 +421,18 @@ export class UpdateGate {
     for (const state of states) {
       if (state.phase !== "transferred") throw new Error("cannot fail an untransferred Telegram claim");
     }
+    this.designateDetachedFailureReporter(states);
     for (const state of states) {
       if (state.terminal === undefined) {
         this.settleClaim(state, { kind: "failed-before-decision", error });
       }
     }
+  }
+
+  private designateDetachedFailureReporter<T>(states: readonly ClaimState<T>[]): void {
+    if (states.some((state) => state.detachedFailureReporter === true)) return;
+    const reporter = states.find((state) => state.terminal === undefined);
+    if (reporter !== undefined) reporter.detachedFailureReporter = true;
   }
 
   private createClaim<T>(): { claim: UpdateClaim<T>; state: ClaimState<T> } {
@@ -539,7 +547,6 @@ export class UpdateGate {
       // whose boundaries were detached by runCoalescedUpdate.
       if (this.detachedFailures.length > 0) {
         const failures = this.detachedFailures.splice(0);
-        this.detachedFailureSeen.clear();
         const total = this.detachedFailureCount;
         this.detachedFailureCount = 0;
         log.error("detached Telegram update boundaries failed", {

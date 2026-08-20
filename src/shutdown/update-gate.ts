@@ -271,31 +271,31 @@ export class UpdateGate {
           case "closed": return undefined;
           case "failed-before-decision": throw terminal.error;
           case "decision":
-            // A rejected transferred decision is terminal: do not await its
-            // completion. Suppress unhandled rejections from any detached
-            // side effects (decision 0046).
-            if (terminal.decision.kind === "rejected") {
-              void terminal.decision.completion.catch(() => {});
-              return undefined;
-            }
+            // The structural decision (including `rejected`) is already
+            // recorded and the runtime-admission drain released by
+            // `settleClaim`. The completion is separately tracked by this
+            // boundary: await it so one-shot delivery, steering, or delegated
+            // work settles before the gate drain, without holding the
+            // runtime-admission drain (decision 0046). A rejected completion
+            // may still carry required delivery (e.g. /revive's failure
+            // reply); detaching it would let shutdown exit before delivery
+            // finishes and swallow its failures.
             return await terminal.decision.completion;
         }
       }
 
       const admissionResult = outcome as AdmissionResult<T>;
       this.settleClaim(state, { kind: "decision", decision: admissionResult });
-      // A rejected admission is a terminal structural decision: its completion
-      // is not consumed for a value and must not block the gate drain. The
-      // rejected completion settles on its own; awaiting it here would hang
-      // shutdown if a caller passed a never-resolving promise, and consuming
-      // its value would violate the rejection contract (decision 0046).
-      // The completion may still carry detached side effects (e.g. /revive's
-      // failure reply delivery); suppress unhandled rejections without
-      // awaiting, so a slow or failing delivery does not block the drain.
-      if (admissionResult.kind === "rejected") {
-        void admissionResult.completion.catch(() => {});
-        return undefined;
-      }
+      // The structural decision (including `rejected`) is recorded above and
+      // the runtime-admission drain is released by `settleClaim`→`finalize`.
+      // The completion is separately tracked by this boundary: await it so
+      // one-shot delivery, steering, or delegated work settles before the
+      // gate drain, without holding the runtime-admission drain (decision
+      // 0046). A rejected completion may still carry required delivery (e.g.
+      // /revive's failure reply); detaching it would let shutdown exit before
+      // delivery finishes and swallow its failures. A caller that passes a
+      // never-settling completion now hangs the drain rather than the gate
+      // silently dropping it — fail loud, not silent loss.
       return await admissionResult.completion;
     })();
 

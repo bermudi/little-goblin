@@ -328,34 +328,104 @@ describe("UpdateGate", () => {
     await first;
   });
 
-  it("does not hang the drain on a rejected admission with a never-resolving completion", async () => {
-    // Regression: a rejected admission whose completion never settles must
-    // not block the gate drain. The gate branches on rejection and does not
-    // await the completion (decision 0046).
+  it("awaits a rejected admission's completion so delivery settles before the drain", async () => {
+    // A rejected admission is a terminal structural decision, but its
+    // completion may still carry required one-shot delivery (e.g. /revive's
+    // failure reply). The gate releases the runtime-admission drain at the
+    // decision and separately awaits the completion as part of the boundary,
+    // so shutdown cannot exit before delivery settles (decision 0046).
     const gate = makeGate();
+    let deliver!: () => void;
+    let delivered = false;
+    const completion = new Promise<void>((resolve) => {
+      deliver = () => { delivered = true; resolve(); };
+    });
     const boundary = gate.runUpdate(() => ({
       kind: "rejected" as const,
-      completion: new Promise<unknown>(() => {}),
+      completion,
     }));
-    await expect(boundary).resolves.toBeUndefined();
+
+    // The runtime-admission drain is released by the decision: it completes
+    // before delivery settles, so runtime disposal is not blocked.
     await gate.runtimeAdmission();
+    expect(delivered).toBe(false);
+
+    // The boundary (and thus the gate drain) waits for delivery.
+    let boundarySettled = false;
+    void boundary.then(() => { boundarySettled = true; });
+    await Promise.resolve();
+    expect(boundarySettled).toBe(false);
+
+    deliver();
+    await boundary;
+    expect(delivered).toBe(true);
     await gate.closeAdmission();
   });
 
-  it("does not hang the drain on a rejected transferred decision", async () => {
+  it("propagates a rejected admission's completion failure through the boundary", async () => {
+    // A rejected completion that fails (e.g. delivery threw) must surface to
+    // the caller via the boundary, not be silently swallowed. Previously the
+    // gate detached the rejected completion with an empty catch, so the
+    // boundary resolved with undefined and the failure disappeared. The
+    // structural decision remains `rejected`; only the completion failure
+    // propagates. The drain awaits the boundary via allSettled, so it does
+    // not re-throw — the caller observes the failure, matching the
+    // non-rejected completion-failure contract.
+    const gate = makeGate();
+    const failure = new Error("rejected delivery failed");
+    const boundary = gate.runUpdate(() => ({
+      kind: "rejected" as const,
+      completion: Promise.reject(failure),
+    }));
+    await gate.runtimeAdmission();
+    await expect(boundary).rejects.toBe(failure);
+    // The drain no longer hangs on the rejected completion: it awaited the
+    // boundary and completes once it settles.
+    await gate.closeAdmission();
+  });
+
+  it("awaits a rejected transferred decision's completion so delivery settles", async () => {
     const gate = makeGate();
     let claim!: UpdateClaim<void>;
+    let deliver!: () => void;
+    let delivered = false;
+    const completion = new Promise<void>((resolve) => {
+      deliver = () => { delivered = true; resolve(); };
+    });
     const boundary = gate.runUpdate<void>((ownedClaim) => {
       claim = ownedClaim;
       return gate.transferUpdate(ownedClaim);
     });
     await Promise.resolve();
-    gate.settleTransferred([claim], {
-      kind: "rejected",
-      completion: new Promise<void>(() => {}),
-    });
-    await expect(boundary).resolves.toBeUndefined();
+    gate.settleTransferred([claim], { kind: "rejected", completion });
+
+    // Runtime-admission drain releases at the decision, before delivery.
     await gate.runtimeAdmission();
+    expect(delivered).toBe(false);
+
+    let boundarySettled = false;
+    void boundary.then(() => { boundarySettled = true; });
+    await Promise.resolve();
+    expect(boundarySettled).toBe(false);
+
+    deliver();
+    await boundary;
+    expect(delivered).toBe(true);
+    await gate.closeAdmission();
+  });
+
+  it("propagates a rejected transferred decision's completion failure", async () => {
+    const gate = makeGate();
+    let claim!: UpdateClaim<void>;
+    const failure = new Error("rejected transferred delivery failed");
+    const boundary = gate.runUpdate<void>((ownedClaim) => {
+      claim = ownedClaim;
+      return gate.transferUpdate(ownedClaim);
+    });
+    await Promise.resolve();
+    gate.settleTransferred([claim], { kind: "rejected", completion: Promise.reject(failure) });
+    await gate.runtimeAdmission();
+    await expect(boundary).rejects.toBe(failure);
     await gate.closeAdmission();
   });
 });

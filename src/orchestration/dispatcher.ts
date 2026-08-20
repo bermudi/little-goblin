@@ -435,8 +435,15 @@ export class TurnDispatcher {
     session: ConversationState,
     surface: Surface,
   ): RuntimeAdmissionResult<AgentRunner> {
+    // Runtime closure is the owner's generic rejected result, not a
+    // failed-before-decision exception (decision 0046). Check openness
+    // synchronously and map to runtimeAdmission.rejected().
+    if (!this.runtimeHost.isAdmissionOpen()) {
+      // The completion of a rejected admission is never consumed for its
+      // value; use a never-resolving promise to make that explicit.
+      return runtimeAdmission.rejected(new Promise<AgentRunner>(() => {}));
+    }
     try {
-      this.runtimeHost.assertAdmissionOpen();
       if (this.runtimeHost.isInternalRuntime(session.id)) {
         throw new Error(`conversation ${session.id} is reserved by an internal runtime`);
       }
@@ -632,6 +639,49 @@ export class TurnDispatcher {
     );
   }
 
+  /**
+   * Acquire/adopt the runner and enqueue prompt work in one synchronous
+   * admission section, returning a structural `RuntimeAdmissionResult`
+   * immediately. For an already-registered runner, the queue entry is
+   * admitted with `current-runtime` intent (runner known at admission
+   * time). When no runner is registered yet, a `bootstrap` ticket owns
+   * the queue position and acquires the runner inside the queued work,
+   * so a stalled creation is cancelled by shutdown disposal rather than
+   * deadlocking the runtime-admission drain (decision 0046).
+   *
+   * Preparation and prompt execution remain in the separately tracked
+   * completion; only the structural decision is returned here.
+   */
+  admitPromptTurn(
+    conversation: ConversationState,
+    surface: Surface,
+    run: (runner: AgentRunner, authority: WorkAuthority) => Promise<void>,
+    onError: (error: unknown) => Promise<void> | void,
+    opts: { isPrompt?: boolean } = {},
+  ): RuntimeAdmissionResult<void> {
+    const existing = this.runtimeHost.getRunner(conversation.id);
+    if (existing !== null) {
+      const admitted = this.schedulePrompt(
+        conversation,
+        { kind: "current-runtime", runner: existing },
+        (authority) => run(existing, authority),
+        onError,
+        opts,
+      );
+      if (!admitted) return runtimeAdmission.rejected(undefined);
+      return runtimeAdmission.handoff(undefined);
+    }
+    const admitted = this.scheduleBootstrapTurn(
+      conversation,
+      surface,
+      run,
+      onError,
+      opts,
+    );
+    if (!admitted) return runtimeAdmission.rejected(undefined);
+    return runtimeAdmission.handoff(undefined);
+  }
+
   /** Enqueue work tied to the runner that is current at admission. */
   schedulePrompt(
     conversation: ConversationState,
@@ -727,6 +777,23 @@ export class TurnDispatcher {
    */
   async cancelPending(sessionId: string): Promise<boolean> {
     return this.runtimeHost.cancelPending(sessionId);
+  }
+
+  /**
+   * Classify whether runtime or delegated work is admitted for a conversation.
+   * The structural decision (handoff/rejected) is owned by the runtime host;
+   * callers attach completion work and reply delivery. This is the
+   * classification boundary for operations that perform runtime or delegated
+   * work but do not acquire a runner through the normal prompt path
+   * (e.g. /cancel interrupts, /cancel_subagent delegated cancellations).
+   * Commands map the result kind and attach reply delivery; they do not
+   * invent admission classifications (decision 0046).
+   */
+  admitRuntimeWork(): RuntimeAdmissionResult<void> {
+    if (!this.runtimeHost.isAdmissionOpen()) {
+      return runtimeAdmission.rejected(new Promise<void>(() => {}));
+    }
+    return runtimeAdmission.handoff(undefined);
   }
 
   /**

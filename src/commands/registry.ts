@@ -192,6 +192,12 @@ const cancelHandler: CommandHandler = async ({ deps, conversation, existingRunne
   // If there is a queued-but-not-yet-started prompt (e.g. a coalescer flush
   // that has scheduled but not yet started), cancel it first so the reply
   // reflects the work that was actually stopped.
+  //
+  // The admission classification is owned by the dispatcher (runtime host);
+  // the command maps the result and attaches reply delivery (decision 0046).
+  const admission = deps.dispatcher
+    ? deps.dispatcher.admitRuntimeWork()
+    : runtimeAdmission.handoff(undefined);
   const completion = (async (): Promise<CommandCompletionResult> => {
     const cancelledPending = conversation
       ? await deps.dispatcher?.cancelPending(conversation.id)
@@ -214,10 +220,12 @@ const cancelHandler: CommandHandler = async ({ deps, conversation, existingRunne
       cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
     }), [], tag);
   })();
-  return {
-    kind: "admission",
-    admission: runtimeAdmission.handoff(completion),
-  };
+  switch (admission.kind) {
+    case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(completion) };
+    case "busy": return { kind: "admission", admission: runtimeAdmission.busy(completion) };
+    case "fenced": return { kind: "admission", admission: runtimeAdmission.fenced(completion) };
+    case "rejected": return { kind: "admission", admission: runtimeAdmission.rejected(completion) };
+  }
 };
 
 const newHandler: CommandHandler = async ({ deps, surface, conversation }) => {
@@ -436,6 +444,11 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversati
   const id = parseSubagentId(rawText);
   if (id === null) return replied(CANCEL_SUBAGENT_USAGE_REPLY, [], "info");
   if (conversation === null) return replied("No active conversation.", [], "info");
+  // Delegated cancellation is classified by the dispatcher (runtime host);
+  // the command maps the result and attaches reply delivery (decision 0046).
+  const admission = deps.dispatcher
+    ? deps.dispatcher.admitRuntimeWork()
+    : runtimeAdmission.handoff(undefined);
   const completion = deps.subagentRunner.cancel(id, conversation.id).then(
     () => replied(`Cancelled subagent \`${id}\`.`, [], "ok"),
     (err: unknown) => {
@@ -444,7 +457,12 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversati
       return replied(`Failed to cancel subagent \`${id}\`: ${message}`, [], "error");
     },
   );
-  return { kind: "admission", admission: completed(completion) };
+  switch (admission.kind) {
+    case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(completion) };
+    case "busy": return { kind: "admission", admission: runtimeAdmission.busy(completion) };
+    case "fenced": return { kind: "admission", admission: runtimeAdmission.fenced(completion) };
+    case "rejected": return { kind: "admission", admission: runtimeAdmission.rejected(completion) };
+  }
 };
 
 const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversation }) => {

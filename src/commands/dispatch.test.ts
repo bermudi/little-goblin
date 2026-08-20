@@ -136,6 +136,7 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
     }),
     admitReviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) =>
       runtimeAdmission.handoff(dispatcher.reviveSubagent(_surface, _session, id, prompt)),
+    admitRuntimeWork: () => runtimeAdmission.handoff(undefined),
   } as unknown as TurnDispatcher;
   return {
     cfg,
@@ -510,8 +511,10 @@ describe("handleCommand", () => {
       harness,
     });
     expect(admission.kind).toBe("admission");
-    if (admission.kind !== "admission") throw new Error("expected local completion");
-    expect(admission.admission.kind).toBe("completed");
+    if (admission.kind !== "admission") throw new Error("expected runtime admission");
+    // /cancel_subagent classification is owned by the dispatcher (runtime host),
+    // not the adapter (decision 0046).
+    expect(admission.admission.kind).toBe("handoff");
     let completed = false;
     void admission.admission.completion.then(() => { completed = true; });
     await Promise.resolve();
@@ -540,8 +543,10 @@ describe("handleCommand", () => {
       harness,
     });
     expect(admission.kind).toBe("admission");
-    if (admission.kind !== "admission") throw new Error("expected local completion");
-    expect(admission.admission.kind).toBe("completed");
+    if (admission.kind !== "admission") throw new Error("expected runtime admission");
+    // /cancel_subagent classification is owned by the dispatcher (runtime host),
+    // not the adapter (decision 0046).
+    expect(admission.admission.kind).toBe("handoff");
     const result = expectReplied(await admission.admission.completion);
     expect(result.reply).toBe("Failed to cancel subagent `missing`: Subagent not found");
   });

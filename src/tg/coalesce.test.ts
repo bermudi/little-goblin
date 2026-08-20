@@ -422,6 +422,40 @@ describe("TextCoalescer — commands", () => {
     pending.resolve(completed(undefined));
     await boundary;
   });
+
+  it("retains detached runCoalescedUpdate failures and rejects during gate close", async () => {
+    // Production-shaped test: uses runCoalescedUpdate (not runUpdate) and
+    // wires closeCoalescer/awaitBufferedTextAdmission to the coalescer, so
+    // the gate's closeAdmission exercises the real close → drain path.
+    const failure = new Error("admitted text failed");
+    const dispatch = mock<CoalesceDispatch>(() =>
+      Promise.resolve(runtimeAdmission.handoff(Promise.reject(failure))),
+    );
+    let coalescer!: TextCoalescer;
+    const gate = new UpdateGate({
+      closeCoalescer: async () => { await coalescer.close(); },
+      awaitBufferedTextAdmission: async () => { await coalescer.bufferedTextAdmission(); },
+    });
+    coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch, gate });
+
+    // Submit a threshold-length text via runCoalescedUpdate (the production
+    // path in bot.ts). The claim is transferred to the coalescer; the
+    // boundary is detached and runCoalescedUpdate returns immediately.
+    const ctx = {};
+    await gate.runAuthorization(ctx, async () => {
+      gate.commitAuthorization(ctx);
+      await gate.runCoalescedUpdate<void>(ctx, (claim) =>
+        coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageId: 1 }), claim),
+      );
+    });
+
+    // Flush the buffer via timer so the dispatch reaches the gate.
+    vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS);
+
+    // Gate close drains the detached boundary. The completion failure is
+    // retained in the gate and surfaces as a closeAdmission rejection.
+    await expect(gate.closeAdmission()).rejects.toBe(failure);
+  });
 });
 
 describe("TextCoalescer — key isolation", () => {

@@ -101,6 +101,28 @@ type ActiveTurn = {
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
+/**
+ * Chain a continuation after a runtime admission's completion while
+ * preserving the structural decision kind. The structural decision
+ * (handoff/busy/fenced/rejected) is already authoritative at the
+ * admission call; the continuation runs in the completion so the
+ * runtime-admission drain releases immediately and shutdown disposal
+ * can cancel a stalled runner creation rather than deadlocking on the
+ * admission drain (decision 0046).
+ */
+function mapAdmissionCompletion<T>(
+  admission: RuntimeAdmissionResult<T>,
+  continuation: (value: T) => Promise<void>,
+): RuntimeAdmissionResult<void> {
+  const completion = admission.completion.then(continuation);
+  switch (admission.kind) {
+    case "handoff": return runtimeAdmission.handoff(completion);
+    case "busy": return runtimeAdmission.busy(completion);
+    case "fenced": return runtimeAdmission.fenced(completion);
+    case "rejected": return runtimeAdmission.rejected(completion);
+  }
+}
+
 export async function downloadFileBytes(
   api: Bot["api"],
   fileId: string,
@@ -233,34 +255,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     }
   }
 
-  function scheduleFreshTurn(
-    message: TelegramIntakeMessage,
-    surface: Surface,
-    session: ConversationState,
-    runner: AgentRunner,
-    content: PromptContent,
-    failureLog: string,
-    opts?: { replyModelNotCapable?: boolean },
-  ): boolean {
-    const buffer = dispatcher.createMessageBuffer(surface, session);
-    return dispatcher.schedulePrompt(
-      session,
-      { kind: "current-runtime", runner },
-      async (authority) => {
-        if (!authority.isCurrent()) return;
-        await runner.prompt(message.prepare(content), buffer);
-      },
-      async (err) => {
-        if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
-          await sendSystemReply(message, err.message, "error");
-          return;
-        }
-        const msg = err instanceof Error ? err.message : String(err);
-        log.error(failureLog, { error: msg, sessionId: session.id });
-      },
-    );
-  }
-
   /**
    * Apply the side effects returned by `handleCommand`. Shared between the
    * immediate-dispatch path and the deferred (queued-behind-turn) path so the
@@ -271,19 +265,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     sideEffects: SideEffect[],
     message: TelegramIntakeMessage,
   ): Promise<RuntimeAdmissionResult<void> | null> {
-    const mapWithContinuation = <T>(
-      admission: RuntimeAdmissionResult<T>,
-      continuation: (value: T) => Promise<void>,
-    ): RuntimeAdmissionResult<void> => {
-      const completion = admission.completion.then(continuation);
-      switch (admission.kind) {
-        case "handoff": return runtimeAdmission.handoff(completion);
-        case "busy": return runtimeAdmission.busy(completion);
-        case "fenced": return runtimeAdmission.fenced(completion);
-        case "rejected": return runtimeAdmission.rejected(completion);
-      }
-    };
-
     const applyFrom = async (start: number): Promise<RuntimeAdmissionResult<void> | null> => {
       const completeRemaining = async (next: number): Promise<void> => {
         const remaining = await applyFrom(next);
@@ -297,31 +278,29 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             effect.conversation,
             effect.surface,
           );
-          return mapWithContinuation(admission, () => completeRemaining(index + 1));
+          return mapAdmissionCompletion(admission, () => completeRemaining(index + 1));
         } else if (effect.kind === "runner-disposed") {
           const admission = dispatcher.admitDisposeRunner(effect.conversationId);
-          return mapWithContinuation(admission, () => completeRemaining(index + 1));
+          return mapAdmissionCompletion(admission, () => completeRemaining(index + 1));
         } else if (effect.kind === "queue-prompt") {
-          const runnerAdmission = dispatcher.admitGetOrCreateRunner(
+          // admitPromptTurn enqueues synchronously and acquires the runner
+          // inside the queued work, so a stalled creation is cancelled by
+          // shutdown disposal rather than deadlocking the admission drain.
+          return dispatcher.admitPromptTurn(
             effect.conversation,
             effect.surface,
+            (runner, authority) => {
+              if (!authority.isCurrent()) return Promise.resolve();
+              const buffer = dispatcher.createMessageBuffer(effect.surface, effect.conversation);
+              return runner.prompt(message.prepare(effect.text), buffer);
+            },
+            (err) => {
+              log.error("queued prompt failed", {
+                error: err instanceof Error ? err.message : String(err),
+                sessionId: effect.conversation.id,
+              });
+            },
           );
-          const queueRunner = await runnerAdmission.completion;
-          const admitted = scheduleFreshTurn(
-            message,
-            effect.surface,
-            effect.conversation,
-            queueRunner,
-            effect.text,
-            "queued prompt failed",
-          );
-          if (!admitted) {
-            log.error("queued prompt rejected at queue admission", {
-              sessionId: effect.conversation.id,
-            });
-            return runtimeAdmission.rejected(undefined);
-          }
-          return runtimeAdmission.handoff(undefined);
         }
       }
       return null;
@@ -478,43 +457,23 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           log.error(failureLog, { error: msg, sessionId: session.id });
         };
 
+        // A wedged runner is an adapter-local completion: no runtime work
+        // is attempted. Check synchronously via the registered runner to
+        // avoid awaiting runner acquisition.
         const existingRunner = dispatcher.getRunner(session.id);
-        let admitted: boolean;
-        if (existingRunner === null) {
-          try {
-            admitted = dispatcher.scheduleBootstrapTurn(
-              session,
-              surface,
-              execute,
-              onError,
-            );
-          } catch (err) {
-            throw err;
-          }
-        } else {
-          const runner = await dispatcher.getOrCreateRunner(session, surface);
-          if (runner.isAbortTimedOut) {
-            const completion = sendSystemReply(message, WEDGED_RUNNER_REPLY, "error").catch((err: unknown) => {
-              log.error("failed to send wedged runner reply", {
-                error: String(err),
-                sessionId: session.id,
-              });
-              throw err;
-            });
-            return completed(completion);
-          }
-          admitted = dispatcher.schedulePrompt(
-            session,
-            { kind: "current-runtime", runner },
-            (authority) => execute(runner, authority),
-            onError,
-          );
+        if (existingRunner !== null && existingRunner.isAbortTimedOut) {
+          return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
         }
-        if (!admitted) {
-          log.error("media prompt rejected at queue admission", { sessionId: session.id });
-          return runtimeAdmission.rejected(undefined);
-        }
-        return runtimeAdmission.handoff(undefined);
+        // admitPromptTurn enqueues the work synchronously and acquires
+        // the runner inside the queued work when no runner is registered
+        // yet, so a stalled creation is cancelled by shutdown disposal
+        // rather than deadlocking the runtime-admission drain.
+        return dispatcher.admitPromptTurn(
+          session,
+          surface,
+          execute,
+          onError,
+        );
       },
     };
   }
@@ -661,48 +620,40 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const session = conversation;
     if (!rawText) return completed(undefined);
 
+    // Use the registered runner directly for synchronous steer/wedge checks
+    // without awaiting runner acquisition. For an idle runner or when no
+    // runner is registered, admitPromptTurn enqueues the work synchronously
+    // and acquires the runner inside the queued work, so a stalled creation
+    // is cancelled by shutdown disposal rather than deadlocking the
+    // runtime-admission drain (decision 0046).
     const existingRunner = dispatcher.getRunner(session.id);
-    if (existingRunner === null) {
-      const admitted = dispatcher.scheduleBootstrapTurn(
-        session,
-        surface,
-        async (runner, authority) => {
-          if (runner.isAbortTimedOut) {
-            if (authority.isCurrent()) await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
-            return;
-          }
-          if (!authority.isCurrent()) return;
-          const buffer = dispatcher.createMessageBuffer(surface, session);
-          await runner.prompt(message.prepare(rawText), buffer);
-        },
-        async (error) => {
-          log.error("runner prompt failed", {
-            error: error instanceof Error ? error.message : String(error),
-            sessionId: session.id,
-          });
-        },
-      );
-      if (!admitted) {
-        log.error("runner prompt rejected at queue admission", { sessionId: session.id });
-        return runtimeAdmission.rejected(undefined);
+    if (existingRunner !== null) {
+      if (existingRunner.isAbortTimedOut) {
+        return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
       }
-      return runtimeAdmission.handoff(undefined);
+      if (existingRunner.isStreaming) {
+        return steerOrFallbackToFreshTurn(message, surface, session, existingRunner, rawText);
+      }
     }
-
-    const runner = await dispatcher.getOrCreateRunner(session, surface);
-    if (runner.isAbortTimedOut) {
-      return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
-    }
-    if (runner.isStreaming) {
-      return steerOrFallbackToFreshTurn(message, surface, session, runner, rawText);
-    }
-
-    const admitted = scheduleFreshTurn(message, surface, session, runner, rawText, "runner prompt failed");
-    if (!admitted) {
-      log.error("runner prompt rejected at queue admission", { sessionId: session.id });
-      return runtimeAdmission.rejected(undefined);
-    }
-    return runtimeAdmission.handoff(undefined);
+    return dispatcher.admitPromptTurn(
+      session,
+      surface,
+      async (runner, authority) => {
+        if (runner.isAbortTimedOut) {
+          if (authority.isCurrent()) await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
+          return;
+        }
+        if (!authority.isCurrent()) return;
+        const buffer = dispatcher.createMessageBuffer(surface, session);
+        await runner.prompt(message.prepare(rawText), buffer);
+      },
+      async (error) => {
+        log.error("runner prompt failed", {
+          error: error instanceof Error ? error.message : String(error),
+          sessionId: session.id,
+        });
+      },
+    );
   }
 
   async function handlePhoto(

@@ -117,6 +117,14 @@ export class UpdateGate {
   private readonly transfers = new WeakMap<object, object>();
   private closure: Promise<void> | undefined;
   private draining = false;
+  /**
+   * Completion failures from detached coalesced boundaries. These are not
+   * awaited by the caller (`runCoalescedUpdate` returns immediately for
+   * transferred claims), so without retention they would be silently
+   * discarded by `Promise.allSettled` during drain. The gate retains them
+   * and rejects during `drainAdmitted` so shutdown reports the failure.
+   */
+  private readonly detachedFailures: unknown[] = [];
 
   constructor(private readonly coalescerCallbacks: UpdateGateCoalescerCallbacks) {}
 
@@ -299,6 +307,10 @@ export class UpdateGate {
     });
     if (!transferred) return boundary;
     void boundary.catch((error: unknown) => {
+      // Retain the failure so drainAdmitted can reject during gate close.
+      // Without this, Promise.allSettled in the drain would discard it and
+      // shutdown would report success after admitted text failed.
+      this.detachedFailures.push(error);
       log.error("detached Telegram update failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -480,6 +492,16 @@ export class UpdateGate {
     try {
       while (this.inFlightUpdates.size > 0) {
         await Promise.allSettled([...this.inFlightUpdates]);
+      }
+      // Surface retained detached coalesced failures so shutdown reports
+      // them instead of silently succeeding. The structural decisions were
+      // already recorded; these are completion failures from admitted work
+      // whose boundaries were detached by runCoalescedUpdate.
+      if (this.detachedFailures.length > 0) {
+        const failures = this.detachedFailures.splice(0);
+        throw failures.length === 1
+          ? failures[0]
+          : new AggregateError(failures, "detached Telegram update boundaries failed");
       }
     } finally {
       this.draining = false;

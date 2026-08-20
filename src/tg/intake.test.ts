@@ -1188,6 +1188,7 @@ describe("Telegram intake", () => {
 
   it("/cancel keeps reply delivery in its handoff completion", async () => {
     const { intake } = makeHarness();
+    await completeAdmission(intake.handleText(makeMessage(), "/new"));
     const delivery = deferred();
     const deliveryStarted = deferred();
     const message = makeMessage([], {
@@ -2206,6 +2207,24 @@ describe("createMessageBuffer factory", () => {
     expect(replies.at(-1)).toBe("`[info]` Unknown command\\. Use /help to see available commands\\.");
   });
 
+  it("surfaces rejected unknown-command delivery for an active conversation", async () => {
+    // Regression: the active-conversation unknown-command branch must
+    // propagate delivery failures so the returned completion accurately
+    // represents delivery, matching the inactive-DM branch.
+    const { intake } = makeHarness();
+    const failure = new Error("Telegram unavailable");
+    const errorSpy = spyOn(log, "error").mockImplementation(() => {});
+    await completeAdmission(intake.handleText(makeMessage(), "/new"));
+
+    const message = makeMessage([], {
+      reply: async () => { throw failure; },
+    });
+    const admission = await intake.handleText(message, "/unknown");
+    expect(admission.kind).toBe("completed");
+    await expect(admission.completion).rejects.toBe(failure);
+    errorSpy.mockRestore();
+  });
+
   it("sends an error reply when a side-effect completion fails after /new", async () => {
     // Regression: if /new creates a durable conversation but runner
     // preparation rejects, the user must still receive an error reply.
@@ -2222,6 +2241,45 @@ describe("createMessageBuffer factory", () => {
     await expect(admission.completion).rejects.toBe(failure);
     expect(replies.at(-1)).toBe("`[error]` Something went wrong\\. Please try again\\.");
     admit.mockRestore();
+  });
+
+  it("suppresses success reply when a later side-effect admission is rejected", async () => {
+    // Regression: if /new (via wedged-runtime recovery) disposes the prior
+    // runner (handoff) but runner creation is then rejected, the success
+    // reply must be suppressed and an error reply sent instead. A later
+    // rejected admission must not be silently swallowed by the side-effect
+    // chain.
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
+
+    await completeAdmission(intake.handleText(message, "/new"));
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+    runners[0]!.markAbortTimedOut();
+    replies.length = 0;
+
+    const disposeSpy = spyOn(intake.dispatcher, "admitDisposeRunner").mockReturnValue(
+      runtimeAdmission.handoff(Promise.resolve()),
+    );
+    const createSpy = spyOn(intake.dispatcher, "admitGetOrCreateRunner").mockReturnValue(
+      runtimeAdmission.rejected(undefined as unknown as AgentRunner),
+    );
+
+    const admission = await intake.handleText(message, "/new");
+    expect(admission.kind).toBe("handoff");
+    await expect(admission.completion).rejects.toThrow("command side-effect rejected after handoff");
+    // The success reply ("Created new conversation") must be suppressed;
+    // finishCommand's delivery error handler sends "Something went wrong."
+    expect(replies.some((r) => r.includes("Created new conversation"))).toBe(false);
+    expect(replies.some((r) => r.includes("Something went wrong"))).toBe(true);
+
+    disposeSpy.mockRestore();
+    createSpy.mockRestore();
+    pending.resolve();
+    await flushMicrotasks();
   });
 
   it("operates without a MetricsStore when no Conversation exists", async () => {

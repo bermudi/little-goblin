@@ -273,19 +273,21 @@ function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
 
 function assertTopicDirectory(home: string, id: string, chatId: number, topicId: number): void {
   const path = topicScopeDir(home, chatId, topicId);
+  let stats: ReturnType<typeof statSync>;
   try {
-    if (!statSync(path).isDirectory()) {
-      throw new Error(
-        `Subagent '${id}' topic scope (${chatId}/${topicId}) is not a directory; cannot revive`,
-      );
-    }
+    stats = statSync(path);
   } catch (err) {
     if (isNodeErrnoException(err) && err.code === "ENOENT") {
-      throw new Error(
+      throw new SubagentReviveRejectedError(
         `Subagent '${id}' topic scope (${chatId}/${topicId}) no longer exists; cannot revive`,
       );
     }
     throw err;
+  }
+  if (!stats.isDirectory()) {
+    throw new SubagentReviveRejectedError(
+      `Subagent '${id}' topic scope (${chatId}/${topicId}) is not a directory; cannot revive`,
+    );
   }
 }
 

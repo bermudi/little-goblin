@@ -243,22 +243,24 @@ describe("handleCommand", () => {
     expect(harness.interrupt).toHaveBeenCalledWith(runner, expect.any(Object), 5_000, session.id, undefined);
   });
 
-  it("replies to /cancel without a session (no cascade attempted)", async () => {
+  it("replies to /cancel without a session without invoking the cascade", async () => {
     const cascade = baseCascade();
     const harness = makeHarness(cascade);
-    const result = await expectAdmissionReplied(await dispatch({ command: "/cancel", harness }));
+    const result = expectReplied(await dispatch({ command: "/cancel", harness }));
     expect(result.reply).toBe("Nothing to cancel.");
-    // Still invokes the cascade (with null session id) — but nothing was running,
-    // so the reply reflects "Nothing to cancel."
-    expect(harness.interrupt).toHaveBeenCalledWith(null, expect.any(Object), 5_000, null, undefined);
+    // No conversation means no cascade — the process-wide cancellation that
+    // interruptAndCascade performs when no conversation id is supplied must
+    // not run.
+    expect(harness.interrupt).not.toHaveBeenCalled();
   });
 
   it("/cancel hands off before the abort cascade settles", async () => {
     const harness = makeHarness();
     const pending = deferred<CascadeResult>();
     harness.interrupt.mockImplementation(async () => await pending.promise);
+    const session = await createSession(harness);
 
-    const result = await dispatch({ command: "/cancel", harness });
+    const result = await dispatch({ command: "/cancel", session, harness });
     expect(result.kind).toBe("admission");
     if (result.kind !== "admission") throw new Error("expected command admission");
     expect(result.admission.kind).toBe("handoff");
@@ -763,7 +765,8 @@ describe("handleCommand", () => {
   it("/cancel appends cascade timeout suffixes when subagents time out", async () => {
     const cascade = baseCascade({ attemptedSubagents: 1, timedOutSubagents: 1 });
     const harness = makeHarness(cascade);
-    const result = await expectAdmissionReplied(await dispatch({ command: "/cancel", harness }));
+    const session = await createSession(harness);
+    const result = await expectAdmissionReplied(await dispatch({ command: "/cancel", session, harness }));
     expect(result.reply).toContain(formatCascadeTimeoutSuffix(cascade, 5_000));
   });
 
@@ -785,7 +788,7 @@ describe("handleCommand", () => {
 
     it("/cancel 'Nothing to cancel.' is tagged 'info'", async () => {
       const harness = makeHarness();
-      const result = await expectAdmissionReplied(await dispatch({ command: "/cancel", harness }));
+      const result = expectReplied(await dispatch({ command: "/cancel", harness }));
       expect(result.tag).toBe("info");
     });
 
@@ -803,7 +806,8 @@ describe("handleCommand", () => {
     it("/cancel when main is wedged is tagged 'error'", async () => {
       const cascade = baseCascade({ attemptedMain: true, wedgedMain: true });
       const harness = makeHarness(cascade);
-      const result = await expectAdmissionReplied(await dispatch({ command: "/cancel", harness }));
+      const session = await createSession(harness);
+      const result = await expectAdmissionReplied(await dispatch({ command: "/cancel", session, harness }));
       expect(result.tag).toBe("error");
     });
 

@@ -279,7 +279,17 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const applyFrom = async (start: number): Promise<RuntimeAdmissionResult<void> | null> => {
       const completeRemaining = async (next: number): Promise<void> => {
         const remaining = await applyFrom(next);
-        if (remaining !== null) await remaining.completion;
+        if (remaining !== null) {
+          await remaining.completion;
+          // A later rejected admission in the side-effect chain must suppress
+          // the success reply. mapAdmissionCompletion swallows a rejected
+          // completion, so the kind is the authoritative signal: throw to
+          // turn the rejection into a completion failure that finishCommand's
+          // delivery error handler surfaces as "Something went wrong."
+          if (remaining.kind === "rejected") {
+            throw new Error("command side-effect rejected after handoff");
+          }
+        }
       };
 
       for (let index = start; index < sideEffects.length; index++) {
@@ -525,7 +535,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       const delivery = surface.kind === "guest"
         ? Promise.resolve()
         : existingConversation
-          ? sendSystemReply(message, "Unknown command. Use /help to see available commands.", "info")
+          ? sendSystemReply(message, "Unknown command. Use /help to see available commands.", "info", { propagateErrors: true })
           : surface.kind === "dm"
             ? replyNoActiveSession(message, surface, "text")
             : Promise.resolve();

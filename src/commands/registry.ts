@@ -203,6 +203,10 @@ const cancelHandler: CommandHandler = async ({ deps, conversation, existingRunne
   // that has scheduled but not yet started), cancel it first so the reply
   // reflects the work that was actually stopped.
   //
+  // Without a bound conversation, /cancel has no scope to interrupt.
+  // Returning early avoids the process-wide cascade that interruptAndCascade
+  // performs when no conversation id is supplied (interrupt.ts:142-146).
+  if (conversation === null) return replied("Nothing to cancel.", [], "info");
   // The admission classification and the start of cancellation work are one
   // atomic step: admitRuntimeWork invokes the callback synchronously when
   // admission is open, and does not invoke it when rejected. A rejected

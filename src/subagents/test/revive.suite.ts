@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   SubagentReviveBusyError,
+  SubagentReviveRejectedError,
   SubagentRunner,
   type SubagentPreparation,
 } from "../mod.ts";
@@ -105,9 +106,14 @@ describe("SubagentRunner.revive", () => {
       },
     };
 
-    await expect(
-      runner.revive(topicCapture, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "topic missing"),
-    ).rejects.toThrow(/topic scope \(777\/42\) no longer exists/);
+    let failure: unknown;
+    try {
+      await runner.revive(topicCapture, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "topic missing");
+    } catch (err) {
+      failure = err;
+    }
+    expect(failure).toBeInstanceOf(SubagentReviveRejectedError);
+    expect((failure as Error).message).toMatch(/topic scope \(777\/42\) no longer exists/);
   });
 
   it("rejects revival when the topic path is a regular file", async () => {
@@ -123,9 +129,14 @@ describe("SubagentRunner.revive", () => {
       },
     };
 
-    await expect(
-      runner.revive(topicCapture, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "topic file"),
-    ).rejects.toThrow(/topic scope \(777\/42\) is not a directory/);
+    let failure: unknown;
+    try {
+      await runner.revive(topicCapture, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "topic file");
+    } catch (err) {
+      failure = err;
+    }
+    expect(failure).toBeInstanceOf(SubagentReviveRejectedError);
+    expect((failure as Error).message).toMatch(/topic scope \(777\/42\) is not a directory/);
   });
 
   it("propagates non-ENOENT topic stat failures", async () => {

@@ -29,8 +29,8 @@ import {
 } from "../agent/skills/mod.ts";
 import type { BindingsFile } from "../sessions/types.ts";
 import { isValidConversationId } from "../sessions/conversation.ts";
-import { sessionDir } from "../sessions/paths.ts";
-import { existsSync } from "node:fs";
+import { sessionDir, transcriptPath } from "../sessions/paths.ts";
+import { existsSync, readFileSync } from "node:fs";
 import { log } from "../log.ts";
 import type { ConversationRuntimeHostPort } from "./conversation-runtime-host.ts";
 import type {
@@ -152,6 +152,11 @@ export interface ConversationLifecycle extends SurfaceRuntimeAuthority {
   listResumable(surface: Surface): ConversationState[];
   /** Apply a validated model/thinking Surface preference patch, then invalidate the bound runtime. */
   setSurfacePreferences(surface: Surface, patch: SurfacePreferencePatch): Promise<PreferenceTransition>;
+  /** Roll back a newly created bound Conversation whose bootstrap admission was rejected.
+   * If the Surface is still bound to the given Conversation, the binding is
+   * cleared and the Conversation is deleted. Otherwise no mutation occurs.
+   */
+  rollbackCreation(surface: Surface, conversationId: ConversationId): Promise<boolean>;
 }
 
 export type ProjectAssignmentResult =
@@ -214,6 +219,10 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   readonly settings: SurfaceSettings;
   private readonly runtimeHost: ConversationRuntimeHostPort;
   private readonly skillPolicyWriter: SkillPolicyWriter;
+  /** Surfaces with a binding transition in flight. Fences new control work that
+   * could otherwise capture a freshly bumped epoch before the binding commit.
+   */
+  private readonly pendingBindingSurfaces = new Set<SurfaceId>();
 
   constructor(
     home: string,
@@ -287,6 +296,44 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     });
   }
 
+  async rollbackCreation(surface: Surface, conversationId: ConversationId): Promise<boolean> {
+    return withLifecycleTransitionLock(async () => {
+      const key = surfaceId(surface);
+      const bindings = this.bindings.load();
+      if (bindings.surfaces[key] !== conversationId) return false;
+      // Only roll back an empty newly created Conversation. If it already
+      // has transcript content, keep it as resumable rather than deleting.
+      const conv = this.store.load(conversationId);
+      if (conv === null) {
+        // Binding points to missing Conversation; clear it anyway.
+        const next = cloneBindings(bindings);
+        delete (next.surfaces as Record<string, string>)[key];
+        this.bindings.save(next);
+        return true;
+      }
+      // Check if transcript is still empty (no user-visible content). A
+      // newly created Conversation has an empty transcript file.
+      try {
+        const transcript = transcriptPath(this.home, conversationId);
+        const content = readFileSync(transcript, "utf-8");
+        if (content.trim().length !== 0) return false;
+      } catch {
+        // If we cannot read transcript, do not delete to avoid data loss.
+        return false;
+      }
+      const next = cloneBindings(bindings);
+      delete (next.surfaces as Record<string, string>)[key];
+      this.bindings.save(next);
+      try {
+        this.store.deleteConversation(conversationId);
+      } catch (error) {
+        log.error("rollback creation delete failed", { surface: key, conversationId, error: String(error) });
+      }
+      log.info("rolled back empty conversation after rejected admission", { surface: key, conversation: conversationId });
+      return true;
+    });
+  }
+
   async rotate(surface: Surface): Promise<ConversationState> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
@@ -294,27 +341,42 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       const env = this.settings.effectiveEnvironment(surface);
       const bindings = this.bindings.load();
       const currentId = bindings.surfaces[key];
+      this.pendingBindingSurfaces.add(key);
+      try {
+        if (currentId) {
+          let current: ConversationState | null = null;
+          if (isValidConversationId(currentId)) {
+            current = this.store.load(currentId as ConversationId);
+          }
+          if (current) {
+            await this.runtimeHost.disposeRuntime(current.id);
+          } else if (isValidConversationId(currentId)) {
+            // Stale binding: drop any runner keyed by the old id before creating
+            // the replacement, otherwise it can outlive its conversation.
+            await this.runtimeHost.disposeRuntime(currentId as ConversationId);
+          }
+        }
 
-      if (currentId) {
-        let current: ConversationState | null = null;
-        if (isValidConversationId(currentId)) {
-          current = this.store.load(currentId as ConversationId);
+        // Validate reservation before committing the new binding. During the
+        // await above, isCurrentBinding fences new control work that could
+        // otherwise capture the freshly bumped epoch before the binding commit.
+        const latest = this.bindings.load();
+        if (latest.surfaces[key] !== currentId) {
+          throw new Error(`binding changed during rotate for ${key}: expected ${currentId ?? "unbound"}, got ${latest.surfaces[key] ?? "unbound"}`);
         }
-        if (current) {
-          await this.runtimeHost.disposeRuntime(current.id);
-        } else if (isValidConversationId(currentId)) {
-          // Stale binding: drop any runner keyed by the old id before creating
-          // the replacement, otherwise it can outlive its conversation.
-          await this.runtimeHost.disposeRuntime(currentId as ConversationId);
+        if (!this.pendingBindingSurfaces.has(key)) {
+          throw new Error(`binding reservation lost for ${key} during rotate`);
         }
+
+        const created = this.store.create(env);
+        const next = cloneBindings(latest);
+        next.surfaces[key] = created.id;
+        this.bindings.save(next);
+        log.info("conversation rotated", { surface: key, conversation: created.id, environment: env });
+        return created;
+      } finally {
+        this.pendingBindingSurfaces.delete(key);
       }
-
-      const created = this.store.create(env);
-      const next = cloneBindings(bindings);
-      next.surfaces[key] = created.id;
-      this.bindings.save(next);
-      log.info("conversation rotated", { surface: key, conversation: created.id, environment: env });
-      return created;
     });
   }
 
@@ -343,33 +405,51 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
         return targetConv;
       }
 
-      // Dispose any runtime at the destination (about to be displaced) and at
-      // the source (for a cross-surface move) before committing the binding
-      // change. Disposal is best-effort idempotent; if it fails we abort.
-      if (currentAtDst && isValidConversationId(currentAtDst)) {
-        await this.runtimeHost.disposeRuntime(currentAtDst);
-      }
-      if (sourceKey !== undefined) {
-        await this.runtimeHost.disposeRuntime(target);
-      }
+      this.pendingBindingSurfaces.add(key);
+      if (sourceKey !== undefined) this.pendingBindingSurfaces.add(sourceKey);
+      try {
+        // Dispose any runtime at the destination (about to be displaced) and at
+        // the source (for a cross-surface move) before committing the binding
+        // change. Disposal is best-effort idempotent; if it fails we abort.
+        if (currentAtDst && isValidConversationId(currentAtDst)) {
+          await this.runtimeHost.disposeRuntime(currentAtDst);
+        }
+        if (sourceKey !== undefined) {
+          await this.runtimeHost.disposeRuntime(target);
+        }
 
-      const next = cloneBindings(bindings);
-      if (currentAtDst) {
-        delete (next.surfaces as Record<string, string>)[key];
+        const latest = this.bindings.load();
+        if (latest.surfaces[key] !== currentAtDst) {
+          throw new Error(`binding changed during resume for ${key}: expected ${currentAtDst ?? "unbound"}, got ${latest.surfaces[key] ?? "unbound"}`);
+        }
+        if (sourceKey !== undefined && latest.surfaces[sourceKey] !== target) {
+          throw new Error(`binding changed during resume for source ${sourceKey}: expected ${target}, got ${latest.surfaces[sourceKey] ?? "unbound"}`);
+        }
+        if (!this.pendingBindingSurfaces.has(key) || (sourceKey !== undefined && !this.pendingBindingSurfaces.has(sourceKey))) {
+          throw new Error(`binding reservation lost during resume for ${key}`);
+        }
+
+        const next = cloneBindings(latest);
+        if (currentAtDst) {
+          delete (next.surfaces as Record<string, string>)[key];
+        }
+        if (sourceKey !== undefined) {
+          delete (next.surfaces as Record<string, string>)[sourceKey];
+        }
+        next.surfaces[key] = target;
+        this.bindings.save(next);
+        log.info("conversation resumed", {
+          surface: key,
+          conversation: target,
+          environment: env,
+          sourceSurface: sourceKey,
+          displaced: currentAtDst,
+        });
+        return targetConv;
+      } finally {
+        this.pendingBindingSurfaces.delete(key);
+        if (sourceKey !== undefined) this.pendingBindingSurfaces.delete(sourceKey);
       }
-      if (sourceKey !== undefined) {
-        delete (next.surfaces as Record<string, string>)[sourceKey];
-      }
-      next.surfaces[key] = target;
-      this.bindings.save(next);
-      log.info("conversation resumed", {
-        surface: key,
-        conversation: target,
-        environment: env,
-        sourceSurface: sourceKey,
-        displaced: currentAtDst,
-      });
-      return targetConv;
     });
   }
 
@@ -401,13 +481,25 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
         throw new Error(`no active conversation on this surface`);
       }
 
-      await this.runtimeHost.disposeRuntime(current.id);
-      const next = cloneBindings(bindings);
-      delete (next.surfaces as Record<string, string>)[key];
-      this.bindings.save(next);
-      this.store.archive(current.id);
-      log.info("conversation archived", { surface: key, conversation: current.id });
-      return { kind: "archived", conversationId: current.id };
+      this.pendingBindingSurfaces.add(key);
+      try {
+        await this.runtimeHost.disposeRuntime(current.id);
+        const latest = this.bindings.load();
+        if (latest.surfaces[key] !== currentId) {
+          throw new Error(`binding changed during archive for ${key}: expected ${currentId}, got ${latest.surfaces[key] ?? "unbound"}`);
+        }
+        if (!this.pendingBindingSurfaces.has(key)) {
+          throw new Error(`binding reservation lost for ${key} during archive`);
+        }
+        const next = cloneBindings(latest);
+        delete (next.surfaces as Record<string, string>)[key];
+        this.bindings.save(next);
+        this.store.archive(current.id);
+        log.info("conversation archived", { surface: key, conversation: current.id });
+        return { kind: "archived", conversationId: current.id };
+      } finally {
+        this.pendingBindingSurfaces.delete(key);
+      }
     });
   }
 
@@ -697,6 +789,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       // synchronous stale-runner guard must fail closed; only the async
       // acquisition path may reconcile it under the lifecycle lock.
       if (loadPendingProjectAssignment(this.home) !== null) return false;
+      if (this.pendingBindingSurfaces.has(surfaceId(surface))) return false;
       const current = this.inspect(surface);
       return current?.id === conversationId;
     } catch (error) {

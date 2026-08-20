@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../log.ts";
 import { environmentsEqual, type ExecutionEnvironment } from "./environment.ts";
@@ -197,6 +197,29 @@ export class ConversationStore {
     }
     renameSync(src, dst);
     log.info("archived conversation", { id });
+  }
+
+  /** Delete a conversation and its artifacts. Used to roll back an empty
+   * creation whose bootstrap admission was rejected (shutdown). */
+  deleteConversation(id: ConversationId): void {
+    validateConversationId(id);
+    const src = sessionDir(this.home, id);
+    const archivePath = join(sessionsDir(this.home), "archive", id);
+    try {
+      if (existsSync(src)) {
+        rmSync(src, { recursive: true, force: true });
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    try {
+      if (existsSync(archivePath)) {
+        rmSync(archivePath, { recursive: true, force: true });
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    log.info("deleted conversation", { id });
   }
 
   allocateId(): ConversationId {

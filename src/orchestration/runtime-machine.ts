@@ -86,7 +86,8 @@ export type BindingControlAdmission<T> =
 export type SteerOrQueueResult =
   | { kind: "steered"; followUp: Promise<void> }
   | { kind: "queued" }
-  | { kind: "rejected" };
+  | { kind: "rejected" }
+  | { kind: "fenced" };
 
 /** Frozen settings and skill identity captured by one runtime generation. */
 export interface RuntimeSkillContext {
@@ -713,6 +714,22 @@ export class RuntimeMachine {
       onError: (err: unknown) => Promise<void> | void;
     },
   ): SteerOrQueueResult {
+    // Capture and validate current-runtime authority before attachment.
+    // A successful attachment must not occur after shutdown closure or
+    // runtime replacement; return fenced/rejected without calling attach()
+    // when stale or closed.
+    if (!this.deps.isAdmissionOpen()) {
+      return { kind: "rejected" };
+    }
+    if (
+      (fallback.intent.kind === "current-runtime" || fallback.intent.kind === "internal-runtime") &&
+      fallback.intent.runner !== this.runner
+    ) {
+      return { kind: "fenced" };
+    }
+    if (fallback.intent.kind === "internal-runtime" && !this.isInternal) {
+      return { kind: "fenced" };
+    }
     let followUp: Promise<void>;
     try {
       followUp = attach();

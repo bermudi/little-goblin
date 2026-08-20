@@ -138,7 +138,12 @@ export class ShutdownCoordinator {
     await bufferedTextAttempt;
     // Start disposal before polling stops or the Telegram admission drain is
     // awaited. Disposal is what releases handlers blocked on a runner.
-    const disposal = this.options.disposeRuntimes();
+    let disposal: Promise<void>;
+    try {
+      disposal = this.options.disposeRuntimes();
+    } catch (error) {
+      disposal = Promise.reject(error);
+    }
     void disposal.catch(() => {});
     const runtimeDrain = (async (): Promise<void> => {
       const [admissionResult, disposalResult] = await Promise.allSettled([

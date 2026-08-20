@@ -124,7 +124,12 @@ function mapAdmissionCompletion<T>(
   continuation: (value: T) => Promise<void>,
 ): RuntimeAdmissionResult<void> {
   if (admission.kind === "rejected") {
-    return runtimeAdmission.rejected(admission.completion.then(() => undefined, () => undefined));
+    // Preserve the rejection as a terminal failure: the continuation is not
+    // invoked and the mapped completion rejects so the caller can suppress
+    // success delivery. The original completion is observed to avoid
+    // unhandled rejections.
+    void admission.completion.then(() => undefined, () => undefined);
+    return runtimeAdmission.rejected(Promise.reject(new Error("command side-effect rejected after handoff")));
   }
   const completion = admission.completion.then(continuation);
   switch (admission.kind) {
@@ -421,6 +426,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       log.error("late steer race fallback rejected at queue admission", { sessionId: session.id });
       return runtimeAdmission.rejected(undefined);
     }
+    if (decision.kind === "fenced") {
+      log.warn("steer fenced: runtime no longer current", { sessionId: session.id });
+      return runtimeAdmission.fenced(undefined);
+    }
     if (decision.kind === "queued") return runtimeAdmission.handoff(undefined);
     const completion = decision.followUp.catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -442,6 +451,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     // Photos, documents, voice, and audio are ordinary authorized content:
     // lazily create a conversation on the surface, just like text.
+    const beforeInspect = lifecycle.inspect(surface);
+    const wasNewConversation = beforeInspect === null;
     const conversation = await lifecycle.resolveOrStart(surface);
     const session = conversation;
 
@@ -483,12 +494,16 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // the runner inside the queued work when no runner is registered
         // yet, so a stalled creation is cancelled by shutdown disposal
         // rather than deadlocking the runtime-admission drain.
-        return dispatcher.admitPromptTurn(
+        const admission = dispatcher.admitPromptTurn(
           session,
           surface,
           execute,
           onError,
         );
+        if (admission.kind === "rejected" && wasNewConversation) {
+          await lifecycle.rollbackCreation(surface, session.id).catch(() => {});
+        }
+        return admission;
       },
     };
   }
@@ -691,22 +706,40 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             // reply (e.g. /revive's failure reply), so finishCommand runs
             // with skipSideEffects to deliver the reply without applying
             // any side-effect admissions (decision 0046).
-            const completion = admission.completion.then(async (result) => {
-              const finished = await finishCommand(result, { skipSideEffects: true });
+            const completion = admission.completion.then(
+              async (result) => {
+                const finished = await finishCommand(result, { skipSideEffects: true });
+                if (finished.kind !== "completed") {
+                  throw new Error("admitted command attempted a second runtime admission");
+                }
+                await finished.completion;
+              },
+              async (err: unknown) => {
+                log.error("command admission failed", { error: String(err), command, sessionId: session?.id });
+                const replyText = "Something went wrong. Please try again.";
+                await sendSystemReply(message, replyText, "error");
+                if (session) recordAssistantReply(session.id, surface, existingRunner, replyText);
+                throw err;
+              },
+            );
+            return runtimeAdmission.rejected(completion);
+          }
+          const completion = admission.completion.then(
+            async (result) => {
+              const finished = await finishCommand(result);
               if (finished.kind !== "completed") {
                 throw new Error("admitted command attempted a second runtime admission");
               }
               await finished.completion;
-            });
-            return runtimeAdmission.rejected(completion);
-          }
-          const completion = admission.completion.then(async (result) => {
-            const finished = await finishCommand(result);
-            if (finished.kind !== "completed") {
-              throw new Error("admitted command attempted a second runtime admission");
-            }
-            await finished.completion;
-          });
+            },
+            async (err: unknown) => {
+              log.error("command admission failed", { error: String(err), command, sessionId: session?.id });
+              const replyText = "Something went wrong. Please try again.";
+              await sendSystemReply(message, replyText, "error");
+              if (session) recordAssistantReply(session.id, surface, existingRunner, replyText);
+              throw err;
+            },
+          );
           switch (admission.kind) {
             case "handoff": return runtimeAdmission.handoff(completion);
             case "busy": return runtimeAdmission.busy(completion);
@@ -728,6 +761,8 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       }
     }
 
+    const beforeInspect = lifecycle.inspect(surface);
+    const wasNewConversation = beforeInspect === null;
     const conversation = await lifecycle.resolveOrStart(surface);
     const session = conversation;
     if (!rawText) return completed(undefined);
@@ -747,7 +782,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         return steerOrFallbackToFreshTurn(message, surface, session, existingRunner, rawText);
       }
     }
-    return dispatcher.admitPromptTurn(
+    const admission = dispatcher.admitPromptTurn(
       session,
       surface,
       async (runner, authority) => {
@@ -766,6 +801,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         });
       },
     );
+    if (admission.kind === "rejected" && wasNewConversation) {
+      await lifecycle.rollbackCreation(surface, session.id).catch(() => {});
+    }
+    return admission;
   }
 
   async function handlePhoto(
@@ -1078,7 +1117,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     };
 
     let conversation: ConversationState;
+    let wasNewConversation = false;
     try {
+      const beforeInspect = lifecycle.inspect(surface);
+      wasNewConversation = beforeInspect === null;
       conversation = await lifecycle.resolveOrStart(surface);
     } catch (error) {
       log.error("guest resolve failed", { error: String(error), surfaceId: surfaceId(surface) });
@@ -1103,6 +1145,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           },
         },
       );
+
+    if (wasNewConversation && admission.kind !== "accepted") {
+      await lifecycle.rollbackCreation(surface, conversation.id).catch(() => {});
+    }
 
     switch (admission.kind) {
       case "accepted": {

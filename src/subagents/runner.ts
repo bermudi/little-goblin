@@ -321,6 +321,8 @@ export class SubagentRunner {
   private readonly attachedCancellationPromises = new Map<string, Promise<void>>();
   /** Deduplicates epoch-wide quiescence checks across child registrations. */
   private readonly attachedQuiescencePromises = new Map<string, Promise<void>>();
+  /** Single-flight durable terminal close per invocation (id:index). */
+  private readonly invocationTerminalPromises = new Map<string, Promise<void>>();
   /** One shared delegated-work policy host for runtime invalidation. */
   readonly delegatedWorkHost: DelegatedWorkHost;
 
@@ -1021,9 +1023,9 @@ export class SubagentRunner {
         await this.stopAndCollect(instance, targetFailures, "attached subagent cleanup retry failed");
         try {
           if (instance.status === "cancelled") {
-            this.delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
+            await this.cancelInvocationOnce(instance.id, instance.invocationIndex);
           } else {
-            this.delegatedWorkHost.suppressDelivery(instance.id, instance.invocationIndex);
+            await this.suppressDeliveryOnce(instance.id, instance.invocationIndex);
           }
         } catch (error) {
           targetFailures.push(error);
@@ -1041,7 +1043,7 @@ export class SubagentRunner {
         const targetFailures: unknown[] = [];
         await this.stopAndCollect(instance, targetFailures, "attached subagent stop failed");
         try {
-          this.delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
+          await this.cancelInvocationOnce(instance.id, instance.invocationIndex);
         } catch (error) {
           targetFailures.push(error);
           log.error("attached subagent cancellation record failed", {
@@ -1161,6 +1163,63 @@ export class SubagentRunner {
     if (failure !== null) throw failure;
   }
 
+  /** Single-flight durable terminal close per invocation. Both explicit
+   * cancellation and runtime invalidation call the non-idempotent
+   * `cancelInvocation`/`suppressDelivery` for the same invocation; the
+   * second caller must join the first's durable close rather than failing
+   * with “already cancelled”.
+   */
+  private cancelInvocationOnce(id: string, index: number): Promise<void> {
+    const key = `${id}:${index}:cancel`;
+    const existing = this.invocationTerminalPromises.get(key);
+    if (existing !== undefined) return existing;
+    let resolve!: () => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    promise.catch(() => {});
+    this.invocationTerminalPromises.set(key, promise);
+    try {
+      this.delegatedWorkHost.cancelInvocation(id, index);
+      resolve();
+    } catch (err) {
+      // Allow retry after a persistence failure: the second caller joined
+      // the same in-flight promise and will see this rejection, but a later
+      // sequential attempt after this in-flight settles should be able to
+      // retry the durable close.
+      this.invocationTerminalPromises.delete(key);
+      reject(err);
+    }
+    // On success, keep the resolved promise so a later sequential cancel
+    // of the same already-terminal invocation joins the success rather than
+    // attempting a second non-idempotent close and throwing "already cancelled".
+    return promise;
+  }
+
+  private suppressDeliveryOnce(id: string, index: number): Promise<void> {
+    const key = `${id}:${index}:suppress`;
+    const existing = this.invocationTerminalPromises.get(key);
+    if (existing !== undefined) return existing;
+    let resolve!: () => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    promise.catch(() => {});
+    this.invocationTerminalPromises.set(key, promise);
+    try {
+      this.delegatedWorkHost.suppressDelivery(id, index);
+      resolve();
+    } catch (err) {
+      this.invocationTerminalPromises.delete(key);
+      reject(err);
+    }
+    return promise;
+  }
+
   /**
    * Snapshot of all known subagent instances.
    */
@@ -1271,7 +1330,7 @@ export class SubagentRunner {
     await this.stopAndCollect(instance, failures, "subagent execution stop failed during cancel");
 
     try {
-      this.delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
+      await this.cancelInvocationOnce(instance.id, instance.invocationIndex);
     } catch (err) {
       failures.push(err);
       log.error("cancel record close failed — disk state may be stale", {
@@ -1355,7 +1414,7 @@ export class SubagentRunner {
         await this.stopAndCollect(instance, failures, "cancelBySession execution stop failed");
 
         try {
-          this.delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
+          await this.cancelInvocationOnce(instance.id, instance.invocationIndex);
         } catch (err) {
           failures.push(err);
           log.error("cancelBySession record close failed", {
@@ -1410,7 +1469,7 @@ export class SubagentRunner {
           instance.rejectResult(new Error("Subagent was cancelled"));
           await this.stopAndCollect(instance, failures, "dispose execution stop failed");
           try {
-            this.delegatedWorkHost.cancelInvocation(instance.id, instance.invocationIndex);
+            await this.cancelInvocationOnce(instance.id, instance.invocationIndex);
           } catch (err) {
             failures.push(err);
             log.error("dispose record close failed", {

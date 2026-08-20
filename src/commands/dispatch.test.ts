@@ -136,7 +136,7 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
     }),
     admitReviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) =>
       runtimeAdmission.handoff(dispatcher.reviveSubagent(_surface, _session, id, prompt)),
-    admitRuntimeWork: () => runtimeAdmission.handoff(undefined),
+    admitRuntimeWork: <T>(work: () => Promise<T>) => runtimeAdmission.handoff(work()),
   } as unknown as TurnDispatcher;
   return {
     cfg,
@@ -270,6 +270,53 @@ describe("handleCommand", () => {
 
     pending.resolve(baseCascade());
     expect(expectReplied(await result.admission.completion).reply).toBe("Nothing to cancel.");
+  });
+
+  it("/cancel does not start cancellation when admission is rejected", async () => {
+    // Regression: a rejected admission must not invoke the cancellation
+    // callback. The cascade and cancelPending must not run (decision 0046).
+    const harness = makeHarness();
+    const session = await createSession(harness);
+    (harness.deps.dispatcher as unknown as {
+      admitRuntimeWork: <T>(work: () => Promise<T>) => unknown;
+    }).admitRuntimeWork = <T>(_work: () => Promise<T>) =>
+      runtimeAdmission.rejected(undefined as unknown as T);
+
+    const result = await dispatch({ command: "/cancel", session, harness });
+    expect(result.kind).toBe("admission");
+    if (result.kind !== "admission") throw new Error("expected command admission");
+    expect(result.admission.kind).toBe("rejected");
+    // The completion settles (does not hang) and carries no reply.
+    const completion = await result.admission.completion;
+    expect(completion.kind).toBe("handled");
+    // The cascade was not invoked.
+    expect(harness.interrupt).not.toHaveBeenCalled();
+  });
+
+  it("/cancel_subagent does not start cancellation when admission is rejected", async () => {
+    const harness = makeHarness();
+    const session = await createSession(harness);
+    const subagentRunner = makeSubagentRunner({
+      cancel: mock(async () => { throw new Error("should not be called"); }),
+    });
+    harness.deps.subagentRunner = subagentRunner;
+    (harness.deps.dispatcher as unknown as {
+      admitRuntimeWork: <T>(work: () => Promise<T>) => unknown;
+    }).admitRuntimeWork = <T>(_work: () => Promise<T>) =>
+      runtimeAdmission.rejected(undefined as unknown as T);
+
+    const result = await dispatch({
+      command: "/cancel_subagent",
+      rawText: "/cancel_subagent abc",
+      session,
+      harness,
+    });
+    expect(result.kind).toBe("admission");
+    if (result.kind !== "admission") throw new Error("expected command admission");
+    expect(result.admission.kind).toBe("rejected");
+    const completion = await result.admission.completion;
+    expect(completion.kind).toBe("handled");
+    expect(subagentRunner.cancel).not.toHaveBeenCalled();
   });
 
   it("/new with a prior session disposes prior and creates a new runner", async () => {

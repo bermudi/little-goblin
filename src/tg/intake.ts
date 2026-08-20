@@ -109,17 +109,23 @@ const MAX_FILE_BYTES = 20 * 1024 * 1024;
  * runtime-admission drain releases immediately and shutdown disposal
  * can cancel a stalled runner creation rather than deadlocking on the
  * admission drain (decision 0046).
+ *
+ * A rejected admission is terminal: the continuation is not invoked and
+ * no follow-on side effects are started from it. The mapped completion
+ * settles without consuming the rejected value.
  */
 function mapAdmissionCompletion<T>(
   admission: RuntimeAdmissionResult<T>,
   continuation: (value: T) => Promise<void>,
 ): RuntimeAdmissionResult<void> {
+  if (admission.kind === "rejected") {
+    return runtimeAdmission.rejected(admission.completion.then(() => undefined, () => undefined));
+  }
   const completion = admission.completion.then(continuation);
   switch (admission.kind) {
     case "handoff": return runtimeAdmission.handoff(completion);
     case "busy": return runtimeAdmission.busy(completion);
     case "fenced": return runtimeAdmission.fenced(completion);
-    case "rejected": return runtimeAdmission.rejected(completion);
   }
 }
 
@@ -507,10 +513,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const command = parseCommand(rawText);
     const def = command !== null ? resolveCommand(command) : null;
     const existingConversation = lifecycle.inspect(surface);
-    if (!existingConversation && command !== null && command !== "/new" && def === null) {
-      const delivery = surface.kind === "guest"
-        ? Promise.resolve()
-        : replyNoActiveSession(message, surface, "text");
+    if (command !== null && command !== "/new" && def === null) {
+      // Unknown commands are adapter-owned completions, not runtime work
+      // (decision 0046). Handle locally for both active and inactive
+      // conversations: no runner is prompted and no model turn starts.
+      const delivery = surface.kind === "dm"
+        ? existingConversation
+          ? sendSystemReply(message, "Unknown command. Use /help to see available commands.", "info")
+          : replyNoActiveSession(message, surface, "text")
+        : Promise.resolve();
       return completed(delivery);
     }
 
@@ -554,24 +565,45 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         });
         const finishCommand = async (
           result: Exclude<typeof commandResult, { kind: "admission" }>,
+          opts?: { skipSideEffects?: boolean },
         ): Promise<AdmissionResult<void>> => {
           if (result.kind === "fallthrough") return completed(undefined);
-          const sideEffectAdmission = await applySideEffects(result.sideEffects, message);
+          const sideEffectAdmission = opts?.skipSideEffects
+            ? null
+            : await applySideEffects(result.sideEffects, message);
           const queueRejected = sideEffectAdmission?.kind === "rejected" &&
             result.sideEffects.some((effect) => effect.kind === "queue-prompt");
-          const delivery = sideEffectAdmission?.completion.then(async () => {
-            if (queueRejected) {
-              await sendSystemReply(
-                message,
-                "Queued prompt was dropped: shutdown in progress.",
-                "error",
-              );
-              return;
-            }
-            if (result.kind === "replied") {
-              await sendSystemReply(message, result.reply, result.tag ?? "ok");
-            }
-          }) ?? (
+          const delivery = sideEffectAdmission?.completion.then(
+            async () => {
+              if (queueRejected) {
+                await sendSystemReply(
+                  message,
+                  "Queued prompt was dropped: shutdown in progress.",
+                  "error",
+                );
+                return;
+              }
+              if (result.kind === "replied") {
+                await sendSystemReply(message, result.reply, result.tag ?? "ok");
+              }
+            },
+            async (err: unknown) => {
+              // A side-effect completion failure (e.g. runner preparation
+              // rejected after /new created a durable conversation) must still
+              // produce a user-visible error reply. The structural decision
+              // was already recorded; rethrowing propagates the completion
+              // failure without rewriting it (decision 0046).
+              log.error("command side-effect completion failed", {
+                error: String(err),
+                command,
+                sessionId: session?.id,
+              });
+              const replyText = "Something went wrong. Please try again.";
+              await sendSystemReply(message, replyText, "error");
+              if (session) recordAssistantReply(session.id, surface, existingRunner, replyText);
+              throw err;
+            },
+          ) ?? (
             result.kind === "replied"
               ? sendSystemReply(message, result.reply, result.tag ?? "ok")
               : Promise.resolve()
@@ -587,18 +619,33 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           return completed(delivery);
         };
         if (commandResult.kind === "admission") {
-          const completion = commandResult.admission.completion.then(async (result) => {
+          const admission = commandResult.admission;
+          if (admission.kind === "rejected") {
+            // A rejected command admission is terminal: no follow-on side
+            // effects are started from it. The completion may still carry a
+            // reply (e.g. /revive's failure reply), so finishCommand runs
+            // with skipSideEffects to deliver the reply without applying
+            // any side-effect admissions (decision 0046).
+            const completion = admission.completion.then(async (result) => {
+              const finished = await finishCommand(result, { skipSideEffects: true });
+              if (finished.kind !== "completed") {
+                throw new Error("admitted command attempted a second runtime admission");
+              }
+              await finished.completion;
+            });
+            return runtimeAdmission.rejected(completion);
+          }
+          const completion = admission.completion.then(async (result) => {
             const finished = await finishCommand(result);
             if (finished.kind !== "completed") {
               throw new Error("admitted command attempted a second runtime admission");
             }
             await finished.completion;
           });
-          switch (commandResult.admission.kind) {
+          switch (admission.kind) {
             case "handoff": return runtimeAdmission.handoff(completion);
             case "busy": return runtimeAdmission.busy(completion);
             case "fenced": return runtimeAdmission.fenced(completion);
-            case "rejected": return runtimeAdmission.rejected(completion);
             case "completed": return completed(completion);
           }
         }

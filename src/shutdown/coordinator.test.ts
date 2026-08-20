@@ -327,4 +327,35 @@ describe("UpdateGate", () => {
     expect(gate.closeAdmission()).toBe(first);
     await first;
   });
+
+  it("does not hang the drain on a rejected admission with a never-resolving completion", async () => {
+    // Regression: a rejected admission whose completion never settles must
+    // not block the gate drain. The gate branches on rejection and does not
+    // await the completion (decision 0046).
+    const gate = makeGate();
+    const boundary = gate.runUpdate(() => ({
+      kind: "rejected" as const,
+      completion: new Promise<unknown>(() => {}),
+    }));
+    await expect(boundary).resolves.toBeUndefined();
+    await gate.runtimeAdmission();
+    await gate.closeAdmission();
+  });
+
+  it("does not hang the drain on a rejected transferred decision", async () => {
+    const gate = makeGate();
+    let claim!: UpdateClaim<void>;
+    const boundary = gate.runUpdate<void>((ownedClaim) => {
+      claim = ownedClaim;
+      return gate.transferUpdate(ownedClaim);
+    });
+    await Promise.resolve();
+    gate.settleTransferred([claim], {
+      kind: "rejected",
+      completion: new Promise<void>(() => {}),
+    });
+    await expect(boundary).resolves.toBeUndefined();
+    await gate.runtimeAdmission();
+    await gate.closeAdmission();
+  });
 });

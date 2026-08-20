@@ -423,7 +423,11 @@ export class TurnDispatcher {
 
   /** Return the current runtime, or prepare and atomically commit one generation. */
   async getOrCreateRunner(session: ConversationState, surface: Surface): Promise<AgentRunner> {
-    return await this.admitGetOrCreateRunner(session, surface).completion;
+    const admission = this.admitGetOrCreateRunner(session, surface);
+    if (admission.kind === "rejected") {
+      throw new Error("runtime admission rejected: admission is closed");
+    }
+    return await admission.completion;
   }
 
   /**
@@ -437,11 +441,13 @@ export class TurnDispatcher {
   ): RuntimeAdmissionResult<AgentRunner> {
     // Runtime closure is the owner's generic rejected result, not a
     // failed-before-decision exception (decision 0046). Check openness
-    // synchronously and map to runtimeAdmission.rejected().
+    // synchronously and map to runtimeAdmission.rejected(). The completion
+    // settles immediately: callers branch on rejection before consuming the
+    // value, and the gate does not await a rejected completion, so a
+    // never-resolving promise would hang the shutdown drain without anyone
+    // ever reading its value.
     if (!this.runtimeHost.isAdmissionOpen()) {
-      // The completion of a rejected admission is never consumed for its
-      // value; use a never-resolving promise to make that explicit.
-      return runtimeAdmission.rejected(new Promise<AgentRunner>(() => {}));
+      return runtimeAdmission.rejected(undefined as unknown as AgentRunner);
     }
     try {
       if (this.runtimeHost.isInternalRuntime(session.id)) {
@@ -780,20 +786,28 @@ export class TurnDispatcher {
   }
 
   /**
-   * Classify whether runtime or delegated work is admitted for a conversation.
+   * Atomically classify and start runtime or delegated work for a conversation.
    * The structural decision (handoff/rejected) is owned by the runtime host;
-   * callers attach completion work and reply delivery. This is the
-   * classification boundary for operations that perform runtime or delegated
-   * work but do not acquire a runner through the normal prompt path
-   * (e.g. /cancel interrupts, /cancel_subagent delegated cancellations).
-   * Commands map the result kind and attach reply delivery; they do not
-   * invent admission classifications (decision 0046).
+   * callers pass a closed work intent and attach reply delivery to the
+   * resulting completion. This is the classification boundary for operations
+   * that perform runtime or delegated work but do not acquire a runner through
+   * the normal prompt path (e.g. /cancel interrupts, /cancel_subagent
+   * delegated cancellations). Commands map the result kind and attach reply
+   * delivery; they do not invent admission classifications (decision 0046).
+   *
+   * The work callback is invoked synchronously inside this method when
+   * admission is open, so the structural decision and the start of work are
+   * one atomic step. A rejected admission does not invoke the callback — no
+   * cancellation or runner work may start from a closed gate. The rejected
+   * completion settles immediately so the gate drain cannot hang.
    */
-  admitRuntimeWork(): RuntimeAdmissionResult<void> {
+  admitRuntimeWork<T>(
+    work: () => Promise<T>,
+  ): RuntimeAdmissionResult<T> {
     if (!this.runtimeHost.isAdmissionOpen()) {
-      return runtimeAdmission.rejected(new Promise<void>(() => {}));
+      return runtimeAdmission.rejected(undefined as unknown as T);
     }
-    return runtimeAdmission.handoff(undefined);
+    return runtimeAdmission.handoff(work());
   }
 
   /**
@@ -825,6 +839,11 @@ export class TurnDispatcher {
   /**
    * Invalidation is synchronous inside the runtime host; cleanup remains the
    * separately-lived completion of the resulting handoff decision.
+   *
+   * Calls `runtimeHost.disposeRuntime` directly rather than the `async
+   * disposeRunner` wrapper so a synchronous host failure is caught by the
+   * try/catch and classified as failed-before-decision, not misclassified as
+   * handoff with a rejecting completion.
    */
   admitDisposeRunner(
     sessionId: string,
@@ -833,7 +852,10 @@ export class TurnDispatcher {
   ): RuntimeAdmissionResult<void> {
     try {
       return runtimeAdmission.handoff(
-        this.disposeRunner(sessionId, preserveInFlight, options),
+        this.runtimeHost.disposeRuntime(sessionId, {
+          ...options,
+          preserveInFlight,
+        }),
       );
     } catch (error) {
       throw new RuntimeAdmissionFailedBeforeDecisionError(error);

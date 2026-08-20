@@ -270,12 +270,32 @@ export class UpdateGate {
         switch (terminal.kind) {
           case "closed": return undefined;
           case "failed-before-decision": throw terminal.error;
-          case "decision": return await terminal.decision.completion;
+          case "decision":
+            // A rejected transferred decision is terminal: do not await its
+            // completion. Suppress unhandled rejections from any detached
+            // side effects (decision 0046).
+            if (terminal.decision.kind === "rejected") {
+              void terminal.decision.completion.catch(() => {});
+              return undefined;
+            }
+            return await terminal.decision.completion;
         }
       }
 
       const admissionResult = outcome as AdmissionResult<T>;
       this.settleClaim(state, { kind: "decision", decision: admissionResult });
+      // A rejected admission is a terminal structural decision: its completion
+      // is not consumed for a value and must not block the gate drain. The
+      // rejected completion settles on its own; awaiting it here would hang
+      // shutdown if a caller passed a never-resolving promise, and consuming
+      // its value would violate the rejection contract (decision 0046).
+      // The completion may still carry detached side effects (e.g. /revive's
+      // failure reply delivery); suppress unhandled rejections without
+      // awaiting, so a slow or failing delivery does not block the drain.
+      if (admissionResult.kind === "rejected") {
+        void admissionResult.completion.catch(() => {});
+        return undefined;
+      }
       return await admissionResult.completion;
     })();
 

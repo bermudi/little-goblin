@@ -2190,6 +2190,39 @@ describe("createMessageBuffer factory", () => {
     errorSpy.mockRestore();
   });
 
+  it("handles unknown commands locally for an active conversation without prompting the runner", async () => {
+    // Decision 0046: unknown commands are adapter-owned completions, not
+    // runtime work. An active conversation must not route /unknown to the
+    // model as an ordinary prompt.
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    await completeAdmission(intake.handleText(message, "/new"));
+
+    const admission = await intake.handleText(message, "/unknown");
+    expect(admission.kind).toBe("completed");
+    await admission.completion;
+    expect(replies.at(-1)).toBe("`[info]` Unknown command\\. Use /help to see available commands\\.");
+  });
+
+  it("sends an error reply when a side-effect completion fails after /new", async () => {
+    // Regression: if /new creates a durable conversation but runner
+    // preparation rejects, the user must still receive an error reply.
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const failure = new Error("runner preparation failed");
+    const admit = spyOn(intake.dispatcher, "admitGetOrCreateRunner").mockReturnValue(
+      runtimeAdmission.handoff(Promise.reject(failure)),
+    );
+
+    const admission = await intake.handleText(message, "/new");
+    expect(admission.kind).toBe("handoff");
+    await expect(admission.completion).rejects.toBe(failure);
+    expect(replies.at(-1)).toBe("`[error]` Something went wrong\\. Please try again\\.");
+    admit.mockRestore();
+  });
+
   it("operates without a MetricsStore when no Conversation exists", async () => {
     const cfg = makeConfig();
     const bot = fakeBot();

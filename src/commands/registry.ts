@@ -169,6 +169,16 @@ function replied(reply: string, sideEffects: SideEffect[] = [], tag?: SystemTag)
   return { kind: "replied", reply, sideEffects, tag };
 }
 
+/**
+ * A rejected command admission carries no reply and no side effects. The
+ * cancel/cancel_subagent handlers map the rejected completion to this no-op
+ * result so `finishCommand` processes a valid `CommandCompletionResult`
+ * without sending a reply or starting follow-on work (decision 0046).
+ */
+function noopCommandCompletion(): CommandCompletionResult {
+  return { kind: "handled", sideEffects: [] };
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -193,12 +203,11 @@ const cancelHandler: CommandHandler = async ({ deps, conversation, existingRunne
   // that has scheduled but not yet started), cancel it first so the reply
   // reflects the work that was actually stopped.
   //
-  // The admission classification is owned by the dispatcher (runtime host);
-  // the command maps the result and attaches reply delivery (decision 0046).
-  const admission = deps.dispatcher
-    ? deps.dispatcher.admitRuntimeWork()
-    : runtimeAdmission.handoff(undefined);
-  const completion = (async (): Promise<CommandCompletionResult> => {
+  // The admission classification and the start of cancellation work are one
+  // atomic step: admitRuntimeWork invokes the callback synchronously when
+  // admission is open, and does not invoke it when rejected. A rejected
+  // admission starts no cancellation dependency (decision 0046).
+  const runCancellation = async (): Promise<CommandCompletionResult> => {
     const cancelledPending = conversation
       ? await deps.dispatcher?.cancelPending(conversation.id)
       : false;
@@ -219,12 +228,20 @@ const cancelHandler: CommandHandler = async ({ deps, conversation, existingRunne
       cascade,
       cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS,
     }), [], tag);
-  })();
+  };
+  const admission = deps.dispatcher
+    ? deps.dispatcher.admitRuntimeWork(runCancellation)
+    : runtimeAdmission.handoff(runCancellation());
   switch (admission.kind) {
-    case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(completion) };
-    case "busy": return { kind: "admission", admission: runtimeAdmission.busy(completion) };
-    case "fenced": return { kind: "admission", admission: runtimeAdmission.fenced(completion) };
-    case "rejected": return { kind: "admission", admission: runtimeAdmission.rejected(completion) };
+    case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(admission.completion) };
+    case "busy": return { kind: "admission", admission: runtimeAdmission.busy(admission.completion) };
+    case "fenced": return { kind: "admission", admission: runtimeAdmission.fenced(admission.completion) };
+    case "rejected": return {
+      kind: "admission",
+      admission: runtimeAdmission.rejected(
+        admission.completion.then(noopCommandCompletion, noopCommandCompletion),
+      ),
+    };
   }
 };
 
@@ -446,10 +463,10 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversati
   if (conversation === null) return replied("No active conversation.", [], "info");
   // Delegated cancellation is classified by the dispatcher (runtime host);
   // the command maps the result and attaches reply delivery (decision 0046).
-  const admission = deps.dispatcher
-    ? deps.dispatcher.admitRuntimeWork()
-    : runtimeAdmission.handoff(undefined);
-  const completion = deps.subagentRunner.cancel(id, conversation.id).then(
+  // admitRuntimeWork invokes the callback synchronously when admission is
+  // open and does not invoke it when rejected, so a closed gate starts no
+  // subagent cancellation.
+  const runCancellation = () => deps.subagentRunner.cancel(id, conversation.id).then(
     () => replied(`Cancelled subagent \`${id}\`.`, [], "ok"),
     (err: unknown) => {
       const message = errorMessage(err);
@@ -457,11 +474,19 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversati
       return replied(`Failed to cancel subagent \`${id}\`: ${message}`, [], "error");
     },
   );
+  const admission = deps.dispatcher
+    ? deps.dispatcher.admitRuntimeWork(runCancellation)
+    : runtimeAdmission.handoff(runCancellation());
   switch (admission.kind) {
-    case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(completion) };
-    case "busy": return { kind: "admission", admission: runtimeAdmission.busy(completion) };
-    case "fenced": return { kind: "admission", admission: runtimeAdmission.fenced(completion) };
-    case "rejected": return { kind: "admission", admission: runtimeAdmission.rejected(completion) };
+    case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(admission.completion) };
+    case "busy": return { kind: "admission", admission: runtimeAdmission.busy(admission.completion) };
+    case "fenced": return { kind: "admission", admission: runtimeAdmission.fenced(admission.completion) };
+    case "rejected": return {
+      kind: "admission",
+      admission: runtimeAdmission.rejected(
+        admission.completion.then(noopCommandCompletion, noopCommandCompletion),
+      ),
+    };
   }
 };
 

@@ -28,6 +28,7 @@ import type { GenericSubagentInheritance } from "../subagents/mod.ts";
 import { DelegatedWorkHost, type ConversationRuntimeId } from "../delegated-work/mod.ts";
 import { ShutdownCoordinator, UpdateGate } from "../shutdown/mod.ts";
 import { BindingFencedError } from "./conversation-lifecycle.ts";
+import { RuntimeAdmissionFailedBeforeDecisionError } from "./dispatcher.ts";
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs = 1_000): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1731,5 +1732,148 @@ describe("TurnDispatcher async runner creation", () => {
 
     expect(fakeRunner.disposeCalled).toBe(true);
     expect(delegatedWorkHost.invalidateRuntimeCalls).toHaveLength(1);
+  });
+});
+
+describe("TurnDispatcher rejected admission settlement", () => {
+  let tmpDir: string;
+  let memoryStore: MemoryStore;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "goblin-dispatch-reject-"));
+    mkdirSync(join(tmpDir, "workspace"), { recursive: true });
+    writeFileSync(join(tmpDir, "workspace", "SOUL.md"), "prepared runtime test identity\n", "utf-8");
+    memoryStore = new MemoryStore(tmpDir);
+  });
+
+  afterEach(() => {
+    memoryStore.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function buildDispatcher(): {
+    dispatcher: TurnDispatcher;
+    runtimeHost: ConversationRuntimeHost;
+  } {
+    const delegatedWorkHost = new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost;
+    const runtimeHost = new ConversationRuntimeHost({ delegatedWorkHost });
+    const subagentRunner = new FakeSubagentRunner();
+    const surfaceSettings: SurfaceSettings = {
+      effectiveEnvironment: (_surface: Surface) => personalEnvironment(),
+      getRuntimeSettings: () => ({
+        executionEnvironment: personalEnvironment(),
+        modelName: undefined,
+        thinkingLevel: undefined,
+        skillPolicy: DEFAULT_SKILL_POLICY,
+        fingerprint: JSON.stringify({ environment: personalEnvironment(), policy: DEFAULT_SKILL_POLICY }),
+      }),
+      getModelName: () => undefined,
+      setModelName: () => {},
+      getThinkingLevel: () => undefined,
+      setThinkingLevel: () => {},
+      setPreferences: () => {},
+      getSkillPolicy: () => DEFAULT_SKILL_POLICY,
+    };
+    const dispatcher = new TurnDispatcher({
+      cfg: {
+        botToken: "test-token",
+        allowedTgUserIds: new Set([1]),
+        modelName: "poe/TestModel",
+        poeApiKey: "test-key",
+        openrouterApiKey: "test-key",
+        openaiApiKey: "test-key",
+        anthropicApiKey: "test-key",
+        goblinHome: tmpDir,
+        logLevel: "error",
+        toolVisibility: "standard",
+        voiceName: "en-US-AriaNeural",
+        favorites: [],
+      },
+      surfaceSettings,
+      subagentRunner: subagentRunner as unknown as SubagentRunner,
+      memoryStore,
+      runtimeHost,
+      createMessageBuffer: (_surface: Surface, _session?: ConversationState): TurnSink => ({
+        onTextDelta: () => {},
+        onToolStart: () => {},
+        onToolEnd: () => {},
+        onStatusUpdate: () => {},
+        onMessageStart: () => {},
+        onMessageEnd: () => {},
+        onAgentEnd: () => {},
+      }),
+      createBetaTools: (_surface: Surface) => [],
+      createAgentRunner: (o) => {
+        const plan = o.plan;
+        if (plan === undefined) throw new Error("expected a prepared Surface runtime plan");
+        const runner = new FakeAgentRunner();
+        runner.memoryContext = plan.memoryContext;
+        return runner as unknown as AgentRunner;
+      },
+      surfaceRuntimeAuthority: permissiveRuntimeAuthority(),
+    });
+    return { dispatcher, runtimeHost };
+  }
+
+  it("admitRuntimeWork does not invoke the work callback when admission is closed", async () => {
+    const { dispatcher, runtimeHost } = buildDispatcher();
+    await runtimeHost.disposeAll();
+
+    let workCalled = false;
+    const admission = dispatcher.admitRuntimeWork(async () => {
+      workCalled = true;
+      return "result" as unknown as void;
+    });
+
+    expect(admission.kind).toBe("rejected");
+    expect(workCalled).toBe(false);
+    // The rejected completion settles rather than hanging.
+    await expect(admission.completion).resolves.toBeUndefined();
+  });
+
+  it("admitRuntimeWork invokes the work callback when admission is open", async () => {
+    const { dispatcher } = buildDispatcher();
+
+    let workCalled = false;
+    const admission = dispatcher.admitRuntimeWork(async () => {
+      workCalled = true;
+    });
+
+    expect(admission.kind).toBe("handoff");
+    expect(workCalled).toBe(true);
+    await admission.completion;
+  });
+
+  it("admitGetOrCreateRunner rejected completion settles and getOrCreateRunner throws", async () => {
+    const { dispatcher, runtimeHost } = buildDispatcher();
+    await runtimeHost.disposeAll();
+
+    const session = makeSession("abc123def0");
+    const admission = dispatcher.admitGetOrCreateRunner(session, dmSurface(1));
+    expect(admission.kind).toBe("rejected");
+    // The rejected completion settles rather than hanging.
+    await expect(admission.completion).resolves.toBeUndefined();
+
+    // The non-admission API throws explicitly instead of returning undefined.
+    await expect(dispatcher.getOrCreateRunner(session, dmSurface(1))).rejects.toThrow(
+      "runtime admission rejected: admission is closed",
+    );
+  });
+
+  it("admitDisposeRunner classifies a synchronous host failure as failed-before-decision", async () => {
+    const { dispatcher, runtimeHost } = buildDispatcher();
+    const session = makeSession("abc123def0");
+    // Register a runner so disposeRuntime has something to invalidate.
+    await dispatcher.getOrCreateRunner(session, dmSurface(1));
+
+    // Replace the host's disposeRuntime with one that throws synchronously.
+    const syncError = new Error("synchronous host failure");
+    (runtimeHost as unknown as { disposeRuntime: unknown }).disposeRuntime = () => {
+      throw syncError;
+    };
+
+    expect(() => dispatcher.admitDisposeRunner(session.id)).toThrow(
+      RuntimeAdmissionFailedBeforeDecisionError,
+    );
   });
 });

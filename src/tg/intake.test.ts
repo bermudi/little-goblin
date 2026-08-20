@@ -13,7 +13,8 @@ import { ConversationStore } from "../sessions/conversation-store.ts";
 import type { ConversationState } from "../sessions/types.ts";
 import { InternalSessionStore } from "../sessions/internal-session-store.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
-import { dmSurface, guestSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
+import { dmSurface, guestSurface, surfaceId, supergroupSurface, topicSurface, type Surface } from "../surface.ts";
+import { appendAssistantTranscriptEntry } from "../sessions/transcript.ts";
 import { metricsPath, transcriptPath } from "../sessions/paths.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
@@ -2281,5 +2282,76 @@ describe("createMessageBuffer factory", () => {
 
     expect(intake.lifecycle.inspect(dmSurface(1))?.id).toBe(target.id);
     expect(existsSync(join(cfg.goblinHome, "state/sessions", target.id))).toBe(true);
+  });
+
+  it("handles unknown commands locally on active topic and supergroup surfaces", async () => {
+    // Decision 0046: unknown commands are adapter-owned completions on every
+    // reply-capable active surface, not just DMs.
+    const { intake } = makeHarness();
+    const topicReplies: string[] = [];
+    const supergroupReplies: string[] = [];
+    const topicMessage = makeMessage(topicReplies, { surface: topicSurface("supergroup", 1, 42) });
+    const supergroupMessage = makeMessage(supergroupReplies, { surface: supergroupSurface(2) });
+
+    await completeAdmission(intake.handleText(topicMessage, "/new"));
+    await completeAdmission(intake.handleText(supergroupMessage, "/new"));
+
+    const topicAdmission = await intake.handleText(topicMessage, "/unknown");
+    const supergroupAdmission = await intake.handleText(supergroupMessage, "/unknown");
+    expect(topicAdmission.kind).toBe("completed");
+    expect(supergroupAdmission.kind).toBe("completed");
+    await topicAdmission.completion;
+    await supergroupAdmission.completion;
+
+    expect(topicReplies.at(-1)).toBe("`[info]` Unknown command\\. Use /help to see available commands\\.");
+    expect(supergroupReplies.at(-1)).toBe("`[info]` Unknown command\\. Use /help to see available commands\\.");
+  });
+
+  it("does not record a /new runner-preparation error to the displaced conversation", async () => {
+    // Regression: when /new rotates an existing conversation but runner
+    // preparation rejects, the user-visible error reply must not be appended
+    // to the old resumable conversation; the authoritative post-command
+    // target (the new Conversation) is used, or no transcript is recorded.
+    const { cfg, intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
+
+    await completeAdmission(intake.handleText(message, "/new"));
+    const firstConversation = intake.lifecycle.inspect(dmSurface(1))!;
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isPrompting);
+    runners[0]!.markAbortTimedOut();
+
+    appendAssistantTranscriptEntry(
+      firstConversation.id,
+      cfg.goblinHome,
+      "existing",
+      { kind: "surface", sourceSurfaceId: surfaceId(dmSurface(1)) },
+    );
+
+    const failure = new Error("runner preparation failed");
+    const admit = spyOn(intake.dispatcher, "admitGetOrCreateRunner").mockReturnValue(
+      runtimeAdmission.handoff(Promise.reject(failure)),
+    );
+
+    const admission = await intake.handleText(message, "/new");
+    expect(admission.kind).toBe("handoff");
+    await expect(admission.completion).rejects.toBe(failure);
+    expect(replies.at(-1)).toBe("`[error]` Something went wrong\\. Please try again\\.");
+    admit.mockRestore();
+
+    const oldLines = readTranscriptLines(cfg.goblinHome, firstConversation.id);
+    expect(oldLines).toHaveLength(1);
+    expect((oldLines[0] as { content?: unknown }).content).toBe("[system] existing");
+
+    const newConversation = intake.lifecycle.inspect(dmSurface(1))!;
+    expect(newConversation.id).not.toBe(firstConversation.id);
+    const newLines = readTranscriptLines(cfg.goblinHome, newConversation.id);
+    expect(newLines).toHaveLength(0);
+
+    pending.resolve();
+    await flushMicrotasks();
   });
 });

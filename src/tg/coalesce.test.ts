@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn, vi } from "bun:test";
 import {
   MAX_FRAGMENTS,
   MAX_TOTAL_CHARS,
@@ -10,6 +10,7 @@ import {
   type CoalesceKey,
 } from "./coalesce.ts";
 import { dmSurface, surfaceId, topicSurface } from "../surface.ts";
+import { log } from "../log.ts";
 import type { PromptContent } from "./intake.ts";
 import type { TelegramIntakeMessage } from "./intake.ts";
 import { completed, runtimeAdmission, UpdateGate, type AdmissionResult } from "../shutdown/mod.ts";
@@ -455,6 +456,88 @@ describe("TextCoalescer — commands", () => {
     // Gate close drains the detached boundary. The completion failure is
     // retained in the gate and surfaces as a closeAdmission rejection.
     await expect(gate.closeAdmission()).rejects.toBe(failure);
+  });
+
+  it("retains one detached failure per merged group, not one per fragment", async () => {
+    const failure = new Error("admitted text failed");
+    const dispatch = mock<CoalesceDispatch>(() =>
+      Promise.resolve(runtimeAdmission.handoff(Promise.reject(failure)))
+    );
+    let coalescer!: TextCoalescer;
+    const gate = new UpdateGate({
+      closeCoalescer: async () => { await coalescer.close(); },
+      awaitBufferedTextAdmission: async () => { await coalescer.bufferedTextAdmission(); },
+    });
+    coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch, gate });
+
+    for (const messageId of [1, 2, 3]) {
+      const ctx = { messageId };
+      await gate.runAuthorization(ctx, async () => {
+        gate.commitAuthorization(ctx);
+        await gate.runCoalescedUpdate<void>(ctx, (claim) =>
+          coalescer.submit(
+            makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageId, messageIdFor: messageId }),
+            claim,
+          ),
+        );
+      });
+    }
+
+    vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS);
+    // Without per-group deduplication, three fragments would yield an
+    // AggregateError of three identical failures. With deduplication, the
+    // merged group contributes exactly one.
+    await expect(gate.closeAdmission()).rejects.toBe(failure);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds detached failure retention and reports the total at close", async () => {
+    const logSpy = spyOn(log, "error").mockImplementation(() => {});
+    const errorCount = 105;
+    const errors = Array.from({ length: errorCount }, (_, i) => new Error(`detached ${i}`));
+    let dispatchIndex = 0;
+    const dispatch = mock<CoalesceDispatch>(() => {
+      const failure = errors[dispatchIndex++]!;
+      return Promise.resolve(runtimeAdmission.handoff(Promise.reject(failure)));
+    });
+    let coalescer!: TextCoalescer;
+    const gate = new UpdateGate({
+      closeCoalescer: async () => { await coalescer.close(); },
+      awaitBufferedTextAdmission: async () => { await coalescer.bufferedTextAdmission(); },
+    });
+    coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch, gate });
+
+    for (let i = 0; i < errorCount; i++) {
+      const ctx = { id: i };
+      const key: CoalesceKey = { surfaceId: surfaceId(dmSurface(1)), fromUserId: i + 1000 };
+      const text = String(i).padEnd(TEXT_SPLIT_THRESHOLD, "x");
+      await gate.runAuthorization(ctx, async () => {
+        gate.commitAuthorization(ctx);
+        await gate.runCoalescedUpdate<void>(ctx, (claim) =>
+          coalescer.submit(
+            makeInput(text, { messageId: i + 1, messageIdFor: i + 1, key }),
+            claim,
+          ),
+        );
+      });
+    }
+
+    let thrown: unknown;
+    try {
+      await gate.closeAdmission();
+    } catch (reason) {
+      thrown = reason;
+    }
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors.length).toBe(100);
+
+    const drainLog = logSpy.mock.calls.find(
+      (call) => call[0] === "detached Telegram update boundaries failed",
+    );
+    expect(drainLog).toBeDefined();
+    expect((drainLog![1] as { retained: number; total: number }).retained).toBe(100);
+    expect((drainLog![1] as { retained: number; total: number }).total).toBe(errorCount);
+    logSpy.mockRestore();
   });
 });
 

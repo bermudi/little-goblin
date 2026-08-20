@@ -8,7 +8,12 @@ import { AgentRunner, appendAssistantTranscriptEntry, ModelNotCapableError } fro
 import { resolveModel, type ResolvedModel } from "../agent/models.ts";
 import { handleCommand, type DispatchDeps } from "../commands/dispatch.ts";
 import { parseCommand } from "../commands/parse.ts";
-import { resolveCommand, resolveTiming, type SideEffect } from "../commands/registry.ts";
+import {
+  resolveCommand,
+  resolveTiming,
+  type CommandCompletionResult,
+  type SideEffect,
+} from "../commands/registry.ts";
 import { interruptAndCascade } from "../interrupt.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { type ConversationState } from "../sessions/mod.ts";
@@ -517,17 +522,92 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       // Unknown commands are adapter-owned completions, not runtime work
       // (decision 0046). Handle locally for both active and inactive
       // conversations: no runner is prompted and no model turn starts.
-      const delivery = surface.kind === "dm"
-        ? existingConversation
+      const delivery = surface.kind === "guest"
+        ? Promise.resolve()
+        : existingConversation
           ? sendSystemReply(message, "Unknown command. Use /help to see available commands.", "info")
-          : replyNoActiveSession(message, surface, "text")
-        : Promise.resolve();
+          : surface.kind === "dm"
+            ? replyNoActiveSession(message, surface, "text")
+            : Promise.resolve();
       return completed(delivery);
     }
 
     if (command !== null) {
       const session = existingConversation ?? null;
       const existingRunner = session ? dispatcher.getRunner(session.id) : null;
+
+      function getSideEffectWriter(
+        sideEffects: SideEffect[],
+      ): { conversation: ConversationState; runner: AgentRunner | null } | null {
+        for (let index = sideEffects.length - 1; index >= 0; index--) {
+          const effect = sideEffects[index]!;
+          if (effect.kind === "runner-created") {
+            return { conversation: effect.conversation, runner: dispatcher.getRunner(effect.conversation.id) };
+          }
+        }
+        return null;
+      }
+
+      const finishCommand = async (
+        result: CommandCompletionResult,
+        opts?: { skipSideEffects?: boolean },
+      ): Promise<AdmissionResult<void>> => {
+        if (result.kind === "fallthrough") return completed(undefined);
+        const sideEffectAdmission = opts?.skipSideEffects
+          ? null
+          : await applySideEffects(result.sideEffects, message);
+        const queueRejected = sideEffectAdmission?.kind === "rejected" &&
+          result.sideEffects.some((effect) => effect.kind === "queue-prompt");
+        const delivery = sideEffectAdmission?.completion.then(
+          async () => {
+            if (queueRejected) {
+              await sendSystemReply(
+                message,
+                "Queued prompt was dropped: shutdown in progress.",
+                "error",
+              );
+              return;
+            }
+            if (result.kind === "replied") {
+              await sendSystemReply(message, result.reply, result.tag ?? "ok");
+            }
+          },
+          async (err: unknown) => {
+            // A side-effect completion failure (e.g. runner preparation
+            // rejected after /new created a durable conversation) must still
+            // produce a user-visible error reply. The structural decision
+            // was already recorded; rethrowing propagates the completion
+            // failure without rewriting it (decision 0046).
+            log.error("command side-effect completion failed", {
+              error: String(err),
+              command,
+              sessionId: session?.id,
+            });
+            const replyText = "Something went wrong. Please try again.";
+            await sendSystemReply(message, replyText, "error");
+            const writer = getSideEffectWriter(result.sideEffects) ??
+              (session ? { conversation: session, runner: existingRunner } : null);
+            if (writer?.runner) {
+              recordAssistantReply(writer.conversation.id, surface, writer.runner, replyText);
+            }
+            throw err;
+          },
+        ) ?? (
+          result.kind === "replied"
+            ? sendSystemReply(message, result.reply, result.tag ?? "ok")
+            : Promise.resolve()
+        );
+        if (sideEffectAdmission !== null) {
+          switch (sideEffectAdmission.kind) {
+            case "handoff": return runtimeAdmission.handoff(delivery);
+            case "busy": return runtimeAdmission.busy(delivery);
+            case "fenced": return runtimeAdmission.fenced(delivery);
+            case "rejected": return runtimeAdmission.rejected(delivery);
+          }
+        }
+        return completed(delivery);
+      };
+
       const timing = resolveTiming(def, rawText ?? "");
       const runnerIsWedged = existingRunner?.isAbortTimedOut === true;
       if (timing === "queue" && session && runnerIsWedged && !def?.mayRecoverWedgedRuntime) {
@@ -553,6 +633,37 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         return runtimeAdmission.handoff(completion);
       }
 
+      if (recoverWedgedRuntime) {
+        // A wedged runtime needs a lifecycle/runtime-owned recovery admission:
+        // record the structural handoff synchronously and carry the disposal
+        // and replacement in the completion (decision 0046). Awaiting the
+        // lifecycle call directly would hold the runtime-admission drain while
+        // disposal runs, so recovery is wrapped in admitRuntimeWork.
+        return dispatcher.admitRuntimeWork(async () => {
+          const commandResult = await handleCommand({
+            command,
+            deps: dispatchDeps,
+            rawText: rawText ?? "",
+            surface,
+            conversation: session,
+            existingRunner,
+            bot,
+          });
+          if (commandResult.kind === "fallthrough") return;
+          if (commandResult.kind === "admission") {
+            const resolved = await commandResult.admission.completion;
+            const finished = await finishCommand(
+              resolved,
+              commandResult.admission.kind === "rejected" ? { skipSideEffects: true } : undefined,
+            );
+            await finished.completion;
+            return;
+          }
+          const finished = await finishCommand(commandResult);
+          await finished.completion;
+        });
+      }
+
       try {
         const commandResult = await handleCommand({
           command,
@@ -563,61 +674,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           existingRunner,
           bot,
         });
-        const finishCommand = async (
-          result: Exclude<typeof commandResult, { kind: "admission" }>,
-          opts?: { skipSideEffects?: boolean },
-        ): Promise<AdmissionResult<void>> => {
-          if (result.kind === "fallthrough") return completed(undefined);
-          const sideEffectAdmission = opts?.skipSideEffects
-            ? null
-            : await applySideEffects(result.sideEffects, message);
-          const queueRejected = sideEffectAdmission?.kind === "rejected" &&
-            result.sideEffects.some((effect) => effect.kind === "queue-prompt");
-          const delivery = sideEffectAdmission?.completion.then(
-            async () => {
-              if (queueRejected) {
-                await sendSystemReply(
-                  message,
-                  "Queued prompt was dropped: shutdown in progress.",
-                  "error",
-                );
-                return;
-              }
-              if (result.kind === "replied") {
-                await sendSystemReply(message, result.reply, result.tag ?? "ok");
-              }
-            },
-            async (err: unknown) => {
-              // A side-effect completion failure (e.g. runner preparation
-              // rejected after /new created a durable conversation) must still
-              // produce a user-visible error reply. The structural decision
-              // was already recorded; rethrowing propagates the completion
-              // failure without rewriting it (decision 0046).
-              log.error("command side-effect completion failed", {
-                error: String(err),
-                command,
-                sessionId: session?.id,
-              });
-              const replyText = "Something went wrong. Please try again.";
-              await sendSystemReply(message, replyText, "error");
-              if (session) recordAssistantReply(session.id, surface, existingRunner, replyText);
-              throw err;
-            },
-          ) ?? (
-            result.kind === "replied"
-              ? sendSystemReply(message, result.reply, result.tag ?? "ok")
-              : Promise.resolve()
-          );
-          if (sideEffectAdmission !== null) {
-            switch (sideEffectAdmission.kind) {
-              case "handoff": return runtimeAdmission.handoff(delivery);
-              case "busy": return runtimeAdmission.busy(delivery);
-              case "fenced": return runtimeAdmission.fenced(delivery);
-              case "rejected": return runtimeAdmission.rejected(delivery);
-            }
-          }
-          return completed(delivery);
-        };
         if (commandResult.kind === "admission") {
           const admission = commandResult.admission;
           if (admission.kind === "rejected") {

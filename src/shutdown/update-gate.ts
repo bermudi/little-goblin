@@ -1,5 +1,8 @@
 import { log } from "../log.ts";
 
+/** Maximum detached coalesced completion failures retained for gate close. */
+const MAX_DETACHED_FAILURES = 100;
+
 /** Structural settlement produced by the authority that attempted admission. */
 export type AdmissionKind = "handoff" | "busy" | "fenced" | "rejected" | "completed";
 
@@ -123,8 +126,15 @@ export class UpdateGate {
    * transferred claims), so without retention they would be silently
    * discarded by `Promise.allSettled` during drain. The gate retains them
    * and rejects during `drainAdmitted` so shutdown reports the failure.
+   *
+   * Retention is bounded and deduplicated: a merged group shares one
+   * underlying completion, so a single rejection must be retained once per
+   * group, not once per fragment. `detachedFailureCount` tracks the true
+   * total for observability.
    */
   private readonly detachedFailures: unknown[] = [];
+  private readonly detachedFailureSeen = new Set<unknown>();
+  private detachedFailureCount = 0;
 
   constructor(private readonly coalescerCallbacks: UpdateGateCoalescerCallbacks) {}
 
@@ -327,10 +337,20 @@ export class UpdateGate {
     });
     if (!transferred) return boundary;
     void boundary.catch((error: unknown) => {
-      // Retain the failure so drainAdmitted can reject during gate close.
-      // Without this, Promise.allSettled in the drain would discard it and
-      // shutdown would report success after admitted text failed.
+      // Rejection is an outcome independent of its reason: Promise.reject()
+      // is still a failure even though the reason may be undefined. Retain
+      // the failure so drainAdmitted can reject during gate close. A merged
+      // group shares one underlying completion, so the same failure object
+      // is observed once per fragment; deduplicate by identity and bound
+      // the buffer to restore the previous retention discipline.
+      this.detachedFailureCount++;
+      if (this.detachedFailureSeen.has(error)) return;
+      if (this.detachedFailures.length >= MAX_DETACHED_FAILURES) {
+        const removed = this.detachedFailures.shift()!;
+        this.detachedFailureSeen.delete(removed);
+      }
       this.detachedFailures.push(error);
+      this.detachedFailureSeen.add(error);
       log.error("detached Telegram update failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -519,6 +539,13 @@ export class UpdateGate {
       // whose boundaries were detached by runCoalescedUpdate.
       if (this.detachedFailures.length > 0) {
         const failures = this.detachedFailures.splice(0);
+        this.detachedFailureSeen.clear();
+        const total = this.detachedFailureCount;
+        this.detachedFailureCount = 0;
+        log.error("detached Telegram update boundaries failed", {
+          retained: failures.length,
+          total,
+        });
         throw failures.length === 1
           ? failures[0]
           : new AggregateError(failures, "detached Telegram update boundaries failed");

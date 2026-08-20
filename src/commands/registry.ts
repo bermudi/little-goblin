@@ -42,7 +42,11 @@ import {
 } from "./skills.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
-import { runtimeAdmission, type RuntimeAdmissionResult } from "../shutdown/mod.ts";
+import {
+  completed,
+  runtimeAdmission,
+  type AdmissionResult,
+} from "../shutdown/mod.ts";
 import type { SystemTag } from "../tg/format.ts";
 
 // ---------------------------------------------------------------------------
@@ -61,7 +65,7 @@ export type CommandCompletionResult =
 
 export type DispatchResult = CommandCompletionResult | {
   kind: "admission";
-  admission: RuntimeAdmissionResult<CommandCompletionResult>;
+  admission: AdmissionResult<CommandCompletionResult>;
 };
 
 export interface DispatchDeps {
@@ -238,7 +242,10 @@ const archiveHandler: CommandHandler = async ({ deps, surface, conversation: act
       archive: () => lifecycle.archive(surface),
     });
     const tag: SystemTag = result.kind === "archived" ? "ok" : "info";
-    return replied(result.reply, [], tag);
+    const sideEffects: SideEffect[] = result.kind === "archived" && activeConversation !== null
+      ? [{ kind: "runner-disposed", conversationId: activeConversation.id }]
+      : [];
+    return replied(result.reply, sideEffects, tag);
   } catch (err) {
     log.error("archive failed", { error: String(err), sessionId: activeConversation?.id });
     return replied("Failed to archive conversation. Please try again.", [], "error");
@@ -429,14 +436,15 @@ const cancelSubagentHandler: CommandHandler = async ({ deps, rawText, conversati
   const id = parseSubagentId(rawText);
   if (id === null) return replied(CANCEL_SUBAGENT_USAGE_REPLY, [], "info");
   if (conversation === null) return replied("No active conversation.", [], "info");
-  try {
-    await deps.subagentRunner.cancel(id, conversation.id);
-    return replied(`Cancelled subagent \`${id}\`.`, [], "ok");
-  } catch (err) {
-    const message = errorMessage(err);
-    log.error("cancel_subagent failed", { id, error: message });
-    return replied(`Failed to cancel subagent \`${id}\`: ${message}`, [], "error");
-  }
+  const completion = deps.subagentRunner.cancel(id, conversation.id).then(
+    () => replied(`Cancelled subagent \`${id}\`.`, [], "ok"),
+    (err: unknown) => {
+      const message = errorMessage(err);
+      log.error("cancel_subagent failed", { id, error: message });
+      return replied(`Failed to cancel subagent \`${id}\`: ${message}`, [], "error");
+    },
+  );
+  return { kind: "admission", admission: completed(completion) };
 };
 
 const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversation }) => {
@@ -479,26 +487,29 @@ const voiceHandler: CommandHandler = async ({ deps, conversation, surface, bot }
     log.error("voice dispatch bot missing");
     return replied("Voice generation failed: internal error", [], "error");
   }
-  try {
-    const voiceResult = await executeVoice({
+  const completion = executeVoice({
       home: deps.cfg.goblinHome,
       sessionId: conversation.id,
       bot,
       surface,
-    });
-    switch (voiceResult.kind) {
-      case "no-messages":
-        return replied("No messages to voice yet.", [], "info");
-      case "tts-failed":
-        log.warn("voice failed", { error: voiceResult.error, sessionId: conversation.id });
-        return replied(`Voice generation failed: ${voiceResult.error}`, [], "error");
-      case "sent":
-        return { kind: "handled", sideEffects: [] };
-    }
-  } catch (err) {
-    log.error("voice failed", { error: String(err), sessionId: conversation.id });
-    return replied(`Voice generation failed: ${errorMessage(err)}`, [], "error");
-  }
+    }).then(
+      (voiceResult): CommandCompletionResult => {
+        switch (voiceResult.kind) {
+          case "no-messages":
+            return replied("No messages to voice yet.", [], "info");
+          case "tts-failed":
+            log.warn("voice failed", { error: voiceResult.error, sessionId: conversation.id });
+            return replied(`Voice generation failed: ${voiceResult.error}`, [], "error");
+          case "sent":
+            return { kind: "handled", sideEffects: [] };
+        }
+      },
+      (err: unknown) => {
+        log.error("voice failed", { error: String(err), sessionId: conversation.id });
+        return replied(`Voice generation failed: ${errorMessage(err)}`, [], "error");
+      },
+    );
+  return { kind: "admission", admission: completed(completion) };
 };
 
 const queueHandler: CommandHandler = async ({ conversation, existingRunner, rawText, surface }) => {

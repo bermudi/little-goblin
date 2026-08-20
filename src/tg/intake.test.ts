@@ -39,6 +39,7 @@ import type { MessageBuffer } from "./mod.ts";
 import { createTelegramRuntimeAdapters } from "./runtime-adapters.ts";
 import type { GuestReplySink } from "./guest-sink.ts";
 import type { InlineQueryResult } from "@grammyjs/types";
+import { runtimeAdmission } from "../shutdown/mod.ts";
 
 class MockAgentRunner {
   static nextPrompt?: (content: unknown, buffer: unknown) => Promise<void>;
@@ -344,6 +345,14 @@ async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 8; i += 1) await Promise.resolve();
 }
 
+async function completeAdmission<T extends { completion: Promise<void> }>(
+  admissionPromise: Promise<T>,
+): Promise<T> {
+  const admission = await admissionPromise;
+  await admission.completion;
+  return admission;
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 250;
   while (!predicate()) {
@@ -387,7 +396,7 @@ describe("Telegram intake", () => {
     const replies: string[] = [];
     const message = makeMessage(replies);
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
 
     expect(conversationStore.list()).toHaveLength(1);
     expect(replies[0]).toContain("Created new conversation");
@@ -410,18 +419,19 @@ describe("Telegram intake", () => {
     const replies: string[] = [];
     const message = makeMessage(replies);
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     const firstConversation = intake.lifecycle.inspect(dmSurface(1))!;
     const firstRunner = runners[0]!;
 
     const archive = await intake.handleText(message, "/archive");
+    expect(archive.kind).toBe("handoff");
     await archive.completion;
 
     expect(firstRunner.dispose).toHaveBeenCalledTimes(1);
     expect(runtimeHost.hasRunner(firstConversation.id)).toBe(false);
     expect(replies.at(-1)).toContain("Conversation archived");
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     const secondConversation = intake.lifecycle.inspect(dmSurface(1))!;
     const secondRunner = runners.at(-1)!;
 
@@ -433,6 +443,57 @@ describe("Telegram intake", () => {
     expect(replies.at(-1)).toContain("Project assigned");
   });
 
+  it("propagates runner acquisition failure before a structural decision", async () => {
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const failure = new RuntimeAdmissionFailedBeforeDecisionError(
+      new Error("creation reservation failed"),
+    );
+    const admit = spyOn(intake.dispatcher, "admitGetOrCreateRunner").mockImplementation(() => {
+      throw failure;
+    });
+
+    await expect(intake.handleText(makeMessage(replies), "/new")).rejects.toBe(failure);
+    expect(replies).toEqual([]);
+    admit.mockRestore();
+  });
+
+  it("returns runner creation handoff before preparation completion", async () => {
+    const { intake } = makeHarness();
+    let resolveRunner!: (runner: AgentRunner) => void;
+    const pending = new Promise<AgentRunner>((resolve) => {
+      resolveRunner = resolve;
+    });
+    const admit = spyOn(intake.dispatcher, "admitGetOrCreateRunner").mockReturnValue(
+      runtimeAdmission.handoff(pending),
+    );
+
+    const admission = await intake.handleText(makeMessage(), "/new");
+    expect(admission.kind).toBe("handoff");
+    let completed = false;
+    void admission.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    resolveRunner({} as AgentRunner);
+    await admission.completion;
+    admit.mockRestore();
+  });
+
+  it("keeps a post-handoff runtime creation failure as completion failure", async () => {
+    const { intake } = makeHarness();
+    const message = makeMessage();
+    const failure = new Error("runtime creation failed");
+    const admit = spyOn(intake.dispatcher, "admitGetOrCreateRunner").mockReturnValue(
+      runtimeAdmission.handoff(Promise.reject(failure)),
+    );
+
+    const admission = await intake.handleText(message, "/new");
+    expect(admission.kind).toBe("handoff");
+    await expect(admission.completion).rejects.toBe(failure);
+    admit.mockRestore();
+  });
+
   it("queues /queue prompts behind active work at the intake seam", async () => {
     const { intake } = makeHarness();
     const replies: string[] = [];
@@ -442,7 +503,7 @@ describe("Telegram intake", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await pending.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -460,7 +521,7 @@ describe("Telegram intake", () => {
 
   it("/queue returns handoff while its acknowledgement delivery is blocked", async () => {
     const { intake } = makeHarness();
-    await intake.handleText(makeMessage(), "/new");
+    await completeAdmission(intake.handleText(makeMessage(), "/new"));
     const delivery = deferred();
     const deliveryStarted = deferred();
     const message = makeMessage([], {
@@ -486,7 +547,7 @@ describe("Telegram intake", () => {
     const { intake } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     replies.length = 0;
     const schedule = spyOn(intake.dispatcher, "schedulePrompt").mockReturnValue(false);
 
@@ -748,7 +809,7 @@ describe("Telegram intake", () => {
       return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } });
     }) as unknown as typeof fetch;
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handlePhoto(message, fakeApi(), ["small", "big"], "stale image");
     const staleRunner = runners[0]!;
 
@@ -768,7 +829,7 @@ describe("Telegram intake", () => {
     const replies: string[] = [];
     const message = makeMessage(replies);
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleDocument(message, fakeApi(), { fileId: "doc", fileName: "note.txt", caption: "read this" });
     await waitFor(() => runners[0]!.prompt.mock.calls.length === 1);
 
@@ -794,7 +855,7 @@ describe("Telegram intake", () => {
     const message = makeMessage(replies);
     globalThis.fetch = mock(async () => new Response("", { status: 404 })) as unknown as typeof fetch;
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handlePhoto(message, fakeApi(), ["file-id"], undefined);
     await flushMicrotasks();
 
@@ -840,7 +901,7 @@ describe("Telegram intake", () => {
     const message = makeMessage(replies);
     globalThis.fetch = mock(async () => new Response("", { status: 404 })) as unknown as typeof fetch;
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     const conversationCount = conversationStore.list().length;
     const conversationId = intake.lifecycle.inspect(dmSurface(1))!.id;
     const runnerCount = intake.dispatcher.hasRunner(conversationId) ? 1 : 0;
@@ -882,7 +943,7 @@ describe("Telegram intake", () => {
     MockAgentRunner.nextPrompt = async () => { await slow.promise; };
     MockAgentRunner.nextFollowUp = async () => { await steering.promise; };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -913,7 +974,7 @@ describe("Telegram intake", () => {
       throw new RunnerNotStreamingError();
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -941,7 +1002,7 @@ describe("Telegram intake", () => {
       throw new RunnerNotStreamingError();
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -966,7 +1027,7 @@ describe("Telegram intake", () => {
       throw new Error("session disposed");
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -996,7 +1057,7 @@ describe("Telegram intake", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -1026,7 +1087,7 @@ describe("Telegram intake", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
     await intake.handleText(message, "/model 1");
@@ -1052,7 +1113,7 @@ describe("Telegram intake", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -1076,7 +1137,7 @@ describe("Telegram intake", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -1101,7 +1162,7 @@ describe("Telegram intake", () => {
     const abortGate = deferred();
     MockAgentRunner.nextPrompt = async () => { await slow.promise; };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
     runners[0]!.abort.mockImplementation(async () => {
@@ -1154,7 +1215,7 @@ describe("Telegram intake", () => {
     const pending = deferred();
     MockAgentRunner.nextPrompt = async () => { await pending.promise; };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -1189,7 +1250,7 @@ describe("Telegram intake", () => {
   it("propagates revival attachment failure before any admission decision", async () => {
     const { intake } = makeHarness();
     const message = makeMessage();
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     const failure = new RuntimeAdmissionFailedBeforeDecisionError(new Error("attachment failed"));
     const admit = spyOn(intake.dispatcher, "admitReviveSubagent").mockRejectedValue(failure);
 
@@ -1201,7 +1262,7 @@ describe("Telegram intake", () => {
     const { intake } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
 
     const admission = await intake.handleText(message, "/revive missing try again");
 
@@ -1230,7 +1291,7 @@ describe("Telegram intake", () => {
     const pending = deferred();
     MockAgentRunner.nextPrompt = async () => { await pending.promise; };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     const sessionId = intake.lifecycle.inspect(message.surface!)!.id;
     const runner = runners[0]!;
     await intake.handleText(message, "slow turn");
@@ -1250,7 +1311,7 @@ describe("Telegram intake", () => {
     await compactAdmission.completion;
     expect(replies.at(-1)).toBe("`[error]` A previous turn is wedged after a failed abort\\. Use /new or /archive to recover\\.");
 
-    await intake.handleText(message, "/archive");
+    await completeAdmission(intake.handleText(message, "/archive"));
 
     expect(replies.at(-1)).toBe("`[ok]` Conversation archived\\.");
     expect(runner.dispose).toHaveBeenCalledTimes(1);
@@ -1280,7 +1341,7 @@ describe("Telegram intake", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -1312,7 +1373,7 @@ describe("Telegram intake", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -1347,7 +1408,7 @@ describe("Telegram intake", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
 
@@ -1383,7 +1444,7 @@ describe("Telegram intake", () => {
       if (order.length === 1) await pending.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     const conversation = intake.lifecycle.inspect(dmSurface(1))!;
     const dispatcher = intake.dispatcher;
 
@@ -1425,7 +1486,7 @@ describe("Telegram intake", () => {
       if (order.length === 1) await pending.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     const schedule = store.create({
       surface: dmSurface(1),
       kind: "once",
@@ -1473,7 +1534,7 @@ describe("Telegram intake", () => {
       await pending.promise; // keep the first turn in flight
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     const conversation = intake.lifecycle.inspect(dmSurface(1))!;
     const dispatcher = intake.dispatcher;
     const firstRunner = runners[0]!;
@@ -1556,7 +1617,7 @@ describe("Telegram intake", () => {
     const message = makeMessage(replies);
     installVoiceFetch({ groqText: "take out the trash" });
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
     await waitFor(() => runners[0]!.prompt.mock.calls.length === 1);
 
@@ -1576,7 +1637,7 @@ describe("Telegram intake", () => {
     const message = makeMessage(replies);
     installVoiceFetch({ groqText: "hello project" });
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, `/project ${cfg.goblinHome}`);
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
     await waitFor(() => {
@@ -1599,7 +1660,7 @@ describe("Telegram intake", () => {
     const message = makeMessage(replies);
     installVoiceFetch({});
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
     await flushMicrotasks();
 
@@ -1615,7 +1676,7 @@ describe("Telegram intake", () => {
     const message = makeMessage(replies);
     installVoiceFetch({ groqStatus: 500, groqBody: '{"error":"internal"}' });
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
     await flushMicrotasks();
 
@@ -1645,7 +1706,7 @@ describe("Telegram intake", () => {
     const message = makeMessage(replies);
     installVoiceFetch({ groqText: "   " });
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
     await flushMicrotasks();
 
@@ -1661,7 +1722,7 @@ describe("Telegram intake", () => {
     const message = makeMessage(replies);
     const stats = installVoiceFetch({ groqText: "no mime given" });
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     // No mimeType on the voice input.
     await intake.handleVoice(message, fakeApi(), { fileId: "v1" });
     await waitFor(() => runners[0]!.prompt.mock.calls.length === 1);
@@ -1687,7 +1748,7 @@ describe("Telegram intake", () => {
       return new Response(JSON.stringify({ text: "stale" }), { status: 200 });
     }) as unknown as typeof fetch;
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
     const staleRunner = runners[0]!;
 
@@ -1719,7 +1780,7 @@ describe("Telegram intake", () => {
       return new Response(JSON.stringify({ text: "stale" }), { status: 200 });
     }) as unknown as typeof fetch;
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     const project = await intake.handleText(message, `/project ${cfg.goblinHome}`);
     await project.completion;
     await intake.handleVoice(message, fakeApi(), { fileId: "v1", mimeType: "audio/ogg" });
@@ -2067,7 +2128,7 @@ describe("createMessageBuffer factory", () => {
 
     const replies: string[] = [];
     const message = makeMessage(replies);
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
 
     const conversation = intake.lifecycle.inspect(dmSurface(1));
     expect(conversation).not.toBeNull();
@@ -2170,7 +2231,7 @@ describe("createMessageBuffer factory", () => {
       if (runners[0]!.prompt.mock.calls.length === 1) await slow.promise;
     };
 
-    await intake.handleText(message, "/new");
+    await completeAdmission(intake.handleText(message, "/new"));
     await intake.handleText(message, "slow turn");
     await waitFor(() => runners[0]!.isStreaming);
 

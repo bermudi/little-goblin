@@ -336,8 +336,8 @@ describe("TextCoalescer — commands", () => {
     const decision = deferred<AdmissionResult<void>>();
     const dispatch = mock<CoalesceDispatch>(() => decision.promise);
     const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
-    await coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageId: 1 }));
-    await coalescer.submit(makeInput("tail", { messageId: 2 }));
+    const first = coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageId: 1 }));
+    const second = coalescer.submit(makeInput("tail", { messageId: 2 }));
 
     let drained = false;
     void coalescer.gate.runtimeAdmission().then(() => { drained = true; });
@@ -348,6 +348,7 @@ describe("TextCoalescer — commands", () => {
     decision.resolve(runtimeAdmission.handoff(undefined));
     await coalescer.gate.runtimeAdmission();
     expect(drained).toBe(true);
+    await Promise.all([first, second]);
     await coalescer.close();
   });
 
@@ -364,33 +365,40 @@ describe("TextCoalescer — commands", () => {
   it("fails transferred claims when a buffered result is malformed", async () => {
     const dispatch = mock<CoalesceDispatch>(async () => undefined as never);
     const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
-    await coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageId: 1 }));
+    const boundary = coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageId: 1 }));
 
     vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS);
     await coalescer.gate.runtimeAdmission();
-    await expect(coalescer.close()).rejects.toThrow(
+    await expect(boundary).rejects.toThrow(
       "without an admission decision",
     );
+    await expect(coalescer.close()).resolves.toBeUndefined();
   });
 
-  it("surfaces dispatch failures during close without swallowing them", async () => {
+  it("surfaces buffered dispatch failures through the original update boundary", async () => {
     const error = new Error("boom");
     const dispatch = mock<CoalesceDispatch>(() => Promise.reject(error));
     const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
-    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
+    const boundary = coalescer.submit(
+      makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }),
+    );
 
-    await expect(coalescer.close()).rejects.toBe(error);
+    await expect(coalescer.close()).resolves.toBeUndefined();
+    await expect(boundary).rejects.toBe(error);
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
-  it("retains a detached rejection even when its reason is undefined", async () => {
+  it("preserves an undefined rejection reason on the original update boundary", async () => {
     const dispatch = mock<CoalesceDispatch>(() => Promise.reject(undefined));
     const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
-    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
+    const boundary = coalescer.submit(
+      makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }),
+    );
 
     let rejected = false;
     try {
       await coalescer.close();
+      await boundary;
     } catch (reason) {
       rejected = true;
       expect(reason).toBeUndefined();
@@ -398,23 +406,21 @@ describe("TextCoalescer — commands", () => {
     expect(rejected).toBe(true);
   });
 
-  it("awaits a timer-flushed dispatch and shares one close promise", async () => {
+  it("flushes without owning completion and shares one close promise", async () => {
     const pending = deferred<AdmissionResult<void>>();
     const dispatch = mock<CoalesceDispatch>(() => pending.promise);
     const coalescer = testCoalescer(dispatch as unknown as CoalesceDispatch);
-    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
+    const boundary = coalescer.submit(
+      makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }),
+    );
     vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS);
 
     const firstClose = coalescer.close();
     expect(coalescer.close()).toBe(firstClose);
-    let closed = false;
-    void firstClose.then(() => { closed = true; });
-    await Promise.resolve();
-    expect(closed).toBe(false);
+    await firstClose;
 
     pending.resolve(completed(undefined));
-    await firstClose;
-    expect(closed).toBe(true);
+    await boundary;
   });
 });
 

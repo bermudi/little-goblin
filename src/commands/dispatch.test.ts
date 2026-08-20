@@ -292,11 +292,13 @@ describe("handleCommand", () => {
     expect(result.reply).toBe("Failed to reset conversation. Please try again.");
   });
 
-  it("/archive with an active conversation archives and returns no further side effects", async () => {
+  it("/archive with an active conversation reports its runtime disposal", async () => {
     const harness = makeHarness();
     const session = await createSession(harness);
     const result = expectReplied(await dispatch({ command: "/archive", session, harness }));
-    expect(result.sideEffects).toEqual([]);
+    expect(result.sideEffects).toEqual([
+      { kind: "runner-disposed", conversationId: session.id },
+    ]);
   });
 
   it("/archive without a session has no side effects", async () => {
@@ -495,12 +497,27 @@ describe("handleCommand", () => {
   });
 
   it("cancels a subagent by id", async () => {
-    const cancel = mock(async () => {});
+    const pending = deferred<void>();
+    const cancel = mock(async () => await pending.promise);
     const subagentRunner = makeSubagentRunner({ cancel });
     const harness = makeHarness(baseCascade(), subagentRunner);
     const session = await createSession(harness);
 
-    const result = expectReplied(await dispatch({ command: "/cancel_subagent", rawText: "/cancel_subagent abc", session, harness }));
+    const admission = await dispatch({
+      command: "/cancel_subagent",
+      rawText: "/cancel_subagent abc",
+      session,
+      harness,
+    });
+    expect(admission.kind).toBe("admission");
+    if (admission.kind !== "admission") throw new Error("expected local completion");
+    expect(admission.admission.kind).toBe("completed");
+    let completed = false;
+    void admission.admission.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    pending.resolve();
+    const result = expectReplied(await admission.admission.completion);
     expect(result.reply).toBe("Cancelled subagent `abc`.");
     expect(cancel).toHaveBeenCalledWith("abc", session.id);
   });
@@ -516,7 +533,16 @@ describe("handleCommand", () => {
     const harness = makeHarness(baseCascade(), subagentRunner);
     const session = await createSession(harness);
 
-    const result = expectReplied(await dispatch({ command: "/cancel_subagent", rawText: "/cancel_subagent missing", session, harness }));
+    const admission = await dispatch({
+      command: "/cancel_subagent",
+      rawText: "/cancel_subagent missing",
+      session,
+      harness,
+    });
+    expect(admission.kind).toBe("admission");
+    if (admission.kind !== "admission") throw new Error("expected local completion");
+    expect(admission.admission.kind).toBe("completed");
+    const result = expectReplied(await admission.admission.completion);
     expect(result.reply).toBe("Failed to cancel subagent `missing`: Subagent not found");
   });
 
@@ -570,7 +596,8 @@ describe("handleCommand", () => {
   it("/voice returns handled when voice is sent", async () => {
     const harness = makeHarness();
     const session = await createSession(harness);
-    const sendVoice = mock(async () => ({ message_id: 1 }));
+    const delivery = deferred<{ message_id: number }>();
+    const sendVoice = mock(async () => await delivery.promise);
     const bot = { api: { sendVoice } } as unknown as import("grammy").Bot;
     const dir = sessionDir(harness.cfg.goblinHome, session.id);
     mkdirSync(dir, { recursive: true });
@@ -587,7 +614,15 @@ describe("handleCommand", () => {
       existingRunner: null,
       bot,
     });
-    expect(result.kind).toBe("handled");
+    expect(result.kind).toBe("admission");
+    if (result.kind !== "admission") throw new Error("expected local completion");
+    expect(result.admission.kind).toBe("completed");
+    let completed = false;
+    void result.admission.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    delivery.resolve({ message_id: 1 });
+    expect((await result.admission.completion).kind).toBe("handled");
     expect(sendVoice).toHaveBeenCalled();
   }, 60_000);
 

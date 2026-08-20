@@ -47,6 +47,29 @@ import {
   savePendingProjectAssignment,
 } from "../sessions/project-assignment.ts";
 
+/** Expected authority race: the requested binding is no longer current. */
+export class BindingFencedError extends Error {
+  readonly surfaceId: SurfaceId;
+  readonly expectedConversationId: ConversationId;
+  readonly currentConversationId: string | null;
+
+  constructor(
+    requestedSurfaceId: SurfaceId,
+    expectedConversationId: ConversationId,
+    currentConversationId: string | null,
+  ) {
+    super(
+      `binding rotated: surface ${requestedSurfaceId} is bound to ${
+        currentConversationId ?? "unbound"
+      }, expected ${expectedConversationId}`,
+    );
+    this.name = "BindingFencedError";
+    this.surfaceId = requestedSurfaceId;
+    this.expectedConversationId = expectedConversationId;
+    this.currentConversationId = currentConversationId;
+  }
+}
+
 /**
  * Surface-scoped settings adapter used by the lifecycle to determine the
  * effective execution environment, model, thinking preferences, and skill
@@ -708,8 +731,10 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     const key = surfaceId(surface);
     const current = this.inspect(surface);
     if (current?.id !== conversationId) {
-      throw new Error(
-        `binding rotated: surface ${key} is bound to ${current?.id ?? "unbound"}, expected ${conversationId}`,
+      throw new BindingFencedError(
+        key,
+        conversationId as ConversationId,
+        current?.id ?? null,
       );
     }
   }

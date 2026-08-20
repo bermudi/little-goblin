@@ -579,10 +579,10 @@ describe("RuntimeMachine immediate runtime admission", () => {
     expect(await failed.settlement).toEqual({ kind: "failed", error: failure });
   });
 
-  it("returns rejected or fenced without installing work", () => {
+  it("returns closed or fenced without installing work", () => {
     const closed = makeMachine("closed", false);
     expect(closed.admitImmediateRuntimeWork(async () => ({ kind: "completed" })))
-      .toEqual({ kind: "rejected" });
+      .toEqual({ kind: "closed" });
 
     const internal = makeMachine("internal");
     internal.registerInternalRuntime(fakeRunner());

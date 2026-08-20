@@ -7,7 +7,6 @@
  * adjacent Telegram `message_id`s, trailing-debounced. Historical rationale:
  * `specs/changes/archive/2026-07-09-telegram-text-coalescing/`.
  */
-import { log } from "../log.ts";
 import type { TelegramIntakeMessage } from "./intake.ts";
 import type {
   AdmissionResult,
@@ -27,9 +26,6 @@ export const MAX_FRAGMENTS = 12;
 
 /** Hard cap on total concatenated chars; reaching it forces an immediate flush. */
 export const MAX_TOTAL_CHARS = 50_000;
-
-/** Maximum number of detached dispatch failures retained for close. */
-export const DISPATCH_FAILURE_RETENTION_CAP = 100;
 
 /** Bucket key: canonical surface identity + sender. Splits from different
  * senders, different surfaces, or different topic containers never merge. */
@@ -101,10 +97,7 @@ export class TextCoalescer {
   private readonly dispatch: CoalesceDispatch;
   private readonly gate: UpdateGate;
   private readonly buffers = new Map<string, BufferEntry>();
-  private readonly activeDispatches = new Set<Promise<void>>();
   private readonly activeBufferedAdmissions = new Set<Promise<AdmissionResult<void>>>();
-  private readonly dispatchFailures: unknown[] = [];
-  private totalDispatchFailures = 0;
   private closed = false;
   private closePromise: Promise<void> | undefined;
 
@@ -113,12 +106,11 @@ export class TextCoalescer {
     this.gate = options.gate;
   }
 
-  /** Observe a dispatch at both lifetimes: the structural result settles all
-   * buffered claims, while its completion remains drainable independently. */
+  /** Settle transferred claims at the structural decision. UpdateGate keeps
+   * every original update boundary pending through the shared completion. */
   private dispatchTracked(
     message: TelegramIntakeMessage,
     text: string,
-    detached: boolean,
     buffered: boolean,
     claims: UpdateClaim<void>[],
   ): Promise<AdmissionResult<void>> {
@@ -150,23 +142,6 @@ export class TextCoalescer {
     const settledDecision = decision.then(settleClaims, rejectClaims);
     void decision.catch(() => {});
     void settledDecision.catch(() => {});
-
-    const completion = settledDecision.then((admissionResult) => admissionResult.completion);
-    this.activeDispatches.add(completion);
-    const finish = (): void => { this.activeDispatches.delete(completion); };
-    const retainFailure = (error: unknown): void => {
-      finish();
-      if (!detached) return;
-      this.dispatchFailures.push(error);
-      this.totalDispatchFailures++;
-      if (this.dispatchFailures.length > DISPATCH_FAILURE_RETENTION_CAP) {
-        this.dispatchFailures.splice(0, this.dispatchFailures.length - DISPATCH_FAILURE_RETENTION_CAP);
-      }
-      log.error("detached coalescer dispatch failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    };
-    void completion.then(finish, retainFailure);
     return settledDecision;
   }
 
@@ -182,14 +157,14 @@ export class TextCoalescer {
     // command immediately.
     if (input.isCommand) {
       this.flush(input.key);
-      return this.dispatchTracked(input.message, input.text, false, false, []);
+      return this.dispatchTracked(input.message, input.text, false, []);
     }
 
     const entry = this.buffers.get(keyToString(input.key));
     if (entry === undefined) {
       return input.text.length >= TEXT_SPLIT_THRESHOLD
         ? this.open(input, claim)
-        : this.dispatchTracked(input.message, input.text, false, false, []);
+        : this.dispatchTracked(input.message, input.text, false, []);
     }
 
     const isAdjacent =
@@ -200,7 +175,7 @@ export class TextCoalescer {
       this.flush(input.key);
       return input.text.length >= TEXT_SPLIT_THRESHOLD
         ? this.open(input, claim)
-        : this.dispatchTracked(input.message, input.text, false, false, []);
+        : this.dispatchTracked(input.message, input.text, false, []);
     }
 
     if (
@@ -210,7 +185,7 @@ export class TextCoalescer {
       this.flush(input.key);
       return input.text.length >= TEXT_SPLIT_THRESHOLD
         ? this.open(input, claim)
-        : this.dispatchTracked(input.message, input.text, false, false, []);
+        : this.dispatchTracked(input.message, input.text, false, []);
     }
 
     clearTimeout(entry.timer);
@@ -242,11 +217,9 @@ export class TextCoalescer {
   }
 
   /**
-   * Stop accepting Telegram text and deliver the fragments already accepted
-   * into coalescing buffers exactly once. New submissions after close are
-   * rejected; buffered fragments are flushed and their dispatches awaited so
-   * shutdown never silently drops user text that was already admitted.
-   * Dispatch failures are logged, not swallowed.
+   * Stop accepting Telegram text and deliver buffered fragments exactly once.
+   * New submissions are rejected; buffered fragments are flushed while
+   * UpdateGate keeps their original boundaries pending through completion.
    */
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
@@ -260,21 +233,8 @@ export class TextCoalescer {
     for (const entry of entries) clearTimeout(entry.timer);
     this.buffers.clear();
     for (const entry of entries) {
-      void this.dispatchTracked(entry.message, entry.text, true, true, entry.claims);
+      void this.dispatchTracked(entry.message, entry.text, true, entry.claims);
     }
-
-    while (this.activeDispatches.size > 0) {
-      await Promise.allSettled([...this.activeDispatches]);
-    }
-
-    const failures = this.dispatchFailures.splice(0);
-    log.info("telegram text admission closed", {
-      bufferedFragments: entries.length,
-      dispatchFailures: failures.length,
-      totalDispatchFailures: this.totalDispatchFailures,
-    });
-    if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) throw new AggregateError(failures, "Telegram text dispatch failed");
   }
 
   /**
@@ -297,7 +257,7 @@ export class TextCoalescer {
     if (entry === undefined) return;
     clearTimeout(entry.timer);
     this.buffers.delete(k);
-    void this.dispatchTracked(entry.message, entry.text, true, true, entry.claims);
+    void this.dispatchTracked(entry.message, entry.text, true, entry.claims);
   }
 }
 

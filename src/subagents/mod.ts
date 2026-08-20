@@ -16,6 +16,7 @@
 
 export {
   SubagentRunner,
+  SubagentReviveBusyError,
   SubagentReviveRejectedError,
   RuntimeFenceError,
   type SubagentMemoryStoreFactory,

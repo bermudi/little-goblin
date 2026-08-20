@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { SubagentRunner, type SubagentPreparation } from "../mod.ts";
+import {
+  SubagentReviveBusyError,
+  SubagentRunner,
+  type SubagentPreparation,
+} from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import {
   DelegatedWorkHost,
@@ -262,7 +266,9 @@ describe("SubagentRunner — revive guards", () => {
 
     writeFileSync(join(delegatedWorkRunDir(tmp, handle.id), "2026-01-01T00-00-00_fake.jsonl"), "");
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "second")).rejects.toThrow("Subagent is already running");
+    await expect(
+      runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, handle.id, "second"),
+    ).rejects.toBeInstanceOf(SubagentReviveBusyError);
   });
 
   it("clears stale errorMessage and completedAt on revival", async () => {
@@ -368,7 +374,9 @@ describe("SubagentRunner — double-revive race guard", () => {
     const firstRevive = runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 2");
     await flush();
 
-    await expect(runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 2b")).rejects.toThrow("Subagent revive already in progress");
+    await expect(
+      runner.revive(DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "turn 2b"),
+    ).rejects.toBeInstanceOf(SubagentReviveBusyError);
 
     host.latest().complete("done");
     await firstRevive;

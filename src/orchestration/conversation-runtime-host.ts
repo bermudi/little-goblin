@@ -243,7 +243,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     conversationId: ConversationId,
     run: (context: ImmediateRuntimeWorkContext) => Promise<ImmediateWorkExecutionResult>,
   ): ImmediateWorkAdmission {
-    if (!this.admissionOpen) return { kind: "rejected" };
+    if (!this.admissionOpen) return { kind: "closed" };
     return this.machineFor(conversationId).admitImmediateRuntimeWork(run);
   }
 

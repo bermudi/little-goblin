@@ -73,7 +73,7 @@ export type ImmediateWorkSettlement =
 export type ImmediateWorkAdmission =
   | { readonly kind: "accepted"; readonly settlement: Promise<ImmediateWorkSettlement> }
   | { readonly kind: "busy" }
-  | { readonly kind: "rejected" }
+  | { readonly kind: "closed" }
   | { readonly kind: "fenced" };
 
 /** Outcome of {@link RuntimeMachine.steerOrQueue}. */
@@ -624,7 +624,7 @@ export class RuntimeMachine {
   admitImmediateRuntimeWork(
     run: (context: ImmediateRuntimeWorkContext) => Promise<ImmediateWorkExecutionResult>,
   ): ImmediateWorkAdmission {
-    if (!this.deps.isAdmissionOpen()) return { kind: "rejected" };
+    if (!this.deps.isAdmissionOpen()) return { kind: "closed" };
     if (this.queueRunning || this.queue.length > 0) return { kind: "busy" };
     if (this.isInternal) return { kind: "fenced" };
 
@@ -653,7 +653,7 @@ export class RuntimeMachine {
         onSettled: () => classify(executionResult ?? { kind: "completed" }),
       },
     );
-    if (!admitted) return { kind: "rejected" };
+    if (!admitted) return { kind: "closed" };
     return { kind: "accepted", settlement: settlementControl.promise };
   }
 

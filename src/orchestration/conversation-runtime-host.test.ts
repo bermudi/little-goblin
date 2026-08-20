@@ -51,7 +51,7 @@ function registerRunner(
 }
 
 describe("ConversationRuntimeHost immediate runtime admission", () => {
-  it("forwards atomic accepted, busy, and rejected classifications", async () => {
+  it("forwards atomic accepted, busy, and closed classifications", async () => {
     const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
     const release = deferred<void>();
     const first = host.admitImmediateRuntimeWork("conversation-a", async () => {
@@ -67,7 +67,7 @@ describe("ConversationRuntimeHost immediate runtime admission", () => {
     expect(await first.settlement).toEqual({ kind: "completed" });
     host.closeAdmission();
     expect(host.admitImmediateRuntimeWork("conversation-b", async () => ({ kind: "completed" })))
-      .toEqual({ kind: "rejected" });
+      .toEqual({ kind: "closed" });
   });
 });
 

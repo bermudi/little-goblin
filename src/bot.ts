@@ -256,9 +256,9 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // One instance shared across all message:text handlers, keyed per
   // (chatId, topicId, fromUserId). See src/tg/coalesce.ts.
   //
-  // The coalescer tracks every dispatch, including timer-originated work, and
-  // propagates failures from its close drain. Immediate handler promises still
-  // flow to grammy's error boundary.
+  // UpdateGate tracks every dispatch through completion. The text middleware
+  // itself detaches because grammy long polling is sequential: waiting here
+  // would prevent an adjacent split fragment from reaching the coalescer.
   const coalescer = new TextCoalescer({
     dispatch: (msg, text) => intake.handleText(msg, text),
     gate,
@@ -277,7 +277,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   });
   registerCommands(bot, intake.lifecycle, gate);
 
-  bot.on("message:text", (ctx: Context) => gate.runUpdate<void>(ctx, (claim) => {
+  bot.on("message:text", (ctx: Context) => gate.runCoalescedUpdate<void>(ctx, (claim) => {
     const message = intakeMessageFromCtx(ctx, intake.lifecycle, cfg);
     if (!message.surface) return completed(undefined);
     const fromId = ctx.from?.id;

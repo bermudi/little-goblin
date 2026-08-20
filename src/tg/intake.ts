@@ -271,27 +271,63 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     sideEffects: SideEffect[],
     message: TelegramIntakeMessage,
   ): Promise<RuntimeAdmissionResult<void> | null> {
-    let runtimeResult: RuntimeAdmissionResult<void> | null = null;
-    for (const effect of sideEffects) {
-      if (effect.kind === "runner-created") {
-        await dispatcher.getOrCreateRunner(effect.conversation, effect.surface);
-      } else if (effect.kind === "runner-disposed") {
-        await dispatcher.disposeRunner(effect.conversationId);
-      } else if (effect.kind === "queue-prompt") {
-        if (runtimeResult !== null) {
-          throw new Error("command attempted more than one runtime admission");
-        }
-        const queueRunner = await dispatcher.getOrCreateRunner(effect.conversation, effect.surface);
-        const admitted = scheduleFreshTurn(message, effect.surface, effect.conversation, queueRunner, effect.text, "queued prompt failed");
-        if (!admitted) {
-          log.error("queued prompt rejected at queue admission", { sessionId: effect.conversation.id });
-          runtimeResult = runtimeAdmission.rejected(undefined);
-        } else {
-          runtimeResult = runtimeAdmission.handoff(undefined);
+    const mapWithContinuation = <T>(
+      admission: RuntimeAdmissionResult<T>,
+      continuation: (value: T) => Promise<void>,
+    ): RuntimeAdmissionResult<void> => {
+      const completion = admission.completion.then(continuation);
+      switch (admission.kind) {
+        case "handoff": return runtimeAdmission.handoff(completion);
+        case "busy": return runtimeAdmission.busy(completion);
+        case "fenced": return runtimeAdmission.fenced(completion);
+        case "rejected": return runtimeAdmission.rejected(completion);
+      }
+    };
+
+    const applyFrom = async (start: number): Promise<RuntimeAdmissionResult<void> | null> => {
+      const completeRemaining = async (next: number): Promise<void> => {
+        const remaining = await applyFrom(next);
+        if (remaining !== null) await remaining.completion;
+      };
+
+      for (let index = start; index < sideEffects.length; index++) {
+        const effect = sideEffects[index]!;
+        if (effect.kind === "runner-created") {
+          const admission = dispatcher.admitGetOrCreateRunner(
+            effect.conversation,
+            effect.surface,
+          );
+          return mapWithContinuation(admission, () => completeRemaining(index + 1));
+        } else if (effect.kind === "runner-disposed") {
+          const admission = dispatcher.admitDisposeRunner(effect.conversationId);
+          return mapWithContinuation(admission, () => completeRemaining(index + 1));
+        } else if (effect.kind === "queue-prompt") {
+          const runnerAdmission = dispatcher.admitGetOrCreateRunner(
+            effect.conversation,
+            effect.surface,
+          );
+          const queueRunner = await runnerAdmission.completion;
+          const admitted = scheduleFreshTurn(
+            message,
+            effect.surface,
+            effect.conversation,
+            queueRunner,
+            effect.text,
+            "queued prompt failed",
+          );
+          if (!admitted) {
+            log.error("queued prompt rejected at queue admission", {
+              sessionId: effect.conversation.id,
+            });
+            return runtimeAdmission.rejected(undefined);
+          }
+          return runtimeAdmission.handoff(undefined);
         }
       }
-    }
-    return runtimeResult;
+      return null;
+    };
+
+    return await applyFrom(0);
   }
 
   /**
@@ -343,7 +379,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         }
         const sideEffectAdmission = await applySideEffects(result.sideEffects, message);
         if (sideEffectAdmission !== null) {
-          throw new Error(`queue-timing command ${command} attempted nested runtime admission`);
+          await sideEffectAdmission.completion;
         }
         if (result.kind === "replied") await sendSystemReply(message, result.reply, result.tag ?? "ok");
       },
@@ -604,6 +640,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             case "busy": return runtimeAdmission.busy(completion);
             case "fenced": return runtimeAdmission.fenced(completion);
             case "rejected": return runtimeAdmission.rejected(completion);
+            case "completed": return completed(completion);
           }
         }
         if (commandResult.kind !== "fallthrough") {
@@ -1026,7 +1063,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           sessionId: conversation.id,
         });
         return runtimeAdmission.busy(replyOnce(busyArticle(), "guest busy reply failed"));
-      case "rejected":
+      case "closed":
         return runtimeAdmission.rejected(undefined);
       case "fenced":
         return runtimeAdmission.fenced(undefined);

@@ -101,6 +101,17 @@ export class SubagentReviveRejectedError extends Error {
   }
 }
 
+/** Expected contention refusal while another invocation owns the subagent. */
+export class SubagentReviveBusyError extends Error {
+  readonly subagentId: string;
+
+  constructor(subagentId: string, message: string) {
+    super(message);
+    this.name = "SubagentReviveBusyError";
+    this.subagentId = subagentId;
+  }
+}
+
 /** Thrown when a completed subagent delivery is rejected by runtime invalidation. */
 export class RuntimeFenceError extends Error {
   readonly subagentId: string;
@@ -612,13 +623,13 @@ export class SubagentRunner {
 
     // Guard against concurrent revive() of the same subagent ID.
     if (this.revivesInProgress.has(id)) {
-      throw new SubagentReviveRejectedError("Subagent revive already in progress");
+      throw new SubagentReviveBusyError(id, "Subagent revive already in progress");
     }
 
     // Reject if this subagent is already active and running.
     const existing = this.activeSubagents.get(id);
     if (existing !== undefined && existing.status === "running") {
-      throw new SubagentReviveRejectedError("Subagent is already running");
+      throw new SubagentReviveBusyError(id, "Subagent is already running");
     }
 
     this.revivesInProgress.add(id);

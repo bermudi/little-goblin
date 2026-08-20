@@ -64,7 +64,7 @@ export const runtimeAdmission = {
 
 /** Callbacks the gate needs from the text coalescer. Wired after construction. */
 export interface UpdateGateCoalescerCallbacks {
-  /** Flush buffered text and drain coalescer dispatches. */
+  /** Flush buffered text; UpdateGate drains the resulting update boundaries. */
   closeCoalescer: () => Promise<void>;
   /** Wait until buffered text has produced its structural admission decision. */
   awaitBufferedTextAdmission: () => Promise<void>;
@@ -93,6 +93,8 @@ type ClaimTerminal<T> =
 interface ClaimState<T> {
   phase: "pending" | "transferred";
   terminal?: ClaimTerminal<T>;
+  readonly terminalPromise: Promise<ClaimTerminal<T>>;
+  resolveTerminal(terminal: ClaimTerminal<T>): void;
   finalize(): void;
 }
 
@@ -239,16 +241,29 @@ export class UpdateGate {
       }
 
       let outcome: AdmissionResult<T> | TransferredAdmission<T>;
+      let transferred = false;
       try {
         outcome = await execute(claim);
-        if (this.transfers.get(outcome as object) === claim as object) return undefined;
-        if (state.phase === "transferred") {
-          throw new Error("transferred Telegram claim also returned a structural decision");
+        if (this.transfers.get(outcome as object) === claim as object) {
+          transferred = true;
+        } else {
+          if (state.phase === "transferred") {
+            throw new Error("transferred Telegram claim also returned a structural decision");
+          }
+          this.assertAdmissionResult(outcome as AdmissionResult<T>);
         }
-        this.assertAdmissionResult(outcome as AdmissionResult<T>);
       } catch (error) {
         this.settleClaim(state, { kind: "failed-before-decision", error });
         throw error;
+      }
+
+      if (transferred) {
+        const terminal = await state.terminalPromise;
+        switch (terminal.kind) {
+          case "closed": return undefined;
+          case "failed-before-decision": throw terminal.error;
+          case "decision": return await terminal.decision.completion;
+        }
       }
 
       const admissionResult = outcome as AdmissionResult<T>;
@@ -260,6 +275,35 @@ export class UpdateGate {
     const finish = (): void => { this.inFlightUpdates.delete(boundary); };
     void boundary.then(finish, finish);
     return boundary;
+  }
+
+  /**
+   * Start a gate-owned update boundary without making a sequential transport
+   * wait for its completion. Telegram long polling handles updates one at a
+   * time, so text fragments must release the middleware chain to let the next
+   * adjacent fragment reach the coalescer. The ordinary runUpdate boundary
+   * remains in `inFlightUpdates` through decision and completion.
+   */
+  runCoalescedUpdate<T>(
+    ctx: object,
+    execute: (claim: UpdateClaim<T>) => AdmissionResult<T> | TransferredAdmission<T> |
+      Promise<AdmissionResult<T>>,
+  ): Promise<T | undefined> {
+    let transferred = false;
+    const boundary = this.runUpdate<T>(ctx, (claim) => {
+      const outcome = execute(claim);
+      if (!(outcome instanceof Promise)) {
+        transferred = this.transfers.get(outcome as object) === claim as object;
+      }
+      return outcome;
+    });
+    if (!transferred) return boundary;
+    void boundary.catch((error: unknown) => {
+      log.error("detached Telegram update failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    return Promise.resolve(undefined);
   }
 
   private acceptAuthorization(ctx: object): void {
@@ -334,9 +378,15 @@ export class UpdateGate {
   private createClaim<T>(): { claim: UpdateClaim<T>; state: ClaimState<T> } {
     let resolveAdmission!: () => void;
     const admission = new Promise<void>((resolve) => { resolveAdmission = resolve; });
+    let resolveTerminal!: (terminal: ClaimTerminal<T>) => void;
+    const terminalPromise = new Promise<ClaimTerminal<T>>((resolve) => {
+      resolveTerminal = resolve;
+    });
     this.inFlightRuntimeAdmissions.add(admission);
     const state: ClaimState<T> = {
       phase: "pending",
+      terminalPromise,
+      resolveTerminal,
       finalize: () => {
         resolveAdmission();
         this.inFlightRuntimeAdmissions.delete(admission);
@@ -368,6 +418,7 @@ export class UpdateGate {
     }
     state.terminal = terminal;
     state.finalize();
+    state.resolveTerminal(terminal);
   }
 
   private assertAdmissionResult<T>(value: AdmissionResult<T>): void {

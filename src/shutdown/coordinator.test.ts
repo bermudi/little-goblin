@@ -247,27 +247,36 @@ describe("UpdateGate", () => {
   it("keeps a transferred coalescer claim pending and rejects contradictory settlement", async () => {
     const gate = makeGate();
     let claim!: UpdateClaim<void>;
-    await gate.runUpdate<void>((ownedClaim) => {
+    let finish!: () => void;
+    const completion = new Promise<void>((resolve) => { finish = resolve; });
+    const boundary = gate.runUpdate<void>((ownedClaim) => {
       claim = ownedClaim;
       return gate.transferUpdate(ownedClaim);
     });
+    await Promise.resolve();
 
     let drained = false;
     void gate.runtimeAdmission().then(() => { drained = true; });
     await Promise.resolve();
     expect(drained).toBe(false);
 
-    const decision = { kind: "handoff" as const, completion: Promise.resolve() };
+    const decision = { kind: "handoff" as const, completion };
     gate.settleTransferred([claim], decision);
     gate.settleTransferred([claim], decision); // repeated internal finalization is idempotent
     await gate.runtimeAdmission();
     await Promise.resolve();
     await Promise.resolve();
     expect(drained).toBe(true);
+    let completed = false;
+    void boundary.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
     expect(() => gate.settleTransferred([claim], {
       kind: "rejected",
       completion: Promise.resolve(),
     })).toThrow("contradictory decisions");
+    finish();
+    await boundary;
   });
 
   it("records denied authorization as completed and consumes one authorized transfer", async () => {

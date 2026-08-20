@@ -12,13 +12,17 @@ import {
 import type { ConversationState } from "../sessions/types.ts";
 import { assertInternalSessionState, type InternalSessionState } from "../sessions/internal-session.ts";
 import { surfaceId, type Surface } from "../surface.ts";
-import { SubagentReviveRejectedError, SubagentRunner } from "../subagents/mod.ts";
+import {
+  SubagentReviveBusyError,
+  SubagentReviveRejectedError,
+  SubagentRunner,
+} from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
 import { runtimeAdmission, type RuntimeAdmissionResult } from "../shutdown/mod.ts";
-import type { SurfaceSettings } from "./conversation-lifecycle.ts";
+import { BindingFencedError, type SurfaceSettings } from "./conversation-lifecycle.ts";
 import { PreparedRuntimeAssembler } from "./prepared-runtime.ts";
 import type { PreparedSurfaceRuntimePlan } from "../agent/runtime-plan.ts";
 import { CapabilityManifestToolSource } from "../agent/tool-assembly.ts";
@@ -359,8 +363,14 @@ export class TurnDispatcher {
       const attached = await this.beginReviveSubagent(surface, session, subagentId, prompt);
       return runtimeAdmission.handoff(attached.result);
     } catch (error) {
+      if (error instanceof SubagentReviveBusyError) {
+        return runtimeAdmission.busy(Promise.reject(error));
+      }
       if (error instanceof SubagentReviveRejectedError) {
         return runtimeAdmission.rejected(Promise.reject(error));
+      }
+      if (error instanceof BindingFencedError) {
+        return runtimeAdmission.fenced(Promise.reject(error));
       }
       throw new RuntimeAdmissionFailedBeforeDecisionError(error);
     }
@@ -413,54 +423,66 @@ export class TurnDispatcher {
 
   /** Return the current runtime, or prepare and atomically commit one generation. */
   async getOrCreateRunner(session: ConversationState, surface: Surface): Promise<AgentRunner> {
-    this.runtimeHost.assertAdmissionOpen();
-    if (this.runtimeHost.isInternalRuntime(session.id)) {
-      throw new Error(`conversation ${session.id} is reserved by an internal runtime`);
-    }
+    return await this.admitGetOrCreateRunner(session, surface).completion;
+  }
 
-    const expectedSurfaceId = surfaceId(surface);
-    const snapshot = this.surfaceSettings.getRuntimeSettings(surface);
-    const existing = this.runtimeHost.getRunner(session.id);
-    const existingSurfaceId = this.runtimeHost.surfaceIdFor(session.id);
-    const existingSkillContext = this.runtimeHost.skillContextFor(session.id);
-    if (
-      existing &&
-      existingSurfaceId === expectedSurfaceId &&
-      existingSkillContext?.settingsFingerprint === snapshot.fingerprint
-    ) {
-      await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
-      // Every settings-mutation path bumps the runtime epoch through lifecycle
-      // invalidation (invalidateSurfaceRuntime → disposeRuntime →
-      // invalidate("settings-change")), which synchronously clears the runner.
-      // No Surface-settings re-read is needed — isRegisteredRunner is the
-      // authority check. The skillContext/surfaceId checks are cheap
-      // consistency guards against a replacement registration racing in
-      // during the await.
+  /**
+   * Authoritatively classify runner acquisition for an update boundary.
+   * A creation reservation or attachment to an existing generation commits
+   * synchronously; preparation and binding checks remain completion work.
+   */
+  admitGetOrCreateRunner(
+    session: ConversationState,
+    surface: Surface,
+  ): RuntimeAdmissionResult<AgentRunner> {
+    try {
+      this.runtimeHost.assertAdmissionOpen();
+      if (this.runtimeHost.isInternalRuntime(session.id)) {
+        throw new Error(`conversation ${session.id} is reserved by an internal runtime`);
+      }
+
+      const expectedSurfaceId = surfaceId(surface);
+      const snapshot = this.surfaceSettings.getRuntimeSettings(surface);
+      const existing = this.runtimeHost.getRunner(session.id);
+      const existingSurfaceId = this.runtimeHost.surfaceIdFor(session.id);
+      const existingSkillContext = this.runtimeHost.skillContextFor(session.id);
       if (
-        this.runtimeHost.isRegisteredRunner(session.id, existing) &&
-        this.runtimeHost.surfaceIdFor(session.id) === expectedSurfaceId &&
-        this.runtimeHost.skillContextFor(session.id)?.settingsFingerprint === snapshot.fingerprint
-      ) return existing;
-      return this.getOrCreateRunner(session, surface);
+        existing &&
+        existingSurfaceId === expectedSurfaceId &&
+        existingSkillContext?.settingsFingerprint === snapshot.fingerprint
+      ) {
+        const completion = (async (): Promise<AgentRunner> => {
+          await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
+          if (
+            this.runtimeHost.isRegisteredRunner(session.id, existing) &&
+            this.runtimeHost.surfaceIdFor(session.id) === expectedSurfaceId &&
+            this.runtimeHost.skillContextFor(session.id)?.settingsFingerprint === snapshot.fingerprint
+          ) return existing;
+          return await this.getOrCreateRunner(session, surface);
+        })();
+        return runtimeAdmission.handoff(completion);
+      }
+
+      const inFlight = this.runtimeHost.creationFor(session.id);
+      if (
+        inFlight &&
+        inFlight.surfaceId === expectedSurfaceId &&
+        inFlight.settingsFingerprint === snapshot.fingerprint
+      ) return runtimeAdmission.handoff(inFlight.promise);
+
+      const creation = this.runtimeHost.reserveCreation(
+        session.id,
+        expectedSurfaceId,
+        snapshot.fingerprint,
+      );
+      const creationPromise = creation.promise;
+      this.doCreateAndRegisterRunner(session, surface, snapshot, creation)
+        .then(creation.resolve, creation.reject)
+        .finally(() => this.runtimeHost.finishCreation(session.id, creationPromise, creation));
+      return runtimeAdmission.handoff(creationPromise);
+    } catch (error) {
+      throw new RuntimeAdmissionFailedBeforeDecisionError(error);
     }
-
-    const inFlight = this.runtimeHost.creationFor(session.id);
-    if (
-      inFlight &&
-      inFlight.surfaceId === expectedSurfaceId &&
-      inFlight.settingsFingerprint === snapshot.fingerprint
-    ) return inFlight.promise;
-
-    const creation = this.runtimeHost.reserveCreation(
-      session.id,
-      expectedSurfaceId,
-      snapshot.fingerprint,
-    );
-    const creationPromise = creation.promise;
-    this.doCreateAndRegisterRunner(session, surface, snapshot, creation)
-      .then(creation.resolve, creation.reject)
-      .finally(() => this.runtimeHost.finishCreation(session.id, creationPromise, creation));
-    return creationPromise;
   }
 
   private async doCreateAndRegisterRunner(
@@ -731,6 +753,24 @@ export class TurnDispatcher {
       ...options,
       preserveInFlight,
     });
+  }
+
+  /**
+   * Invalidation is synchronous inside the runtime host; cleanup remains the
+   * separately-lived completion of the resulting handoff decision.
+   */
+  admitDisposeRunner(
+    sessionId: string,
+    preserveInFlight?: Promise<AgentRunner>,
+    options?: RuntimeDisposalOptions,
+  ): RuntimeAdmissionResult<void> {
+    try {
+      return runtimeAdmission.handoff(
+        this.disposeRunner(sessionId, preserveInFlight, options),
+      );
+    } catch (error) {
+      throw new RuntimeAdmissionFailedBeforeDecisionError(error);
+    }
   }
 
   /**

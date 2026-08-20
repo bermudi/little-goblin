@@ -8,10 +8,13 @@ import { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
 import type { AttachmentSignal, AttachedWork, SurfaceRuntimeAuthority } from "./dispatcher.ts";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentRunner } from "../agent/mod.ts";
-import type { SubagentRunner } from "../subagents/mod.ts";
+import {
+  SubagentReviveBusyError,
+  type SubagentRunner,
+} from "../subagents/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
-import type { ConversationState } from "../sessions/mod.ts";
+import type { ConversationId, ConversationState } from "../sessions/mod.ts";
 import type { InternalSessionState } from "../sessions/internal-session.ts";
 import type { Config } from "../config.ts";
 import type { Surface } from "../surface.ts";
@@ -24,6 +27,7 @@ import { DEFAULT_SKILL_POLICY, type SkillPolicy } from "../agent/skills/mod.ts";
 import type { GenericSubagentInheritance } from "../subagents/mod.ts";
 import { DelegatedWorkHost, type ConversationRuntimeId } from "../delegated-work/mod.ts";
 import { ShutdownCoordinator, UpdateGate } from "../shutdown/mod.ts";
+import { BindingFencedError } from "./conversation-lifecycle.ts";
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs = 1_000): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -321,7 +325,11 @@ class FakeBindingGuard implements SurfaceRuntimeAuthority {
   async assertCurrentBinding(surface: Surface, conversationId: string): Promise<void> {
     const bound = this.bindings.get(surfaceId(surface));
     if (bound !== conversationId) {
-      throw new Error(`binding rotated: ${bound ?? "unbound"} !== ${conversationId}`);
+      throw new BindingFencedError(
+        surfaceId(surface),
+        conversationId as ConversationId,
+        bound ?? null,
+      );
     }
   }
 
@@ -336,8 +344,10 @@ class FakeBindingGuard implements SurfaceRuntimeAuthority {
   ): Promise<AttachedWork<T>> {
     const bound = this.bindings.get(surfaceId(surface));
     if (bound !== conversationId) {
-      throw new Error(
-        `binding rotated: ${bound ?? "unbound"} !== ${conversationId}`,
+      throw new BindingFencedError(
+        surfaceId(surface),
+        conversationId as ConversationId,
+        bound ?? null,
       );
     }
 
@@ -1134,6 +1144,50 @@ describe("TurnDispatcher async runner creation", () => {
     await expect(dispatcher.reviveSubagent(surface, session, "sub-1", "go")).rejects.toThrow(
       /binding rotated/,
     );
+  });
+
+  it("admitReviveSubagent classifies an already-owned invocation as busy", async () => {
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+    const guard = new FakeBindingGuard();
+    guard.bind(surface, session.id);
+    const { dispatcher, subagentRunner } = buildAsyncDispatcher({
+      surfaceRuntimeAuthority: guard,
+    });
+    await dispatcher.getOrCreateRunner(session, surface);
+    subagentRunner.revive = () => {
+      throw new SubagentReviveBusyError("sub-1", "Subagent is already running");
+    };
+
+    const admission = await dispatcher.admitReviveSubagent(
+      surface,
+      session,
+      "sub-1",
+      "go",
+    );
+
+    expect(admission.kind).toBe("busy");
+    await expect(admission.completion).rejects.toBeInstanceOf(SubagentReviveBusyError);
+  });
+
+  it("admitReviveSubagent classifies a rotated binding as fenced", async () => {
+    const session = makeSession("abc123def0");
+    const surface = dmSurface(1);
+    const guard = new FakeBindingGuard();
+    guard.bind(surface, session.id);
+    const { dispatcher } = buildAsyncDispatcher({ surfaceRuntimeAuthority: guard });
+    await dispatcher.getOrCreateRunner(session, surface);
+    guard.bind(surface, "other-session-id");
+
+    const admission = await dispatcher.admitReviveSubagent(
+      surface,
+      session,
+      "sub-1",
+      "go",
+    );
+
+    expect(admission.kind).toBe("fenced");
+    await expect(admission.completion).rejects.toBeInstanceOf(BindingFencedError);
   });
 
   it("reviveSubagent rejects when the runner's captured Surface does not match the requested surface", async () => {

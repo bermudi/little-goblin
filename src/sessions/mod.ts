@@ -7,6 +7,6 @@ export { loadConversationState, saveConversationState } from "./state.ts";
 export { assertInternalSessionId, assertInternalSessionState, createInternalSessionState } from "./internal-session.ts";
 export type { InternalSessionId, InternalSessionState } from "./internal-session.ts";
 export type { ConversationId, ConversationState, Surface, SurfaceId } from "./types.ts";
-export type { TopicSettings, TopicSettingsFile, LegacyTopicSettingsFile } from "./topic-settings.ts";
-export type { BindingsFile, LegacyBindingsFile } from "./types.ts";
+export type { TopicSettings, TopicSettingsFile } from "./topic-settings.ts";
+export type { BindingsFile } from "./types.ts";
 export type { ExecutionEnvironment } from "./environment.ts";

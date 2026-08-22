@@ -22,13 +22,13 @@ import {
   type SubagentRunner,
 } from "../subagents/mod.ts";
 import { cancelReply, formatCascadeTimeoutSuffix } from "./cancel.ts";
-import { HELP_REPLY } from "./help.ts";
 import {
   CANCEL_SUBAGENT_USAGE_REPLY,
   NO_SUBAGENTS_REPLY,
   REVIVE_SUBAGENT_USAGE_REPLY,
 } from "./subagents.ts";
-import { handleCommand, type DispatchDeps, type DispatchOpts, type DispatchResult } from "./dispatch.ts";
+import { handleCommand, type DispatchDeps } from "./dispatch.ts";
+import { helpReply, type DispatchOpts, type DispatchResult } from "./registry.ts";
 import { runtimeAdmission } from "../shutdown/mod.ts";
 
 const EMPTY_RESOLVED_SKILL_SET: ResolvedSkillSet = {
@@ -564,7 +564,7 @@ describe("handleCommand", () => {
   });
 
   it("handles /help", async () => {
-    expect(expectReplied(await dispatch({ command: "/help" })).reply).toBe(HELP_REPLY);
+    expect(expectReplied(await dispatch({ command: "/help" })).reply).toBe(helpReply());
   });
 
   it("lists tracked subagents", async () => {

@@ -1,13 +1,11 @@
 import {
   resolveCommand,
-  type SideEffect,
   type DispatchResult,
   type DispatchDeps,
   type DispatchOpts,
 } from "./registry.ts";
 
-// Re-export for backward compatibility with dispatch.test.ts and other consumers.
-export type { SideEffect, DispatchResult, DispatchDeps, DispatchOpts };
+export type { DispatchDeps };
 
 /**
  * Resolve a slash command token via the registry and dispatch to its handler.

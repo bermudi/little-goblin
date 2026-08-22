@@ -36,8 +36,6 @@ import { cosineSimilarity } from "./search.ts";
 // Types
 // ---------------------------------------------------------------------------
 
-export type { TranscriptLine } from "../sessions/transcript.ts";
-
 export type DreamingCategory =
   | "fact"
   | "short_term"

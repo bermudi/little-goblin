@@ -136,7 +136,7 @@ type ExecutionEnvironment =
 | Proactive-contact consent | Surface, intersected with deployment and WakeProfile policy |
 | Active memory-context projection | Derived from current Surface; captured by runtime |
 | Current Conversation pointer | Binding |
-| Newly-created Conversation rollback authority | Resolving Telegram update from lifecycle resolution through synchronous admission settlement; process-ephemeral and never persisted **(CURRENT)** |
+| Pending newly-created Conversation leases | `ConversationLifecycle`; process-ephemeral from lazy creation through synchronous admission settlement, never persisted **(CURRENT)** |
 | Model history and immutable CWD | Conversation |
 | Transcript, events, metrics, pi history | Conversation |
 | Runner, prompt queue, Telegram sink/tools | Conversation runtime (RuntimeMachine — CURRENT, decision 0046) |
@@ -168,7 +168,7 @@ src/index.ts / composition root
        │
        ▼
 ConversationLifecycle (`src/orchestration`)
-       │  inspect / resolveOrStart (+ ephemeral creation authority) / rotate / resume / archive
+       │  inspect / resolveOrStart (+ ephemeral pending-creation lease) / rotate / resume / archive
        ├── ConversationStore
        ├── BindingStore
        ├── SurfaceSettings
@@ -188,6 +188,8 @@ ShutdownCoordinator / UpdateGate (`src/shutdown`)
        ▼
 Persistence adapters ──► path helpers / atomic filesystem operations
 ```
+
+Lazy Telegram creation is one lifecycle-owned pending record per Surface. Every successful `resolveOrStart` observer receives a process-ephemeral lease while that creation remains pending. Any accepted use or non-lease lifecycle observation seals retention; rejected or throwing admission releases only its lease; rollback is attempted only after the final lease rejects and the Binding is still current and the Conversation safely empty. Settlement removes the pending record, and a resolution that fails before returning neither joins nor fences existing leases.
 
 Rules:
 

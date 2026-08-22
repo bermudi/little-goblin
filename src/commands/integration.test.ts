@@ -29,7 +29,7 @@ import { DEFAULT_SKILL_POLICY } from "../agent/skills/mod.ts";
 
 async function resolveConversation(lifecycle: ConversationLifecycle, surface: Surface) {
   const resolution = await lifecycle.resolveOrStart(surface);
-  if (resolution.creationAuthority !== null) lifecycle.settleCreation(resolution.creationAuthority);
+  if (resolution.creationLease !== null) lifecycle.sealCreation(resolution.creationLease);
   return resolution.conversation;
 }
 

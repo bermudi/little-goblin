@@ -649,9 +649,9 @@ describe("Telegram intake", () => {
     expect(topicReplies).toEqual([]);
   });
 
-  it("lazily creates a conversation for plain text and settles creation authority after admission", async () => {
+  it("lazily creates a conversation for plain text and settles its creation lease after admission", async () => {
     const { intake, conversationStore } = makeHarness();
-    const settle = spyOn(intake.lifecycle, "settleCreation");
+    const settle = spyOn(intake.lifecycle, "sealCreation");
     const replies: string[] = [];
     const message = makeMessage(replies);
 
@@ -713,7 +713,7 @@ describe("Telegram intake", () => {
   it("preserves rejected media settlement and surfaces a thrown creation rollback with context", async () => {
     const { intake, runtimeHost } = makeHarness();
     const failure = new Error("binding persistence unavailable");
-    const rollback = spyOn(intake.lifecycle, "rollbackCreation").mockRejectedValue(failure);
+    const rollback = spyOn(intake.lifecycle, "releaseCreation").mockRejectedValue(failure);
     runtimeHost.closeAdmission();
 
     const admission = await intake.handlePhoto(makeMessage(), fakeApi(), ["photo"]);
@@ -725,7 +725,7 @@ describe("Telegram intake", () => {
     );
     expect(rollbackError).toBeInstanceOf(Error);
     expect((rollbackError as Error).message).toContain(
-      "failed to roll back newly created Conversation after photo admission (rejected)",
+      "failed to release rejected creation lease after photo admission (rejected)",
     );
     expect((rollbackError as Error).message).toContain(surfaceId(dmSurface(1)));
     expect((rollbackError as Error).cause).toBe(failure);
@@ -735,14 +735,14 @@ describe("Telegram intake", () => {
 
   it("surfaces a false creation rollback as a contractually unchanged result", async () => {
     const { intake, runtimeHost } = makeHarness();
-    const rollback = spyOn(intake.lifecycle, "rollbackCreation").mockResolvedValue(false);
+    const rollback = spyOn(intake.lifecycle, "releaseCreation").mockResolvedValue(false);
     runtimeHost.closeAdmission();
 
     const admission = await intake.handleText(makeMessage(), "cold text");
 
     expect(admission.kind).toBe("rejected");
     await expect(admission.completion).rejects.toThrow(
-      /new Conversation rollback was not applied after text admission \(rejected\).*creation authority was settled, fenced, or no safe rollback mutation applied/,
+      /creation lease release\/rollback was not applied after text admission \(rejected\).*lease was already settled or no safe final rollback mutation applied/,
     );
     expect(intake.lifecycle.inspect(dmSurface(1))).not.toBeNull();
     rollback.mockRestore();
@@ -760,7 +760,40 @@ describe("Telegram intake", () => {
     expect(conversationStore.list()).toHaveLength(0);
   });
 
-  it("does not let a rejected concurrent resolve delete a Conversation another update accepted", async () => {
+  it("rolls back after concurrent creation observers both reject", async () => {
+    const { intake, runtimeHost, conversationStore } = makeHarness();
+    const firstResolved = deferred();
+    const releaseFirst = deferred();
+    const originalResolve = intake.lifecycle.resolveOrStart.bind(intake.lifecycle);
+    let blockFirst = true;
+    const resolve = spyOn(intake.lifecycle, "resolveOrStart").mockImplementation(async (surface) => {
+      const resolution = await originalResolve(surface);
+      if (blockFirst) {
+        blockFirst = false;
+        firstResolved.resolve();
+        await releaseFirst.promise;
+      }
+      return resolution;
+    });
+
+    const firstPromise = intake.handleText(makeMessage(), "first");
+    await firstResolved.promise;
+    runtimeHost.closeAdmission();
+    const second = await intake.handleText(makeMessage(), "second");
+    expect(second.kind).toBe("rejected");
+    await expect(second.completion).resolves.toBeUndefined();
+    expect(conversationStore.list()).toHaveLength(1);
+
+    releaseFirst.resolve();
+    const first = await firstPromise;
+    expect(first.kind).toBe("rejected");
+    await expect(first.completion).resolves.toBeUndefined();
+    expect(intake.lifecycle.inspect(dmSurface(1))).toBeNull();
+    expect(conversationStore.list()).toHaveLength(0);
+    resolve.mockRestore();
+  });
+
+  it("retains creation when one concurrent observer is accepted", async () => {
     const { intake, runtimeHost, conversationStore } = makeHarness();
     const firstResolved = deferred();
     const releaseFirst = deferred();
@@ -786,7 +819,7 @@ describe("Telegram intake", () => {
     const rejected = await firstPromise;
 
     expect(rejected.kind).toBe("rejected");
-    await expect(rejected.completion).rejects.toThrow(/creation authority was settled, fenced/);
+    await expect(rejected.completion).resolves.toBeUndefined();
     expect(intake.lifecycle.inspect(dmSurface(1))).not.toBeNull();
     expect(conversationStore.list()).toHaveLength(1);
     resolve.mockRestore();
@@ -812,7 +845,7 @@ describe("Telegram intake", () => {
     const admit = spyOn(intake.dispatcher, "admitPromptTurn").mockImplementation(() => {
       throw admissionFailure;
     });
-    const rollback = spyOn(intake.lifecycle, "rollbackCreation").mockRejectedValue(rollbackFailure);
+    const rollback = spyOn(intake.lifecycle, "releaseCreation").mockRejectedValue(rollbackFailure);
 
     const error = await intake.handleText(makeMessage(), "cold text").then(
       () => undefined,
@@ -1427,7 +1460,7 @@ describe("Telegram intake", () => {
     const replies: string[] = [];
     const message = makeMessage(replies);
     const resolution = await intake.lifecycle.resolveOrStart(dmSurface(1));
-    if (resolution.creationAuthority !== null) intake.lifecycle.settleCreation(resolution.creationAuthority);
+    if (resolution.creationLease !== null) intake.lifecycle.sealCreation(resolution.creationLease);
 
     const admission = await intake.handleText(message, "/revive missing try again");
 
@@ -2127,7 +2160,7 @@ describe("Telegram intake", () => {
     it("releases a fenced classification without replying", async () => {
       const { intake, runtimeHost } = makeHarness();
       const resolution = await intake.lifecycle.resolveOrStart(guestSurface(99));
-      if (resolution.creationAuthority !== null) intake.lifecycle.settleCreation(resolution.creationAuthority);
+      if (resolution.creationLease !== null) intake.lifecycle.sealCreation(resolution.creationLease);
       const conversation = resolution.conversation;
       runtimeHost.registerInternalRuntime(
         conversation.id,

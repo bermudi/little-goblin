@@ -27,7 +27,7 @@ import {
   type PromptContent,
 } from "../orchestration/dispatcher.ts";
 import type {
-  ConversationCreationAuthority,
+  ConversationCreationLease,
   ConversationLifecycle,
 } from "../orchestration/conversation-lifecycle.ts";
 import type { WorkAuthority } from "../orchestration/conversation-runtime-host.ts";
@@ -142,78 +142,78 @@ function mapAdmissionCompletion<T>(
   }
 }
 
-/** Roll back one lifecycle-issued creation authority with caller context. */
-async function rollbackCreatedConversation(
+/** Release one lifecycle-issued rejected creation lease with caller context. */
+async function releaseRejectedCreation(
   lifecycle: ConversationLifecycle,
-  authority: ConversationCreationAuthority,
+  lease: ConversationCreationLease,
   context: string,
 ): Promise<void> {
   let applied: boolean;
   try {
-    applied = await lifecycle.rollbackCreation(authority);
+    applied = await lifecycle.releaseCreation(lease);
   } catch (cause) {
-    throw new Error(`failed to roll back newly created Conversation after ${context}`, { cause });
+    throw new Error(`failed to release rejected creation lease after ${context}`, { cause });
   }
   if (!applied) {
     throw new Error(
-      `new Conversation rollback was not applied after ${context}; creation authority was settled, fenced, or no safe rollback mutation applied`,
+      `creation lease release/rollback was not applied after ${context}; lease was already settled or no safe final rollback mutation applied`,
     );
   }
 }
 
 /**
- * Preserve an authoritative structural rejection while attaching authorized
- * creation rollback to the separately tracked completion.
+ * Preserve an authoritative structural rejection while attaching creation
+ * lease release (and any final authorized rollback) to its completion.
  */
-function withRejectedCreationRollback<T>(
+function withRejectedCreationRelease<T>(
   admission: AdmissionResult<T>,
-  authority: ConversationCreationAuthority | null,
+  lease: ConversationCreationLease | null,
   lifecycle: ConversationLifecycle,
   source: string,
 ): AdmissionResult<T> {
-  if (authority === null) return admission;
+  if (lease === null) return admission;
 
-  const context = `${source} admission (${admission.kind}) for Surface ${authority.surfaceId} and Conversation ${authority.conversationId}`;
-  const rollback = rollbackCreatedConversation(lifecycle, authority, context);
-  const completion = rollback.then(
+  const context = `${source} admission (${admission.kind}) for Surface ${lease.surfaceId} and Conversation ${lease.conversationId}`;
+  const release = releaseRejectedCreation(lifecycle, lease, context);
+  const completion = release.then(
     () => admission.completion,
-    async (rollbackError: unknown) => {
+    async (releaseError: unknown) => {
       try {
         await admission.completion;
       } catch (completionError) {
         throw new AggregateError(
-          [rollbackError, completionError],
-          `Conversation rollback and ${source} admission completion both failed`,
+          [releaseError, completionError],
+          `Conversation creation release and ${source} admission completion both failed`,
         );
       }
-      throw rollbackError;
+      throw releaseError;
     },
   );
   return { kind: admission.kind, completion };
 }
 
 /**
- * Synchronous dispatcher throws happen before a structural decision. Attempt
- * authorized rollback first, then rethrow the admission error; if rollback
- * also fails, preserve both causes in admission-first order.
+ * Synchronous dispatcher throws happen before a structural decision. Release
+ * the observer lease first, then rethrow the admission error; if release or
+ * final rollback also fails, preserve both causes in admission-first order.
  */
 async function attemptCreationAdmission<T>(
   admit: () => T,
-  authority: ConversationCreationAuthority | null,
+  lease: ConversationCreationLease | null,
   lifecycle: ConversationLifecycle,
   source: string,
 ): Promise<T> {
   try {
     return admit();
   } catch (admissionError) {
-    if (authority === null) throw admissionError;
-    const context = `${source} admission throw for Surface ${authority.surfaceId} and Conversation ${authority.conversationId}`;
+    if (lease === null) throw admissionError;
+    const context = `${source} admission throw for Surface ${lease.surfaceId} and Conversation ${lease.conversationId}`;
     try {
-      await rollbackCreatedConversation(lifecycle, authority, context);
-    } catch (rollbackError) {
+      await releaseRejectedCreation(lifecycle, lease, context);
+    } catch (releaseError) {
       throw new AggregateError(
-        [admissionError, rollbackError],
-        `Conversation admission and creation rollback both failed for ${source}`,
+        [admissionError, releaseError],
+        `Conversation admission and creation release both failed for ${source}`,
       );
     }
     throw admissionError;
@@ -532,10 +532,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     // Photos, documents, voice, and audio are ordinary authorized content:
     // lazily create a conversation on the surface, just like text. Lifecycle
-    // supplies the only authority capable of rolling this creation back.
+    // supplies the only lease capable of participating in creation settlement.
     const resolution = await lifecycle.resolveOrStart(surface);
     const conversation = resolution.conversation;
-    const creationAuthority = resolution.creationAuthority;
+    const creationLease = resolution.creationLease;
     const session = conversation;
 
     return {
@@ -570,7 +570,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // avoid awaiting runner acquisition.
         const existingRunner = dispatcher.getRunner(session.id);
         if (existingRunner !== null && existingRunner.isAbortTimedOut) {
-          if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
+          if (creationLease !== null) lifecycle.sealCreation(creationLease);
           return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
         }
         // admitPromptTurn enqueues the work synchronously and acquires
@@ -584,15 +584,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             execute,
             onError,
           ),
-          creationAuthority,
+          creationLease,
           lifecycle,
           kind,
         );
         if (admission.kind !== "rejected") {
-          if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
+          if (creationLease !== null) lifecycle.sealCreation(creationLease);
           return admission;
         }
-        return withRejectedCreationRollback(admission, creationAuthority, lifecycle, kind);
+        return withRejectedCreationRelease(admission, creationLease, lifecycle, kind);
       },
     };
   }
@@ -625,7 +625,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     const command = parseCommand(rawText);
     const def = command !== null ? resolveCommand(command) : null;
-    const existingConversation = lifecycle.inspect(surface);
+    // Ordinary content must join a still-pending lazy creation through
+    // resolveOrStart rather than observing it through the sealing inspect API.
+    const existingConversation = command !== null ? lifecycle.inspect(surface) : null;
     if (command !== null && command !== "/new" && def === null) {
       // Unknown commands are adapter-owned completions, not runtime work
       // (decision 0046). Handle locally for both active and inactive
@@ -852,10 +854,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
 
     const resolution = await lifecycle.resolveOrStart(surface);
     const conversation = resolution.conversation;
-    const creationAuthority = resolution.creationAuthority;
+    const creationLease = resolution.creationLease;
     const session = conversation;
     if (!rawText) {
-      if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
+      if (creationLease !== null) lifecycle.sealCreation(creationLease);
       return completed(undefined);
     }
 
@@ -868,11 +870,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const existingRunner = dispatcher.getRunner(session.id);
     if (existingRunner !== null) {
       if (existingRunner.isAbortTimedOut) {
-        if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
+        if (creationLease !== null) lifecycle.sealCreation(creationLease);
         return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
       }
       if (existingRunner.isStreaming) {
-        if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
+        if (creationLease !== null) lifecycle.sealCreation(creationLease);
         return steerOrFallbackToFreshTurn(message, surface, session, existingRunner, rawText);
       }
     }
@@ -896,15 +898,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           });
         },
       ),
-      creationAuthority,
+      creationLease,
       lifecycle,
       "text",
     );
     if (admission.kind !== "rejected") {
-      if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
+      if (creationLease !== null) lifecycle.sealCreation(creationLease);
       return admission;
     }
-    return withRejectedCreationRollback(admission, creationAuthority, lifecycle, "text");
+    return withRejectedCreationRelease(admission, creationLease, lifecycle, "text");
   }
 
   async function handlePhoto(
@@ -1217,11 +1219,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     };
 
     let conversation: ConversationState;
-    let creationAuthority: ConversationCreationAuthority | null;
+    let creationLease: ConversationCreationLease | null;
     try {
       const resolution = await lifecycle.resolveOrStart(surface);
       conversation = resolution.conversation;
-      creationAuthority = resolution.creationAuthority;
+      creationLease = resolution.creationLease;
     } catch (error) {
       log.error("guest resolve failed", { error: String(error), surfaceId: surfaceId(surface) });
       return completed(replyOnce(errorArticle(), "guest error reply failed"));
@@ -1246,7 +1248,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           },
         },
       ),
-      creationAuthority,
+      creationLease,
       lifecycle,
       "guest",
     );
@@ -1254,7 +1256,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     let rejectedAdmission: RuntimeAdmissionResult<void>;
     switch (admission.kind) {
       case "accepted": {
-        if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
+        if (creationLease !== null) lifecycle.sealCreation(creationLease);
         const completion = admission.settlement.then(async (settlement) => {
           if (settlement.kind === "failed") {
             log.error("accepted guest runtime work failed", {
@@ -1283,7 +1285,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         rejectedAdmission = runtimeAdmission.fenced(undefined);
         break;
     }
-    return withRejectedCreationRollback(rejectedAdmission, creationAuthority, lifecycle, "guest");
+    return withRejectedCreationRelease(rejectedAdmission, creationLease, lifecycle, "guest");
   }
 
   return {

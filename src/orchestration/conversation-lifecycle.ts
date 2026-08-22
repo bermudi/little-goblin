@@ -122,32 +122,31 @@ export interface SkillPolicyTransition extends SkillPolicyStatus {
   readonly cleanupError?: string;
 }
 
-const conversationCreationAuthorityBrand: unique symbol = Symbol("conversation-creation-authority");
+const conversationCreationLeaseBrand: unique symbol = Symbol("conversation-creation-lease");
 
 /**
- * Process-ephemeral authority to settle one Conversation created by
- * `resolveOrStart`. The resolving update owns it from resolution until its
- * synchronous runtime-admission decision. It is never persisted, and a later
- * lifecycle resolution of the same Surface fences rollback authority.
+ * Process-ephemeral participation in one still-pending Conversation creation.
+ * Every successful `resolveOrStart` observer receives its own lease until an
+ * accepted use seals the creation or every observer rejects. Leases are owned
+ * by ConversationLifecycle and are never persisted.
  */
-export interface ConversationCreationAuthority {
+export interface ConversationCreationLease {
   readonly surfaceId: SurfaceId;
   readonly conversationId: ConversationId;
-  readonly resolutionEpoch: number;
-  readonly [conversationCreationAuthorityBrand]: true;
+  readonly [conversationCreationLeaseBrand]: true;
 }
 
-export type ConversationResolution =
-  | {
-      readonly kind: "existing";
-      readonly conversation: ConversationState;
-      readonly creationAuthority: null;
-    }
-  | {
-      readonly kind: "created";
-      readonly conversation: ConversationState;
-      readonly creationAuthority: ConversationCreationAuthority;
-    };
+type PendingConversationCreation = {
+  readonly surfaceId: SurfaceId;
+  readonly conversationId: ConversationId;
+  readonly leases: Set<ConversationCreationLease>;
+};
+
+export type ConversationResolution = {
+  readonly kind: "existing" | "created";
+  readonly conversation: ConversationState;
+  readonly creationLease: ConversationCreationLease | null;
+};
 
 /**
  * Public seam for callers (intake, commands, scheduler). Every method that
@@ -168,8 +167,8 @@ export interface ConversationLifecycle extends SurfaceRuntimeAuthority {
    */
   resolveCurrent(surface: Surface): Promise<ConversationState | null>;
   resolveOrStart(surface: Surface): Promise<ConversationResolution>;
-  /** Settle creation authority after admission accepted the new Conversation. */
-  settleCreation(authority: ConversationCreationAuthority): void;
+  /** Seal a pending creation after this observer's use was accepted. */
+  sealCreation(lease: ConversationCreationLease): void;
   rotate(surface: Surface): Promise<ConversationState>;
   resume(surface: Surface, target: ConversationId): Promise<ConversationState>;
   /** Archive the current bound Conversation and return a status transition. */
@@ -187,12 +186,13 @@ export interface ConversationLifecycle extends SurfaceRuntimeAuthority {
   /** Apply a validated model/thinking Surface preference patch, then invalidate the bound runtime. */
   setSurfacePreferences(surface: Surface, patch: SurfacePreferencePatch): Promise<PreferenceTransition>;
   /**
-   * Consume lifecycle-issued creation authority after admission rejection and
-   * roll back only while that authority remains current. Returns false when
-   * the authority was already settled, fenced by a later resolution, or the
-   * Conversation is no longer safely eligible for deletion.
+   * Release one rejected observer's lease. Rollback occurs only when every
+   * lease rejected and the pending Conversation remains safely empty/current.
+   * Returns false only when this lease was already settled or final rollback
+   * was unsafe; a lease released after another observer sealed creation is a
+   * successful settlement.
    */
-  rollbackCreation(authority: ConversationCreationAuthority): Promise<boolean>;
+  releaseCreation(lease: ConversationCreationLease): Promise<boolean>;
 }
 
 export type ProjectAssignmentResult =
@@ -259,10 +259,14 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
    * could otherwise capture a freshly bumped epoch before the binding commit.
    */
   private readonly pendingBindingSurfaces = new Set<SurfaceId>();
-  /** Surface-lifetime observation epochs; authority objects remain caller-owned. */
-  private readonly resolutionEpochs = new Map<SurfaceId, number>();
-  /** Weak membership makes issued authority nominal without retaining it. */
-  private readonly activeCreationAuthorities = new WeakSet<ConversationCreationAuthority>();
+  /**
+   * Process-ephemeral pending creation state. Lifecycle is the sole owner;
+   * entries exist only from first creation until acceptance, conservative
+   * sealing, or the final rejected lease settles.
+   */
+  private readonly pendingCreations = new Map<SurfaceId, PendingConversationCreation>();
+  /** Weak membership makes issued leases nominal without retaining callers. */
+  private readonly activeCreationLeases = new WeakSet<ConversationCreationLease>();
 
   constructor(
     home: string,
@@ -292,13 +296,15 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     const env = this.settings.effectiveEnvironment(surface);
     if (!environmentsEqual(conv.executionEnvironment, env)) return null;
 
+    // A non-intake observer can act on the returned Conversation without a
+    // creation lease, so retaining it is the only conservative outcome.
+    this.sealPendingCreation(key);
     return conv;
   }
 
   async resolveCurrent(surface: Surface): Promise<ConversationState | null> {
     return withLifecycleTransitionLock(async () => {
       await this.reconcilePendingAssignment();
-      this.beginSurfaceResolution(surfaceId(surface));
       return this.inspect(surface);
     });
   }
@@ -307,7 +313,6 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
       await this.reconcilePendingAssignment();
-      const resolutionEpoch = this.beginSurfaceResolution(key);
       const env = this.settings.effectiveEnvironment(surface);
       const bindings = this.bindings.load();
       const currentId = bindings.surfaces[key];
@@ -318,7 +323,9 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
           current = this.store.load(currentId as ConversationId);
         }
         if (current && environmentsEqual(current.executionEnvironment, env)) {
-          return { kind: "existing", conversation: current, creationAuthority: null };
+          const creationLease = this.issuePendingCreationLease(key, current.id);
+          if (creationLease === null) this.sealPendingCreation(key);
+          return { kind: "existing", conversation: current, creationLease };
         }
         if (current) {
           await this.runtimeHost.disposeRuntime(current.id);
@@ -333,31 +340,48 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       const next = cloneBindings(bindings);
       next.surfaces[key] = created.id;
       this.bindings.save(next);
-      const creationAuthority: ConversationCreationAuthority = {
+      // Keep fallible reporting before lease issuance: once a lease is returned
+      // there must be no later resolution step that can throw and strand it.
+      log.info("conversation started", { surface: key, conversation: created.id, environment: env });
+      // A successful replacement makes any older pending creation on this
+      // Surface ineligible. Install one lifecycle-owned pending record for the
+      // new Conversation and issue this observer's lease.
+      this.sealPendingCreation(key);
+      const pending: PendingConversationCreation = {
         surfaceId: key,
         conversationId: created.id,
-        resolutionEpoch,
-        [conversationCreationAuthorityBrand]: true,
+        leases: new Set(),
       };
-      this.activeCreationAuthorities.add(creationAuthority);
-      log.info("conversation started", { surface: key, conversation: created.id, environment: env });
-      return { kind: "created", conversation: created, creationAuthority };
+      this.pendingCreations.set(key, pending);
+      const creationLease = this.createPendingCreationLease(pending);
+      return { kind: "created", conversation: created, creationLease };
     });
   }
 
-  settleCreation(authority: ConversationCreationAuthority): void {
-    this.activeCreationAuthorities.delete(authority);
+  sealCreation(lease: ConversationCreationLease): void {
+    if (!this.activeCreationLeases.delete(lease)) return;
+    this.sealPendingCreation(lease.surfaceId, lease.conversationId);
   }
 
-  rollbackCreation(authority: ConversationCreationAuthority): Promise<boolean> {
+  releaseCreation(lease: ConversationCreationLease): Promise<boolean> {
     // Consume synchronously so repeated settlement cannot race while waiting
     // for another lifecycle transition to release the process-wide lock.
-    if (!this.activeCreationAuthorities.delete(authority)) return Promise.resolve(false);
+    if (!this.activeCreationLeases.delete(lease)) return Promise.resolve(false);
 
     return withLifecycleTransitionLock(async () => {
-      const key = authority.surfaceId;
-      const conversationId = authority.conversationId;
-      if (this.resolutionEpochs.get(key) !== authority.resolutionEpoch) return false;
+      const key = lease.surfaceId;
+      const conversationId = lease.conversationId;
+      const pending = this.pendingCreations.get(key);
+      // Another accepted use or lifecycle observer already sealed retention.
+      // Releasing this still-active lease remains a successful settlement.
+      if (pending === undefined || pending.conversationId !== conversationId || !pending.leases.has(lease)) {
+        return true;
+      }
+      pending.leases.delete(lease);
+      if (pending.leases.size > 0) return true;
+      // The final rejection owns the one rollback attempt. Remove process state
+      // before durable work so every success/failure path settles the map.
+      this.pendingCreations.delete(key);
 
       const bindings = this.bindings.load();
       if (bindings.surfaces[key] !== conversationId) return false;
@@ -398,10 +422,34 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     });
   }
 
-  private beginSurfaceResolution(key: SurfaceId): number {
-    const next = (this.resolutionEpochs.get(key) ?? 0) + 1;
-    this.resolutionEpochs.set(key, next);
-    return next;
+  private issuePendingCreationLease(
+    key: SurfaceId,
+    conversationId: ConversationId,
+  ): ConversationCreationLease | null {
+    const pending = this.pendingCreations.get(key);
+    if (pending === undefined || pending.conversationId !== conversationId) return null;
+    return this.createPendingCreationLease(pending);
+  }
+
+  private createPendingCreationLease(
+    pending: PendingConversationCreation,
+  ): ConversationCreationLease {
+    const lease: ConversationCreationLease = {
+      surfaceId: pending.surfaceId,
+      conversationId: pending.conversationId,
+      [conversationCreationLeaseBrand]: true,
+    };
+    pending.leases.add(lease);
+    this.activeCreationLeases.add(lease);
+    return lease;
+  }
+
+  private sealPendingCreation(key: SurfaceId, conversationId?: ConversationId): void {
+    const pending = this.pendingCreations.get(key);
+    if (pending === undefined) return;
+    if (conversationId !== undefined && pending.conversationId !== conversationId) return;
+    pending.leases.clear();
+    this.pendingCreations.delete(key);
   }
 
   async rotate(surface: Surface): Promise<ConversationState> {
@@ -411,6 +459,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       const env = this.settings.effectiveEnvironment(surface);
       const bindings = this.bindings.load();
       const currentId = bindings.surfaces[key];
+      this.sealPendingCreation(key);
       this.pendingBindingSurfaces.add(key);
       try {
         if (currentId) {
@@ -466,15 +515,20 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       const bindings = this.bindings.load();
       const currentAtDst = bindings.surfaces[key];
       if (currentAtDst === target) {
+        this.sealPendingCreation(key, target);
         return targetConv;
       }
 
       const sourceKey = this.findBoundSurface(bindings, target);
       // If the target is already bound to the destination surface, this is a no-op.
       if (sourceKey === key) {
+        this.sealPendingCreation(key, target);
         return targetConv;
       }
 
+      // Moving either binding makes rollback unsafe for pending observers.
+      this.sealPendingCreation(key);
+      if (sourceKey !== undefined) this.sealPendingCreation(sourceKey, target);
       this.pendingBindingSurfaces.add(key);
       if (sourceKey !== undefined) this.pendingBindingSurfaces.add(sourceKey);
       try {
@@ -551,6 +605,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
         throw new Error(`no active conversation on this surface`);
       }
 
+      this.sealPendingCreation(key, current.id);
       this.pendingBindingSurfaces.add(key);
       try {
         await this.runtimeHost.disposeRuntime(current.id);
@@ -736,12 +791,14 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   }
 
   private acquireSurfaceRuntimeInvalidation(surface: Surface): SurfaceRuntimeInvalidationTarget {
-    const rawConversationId = this.bindings.load().surfaces[surfaceId(surface)];
+    const key = surfaceId(surface);
+    const rawConversationId = this.bindings.load().surfaces[key];
     if (!rawConversationId || !isValidConversationId(rawConversationId)) {
       return { conversationId: undefined, hadRuntime: false };
     }
 
     const conversationId = rawConversationId as ConversationId;
+    this.sealPendingCreation(key, conversationId);
     return {
       conversationId,
       hadRuntime: this.runtimeHost.hasRuntime(conversationId),
@@ -817,6 +874,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       const bindings = this.bindings.load();
       validateBindings(bindings);
       const previousConversationId = bindings.surfaces[key] as ConversationId | undefined;
+      this.sealPendingCreation(key, previousConversationId);
       const plannedConversationId = this.store.allocateId();
       const intent: ProjectAssignmentIntent = {
         version: 1,
@@ -927,6 +985,10 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   private async reconcilePendingAssignment(): Promise<void> {
     const prepared = preparePendingProjectAssignment(this.home, this.store, this.bindings);
     if (prepared === null) return;
+    // Planning succeeded and the durable transition can now dispose/move the
+    // current Conversation. Seal only here: a failed planning read must not
+    // fence existing intake leases.
+    this.sealPendingCreation(prepared.intent.surfaceId, prepared.currentConversationId);
     await this.quiescePreparedProjectAssignment(prepared);
     applyPreparedProjectAssignment(this.home, this.bindings, prepared);
   }

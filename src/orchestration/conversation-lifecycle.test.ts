@@ -216,8 +216,8 @@ async function resolveConversation(
   surface: Surface,
 ) {
   const resolution = await lifecycle.resolveOrStart(surface);
-  if (resolution.creationAuthority !== null) {
-    lifecycle.settleCreation(resolution.creationAuthority);
+  if (resolution.creationLease !== null) {
+    lifecycle.sealCreation(resolution.creationLease);
   }
   return resolution.conversation;
 }
@@ -487,73 +487,108 @@ describe("ConversationLifecycle", () => {
     });
   });
 
-  describe("rollbackCreation", () => {
-    it("deletes an empty Conversation with current lifecycle-issued authority", async () => {
+  describe("releaseCreation", () => {
+    it("deletes an empty Conversation with the final lifecycle-issued lease", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
       const resolution = await lifecycle.resolveOrStart(surface);
       expect(resolution.kind).toBe("created");
-      if (resolution.creationAuthority === null) throw new Error("expected creation authority");
+      if (resolution.creationLease === null) throw new Error("expected creation lease");
 
-      expect(await lifecycle.rollbackCreation(resolution.creationAuthority)).toBe(true);
+      expect(await lifecycle.releaseCreation(resolution.creationLease)).toBe(true);
 
       expect(bindings.bindings.surfaces[surfaceId(surface)]).toBeUndefined();
       expect(store.load(resolution.conversation.id)).toBeNull();
       expect(existsSync(sessionDir(tmpDir, resolution.conversation.id))).toBe(false);
-      expect(await lifecycle.rollbackCreation(resolution.creationAuthority)).toBe(false);
+      expect(await lifecycle.releaseCreation(resolution.creationLease)).toBe(false);
     });
 
-    it("fences rollback after a concurrent same-Surface resolution observes the Conversation", async () => {
+    it("rolls back only after every concurrent creation lease rejects", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
       const created = await lifecycle.resolveOrStart(surface);
-      if (created.creationAuthority === null) throw new Error("expected creation authority");
+      if (created.creationLease === null) throw new Error("expected creation lease");
 
       const observed = await lifecycle.resolveOrStart(surface);
       expect(observed.kind).toBe("existing");
       expect(observed.conversation.id).toBe(created.conversation.id);
+      if (observed.creationLease === null) throw new Error("expected observer creation lease");
 
-      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
-      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(created.conversation.id);
+      expect(await lifecycle.releaseCreation(created.creationLease)).toBe(true);
       expect(store.load(created.conversation.id)).not.toBeNull();
+      expect(await lifecycle.releaseCreation(observed.creationLease)).toBe(true);
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBeUndefined();
+      expect(store.load(created.conversation.id)).toBeNull();
     });
 
-    it("settles accepted creation authority so it cannot later roll back", async () => {
+    it("one accepted lease seals retention while other leases settle repeatedly", async () => {
       const { lifecycle, store } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
       const created = await lifecycle.resolveOrStart(surface);
-      if (created.creationAuthority === null) throw new Error("expected creation authority");
+      const observed = await lifecycle.resolveOrStart(surface);
+      if (created.creationLease === null || observed.creationLease === null) {
+        throw new Error("expected creation leases");
+      }
 
-      lifecycle.settleCreation(created.creationAuthority);
+      lifecycle.sealCreation(observed.creationLease);
 
-      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
+      expect(await lifecycle.releaseCreation(created.creationLease)).toBe(true);
+      expect(await lifecycle.releaseCreation(created.creationLease)).toBe(false);
+      lifecycle.sealCreation(observed.creationLease);
       expect(store.load(created.conversation.id)).not.toBeNull();
+      const settled = await lifecycle.resolveOrStart(surface);
+      expect(settled.creationLease).toBeNull();
     });
 
-    it("returns false and consumes authority when transcript history makes rollback ineligible", async () => {
+    it("does not fence an existing lease when a later resolution throws before returning", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
       const created = await lifecycle.resolveOrStart(surface);
-      if (created.creationAuthority === null) throw new Error("expected creation authority");
+      if (created.creationLease === null) throw new Error("expected creation lease");
+      bindings.failNextLoad = true;
+
+      await expect(lifecycle.resolveOrStart(surface)).rejects.toThrow("binding load failed");
+
+      expect(await lifecycle.releaseCreation(created.creationLease)).toBe(true);
+      expect(store.load(created.conversation.id)).toBeNull();
+    });
+
+    it("conservatively seals pending creation when a non-lease observer resolves it", async () => {
+      const { lifecycle, store } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const created = await lifecycle.resolveOrStart(surface);
+      if (created.creationLease === null) throw new Error("expected creation lease");
+
+      expect(lifecycle.inspect(surface)?.id).toBe(created.conversation.id);
+      expect(await lifecycle.releaseCreation(created.creationLease)).toBe(true);
+      expect(store.load(created.conversation.id)).not.toBeNull();
+      expect((await lifecycle.resolveOrStart(surface)).creationLease).toBeNull();
+    });
+
+    it("returns false and consumes the lease when transcript history makes rollback ineligible", async () => {
+      const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const created = await lifecycle.resolveOrStart(surface);
+      if (created.creationLease === null) throw new Error("expected creation lease");
       writeFileSync(transcriptPath(tmpDir, created.conversation.id), '{"role":"user","content":"keep me"}\n');
 
-      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
-      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
+      expect(await lifecycle.releaseCreation(created.creationLease)).toBe(false);
+      expect(await lifecycle.releaseCreation(created.creationLease)).toBe(false);
       expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(created.conversation.id);
       expect(store.load(created.conversation.id)).not.toBeNull();
     });
 
-    it("fails safe and consumes authority when the transcript cannot be read", async () => {
+    it("fails safe and consumes the lease when the transcript cannot be read", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
       const created = await lifecycle.resolveOrStart(surface);
-      if (created.creationAuthority === null) throw new Error("expected creation authority");
+      if (created.creationLease === null) throw new Error("expected creation lease");
       const transcript = transcriptPath(tmpDir, created.conversation.id);
       rmSync(transcript);
       mkdirSync(transcript);
 
-      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
-      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
+      expect(await lifecycle.releaseCreation(created.creationLease)).toBe(false);
+      expect(await lifecycle.releaseCreation(created.creationLease)).toBe(false);
       expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(created.conversation.id);
       expect(store.load(created.conversation.id)).not.toBeNull();
       expect(existsSync(sessionDir(tmpDir, created.conversation.id))).toBe(true);
@@ -571,9 +606,9 @@ describe("ConversationLifecycle", () => {
       );
       const surface = dmSurface(1);
       const created = await lifecycle.resolveOrStart(surface);
-      if (created.creationAuthority === null) throw new Error("expected creation authority");
+      if (created.creationLease === null) throw new Error("expected creation lease");
 
-      const error = await lifecycle.rollbackCreation(created.creationAuthority).then(
+      const error = await lifecycle.releaseCreation(created.creationLease).then(
         () => undefined,
         (cause: unknown) => cause,
       );
@@ -583,7 +618,7 @@ describe("ConversationLifecycle", () => {
       expect((error as Error).cause).toBeInstanceOf(Error);
       expect(bindings.bindings.surfaces[surfaceId(surface)]).toBeUndefined();
       expect(store.load(created.conversation.id)).not.toBeNull();
-      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
+      expect(await lifecycle.releaseCreation(created.creationLease)).toBe(false);
     });
   });
 

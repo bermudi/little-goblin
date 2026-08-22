@@ -209,7 +209,7 @@ function createFixture(): RuntimeFixture {
 
 async function makeSession(lifecycle: ConversationLifecycle, surface: Surface, _home: string): Promise<ConversationState> {
   const resolution = await lifecycle.resolveOrStart(surface);
-  if (resolution.creationAuthority !== null) lifecycle.settleCreation(resolution.creationAuthority);
+  if (resolution.creationLease !== null) lifecycle.sealCreation(resolution.creationLease);
   return resolution.conversation;
 }
 

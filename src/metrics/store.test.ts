@@ -79,21 +79,10 @@ function makeTurnEvent(overrides?: {
   };
 }
 
-function assertRootWriteErrorPreserved(write: () => void): void {
+function assertWriteErrorPropagates(write: () => void): void {
   const writeErr = new Error("disk full") as NodeJS.ErrnoException;
   writeErr.code = "ENOSPC";
-
-  const unlinkErr = new Error("lock cleanup denied") as NodeJS.ErrnoException;
-  unlinkErr.code = "EPERM";
-
-  const originalUnlink = fs.unlinkSync;
   const writeSpy = spyOn(fs, "writeSync").mockImplementation((): never => { throw writeErr; });
-  const unlink = spyOn(fs, "unlinkSync").mockImplementation((path: fs.PathLike): void => {
-    if (String(path).endsWith("metrics.jsonl.lock")) {
-      throw unlinkErr;
-    }
-    originalUnlink(path);
-  });
 
   let caught: unknown;
   try {
@@ -102,7 +91,6 @@ function assertRootWriteErrorPreserved(write: () => void): void {
     caught = e;
   } finally {
     writeSpy.mockRestore();
-    unlink.mockRestore();
   }
 
   expect(caught).toBe(writeErr);
@@ -135,35 +123,6 @@ describe("MetricsStore", () => {
       });
     });
 
-    it("recreates the metrics directory if it is removed during lock acquisition", () => {
-      const originalOpenSync = fs.openSync;
-      let callCount = 0;
-      const enoent = new Error("concurrent directory removal") as NodeJS.ErrnoException;
-      enoent.code = "ENOENT";
-
-      const open = spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, flags: string, mode?: number | null): number => {
-        if (callCount++ === 0) {
-          throw enoent;
-        }
-        return mode !== undefined ? originalOpenSync(path, flags, mode) : originalOpenSync(path, flags);
-      }) as unknown as typeof fs.openSync);
-
-      try {
-        store.record({ type: "counter", name: "test", scope: null, value: 1 });
-        const raw = readFileSync(metricsFilePath(tmp), "utf-8");
-        const lines = raw.trim().split("\n");
-        expect(lines.length).toBe(1);
-        expect(JSON.parse(lines[0]!)).toEqual({
-          type: "counter",
-          name: "test",
-          scope: null,
-          value: 1,
-        });
-      } finally {
-        open.mockRestore();
-      }
-    });
-
     it("appends a second complete JSON line", () => {
       store.record({ type: "counter", name: "a", scope: null, value: 1 });
       store.record({ type: "counter", name: "b", scope: "general", value: 2 });
@@ -179,74 +138,27 @@ describe("MetricsStore", () => {
       });
     });
 
-    it("propagates a non-ENOENT metrics-lock cleanup failure", () => {
-      const originalUnlink = fs.unlinkSync;
-      const unlink = spyOn(fs, "unlinkSync").mockImplementation((path: fs.PathLike): void => {
-        if (String(path).endsWith("metrics.jsonl.lock")) {
-          const error = new Error("lock cleanup denied") as NodeJS.ErrnoException;
-          error.code = "EPERM";
-          throw error;
-        }
-        originalUnlink(path);
-      });
-      try {
-        expect(() => store.record({ type: "counter", name: "test", scope: null, value: 1 }))
-          .toThrow("lock cleanup denied");
-      } finally {
-        unlink.mockRestore();
-      }
-    });
-
-    it("propagates a non-ENOENT stale-lock cleanup failure", () => {
+    it("ignores a stale legacy lock artifact left by a crashed process", () => {
       const lockPath = `${metricsFilePath(tmp)}.lock`;
       mkdirSync(dirname(lockPath), { recursive: true });
-      writeFileSync(lockPath, "");
+      writeFileSync(lockPath, "legacy crash artifact", "utf-8");
       const stale = new Date(Date.now() - 60_000);
       utimesSync(lockPath, stale, stale);
 
-      const originalUnlink = fs.unlinkSync;
-      const unlink = spyOn(fs, "unlinkSync").mockImplementation((path: fs.PathLike): void => {
-        if (path === lockPath) {
-          const error = new Error("stale lock cleanup denied") as NodeJS.ErrnoException;
-          error.code = "EPERM";
-          throw error;
-        }
-        originalUnlink(path);
+      store.record({ type: "counter", name: "test", scope: null, value: 1 });
+
+      expect(readFileSync(lockPath, "utf-8")).toBe("legacy crash artifact");
+      expect(JSON.parse(readFileSync(metricsFilePath(tmp), "utf-8").trim())).toEqual({
+        type: "counter",
+        name: "test",
+        scope: null,
+        value: 1,
       });
-      try {
-        expect(() => store.record({ type: "counter", name: "test", scope: null, value: 1 }))
-          .toThrow("stale lock cleanup denied");
-      } finally {
-        unlink.mockRestore();
-      }
     });
 
-    it("propagates a non-ENOENT metrics-lock stat failure", () => {
-      const lockPath = `${metricsFilePath(tmp)}.lock`;
-      mkdirSync(dirname(lockPath), { recursive: true });
-      writeFileSync(lockPath, "");
-      const fresh = new Date();
-      utimesSync(lockPath, fresh, fresh);
-
-      const originalStat = fs.statSync;
-      const stat = spyOn(fs, "statSync").mockImplementation(((path: fs.PathLike): fs.Stats => {
-        if (path === lockPath) {
-          const error = new Error("metrics lock stat denied") as NodeJS.ErrnoException;
-          error.code = "EPERM";
-          throw error;
-        }
-        return originalStat(path);
-      }) as unknown as typeof fs.statSync);
-      try {
-        expect(() => store.record({ type: "counter", name: "test", scope: null, value: 1 }))
-          .toThrow("metrics lock stat denied");
-      } finally {
-        stat.mockRestore();
-      }
-    });
-
-    it("preserves the original write error when the lock release also fails", () => {
-      assertRootWriteErrorPreserved(() => store.record({ type: "counter", name: "test", scope: null, value: 1 }));
+    it("propagates append failures without creating a lock artifact", () => {
+      assertWriteErrorPropagates(() => store.record({ type: "counter", name: "test", scope: null, value: 1 }));
+      expect(fs.existsSync(`${metricsFilePath(tmp)}.lock`)).toBe(false);
     });
 
     it("persists a turn event with nested usage", () => {
@@ -271,12 +183,19 @@ describe("MetricsStore", () => {
       expect(summary!.memoryWriteTotal).toBe(1);
     });
 
-    it("records cumulative values after prior writes", () => {
+    it("serializes cumulative updates across store instances in one process", () => {
+      const otherStore = new MetricsStore(tmp, VALID_ID);
+
       store.incrementCounter("memory_write_total", "all");
+      otherStore.incrementCounter("memory_write_total", "all");
       store.incrementCounter("memory_write_total", "all");
-      store.incrementCounter("memory_write_total", "all");
-      const summary = readMetricsSummary(tmp, VALID_ID);
-      expect(summary!.memoryWriteTotal).toBe(3);
+
+      const events = readFileSync(metricsFilePath(tmp), "utf-8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { value: number });
+      expect(events.map((event) => event.value)).toEqual([1, 2, 3]);
+      expect(readMetricsSummary(tmp, VALID_ID)!.memoryWriteTotal).toBe(3);
     });
 
     it("keeps scopes independent and aggregates by counter name", () => {
@@ -294,8 +213,9 @@ describe("MetricsStore", () => {
       expect(parsed).toEqual({ type: "counter", name: "manual_counter", scope: null, value: 1 });
     });
 
-    it("preserves the original write error when the lock release also fails", () => {
-      assertRootWriteErrorPreserved(() => store.incrementCounter("manual_counter"));
+    it("propagates read-modify-append failures without creating a lock artifact", () => {
+      assertWriteErrorPropagates(() => store.incrementCounter("manual_counter"));
+      expect(fs.existsSync(`${metricsFilePath(tmp)}.lock`)).toBe(false);
     });
   });
 

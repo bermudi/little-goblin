@@ -1,75 +1,6 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
-import { log, boundedError } from "../log.ts";
 import { metricsPath } from "../sessions/paths.ts";
-
-const LOCK_STALE_MS = 5000;
-const LOCK_MAX_ATTEMPTS = 100;
-const LOCK_RETRY_SLEEP_MS = 5;
-
-/**
- * Acquire a file-scoped lock for the given metrics file using an atomic
- * `O_EXCL` lock file. The lock is released by the returned function.
- *
- * If a stale lock file is detected (older than `LOCK_STALE_MS`), it is removed
- * and acquisition is retried, so a crashed process does not block writers
- * forever. Contended locks are retried briefly before throwing.
- */
-function lockMetricsFile(filePath: string): () => void {
-  const lockPath = `${filePath}.lock`;
-  const dir = dirname(filePath);
-  mkdirSync(dir, { recursive: true });
-
-  for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
-    try {
-      const fd = openSync(lockPath, "wx");
-      closeSync(fd);
-      return () => {
-        try {
-          unlinkSync(lockPath);
-        } catch (error) {
-          // Another writer may have released the lock first; all other cleanup
-          // failures must surface rather than leaving a stale lock silently.
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-          throw error;
-        }
-      };
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
-        // A concurrent rm -rf of the session dir removed the parent path
-        // between the initial mkdir and the open. Recreate it and retry.
-        mkdirSync(dir, { recursive: true });
-        continue;
-      }
-      if (code === "EEXIST") {
-        // Another writer holds the lock. A missing lock is an expected race;
-        // stat and stale-lock cleanup failures otherwise need to surface.
-        let stat: ReturnType<typeof statSync>;
-        try {
-          stat = statSync(lockPath);
-        } catch (statError) {
-          if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
-          throw statError;
-        }
-        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-          try {
-            unlinkSync(lockPath);
-          } catch (unlinkError) {
-            if ((unlinkError as NodeJS.ErrnoException).code === "ENOENT") continue;
-            throw unlinkError;
-          }
-          continue;
-        }
-        Bun.sleepSync(LOCK_RETRY_SLEEP_MS);
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  throw new Error(`Failed to acquire metrics lock for ${filePath}`);
-}
 
 export interface MetricsUsage {
   input: number;
@@ -251,47 +182,17 @@ export class MetricsStore {
     }
   }
 
-  private releaseAfterWrite(release: () => void, writeError: unknown): void {
-    try {
-      release();
-    } catch (releaseErr) {
-      if (writeError !== undefined) {
-        log.error("metrics lock release failed after write failure", {
-          ...boundedError(writeError),
-          releaseErr: boundedError(releaseErr).error,
-        });
-        throw writeError;
-      }
-      throw releaseErr;
-    }
-  }
-
   record(event: MetricsEvent): void {
-    const release = lockMetricsFile(this.path);
-    let writeError: unknown;
-    try {
-      this.writeLine(JSON.stringify(event) + "\n");
-    } catch (e) {
-      writeError = e;
-      throw e;
-    } finally {
-      this.releaseAfterWrite(release, writeError);
-    }
+    this.writeLine(JSON.stringify(event) + "\n");
   }
 
   incrementCounter(name: string, scope: string | null = null, delta: number = 1): void {
+    // MetricsStore is used only by the declared one-process deployment. This
+    // synchronous read-modify-append cannot overlap another JS callback on the
+    // Bun event loop; offline migration runs with that process stopped.
     const path = this.path;
-    const release = lockMetricsFile(path);
-    let writeError: unknown;
-    try {
-      const last = lastCounterValue(path, name, scope);
-      this.writeLine(JSON.stringify({ type: "counter", name, scope, value: last + delta }) + "\n");
-    } catch (e) {
-      writeError = e;
-      throw e;
-    } finally {
-      this.releaseAfterWrite(release, writeError);
-    }
+    const last = lastCounterValue(path, name, scope);
+    this.writeLine(JSON.stringify({ type: "counter", name, scope, value: last + delta }) + "\n");
   }
 }
 

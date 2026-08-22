@@ -222,8 +222,19 @@ export function loadStore(home: string): ScheduleStoreFile {
 
 /**
  * Save the store atomically via `atomicWrite` (tmp + fsync + rename).
+ *
+ * Offline Surface migration also uses this writer for partially migrated
+ * records, so it cannot apply the runtime file schema yet. It still enforces
+ * recurrence safety for every record whose kind has already been established.
  */
 export function saveStore(home: string, store: ScheduleStoreFile): void {
+  for (const [index, schedule] of store.schedules.entries()) {
+    if (schedule.kind === "recurring" || schedule.kind === "heartbeat") {
+      assertValidRecurrenceInterval(schedule.intervalMs, `schedule ${schedule.id || index}`);
+    } else if (schedule.kind === "once" && schedule.intervalMs !== undefined) {
+      throw new Error(`one-shot schedule ${schedule.id || index} must not have intervalMs`);
+    }
+  }
   atomicWrite(pathFor(home), JSON.stringify(store, null, 2) + "\n");
 }
 

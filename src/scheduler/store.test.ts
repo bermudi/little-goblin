@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ScheduleStore, makeScheduleId, loadStore } from "./store.ts";
+import { ScheduleStore, makeScheduleId, loadStore, saveStore } from "./store.ts";
 import { schedulesPath } from "../sessions/paths.ts";
 import { dmSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
 import type { ScheduledTurn } from "./types.ts";
@@ -189,6 +189,25 @@ describe("ScheduleStore", () => {
           intervalMs: 60_000,
         }),
       ).toThrow(/one-shot schedule must not have intervalMs/);
+    });
+
+    it("rejects an invalid interval at the exported persistence writer", () => {
+      expect(() =>
+        saveStore(tmpDir, {
+          schedules: [{
+            id: "unsafe",
+            surfaceId: surfaceId(LOC),
+            kind: "recurring",
+            prompt: "unsafe",
+            enabled: true,
+            state: "enabled",
+            nextRunAt: FUTURE_ISO,
+            intervalMs: -1,
+            createdAt: NOW_ISO,
+          }],
+        }),
+      ).toThrow(/invalid intervalMs/);
+      expect(existsSync(schedulesPath(tmpDir))).toBe(false);
     });
   });
 

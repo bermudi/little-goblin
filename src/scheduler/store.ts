@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { atomicWrite } from "../fs.ts";
 import { log } from "../log.ts";
 import { schedulesPath } from "../sessions/paths.ts";
+import { loadJsonFile } from "../sessions/state-file.ts";
+import { atomicWrite } from "../fs.ts";
 import { surfaceId, parseSurfaceId, type Surface } from "../surface.ts";
 import {
   MAX_AGENT_SCHEDULES,
@@ -83,30 +83,141 @@ function surfaceIdOf(surface: Surface): string {
   return surfaceId(surface);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isValidTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function isValidRecurrenceInterval(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function assertValidRecurrenceInterval(value: unknown, context: string): asserts value is number {
+  if (!isValidRecurrenceInterval(value)) {
+    throw new Error(`${context} has invalid intervalMs: expected a positive safe integer`);
+  }
+}
+
+function validateLastRun(value: unknown, id: string): void {
+  if (!isRecord(value) || !isValidTimestamp(value.at)) {
+    throw new Error(`schedule ${id} has invalid lastRun`);
+  }
+  if (
+    value.outcome !== "ok" &&
+    value.outcome !== "binding-mismatch" &&
+    value.outcome !== "archived" &&
+    value.outcome !== "error" &&
+    value.outcome !== "pending"
+  ) {
+    throw new Error(`schedule ${id} has invalid lastRun outcome`);
+  }
+  if (value.message !== undefined && typeof value.message !== "string") {
+    throw new Error(`schedule ${id} has invalid lastRun message`);
+  }
+}
+
+function validatePersistedTurn(value: unknown, index: number): PersistedScheduledTurn {
+  if (!isRecord(value)) {
+    throw new Error(`schedule ${index} is not an object`);
+  }
+
+  const id = typeof value.id === "string" && value.id.length > 0 ? value.id : String(index);
+  if (typeof value.id !== "string" || value.id.length === 0) {
+    throw new Error(`schedule ${id} has invalid id`);
+  }
+  if (typeof value.surfaceId !== "string") {
+    throw new Error(`schedule ${id} has invalid surfaceId`);
+  }
+  try {
+    parseSurfaceId(value.surfaceId);
+  } catch (error) {
+    throw new Error(
+      `schedule ${id} has invalid surfaceId: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (value.kind !== "once" && value.kind !== "recurring" && value.kind !== "heartbeat") {
+    throw new Error(`schedule ${id} has invalid kind`);
+  }
+  if (value.prompt !== null && typeof value.prompt !== "string") {
+    throw new Error(`schedule ${id} has invalid prompt`);
+  }
+  if (typeof value.enabled !== "boolean") {
+    throw new Error(`schedule ${id} has invalid enabled`);
+  }
+  if (value.state !== "enabled" && value.state !== "disabled" && value.state !== "completed") {
+    throw new Error(`schedule ${id} has invalid state`);
+  }
+  if (!isValidTimestamp(value.nextRunAt)) {
+    throw new Error(`schedule ${id} has invalid nextRunAt`);
+  }
+  if (!isValidTimestamp(value.createdAt)) {
+    throw new Error(`schedule ${id} has invalid createdAt`);
+  }
+  if (value.kind === "recurring" || value.kind === "heartbeat") {
+    assertValidRecurrenceInterval(value.intervalMs, `schedule ${id}`);
+  } else if (value.intervalMs !== undefined) {
+    throw new Error(`one-shot schedule ${id} must not have intervalMs`);
+  }
+  if (value.source !== undefined && value.source !== "user" && value.source !== "agent") {
+    throw new Error(`schedule ${id} has invalid source`);
+  }
+  if (value.lastRun !== undefined) {
+    validateLastRun(value.lastRun, id);
+  }
+  if (
+    value.claimRevision !== undefined &&
+    (typeof value.claimRevision !== "number" ||
+      !Number.isSafeInteger(value.claimRevision) ||
+      value.claimRevision < 0)
+  ) {
+    throw new Error(`schedule ${id} has invalid claimRevision`);
+  }
+
+  return value as unknown as PersistedScheduledTurn;
+}
+
+function validateStoreFile(value: unknown, path: string): ScheduleStoreFile {
+  try {
+    if (!isRecord(value) || !Array.isArray(value.schedules)) {
+      throw new Error('expected an object with a "schedules" array');
+    }
+
+    const ids = new Set<string>();
+    const heartbeatSurfaces = new Set<string>();
+    const schedules = value.schedules.map((entry, index) => {
+      const schedule = validatePersistedTurn(entry, index);
+      if (ids.has(schedule.id)) {
+        throw new Error(`duplicate schedule id ${schedule.id}`);
+      }
+      ids.add(schedule.id);
+      if (schedule.kind === "heartbeat") {
+        if (heartbeatSurfaces.has(schedule.surfaceId)) {
+          throw new Error(`surface ${schedule.surfaceId} has duplicate heartbeat schedules`);
+        }
+        heartbeatSurfaces.add(schedule.surfaceId);
+      }
+      return schedule;
+    });
+    return { schedules };
+  } catch (error) {
+    throw new Error(
+      `invalid schedules authority at ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 /**
- * Load the schedule store. Returns an empty store when the file is missing
- * (ENOENT is expected — first run). Malformed JSON logs a warning and yields
- * an empty store so the bot keeps running; everything else propagates.
+ * Load and validate the schedule authority. A missing file is the sole empty
+ * case (first run); malformed JSON or an invalid persisted shape propagates so
+ * no later mutation can replace corrupt authority with a partial store.
  */
 export function loadStore(home: string): ScheduleStoreFile {
-  try {
-    const raw = readFileSync(pathFor(home), "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed !== null && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).schedules)) {
-      return parsed as ScheduleStoreFile;
-    }
-    log.warn("schedules.json has unexpected shape, treating as empty", { path: pathFor(home) });
-    return structuredClone(EMPTY_STORE);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      return structuredClone(EMPTY_STORE);
-    }
-    if (e instanceof SyntaxError) {
-      log.warn("schedules.json malformed, treating as empty", { error: e.message });
-      return structuredClone(EMPTY_STORE);
-    }
-    throw e;
-  }
+  const path = pathFor(home);
+  const parsed = loadJsonFile<unknown>(path, structuredClone(EMPTY_STORE));
+  return validateStoreFile(parsed, path);
 }
 
 /**
@@ -218,6 +329,12 @@ export class ScheduleStore {
     intervalMs?: number;
     source?: "user" | "agent";
   }): ScheduledTurn {
+    if (params.kind === "recurring") {
+      assertValidRecurrenceInterval(params.intervalMs, "recurring schedule");
+    } else if (params.intervalMs !== undefined) {
+      throw new Error("one-shot schedule must not have intervalMs");
+    }
+
     const source = params.source ?? "user";
     const store = this.read();
 
@@ -266,6 +383,10 @@ export class ScheduleStore {
     now: string;
     agent?: boolean;
   }): ScheduledTurn {
+    if (params.intervalMs !== undefined) {
+      assertValidRecurrenceInterval(params.intervalMs, "heartbeat schedule");
+    }
+
     const key = surfaceIdOf(params.surface);
     const agent = params.agent ?? false;
     const store = this.read();
@@ -490,18 +611,30 @@ export class ScheduleStore {
       s.state = "completed";
     } else {
       const interval = s.intervalMs;
-      if (interval === undefined) {
-        // Defensive: a recurring/heartbeat record without an interval is
-        // broken; disable it rather than tight-looping.
+      if (!isValidRecurrenceInterval(interval)) {
+        // Defensive even though persisted and writable boundaries validate:
+        // malformed legacy/in-memory input must never enter recurrence math.
         s.enabled = false;
         s.state = "disabled";
-        s.lastRun = { at: now, outcome: "error", message: "missing intervalMs" };
+        s.lastRun = {
+          at: now,
+          outcome: "error",
+          message: interval === undefined ? "missing intervalMs" : "invalid intervalMs",
+        };
       } else {
-        // Advance from the due time (not from now) so a delayed tick does not
-        // accumulate drift, but never schedule the next run in the past.
-        let nextMs = new Date(s.nextRunAt).getTime() + interval;
-        while (nextMs <= nowMs) nextMs += interval;
-        s.nextRunAt = new Date(nextMs).toISOString();
+        // Advance from the due time (not from now) without iterating once per
+        // missed occurrence. The direct calculation cannot hang on a large
+        // backlog and still schedules the first occurrence strictly after now.
+        const dueMs = new Date(s.nextRunAt).getTime();
+        const elapsedIntervals = Math.floor((nowMs - dueMs) / interval) + 1;
+        const nextMs = dueMs + elapsedIntervals * interval;
+        if (!Number.isFinite(nextMs) || Number.isNaN(new Date(nextMs).getTime())) {
+          s.enabled = false;
+          s.state = "disabled";
+          s.lastRun = { at: now, outcome: "error", message: "invalid next recurrence" };
+        } else {
+          s.nextRunAt = new Date(nextMs).toISOString();
+        }
       }
     }
     s.claimRevision = (s.claimRevision ?? 0) + 1;

@@ -1,11 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ScheduleStore, makeScheduleId, loadStore } from "./store.ts";
 import { schedulesPath } from "../sessions/paths.ts";
 import { dmSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
-import { log } from "../log.ts";
 import type { ScheduledTurn } from "./types.ts";
 
 const LOC: Surface = topicSurface("supergroup", 100, 5);
@@ -33,25 +32,53 @@ describe("ScheduleStore", () => {
       expect(existsSync(schedulesPath(tmpDir))).toBe(false);
     });
 
-    it("warns and loads empty on malformed JSON", () => {
-      mkdirSync(dirname(schedulesPath(tmpDir)), { recursive: true });
-      writeFileSync(schedulesPath(tmpDir), "{not json");
-      const loaded = loadStore(tmpDir);
-      expect(loaded.schedules).toEqual([]);
+    it("fails loudly on malformed JSON and does not overwrite it during a mutation", () => {
+      const path = schedulesPath(tmpDir);
+      const malformed = "{not json";
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, malformed);
+
+      expect(() => loadStore(tmpDir)).toThrow(SyntaxError);
+      expect(() =>
+        store.create({
+          surface: LOC,
+          kind: "once",
+          prompt: "must not replace authority",
+          nextRunAt: FUTURE_ISO,
+        }),
+      ).toThrow(SyntaxError);
+      expect(readFileSync(path, "utf-8")).toBe(malformed);
     });
 
-    it("warns and loads empty on valid JSON with an unexpected shape", () => {
-      mkdirSync(dirname(schedulesPath(tmpDir)), { recursive: true });
-      writeFileSync(schedulesPath(tmpDir), JSON.stringify({ schedules: "not-an-array" }));
-      const warn = spyOn(log, "warn");
-      try {
-        expect(loadStore(tmpDir).schedules).toEqual([]);
-        expect(warn).toHaveBeenCalledWith("schedules.json has unexpected shape, treating as empty", {
-          path: schedulesPath(tmpDir),
-        });
-      } finally {
-        warn.mockRestore();
-      }
+    it("fails loudly on valid JSON with an unexpected shape", () => {
+      const path = schedulesPath(tmpDir);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schedules: "not-an-array" }));
+
+      expect(() => loadStore(tmpDir)).toThrow(`invalid schedules authority at ${path}`);
+    });
+
+    it("fails loudly on an invalid persisted schedule without rewriting it", () => {
+      const path = schedulesPath(tmpDir);
+      const malformed = JSON.stringify({
+        schedules: [{
+          id: "broken",
+          surfaceId: surfaceId(LOC),
+          kind: "recurring",
+          prompt: "broken",
+          enabled: true,
+          state: "enabled",
+          nextRunAt: PAST_ISO,
+          intervalMs: 0,
+          createdAt: NOW_ISO,
+        }],
+      });
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, malformed);
+
+      expect(() => store.claimDue("broken", NOW_ISO)).toThrow(/schedule broken has invalid intervalMs/);
+      expect(() => store.remove(LOC, "broken")).toThrow(/schedule broken has invalid intervalMs/);
+      expect(readFileSync(path, "utf-8")).toBe(malformed);
     });
   });
 
@@ -135,6 +162,33 @@ describe("ScheduleStore", () => {
       });
       expect(created.kind).toBe("recurring");
       expect(created.intervalMs).toBe(7_200_000);
+    });
+
+    it("rejects missing, zero, negative, non-finite, and fractional intervals", () => {
+      for (const intervalMs of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+        expect(() =>
+          store.create({
+            surface: LOC,
+            kind: "recurring",
+            prompt: "invalid recurrence",
+            nextRunAt: FUTURE_ISO,
+            intervalMs,
+          }),
+        ).toThrow(/invalid intervalMs/);
+      }
+      expect(existsSync(schedulesPath(tmpDir))).toBe(false);
+    });
+
+    it("rejects an interval on a one-shot schedule", () => {
+      expect(() =>
+        store.create({
+          surface: LOC,
+          kind: "once",
+          prompt: "not recurring",
+          nextRunAt: FUTURE_ISO,
+          intervalMs: 60_000,
+        }),
+      ).toThrow(/one-shot schedule must not have intervalMs/);
     });
   });
 
@@ -258,6 +312,20 @@ describe("ScheduleStore", () => {
       });
       expect(hb.intervalMs).toBe(7_200_000);
       expect(hb.nextRunAt).toBe("2026-07-04T14:00:00.000Z");
+    });
+
+    it("rejects zero and negative heartbeat intervals", () => {
+      for (const intervalMs of [0, -60_000]) {
+        expect(() =>
+          store.setHeartbeat({
+            surface: LOC,
+            enabled: true,
+            intervalMs,
+            now: NOW_ISO,
+          }),
+        ).toThrow(/invalid intervalMs/);
+      }
+      expect(existsSync(schedulesPath(tmpDir))).toBe(false);
     });
 
     it("bare 'on' after a custom interval resets to 30 minutes", () => {

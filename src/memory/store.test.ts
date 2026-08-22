@@ -1,9 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
+import { EmbeddingProvider } from "./embeddings.ts";
+import { MemoryDatabase } from "./db.ts";
 import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
+import { log } from "../log.ts";
 import { surfaceId, dmSurface, topicSurface } from "../surface.ts";
 import type { TranscriptChunk } from "../sessions/transcript.ts";
 
@@ -11,6 +14,16 @@ const DELIMITER = "\n§\n";
 
 // Pin the global budget for these tests so overflow behavior is deterministic.
 process.env.GOBLIN_MEMORY_BUDGET_CHARS = "5000";
+
+class ThrowingEmbeddingProvider extends EmbeddingProvider {
+  constructor(db: MemoryDatabase, private readonly failure: Error) {
+    super(db);
+  }
+
+  override async embedEntries(): Promise<Map<string, Float32Array | null>> {
+    throw this.failure;
+  }
+}
 
 describe("MemoryStore", () => {
   let tmp: string;
@@ -93,6 +106,118 @@ describe("MemoryStore", () => {
       expect((await store.add(topic7, "y".repeat(2000))).ok).toBe(false);
       expect((await store.add(topic7, "fresh")).ok).toBe(true);
       expect(store.readBody(topic7)).toBe("fresh");
+    });
+  });
+
+  describe("post-commit embedding failures", () => {
+    const failure = new Error("embedding implementation exploded");
+
+    function useThrowingEmbeddings(): void {
+      store = new MemoryStore(store.db, undefined, {
+        embeddings: new ThrowingEmbeddingProvider(store.db, failure),
+      });
+    }
+
+    function captureLogsAndTransactions() {
+      return {
+        warn: spyOn(log, "warn").mockImplementation(() => {}),
+        error: spyOn(log, "error").mockImplementation(() => {}),
+        exec: spyOn(store.db.database, "exec"),
+      };
+    }
+
+    it("addEntry returns the durable id and only warns when embedding throws", async () => {
+      useThrowingEmbeddings();
+      const spies = captureLogsAndTransactions();
+      try {
+        const id = await store.addEntry({
+          scope: "general",
+          entryKind: "memory",
+          text: "durable addEntry text",
+        });
+
+        expect(store.readEntries("general")).toEqual([
+          expect.objectContaining({ entry_id: id, text: "durable addEntry text" }),
+        ]);
+        expect(spies.warn).toHaveBeenCalledWith(
+          "memory embedding failed after commit; write remains durable",
+          { operation: "addEntry", error: failure.message },
+        );
+        expect(spies.error).not.toHaveBeenCalled();
+        expect(spies.exec).not.toHaveBeenCalledWith("ROLLBACK");
+      } finally {
+        spies.warn.mockRestore();
+        spies.error.mockRestore();
+        spies.exec.mockRestore();
+      }
+    });
+
+    it("updateEntry reports success for the durable update and only warns when embedding throws", async () => {
+      const id = await store.addEntry({
+        scope: "general",
+        entryKind: "memory",
+        text: "before update",
+      });
+      useThrowingEmbeddings();
+      const spies = captureLogsAndTransactions();
+      try {
+        const result = await store.updateEntry(id, { text: "durable updated text" });
+
+        expect(result).toEqual({ ok: true });
+        expect(store.readBody("general")).toBe("durable updated text");
+        expect(spies.warn).toHaveBeenCalledWith(
+          "memory embedding failed after commit; write remains durable",
+          { operation: "updateEntry", error: failure.message },
+        );
+        expect(spies.error).not.toHaveBeenCalled();
+        expect(spies.exec).not.toHaveBeenCalledWith("ROLLBACK");
+      } finally {
+        spies.warn.mockRestore();
+        spies.error.mockRestore();
+        spies.exec.mockRestore();
+      }
+    });
+
+    it("mutate reports success for the durable write and does not misreport a transaction failure", async () => {
+      useThrowingEmbeddings();
+      const spies = captureLogsAndTransactions();
+      try {
+        const result = await store.add("general", "durable manual write");
+
+        expect(result).toEqual({ ok: true });
+        expect(store.readBody("general")).toBe("durable manual write");
+        expect(spies.warn).toHaveBeenCalledWith(
+          "memory embedding failed after commit; write remains durable",
+          { operation: "add", error: failure.message },
+        );
+        expect(spies.error).not.toHaveBeenCalled();
+        expect(spies.exec).not.toHaveBeenCalledWith("ROLLBACK");
+      } finally {
+        spies.warn.mockRestore();
+        spies.error.mockRestore();
+        spies.exec.mockRestore();
+      }
+    });
+
+    it("still rolls back and surfaces a true transaction failure before embedding", async () => {
+      useThrowingEmbeddings();
+      const spies = captureLogsAndTransactions();
+      try {
+        await expect(store.addEntry({
+          scope: "general",
+          entryKind: "memory",
+          text: "x".repeat(5001),
+        })).rejects.toThrow("memory overflow");
+
+        expect(store.readEntries("general")).toEqual([]);
+        expect(spies.exec).toHaveBeenCalledWith("ROLLBACK");
+        expect(spies.warn).not.toHaveBeenCalled();
+        expect(spies.error).not.toHaveBeenCalled();
+      } finally {
+        spies.warn.mockRestore();
+        spies.error.mockRestore();
+        spies.exec.mockRestore();
+      }
     });
   });
 

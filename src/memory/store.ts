@@ -257,18 +257,20 @@ export class MemoryStore {
     const now = Date.now();
     const createdAt = input.createdAt ?? now;
     const updatedAt = input.updatedAt ?? now;
+    let id: string;
     this.db.database.exec("BEGIN");
     try {
       const currentChars = this.budget.currentChars(this.db);
       this.budget.enforce(this.db, currentChars + input.text.length);
-      const id = this.addEntryInTransaction({ ...input, createdAt, updatedAt });
+      id = this.addEntryInTransaction({ ...input, createdAt, updatedAt });
       this.db.database.exec("COMMIT");
-      await this.embeddings?.embedEntry(id, input.text);
-      return id;
     } catch (err) {
       this.db.database.exec("ROLLBACK");
       throw err;
     }
+
+    await this.runEmbeddingAfterCommit("addEntry", () => this.embeddings?.embedEntry(id, input.text));
+    return id;
   }
 
   /**
@@ -361,8 +363,6 @@ export class MemoryStore {
       this.insertIndexAndTags(id, existing.scope, existing.entry_kind, input.text, existing.chat_id);
 
       this.db.database.exec("COMMIT");
-      await this.embeddings?.embedEntry(id, input.text);
-      return { ok: true };
     } catch (err) {
       this.db.database.exec("ROLLBACK");
       if (err instanceof MemoryOverflowError) {
@@ -370,6 +370,9 @@ export class MemoryStore {
       }
       throw err;
     }
+
+    await this.runEmbeddingAfterCommit("updateEntry", () => this.embeddings?.embedEntry(id, input.text));
+    return { ok: true };
   }
 
   async addEntries(inputs: MemoryEntryInput[]): Promise<string[]> {
@@ -959,14 +962,6 @@ export class MemoryStore {
       }
 
       this.db.database.exec("COMMIT");
-      this.metrics?.incrementCounter("memory_write_total", tag);
-      this.metrics?.incrementCounter(`memory_write_${action}_total`, tag);
-
-      // Embed new/changed entries after the transaction commits. Failures are
-      // logged but do not fail the write — FTS still serves search.
-      await this.embeddings?.embedEntries(toEmbed);
-
-      return { ok: true };
     } catch (err) {
       this.db.database.exec("ROLLBACK");
       log.error("memory store transaction failed", { action, error: err instanceof Error ? err.message : String(err) });
@@ -975,6 +970,29 @@ export class MemoryStore {
         return { ok: false, error: err.message };
       }
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    this.metrics?.incrementCounter("memory_write_total", tag);
+    this.metrics?.incrementCounter(`memory_write_${action}_total`, tag);
+
+    // Embed new/changed entries after the transaction commits. Failures are
+    // logged but do not fail the write — FTS still serves search.
+    await this.runEmbeddingAfterCommit(action, () => this.embeddings?.embedEntries(toEmbed));
+
+    return { ok: true };
+  }
+
+  private async runEmbeddingAfterCommit(
+    operation: "addEntry" | "updateEntry" | "add" | "replace" | "remove" | "rewrite",
+    embed: () => Promise<unknown> | undefined,
+  ): Promise<void> {
+    try {
+      await embed();
+    } catch (err) {
+      log.warn("memory embedding failed after commit; write remains durable", {
+        operation,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

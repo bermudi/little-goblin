@@ -199,6 +199,107 @@ describe("MemoryStore", () => {
       }
     });
 
+    it("addEntries returns all durable ids when batch embedding throws", async () => {
+      useThrowingEmbeddings();
+      const spies = captureLogsAndTransactions();
+      try {
+        const ids = await store.addEntries([
+          { scope: "general", entryKind: "memory", text: "durable batch one" },
+          { scope: "general", entryKind: "memory", text: "durable batch two" },
+        ]);
+
+        expect(ids).toHaveLength(2);
+        expect(store.readEntries("general").map((entry) => entry.entry_id)).toEqual(ids);
+        expect(spies.warn).toHaveBeenCalledWith(
+          "memory embedding failed after commit; write remains durable",
+          { operation: "addEntries", error: failure.message },
+        );
+        expect(spies.exec).not.toHaveBeenCalledWith("ROLLBACK");
+      } finally {
+        spies.warn.mockRestore();
+        spies.error.mockRestore();
+        spies.exec.mockRestore();
+      }
+    });
+
+    it("importEntries returns durable imported rows when batch embedding throws", async () => {
+      useThrowingEmbeddings();
+      const spies = captureLogsAndTransactions();
+      try {
+        const ids = await store.importEntries([
+          {
+            scope: "agents/imported",
+            entryKind: "memory",
+            text: "durable imported memory",
+            description: "imported description",
+          },
+        ]);
+
+        expect(ids).toHaveLength(1);
+        expect(store.read({ agent: { name: "imported" } })).toEqual({
+          description: "imported description",
+          body: "durable imported memory",
+        });
+        expect(spies.warn).toHaveBeenCalledWith(
+          "memory embedding failed after commit; write remains durable",
+          { operation: "importEntries", error: failure.message },
+        );
+        expect(spies.exec).not.toHaveBeenCalledWith("ROLLBACK");
+      } finally {
+        spies.warn.mockRestore();
+        spies.error.mockRestore();
+        spies.exec.mockRestore();
+      }
+    });
+
+    it("syncTranscriptChunks remains successful and idempotent when embedding throws", async () => {
+      useThrowingEmbeddings();
+      const spies = captureLogsAndTransactions();
+      const chunk: TranscriptChunk = {
+        text: "durable transcript chunk",
+        ts: new Date().toISOString(),
+        role: "user",
+        sessionId: "embedding-failure-session",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      try {
+        const firstIds = await store.syncTranscriptChunks(
+          "/tmp/embedding-failure.jsonl",
+          chunk.sessionId,
+          [chunk],
+          { hash: "same-hash", mtime: 10, size: 20 },
+        );
+        const retryIds = await store.syncTranscriptChunks(
+          "/tmp/embedding-failure.jsonl",
+          chunk.sessionId,
+          [chunk],
+          { hash: "same-hash", mtime: 10, size: 20 },
+        );
+
+        expect(firstIds).toHaveLength(1);
+        expect(retryIds).toHaveLength(1);
+        expect(store.db.database
+          .query<{ text: string }, { $scope: string }>("SELECT text FROM memory_entries WHERE scope = $scope")
+          .all({ $scope: `transcript/${chunk.sessionId}` }))
+          .toEqual([{ text: chunk.text }]);
+        expect(store.db.database
+          .query<{ hash: string }, { $path: string }>("SELECT hash FROM memory_sources WHERE path = $path")
+          .get({ $path: "/tmp/embedding-failure.jsonl" }))
+          .toEqual({ hash: "same-hash" });
+        expect(spies.warn).toHaveBeenCalledTimes(2);
+        expect(spies.warn).toHaveBeenLastCalledWith(
+          "memory embedding failed after commit; write remains durable",
+          { operation: "syncTranscriptChunks", error: failure.message },
+        );
+        expect(spies.exec).not.toHaveBeenCalledWith("ROLLBACK");
+      } finally {
+        spies.warn.mockRestore();
+        spies.error.mockRestore();
+        spies.exec.mockRestore();
+      }
+    });
+
     it("still rolls back and surfaces a true transaction failure before embedding", async () => {
       useThrowingEmbeddings();
       const spies = captureLogsAndTransactions();
@@ -359,6 +460,38 @@ describe("MemoryStore", () => {
       // topic scope, so the source is empty and a second archive is a no-op.
       expect(await store.archiveOrphan(-100, 42)).toBe(false);
       expect(store.read(scope)).toEqual({ body: "" });
+    });
+
+    it("keeps a committed archive successful when best-effort metrics fail", async () => {
+      const scope = { topic: { chatId: -100, topicId: 42 } };
+      await store.add(scope, "durable archive");
+      const metrics = new MetricsStore(tmp, "abcdef1234");
+      const metricFailure = new Error("metrics implementation exploded");
+      const increment = spyOn(metrics, "incrementCounter").mockImplementation(() => {
+        throw metricFailure;
+      });
+      store = new MemoryStore(store.db, metrics);
+      const warn = spyOn(log, "warn").mockImplementation(() => {});
+      const exec = spyOn(store.db.database, "exec");
+      try {
+        expect(await store.archiveOrphan(-100, 42)).toBe(true);
+
+        expect(store.read(scope)).toEqual({ body: "" });
+        expect(store.db.database
+          .query<{ text: string }, { $scope: string }>("SELECT text FROM memory_entries WHERE scope = $scope")
+          .all({ $scope: "archive/topics/-100/42" }))
+          .toEqual([{ text: "durable archive" }]);
+        expect(exec).not.toHaveBeenCalledWith("ROLLBACK");
+        expect(warn).toHaveBeenCalledWith("failed to record memory archive metric", {
+          chatId: -100,
+          topicId: 42,
+          error: metricFailure.message,
+        });
+      } finally {
+        increment.mockRestore();
+        warn.mockRestore();
+        exec.mockRestore();
+      }
     });
   });
 

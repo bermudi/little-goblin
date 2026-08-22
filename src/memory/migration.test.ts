@@ -1,10 +1,12 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, spyOn } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
+import { EmbeddingProvider } from "./embeddings.ts";
 import { migrateFromMarkdown } from "./migration.ts";
+import { log } from "../log.ts";
 import { fileCommitTimeMs } from "./store.ts";
 
 // Keep the global budget high so migration never hits a cap.
@@ -117,6 +119,41 @@ describe("migrateFromMarkdown", () => {
       expect(await migrateFromMarkdown(home, store)).toBe(false);
       expect(store.getEntryCount()).toBe(1);
     } finally {
+      store.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("completes once without duplicate imports when post-commit embedding fails", async () => {
+    const home = mkdtempSync(join(tmpdir(), "goblin-migration-embedding-failure-"));
+    let store = new MemoryStore(home);
+    const embeddingFailure = new Error("migration embedding exploded");
+    const provider = new EmbeddingProvider(store.db);
+    const embed = spyOn(provider, "embedEntries").mockRejectedValue(embeddingFailure);
+    store = new MemoryStore(store.db, undefined, { embeddings: provider });
+    const warn = spyOn(log, "warn").mockImplementation(() => {});
+    const exec = spyOn(store.db.database, "exec");
+    const root = memoryRootFor(home);
+    try {
+      mkdirSync(join(root, "general"), { recursive: true });
+      writeMarkdown(join(root, "general", "memory.md"), "durable legacy entry");
+
+      expect(await migrateFromMarkdown(home, store)).toBe(true);
+      expect(store.readBody("general")).toBe("durable legacy entry");
+      expect(store.db.getMeta("migrated_at")).toBeDefined();
+      expect(exec).not.toHaveBeenCalledWith("ROLLBACK");
+      expect(warn).toHaveBeenCalledWith(
+        "memory embedding failed after commit; write remains durable",
+        { operation: "importEntries", error: embeddingFailure.message },
+      );
+
+      expect(await migrateFromMarkdown(home, store)).toBe(false);
+      expect(store.getEntryCount()).toBe(1);
+      expect(embed).toHaveBeenCalledTimes(1);
+    } finally {
+      embed.mockRestore();
+      warn.mockRestore();
+      exec.mockRestore();
       store.close();
       rmSync(home, { recursive: true, force: true });
     }

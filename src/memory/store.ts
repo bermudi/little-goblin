@@ -402,9 +402,9 @@ export class MemoryStore {
       this.db.database.exec("ROLLBACK");
       throw err;
     }
-    await this.embeddings?.embedEntries(
+    await this.runEmbeddingAfterCommit("addEntries", () => this.embeddings?.embedEntries(
       inputs.map((input, i) => ({ entryId: ids[i]!, text: input.text })),
-    );
+    ));
     return ids;
   }
 
@@ -476,7 +476,9 @@ export class MemoryStore {
       throw err;
     }
 
-    await this.embeddings?.embedEntries(ids.map((id, i) => ({ entryId: id, text: chunks[i]!.text })));
+    await this.runEmbeddingAfterCommit("syncTranscriptChunks", () =>
+      this.embeddings?.embedEntries(ids.map((id, i) => ({ entryId: id, text: chunks[i]!.text }))),
+    );
     return ids;
   }
 
@@ -513,7 +515,7 @@ export class MemoryStore {
       this.db.database.exec("ROLLBACK");
       throw err;
     }
-    await this.embeddings?.embedEntries(toEmbed);
+    await this.runEmbeddingAfterCommit("importEntries", () => this.embeddings?.embedEntries(toEmbed));
     return ids;
   }
 
@@ -776,13 +778,24 @@ export class MemoryStore {
       this.db.database.query("UPDATE memory_index_fts SET scope = $new WHERE scope = $old").run({ $new: newScope, $old: oldScope });
       this.db.database.query("UPDATE memory_scopes SET scope = $new WHERE scope = $old").run({ $new: newScope, $old: oldScope });
       this.db.database.exec("COMMIT");
-      this.metrics?.incrementCounter("memory_archive_orphan_total", `topics/${chatId}/${topicId}`);
-      return true;
     } catch (err) {
       this.db.database.exec("ROLLBACK");
       log.warn("archiveOrphan failed", { chatId, topicId, error: err instanceof Error ? err.message : String(err) });
       return false;
     }
+
+    // Metrics are best-effort and must not reclassify a committed archive as
+    // failed. This matches the established policy for post-effect metrics.
+    try {
+      this.metrics?.incrementCounter("memory_archive_orphan_total", `topics/${chatId}/${topicId}`);
+    } catch (err) {
+      log.warn("failed to record memory archive metric", {
+        chatId,
+        topicId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return true;
   }
 
   /**
@@ -983,7 +996,16 @@ export class MemoryStore {
   }
 
   private async runEmbeddingAfterCommit(
-    operation: "addEntry" | "updateEntry" | "add" | "replace" | "remove" | "rewrite",
+    operation:
+      | "addEntry"
+      | "updateEntry"
+      | "addEntries"
+      | "syncTranscriptChunks"
+      | "importEntries"
+      | "add"
+      | "replace"
+      | "remove"
+      | "rewrite",
     embed: () => Promise<unknown> | undefined,
   ): Promise<void> {
     try {

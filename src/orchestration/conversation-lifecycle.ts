@@ -112,6 +112,11 @@ export interface SkillPolicyStatus {
 
 export type SkillRuntimeTransition = "invalidated" | "none";
 
+type SurfaceRuntimeInvalidationTarget = {
+  readonly conversationId: ConversationId | undefined;
+  readonly hadRuntime: boolean;
+};
+
 export interface SkillPolicyTransition extends SkillPolicyStatus {
   readonly runtime: SkillRuntimeTransition;
   readonly cleanupError?: string;
@@ -542,20 +547,17 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       await this.reconcilePendingAssignment();
       const previousModelName = this.settings.getModelName(surface);
       const previousThinkingLevel = this.settings.getThinkingLevel(surface);
+      const invalidationTarget = this.acquireSurfaceRuntimeInvalidation(surface);
 
-      // Persist first; once durable authority is written, it stays authoritative.
+      // Binding/runtime authority must be readable before durable settings are
+      // changed. Once the write commits, invalidation uses that held target and
+      // cannot be skipped by a later Binding-store read failure.
       this.settings.setPreferences(surface, patch);
-
-      // Then invalidate model work under the same lock while preserving any
-      // lifecycle commands already acknowledged behind this transition.
-      const invalidation = await this.invalidateSurfaceRuntime(surface, "preferences");
-
-      const currentId = this.bindings.load().surfaces[key];
-      const conversationId = currentId && isValidConversationId(currentId) ? (currentId as ConversationId) : undefined;
+      const invalidation = await this.invalidateSurfaceRuntime(surface, invalidationTarget, "preferences");
 
       log.info("surface preferences changed", {
         surfaceId: key,
-        conversationId,
+        conversationId: invalidationTarget.conversationId,
         modelName: patch.modelName,
         thinkingLevel: patch.thinkingLevel,
         previousModelName,
@@ -608,8 +610,9 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     // missing selected skill or cross-source collision therefore leaves both
     // authorities unchanged.
     const status = await this.resolveSkillPolicyStatus(surface, candidate);
+    const invalidationTarget = this.acquireSurfaceRuntimeInvalidation(surface);
     this.skillPolicyWriter(surface, candidate);
-    const invalidation = await this.invalidateSurfaceRuntime(surface, "skill-policy");
+    const invalidation = await this.invalidateSurfaceRuntime(surface, invalidationTarget, "skill-policy");
 
     log.info("Surface skill policy changed", {
       surfaceId: surfaceId(surface),
@@ -630,7 +633,8 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       // Resolve first: reload is not allowed to destroy a usable runtime when
       // the newly edited catalog is invalid or no longer satisfies selection.
       const status = await this.resolveSkillPolicyStatus(surface);
-      const invalidation = await this.invalidateSurfaceRuntime(surface, "skill-reload");
+      const invalidationTarget = this.acquireSurfaceRuntimeInvalidation(surface);
+      const invalidation = await this.invalidateSurfaceRuntime(surface, invalidationTarget, "skill-reload");
       log.info("Surface skills reloaded", {
         surfaceId: key,
         environment: status.environment,
@@ -666,21 +670,33 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
     return { environment, policy, resolvedSkills };
   }
 
+  private acquireSurfaceRuntimeInvalidation(surface: Surface): SurfaceRuntimeInvalidationTarget {
+    const rawConversationId = this.bindings.load().surfaces[surfaceId(surface)];
+    if (!rawConversationId || !isValidConversationId(rawConversationId)) {
+      return { conversationId: undefined, hadRuntime: false };
+    }
+
+    const conversationId = rawConversationId as ConversationId;
+    return {
+      conversationId,
+      hadRuntime: this.runtimeHost.hasRuntime(conversationId),
+    };
+  }
+
   private async invalidateSurfaceRuntime(
     surface: Surface,
+    target: SurfaceRuntimeInvalidationTarget,
     reason: "preferences" | "skill-policy" | "skill-reload",
   ): Promise<{
     runtime: SkillRuntimeTransition;
     cleanupError?: string;
   }> {
     const key = surfaceId(surface);
-    const rawConversationId = this.bindings.load().surfaces[key];
-    if (!rawConversationId || !isValidConversationId(rawConversationId)) {
+    const { conversationId, hadRuntime } = target;
+    if (conversationId === undefined) {
       return { runtime: "none" };
     }
 
-    const conversationId = rawConversationId as ConversationId;
-    const hadRuntime = this.runtimeHost.hasRuntime(conversationId);
     try {
       // The runtime host removes runner identity synchronously before it
       // awaits disposal. Lifecycle commands remain serialized by current

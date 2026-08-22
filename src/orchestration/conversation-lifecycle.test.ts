@@ -37,9 +37,14 @@ import { goblinSkillsPath, personalEnvironmentSkillsPath, soulMdPath, workspaceP
 
 class InMemoryBindingStore implements BindingStore {
   bindings: BindingsFile = { version: 1, surfaces: {} };
+  failNextLoad = false;
   failNextSave = false;
 
   load(): BindingsFile {
+    if (this.failNextLoad) {
+      this.failNextLoad = false;
+      throw new Error("binding load failed");
+    }
     return this.bindings;
   }
 
@@ -881,6 +886,26 @@ describe("ConversationLifecycle", () => {
       expect(runtimeHost.active.has(conversation.id)).toBe(false);
     });
 
+    it("does not persist preferences when runtime invalidation authority cannot be read", async () => {
+      const { lifecycle, bindings, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const conversation = await lifecycle.resolveOrStart(surface);
+      runtimeHost.active.add(conversation.id);
+      bindings.failNextLoad = true;
+
+      await expect(
+        lifecycle.setSurfacePreferences(surface, {
+          modelName: "poe/SurfaceModel",
+          thinkingLevel: "high",
+        }),
+      ).rejects.toThrow(/binding load failed/);
+
+      expect(lifecycle.settings.getModelName(surface)).toBeUndefined();
+      expect(lifecycle.settings.getThinkingLevel(surface)).toBeUndefined();
+      expect(runtimeHost.active.has(conversation.id)).toBe(true);
+      expect(runtimeHost.disposed).toEqual([]);
+    });
+
     it("inspects an unbound Surface with defaults and does not create history", async () => {
       const { lifecycle } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
@@ -947,6 +972,22 @@ describe("ConversationLifecycle", () => {
       expect(runtimeHost.active.has(conversation.id)).toBe(false);
     });
 
+    it("does not persist skill policy when runtime invalidation authority cannot be read", async () => {
+      const { lifecycle, bindings, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const conversation = await lifecycle.resolveOrStart(surface);
+      runtimeHost.active.add(conversation.id);
+      bindings.failNextLoad = true;
+
+      await expect(
+        lifecycle.setSkillSelection(surface, "goblin", { mode: "none" }),
+      ).rejects.toThrow(/binding load failed/);
+
+      expect(lifecycle.settings.getSkillPolicy(surface)).toEqual(DEFAULT_SKILL_POLICY);
+      expect(runtimeHost.active.has(conversation.id)).toBe(true);
+      expect(runtimeHost.disposed).toEqual([]);
+    });
+
     it("rejects a missing selected skill before settings or runtime changes", async () => {
       const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
@@ -977,6 +1018,20 @@ describe("ConversationLifecycle", () => {
       expect(result.resolvedSkills.skills.map((skill) => skill.name)).toContain("goblin-beta");
       expect(result.runtime).toBe("invalidated");
       expect(lifecycle.settings.getSkillPolicy(surface)).toEqual(DEFAULT_SKILL_POLICY);
+    });
+
+    it("fails reload before invalidation when Binding authority cannot be read", async () => {
+      const { lifecycle, bindings, runtimeHost } = makeFileLifecycle(tmpDir);
+      const surface = dmSurface(1);
+      const conversation = await lifecycle.resolveOrStart(surface);
+      runtimeHost.active.add(conversation.id);
+      bindings.failNextLoad = true;
+
+      await expect(lifecycle.reloadSkills(surface)).rejects.toThrow(/binding load failed/);
+
+      expect(lifecycle.settings.getSkillPolicy(surface)).toEqual(DEFAULT_SKILL_POLICY);
+      expect(runtimeHost.active.has(conversation.id)).toBe(true);
+      expect(runtimeHost.disposed).toEqual([]);
     });
 
     it("survives rotation and uses the destination policy on resume", async () => {

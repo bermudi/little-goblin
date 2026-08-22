@@ -286,6 +286,31 @@ describe("conversation migration", () => {
     expect(readFileSync(schedulesPath(home), "utf-8")).toBe(before);
   });
 
+  it("refuses contradictory schedule state before writing lifecycle output", () => {
+    mkdirSync(join(home, "state"), { recursive: true });
+    writeFileSync(
+      schedulesPath(home),
+      JSON.stringify({
+        schedules: [{
+          id: "contradictory-schedule",
+          sessionId: CONVERSATION_ID,
+          surfaceId: SURFACE_ID,
+          kind: "recurring",
+          prompt: "must not migrate",
+          enabled: false,
+          state: "completed",
+          nextRunAt: "2026-07-27T11:00:00.000Z",
+          intervalMs: 1_800_000,
+          createdAt: "2026-07-27T10:00:00.000Z",
+        }],
+      }),
+    );
+    const before = readFileSync(schedulesPath(home), "utf-8");
+
+    expect(() => planConversationMigration(home)).toThrow(/only a one-shot schedule may be completed/);
+    expect(readFileSync(schedulesPath(home), "utf-8")).toBe(before);
+  });
+
   it("refuses differing non-whitespace heartbeat prompts before writing", () => {
     writeState(home, CONVERSATION_ID, legacyState(CONVERSATION_ID));
     writeBindings(home, { version: 1, surfaces: { [SURFACE_ID]: CONVERSATION_ID } });

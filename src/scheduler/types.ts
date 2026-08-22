@@ -80,13 +80,10 @@ export interface ScheduledTurn {
 }
 
 /**
- * On-disk DTO for a scheduled turn. The canonical on-disk representation stores
- * the surface as a validated `SurfaceId`; the in-memory model carries the
- * decoded `Surface`.
+ * Fields shared by canonical and supported legacy on-disk schedule records.
  */
-export interface PersistedScheduledTurn {
+interface PersistedScheduledTurnFields {
   id: string;
-  surfaceId: string;
   kind: ScheduleKind;
   prompt: string | null;
   enabled: boolean;
@@ -103,6 +100,17 @@ export interface PersistedScheduledTurn {
   /** Optional claim revision; absent on legacy records. */
   claimRevision?: number;
 }
+
+/**
+ * On-disk DTO for a scheduled turn. Canonical records store `surfaceId`.
+ * Records written by the earlier Surface-aware scheduler stored the full
+ * `Surface`; they remain readable and are converted only when a normal store
+ * mutation rewrites the file.
+ */
+export type PersistedScheduledTurn = PersistedScheduledTurnFields & (
+  | { surfaceId: string; surface?: never }
+  | { surfaceId?: never; surface: Surface }
+);
 
 /**
  * On-disk shape of `schedules.json`. The store is a flat list keyed by id so

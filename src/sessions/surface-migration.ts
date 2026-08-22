@@ -16,7 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import { surfaceId, parseSurfaceId, topicSurface, dmSurface, supergroupSurface, guestSurface, type Surface, type SurfaceId } from "../surface.ts";
-import { saveStore } from "../scheduler/store.ts";
+import { saveSurfaceMigrationStore } from "../scheduler/store.ts";
 import type { ScheduleStoreFile, PersistedScheduledTurn } from "../scheduler/types.ts";
 import { loadCanonicalBindingsForMigration, saveBindings, loadLegacyBindings, validateBindings } from "./bindings.ts";
 import { loadCanonicalTopicSettingsForMigration, saveTopicSettingsForEnvironmentMigration, loadLegacyTopicSettings } from "./topic-settings.ts";
@@ -473,7 +473,7 @@ export function applySurfaceMigration(home: string, plan: SurfaceMigrationPlan):
   saveBindings(home, plan.bindings);
   saveTopicSettingsForEnvironmentMigration(home, plan.settings);
   if (plan.schedules !== null) {
-    saveStore(home, plan.schedules);
+    saveSurfaceMigrationStore(home, plan.schedules);
   }
 }
 

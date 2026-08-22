@@ -80,6 +80,99 @@ describe("ScheduleStore", () => {
       expect(() => store.remove(LOC, "broken")).toThrow(/schedule broken has invalid intervalMs/);
       expect(readFileSync(path, "utf-8")).toBe(malformed);
     });
+
+    it("fails loudly on contradictory lifecycle and kind fields without rewriting them", () => {
+      const path = schedulesPath(tmpDir);
+      mkdirSync(dirname(path), { recursive: true });
+      const base = {
+        id: "contradictory",
+        surfaceId: surfaceId(LOC),
+        kind: "once",
+        prompt: "run once",
+        enabled: true,
+        state: "enabled",
+        nextRunAt: FUTURE_ISO,
+        createdAt: NOW_ISO,
+      };
+      const cases: Array<{ record: Record<string, unknown>; error: RegExp }> = [
+        { record: { ...base, enabled: false }, error: /inconsistent enabled and state/ },
+        {
+          record: { ...base, kind: "heartbeat", prompt: "persisted heartbeat prompt", intervalMs: 60_000 },
+          error: /heartbeat schedule .* must have a null prompt/,
+        },
+        { record: { ...base, prompt: null }, error: /once schedule .* must have a string prompt/ },
+        {
+          record: { ...base, kind: "recurring", state: "completed", enabled: false, intervalMs: 60_000 },
+          error: /only a one-shot schedule may be completed/,
+        },
+        {
+          record: { ...base, kind: "recurring" },
+          error: /invalid intervalMs/,
+        },
+      ];
+
+      for (const testCase of cases) {
+        const persisted = JSON.stringify({ schedules: [testCase.record] });
+        writeFileSync(path, persisted);
+        expect(() => store.remove(LOC, "contradictory")).toThrow(testCase.error);
+        expect(readFileSync(path, "utf-8")).toBe(persisted);
+      }
+    });
+
+    it("rejects an invalid legacy Surface without replacing the record", () => {
+      const path = schedulesPath(tmpDir);
+      const persisted = JSON.stringify({
+        schedules: [{
+          id: "bad-surface",
+          surface: { kind: "topic", container: "supergroup", chatId: 100, topicId: 0 },
+          kind: "once",
+          prompt: "do not run",
+          enabled: true,
+          state: "enabled",
+          nextRunAt: FUTURE_ISO,
+          createdAt: NOW_ISO,
+        }],
+      });
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, persisted);
+
+      expect(() => store.create({
+        surface: LOC,
+        kind: "once",
+        prompt: "must not replace authority",
+        nextRunAt: FUTURE_ISO,
+      })).toThrow(/invalid legacy surface/);
+      expect(readFileSync(path, "utf-8")).toBe(persisted);
+    });
+  });
+
+  describe("legacy Surface persistence", () => {
+    it("reads without rewriting and canonicalizes only on a normal mutation", () => {
+      const path = schedulesPath(tmpDir);
+      const persisted = JSON.stringify({
+        schedules: [{
+          id: "legacy-surface",
+          surface: LOC,
+          kind: "once",
+          prompt: "legacy prompt",
+          enabled: true,
+          state: "enabled",
+          nextRunAt: FUTURE_ISO,
+          createdAt: NOW_ISO,
+        }],
+      });
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, persisted);
+
+      expect(loadStore(tmpDir).schedules[0]?.surface).toEqual(LOC);
+      expect(store.listBySurface(LOC)[0]?.surface).toEqual(LOC);
+      expect(readFileSync(path, "utf-8")).toBe(persisted);
+
+      expect(store.pause(LOC, "legacy-surface")?.state).toBe("disabled");
+      const rewritten = JSON.parse(readFileSync(path, "utf-8"));
+      expect(rewritten.schedules[0].surfaceId).toBe(surfaceId(LOC));
+      expect(rewritten.schedules[0].surface).toBeUndefined();
+    });
   });
 
   describe("persistence", () => {
@@ -207,6 +300,24 @@ describe("ScheduleStore", () => {
           }],
         }),
       ).toThrow(/invalid intervalMs/);
+      expect(existsSync(schedulesPath(tmpDir))).toBe(false);
+    });
+
+    it("rejects contradictory state at the exported persistence writer", () => {
+      expect(() =>
+        saveStore(tmpDir, {
+          schedules: [{
+            id: "unsafe-state",
+            surfaceId: surfaceId(LOC),
+            kind: "once",
+            prompt: "unsafe",
+            enabled: true,
+            state: "disabled",
+            nextRunAt: FUTURE_ISO,
+            createdAt: NOW_ISO,
+          }],
+        }),
+      ).toThrow(/inconsistent enabled and state/);
       expect(existsSync(schedulesPath(tmpDir))).toBe(false);
     });
   });

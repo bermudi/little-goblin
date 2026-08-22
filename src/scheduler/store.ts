@@ -40,33 +40,36 @@ function encodeSurface(surface: Surface): string {
 }
 
 function decodeSurface(
-  surfaceIdText: string | undefined,
+  surfaceIdText: unknown,
   legacySurface: unknown,
   recordId: string,
 ): Surface {
   if (surfaceIdText !== undefined) {
+    if (typeof surfaceIdText !== "string") {
+      throw new Error(`schedule ${recordId} has invalid surfaceId`);
+    }
     try {
       return parseSurfaceId(surfaceIdText);
-    } catch (err) {
-      throw new Error(`Schedule ${recordId} has invalid surfaceId ${surfaceIdText}: ${err instanceof Error ? err.message : String(err)}`);
+    } catch (error) {
+      throw new Error(
+        `schedule ${recordId} has invalid surfaceId: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
-  // Fallback for legacy records that persisted the full Surface object
-  // instead of a SurfaceId. This path is used by tests and any pre-migration
-  // schedules.json that has not yet been rewritten by surface-migration.ts.
-  if (legacySurface && typeof legacySurface === "object") {
-    try {
-      // surfaceId() validates the Surface shape and returns the canonical
-      // SurfaceId string. parseSurfaceId then decodes it back to a canonical
-      // Surface object, just as for first-class surfaceId records.
-      return parseSurfaceId(surfaceId(legacySurface as Surface));
-    } catch {
-      // surfaceId validation or parseSurfaceId decoding failed; fall through.
-    }
+  if (legacySurface === undefined) {
+    throw new Error(`schedule ${recordId} has no surfaceId or legacy surface`);
   }
-
-  throw new Error(`Schedule ${recordId} has no surfaceId or legacy surface`);
+  try {
+    // surfaceId validates the complete legacy object; parsing its result also
+    // returns a fresh canonical Surface rather than trusting the persisted
+    // object's prototype or extra properties.
+    return parseSurfaceId(surfaceId(legacySurface as Surface));
+  } catch (error) {
+    throw new Error(
+      `schedule ${recordId} has invalid legacy surface: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function encodeTurn(s: ScheduledTurn): PersistedScheduledTurn {
@@ -75,8 +78,9 @@ function encodeTurn(s: ScheduledTurn): PersistedScheduledTurn {
 }
 
 function decodeTurn(p: PersistedScheduledTurn): ScheduledTurn {
-  const { surfaceId, ...rest } = p;
-  return { ...rest, surface: decodeSurface(surfaceId, (p as { surface?: unknown }).surface, p.id) };
+  const decodedSurface = decodeSurface(p.surfaceId, p.surface, p.id);
+  const { surfaceId: _surfaceId, surface: _legacySurface, ...rest } = p;
+  return { ...rest, surface: decodedSurface };
 }
 
 function surfaceIdOf(surface: Surface): string {
@@ -119,7 +123,10 @@ function validateLastRun(value: unknown, id: string): void {
   }
 }
 
-function validatePersistedTurn(value: unknown, index: number): PersistedScheduledTurn {
+export function validatePersistedScheduledTurn(
+  value: unknown,
+  index: number,
+): PersistedScheduledTurn {
   if (!isRecord(value)) {
     throw new Error(`schedule ${index} is not an object`);
   }
@@ -128,27 +135,28 @@ function validatePersistedTurn(value: unknown, index: number): PersistedSchedule
   if (typeof value.id !== "string" || value.id.length === 0) {
     throw new Error(`schedule ${id} has invalid id`);
   }
-  if (typeof value.surfaceId !== "string") {
-    throw new Error(`schedule ${id} has invalid surfaceId`);
-  }
-  try {
-    parseSurfaceId(value.surfaceId);
-  } catch (error) {
-    throw new Error(
-      `schedule ${id} has invalid surfaceId: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  decodeSurface(value.surfaceId, value.surface, id);
   if (value.kind !== "once" && value.kind !== "recurring" && value.kind !== "heartbeat") {
     throw new Error(`schedule ${id} has invalid kind`);
   }
-  if (value.prompt !== null && typeof value.prompt !== "string") {
-    throw new Error(`schedule ${id} has invalid prompt`);
+  if (value.kind === "heartbeat") {
+    if (value.prompt !== null) {
+      throw new Error(`heartbeat schedule ${id} must have a null prompt`);
+    }
+  } else if (typeof value.prompt !== "string") {
+    throw new Error(`${value.kind} schedule ${id} must have a string prompt`);
   }
   if (typeof value.enabled !== "boolean") {
     throw new Error(`schedule ${id} has invalid enabled`);
   }
   if (value.state !== "enabled" && value.state !== "disabled" && value.state !== "completed") {
     throw new Error(`schedule ${id} has invalid state`);
+  }
+  if (value.enabled !== (value.state === "enabled")) {
+    throw new Error(`schedule ${id} has inconsistent enabled and state`);
+  }
+  if (value.state === "completed" && value.kind !== "once") {
+    throw new Error(`only a one-shot schedule may be completed: ${id}`);
   }
   if (!isValidTimestamp(value.nextRunAt)) {
     throw new Error(`schedule ${id} has invalid nextRunAt`);
@@ -188,16 +196,17 @@ function validateStoreFile(value: unknown, path: string): ScheduleStoreFile {
     const ids = new Set<string>();
     const heartbeatSurfaces = new Set<string>();
     const schedules = value.schedules.map((entry, index) => {
-      const schedule = validatePersistedTurn(entry, index);
+      const schedule = validatePersistedScheduledTurn(entry, index);
       if (ids.has(schedule.id)) {
         throw new Error(`duplicate schedule id ${schedule.id}`);
       }
       ids.add(schedule.id);
       if (schedule.kind === "heartbeat") {
-        if (heartbeatSurfaces.has(schedule.surfaceId)) {
-          throw new Error(`surface ${schedule.surfaceId} has duplicate heartbeat schedules`);
+        const owner = surfaceId(decodeSurface(schedule.surfaceId, schedule.surface, schedule.id));
+        if (heartbeatSurfaces.has(owner)) {
+          throw new Error(`surface ${owner} has duplicate heartbeat schedules`);
         }
-        heartbeatSurfaces.add(schedule.surfaceId);
+        heartbeatSurfaces.add(owner);
       }
       return schedule;
     });
@@ -220,20 +229,26 @@ export function loadStore(home: string): ScheduleStoreFile {
   return validateStoreFile(parsed, path);
 }
 
-/**
- * Save the store atomically via `atomicWrite` (tmp + fsync + rename).
- *
- * Offline Surface migration also uses this writer for partially migrated
- * records, so it cannot apply the runtime file schema yet. It still enforces
- * recurrence safety for every record whose kind has already been established.
- */
+/** Save a complete schedule authority after validating it in full. */
 export function saveStore(home: string, store: ScheduleStoreFile): void {
+  validateStoreFile(store, pathFor(home));
+  atomicWrite(pathFor(home), JSON.stringify(store, null, 2) + "\n");
+}
+
+/**
+ * Write the projected step-1 Surface migration output. That migration can be
+ * exercised independently with locator-only evidence records, before the
+ * lifecycle migration validates the complete schedule schema. Established
+ * recurrence fields are still checked so migration cannot persist unsafe
+ * recurrence arithmetic.
+ */
+export function saveSurfaceMigrationStore(home: string, store: ScheduleStoreFile): void {
   for (const [index, schedule] of store.schedules.entries()) {
-    if (schedule.kind === "recurring" || schedule.kind === "heartbeat") {
-      assertValidRecurrenceInterval(schedule.intervalMs, `schedule ${schedule.id || index}`);
-    } else if (schedule.kind === "once" && schedule.intervalMs !== undefined) {
-      throw new Error(`one-shot schedule ${schedule.id || index} must not have intervalMs`);
-    }
+    // Locator-only records are accepted solely as step-1 evidence projections;
+    // every record with an established scheduler kind has the complete schema
+    // and must satisfy the same invariants as a runtime write.
+    if (isRecord(schedule) && schedule.kind === undefined) continue;
+    validatePersistedScheduledTurn(schedule, index);
   }
   atomicWrite(pathFor(home), JSON.stringify(store, null, 2) + "\n");
 }

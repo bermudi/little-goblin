@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite } from "../fs.ts";
 import { parseSurfaceId, type SurfaceId } from "../surface.ts";
-import { saveStore } from "../scheduler/store.ts";
+import { saveStore, validatePersistedScheduledTurn } from "../scheduler/store.ts";
 import type { PersistedScheduledTurn, ScheduleStoreFile } from "../scheduler/types.ts";
 import { isValidConversationId } from "./conversation.ts";
 import type { ExecutionEnvironment } from "./environment.ts";
@@ -292,50 +292,6 @@ function planConversationRecords(records: ConversationRecord[]): ConversationRec
   return plans;
 }
 
-function validateScheduleRecord(entry: Record<string, unknown>, index: number): void {
-  const id = typeof entry.id === "string" && entry.id.length > 0 ? entry.id : String(index);
-  if (typeof entry.id !== "string" || entry.id.length === 0) {
-    throw new Error(`schedule ${id} has invalid id`);
-  }
-  if (entry.kind !== "once" && entry.kind !== "recurring" && entry.kind !== "heartbeat") {
-    throw new Error(`schedule ${id} has invalid kind`);
-  }
-  if (entry.prompt !== null && typeof entry.prompt !== "string") {
-    throw new Error(`schedule ${id} has invalid prompt`);
-  }
-  if (typeof entry.enabled !== "boolean") {
-    throw new Error(`schedule ${id} has invalid enabled`);
-  }
-  if (entry.state !== "enabled" && entry.state !== "disabled" && entry.state !== "completed") {
-    throw new Error(`schedule ${id} has invalid state`);
-  }
-  for (const key of ["nextRunAt", "createdAt"] as const) {
-    if (typeof entry[key] !== "string" || Number.isNaN(Date.parse(entry[key]))) {
-      throw new Error(`schedule ${id} has invalid ${key}`);
-    }
-  }
-  if (entry.intervalMs !== undefined && (typeof entry.intervalMs !== "number" || !Number.isFinite(entry.intervalMs) || entry.intervalMs <= 0)) {
-    throw new Error(`schedule ${id} has invalid intervalMs`);
-  }
-  if ((entry.kind === "recurring" || entry.kind === "heartbeat") && entry.intervalMs === undefined) {
-    throw new Error(`schedule ${id} is missing intervalMs`);
-  }
-  if (entry.source !== undefined && entry.source !== "user" && entry.source !== "agent") {
-    throw new Error(`schedule ${id} has invalid source`);
-  }
-  if (entry.lastRun !== undefined) {
-    if (!isRecord(entry.lastRun) || typeof entry.lastRun.at !== "string" || Number.isNaN(Date.parse(entry.lastRun.at))) {
-      throw new Error(`schedule ${id} has invalid lastRun`);
-    }
-    if (!(["ok", "binding-mismatch", "archived", "error", "pending"] as readonly string[]).includes(String(entry.lastRun.outcome))) {
-      throw new Error(`schedule ${id} has invalid lastRun outcome`);
-    }
-    if (entry.lastRun.message !== undefined && typeof entry.lastRun.message !== "string") {
-      throw new Error(`schedule ${id} has invalid lastRun message`);
-    }
-  }
-}
-
 function planScheduleMigration(home: string, supplied?: ScheduleStoreFile): ScheduleStoreFile | null {
   const raw: unknown = supplied ?? readJson(schedulesPath(home));
   if (raw === null) return null;
@@ -359,7 +315,7 @@ function planScheduleMigration(home: string, supplied?: ScheduleStoreFile): Sche
       }
       heartbeats.add(entry.surfaceId);
     }
-    validateScheduleRecord(entry, index);
+    validatePersistedScheduledTurn(entry, index);
 
     const migrated = { ...entry };
     if (Object.prototype.hasOwnProperty.call(migrated, "sessionId")) {

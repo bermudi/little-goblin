@@ -472,6 +472,7 @@ export class RuntimeMachine {
     if (this.isInternal) {
       throw new Error(`Conversation ${this.deps.conversationId} is reserved by an internal runtime`);
     }
+    this.assertTransitionAllowed("active", "registerSurfaceRuntime");
     this.nextGeneration();
     this.runner = runner;
     this.surfaceId = registration.surfaceId;
@@ -500,6 +501,7 @@ export class RuntimeMachine {
       throw new Error(`cannot reuse Surface-backed runtime ${this.deps.conversationId} for an internal turn`);
     }
 
+    this.assertTransitionAllowed("active", "registerInternalRuntime");
     const priorRunner = replacingInternal ? this.runner : undefined;
     const priorGeneration = this.generation;
     if (priorRunner !== undefined && priorRunner !== runner) {
@@ -1284,7 +1286,7 @@ export class RuntimeMachine {
 
   // ── transition guard ───────────────────────────────────────────────
 
-  private transitionTo(target: MachinePhase, op: TransitionOp): void {
+  private assertTransitionAllowed(target: MachinePhase, op: TransitionOp): void {
     const source = this.phase;
     if (!isLegalTransition(source, target, op)) {
       throw new Error(
@@ -1292,6 +1294,10 @@ export class RuntimeMachine {
           `${source} → ${target} via ${op}`,
       );
     }
+  }
+
+  private transitionTo(target: MachinePhase, op: TransitionOp): void {
+    this.assertTransitionAllowed(target, op);
     this.phase = target;
   }
 }

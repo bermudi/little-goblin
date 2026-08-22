@@ -197,6 +197,37 @@ describe("RuntimeMachine transitions", () => {
   });
 
   describe("illegal state preconditions fail loud with structured identity", () => {
+    it("leaves idle state unchanged after illegal Surface registration and permits a later legal registration", () => {
+      const m = makeMachine("conv-x");
+      const illegalRunner = fakeRunner();
+
+      expect(() => m.registerSurfaceRuntime(illegalRunner, makeRegistration("illegal"))).toThrow(
+        /idle → active via registerSurfaceRuntime/,
+      );
+      expect(m.currentPhase).toBe("idle");
+      expect(m.epoch).toBe(0);
+      expect(m.getRunner()).toBeNull();
+      expect(m.surfaceIdFor()).toBeUndefined();
+      expect(m.runtimeIdFor()).toBeUndefined();
+      expect(m.skillContextFor()).toBeUndefined();
+      expect(m.isInternalRuntime()).toBe(false);
+
+      const legalRunner = fakeRunner();
+      const legalRegistration = makeRegistration("legal");
+      const creation = m.reserveCreation(surfaceId(dmSurface(1)), "test-settings");
+      try {
+        m.registerSurfaceRuntime(legalRunner, legalRegistration);
+      } finally {
+        creation.complete();
+      }
+
+      expect(m.currentPhase).toBe("active");
+      expect(m.getRunner()).toBe(legalRunner);
+      expect(m.surfaceIdFor()).toBe(legalRegistration.surfaceId);
+      expect(m.runtimeIdFor()).toBe(legalRegistration.runtimeId);
+      expect(m.skillContextFor()).toBe(legalRegistration.skillContext);
+    });
+
     it("registerSurfaceRuntime throws when a runner is already registered", () => {
       const m = makeMachine("conv-x");
       registerSurface(m);

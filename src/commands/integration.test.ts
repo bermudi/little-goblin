@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
-import { dmSurface, surfaceId } from "../surface.ts";
+import { dmSurface, surfaceId, type Surface } from "../surface.ts";
 import { executeNew } from "./new.ts";
 import { executeArchive } from "./archive.ts";
 import { executeName } from "./name.ts";
@@ -26,6 +26,12 @@ import { personalEnvironment, projectEnvironment } from "../sessions/environment
 import type { ConversationId } from "../sessions/types.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
 import { DEFAULT_SKILL_POLICY } from "../agent/skills/mod.ts";
+
+async function resolveConversation(lifecycle: ConversationLifecycle, surface: Surface) {
+  const resolution = await lifecycle.resolveOrStart(surface);
+  if (resolution.creationAuthority !== null) lifecycle.settleCreation(resolution.creationAuthority);
+  return resolution.conversation;
+}
 
 function makeTestConfig(home: string): Config {
   return {
@@ -224,8 +230,8 @@ describe("rapid command spam integration", () => {
     const source = dmSurface(111);
     const destination = dmSurface(222);
 
-    const target = await manager.resolveOrStart(source);
-    const displaced = await manager.resolveOrStart(destination);
+    const target = await resolveConversation(manager, source);
+    const displaced = await resolveConversation(manager, destination);
     setModelName(tmpDir, destination, "poe/DestinationModel");
 
     const { compatible, incompatible } = await manager.getResumeCandidates(destination);
@@ -261,7 +267,7 @@ describe("rapid command spam integration", () => {
     );
     const surface = dmSurface(123456);
 
-    const conv = await manager.resolveOrStart(surface);
+    const conv = await resolveConversation(manager, surface);
     throwingStore.throwOn = conv.id;
 
     const archiveResult = executeArchive({

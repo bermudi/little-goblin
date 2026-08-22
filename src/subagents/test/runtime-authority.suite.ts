@@ -208,8 +208,9 @@ function createFixture(): RuntimeFixture {
 }
 
 async function makeSession(lifecycle: ConversationLifecycle, surface: Surface, _home: string): Promise<ConversationState> {
-  const conv = await lifecycle.resolveOrStart(surface);
-  return conv;
+  const resolution = await lifecycle.resolveOrStart(surface);
+  if (resolution.creationAuthority !== null) lifecycle.settleCreation(resolution.creationAuthority);
+  return resolution.conversation;
 }
 
 describe("TurnDispatcher + SubagentRunner Surface authority integration", () => {

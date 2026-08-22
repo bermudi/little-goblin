@@ -122,6 +122,33 @@ export interface SkillPolicyTransition extends SkillPolicyStatus {
   readonly cleanupError?: string;
 }
 
+const conversationCreationAuthorityBrand: unique symbol = Symbol("conversation-creation-authority");
+
+/**
+ * Process-ephemeral authority to settle one Conversation created by
+ * `resolveOrStart`. The resolving update owns it from resolution until its
+ * synchronous runtime-admission decision. It is never persisted, and a later
+ * lifecycle resolution of the same Surface fences rollback authority.
+ */
+export interface ConversationCreationAuthority {
+  readonly surfaceId: SurfaceId;
+  readonly conversationId: ConversationId;
+  readonly resolutionEpoch: number;
+  readonly [conversationCreationAuthorityBrand]: true;
+}
+
+export type ConversationResolution =
+  | {
+      readonly kind: "existing";
+      readonly conversation: ConversationState;
+      readonly creationAuthority: null;
+    }
+  | {
+      readonly kind: "created";
+      readonly conversation: ConversationState;
+      readonly creationAuthority: ConversationCreationAuthority;
+    };
+
 /**
  * Public seam for callers (intake, commands, scheduler). Every method that
  * changes a binding runs under the lifecycle transition lock internally.
@@ -140,7 +167,9 @@ export interface ConversationLifecycle extends SurfaceRuntimeAuthority {
    * pending project assignment. Never creates Conversation history.
    */
   resolveCurrent(surface: Surface): Promise<ConversationState | null>;
-  resolveOrStart(surface: Surface): Promise<ConversationState>;
+  resolveOrStart(surface: Surface): Promise<ConversationResolution>;
+  /** Settle creation authority after admission accepted the new Conversation. */
+  settleCreation(authority: ConversationCreationAuthority): void;
   rotate(surface: Surface): Promise<ConversationState>;
   resume(surface: Surface, target: ConversationId): Promise<ConversationState>;
   /** Archive the current bound Conversation and return a status transition. */
@@ -157,11 +186,13 @@ export interface ConversationLifecycle extends SurfaceRuntimeAuthority {
   listResumable(surface: Surface): ConversationState[];
   /** Apply a validated model/thinking Surface preference patch, then invalidate the bound runtime. */
   setSurfacePreferences(surface: Surface, patch: SurfacePreferencePatch): Promise<PreferenceTransition>;
-  /** Roll back a newly created bound Conversation whose bootstrap admission was rejected.
-   * If the Surface is still bound to the given Conversation, the binding is
-   * cleared and the Conversation is deleted. Otherwise no mutation occurs.
+  /**
+   * Consume lifecycle-issued creation authority after admission rejection and
+   * roll back only while that authority remains current. Returns false when
+   * the authority was already settled, fenced by a later resolution, or the
+   * Conversation is no longer safely eligible for deletion.
    */
-  rollbackCreation(surface: Surface, conversationId: ConversationId): Promise<boolean>;
+  rollbackCreation(authority: ConversationCreationAuthority): Promise<boolean>;
 }
 
 export type ProjectAssignmentResult =
@@ -228,6 +259,10 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
    * could otherwise capture a freshly bumped epoch before the binding commit.
    */
   private readonly pendingBindingSurfaces = new Set<SurfaceId>();
+  /** Surface-lifetime observation epochs; authority objects remain caller-owned. */
+  private readonly resolutionEpochs = new Map<SurfaceId, number>();
+  /** Weak membership makes issued authority nominal without retaining it. */
+  private readonly activeCreationAuthorities = new WeakSet<ConversationCreationAuthority>();
 
   constructor(
     home: string,
@@ -263,14 +298,16 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
   async resolveCurrent(surface: Surface): Promise<ConversationState | null> {
     return withLifecycleTransitionLock(async () => {
       await this.reconcilePendingAssignment();
+      this.beginSurfaceResolution(surfaceId(surface));
       return this.inspect(surface);
     });
   }
 
-  async resolveOrStart(surface: Surface): Promise<ConversationState> {
+  async resolveOrStart(surface: Surface): Promise<ConversationResolution> {
     return withLifecycleTransitionLock(async () => {
       const key = surfaceId(surface);
       await this.reconcilePendingAssignment();
+      const resolutionEpoch = this.beginSurfaceResolution(key);
       const env = this.settings.effectiveEnvironment(surface);
       const bindings = this.bindings.load();
       const currentId = bindings.surfaces[key];
@@ -281,7 +318,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
           current = this.store.load(currentId as ConversationId);
         }
         if (current && environmentsEqual(current.executionEnvironment, env)) {
-          return current;
+          return { kind: "existing", conversation: current, creationAuthority: null };
         }
         if (current) {
           await this.runtimeHost.disposeRuntime(current.id);
@@ -296,14 +333,32 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       const next = cloneBindings(bindings);
       next.surfaces[key] = created.id;
       this.bindings.save(next);
+      const creationAuthority: ConversationCreationAuthority = {
+        surfaceId: key,
+        conversationId: created.id,
+        resolutionEpoch,
+        [conversationCreationAuthorityBrand]: true,
+      };
+      this.activeCreationAuthorities.add(creationAuthority);
       log.info("conversation started", { surface: key, conversation: created.id, environment: env });
-      return created;
+      return { kind: "created", conversation: created, creationAuthority };
     });
   }
 
-  async rollbackCreation(surface: Surface, conversationId: ConversationId): Promise<boolean> {
+  settleCreation(authority: ConversationCreationAuthority): void {
+    this.activeCreationAuthorities.delete(authority);
+  }
+
+  rollbackCreation(authority: ConversationCreationAuthority): Promise<boolean> {
+    // Consume synchronously so repeated settlement cannot race while waiting
+    // for another lifecycle transition to release the process-wide lock.
+    if (!this.activeCreationAuthorities.delete(authority)) return Promise.resolve(false);
+
     return withLifecycleTransitionLock(async () => {
-      const key = surfaceId(surface);
+      const key = authority.surfaceId;
+      const conversationId = authority.conversationId;
+      if (this.resolutionEpochs.get(key) !== authority.resolutionEpoch) return false;
+
       const bindings = this.bindings.load();
       if (bindings.surfaces[key] !== conversationId) return false;
       // Only roll back an empty newly created Conversation. If it already
@@ -331,12 +386,22 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       this.bindings.save(next);
       try {
         this.store.deleteConversation(conversationId);
-      } catch (error) {
-        log.error("rollback creation delete failed", { surface: key, conversationId, error: String(error) });
+      } catch (cause) {
+        log.error("rollback creation delete failed", { surface: key, conversationId, error: String(cause) });
+        throw new Error(
+          `failed to delete Conversation ${conversationId} after clearing Surface ${key} binding; residual Conversation state remains`,
+          { cause },
+        );
       }
       log.info("rolled back empty conversation after rejected admission", { surface: key, conversation: conversationId });
       return true;
     });
+  }
+
+  private beginSurfaceResolution(key: SurfaceId): number {
+    const next = (this.resolutionEpochs.get(key) ?? 0) + 1;
+    this.resolutionEpochs.set(key, next);
+    return next;
   }
 
   async rotate(surface: Surface): Promise<ConversationState> {

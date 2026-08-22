@@ -136,6 +136,7 @@ type ExecutionEnvironment =
 | Proactive-contact consent | Surface, intersected with deployment and WakeProfile policy |
 | Active memory-context projection | Derived from current Surface; captured by runtime |
 | Current Conversation pointer | Binding |
+| Newly-created Conversation rollback authority | Resolving Telegram update from lifecycle resolution through synchronous admission settlement; process-ephemeral and never persisted **(CURRENT)** |
 | Model history and immutable CWD | Conversation |
 | Transcript, events, metrics, pi history | Conversation |
 | Runner, prompt queue, Telegram sink/tools | Conversation runtime (RuntimeMachine — CURRENT, decision 0046) |
@@ -167,7 +168,7 @@ src/index.ts / composition root
        │
        ▼
 ConversationLifecycle (`src/orchestration`)
-       │  inspect / resolveOrStart / rotate / resume / archive
+       │  inspect / resolveOrStart (+ ephemeral creation authority) / rotate / resume / archive
        ├── ConversationStore
        ├── BindingStore
        ├── SurfaceSettings

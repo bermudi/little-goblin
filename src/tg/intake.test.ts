@@ -649,17 +649,21 @@ describe("Telegram intake", () => {
     expect(topicReplies).toEqual([]);
   });
 
-  it("lazily creates a conversation for plain text when none is bound", async () => {
+  it("lazily creates a conversation for plain text and settles creation authority after admission", async () => {
     const { intake, conversationStore } = makeHarness();
+    const settle = spyOn(intake.lifecycle, "settleCreation");
     const replies: string[] = [];
     const message = makeMessage(replies);
 
-    await intake.handleText(message, "hello");
+    const admission = await intake.handleText(message, "hello");
     await waitFor(() => runners[0]?.prompt?.mock?.calls?.length === 1);
 
+    expect(admission.kind).toBe("handoff");
+    expect(settle).toHaveBeenCalledTimes(1);
     expect(conversationStore.list()).toHaveLength(1);
     expect(runners[0]!.prompt).toHaveBeenCalledWith("[prepared] hello", expect.anything());
     expect(replies).toEqual([]);
+    settle.mockRestore();
   });
 
   it("lazily creates a conversation for the first unbound media message", async () => {
@@ -738,7 +742,7 @@ describe("Telegram intake", () => {
 
     expect(admission.kind).toBe("rejected");
     await expect(admission.completion).rejects.toThrow(
-      /new Conversation rollback was not applied after text admission \(rejected\).*lifecycle left state unchanged because no safe rollback mutation applied/,
+      /new Conversation rollback was not applied after text admission \(rejected\).*creation authority was settled, fenced, or no safe rollback mutation applied/,
     );
     expect(intake.lifecycle.inspect(dmSurface(1))).not.toBeNull();
     rollback.mockRestore();
@@ -754,6 +758,74 @@ describe("Telegram intake", () => {
     await expect(admission.completion).resolves.toBeUndefined();
     expect(intake.lifecycle.inspect(dmSurface(1))).toBeNull();
     expect(conversationStore.list()).toHaveLength(0);
+  });
+
+  it("does not let a rejected concurrent resolve delete a Conversation another update accepted", async () => {
+    const { intake, runtimeHost, conversationStore } = makeHarness();
+    const firstResolved = deferred();
+    const releaseFirst = deferred();
+    const originalResolve = intake.lifecycle.resolveOrStart.bind(intake.lifecycle);
+    let blockFirst = true;
+    const resolve = spyOn(intake.lifecycle, "resolveOrStart").mockImplementation(async (surface) => {
+      const resolution = await originalResolve(surface);
+      if (blockFirst) {
+        blockFirst = false;
+        firstResolved.resolve();
+        await releaseFirst.promise;
+      }
+      return resolution;
+    });
+
+    const firstPromise = intake.handleText(makeMessage(), "first");
+    await firstResolved.promise;
+    const accepted = await intake.handleText(makeMessage(), "second");
+    expect(accepted.kind).toBe("handoff");
+
+    runtimeHost.closeAdmission();
+    releaseFirst.resolve();
+    const rejected = await firstPromise;
+
+    expect(rejected.kind).toBe("rejected");
+    await expect(rejected.completion).rejects.toThrow(/creation authority was settled, fenced/);
+    expect(intake.lifecycle.inspect(dmSurface(1))).not.toBeNull();
+    expect(conversationStore.list()).toHaveLength(1);
+    resolve.mockRestore();
+  });
+
+  it("rolls back and rethrows a synchronous prompt admission failure", async () => {
+    const { intake, conversationStore } = makeHarness();
+    const failure = new Error("prompt admission exploded");
+    const admit = spyOn(intake.dispatcher, "admitPromptTurn").mockImplementation(() => {
+      throw failure;
+    });
+
+    await expect(intake.handleText(makeMessage(), "cold text")).rejects.toBe(failure);
+    expect(intake.lifecycle.inspect(dmSurface(1))).toBeNull();
+    expect(conversationStore.list()).toHaveLength(0);
+    admit.mockRestore();
+  });
+
+  it("preserves synchronous prompt admission and rollback failures", async () => {
+    const { intake } = makeHarness();
+    const admissionFailure = new Error("prompt admission exploded");
+    const rollbackFailure = new Error("rollback persistence exploded");
+    const admit = spyOn(intake.dispatcher, "admitPromptTurn").mockImplementation(() => {
+      throw admissionFailure;
+    });
+    const rollback = spyOn(intake.lifecycle, "rollbackCreation").mockRejectedValue(rollbackFailure);
+
+    const error = await intake.handleText(makeMessage(), "cold text").then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+
+    expect(error).toBeInstanceOf(AggregateError);
+    const errors = (error as AggregateError).errors;
+    expect(errors[0]).toBe(admissionFailure);
+    expect(errors[1]).toBeInstanceOf(Error);
+    expect((errors[1] as Error).cause).toBe(rollbackFailure);
+    admit.mockRestore();
+    rollback.mockRestore();
   });
 
   it("installs cold text bootstrap work before releasing runtime admission", async () => {
@@ -1354,7 +1426,8 @@ describe("Telegram intake", () => {
     const { intake } = makeHarness();
     const replies: string[] = [];
     const message = makeMessage(replies);
-    await intake.lifecycle.resolveOrStart(dmSurface(1));
+    const resolution = await intake.lifecycle.resolveOrStart(dmSurface(1));
+    if (resolution.creationAuthority !== null) intake.lifecycle.settleCreation(resolution.creationAuthority);
 
     const admission = await intake.handleText(message, "/revive missing try again");
 
@@ -1912,6 +1985,21 @@ describe("Telegram intake", () => {
       expect(results[0]!.type).toBe("article");
     });
 
+    it("rolls back and rethrows a synchronous immediate admission failure", async () => {
+      const { intake, conversationStore } = makeHarness();
+      const failure = new Error("immediate admission exploded");
+      const admit = spyOn(intake.dispatcher, "admitImmediateTurn").mockImplementation(() => {
+        throw failure;
+      });
+
+      await expect(
+        intake.handleGuestMessage(makeGuestMessage().message, "cold guest"),
+      ).rejects.toBe(failure);
+      expect(intake.lifecycle.inspect(guestSurface(99))).toBeNull();
+      expect(conversationStore.list()).toHaveLength(0);
+      admit.mockRestore();
+    });
+
     it("replies with the fallback when agent output is empty", async () => {
       const { intake } = makeHarness();
       const { message, results } = makeGuestMessage();
@@ -2038,7 +2126,9 @@ describe("Telegram intake", () => {
 
     it("releases a fenced classification without replying", async () => {
       const { intake, runtimeHost } = makeHarness();
-      const conversation = await intake.lifecycle.resolveOrStart(guestSurface(99));
+      const resolution = await intake.lifecycle.resolveOrStart(guestSurface(99));
+      if (resolution.creationAuthority !== null) intake.lifecycle.settleCreation(resolution.creationAuthority);
+      const conversation = resolution.conversation;
       runtimeHost.registerInternalRuntime(
         conversation.id,
         new MockAgentRunner({

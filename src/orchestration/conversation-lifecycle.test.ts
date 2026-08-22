@@ -90,6 +90,12 @@ class ThrowingArchiveStore extends ConversationStore {
   }
 }
 
+class ThrowingDeleteStore extends ConversationStore {
+  override deleteConversation(_id: ConversationId): void {
+    throw new Error("conversation delete failed");
+  }
+}
+
 class FakeAgentRunner {
   disposeCalled = false;
   memoryContext: CapturedMemoryContext | InternalMemoryContext;
@@ -205,6 +211,17 @@ function makeFileLifecycle(home: string, settings: SurfaceSettings = fileBasedSe
   return { home, store, bindings, runtimeHost, lifecycle };
 }
 
+async function resolveConversation(
+  lifecycle: ConversationLifecycle,
+  surface: Surface,
+) {
+  const resolution = await lifecycle.resolveOrStart(surface);
+  if (resolution.creationAuthority !== null) {
+    lifecycle.settleCreation(resolution.creationAuthority);
+  }
+  return resolution.conversation;
+}
+
 describe("ConversationLifecycle", () => {
   let tmpDir: string;
 
@@ -224,7 +241,7 @@ describe("ConversationLifecycle", () => {
 
     it("returns the bound compatible conversation", async () => {
       const { lifecycle } = makeLifecycle(personalEnvironment(), tmpDir);
-      const created = await lifecycle.resolveOrStart(dmSurface(1));
+      const created = await resolveConversation(lifecycle, dmSurface(1));
       const lookedUp = lifecycle.inspect(dmSurface(1));
       expect(lookedUp?.id).toBe(created.id);
       expect(lookedUp?.executionEnvironment).toEqual(personalEnvironment());
@@ -269,7 +286,7 @@ describe("ConversationLifecycle", () => {
     it("returns the currently bound compatible Conversation", async () => {
       const { lifecycle } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const created = await lifecycle.resolveOrStart(surface);
+      const created = await resolveConversation(lifecycle, surface);
 
       expect((await lifecycle.resolveCurrent(surface))?.id).toBe(created.id);
     });
@@ -278,7 +295,7 @@ describe("ConversationLifecycle", () => {
       const { lifecycle, store, bindings, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
       const key = surfaceId(surface);
-      const prior = await lifecycle.resolveOrStart(surface);
+      const prior = await resolveConversation(lifecycle, surface);
       runtimeHost.active.add(prior.id);
       const projectRoot = join(tmpDir, "pending-project");
       mkdirSync(projectRoot, { recursive: true });
@@ -313,7 +330,7 @@ describe("ConversationLifecycle", () => {
       const { lifecycle, store, bindings, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
       const key = surfaceId(surface);
-      const prior = await lifecycle.resolveOrStart(surface);
+      const prior = await resolveConversation(lifecycle, surface);
       const projectRoot = join(tmpDir, "failed-pending-project");
       mkdirSync(projectRoot, { recursive: true });
       const plannedId = store.allocateId();
@@ -392,7 +409,7 @@ describe("ConversationLifecycle", () => {
     it("creates and binds a conversation for an unbound DM surface", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const conv = await lifecycle.resolveOrStart(surface);
+      const conv = await resolveConversation(lifecycle, surface);
       expect(conv.executionEnvironment).toEqual(personalEnvironment());
       expect(store.load(conv.id)?.id).toBe(conv.id);
       expect(bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBe(conv.id);
@@ -401,7 +418,7 @@ describe("ConversationLifecycle", () => {
     it("creates and binds a conversation for an unbound topic surface", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = topicSurface("supergroup", -100123, 5);
-      const conv = await lifecycle.resolveOrStart(surface);
+      const conv = await resolveConversation(lifecycle, surface);
       expect(conv.executionEnvironment).toEqual(personalEnvironment());
       expect(store.load(conv.id)?.id).toBe(conv.id);
       expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(conv.id);
@@ -410,8 +427,8 @@ describe("ConversationLifecycle", () => {
     it("returns an existing bound compatible conversation", async () => {
       const { lifecycle, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const first = await lifecycle.resolveOrStart(surface);
-      const second = await lifecycle.resolveOrStart(surface);
+      const first = await resolveConversation(lifecycle, surface);
+      const second = await resolveConversation(lifecycle, surface);
       expect(second.id).toBe(first.id);
       expect(Object.keys(bindings.bindings.surfaces)).toHaveLength(1);
     });
@@ -420,8 +437,8 @@ describe("ConversationLifecycle", () => {
       const { lifecycle, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
       const [a, b] = await Promise.all([
-        lifecycle.resolveOrStart(surface),
-        lifecycle.resolveOrStart(surface),
+        resolveConversation(lifecycle, surface),
+        resolveConversation(lifecycle, surface),
       ]);
       expect(a.id).toBe(b.id);
       expect(Object.keys(bindings.bindings.surfaces)).toHaveLength(1);
@@ -430,7 +447,7 @@ describe("ConversationLifecycle", () => {
     it("replaces a stale binding with a fresh conversation and drops the stale runner", async () => {
       const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       bindings.bindings = { version: 1, surfaces: { [surfaceId(dmSurface(1))]: "0000000000" } } as BindingsFile;
-      const conv = await lifecycle.resolveOrStart(dmSurface(1));
+      const conv = await resolveConversation(lifecycle, dmSurface(1));
       expect(conv.id).not.toBe("0000000000");
       expect(bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBe(conv.id);
       expect(store.load(conv.id)).not.toBeNull();
@@ -450,7 +467,7 @@ describe("ConversationLifecycle", () => {
       }));
       bindings.bindings = { version: 1, surfaces: { [surfaceId(surface)]: corruptId } } as BindingsFile;
 
-      await expect(lifecycle.resolveOrStart(surface)).rejects.toThrow(/unexpected state field: chatId/);
+      await expect(resolveConversation(lifecycle, surface)).rejects.toThrow(/unexpected state field: chatId/);
       expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(corruptId);
       expect(runtimeHost.disposed).toEqual([]);
     });
@@ -462,7 +479,7 @@ describe("ConversationLifecycle", () => {
       const projectConv = personal.store.create(projectEnvironment(projectRoot));
       personal.bindings.bindings = { version: 1, surfaces: { [surfaceId(dmSurface(1))]: projectConv.id } } as BindingsFile;
 
-      const conv = await personal.lifecycle.resolveOrStart(dmSurface(1));
+      const conv = await resolveConversation(personal.lifecycle, dmSurface(1));
       expect(conv.executionEnvironment).toEqual(personalEnvironment());
       expect(personal.runtimeHost.disposed).toEqual([projectConv.id]);
       expect(personal.bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBe(conv.id);
@@ -471,52 +488,102 @@ describe("ConversationLifecycle", () => {
   });
 
   describe("rollbackCreation", () => {
-    it("deletes only an empty Conversation that is still bound to the requesting Surface", async () => {
+    it("deletes an empty Conversation with current lifecycle-issued authority", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const created = await lifecycle.resolveOrStart(surface);
+      const resolution = await lifecycle.resolveOrStart(surface);
+      expect(resolution.kind).toBe("created");
+      if (resolution.creationAuthority === null) throw new Error("expected creation authority");
 
-      expect(await lifecycle.rollbackCreation(surface, created.id)).toBe(true);
+      expect(await lifecycle.rollbackCreation(resolution.creationAuthority)).toBe(true);
 
       expect(bindings.bindings.surfaces[surfaceId(surface)]).toBeUndefined();
-      expect(store.load(created.id)).toBeNull();
-      expect(existsSync(sessionDir(tmpDir, created.id))).toBe(false);
+      expect(store.load(resolution.conversation.id)).toBeNull();
+      expect(existsSync(sessionDir(tmpDir, resolution.conversation.id))).toBe(false);
+      expect(await lifecycle.rollbackCreation(resolution.creationAuthority)).toBe(false);
     });
 
-    it("preserves Conversations with transcript history and Conversations moved to another Surface", async () => {
-      const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
-      const originalSurface = dmSurface(1);
-      const movedSurface = dmSurface(2);
-
-      const withHistory = await lifecycle.resolveOrStart(originalSurface);
-      writeFileSync(transcriptPath(tmpDir, withHistory.id), '{"role":"user","content":"keep me"}\n');
-
-      expect(await lifecycle.rollbackCreation(originalSurface, withHistory.id)).toBe(false);
-      expect(bindings.bindings.surfaces[surfaceId(originalSurface)]).toBe(withHistory.id);
-      expect(store.load(withHistory.id)).not.toBeNull();
-
-      const empty = await lifecycle.rotate(originalSurface);
-      await lifecycle.resume(movedSurface, empty.id);
-
-      expect(await lifecycle.rollbackCreation(originalSurface, empty.id)).toBe(false);
-      expect(bindings.bindings.surfaces[surfaceId(originalSurface)]).toBeUndefined();
-      expect(bindings.bindings.surfaces[surfaceId(movedSurface)]).toBe(empty.id);
-      expect(store.load(empty.id)).not.toBeNull();
-    });
-
-    it("fails safe when the transcript cannot be read", async () => {
+    it("fences rollback after a concurrent same-Surface resolution observes the Conversation", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
       const created = await lifecycle.resolveOrStart(surface);
-      const transcript = transcriptPath(tmpDir, created.id);
+      if (created.creationAuthority === null) throw new Error("expected creation authority");
+
+      const observed = await lifecycle.resolveOrStart(surface);
+      expect(observed.kind).toBe("existing");
+      expect(observed.conversation.id).toBe(created.conversation.id);
+
+      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(created.conversation.id);
+      expect(store.load(created.conversation.id)).not.toBeNull();
+    });
+
+    it("settles accepted creation authority so it cannot later roll back", async () => {
+      const { lifecycle, store } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const created = await lifecycle.resolveOrStart(surface);
+      if (created.creationAuthority === null) throw new Error("expected creation authority");
+
+      lifecycle.settleCreation(created.creationAuthority);
+
+      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
+      expect(store.load(created.conversation.id)).not.toBeNull();
+    });
+
+    it("returns false and consumes authority when transcript history makes rollback ineligible", async () => {
+      const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const created = await lifecycle.resolveOrStart(surface);
+      if (created.creationAuthority === null) throw new Error("expected creation authority");
+      writeFileSync(transcriptPath(tmpDir, created.conversation.id), '{"role":"user","content":"keep me"}\n');
+
+      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
+      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(created.conversation.id);
+      expect(store.load(created.conversation.id)).not.toBeNull();
+    });
+
+    it("fails safe and consumes authority when the transcript cannot be read", async () => {
+      const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const created = await lifecycle.resolveOrStart(surface);
+      if (created.creationAuthority === null) throw new Error("expected creation authority");
+      const transcript = transcriptPath(tmpDir, created.conversation.id);
       rmSync(transcript);
       mkdirSync(transcript);
 
-      expect(await lifecycle.rollbackCreation(surface, created.id)).toBe(false);
+      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
+      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(created.conversation.id);
+      expect(store.load(created.conversation.id)).not.toBeNull();
+      expect(existsSync(sessionDir(tmpDir, created.conversation.id))).toBe(true);
+    });
 
-      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(created.id);
-      expect(store.load(created.id)).not.toBeNull();
-      expect(existsSync(sessionDir(tmpDir, created.id))).toBe(true);
+    it("throws with residual-state context when Conversation deletion fails", async () => {
+      const store = new ThrowingDeleteStore(tmpDir);
+      const bindings = new InMemoryBindingStore();
+      const lifecycle = new ConversationLifecycleManager(
+        tmpDir,
+        store,
+        bindings,
+        staticSettings(personalEnvironment()),
+        new FakeRuntimeHost(),
+      );
+      const surface = dmSurface(1);
+      const created = await lifecycle.resolveOrStart(surface);
+      if (created.creationAuthority === null) throw new Error("expected creation authority");
+
+      const error = await lifecycle.rollbackCreation(created.creationAuthority).then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("after clearing Surface");
+      expect((error as Error).message).toContain("residual Conversation state remains");
+      expect((error as Error).cause).toBeInstanceOf(Error);
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBeUndefined();
+      expect(store.load(created.conversation.id)).not.toBeNull();
+      expect(await lifecycle.rollbackCreation(created.creationAuthority)).toBe(false);
     });
   });
 
@@ -524,7 +591,7 @@ describe("ConversationLifecycle", () => {
     it("creates a fresh conversation and leaves the prior one resumable", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const prior = await lifecycle.resolveOrStart(surface);
+      const prior = await resolveConversation(lifecycle, surface);
       const next = await lifecycle.rotate(surface);
       expect(next.id).not.toBe(prior.id);
       expect(bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBe(next.id);
@@ -535,7 +602,7 @@ describe("ConversationLifecycle", () => {
     it("does not create a fresh conversation when quiescence fails", async () => {
       const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const prior = await lifecycle.resolveOrStart(surface);
+      const prior = await resolveConversation(lifecycle, surface);
       runtimeHost.throwOnNext = prior.id;
       const before = store.list().length;
       await expect(lifecycle.rotate(surface)).rejects.toThrow(/dispose failed/);
@@ -546,7 +613,7 @@ describe("ConversationLifecycle", () => {
     it("leaves the fresh conversation resumable when the binding write fails", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const prior = await lifecycle.resolveOrStart(surface);
+      const prior = await resolveConversation(lifecycle, surface);
       bindings.failNextSave = true;
       const before = store.list().length;
       await expect(lifecycle.rotate(surface)).rejects.toThrow(/binding save failed/);
@@ -562,7 +629,7 @@ describe("ConversationLifecycle", () => {
     it("disposes the runtime, archives the directory, clears the binding, and reports archived", async () => {
       const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const conv = await lifecycle.resolveOrStart(surface);
+      const conv = await resolveConversation(lifecycle, surface);
       const transition = await lifecycle.archive(surface);
       expect(transition).toEqual({ kind: "archived", conversationId: conv.id });
       expect(runtimeHost.disposed).toEqual([conv.id]);
@@ -577,7 +644,7 @@ describe("ConversationLifecycle", () => {
       const runtimeHost = new FakeRuntimeHost();
       const lifecycle = new ConversationLifecycleManager(tmpDir, store, bindings, staticSettings(personalEnvironment()), runtimeHost);
       const surface = dmSurface(1);
-      const conv = await lifecycle.resolveOrStart(surface);
+      const conv = await resolveConversation(lifecycle, surface);
       store.throwOn = conv.id;
 
       await expect(lifecycle.archive(surface)).rejects.toThrow(/archive move failed/);
@@ -607,7 +674,7 @@ describe("ConversationLifecycle", () => {
     it("is idempotent when the target is already bound to the destination surface", async () => {
       const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const conv = await lifecycle.resolveOrStart(surface);
+      const conv = await resolveConversation(lifecycle, surface);
       const result = await lifecycle.resume(surface, conv.id);
       expect(result.id).toBe(conv.id);
       expect(runtimeHost.disposed).toEqual([]);
@@ -619,8 +686,8 @@ describe("ConversationLifecycle", () => {
       const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       const source = dmSurface(1);
       const destination = dmSurface(2);
-      const target = await lifecycle.resolveOrStart(source);
-      const displaced = await lifecycle.resolveOrStart(destination);
+      const target = await resolveConversation(lifecycle, source);
+      const displaced = await resolveConversation(lifecycle, destination);
 
       const result = await lifecycle.resume(destination, target.id);
 
@@ -646,7 +713,7 @@ describe("ConversationLifecycle", () => {
     it("binds an unbound target to the destination surface", async () => {
       const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       const destination = dmSurface(2);
-      const displaced = await lifecycle.resolveOrStart(destination);
+      const displaced = await resolveConversation(lifecycle, destination);
       const target = store.create(personalEnvironment());
 
       const result = await lifecycle.resume(destination, target.id);
@@ -709,7 +776,7 @@ describe("ConversationLifecycle", () => {
     it("disposes the previous runtime before assigning", async () => {
       const { lifecycle, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const prior = await lifecycle.resolveOrStart(surface);
+      const prior = await resolveConversation(lifecycle, surface);
       const projectRoot = join(tmpDir, "project");
       mkdirSync(projectRoot, { recursive: true });
 
@@ -723,7 +790,7 @@ describe("ConversationLifecycle", () => {
       const { lifecycle, store, bindings, runtimeHost } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
       const key = surfaceId(surface);
-      const prior = await lifecycle.resolveOrStart(surface);
+      const prior = await resolveConversation(lifecycle, surface);
       const projectRoot = join(tmpDir, "project");
       mkdirSync(projectRoot, { recursive: true });
       runtimeHost.throwOnNext = prior.id;
@@ -792,7 +859,7 @@ describe("ConversationLifecycle", () => {
     it("atomically persists model and thinking preferences and invalidates the current runtime", async () => {
       const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
-      const conversation = await lifecycle.resolveOrStart(surface);
+      const conversation = await resolveConversation(lifecycle, surface);
       runtimeHost.active.add(conversation.id);
 
       const result = await lifecycle.setSurfacePreferences(surface, {
@@ -813,7 +880,7 @@ describe("ConversationLifecycle", () => {
       const { lifecycle, store, bindings, runtimeHost } = makeFileLifecycle(tmpDir, settings);
       const surface = dmSurface(1);
       const key = surfaceId(surface);
-      const prior = await lifecycle.resolveOrStart(surface);
+      const prior = await resolveConversation(lifecycle, surface);
       runtimeHost.active.add(prior.id);
       const projectRoot = join(tmpDir, "pending-project");
       mkdirSync(projectRoot, { recursive: true });
@@ -874,7 +941,7 @@ describe("ConversationLifecycle", () => {
     it("keeps committed preferences authoritative and reports runtime cleanup failure", async () => {
       const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
-      const conversation = await lifecycle.resolveOrStart(surface);
+      const conversation = await resolveConversation(lifecycle, surface);
       runtimeHost.active.add(conversation.id);
       runtimeHost.throwOnNext = conversation.id;
 
@@ -889,7 +956,7 @@ describe("ConversationLifecycle", () => {
     it("does not persist preferences when runtime invalidation authority cannot be read", async () => {
       const { lifecycle, bindings, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
-      const conversation = await lifecycle.resolveOrStart(surface);
+      const conversation = await resolveConversation(lifecycle, surface);
       runtimeHost.active.add(conversation.id);
       bindings.failNextLoad = true;
 
@@ -944,7 +1011,7 @@ describe("ConversationLifecycle", () => {
       const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
       writeSkill(goblinSkillsPath(tmpDir), "goblin-alpha");
-      const conversation = await lifecycle.resolveOrStart(surface);
+      const conversation = await resolveConversation(lifecycle, surface);
       runtimeHost.active.add(conversation.id);
 
       const result = await lifecycle.setSkillSelection(surface, "goblin", { mode: "none" });
@@ -961,7 +1028,7 @@ describe("ConversationLifecycle", () => {
     it("reports cleanup failure without restoring the stale runtime", async () => {
       const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
-      const conversation = await lifecycle.resolveOrStart(surface);
+      const conversation = await resolveConversation(lifecycle, surface);
       runtimeHost.active.add(conversation.id);
       runtimeHost.throwOnNext = conversation.id;
 
@@ -975,7 +1042,7 @@ describe("ConversationLifecycle", () => {
     it("does not persist skill policy when runtime invalidation authority cannot be read", async () => {
       const { lifecycle, bindings, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
-      const conversation = await lifecycle.resolveOrStart(surface);
+      const conversation = await resolveConversation(lifecycle, surface);
       runtimeHost.active.add(conversation.id);
       bindings.failNextLoad = true;
 
@@ -991,7 +1058,7 @@ describe("ConversationLifecycle", () => {
     it("rejects a missing selected skill before settings or runtime changes", async () => {
       const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
-      const conversation = await lifecycle.resolveOrStart(surface);
+      const conversation = await resolveConversation(lifecycle, surface);
       runtimeHost.active.add(conversation.id);
 
       await expect(
@@ -1008,7 +1075,7 @@ describe("ConversationLifecycle", () => {
       const { lifecycle, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
       writeSkill(goblinSkillsPath(tmpDir), "goblin-alpha");
-      await lifecycle.resolveOrStart(surface);
+      await resolveConversation(lifecycle, surface);
       writeSkill(goblinSkillsPath(tmpDir), "goblin-beta");
       const conversation = lifecycle.inspect(surface);
       expect(conversation).not.toBeNull();
@@ -1023,7 +1090,7 @@ describe("ConversationLifecycle", () => {
     it("fails reload before invalidation when Binding authority cannot be read", async () => {
       const { lifecycle, bindings, runtimeHost } = makeFileLifecycle(tmpDir);
       const surface = dmSurface(1);
-      const conversation = await lifecycle.resolveOrStart(surface);
+      const conversation = await resolveConversation(lifecycle, surface);
       runtimeHost.active.add(conversation.id);
       bindings.failNextLoad = true;
 
@@ -1038,7 +1105,7 @@ describe("ConversationLifecycle", () => {
       const { lifecycle } = makeFileLifecycle(tmpDir);
       const source = dmSurface(1);
       const destination = dmSurface(2);
-      const target = await lifecycle.resolveOrStart(source);
+      const target = await resolveConversation(lifecycle, source);
       await lifecycle.setSkillPolicy(source, {
         goblin: { mode: "none" },
         environment: { mode: "all" },
@@ -1064,7 +1131,7 @@ describe("ConversationLifecycle", () => {
       lifecycle.settings.setModelName(surface, "poe/SurfaceModel");
       lifecycle.settings.setThinkingLevel(surface, "high");
 
-      const first = await lifecycle.resolveOrStart(surface);
+      const first = await resolveConversation(lifecycle, surface);
       const rotated = await lifecycle.rotate(surface);
       expect(rotated.id).not.toBe(first.id);
       expect(lifecycle.settings.getModelName(surface)).toBe("poe/SurfaceModel");
@@ -1076,7 +1143,7 @@ describe("ConversationLifecycle", () => {
       const source = dmSurface(1);
       const destination = dmSurface(2);
 
-      const target = await lifecycle.resolveOrStart(source);
+      const target = await resolveConversation(lifecycle, source);
       lifecycle.settings.setModelName(destination, "poe/DestinationModel");
       lifecycle.settings.setThinkingLevel(destination, "low");
 
@@ -1093,7 +1160,7 @@ describe("ConversationLifecycle", () => {
       lifecycle.settings.setModelName(surface, "poe/SurfaceModel");
       lifecycle.settings.setThinkingLevel(surface, "high");
 
-      await lifecycle.resolveOrStart(surface);
+      await resolveConversation(lifecycle, surface);
       await lifecycle.archive(surface);
       expect(lifecycle.settings.getModelName(surface)).toBe("poe/SurfaceModel");
       expect(lifecycle.settings.getThinkingLevel(surface)).toBe("high");
@@ -1127,7 +1194,7 @@ describe("ConversationLifecycle", () => {
         fileBasedSettings(tmpDir),
         { hasRuntime: () => false, disposeRuntime: async () => {} },
       );
-      const result = await lifecycle.resolveOrStart(surface);
+      const result = await resolveConversation(lifecycle, surface);
 
       expect(result.id).toBe(plannedId);
       expect(result.executionEnvironment).toEqual(projectEnvironment(projectRoot));
@@ -1148,7 +1215,7 @@ describe("ConversationLifecycle", () => {
       );
 
       const [, assignResult] = await Promise.all([
-        lifecycle.resolveOrStart(surface),
+        resolveConversation(lifecycle, surface),
         lifecycle.assignProject(surface, projectRoot),
       ]);
 
@@ -1176,7 +1243,7 @@ describe("ConversationLifecycle", () => {
         fileBasedSettings(tmpDir),
         runtimeHost,
       );
-      const personalP = await lifecycleA.resolveOrStart(surfaceA);
+      const personalP = await resolveConversation(lifecycleA, surfaceA);
 
       const lifecycleB = new ConversationLifecycleManager(
         tmpDir,
@@ -1221,7 +1288,7 @@ describe("ConversationLifecycle", () => {
     it("does not mutate the previous conversation environment on assignment", async () => {
       const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
       const surface = dmSurface(1);
-      const prior = await lifecycle.resolveOrStart(surface);
+      const prior = await resolveConversation(lifecycle, surface);
       const projectRoot = makeProjectDir("project");
 
       await lifecycle.assignProject(surface, projectRoot);
@@ -1336,7 +1403,7 @@ describe("ConversationLifecycle", () => {
         surfaceRuntimeAuthority: lifecycle,
       });
 
-      const personal = await lifecycle.resolveOrStart(surface);
+      const personal = await resolveConversation(lifecycle, surface);
       const personalSession = personal;
       await dispatcher.getOrCreateRunner(personalSession, surface);
       bindings.failNextSave = true;
@@ -1365,8 +1432,8 @@ describe("ConversationLifecycle", () => {
       const source = dmSurface(1);
       const destination = dmSurface(2);
 
-      const target = await lifecycle.resolveOrStart(source);
-      const displaced = await lifecycle.resolveOrStart(destination);
+      const target = await resolveConversation(lifecycle, source);
+      const displaced = await resolveConversation(lifecycle, destination);
 
       const r1 = await dispatcher.getOrCreateRunner(
         target,

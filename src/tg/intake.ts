@@ -26,7 +26,10 @@ import {
   type TurnDispatcher,
   type PromptContent,
 } from "../orchestration/dispatcher.ts";
-import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
+import type {
+  ConversationCreationAuthority,
+  ConversationLifecycle,
+} from "../orchestration/conversation-lifecycle.ts";
 import type { WorkAuthority } from "../orchestration/conversation-runtime-host.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 
@@ -139,42 +142,39 @@ function mapAdmissionCompletion<T>(
   }
 }
 
+/** Roll back one lifecycle-issued creation authority with caller context. */
+async function rollbackCreatedConversation(
+  lifecycle: ConversationLifecycle,
+  authority: ConversationCreationAuthority,
+  context: string,
+): Promise<void> {
+  let applied: boolean;
+  try {
+    applied = await lifecycle.rollbackCreation(authority);
+  } catch (cause) {
+    throw new Error(`failed to roll back newly created Conversation after ${context}`, { cause });
+  }
+  if (!applied) {
+    throw new Error(
+      `new Conversation rollback was not applied after ${context}; creation authority was settled, fenced, or no safe rollback mutation applied`,
+    );
+  }
+}
+
 /**
- * Keep the runtime owner's structural decision authoritative while making
- * cleanup of a newly created Conversation part of the update completion.
- * `rollbackCreation(false)` means lifecycle made no mutation. That does not
- * satisfy this caller's cleanup obligation, so surface it without guessing
- * which guard (binding identity, transcript content, or transcript
- * readability) declined the mutation.
+ * Preserve an authoritative structural rejection while attaching authorized
+ * creation rollback to the separately tracked completion.
  */
 function withRejectedCreationRollback<T>(
   admission: AdmissionResult<T>,
-  required: boolean,
+  authority: ConversationCreationAuthority | null,
   lifecycle: ConversationLifecycle,
-  surface: Surface,
-  conversationId: ConversationState["id"],
   source: string,
 ): AdmissionResult<T> {
-  if (!required) return admission;
+  if (authority === null) return admission;
 
-  const context = `${source} admission (${admission.kind}) for Surface ${surfaceId(surface)} and Conversation ${conversationId}`;
-  const rollback = (async (): Promise<void> => {
-    let applied: boolean;
-    try {
-      applied = await lifecycle.rollbackCreation(surface, conversationId);
-    } catch (cause) {
-      throw new Error(`failed to roll back newly created Conversation after ${context}`, { cause });
-    }
-    if (!applied) {
-      throw new Error(
-        `new Conversation rollback was not applied after ${context}; lifecycle left state unchanged because no safe rollback mutation applied`,
-      );
-    }
-  })();
-
-  // The structural decision has already been made. Preserve it and attach
-  // rollback to the separately tracked completion instead of turning a cleanup
-  // failure into a misleading failed-before-decision gate outcome.
+  const context = `${source} admission (${admission.kind}) for Surface ${authority.surfaceId} and Conversation ${authority.conversationId}`;
+  const rollback = rollbackCreatedConversation(lifecycle, authority, context);
   const completion = rollback.then(
     () => admission.completion,
     async (rollbackError: unknown) => {
@@ -190,6 +190,34 @@ function withRejectedCreationRollback<T>(
     },
   );
   return { kind: admission.kind, completion };
+}
+
+/**
+ * Synchronous dispatcher throws happen before a structural decision. Attempt
+ * authorized rollback first, then rethrow the admission error; if rollback
+ * also fails, preserve both causes in admission-first order.
+ */
+async function attemptCreationAdmission<T>(
+  admit: () => T,
+  authority: ConversationCreationAuthority | null,
+  lifecycle: ConversationLifecycle,
+  source: string,
+): Promise<T> {
+  try {
+    return admit();
+  } catch (admissionError) {
+    if (authority === null) throw admissionError;
+    const context = `${source} admission throw for Surface ${authority.surfaceId} and Conversation ${authority.conversationId}`;
+    try {
+      await rollbackCreatedConversation(lifecycle, authority, context);
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [admissionError, rollbackError],
+        `Conversation admission and creation rollback both failed for ${source}`,
+      );
+    }
+    throw admissionError;
+  }
 }
 
 export async function downloadFileBytes(
@@ -503,10 +531,11 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     }
 
     // Photos, documents, voice, and audio are ordinary authorized content:
-    // lazily create a conversation on the surface, just like text.
-    const beforeInspect = lifecycle.inspect(surface);
-    const wasNewConversation = beforeInspect === null;
-    const conversation = await lifecycle.resolveOrStart(surface);
+    // lazily create a conversation on the surface, just like text. Lifecycle
+    // supplies the only authority capable of rolling this creation back.
+    const resolution = await lifecycle.resolveOrStart(surface);
+    const conversation = resolution.conversation;
+    const creationAuthority = resolution.creationAuthority;
     const session = conversation;
 
     return {
@@ -541,26 +570,29 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // avoid awaiting runner acquisition.
         const existingRunner = dispatcher.getRunner(session.id);
         if (existingRunner !== null && existingRunner.isAbortTimedOut) {
+          if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
           return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
         }
         // admitPromptTurn enqueues the work synchronously and acquires
         // the runner inside the queued work when no runner is registered
         // yet, so a stalled creation is cancelled by shutdown disposal
         // rather than deadlocking the runtime-admission drain.
-        const admission = dispatcher.admitPromptTurn(
-          session,
-          surface,
-          execute,
-          onError,
-        );
-        return withRejectedCreationRollback(
-          admission,
-          admission.kind === "rejected" && wasNewConversation,
+        const admission = await attemptCreationAdmission(
+          () => dispatcher.admitPromptTurn(
+            session,
+            surface,
+            execute,
+            onError,
+          ),
+          creationAuthority,
           lifecycle,
-          surface,
-          session.id,
           kind,
         );
+        if (admission.kind !== "rejected") {
+          if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
+          return admission;
+        }
+        return withRejectedCreationRollback(admission, creationAuthority, lifecycle, kind);
       },
     };
   }
@@ -818,11 +850,14 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       }
     }
 
-    const beforeInspect = lifecycle.inspect(surface);
-    const wasNewConversation = beforeInspect === null;
-    const conversation = await lifecycle.resolveOrStart(surface);
+    const resolution = await lifecycle.resolveOrStart(surface);
+    const conversation = resolution.conversation;
+    const creationAuthority = resolution.creationAuthority;
     const session = conversation;
-    if (!rawText) return completed(undefined);
+    if (!rawText) {
+      if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
+      return completed(undefined);
+    }
 
     // Use the registered runner directly for synchronous steer/wedge checks
     // without awaiting runner acquisition. For an idle runner or when no
@@ -833,39 +868,43 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const existingRunner = dispatcher.getRunner(session.id);
     if (existingRunner !== null) {
       if (existingRunner.isAbortTimedOut) {
+        if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
         return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
       }
       if (existingRunner.isStreaming) {
+        if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
         return steerOrFallbackToFreshTurn(message, surface, session, existingRunner, rawText);
       }
     }
-    const admission = dispatcher.admitPromptTurn(
-      session,
-      surface,
-      async (runner, authority) => {
-        if (runner.isAbortTimedOut) {
-          if (authority.isCurrent()) await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
-          return;
-        }
-        if (!authority.isCurrent()) return;
-        const buffer = dispatcher.createMessageBuffer(surface, session);
-        await runner.prompt(message.prepare(rawText), buffer);
-      },
-      async (error) => {
-        log.error("runner prompt failed", {
-          error: error instanceof Error ? error.message : String(error),
-          sessionId: session.id,
-        });
-      },
-    );
-    return withRejectedCreationRollback(
-      admission,
-      admission.kind === "rejected" && wasNewConversation,
+    const admission = await attemptCreationAdmission(
+      () => dispatcher.admitPromptTurn(
+        session,
+        surface,
+        async (runner, authority) => {
+          if (runner.isAbortTimedOut) {
+            if (authority.isCurrent()) await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
+            return;
+          }
+          if (!authority.isCurrent()) return;
+          const buffer = dispatcher.createMessageBuffer(surface, session);
+          await runner.prompt(message.prepare(rawText), buffer);
+        },
+        async (error) => {
+          log.error("runner prompt failed", {
+            error: error instanceof Error ? error.message : String(error),
+            sessionId: session.id,
+          });
+        },
+      ),
+      creationAuthority,
       lifecycle,
-      surface,
-      session.id,
       "text",
     );
+    if (admission.kind !== "rejected") {
+      if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
+      return admission;
+    }
+    return withRejectedCreationRollback(admission, creationAuthority, lifecycle, "text");
   }
 
   async function handlePhoto(
@@ -1178,18 +1217,19 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     };
 
     let conversation: ConversationState;
-    let wasNewConversation = false;
+    let creationAuthority: ConversationCreationAuthority | null;
     try {
-      const beforeInspect = lifecycle.inspect(surface);
-      wasNewConversation = beforeInspect === null;
-      conversation = await lifecycle.resolveOrStart(surface);
+      const resolution = await lifecycle.resolveOrStart(surface);
+      conversation = resolution.conversation;
+      creationAuthority = resolution.creationAuthority;
     } catch (error) {
       log.error("guest resolve failed", { error: String(error), surfaceId: surfaceId(surface) });
       return completed(replyOnce(errorArticle(), "guest error reply failed"));
     }
 
     const sink = new GuestReplySink();
-    const admission = dispatcher.admitImmediateTurn(
+    const admission = await attemptCreationAdmission(
+      () => dispatcher.admitImmediateTurn(
         conversation,
         surface,
         text,
@@ -1205,11 +1245,16 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             await replyOnce(errorArticle(), "guest error reply failed");
           },
         },
-      );
+      ),
+      creationAuthority,
+      lifecycle,
+      "guest",
+    );
 
     let rejectedAdmission: RuntimeAdmissionResult<void>;
     switch (admission.kind) {
       case "accepted": {
+        if (creationAuthority !== null) lifecycle.settleCreation(creationAuthority);
         const completion = admission.settlement.then(async (settlement) => {
           if (settlement.kind === "failed") {
             log.error("accepted guest runtime work failed", {
@@ -1238,14 +1283,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         rejectedAdmission = runtimeAdmission.fenced(undefined);
         break;
     }
-    return withRejectedCreationRollback(
-      rejectedAdmission,
-      wasNewConversation,
-      lifecycle,
-      surface,
-      conversation.id,
-      "guest",
-    );
+    return withRejectedCreationRollback(rejectedAdmission, creationAuthority, lifecycle, "guest");
   }
 
   return {

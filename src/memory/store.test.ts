@@ -322,6 +322,63 @@ describe("MemoryStore", () => {
     });
   });
 
+  describe("post-commit metric failures", () => {
+    async function expectCommittedMutationWhenCounterFails(failingCounter: string): Promise<void> {
+      const metrics = new MetricsStore(tmp, "abcdef1234");
+      const metricFailure = new Error(`${failingCounter} exploded`);
+      const effects: string[] = [];
+      const increment = spyOn(metrics, "incrementCounter").mockImplementation((counter) => {
+        effects.push(`metric:${counter}`);
+        if (counter === failingCounter) throw metricFailure;
+      });
+      const embeddings = new EmbeddingProvider(store.db);
+      const embedEntries = spyOn(embeddings, "embedEntries").mockImplementation(async () => {
+        effects.push("embedding");
+        return new Map();
+      });
+      store = new MemoryStore(store.db, metrics, { embeddings });
+      const warn = spyOn(log, "warn").mockImplementation(() => {});
+      const exec = spyOn(store.db.database, "exec");
+
+      try {
+        const result = await store.add("general", "durable manual write");
+
+        expect(result).toEqual({ ok: true });
+        expect(store.readBody("general")).toBe("durable manual write");
+        expect(effects).toEqual([
+          "metric:memory_write_total",
+          "metric:memory_write_add_total",
+          "embedding",
+        ]);
+        expect(embedEntries).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          "memory metric failed after commit; write remains durable",
+          {
+            operation: "add",
+            scope: "general",
+            counter: failingCounter,
+            error: metricFailure.message,
+          },
+        );
+        expect(exec).not.toHaveBeenCalledWith("ROLLBACK");
+      } finally {
+        increment.mockRestore();
+        embedEntries.mockRestore();
+        warn.mockRestore();
+        exec.mockRestore();
+      }
+    }
+
+    it("keeps the durable mutation and runs later side effects when the total counter fails", async () => {
+      await expectCommittedMutationWhenCounterFails("memory_write_total");
+    });
+
+    it("keeps the durable mutation and runs embedding when the action counter fails", async () => {
+      await expectCommittedMutationWhenCounterFails("memory_write_add_total");
+    });
+  });
+
   describe("replace", () => {
     beforeEach(async () => {
       await store.add("general", "alpha");

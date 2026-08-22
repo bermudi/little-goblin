@@ -985,14 +985,31 @@ export class MemoryStore {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
 
-    this.metrics?.incrementCounter("memory_write_total", tag);
-    this.metrics?.incrementCounter(`memory_write_${action}_total`, tag);
+    this.recordMetricAfterCommit(action, tag, "memory_write_total");
+    this.recordMetricAfterCommit(action, tag, `memory_write_${action}_total`);
 
     // Embed new/changed entries after the transaction commits. Failures are
     // logged but do not fail the write — FTS still serves search.
     await this.runEmbeddingAfterCommit(action, () => this.embeddings?.embedEntries(toEmbed));
 
     return { ok: true };
+  }
+
+  private recordMetricAfterCommit(
+    operation: "add" | "replace" | "remove" | "rewrite",
+    scope: string,
+    counter: string,
+  ): void {
+    try {
+      this.metrics?.incrementCounter(counter, scope);
+    } catch (err) {
+      log.warn("memory metric failed after commit; write remains durable", {
+        operation,
+        scope,
+        counter,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   private async runEmbeddingAfterCommit(

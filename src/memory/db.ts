@@ -15,26 +15,59 @@ export class MemoryDatabase {
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath, { create: true });
-    this.db.exec("PRAGMA journal_mode = WAL;");
-    this.db.exec("PRAGMA foreign_keys = ON;");
-    this.db.exec("PRAGMA busy_timeout = 2000;");
-    this.db.exec(DDL);
-    this.db.exec(INDEX_DDL);
     this.vectorWeight = clampWeight(process.env.GOBLIN_MEMORY_VECTOR_WEIGHT, 0.7);
     this.textWeight = clampWeight(process.env.GOBLIN_MEMORY_TEXT_WEIGHT, 0.3);
     if (this.vectorWeight + this.textWeight === 0) {
       this.vectorWeight = 0.7;
       this.textWeight = 0.3;
     }
-    this.migrate();
+
+    try {
+      // Read and reject a future schema before current DDL can mutate it.
+      const current = this.readSchemaVersion();
+      this.db.exec("PRAGMA journal_mode = WAL;");
+      this.db.exec("PRAGMA foreign_keys = ON;");
+      this.db.exec("PRAGMA busy_timeout = 2000;");
+      this.db.exec(DDL);
+      this.migrate(current);
+      this.db.exec(INDEX_DDL);
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
-  private migrate(): void {
-    const row = this.db
-      .query<{ value: string }, { $key: string }>("SELECT value FROM memory_meta WHERE key = $key")
-      .get({ $key: "schema_version" });
-    const current = row ? Number.parseInt(row.value, 10) : 0;
+  private readSchemaVersion(): number {
+    const hasMetaTable = this.db
+      .query<{ present: number }, []>(
+        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'memory_meta'",
+      )
+      .get();
+    if (!hasMetaTable) return 0;
 
+    const row = this.db
+      .query<{ value: string | null }, { $key: string }>(
+        "SELECT value FROM memory_meta WHERE key = $key",
+      )
+      .get({ $key: "schema_version" });
+    if (!row) return 0;
+    if (row.value === null || !/^(0|[1-9]\d*)$/.test(row.value)) {
+      throw new Error(`invalid memory schema version: ${String(row.value)}`);
+    }
+
+    const current = Number(row.value);
+    if (!Number.isSafeInteger(current)) {
+      throw new Error(`invalid memory schema version: ${row.value}`);
+    }
+    if (current > MEMORY_SCHEMA_VERSION) {
+      throw new Error(
+        `memory schema version ${current} is newer than supported ${MEMORY_SCHEMA_VERSION}`,
+      );
+    }
+    return current;
+  }
+
+  private migrate(current: number): void {
     // Schema migration: add display_order to existing databases.
     const hasDisplayOrder = this.db
       .query<{ name: string }, []>("PRAGMA table_info(memory_entries)")

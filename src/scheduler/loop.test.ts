@@ -1167,6 +1167,83 @@ describe("SchedulerLoop", () => {
   });
 
   describe("stop behavior", () => {
+    it("drains admitted memory work without rearming an aligned timer after the stop fence closes", async () => {
+      const transcriptSync = deferred<void>();
+      const remSleep = deferred<void>();
+      const timers: Array<{
+        callback: () => void;
+        ms: number;
+        cleared: boolean;
+        clear(): void;
+      }> = [];
+      const fakeClock: SchedulerClock = {
+        now: () => NOW_MS,
+        setInterval: (callback, ms) => {
+          const timer = {
+            callback,
+            ms,
+            cleared: false,
+            clear: () => { timer.cleared = true; },
+          };
+          timers.push(timer);
+          return timer;
+        },
+      };
+      const tickIntervalMs = 101;
+      const transcriptSyncIntervalMs = 202;
+      const remRepeatIntervalMs = 86_400_123;
+      let loop!: SchedulerLoop;
+      let drain: Promise<void> | undefined;
+      const memoryEngine = {
+        syncTranscripts: () => transcriptSync.promise,
+        dreaming: {
+          runRemSleep: () => {
+            // Close the fence from inside the aligned callback, after that
+            // callback was admitted but before it can install its repeat timer.
+            drain = loop.stopAndDrain();
+            return remSleep.promise;
+          },
+        },
+      } as unknown as MemoryEngine;
+      loop = new SchedulerLoop({
+        store,
+        ...schedulerDependencies(),
+        dispatcher,
+        clock: fakeClock,
+        home: tmpDir,
+        memoryEngine,
+        tickIntervalMs,
+        transcriptSyncIntervalMs,
+        dreamingLightIntervalMs: Number.POSITIVE_INFINITY,
+        dreamingRemIntervalMs: remRepeatIntervalMs,
+        dreamingDeepIntervalMs: Number.POSITIVE_INFINITY,
+      });
+
+      loop.start();
+      timers.find((timer) => timer.ms === transcriptSyncIntervalMs)!.callback();
+      const alignedTimer = timers.find(
+        (timer) => timer.ms !== tickIntervalMs && timer.ms !== transcriptSyncIntervalMs,
+      )!;
+      alignedTimer.callback();
+
+      expect(drain).toBeDefined();
+      expect(timers.some((timer) => timer.ms === remRepeatIntervalMs)).toBe(false);
+      expect(await Promise.race([
+        drain!.then(() => "drained" as const),
+        Promise.resolve("pending" as const),
+      ])).toBe("pending");
+
+      transcriptSync.resolve();
+      expect(await Promise.race([
+        drain!.then(() => "drained" as const),
+        Promise.resolve("pending" as const),
+      ])).toBe("pending");
+
+      remSleep.resolve();
+      await expect(drain!).resolves.toBeUndefined();
+      expect(timers.every((timer) => timer.cleared)).toBe(true);
+    });
+
     it("stop clears the timer and is idempotent", () => {
       let cleared = 0;
       let setCount = 0;

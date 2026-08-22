@@ -280,6 +280,12 @@ function makeConfig(home: string): Config {
   };
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
 function nopCallbacks(): TurnCallbacks {
   return {
     onTextDelta: mock(() => {}),
@@ -530,6 +536,36 @@ describe("AgentRunner", () => {
 
       await expect(tool.execute("call-1", {}, undefined, undefined, {})).rejects.toThrow(/no longer current/);
       expect(sideEffect).not.toHaveBeenCalled();
+    });
+
+    it("rejects a guarded tool result when authority becomes stale during execution", async () => {
+      let current = true;
+      const result = { content: [{ type: "text" as const, text: "done" }] };
+      const completion = deferred<typeof result>();
+      const sideEffect = mock(() => completion.promise);
+      const runner = await makeRunner(
+        tmpDir,
+        [{ name: "mutating_tool", execute: sideEffect }],
+        dmSurface(123),
+        undefined,
+        undefined,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        () => current,
+      );
+      await runner.prompt("hello", nopCallbacks());
+      const tools = (capturedCreateArgs[0] as { customTools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> }).customTools;
+      const tool = tools.find((candidate) => candidate.name === "mutating_tool")!;
+
+      const execution = tool.execute("call-1", {}, undefined, undefined, {});
+      expect(sideEffect).toHaveBeenCalledTimes(1);
+
+      current = false;
+      completion.resolve(result);
+
+      await expect(execution).rejects.toThrow(/no longer current/);
     });
 
     it("fences follow-ups and compaction after binding rotation", async () => {

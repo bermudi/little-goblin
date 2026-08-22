@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConversationLifecycleManager, reconcileProjectAssignmentAtColdStart } from "./conversation-lifecycle.ts";
@@ -23,7 +23,7 @@ import {
   patchSurfaceSettings,
   getSurfaceRuntimeSettings,
 } from "../sessions/topic-settings.ts";
-import { sessionDir, statePath } from "../sessions/paths.ts";
+import { sessionDir, statePath, transcriptPath } from "../sessions/paths.ts";
 import { environmentFromProjectRoot, personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
 import { dmSurface, surfaceId, supergroupSurface, topicSurface, type Surface } from "../surface.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
@@ -462,6 +462,56 @@ describe("ConversationLifecycle", () => {
       expect(personal.runtimeHost.disposed).toEqual([projectConv.id]);
       expect(personal.bindings.bindings.surfaces[surfaceId(dmSurface(1))]).toBe(conv.id);
       expect(personal.store.load(projectConv.id)).not.toBeNull();
+    });
+  });
+
+  describe("rollbackCreation", () => {
+    it("deletes only an empty Conversation that is still bound to the requesting Surface", async () => {
+      const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const created = await lifecycle.resolveOrStart(surface);
+
+      expect(await lifecycle.rollbackCreation(surface, created.id)).toBe(true);
+
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBeUndefined();
+      expect(store.load(created.id)).toBeNull();
+      expect(existsSync(sessionDir(tmpDir, created.id))).toBe(false);
+    });
+
+    it("preserves Conversations with transcript history and Conversations moved to another Surface", async () => {
+      const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const originalSurface = dmSurface(1);
+      const movedSurface = dmSurface(2);
+
+      const withHistory = await lifecycle.resolveOrStart(originalSurface);
+      writeFileSync(transcriptPath(tmpDir, withHistory.id), '{"role":"user","content":"keep me"}\n');
+
+      expect(await lifecycle.rollbackCreation(originalSurface, withHistory.id)).toBe(false);
+      expect(bindings.bindings.surfaces[surfaceId(originalSurface)]).toBe(withHistory.id);
+      expect(store.load(withHistory.id)).not.toBeNull();
+
+      const empty = await lifecycle.rotate(originalSurface);
+      await lifecycle.resume(movedSurface, empty.id);
+
+      expect(await lifecycle.rollbackCreation(originalSurface, empty.id)).toBe(false);
+      expect(bindings.bindings.surfaces[surfaceId(originalSurface)]).toBeUndefined();
+      expect(bindings.bindings.surfaces[surfaceId(movedSurface)]).toBe(empty.id);
+      expect(store.load(empty.id)).not.toBeNull();
+    });
+
+    it("fails safe when the transcript cannot be read", async () => {
+      const { lifecycle, store, bindings } = makeLifecycle(personalEnvironment(), tmpDir);
+      const surface = dmSurface(1);
+      const created = await lifecycle.resolveOrStart(surface);
+      const transcript = transcriptPath(tmpDir, created.id);
+      rmSync(transcript);
+      mkdirSync(transcript);
+
+      expect(await lifecycle.rollbackCreation(surface, created.id)).toBe(false);
+
+      expect(bindings.bindings.surfaces[surfaceId(surface)]).toBe(created.id);
+      expect(store.load(created.id)).not.toBeNull();
+      expect(existsSync(sessionDir(tmpDir, created.id))).toBe(true);
     });
   });
 

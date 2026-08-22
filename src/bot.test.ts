@@ -12,7 +12,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { replyNoActiveSession, buildBot } from "./bot.ts";
-import { dmSurface, supergroupSurface, topicSurface } from "./surface.ts";
+import { dmSurface, guestSurface, supergroupSurface, topicSurface } from "./surface.ts";
 import { projectRootOf } from "./sessions/environment.ts";
 import { MemoryStore } from "./memory/store.ts";
 import { metricsPath } from "./sessions/paths.ts";
@@ -104,6 +104,7 @@ function makeConfig(): Config {
 function makeApi() {
   const sent: string[] = [];
   const edits: string[] = [];
+  const guestAnswers: Array<{ guestQueryId: string; result: unknown }> = [];
   let failTopicNotFound = false;
   let failParseOnce = false;
   let parseErrorThrown = false;
@@ -120,6 +121,7 @@ function makeApi() {
   return {
     sent,
     edits,
+    guestAnswers,
     api: {
       getMe: mock(async () => ({ id: 99, is_bot: true, first_name: "Goblin", username: "goblinbot" })),
       getChatMemberCount,
@@ -180,6 +182,13 @@ function makeApi() {
       if (method === "sendRichMessageDraft" || method === "sendMessageDraft") return { ok: true as const, result: true };
       if (method === "sendVoice" || method === "sendPhoto" || method === "sendDocument") return { ok: true as const, result: { message_id: 1 } };
       if (method === "editForumTopic") return { ok: true as const, result: true };
+      if (method === "answerGuestQuery") {
+        guestAnswers.push({
+          guestQueryId: payload.guest_query_id as string,
+          result: payload.result,
+        });
+        return { ok: true as const, result: { inline_message_id: `guest-${guestAnswers.length}` } };
+      }
       throw new Error(`unexpected Telegram API method ${method}`);
     },
     failTopicNotFound() { failTopicNotFound = true; },
@@ -247,6 +256,26 @@ function textUpdate(text: string, fromId = 1, messageId = 1) {
       from: { id: fromId, is_bot: false, first_name: "Daniel", username: "bermudi" },
       text,
       entities: text.startsWith("/") ? [{ type: "bot_command" as const, offset: 0, length: text.split(/\s/u)[0]!.length }] : undefined,
+    },
+  } as const;
+}
+
+function guestMessageUpdate(chatId: number, fromId: number, queryId: string, updateId: number) {
+  return {
+    update_id: updateId,
+    guest_message: {
+      message_id: updateId,
+      date: 1,
+      guest_query_id: queryId,
+      chat: { id: chatId, type: "supergroup", title: "Foreign group" },
+      from: {
+        id: fromId,
+        is_bot: false,
+        first_name: fromId === 1 ? "Daniel" : "Mallory",
+        username: fromId === 1 ? "bermudi" : "mallory",
+      },
+      text: "@goblinbot hello",
+      entities: [{ type: "mention" as const, offset: 0, length: 10 }],
     },
   } as const;
 }
@@ -425,6 +454,40 @@ describe("buildBot integration", () => {
     // buildBot exposes no second DelegatedWorkHost input: composition can only
     // derive runtime cleanup authority from SubagentRunner's owner.
     expect(built.runtimeHost.delegatedWorkHost).toBe(built.subagentRunner.delegatedWorkHost);
+  });
+
+  it("authorizes the full guest_message path and does no work for a denied summoner", async () => {
+    const built = await makeBot();
+    MockAgentRunner.nextPrompt = async (_content, sink) => {
+      (sink as { onTextDelta(text: string): void }).onTextDelta("guest answer");
+    };
+
+    const deniedChatId = -9002;
+    await built.bot.handleUpdate(guestMessageUpdate(deniedChatId, 2, "denied-query", 20) as never);
+
+    expect(built.lifecycle.inspect(guestSurface(deniedChatId))).toBeNull();
+    expect(runnerInstances).toHaveLength(0);
+    expect(built.api.guestAnswers).toHaveLength(0);
+
+    const allowedChatId = -9001;
+    await built.bot.handleUpdate(guestMessageUpdate(allowedChatId, 1, "allowed-query", 21) as never);
+
+    expect(built.lifecycle.inspect(guestSurface(allowedChatId))).not.toBeNull();
+    expect(built.lifecycle.inspect(dmSurface(allowedChatId))).toBeNull();
+    expect(runnerInstances).toHaveLength(1);
+    expect(runnerInstances[0]!.prompt).toHaveBeenCalledTimes(1);
+    expect(runnerInstances[0]!.prompt.mock.calls[0]![0]).toBe("[From: Daniel (@bermudi)]\nhello");
+    expect(built.api.guestAnswers).toHaveLength(1);
+    expect(built.api.guestAnswers[0]!.guestQueryId).toBe("allowed-query");
+    const answer = built.api.guestAnswers[0]!.result as {
+      type: string;
+      input_message_content: { message_text: string };
+    };
+    expect(answer.type).toBe("article");
+    expect(answer.input_message_content.message_text).toBe("guest answer");
+
+    expect(built.lifecycle.inspect(guestSurface(deniedChatId))).toBeNull();
+    expect(runnerInstances.reduce((count, runner) => count + runner.prompt.mock.calls.length, 0)).toBe(1);
   });
 
   it("/new creates a Conversation and replies", async () => {

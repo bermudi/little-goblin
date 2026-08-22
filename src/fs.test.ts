@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import * as nodeFs from "node:fs";
 import {
   chmodSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -92,10 +94,69 @@ describe("atomicWrite", () => {
     //      This matters because memory/store.ts archiveOrphan aborts on
     //      any `.tmp` file present in a scope directory.
     //
-    // We trigger pre-tmp-creation failures (mkdir / open), which are the
-    // reliably portable cases. The write/fsync/rename failure branch
-    // shares the same cleanup catch block, so the structural guarantee
-    // holds there too even though we can't trigger it without mocking fs.
+    it("preserves the original and cleans up in order after write, fsync, or rename fails", () => {
+      const target = join(tmpDir, "out.json");
+      const failures = ["writeFileSync", "fsyncSync", "renameSync"] as const;
+
+      for (const failedOperation of failures) {
+        writeFileSync(target, "original", "utf-8");
+        const sentinel = new Error(`${failedOperation} sentinel`);
+        const writeSpy = spyOn(nodeFs, "writeFileSync");
+        const fsyncSpy = spyOn(nodeFs, "fsyncSync");
+        const closeSpy = spyOn(nodeFs, "closeSync");
+        const renameSpy = spyOn(nodeFs, "renameSync");
+        const removeSpy = spyOn(nodeFs, "rmSync");
+        const failingSpy = failedOperation === "writeFileSync"
+          ? writeSpy
+          : failedOperation === "fsyncSync"
+            ? fsyncSpy
+            : renameSpy;
+        failingSpy.mockImplementation(() => { throw sentinel; });
+
+        try {
+          let thrown: unknown;
+          try {
+            atomicWrite(target, "replacement");
+          } catch (error) {
+            thrown = error;
+          }
+
+          expect(thrown).toBe(sentinel);
+          expect(readFileSync(target, "utf-8")).toBe("original");
+          expect(readdirSync(tmpDir)).toEqual(["out.json"]);
+
+          expect(writeSpy).toHaveBeenCalledTimes(1);
+          expect(fsyncSpy).toHaveBeenCalledTimes(failedOperation === "writeFileSync" ? 0 : 1);
+          expect(closeSpy).toHaveBeenCalledTimes(1);
+          expect(renameSpy).toHaveBeenCalledTimes(failedOperation === "renameSync" ? 1 : 0);
+          expect(removeSpy).toHaveBeenCalledTimes(1);
+
+          const fd = writeSpy.mock.calls[0]![0];
+          expect(typeof fd).toBe("number");
+          expect(() => fstatSync(fd as number)).toThrow(/bad file descriptor/i);
+
+          const writeOrder = writeSpy.mock.invocationCallOrder[0]!;
+          const closeOrder = closeSpy.mock.invocationCallOrder[0]!;
+          const removeOrder = removeSpy.mock.invocationCallOrder[0]!;
+          expect(writeOrder).toBeLessThan(closeOrder);
+          expect(closeOrder).toBeLessThan(removeOrder);
+          if (failedOperation !== "writeFileSync") {
+            expect(writeOrder).toBeLessThan(fsyncSpy.mock.invocationCallOrder[0]!);
+            expect(fsyncSpy.mock.invocationCallOrder[0]!).toBeLessThan(closeOrder);
+          }
+          if (failedOperation === "renameSync") {
+            expect(closeOrder).toBeLessThan(renameSpy.mock.invocationCallOrder[0]!);
+            expect(renameSpy.mock.invocationCallOrder[0]!).toBeLessThan(removeOrder);
+          }
+        } finally {
+          writeSpy.mockRestore();
+          fsyncSpy.mockRestore();
+          closeSpy.mockRestore();
+          renameSpy.mockRestore();
+          removeSpy.mockRestore();
+        }
+      }
+    });
 
     it("throws and leaves no tmp when the parent path is a file, not a dir", () => {
       // `dir` resolves to a regular file → mkdirSync throws ENOTDIR,

@@ -1,5 +1,6 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, existsSync, readdirSync, writeFileSync, readFileSync } from "node:fs";
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
+import * as fs from "node:fs";
+import { cpSync, mkdtempSync, rmSync, mkdirSync, existsSync, readdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMigrations } from "./migrate.ts";
@@ -95,6 +96,61 @@ describe("runMigrations", () => {
     runMigrations(home);
     expect(readStateVersion(home)).toBe(CURRENT_STATE_VERSION);
     expect(existsSync(join(home, "state", "delegated-work", "runs"))).toBe(true);
+  });
+
+  it("keeps the last completed checkpoint and a usable backup when apply is interrupted", () => {
+    const conversationId = "c3d4e5f6a7";
+    const sessionDir = join(home, "state", "sessions", conversationId);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, "state.json"), JSON.stringify({
+      id: conversationId,
+      createdAt: "2026-07-27T10:00:00.000Z",
+      chatId: 1,
+      title: "At version 3",
+      executionEnvironment: { kind: "personal" },
+    }) + "\n");
+    writeFileSync(join(home, "state", "bindings.json"), JSON.stringify({
+      version: 1,
+      surfaces: { "tg:v1:dm:1": conversationId },
+    }) + "\n");
+    writeFileSync(stateVersionPath(home), JSON.stringify({ version: 3 }) + "\n");
+
+    const runsRoot = join(home, "state", "delegated-work", "runs");
+    const originalMkdirSync = fs.mkdirSync;
+    const mkdirSpy = spyOn(fs, "mkdirSync").mockImplementation(((path, options) => {
+      const result = originalMkdirSync(path, options);
+      if (String(path) === runsRoot) {
+        throw new Error("simulated interruption after step-5 apply mutation");
+      }
+      return result;
+    }) as typeof fs.mkdirSync);
+
+    try {
+      expect(() => runMigrations(home)).toThrow(/simulated interruption/);
+    } finally {
+      mkdirSpy.mockRestore();
+    }
+
+    // Step 4 completed and checkpointed. Step 5 mutated its layout but did not
+    // checkpoint. Decision 0038 requires restoring the command's backup rather
+    // than treating this partial tree as restart-safe.
+    expect(readStateVersion(home)).toBe(4);
+    expect(existsSync(runsRoot)).toBe(true);
+    const backups = readdirSync(home).filter((name) => name.startsWith(".migration-backup-"));
+    expect(backups).toHaveLength(1);
+    const backup = join(home, backups[0] as string);
+    expect(existsSync(join(backup, "snapshot.json"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(backup, "state", "state-version.json"), "utf-8"))).toEqual({ version: 3 });
+
+    rmSync(join(home, "state"), { recursive: true });
+    cpSync(join(backup, "state"), join(home, "state"), { recursive: true });
+    expect(readStateVersion(home)).toBe(3);
+    expect(existsSync(runsRoot)).toBe(false);
+
+    runMigrations(home);
+
+    expect(readStateVersion(home)).toBe(CURRENT_STATE_VERSION);
+    expect(existsSync(backup)).toBe(true);
   });
 
   it("does not replan step 2 against already-canonical Conversation state at version 4", () => {

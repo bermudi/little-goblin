@@ -139,6 +139,59 @@ function mapAdmissionCompletion<T>(
   }
 }
 
+/**
+ * Keep the runtime owner's structural decision authoritative while making
+ * cleanup of a newly created Conversation part of the update completion.
+ * `rollbackCreation(false)` means lifecycle made no mutation. That does not
+ * satisfy this caller's cleanup obligation, so surface it without guessing
+ * which guard (binding identity, transcript content, or transcript
+ * readability) declined the mutation.
+ */
+function withRejectedCreationRollback<T>(
+  admission: AdmissionResult<T>,
+  required: boolean,
+  lifecycle: ConversationLifecycle,
+  surface: Surface,
+  conversationId: ConversationState["id"],
+  source: string,
+): AdmissionResult<T> {
+  if (!required) return admission;
+
+  const context = `${source} admission (${admission.kind}) for Surface ${surfaceId(surface)} and Conversation ${conversationId}`;
+  const rollback = (async (): Promise<void> => {
+    let applied: boolean;
+    try {
+      applied = await lifecycle.rollbackCreation(surface, conversationId);
+    } catch (cause) {
+      throw new Error(`failed to roll back newly created Conversation after ${context}`, { cause });
+    }
+    if (!applied) {
+      throw new Error(
+        `new Conversation rollback was not applied after ${context}; lifecycle left state unchanged because no safe rollback mutation applied`,
+      );
+    }
+  })();
+
+  // The structural decision has already been made. Preserve it and attach
+  // rollback to the separately tracked completion instead of turning a cleanup
+  // failure into a misleading failed-before-decision gate outcome.
+  const completion = rollback.then(
+    () => admission.completion,
+    async (rollbackError: unknown) => {
+      try {
+        await admission.completion;
+      } catch (completionError) {
+        throw new AggregateError(
+          [rollbackError, completionError],
+          `Conversation rollback and ${source} admission completion both failed`,
+        );
+      }
+      throw rollbackError;
+    },
+  );
+  return { kind: admission.kind, completion };
+}
+
 export async function downloadFileBytes(
   api: Bot["api"],
   fileId: string,
@@ -500,10 +553,14 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           execute,
           onError,
         );
-        if (admission.kind === "rejected" && wasNewConversation) {
-          await lifecycle.rollbackCreation(surface, session.id).catch(() => {});
-        }
-        return admission;
+        return withRejectedCreationRollback(
+          admission,
+          admission.kind === "rejected" && wasNewConversation,
+          lifecycle,
+          surface,
+          session.id,
+          kind,
+        );
       },
     };
   }
@@ -801,10 +858,14 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         });
       },
     );
-    if (admission.kind === "rejected" && wasNewConversation) {
-      await lifecycle.rollbackCreation(surface, session.id).catch(() => {});
-    }
-    return admission;
+    return withRejectedCreationRollback(
+      admission,
+      admission.kind === "rejected" && wasNewConversation,
+      lifecycle,
+      surface,
+      session.id,
+      "text",
+    );
   }
 
   async function handlePhoto(
@@ -1146,10 +1207,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         },
       );
 
-    if (wasNewConversation && admission.kind !== "accepted") {
-      await lifecycle.rollbackCreation(surface, conversation.id).catch(() => {});
-    }
-
+    let rejectedAdmission: RuntimeAdmissionResult<void>;
     switch (admission.kind) {
       case "accepted": {
         const completion = admission.settlement.then(async (settlement) => {
@@ -1171,12 +1229,23 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           surfaceId: surfaceId(surface),
           sessionId: conversation.id,
         });
-        return runtimeAdmission.busy(replyOnce(busyArticle(), "guest busy reply failed"));
+        rejectedAdmission = runtimeAdmission.busy(replyOnce(busyArticle(), "guest busy reply failed"));
+        break;
       case "closed":
-        return runtimeAdmission.rejected(undefined);
+        rejectedAdmission = runtimeAdmission.rejected(undefined);
+        break;
       case "fenced":
-        return runtimeAdmission.fenced(undefined);
+        rejectedAdmission = runtimeAdmission.fenced(undefined);
+        break;
     }
+    return withRejectedCreationRollback(
+      rejectedAdmission,
+      wasNewConversation,
+      lifecycle,
+      surface,
+      conversation.id,
+      "guest",
+    );
   }
 
   return {

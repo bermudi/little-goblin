@@ -706,6 +706,56 @@ describe("Telegram intake", () => {
     expect(replies).toEqual([]);
   });
 
+  it("preserves rejected media settlement and surfaces a thrown creation rollback with context", async () => {
+    const { intake, runtimeHost } = makeHarness();
+    const failure = new Error("binding persistence unavailable");
+    const rollback = spyOn(intake.lifecycle, "rollbackCreation").mockRejectedValue(failure);
+    runtimeHost.closeAdmission();
+
+    const admission = await intake.handlePhoto(makeMessage(), fakeApi(), ["photo"]);
+
+    expect(admission.kind).toBe("rejected");
+    const rollbackError = await admission.completion.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(rollbackError).toBeInstanceOf(Error);
+    expect((rollbackError as Error).message).toContain(
+      "failed to roll back newly created Conversation after photo admission (rejected)",
+    );
+    expect((rollbackError as Error).message).toContain(surfaceId(dmSurface(1)));
+    expect((rollbackError as Error).cause).toBe(failure);
+    expect(intake.lifecycle.inspect(dmSurface(1))).not.toBeNull();
+    rollback.mockRestore();
+  });
+
+  it("surfaces a false creation rollback as a contractually unchanged result", async () => {
+    const { intake, runtimeHost } = makeHarness();
+    const rollback = spyOn(intake.lifecycle, "rollbackCreation").mockResolvedValue(false);
+    runtimeHost.closeAdmission();
+
+    const admission = await intake.handleText(makeMessage(), "cold text");
+
+    expect(admission.kind).toBe("rejected");
+    await expect(admission.completion).rejects.toThrow(
+      /new Conversation rollback was not applied after text admission \(rejected\).*lifecycle left state unchanged because no safe rollback mutation applied/,
+    );
+    expect(intake.lifecycle.inspect(dmSurface(1))).not.toBeNull();
+    rollback.mockRestore();
+  });
+
+  it("rolls back an empty Conversation while preserving successful rejected settlement", async () => {
+    const { intake, runtimeHost, conversationStore } = makeHarness();
+    runtimeHost.closeAdmission();
+
+    const admission = await intake.handleText(makeMessage(), "cold text");
+
+    expect(admission.kind).toBe("rejected");
+    await expect(admission.completion).resolves.toBeUndefined();
+    expect(intake.lifecycle.inspect(dmSurface(1))).toBeNull();
+    expect(conversationStore.list()).toHaveLength(0);
+  });
+
   it("installs cold text bootstrap work before releasing runtime admission", async () => {
     const { intake, runtimeHost } = makeHarness();
     const promptBlock = deferred();
@@ -1980,6 +2030,8 @@ describe("Telegram intake", () => {
       const admission = await intake.handleGuestMessage(guest.message, "closed");
 
       expect(admission.kind).toBe("rejected");
+      await expect(admission.completion).resolves.toBeUndefined();
+      expect(intake.lifecycle.inspect(guestSurface(99))).toBeNull();
       expect(guest.results).toHaveLength(0);
       expect(runners).toHaveLength(0);
     });

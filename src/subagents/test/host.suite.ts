@@ -278,6 +278,16 @@ describe("PiSubagentHost contract", () => {
   });
 
   it("materializes malformed skill names under an index-only directory", async () => {
+    // Snapshot validation crosses async filesystem I/O. The prompt call is the
+    // deterministic boundary where create args exist and the session is subscribed.
+    let markPromptSent!: () => void;
+    const promptSent = new Promise<void>((resolve) => {
+      markPromptSent = resolve;
+    });
+    sessionHolder.sendUserMessage = mock(async () => {
+      markPromptSent();
+    });
+
     const result = new PiSubagentHost(makeConfig(home))
       .prepare({
         ...genericPreparation(home),
@@ -297,7 +307,13 @@ describe("PiSubagentHost contract", () => {
         },
       })
       .run(invocation());
-    await flush();
+    await Promise.race([
+      promptSent,
+      result.then(
+        () => { throw new Error("subagent execution settled before sending its prompt"); },
+        (error: unknown) => { throw error; },
+      ),
+    ]);
 
     const options = getCapturedCreateArgs()[0] as Record<string, unknown>;
     const loader = options.resourceLoader as { options: { additionalSkillPaths: string[] } };

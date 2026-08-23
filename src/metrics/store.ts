@@ -175,10 +175,24 @@ export class MetricsStore {
       closeSync(createFd);
     }
     const fd = openSync(path, "a");
+    let writeError: unknown;
     try {
-      writeSync(fd, line);
+      const bytes = Buffer.from(line, "utf8");
+      const written = writeSync(fd, bytes);
+      if (written !== bytes.byteLength) {
+        throw new Error(
+          `Short metrics append: path=${path} expected=${bytes.byteLength} written=${written}`,
+        );
+      }
+    } catch (error) {
+      writeError = error;
+      throw error;
     } finally {
-      closeSync(fd);
+      try {
+        closeSync(fd);
+      } catch (closeError) {
+        if (writeError === undefined) throw closeError;
+      }
     }
   }
 

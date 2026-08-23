@@ -96,6 +96,39 @@ function assertWriteErrorPropagates(write: () => void): void {
   expect(caught).toBe(writeErr);
 }
 
+function assertShortWritePropagates(write: () => void, path: string, line: string): void {
+  const expectedBytes = Buffer.from(line, "utf8");
+  const written = expectedBytes.byteLength - 1;
+  let writeCalls = 0;
+  let appendedFd: number | null = null;
+  let receivedCompleteBuffer = false;
+  const writeSpy = spyOn(fs, "writeSync").mockImplementation(((...args: unknown[]): number => {
+    writeCalls++;
+    appendedFd = typeof args[0] === "number" ? args[0] : null;
+    const data = args[1];
+    receivedCompleteBuffer = Buffer.isBuffer(data) && data.equals(expectedBytes);
+    return written;
+  }) as unknown as typeof fs.writeSync);
+
+  let caught: unknown;
+  try {
+    write();
+  } catch (error) {
+    caught = error;
+  } finally {
+    writeSpy.mockRestore();
+  }
+
+  expect(writeCalls).toBe(1);
+  expect(receivedCompleteBuffer).toBe(true);
+  expect(appendedFd).not.toBeNull();
+  expect(() => fs.fstatSync(appendedFd!)).toThrow();
+  expect(caught).toBeInstanceOf(Error);
+  expect((caught as Error).message).toBe(
+    `Short metrics append: path=${path} expected=${expectedBytes.byteLength} written=${written}`,
+  );
+}
+
 describe("MetricsStore", () => {
   let tmp: string;
   let store: MetricsStore;
@@ -161,6 +194,12 @@ describe("MetricsStore", () => {
       expect(fs.existsSync(`${metricsFilePath(tmp)}.lock`)).toBe(false);
     });
 
+    it("fails with append context when one write reports a short byte count", () => {
+      const event = { type: "counter" as const, name: "göblin 👺", scope: null, value: 1 };
+      const line = JSON.stringify(event) + "\n";
+      assertShortWritePropagates(() => store.record(event), metricsFilePath(tmp), line);
+    });
+
     it("persists a turn event with nested usage", () => {
       store.record(makeTurnEvent());
       const summary = readMetricsSummary(tmp, VALID_ID);
@@ -216,6 +255,15 @@ describe("MetricsStore", () => {
     it("propagates read-modify-append failures without creating a lock artifact", () => {
       assertWriteErrorPropagates(() => store.incrementCounter("manual_counter"));
       expect(fs.existsSync(`${metricsFilePath(tmp)}.lock`)).toBe(false);
+    });
+
+    it("propagates the short-write boundary failure", () => {
+      const line = JSON.stringify({ type: "counter", name: "manual_counter", scope: null, value: 1 }) + "\n";
+      assertShortWritePropagates(
+        () => store.incrementCounter("manual_counter"),
+        metricsFilePath(tmp),
+        line,
+      );
     });
   });
 

@@ -20,6 +20,12 @@ class ThrowingEmbeddingProvider extends EmbeddingProvider {
     super(db);
   }
 
+  // Override both entry points so the stub never depends on
+  // EmbeddingProvider.embedEntry delegating to embedEntries.
+  override async embedEntry(): Promise<Float32Array | null> {
+    throw this.failure;
+  }
+
   override async embedEntries(): Promise<Map<string, Float32Array | null>> {
     throw this.failure;
   }

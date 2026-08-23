@@ -107,6 +107,45 @@ describe("SubagentRunner.cancel", () => {
     ]);
   });
 
+  it("retries completion delivery suppression after a shared cancellation failure", async () => {
+    const suppressionFailure = new Error("disk full");
+    const handle = await runner.spawn({
+      prompt: "work",
+      authority: DEFAULT_AUTHORITY,
+      spawnedBy: "session-abc",
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+    });
+    await flush();
+
+    const delegatedHost = runner.delegatedWorkHost;
+    const originalSuppressDelivery = delegatedHost.suppressDelivery.bind(delegatedHost);
+    let suppressionCalls = 0;
+    delegatedHost.suppressDelivery = (id, index) => {
+      suppressionCalls += 1;
+      if (suppressionCalls === 1) throw suppressionFailure;
+      return originalSuppressDelivery(id, index);
+    };
+
+    // Completion claims success synchronously, while result finalization and
+    // delivery suppression continue asynchronously. Both cancellation entry
+    // points must observe the same first cleanup attempt.
+    host.latest().complete("done");
+    const first = runner.cancel(handle.id);
+    const concurrent = runner.cancelBySession("session-abc");
+
+    expect(await Promise.allSettled([first, concurrent])).toEqual([
+      { status: "rejected", reason: suppressionFailure },
+      { status: "rejected", reason: suppressionFailure },
+    ]);
+    expect(suppressionCalls).toBe(1);
+    expect(runner.list()[0]?.deliveryState).toBe("pending");
+
+    await runner.cancel(handle.id);
+
+    expect(suppressionCalls).toBe(2);
+    expect(runner.list()[0]?.deliveryState).toBe("suppressed");
+  });
+
   it("retains host registration when cancellation persistence fails, allowing a later invalidation retry", async () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();
@@ -121,7 +160,7 @@ describe("SubagentRunner.cancel", () => {
     let closeCalls = 0;
     delegatedHost.cancelInvocation = (id, index) => {
       closeCalls += 1;
-      if (closeCalls === 1) throw new Error("disk full");
+      if (closeCalls <= 2) throw new Error("disk full");
       return originalCancelInvocation(id, index);
     };
 
@@ -132,7 +171,12 @@ describe("SubagentRunner.cancel", () => {
     let diskRecord = readRecord(tmp, handle.id);
     expect(diskRecord.status).toBe("running");
 
-    // Restore the host boundary and retry via runtime invalidation.
+    // A later ordinary cancellation retries the durable close rather than
+    // replaying the first rejected cancellation outcome.
+    await expect(runner.cancel(handle.id)).rejects.toThrow("disk full");
+    expect(closeCalls).toBe(2);
+
+    // Restore the host boundary and preserve the runtime invalidation retry.
     delegatedHost.cancelInvocation = originalCancelInvocation;
     await runner.delegatedWorkHost.invalidateRuntime(runtimeId);
 
@@ -346,6 +390,120 @@ describe("SubagentRunner — dispose", () => {
     expect(runner.list()).toHaveLength(0);
     const meta = readRecord(tmp, handle.id);
     expect(meta.status).toBe("cancelled");
+  });
+
+  it("joins an in-flight direct cancellation and surfaces its cleanup failure", async () => {
+    const cleanupFailure = new Error("stop cleanup failed");
+    host.stopFailure = cleanupFailure;
+    let releaseStop!: () => void;
+    host.stopBarrier = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const handle = await runner.spawn({ prompt: "a", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
+    handle.result.catch(() => {});
+    await flush();
+
+    let cancellationSettled = false;
+    let disposalSettled = false;
+    const cancellation = runner.cancel(handle.id).finally(() => {
+      cancellationSettled = true;
+    });
+    const disposal = runner.dispose().finally(() => {
+      disposalSettled = true;
+    });
+    await flush();
+
+    expect(host.latest().stopCalls).toBe(1);
+    expect(cancellationSettled).toBe(false);
+    expect(disposalSettled).toBe(false);
+    expect(runner.list()).toHaveLength(1);
+
+    releaseStop();
+    const outcomes = await Promise.allSettled([cancellation, disposal]);
+    expect(outcomes).toEqual([
+      { status: "rejected", reason: cleanupFailure },
+      { status: "rejected", reason: cleanupFailure },
+    ]);
+    expect(runner.list()).toHaveLength(1);
+  });
+
+  it("retains a failed cancellation for runtime invalidation to retry", async () => {
+    const handle = await runner.spawn({
+      prompt: "a",
+      authority: DEFAULT_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+    });
+    handle.result.catch(() => {});
+    await flush();
+
+    const instance = (runner as unknown as { activeSubagents: Map<string, SubagentInstance> })
+      .activeSubagents.get(handle.id);
+    expect(instance).toBeDefined();
+    const runtimeId = instance!.delegatedOwnership!.runtimeId;
+    const delegatedHost = runner.delegatedWorkHost;
+    const originalCancelInvocation = delegatedHost.cancelInvocation.bind(delegatedHost);
+    let closeCalls = 0;
+    delegatedHost.cancelInvocation = (id, index) => {
+      closeCalls += 1;
+      if (closeCalls === 1) throw new Error("disk full");
+      return originalCancelInvocation(id, index);
+    };
+
+    await expect(runner.dispose()).rejects.toThrow("disk full");
+
+    expect(runner.list()).toHaveLength(1);
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(1);
+    expect(readRecord(tmp, handle.id).status).toBe("running");
+
+    await runner.delegatedWorkHost.invalidateRuntime(runtimeId);
+
+    expect(closeCalls).toBe(2);
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(0);
+    expect(runner.list()).toHaveLength(0);
+    const record = readRecord(tmp, handle.id);
+    expect(record.status).toBe("cancelled");
+    expect(record.deliveryState).toBe("suppressed");
+  });
+
+  it("retains failed pending delivery suppression for runtime invalidation to retry", async () => {
+    const handle = await runner.spawn({
+      prompt: "a",
+      authority: DEFAULT_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+    });
+    await flush();
+    const instance = (runner as unknown as { activeSubagents: Map<string, SubagentInstance> })
+      .activeSubagents.get(handle.id);
+    expect(instance).toBeDefined();
+    const runtimeId = instance!.delegatedOwnership!.runtimeId;
+
+    host.latest().complete("done");
+    await handle.result;
+
+    const delegatedHost = runner.delegatedWorkHost;
+    const originalSuppressDelivery = delegatedHost.suppressDelivery.bind(delegatedHost);
+    let suppressionCalls = 0;
+    delegatedHost.suppressDelivery = (id, index) => {
+      suppressionCalls += 1;
+      if (suppressionCalls === 1) throw new Error("disk full");
+      return originalSuppressDelivery(id, index);
+    };
+
+    await expect(runner.dispose()).rejects.toThrow("disk full");
+
+    expect(runner.list()).toHaveLength(1);
+    expect(runner.list()[0]?.deliveryState).toBe("pending");
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(1);
+    expect(readRecord(tmp, handle.id).deliveryState).toBe("pending");
+
+    await runner.delegatedWorkHost.invalidateRuntime(runtimeId);
+
+    expect(suppressionCalls).toBe(2);
+    expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(0);
+    expect(runner.list()).toHaveLength(0);
+    const record = readRecord(tmp, handle.id);
+    expect(record.status).toBe("completed");
+    expect(record.deliveryState).toBe("suppressed");
   });
 
   it("disposes subagents that already completed", async () => {
@@ -697,6 +855,50 @@ describe("SubagentRunner.cancelBySession", () => {
     expect(host.executions[0]?.stopCalls).toBe(1);
     expect(runner.list().find((entry) => entry.id === a.id)?.status).toBe("cancelled");
   });
+
+  for (const directFirst of [true, false]) {
+    it(`shares blocked cleanup failure when ${directFirst ? "cancel" : "cancelBySession"} starts first`, async () => {
+      const cleanupFailure = new Error("stop cleanup failed");
+      host.stopFailure = cleanupFailure;
+      let releaseStop!: () => void;
+      host.stopBarrier = new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+      const a = await runner.spawn({
+        prompt: "a",
+        authority: DEFAULT_AUTHORITY,
+        spawnedBy: "session-abc",
+        inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      });
+      a.result.catch(() => {});
+      await flush();
+
+      let firstSettled = false;
+      let secondSettled = false;
+      const first = (directFirst
+        ? runner.cancel(a.id)
+        : runner.cancelBySession("session-abc")).finally(() => {
+        firstSettled = true;
+      });
+      const second = (directFirst
+        ? runner.cancelBySession("session-abc")
+        : runner.cancel(a.id)).finally(() => {
+        secondSettled = true;
+      });
+      await flush();
+
+      expect(host.latest().stopCalls).toBe(1);
+      expect(firstSettled).toBe(false);
+      expect(secondSettled).toBe(false);
+
+      releaseStop();
+      const outcomes = await Promise.allSettled([first, second]);
+      expect(outcomes).toEqual([
+        { status: "rejected", reason: cleanupFailure },
+        { status: "rejected", reason: cleanupFailure },
+      ]);
+    });
+  }
 
   it("sets deliveryState to suppressed and releases the delegated registration", async () => {
     const a = await runner.spawn({

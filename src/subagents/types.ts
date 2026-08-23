@@ -230,7 +230,7 @@ export interface SubagentInstance {
   rejectSettlement: (error: unknown) => void;
   /** Shared idempotent stop operation across startup and cancellation races. */
   stopPromise: Promise<void> | null;
-  /** Shared outcome of an accepted explicit cancellation and all concurrent callers. */
+  /** In-flight cancellation cleanup shared by direct, cascade, and disposal callers. */
   cancellationPromise: Promise<void> | null;
   /** Whether coordinator execution/cleanup has been launched for this lease. */
   settlementStarted: boolean;

@@ -216,6 +216,11 @@ interface Deferred<T> {
   reject: (error: unknown) => void;
 }
 
+interface CancellationClaim {
+  outcome: Promise<void>;
+  start: (() => void) | null;
+}
+
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -1040,6 +1045,7 @@ export class SubagentRunner {
         else instance.resolveSettlement();
         failures.push(...targetFailures);
         teardownInstance(instance, targetFailures.length === 0);
+        this.removeDisposedInstanceIfReleased(instance);
       }),
       ...targets.map(async (instance) => {
         const targetFailures: unknown[] = [];
@@ -1060,6 +1066,7 @@ export class SubagentRunner {
         // DelegatedWorkHost must retain ownership of the failed entry so a
         // later invalidation retry can make another cancellation attempt.
         teardownInstance(instance, targetFailures.length === 0);
+        this.removeDisposedInstanceIfReleased(instance);
       }),
     ]);
 
@@ -1085,6 +1092,17 @@ export class SubagentRunner {
     // A failed record write leaves the host registration in place. The
     // lifecycle owner must not report quiescence after losing its retry handle.
     teardownInstance(instance, persisted);
+    this.removeDisposedInstanceIfReleased(instance);
+  }
+
+  private removeDisposedInstanceIfReleased(instance: SubagentInstance): void {
+    if (
+      this.disposed &&
+      instance.delegatedRegistration === null &&
+      this.activeSubagents.get(instance.id) === instance
+    ) {
+      this.activeSubagents.delete(instance.id);
+    }
   }
 
   /**
@@ -1106,6 +1124,7 @@ export class SubagentRunner {
     this.delegatedWorkHost.acknowledgeDelivery(instance.id, instance.invocationIndex);
     instance.deliveryState = "delivered";
     teardownInstance(instance);
+    this.removeDisposedInstanceIfReleased(instance);
     log.debug("subagent delivery acknowledged", { id });
   }
 
@@ -1283,49 +1302,93 @@ export class SubagentRunner {
     ) {
       throw new SubagentCancellationRejectedError("Subagent not found");
     }
-    if (instance.status !== "running") {
-      if (instance.status === "cancelled" && instance.cancellationPromise !== null) {
-        return instance.cancellationPromise;
-      }
-      if (instance.status === "completed" && instance.deliveryState === "pending") {
-        const failures: unknown[] = [];
-        this.suppressPendingDelivery(instance, failures);
-        const failure = combineFailures(failures, "Subagent delivery cancellation failed");
-        if (failure !== null) return Promise.reject(failure);
-      }
-      return Promise.resolve();
+
+    const claim = this.claimCancellation(instance);
+    if (claim === null) return Promise.resolve();
+    claim.start?.();
+    return claim.outcome;
+  }
+
+  /**
+   * Reserve one in-flight cancellation cleanup outcome for an invocation.
+   * Callers may claim several instances first and then start every returned
+   * cleanup, which keeps cascade aborts parallel without exposing partially
+   * claimed instances to direct cancellation or disposal. A failed outcome is
+   * not memoized: later lifecycle calls may retry cleanup still represented by
+   * pending delivery or a retained delegated-work registration.
+   */
+  private claimCancellation(instance: SubagentInstance): CancellationClaim | null {
+    if (instance.cancellationPromise !== null) {
+      return { outcome: instance.cancellationPromise, start: null };
     }
 
-    // A host success reservation wins over cancellation, but the operation
-    // still waits for final cleanup/metadata outcome so it cannot report a
-    // false quiescent success.
-    if (instance.completionClaimed) {
-      return this.finishClaimedCancellation(instance);
+    let cleanup: (() => Promise<void>) | null = null;
+    if (instance.status === "running") {
+      // A host success reservation wins over cancellation, but all lifecycle
+      // callers still join its final cleanup/metadata outcome.
+      if (instance.completionClaimed) {
+        cleanup = () => this.finishClaimedCancellation(instance);
+      } else {
+        // Claim cancellation synchronously so a terminal Pi event cannot win
+        // after this point. No coordinator path may replace this lease after
+        // the lifecycle claim.
+        instance.status = "cancelled";
+        instance.deliveryState = "suppressed";
+        instance.rejectResult(new Error("Subagent was cancelled"));
+        cleanup = () => this.finishCancellationCleanup(instance, instance.id);
+      }
+    } else if (instance.status === "completed" && instance.deliveryState === "pending") {
+      cleanup = () => this.finishPendingDeliveryCancellation(instance);
+    } else if (instance.status === "cancelled" && instance.delegatedRegistration !== null) {
+      cleanup = () => this.finishCancellationCleanup(instance, instance.id);
     }
+    if (cleanup === null) return null;
 
-    // Claim cancellation synchronously so a terminal Pi event cannot win
-    // after this point. Capture the lease before awaiting; no coordinator
-    // path may replace it after the lifecycle claim.
-    instance.status = "cancelled";
-    instance.deliveryState = "suppressed";
-    instance.rejectResult(new Error("Subagent was cancelled"));
-    const cancellation = this.finishCancellationCleanup(instance, id);
-    instance.cancellationPromise = cancellation;
-    return cancellation;
+    const completion = deferred<void>();
+    instance.cancellationPromise = completion.promise;
+    let started = false;
+    return {
+      outcome: completion.promise,
+      start: () => {
+        if (started) return;
+        started = true;
+        void cleanup().then(
+          () => {
+            if (instance.cancellationPromise === completion.promise) {
+              instance.cancellationPromise = null;
+            }
+            completion.resolve(undefined);
+          },
+          (error: unknown) => {
+            if (instance.cancellationPromise === completion.promise) {
+              instance.cancellationPromise = null;
+            }
+            completion.reject(error);
+          },
+        );
+      },
+    };
   }
 
   private async finishClaimedCancellation(instance: SubagentInstance): Promise<void> {
     const failures: unknown[] = [];
     try {
       await waitWithTimeout(instance.result, CANCEL_COMPLETION_TIMEOUT_MS, () =>
-        new Error("Subagent completion wait timed out during cancel"));
+        new Error("Subagent completion wait timed out during cancellation cleanup"));
     } catch (err) {
       failures.push(err);
     }
     if ((instance.status as SubagentStatus) === "completed" && instance.deliveryState === "pending") {
       this.suppressPendingDelivery(instance, failures);
     }
-    const failure = combineFailures(failures, "Subagent cancellation failed");
+    const failure = combineFailures(failures, "Subagent cancellation cleanup failed");
+    if (failure !== null) throw failure;
+  }
+
+  private async finishPendingDeliveryCancellation(instance: SubagentInstance): Promise<void> {
+    const failures: unknown[] = [];
+    this.suppressPendingDelivery(instance, failures);
+    const failure = combineFailures(failures, "Subagent cancellation cleanup failed");
     if (failure !== null) throw failure;
   }
 
@@ -1334,13 +1397,13 @@ export class SubagentRunner {
     id: string,
   ): Promise<void> {
     const failures: unknown[] = [];
-    await this.stopAndCollect(instance, failures, "subagent execution stop failed during cancel");
+    await this.stopAndCollect(instance, failures, "subagent execution stop failed during cancellation cleanup");
 
     try {
       await this.cancelInvocationOnce(instance.id, instance.invocationIndex);
     } catch (err) {
       failures.push(err);
-      log.error("cancel record close failed — disk state may be stale", {
+      log.error("subagent cancellation record close failed — disk state may be stale", {
         id,
         ...boundedError(err),
       });
@@ -1349,8 +1412,9 @@ export class SubagentRunner {
     if (instance.settlementStarted) await collectSettlement(instance, failures);
     else instance.resolveSettlement();
     teardownInstance(instance, failures.length === 0);
-    log.debug("subagent cancelled", { id });
-    const failure = combineFailures(failures, "Subagent cancellation failed");
+    this.removeDisposedInstanceIfReleased(instance);
+    log.debug("subagent cancellation cleanup completed", { id });
+    const failure = combineFailures(failures, "Subagent cancellation cleanup failed");
     if (failure !== null) throw failure;
   }
 
@@ -1384,62 +1448,32 @@ export class SubagentRunner {
       }
     }
 
-    // 2. Mark every cancellable instance synchronously before any await.
-    const targets: SubagentInstance[] = [];
-    const completionClaims: SubagentInstance[] = [];
+    // 2. Claim every cancellation synchronously before starting cleanup. A
+    //    direct cancellation already in flight contributes its same outcome.
+    const claims: CancellationClaim[] = [];
     for (const id of queue) {
       const instance = this.activeSubagents.get(id);
-      if (instance !== undefined && instance.status === "running") {
-        if (instance.completionClaimed) {
-          completionClaims.push(instance);
-        } else {
-          instance.status = "cancelled";
-          instance.deliveryState = "suppressed";
-          instance.rejectResult(new Error("Subagent was cancelled"));
-          targets.push(instance);
-        }
-      }
+      if (instance === undefined) continue;
+      const claim = this.claimCancellation(instance);
+      if (claim !== null) claims.push(claim);
     }
 
-    // 3. Clean up each targeted instance concurrently. Start all aborts in
-    //    parallel so a parent that is blocked on a child result can be
-    //    unblocked when the child's abort settles.
+    // 3. Start every newly claimed cleanup before awaiting any outcome. A
+    //    parent blocked on a child result must be aborted alongside the child.
+    for (const claim of claims) claim.start?.();
+
     const failures: unknown[] = [];
-    await Promise.all([
-      ...completionClaims.map(async (instance) => {
-        try {
-          await waitWithTimeout(instance.result, CANCEL_COMPLETION_TIMEOUT_MS, () =>
-            new Error("Subagent completion wait timed out during cascade cancel"));
-        } catch (err) {
-          failures.push(err);
-        }
-        if (instance.status === "completed" && instance.deliveryState === "pending") {
-          this.suppressPendingDelivery(instance, failures);
-        }
-      }),
-      ...targets.map(async (instance) => {
-        await this.stopAndCollect(instance, failures, "cancelBySession execution stop failed");
+    await Promise.all(claims.map(async (claim) => {
+      try {
+        await claim.outcome;
+      } catch (error) {
+        failures.push(error);
+      }
+    }));
 
-        try {
-          await this.cancelInvocationOnce(instance.id, instance.invocationIndex);
-        } catch (err) {
-          failures.push(err);
-          log.error("cancelBySession record close failed", {
-            id: instance.id,
-            ...boundedError(err),
-          });
-        }
-
-        if (instance.settlementStarted) await collectSettlement(instance, failures);
-        else instance.resolveSettlement();
-        teardownInstance(instance);
-      }),
-    ]);
-
-    if (targets.length > 0 || completionClaims.length > 0) {
+    if (claims.length > 0) {
       log.debug("cascade-cancel: subagents cancelled", {
-        count: targets.length,
-        completionClaims: completionClaims.length,
+        count: claims.length,
         sessionId,
       });
     }
@@ -1448,55 +1482,52 @@ export class SubagentRunner {
   }
 
   /**
-   * Gracefully shut down all active subagents.
-   * Stops running invocation leases and clears the map.
+   * Gracefully shut down all active subagents. Quiescent instances are
+   * removed; failed instances retain their delegated registration and map
+   * entry so runtime invalidation can retry durable cleanup.
    */
   async dispose(): Promise<void> {
     this.disposed = true;
-    const ids = [...this.activeSubagents.keys()];
+    const entries = [...this.activeSubagents.entries()];
+    const claims = new Map<string, CancellationClaim>();
+
+    // Claim all running instances before starting cleanup, just as cascade
+    // cancellation does. Existing direct/cascade cleanup is joined rather
+    // than bypassed or torn down while still active.
+    for (const [id, instance] of entries) {
+      const claim = this.claimCancellation(instance);
+      if (claim !== null) claims.set(id, claim);
+    }
+    for (const claim of claims.values()) claim.start?.();
+
     const failures: unknown[] = [];
-    await Promise.all(
-      ids.map(async (id) => {
-        const instance = this.activeSubagents.get(id);
-        if (!instance) return;
-        // Only cancel instances that are still running. Completed/errored/
-        // cancelled instances should keep their existing status — don't
-        // overwrite a successful completion with "cancelled".
-        if (instance.status === "running" && instance.completionClaimed) {
-          try {
-            await waitWithTimeout(instance.result, CANCEL_COMPLETION_TIMEOUT_MS, () =>
-              new Error("Subagent completion wait timed out during dispose"));
-          } catch (err) {
-            failures.push(err);
-          }
-        } else if (instance.status === "running") {
-          // Mark cancelled before any await so a concurrent runInstance sees
-          // the non-running status and does not activate a new lease.
-          instance.status = "cancelled";
-          instance.rejectResult(new Error("Subagent was cancelled"));
-          await this.stopAndCollect(instance, failures, "dispose execution stop failed");
-          try {
-            await this.cancelInvocationOnce(instance.id, instance.invocationIndex);
-          } catch (err) {
-            failures.push(err);
-            log.error("dispose record close failed", {
-              id,
-              ...boundedError(err),
-            });
-          }
-          if (instance.settlementStarted) await collectSettlement(instance, failures);
-          else instance.resolveSettlement();
-        } else if (instance.status === "cancelled") {
-          if (instance.settlementStarted) await collectSettlement(instance, failures);
-          else instance.resolveSettlement();
-        } else if (instance.status === "completed" && instance.deliveryState === "pending") {
-          this.suppressPendingDelivery(instance, failures);
+    await Promise.all(entries.map(async ([id, instance]) => {
+      const claim = claims.get(id);
+      if (claim !== undefined) {
+        try {
+          await claim.outcome;
+        } catch (error) {
+          failures.push(error);
         }
-        teardownInstance(instance);
-      }),
-    );
-    this.activeSubagents.clear();
-    log.debug("SubagentRunner disposed", { count: ids.length });
+        // Claimed cleanup releases its registration only after proving
+        // quiescence. On failure, retain both the host callback and this map
+        // entry so runtime invalidation can find and retry the instance.
+        this.removeDisposedInstanceIfReleased(instance);
+        return;
+      }
+      if (instance.status === "cancelled") {
+        if (instance.settlementStarted) await collectSettlement(instance, failures);
+        else instance.resolveSettlement();
+      } else if (instance.status === "completed" && instance.deliveryState === "pending") {
+        this.suppressPendingDelivery(instance, failures);
+      }
+      teardownInstance(instance);
+      this.removeDisposedInstanceIfReleased(instance);
+    }));
+    log.debug("SubagentRunner disposed", {
+      count: entries.length,
+      retainedForRetry: this.activeSubagents.size,
+    });
     const failure = combineFailures(failures, "Subagent disposal failed");
     if (failure !== null) throw failure;
   }

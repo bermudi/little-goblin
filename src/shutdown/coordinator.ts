@@ -87,8 +87,9 @@ export class ShutdownCoordinator {
    * 1. Start `close-telegram-gate` (not awaited yet).
    * 2. Start `buffered-text-to-runtime-admission` (not awaited yet).
    * 3. Start `drain-scheduler` (not awaited yet).
-   * 4. Start `dispose-runtimes` — awaits buffered text, then runtime
-   *    admission, then runtime disposal. Not awaited yet.
+   * 4. Start `dispose-runtimes` — awaits buffered text, starts runtime
+   *    disposal, and awaits it together with the runtime-admission drain.
+   *    Not awaited yet.
    * 5. Await `stop-telegram-polling`.
    * 6. Await `dispose-runtimes`.
    * 7. Await `drain-telegram-admission`.

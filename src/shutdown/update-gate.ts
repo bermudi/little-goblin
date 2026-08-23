@@ -508,13 +508,27 @@ export class UpdateGate {
   }
 
   private async closeOnce(): Promise<void> {
+    // Capture a primary failure instead of draining in a `finally`: a throw
+    // from `drainAdmitted` would otherwise replace the propagating
+    // drain/closeCoalescer error and hide its cause from shutdown
+    // diagnostics.
+    let primary: unknown;
+    let failed = false;
     try {
       await this.drainAuthorizations();
       await this.coalescerCallbacks.closeCoalescer();
-    } finally {
-      this.innerOpen = false;
-      await this.drainAdmitted();
+    } catch (error) {
+      primary = error;
+      failed = true;
     }
+    this.innerOpen = false;
+    try {
+      await this.drainAdmitted();
+    } catch (error) {
+      if (!failed) throw error;
+      throw new AggregateError([primary, error], "Telegram gate close failed");
+    }
+    if (failed) throw primary;
   }
 
   async bufferedTextAdmission(): Promise<void> {

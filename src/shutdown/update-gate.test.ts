@@ -269,4 +269,66 @@ describe("UpdateGate", () => {
     await expect(boundary).rejects.toBe(failure);
     await gate.closeAdmission();
   });
+
+  it("propagates a coalescer close failure verbatim when no update failed", async () => {
+    const coalescerFailure = new Error("coalescer flush exploded");
+    const gate = new UpdateGate({
+      closeCoalescer: async () => { throw coalescerFailure; },
+      awaitBufferedTextAdmission: async () => {},
+    });
+    await expect(gate.closeAdmission()).rejects.toBe(coalescerFailure);
+  });
+
+  it("surfaces a retained detached coalesced failure at close", async () => {
+    const deliveryFailure = new Error("coalesced delivery exploded");
+    const gate = makeGate();
+    const { claim } = await admitTransferredUpdate(gate);
+    gate.settleTransferred([claim], {
+      kind: "handoff",
+      completion: Promise.reject(deliveryFailure),
+    });
+    // Let the detached boundary settle so the failure is retained.
+    await gate.runtimeAdmission();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    await expect(gate.closeAdmission()).rejects.toBe(deliveryFailure);
+  });
+
+  it("reports both a coalescer close failure and retained detached failures", async () => {
+    // Regression: `drainAdmitted` ran in closeOnce's finally block, so its
+    // retained-detached-failure throw replaced the propagating coalescer
+    // error. Both causes must reach shutdown diagnostics.
+    const coalescerFailure = new Error("coalescer flush exploded");
+    const deliveryFailure = new Error("coalesced delivery exploded");
+    const gate = new UpdateGate({
+      closeCoalescer: async () => { throw coalescerFailure; },
+      awaitBufferedTextAdmission: async () => {},
+    });
+    const { claim } = await admitTransferredUpdate(gate);
+    gate.settleTransferred([claim], {
+      kind: "handoff",
+      completion: Promise.reject(deliveryFailure),
+    });
+    await gate.runtimeAdmission();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const error: unknown = await gate.closeAdmission().then(() => null, (e) => e);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).message).toBe("Telegram gate close failed");
+    expect((error as AggregateError).errors).toEqual([coalescerFailure, deliveryFailure]);
+  });
+
+  /** Admit one transferred (coalescer-owned) claim through an authorization. */
+  async function admitTransferredUpdate(gate: UpdateGate): Promise<{ claim: UpdateClaim<void> }> {
+    let claim!: UpdateClaim<void>;
+    const ctx = {};
+    await gate.runAuthorization(ctx, async () => {
+      gate.commitAuthorization(ctx);
+      gate.runCoalescedUpdate<void>(ctx, (ownedClaim) => {
+        claim = ownedClaim;
+        return gate.transferUpdate(ownedClaim);
+      });
+    });
+    return { claim };
+  }
 });

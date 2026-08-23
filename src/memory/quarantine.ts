@@ -10,9 +10,7 @@
  * reason, and a redacted candidate preview. The preview never copies the
  * sensitive value — it is produced by `redactPreview()` from safety.ts.
  */
-import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { memoryDir } from "./paths.ts";
+import { MemoryArtifactStore } from "./artifacts.ts";
 import { redactPreview } from "./safety.ts";
 import type { EntryCategory } from "./entry.ts";
 
@@ -70,21 +68,6 @@ export function appendQuarantine(args: AppendQuarantineArgs): QuarantineRecord {
     reason: args.reason,
     preview: redactPreview(args.content, args.previewMaxLen),
   };
-  const path = quarantinePath(args.goblinHome);
-  mkdirSync(dirname(path), { recursive: true });
-  const line = JSON.stringify(record) + "\n";
-  const fd = openSync(path, "a");
-  try {
-    writeSync(fd, line);
-  } finally {
-    closeSync(fd);
-  }
+  new MemoryArtifactStore(args.goblinHome).appendQuarantine(record);
   return record;
-}
-
-/**
- * Path to the quarantine JSONL file under `$GOBLIN_HOME/memory/`.
- */
-export function quarantinePath(goblinHome: string): string {
-  return join(memoryDir(goblinHome), "quarantine.jsonl");
 }

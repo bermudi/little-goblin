@@ -9,7 +9,6 @@
 
 import type { MemoryStore } from "./store.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
-import { log } from "../log.ts";
 import { deriveConceptTags } from "./concept-vocabulary.ts";
 import { activeMemoryScopeFor, scopeTag, type ActiveScope, type MemoryScope } from "./scope.ts";
 import {
@@ -24,6 +23,7 @@ import {
   bm25RankToScore,
   buildFtsQuery,
   mergeHybridResults,
+  parseTemporalDecayConfig,
   type HybridResult,
 } from "./hybrid.ts";
 
@@ -35,13 +35,6 @@ export { stripEntryMetadata } from "./entry.ts";
 
 /** Where a searched entry lives — mirrors the memory tool's `target` concept. */
 export type MemorySearchTarget = "user" | "memory" | "agent";
-
-function temporalDecayFromEnv(): { halfLifeDays: number } | undefined {
-  const raw = process.env.GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS;
-  if (raw === undefined) return undefined;
-  const days = Number.parseFloat(raw);
-  return Number.isFinite(days) && days > 0 ? { halfLifeDays: days } : undefined;
-}
 
 export interface MemorySearchInput {
   /** Free-form query text. Whitespace-only/empty queries are rejected upstream. */
@@ -481,26 +474,6 @@ function buildMemoryResult(result: HybridResult, tags: string[]): MemorySearchRe
   return entry;
 }
 
-function updateRecallStats(store: MemoryStore, entryIds: string[]): void {
-  if (entryIds.length === 0) return;
-  try {
-    const placeholders = entryIds.map(() => "?").join(",");
-    const now = Date.now();
-    store.db.database
-      .query(
-        `UPDATE memory_entries
-         SET recall_count = COALESCE(recall_count, 0) + 1,
-             last_recalled_at = $now
-         WHERE id IN (${placeholders})`,
-      )
-      .run(now, ...entryIds);
-  } catch (err) {
-    log.warn("memory search: failed to update recall stats", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Public search
 // ---------------------------------------------------------------------------
@@ -588,7 +561,7 @@ export async function searchMemoryEntries(args: {
     queryTags,
     entryTagsById,
     nowMs,
-    temporalDecay: temporalDecayFromEnv(),
+    temporalDecay: parseTemporalDecayConfig(),
   });
 
   // Apply MMR re-ranking when the candidate pool is more than twice the requested limit.
@@ -602,11 +575,11 @@ export async function searchMemoryEntries(args: {
   // eligible for recall-aware compaction). The update is deferred to the next
   // event loop tick so it does not block the search response — per spec, the
   // recall update SHALL occur after results are returned and SHALL NOT block.
-  // updateRecallStats catches its own errors, so a failure after the caller has
-  // received results is logged as a warning and never thrown.
+  // `MemoryStore.updateRecallStats` catches its own errors, so a failure after
+  // the caller has received results is logged as a warning and never thrown.
   const memoryIds = ranked.filter((r) => r.entryKind === "memory" || r.entryKind === "user").map((r) => r.entryId);
   if (memoryIds.length > 0) {
-    setImmediate(() => updateRecallStats(args.store, memoryIds));
+    setImmediate(() => args.store.updateRecallStats(memoryIds));
   }
 
   const degraded = vector.degraded;

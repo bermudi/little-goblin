@@ -7,6 +7,7 @@ import {
   mergeHybridResults,
   applyTemporalDecay,
   applyMMR,
+  parseTemporalDecayConfig,
   type HybridResult,
 } from "./hybrid.ts";
 
@@ -32,11 +33,13 @@ function vectorResult(overrides: {
   scope?: string;
   entryKind?: string;
   updatedAt?: number | null;
-}): { entryId: string; scope: string; entryKind: string; text: string; vectorScore: number; updatedAt: number | null } {
+  category?: string | null;
+}): { entryId: string; scope: string; entryKind: string; text: string; vectorScore: number; updatedAt: number | null; category?: string | null } {
   return {
     scope: "memory",
     entryKind: "memory",
     updatedAt: null,
+    category: null,
     ...overrides,
   };
 }
@@ -48,11 +51,13 @@ function keywordResult(overrides: {
   scope?: string;
   entryKind?: string;
   updatedAt?: number | null;
-}): { entryId: string; scope: string; entryKind: string; text: string; textScore: number; updatedAt: number | null } {
+  category?: string | null;
+}): { entryId: string; scope: string; entryKind: string; text: string; textScore: number; updatedAt: number | null; category?: string | null } {
   return {
     scope: "memory",
     entryKind: "memory",
     updatedAt: null,
+    category: null,
     ...overrides,
   };
 }
@@ -266,11 +271,17 @@ describe("mergeHybridResults", () => {
     expect(merged.map((r) => r.entryId)).toEqual(["high", "low"]);
   });
 
-  it("applies temporal decay to merged scores", () => {
+  it("applies temporal decay to eligible merged scores", () => {
     const now = 1_000_000_000_000;
     const dayMs = 24 * 60 * 60 * 1000;
     const merged = mergeHybridResults({
-      vector: [vectorResult({ entryId: "a", text: "alpha beta", vectorScore: 1.0, updatedAt: now - 30 * dayMs })],
+      vector: [vectorResult({
+        entryId: "a",
+        text: "alpha beta",
+        vectorScore: 1.0,
+        updatedAt: now - 30 * dayMs,
+        category: "short_term",
+      })],
       keyword: [],
       vectorWeight: 0.7,
       textWeight: 0.3,
@@ -324,10 +335,10 @@ describe("applyTemporalDecay", () => {
     expect(out[0]!).toBe(entry);
   });
 
-  it("reduces scores for older entries", () => {
+  it("reduces scores for older short_term entries", () => {
     const now = 1_000_000_000_000;
     const dayMs = 24 * 60 * 60 * 1000;
-    const entry = makeHybridResult({ entryId: "a", score: 1.0, updatedAt: now - 30 * dayMs });
+    const entry = makeHybridResult({ entryId: "a", score: 1.0, updatedAt: now - 30 * dayMs, category: "short_term" });
     const out = applyTemporalDecay([entry], {}, now);
     expect(out[0]!.score).toBeCloseTo(0.5, 10);
   });
@@ -335,14 +346,57 @@ describe("applyTemporalDecay", () => {
   it("halves the score after each half-life", () => {
     const now = 1_000_000_000_000;
     const dayMs = 24 * 60 * 60 * 1000;
-    const entry = makeHybridResult({ entryId: "a", score: 1.0, updatedAt: now - 60 * dayMs });
+    const entry = makeHybridResult({ entryId: "a", score: 1.0, updatedAt: now - 60 * dayMs, category: "short_term" });
     const out = applyTemporalDecay([entry], {}, now);
     expect(out[0]!.score).toBeCloseTo(0.25, 10);
   });
 
   it("clamps future updatedAt to age 0", () => {
     const now = 1_000_000_000_000;
-    const entry = makeHybridResult({ entryId: "a", score: 1.0, updatedAt: now + 10_000 });
+    const entry = makeHybridResult({ entryId: "a", score: 1.0, updatedAt: now + 10_000, category: "short_term" });
+    const out = applyTemporalDecay([entry], {}, now);
+    expect(out[0]!.score).toBeCloseTo(1.0, 10);
+  });
+
+  it("decays transcript entries regardless of category", () => {
+    const now = 1_000_000_000_000;
+    const dayMs = 24 * 60 * 60 * 1000;
+    const entry = makeHybridResult({
+      entryId: "a",
+      score: 1.0,
+      updatedAt: now - 30 * dayMs,
+      entryKind: "transcript",
+      category: null,
+    });
+    const out = applyTemporalDecay([entry], {}, now);
+    expect(out[0]!.score).toBeCloseTo(0.5, 10);
+  });
+
+  it("does not decay durable curated categories", () => {
+    const now = 1_000_000_000_000;
+    const dayMs = 24 * 60 * 60 * 1000;
+    for (const category of ["fact", "standing_order", "commitment"]) {
+      const entry = makeHybridResult({
+        entryId: `a-${category}`,
+        score: 1.0,
+        updatedAt: now - 60 * dayMs,
+        category,
+      });
+      const out = applyTemporalDecay([entry], {}, now);
+      expect(out[0]!.score).toBeCloseTo(1.0, 10);
+    }
+  });
+
+  it("does not decay uncategorized legacy curated entries", () => {
+    const now = 1_000_000_000_000;
+    const dayMs = 24 * 60 * 60 * 1000;
+    const entry = makeHybridResult({
+      entryId: "a",
+      score: 1.0,
+      updatedAt: now - 60 * dayMs,
+      entryKind: "memory",
+      category: null,
+    });
     const out = applyTemporalDecay([entry], {}, now);
     expect(out[0]!.score).toBeCloseTo(1.0, 10);
   });
@@ -379,5 +433,32 @@ describe("applyMMR", () => {
     ];
     const out = applyMMR(results, { enabled: true, lambda: 1.0 });
     expect(out.map((r) => r.entryId)).toEqual(["high", "low"]);
+  });
+});
+
+describe("parseTemporalDecayConfig", () => {
+  it("uses the default 30-day half-life when the env variable is unset", () => {
+    expect(parseTemporalDecayConfig({})).toEqual({ enabled: true, halfLifeDays: 30 });
+  });
+
+  it("disables decay for 'off' case-insensitively", () => {
+    expect(parseTemporalDecayConfig({ GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS: "off" })).toEqual({ enabled: false, halfLifeDays: 0 });
+    expect(parseTemporalDecayConfig({ GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS: "OFF" })).toEqual({ enabled: false, halfLifeDays: 0 });
+    expect(parseTemporalDecayConfig({ GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS: "Off" })).toEqual({ enabled: false, halfLifeDays: 0 });
+  });
+
+  it("disables decay for 0", () => {
+    expect(parseTemporalDecayConfig({ GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS: "0" })).toEqual({ enabled: false, halfLifeDays: 0 });
+    expect(parseTemporalDecayConfig({ GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS: "0.0" })).toEqual({ enabled: false, halfLifeDays: 0 });
+  });
+
+  it("sets a positive half-life", () => {
+    expect(parseTemporalDecayConfig({ GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS: "7" })).toEqual({ enabled: true, halfLifeDays: 7 });
+    expect(parseTemporalDecayConfig({ GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS: " 14.5 " })).toEqual({ enabled: true, halfLifeDays: 14.5 });
+  });
+
+  it("falls back to the default for invalid or negative values", () => {
+    expect(parseTemporalDecayConfig({ GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS: "abc" })).toEqual({ enabled: true, halfLifeDays: 30 });
+    expect(parseTemporalDecayConfig({ GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS: "-5" })).toEqual({ enabled: true, halfLifeDays: 30 });
   });
 });

@@ -8,12 +8,10 @@
  * target scope, and promotes candidates as plain-text entries with metadata
  * stored in SQLite columns (never HTML comments in the body text).
  *
- * REM and deep sleep are scheduler-driven phases. For now they are placeholders
- * that log and return; the cursor and promotion machinery for light sleep is
- * fully wired.
+ * REM and deep sleep are scheduler-driven phases.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { log } from "../log.ts";
 import { atomicWrite } from "../fs.ts";
@@ -21,15 +19,12 @@ import { sessionDir } from "../sessions/paths.ts";
 import { countTranscriptLines, readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
 import { parseSurfaceId } from "../surface.ts";
 import { MemoryStore } from "./store.ts";
+import { MemoryArtifactStore } from "./artifacts.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
 import { checkMemorySafety } from "./safety.ts";
 import { appendQuarantine, type QuarantineReason } from "./quarantine.ts";
-import {
-  stripEntryMetadata,
-  type EntrySourceRole,
-} from "./entry.ts";
+import { stripEntryMetadata, type EntrySourceRole } from "./entry.ts";
 import { activeMemoryScopeFor, resolveActiveScope, scopeTag, toMemoryScopePair, type MemoryScope } from "./scope.ts";
-import { memoryDir } from "./paths.ts";
 import { cosineSimilarity } from "./search.ts";
 
 // ---------------------------------------------------------------------------
@@ -279,7 +274,6 @@ function getOrCreateScopeScore(
 interface SessionState {
   running: Promise<void> | null;
   pending: boolean;
-  pendingAdvance: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +299,7 @@ export class DreamingPipeline {
   private store: MemoryStore;
   private metrics: MetricsStore | null;
   private extractor: CandidateExtractor | null;
+  private artifacts: MemoryArtifactStore;
   private confidenceThreshold: number;
   private lookbackHours: number;
   private dedupCosineThreshold: number;
@@ -323,6 +318,7 @@ export class DreamingPipeline {
     this.store = opts.store;
     this.metrics = opts.metrics ?? null;
     this.extractor = opts.extractor ?? null;
+    this.artifacts = new MemoryArtifactStore(this.home);
     this.confidenceThreshold = opts.confidenceThreshold ?? CONFIDENCE_THRESHOLD;
     this.lookbackHours = opts.lookbackHours ?? LOOKBACK_HOURS;
     this.dedupCosineThreshold = opts.dedupCosineThreshold ?? DEDUP_COSINE_THRESHOLD;
@@ -354,35 +350,6 @@ export class DreamingPipeline {
   }
 
   /**
-   * Advance the reflection cursor for a session to the current transcript end.
-   * Called by AgentRunner after a completed main-agent turn.
-   *
-   * Cursor advances are serialized against light-sleep passes for the same
-   * session so the cursor file is never read-modified-written while a pass is
-   * in progress.
-   */
-  advanceCursor(sessionId: string): void {
-    const state = this.sessions.get(sessionId);
-    if (state !== undefined && state.running !== null) {
-      // A light-sleep pass is running; coalesce the cursor advance so it runs
-      // after the pass finishes and observes the updated cursor.
-      state.pendingAdvance = true;
-      return;
-    }
-    this.advanceCursorNow(sessionId);
-  }
-
-  private advanceCursorNow(sessionId: string): void {
-    const cursor = this.readCursor(sessionId);
-    const total = countTranscriptLines(this.home, sessionId);
-    if (cursor === null) {
-      this.writeCursor(sessionId, { processedLines: total, lastDreamedAt: new Date().toISOString() });
-    } else if (total > cursor.processedLines) {
-      this.advanceCursorBy(sessionId, cursor, total - cursor.processedLines);
-    }
-  }
-
-  /**
    * Run light sleep for a session: read new transcript lines, extract
    * candidates, and promote durable ones. Coalesces overlapping calls.
    * Promotion scope is derived from the transcript source Surface provenance
@@ -391,7 +358,7 @@ export class DreamingPipeline {
   async runLightSleep(sessionId: string): Promise<void> {
     let state = this.sessions.get(sessionId);
     if (state === undefined) {
-      state = { running: null, pending: false, pendingAdvance: false };
+      state = { running: null, pending: false };
       this.sessions.set(sessionId, state);
     }
     if (state.running !== null) {
@@ -410,19 +377,6 @@ export class DreamingPipeline {
       if (s.pending) {
         s.pending = false;
         void this.runLightSleep(sessionId);
-      } else if (s.pendingAdvance) {
-        s.pendingAdvance = false;
-        try {
-          this.advanceCursor(sessionId);
-        } catch (err) {
-          log.warn("dreaming: deferred cursor advance failed", {
-            sessionId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-        if (this.sessions.get(sessionId) === s) {
-          this.sessions.delete(sessionId);
-        }
       } else {
         this.sessions.delete(sessionId);
       }
@@ -559,7 +513,8 @@ export class DreamingPipeline {
   }
 
   /**
-   * Deep sleep: promote all short-term entries to durable facts and compact.
+   * Deep sleep: promote qualified short-term entries to durable facts, expire
+   * unqualified short-term entries older than 7 days, and compact.
    */
   async runDeepSleep(): Promise<void> {
     await this.runGlobalPhase(async () => this.deepSleepInner());
@@ -567,20 +522,13 @@ export class DreamingPipeline {
 
   private async deepSleepInner(): Promise<void> {
     const now = Date.now();
-    const promoted = this.store.db.database
-      .query<{ changes: number }, { $now: number }>(
-        `UPDATE memory_entries
-         SET category = 'fact', promoted_at = $now, updated_at = $now
-         WHERE category = 'short_term' AND entry_kind IN ('memory', 'user')`,
-      )
-      .run({ $now: now });
-
+    const { promoted, expired } = this.store.applyShortTermLifecycle(now);
     const { freed, stillOver } = this.store.compact();
     this.appendDreamDiarySummary(
       "deep",
-      `promoted ${promoted.changes} short_term entries; freed ${freed} chars; over=${stillOver}`,
+      `promoted ${promoted} short_term entries; expired ${expired} unqualified rows; freed ${freed} chars; over=${stillOver}`,
     );
-    log.info("dreaming deep sleep completed", { promoted: promoted.changes, freed, stillOver });
+    log.info("dreaming deep sleep completed", { promoted, expired, freed, stillOver });
   }
 
   private async lightSleepInner(sessionId: string): Promise<void> {
@@ -651,7 +599,7 @@ export class DreamingPipeline {
           return migrated;
         }
       } catch {
-        // malformed meta cursor; leave it to be overwritten later
+        // malformed legacy meta cursor
       }
     }
     return null;
@@ -958,32 +906,13 @@ export class DreamingPipeline {
   }
 
   private appendDreamDiary(outcome: string, candidate: Candidate, targetScope: string): void {
-    const dir = join(memoryDir(this.home), "dreams");
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    const date = new Date().toISOString().slice(0, 10);
-    const path = join(dir, `${date}.md`);
     const ts = new Date().toISOString();
     const line = `- ${ts} [${outcome}] scope=${targetScope} category=${candidate.category} confidence=${candidate.confidence.toFixed(2)} source=${candidate.source.sessionId} lines=${candidate.source.lineRange.join(":")} summary=${JSON.stringify(candidate.text)}\n`;
-    this.writeDreamDiaryLine(path, line);
+    this.artifacts.appendDreamDiary(line);
   }
 
   private appendDreamDiarySummary(phase: string, summary: string): void {
-    const dir = join(memoryDir(this.home), "dreams");
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    const date = new Date().toISOString().slice(0, 10);
-    const path = join(dir, `${date}.md`);
     const ts = new Date().toISOString();
-    this.writeDreamDiaryLine(path, `- ${ts} [${phase}] ${summary}\n`);
-  }
-
-  private writeDreamDiaryLine(path: string, line: string): void {
-    const previous = existsSync(path) ? readFileSync(path, "utf-8") : "";
-    const tmp = `${path}.tmp`;
-    writeFileSync(tmp, previous + line, "utf-8");
-    renameSync(tmp, path);
+    this.artifacts.appendDreamDiary(`- ${ts} [${phase}] ${summary}\n`);
   }
 }

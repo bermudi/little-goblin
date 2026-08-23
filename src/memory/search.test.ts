@@ -474,4 +474,34 @@ describe("memory search", () => {
       expect(out.results[2]!.scope).toBe("topics/-100/8");
     });
   });
+
+  describe("searchMemoryEntries — recall stats", () => {
+    it("increments recall_count and sets last_recalled_at for returned curated results after the deferred tick", async () => {
+      await setBody(store, "general", "backups are important");
+      const before = Date.now();
+      const out = await searchMemoryEntries({
+        store,
+        activeScope: ACTIVE_TOPIC,
+        persona: MAIN_PERSONA,
+        query: "backups",
+      });
+      expect(out.results.length).toBeGreaterThan(0);
+
+      const entryId = out.results[0]!.entryId;
+      const query = store.db.database.query<
+        { recall_count: number; last_recalled_at: number | null; updated_at: number },
+        { $id: string }
+      >("SELECT recall_count, last_recalled_at, updated_at FROM memory_entries WHERE id = $id");
+      expect(query.get({ $id: entryId })).toMatchObject({ recall_count: 0, last_recalled_at: null });
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const row = query.get({ $id: entryId });
+      expect(row).not.toBeNull();
+      expect(row!.recall_count).toBe(1);
+      expect(row!.last_recalled_at).not.toBeNull();
+      expect(row!.last_recalled_at).toBeGreaterThanOrEqual(before);
+      expect(row!.updated_at).toBeLessThanOrEqual(before);
+    });
+  });
 });

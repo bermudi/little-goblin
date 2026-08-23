@@ -8,6 +8,8 @@ spine: false
 
 # 0027: Dreaming Model-Driven Promotion
 
+> **Amendment (2026-08-23):** Decision 0047 retains model-confidence extraction but gates `short_term` conversion to durable facts on age, confidence, and recall, and expires unqualified short-term rows after a grace period.
+
 ## Context
 
 OpenClaw's `memory-core` dreaming pipeline promotes entries to durable memory using a recall-based confidence signal: an entry only becomes durable after it has been surfaced by `memory_search` at least `minRecallCount` times (default 3) across `minUniqueQueries` (default 2) distinct queries on multiple days. The confidence formula combines `averageScore`, `recallStrength`, `consolidation`, and `conceptual` weightings. This requires a persistent recall store (2932 lines in `short-term-promotion.ts`) that tracks every search hit, the days they occurred on, and the concept tags that matched.

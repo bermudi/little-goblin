@@ -2062,11 +2062,9 @@ describe("AgentRunner", () => {
       );
     }
 
-    it("does not advance the dreaming cursor on agent_end (light sleep owns the cursor)", async () => {
+    it("does not run light sleep on agent_end", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
-      const advanceSpy = mock((_sessionId: string) => undefined);
       const runSpy = mock((_sessionId: string) => Promise.resolve());
-      dreaming.advanceCursor = advanceSpy as never;
       dreaming.runLightSleep = runSpy as never;
 
       const runner = await makeRunner(
@@ -2076,18 +2074,12 @@ describe("AgentRunner", () => {
 
       sessionHolder.emit({ type: "agent_end", messages: [] });
 
-      // agent_end must NOT advance the cursor — processSession reads new lines
-      // after the cursor during the scheduled light-sleep pass. Advancing here
-      // would skip past new lines and leave light sleep with nothing to process.
-      expect(advanceSpy).not.toHaveBeenCalled();
       expect(runSpy).not.toHaveBeenCalled();
     });
 
-    it("does not advance the cursor or run light sleep for followUp (steer)", async () => {
+    it("does not run light sleep for followUp (steer)", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
-      const advanceSpy = mock((_sessionId: string) => undefined);
       const runSpy = mock((_sessionId: string) => Promise.resolve());
-      dreaming.advanceCursor = advanceSpy as never;
       dreaming.runLightSleep = runSpy as never;
 
       const runner = await makeRunner(
@@ -2098,7 +2090,6 @@ describe("AgentRunner", () => {
       await runner.followUp("redirect");
 
       // followUp steers the running turn — no agent_end is emitted.
-      expect(advanceSpy).not.toHaveBeenCalled();
       expect(runSpy).not.toHaveBeenCalled();
     });
 

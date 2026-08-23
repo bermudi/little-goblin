@@ -739,6 +739,76 @@ export class MemoryStore {
     return row?.count ?? 0;
   }
 
+  applyShortTermLifecycle(now = Date.now()): { promoted: number; expired: number } {
+    const hourMs = 60 * 60 * 1000;
+    const promoteAgeMs = 24 * hourMs;
+    const expireAgeMs = 7 * 24 * hourMs;
+
+    this.db.database.exec("BEGIN");
+    try {
+      const rows = this.db.database
+        .query<
+          { id: string; updated_at: number; confidence: number | null; recall_count: number },
+          []
+        >(
+          `SELECT id, updated_at, confidence, recall_count
+           FROM memory_entries
+           WHERE entry_kind IN ('memory', 'user') AND category = 'short_term'`,
+        )
+        .all();
+      const toPromote: string[] = [];
+      const toDelete: string[] = [];
+      for (const row of rows) {
+        const ageMs = now - row.updated_at;
+        const confidence = row.confidence ?? 0;
+        if (ageMs >= promoteAgeMs && confidence >= 0.8 && row.recall_count >= 2) {
+          toPromote.push(row.id);
+        } else if (ageMs >= expireAgeMs) {
+          toDelete.push(row.id);
+        }
+      }
+
+      if (toPromote.length > 0) {
+        const placeholders = toPromote.map(() => "?").join(",");
+        this.db.database
+          .query(
+            `UPDATE memory_entries
+             SET category = 'fact', promoted_at = ?, updated_at = ?
+             WHERE id IN (${placeholders})`,
+          )
+          .run(now, now, ...toPromote);
+      }
+      for (const id of toDelete) {
+        this.deleteRow(id);
+      }
+      this.db.database.exec("COMMIT");
+      return { promoted: toPromote.length, expired: toDelete.length };
+    } catch (err) {
+      this.db.database.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  updateRecallStats(entryIds: string[], now = Date.now()): void {
+    const ids = [...new Set(entryIds)];
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => "?").join(",");
+    try {
+      this.db.database
+        .query(
+          `UPDATE memory_entries
+           SET recall_count = COALESCE(recall_count, 0) + 1, last_recalled_at = ?
+           WHERE id IN (${placeholders})`,
+        )
+        .run(now, ...ids);
+    } catch (err) {
+      log.warn("memory store: failed to update recall stats", {
+        count: ids.length,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   /**
    * Return the most recent `updated_at` timestamp for each of the given scope
    * tags. Scopes with no entries are omitted.

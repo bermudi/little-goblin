@@ -1049,4 +1049,187 @@ describe("MemoryStore", () => {
       expect(store.migrateTranscriptProvenanceIndex()).toBe(false);
     });
   });
+
+  describe("applyShortTermLifecycle", () => {
+    const insertShortTerm = (overrides: {
+      id: string;
+      updatedAt: number;
+      confidence: number | null;
+      recallCount: number;
+    }): void => {
+      const id = overrides.id;
+      const scope = "topics/-100/42";
+      const now = overrides.updatedAt;
+      store.db.database
+        .query(
+          `INSERT INTO memory_entries (
+            id, scope, entry_kind, text, created_at, updated_at, category, confidence, origin, recall_count, display_order
+          ) VALUES (
+            $id, $scope, $entry_kind, $text, $created_at, $updated_at, $category, $confidence, $origin, $recall_count, $display_order
+          )`,
+        )
+        .run({
+          $id: id,
+          $scope: scope,
+          $entry_kind: "memory",
+          $text: `short-term entry ${id}`,
+          $created_at: now,
+          $updated_at: overrides.updatedAt,
+          $category: "short_term",
+          $confidence: overrides.confidence,
+          $origin: "dreaming",
+          $recall_count: overrides.recallCount,
+          $display_order: 0,
+        });
+      store.db.database
+        .query(
+          "INSERT INTO memory_index_fts (text, entry_id, scope, entry_kind, chat_id) VALUES ($text, $entry_id, $scope, $entry_kind, $chat_id)",
+        )
+        .run({
+          $text: `short-term entry ${id}`,
+          $entry_id: id,
+          $scope: scope,
+          $entry_kind: "memory",
+          $chat_id: null,
+        });
+      store.db.database
+        .query("INSERT INTO memory_entry_tags (entry_id, tag) VALUES ($entry_id, $tag)")
+        .run({ $entry_id: id, $tag: "shortterm" });
+      store.db.database
+        .query(
+          "INSERT INTO memory_embeddings (entry_id, provider, model, hash, embedding, dims, updated_at) VALUES ($entry_id, $provider, $model, $hash, $embedding, $dims, $updated_at)",
+        )
+        .run({
+          $entry_id: id,
+          $provider: "test",
+          $model: "test",
+          $hash: id,
+          $embedding: new Uint8Array(8),
+          $dims: 1,
+          $updated_at: now,
+        });
+    };
+
+    it("promotes an old, confident, well-recalled short-term entry to fact", () => {
+      const now = 1_000_000_000_000;
+      insertShortTerm({ id: "st-promote", updatedAt: now - 25 * 60 * 60 * 1000, confidence: 0.85, recallCount: 3 });
+      const result = store.applyShortTermLifecycle(now);
+      expect(result).toEqual({ promoted: 1, expired: 0 });
+
+      const row = store.db.database
+        .query<{ category: string; promoted_at: number; updated_at: number }, { $id: string }>(
+          "SELECT category, promoted_at, updated_at FROM memory_entries WHERE id = $id",
+        )
+        .get({ $id: "st-promote" });
+      expect(row?.category).toBe("fact");
+      expect(row?.promoted_at).toBe(now);
+      expect(row?.updated_at).toBe(now);
+    });
+
+    it("preserves a qualifying short-term entry that is younger than 24 hours", () => {
+      const now = 1_000_000_000_000;
+      insertShortTerm({ id: "st-young-qualified", updatedAt: now - 60 * 60 * 1000, confidence: 0.9, recallCount: 5 });
+      const result = store.applyShortTermLifecycle(now);
+      expect(result).toEqual({ promoted: 0, expired: 0 });
+
+      const row = store.db.database
+        .query<{ category: string }, { $id: string }>("SELECT category FROM memory_entries WHERE id = $id")
+        .get({ $id: "st-young-qualified" });
+      expect(row?.category).toBe("short_term");
+    });
+
+    it("preserves an unqualified short-term entry that is younger than 7 days", () => {
+      const now = 1_000_000_000_000;
+      insertShortTerm({ id: "st-young-unqualified", updatedAt: now - 3 * 24 * 60 * 60 * 1000, confidence: 0.3, recallCount: 0 });
+      const result = store.applyShortTermLifecycle(now);
+      expect(result).toEqual({ promoted: 0, expired: 0 });
+
+      const row = store.db.database
+        .query<{ category: string }, { $id: string }>("SELECT category FROM memory_entries WHERE id = $id")
+        .get({ $id: "st-young-unqualified" });
+      expect(row?.category).toBe("short_term");
+    });
+
+    it("expires an unqualified short-term entry older than 7 days and removes dependent index rows", () => {
+      const now = 1_000_000_000_000;
+      insertShortTerm({ id: "st-expire", updatedAt: now - 8 * 24 * 60 * 60 * 1000, confidence: 0.5, recallCount: 0 });
+      const result = store.applyShortTermLifecycle(now);
+      expect(result).toEqual({ promoted: 0, expired: 1 });
+
+      const row = store.db.database
+        .query<{ count: number }, { $id: string }>("SELECT COUNT(*) AS count FROM memory_entries WHERE id = $id")
+        .get({ $id: "st-expire" });
+      expect(row?.count).toBe(0);
+
+      const tag = store.db.database
+        .query<{ count: number }, { $id: string }>(
+          "SELECT COUNT(*) AS count FROM memory_entry_tags WHERE entry_id = $id",
+        )
+        .get({ $id: "st-expire" });
+      expect(tag?.count).toBe(0);
+
+      const emb = store.db.database
+        .query<{ count: number }, { $id: string }>(
+          "SELECT COUNT(*) AS count FROM memory_embeddings WHERE entry_id = $id",
+        )
+        .get({ $id: "st-expire" });
+      expect(emb?.count).toBe(0);
+
+      const fts = store.db.database
+        .query<{ count: number }, { $id: string }>(
+          "SELECT COUNT(*) AS count FROM memory_index_fts WHERE entry_id = $id",
+        )
+        .get({ $id: "st-expire" });
+      expect(fts?.count).toBe(0);
+    });
+
+    it("reports both promoted and expired rows", () => {
+      const now = 1_000_000_000_000;
+      insertShortTerm({ id: "st-promote-2", updatedAt: now - 26 * 60 * 60 * 1000, confidence: 0.95, recallCount: 4 });
+      insertShortTerm({ id: "st-expire-2", updatedAt: now - 10 * 24 * 60 * 60 * 1000, confidence: 0.1, recallCount: 0 });
+      const result = store.applyShortTermLifecycle(now);
+      expect(result.promoted).toBe(1);
+      expect(result.expired).toBe(1);
+    });
+  });
+
+  describe("updateRecallStats", () => {
+    it("deduplicates ids before updating", () => {
+      store.db.database
+        .query(
+          `INSERT INTO memory_entries (
+            id, scope, entry_kind, text, created_at, updated_at, category, confidence, origin, recall_count, display_order
+          ) VALUES (
+            $id, $scope, $entry_kind, $text, $created_at, $updated_at, $category, $confidence, $origin, $recall_count, $display_order
+          )`,
+        )
+        .run({
+          $id: "recall-dedup",
+          $scope: "general",
+          $entry_kind: "memory",
+          $text: "dedup test",
+          $created_at: Date.now(),
+          $updated_at: Date.now(),
+          $category: "fact",
+          $confidence: 0.9,
+          $origin: "user",
+          $recall_count: 0,
+          $display_order: 0,
+        });
+      store.db.database
+        .query("INSERT INTO memory_index_fts (text, entry_id, scope, entry_kind, chat_id) VALUES ($text, $entry_id, $scope, $entry_kind, $chat_id)")
+        .run({ $text: "dedup test", $entry_id: "recall-dedup", $scope: "general", $entry_kind: "memory", $chat_id: null });
+
+      const now = 1_000_000_000_000;
+      store.updateRecallStats(["recall-dedup", "recall-dedup", "recall-dedup"], now);
+
+      const row = store.db.database
+        .query<{ recall_count: number; last_recalled_at: number }, { $id: string }>(
+          "SELECT recall_count, last_recalled_at FROM memory_entries WHERE id = $id",
+        )
+        .get({ $id: "recall-dedup" });
+      expect(row?.recall_count).toBe(1);
+      expect(row?.last_recalled_at).toBe(now);
+    });
+  });
 });

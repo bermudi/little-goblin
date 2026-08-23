@@ -158,6 +158,18 @@ export interface TemporalDecayConfig {
 
 export const DEFAULT_TEMPORAL_DECAY_CONFIG: TemporalDecayConfig = { enabled: true, halfLifeDays: 30 };
 
+export function parseTemporalDecayConfig(
+  env: { GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS?: string } = process.env as Record<string, string>,
+): TemporalDecayConfig {
+  const raw = env.GOBLIN_MEMORY_TEMPORAL_HALFLIFE_DAYS;
+  if (raw === undefined || raw.trim().length === 0) return DEFAULT_TEMPORAL_DECAY_CONFIG;
+  if (raw.trim().toLowerCase() === "off") return { enabled: false, halfLifeDays: 0 };
+  const days = Number(raw);
+  if (Number.isFinite(days) && days === 0) return { enabled: false, halfLifeDays: 0 };
+  if (Number.isFinite(days) && days > 0) return { enabled: true, halfLifeDays: days };
+  return DEFAULT_TEMPORAL_DECAY_CONFIG;
+}
+
 function toDecayLambda(halfLifeDays: number): number {
   if (!Number.isFinite(halfLifeDays) || halfLifeDays <= 0) return 0;
   return Math.LN2 / halfLifeDays;
@@ -189,6 +201,11 @@ export interface HybridResult {
   origin?: string | null;
 }
 
+function isTemporalDecayEligible(entry: HybridResult): boolean {
+  if (entry.entryKind === "transcript") return true;
+  return (entry.entryKind === "memory" || entry.entryKind === "user") && entry.category === "short_term";
+}
+
 export function applyTemporalDecay(
   results: HybridResult[],
   config: Partial<TemporalDecayConfig> = {},
@@ -198,6 +215,7 @@ export function applyTemporalDecay(
   if (!enabled) return results;
   const dayMs = 24 * 60 * 60 * 1000;
   return results.map((entry) => {
+    if (!isTemporalDecayEligible(entry)) return entry;
     if (!entry.updatedAt) return entry;
     const ageMs = Math.max(0, nowMs - entry.updatedAt);
     const multiplier = calculateTemporalDecayMultiplier(ageMs / dayMs, halfLifeDays);

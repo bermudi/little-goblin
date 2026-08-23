@@ -20,6 +20,20 @@ export function dreamsDir(home: string): string {
   return join(memoryDir(home), "dreams");
 }
 
+export function quarantinePath(home: string): string {
+  return join(memoryDir(home), "quarantine.jsonl");
+}
+
+export function quarantineRotatedPath(home: string, date: string, sequence = 0): string {
+  return sequence === 0
+    ? join(memoryDir(home), `quarantine-${date}.jsonl`)
+    : join(memoryDir(home), `quarantine-${date}-${sequence}.jsonl`);
+}
+
+export function dreamDiaryPath(home: string, date: string): string {
+  return join(dreamsDir(home), `${date}.md`);
+}
+
 /**
  * Path to the durable directory for one Telegram topic scope.
  *

@@ -60,24 +60,59 @@ describe("DreamingPipeline", () => {
     expect(pipeline).toBeInstanceOf(DreamingPipeline);
   });
 
-  it("runDeepSleep promotes short_term entries to fact and compacts", async () => {
-    const id1 = await store.addEntry({
+  it("runDeepSleep promotes qualified short_term entries and expires unqualified old ones", async () => {
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+
+    const qualified = await store.addEntry({
       scope: "general",
       entryKind: "memory",
       text: "short term fact one",
       category: "short_term",
+      confidence: 0.85,
+      recallCount: 3,
       origin: "dreaming",
       sourceSession: "abcdef1234",
+      createdAt: now - 2 * day,
+      updatedAt: now - 2 * day,
     });
-    const id2 = await store.addEntry({
+    const userQualified = await store.addEntry({
       scope: "user",
       entryKind: "user",
       text: "short term user note",
       category: "short_term",
+      confidence: 0.9,
+      recallCount: 2,
       origin: "dreaming",
       sourceSession: "abcdef1234",
+      createdAt: now - 25 * 60 * 60 * 1000,
+      updatedAt: now - 25 * 60 * 60 * 1000,
     });
-    const id3 = await store.addEntry({
+    const tooYoung = await store.addEntry({
+      scope: "general",
+      entryKind: "memory",
+      text: "young short term",
+      category: "short_term",
+      confidence: 0.95,
+      recallCount: 10,
+      origin: "dreaming",
+      sourceSession: "abcdef1234",
+      createdAt: now - 30 * 60 * 1000,
+      updatedAt: now - 30 * 60 * 1000,
+    });
+    const unqualifiedOld = await store.addEntry({
+      scope: "general",
+      entryKind: "memory",
+      text: "old unqualified",
+      category: "short_term",
+      confidence: 0.3,
+      recallCount: 0,
+      origin: "dreaming",
+      sourceSession: "abcdef1234",
+      createdAt: now - 8 * day,
+      updatedAt: now - 8 * day,
+    });
+    const existingFact = await store.addEntry({
       scope: "general",
       entryKind: "memory",
       text: "existing fact",
@@ -96,14 +131,13 @@ describe("DreamingPipeline", () => {
       .all({});
     const byId = new Map(rows.map((r) => [r.id, r]));
 
-    expect(byId.get(id1)?.category).toBe("fact");
-    expect(byId.get(id1)?.promoted_at).not.toBeNull();
-    expect(byId.get(id1)?.scope).toBe("general");
-    expect(byId.get(id2)?.category).toBe("fact");
-    expect(byId.get(id2)?.promoted_at).not.toBeNull();
-    expect(byId.get(id2)?.scope).toBe("user");
-    expect(byId.get(id3)?.category).toBe("fact");
-    expect(rows.filter((r) => r.category === "short_term")).toHaveLength(0);
+    expect(byId.get(qualified)?.category).toBe("fact");
+    expect(byId.get(qualified)?.promoted_at).not.toBeNull();
+    expect(byId.get(userQualified)?.category).toBe("fact");
+    expect(byId.get(userQualified)?.promoted_at).not.toBeNull();
+    expect(byId.get(tooYoung)?.category).toBe("short_term");
+    expect(byId.get(unqualifiedOld)).toBeUndefined();
+    expect(byId.get(existingFact)?.category).toBe("fact");
   });
 
   it("runRemSleep promotes recurring tags to the proven topic scope", async () => {

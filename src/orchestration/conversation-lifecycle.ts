@@ -148,6 +148,15 @@ export type ConversationResolution = {
   readonly creationLease: ConversationCreationLease | null;
 };
 
+export interface ResumeAdmission {
+  /**
+   * Completion is deliberately separate from admission: disposal and binding
+   * persistence may take arbitrarily long after the lifecycle has accepted
+   * ownership of the transition.
+   */
+  readonly completion: Promise<ConversationState>;
+}
+
 /**
  * Public seam for callers (intake, commands, scheduler). Every method that
  * changes a binding runs under the lifecycle transition lock internally.
@@ -170,6 +179,11 @@ export interface ConversationLifecycle extends SurfaceRuntimeAuthority {
   /** Seal a pending creation after this observer's use was accepted. */
   sealCreation(lease: ConversationCreationLease): void;
   rotate(surface: Surface): Promise<ConversationState>;
+  /**
+   * Synchronously admit a resume transition before runtime disposal or
+   * binding mutation begins.
+   */
+  admitResume(surface: Surface, target: ConversationId): ResumeAdmission;
   resume(surface: Surface, target: ConversationId): Promise<ConversationState>;
   /** Archive the current bound Conversation and return a status transition. */
   archive(surface: Surface): Promise<ArchiveTransition>;
@@ -575,6 +589,10 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
         if (sourceKey !== undefined) this.pendingBindingSurfaces.delete(sourceKey);
       }
     });
+  }
+
+  admitResume(surface: Surface, target: ConversationId): ResumeAdmission {
+    return { completion: this.resume(surface, target) };
   }
 
   async archive(surface: Surface): Promise<ArchiveTransition> {

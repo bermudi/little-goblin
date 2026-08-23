@@ -979,7 +979,16 @@ export class MemoryStore {
       this.db.database.exec("ROLLBACK");
       log.error("memory store transaction failed", { action, error: err instanceof Error ? err.message : String(err) });
       if (err instanceof MemoryOverflowError) {
-        this.metrics?.incrementCounter("memory_write_overflow_total", tag);
+        try {
+          this.metrics?.incrementCounter("memory_write_overflow_total", tag);
+        } catch (metricError) {
+          log.warn("memory overflow metric failed; overflow result preserved", {
+            operation: action,
+            scope: tag,
+            counter: "memory_write_overflow_total",
+            error: metricError instanceof Error ? metricError.message : String(metricError),
+          });
+        }
         return { ok: false, error: err.message };
       }
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

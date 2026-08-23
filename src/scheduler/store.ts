@@ -44,6 +44,9 @@ function decodeSurface(
   legacySurface: unknown,
   recordId: string,
 ): Surface {
+  if (surfaceIdText !== undefined && legacySurface !== undefined) {
+    throw new Error(`schedule ${recordId} has conflicting surfaceId and legacy surface`);
+  }
   if (surfaceIdText !== undefined) {
     if (typeof surfaceIdText !== "string") {
       throw new Error(`schedule ${recordId} has invalid surfaceId`);

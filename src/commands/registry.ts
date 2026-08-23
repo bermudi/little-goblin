@@ -25,7 +25,7 @@ import { executeProject } from "./project.ts";
 import { executeModel } from "./model.ts";
 import { executeCompact } from "./compact.ts";
 import { executeName } from "./name.ts";
-import { executeResume } from "./resume.ts";
+import { executeResume, selectResumeConversation, type ResumeCommandResult } from "./resume.ts";
 import { executeThink, ALL_LEVELS } from "./think.ts";
 import { parseCommandArg } from "./parse.ts";
 import {
@@ -430,18 +430,8 @@ const nameHandler: CommandHandler = async ({ deps, conversation, surface, rawTex
 
 const resumeHandler: CommandHandler = async ({ deps, surface, conversation: activeConversation, rawText }) => {
   const { lifecycle } = deps;
-  const sideEffects: SideEffect[] = [];
-  try {
-    const { compatible, incompatible } = await lifecycle.getResumeCandidates(surface);
-
-    const bindConversation = (conversationId: string): Promise<ConversationState> =>
-      lifecycle.resume(surface, conversationId as ConversationId);
-    const result = await executeResume({
-      rawText,
-      conversations: compatible,
-      incompatibleConversations: incompatible,
-      bindConversation,
-    });
+  const finishResume = (result: ResumeCommandResult): CommandCompletionResult => {
+    const sideEffects: SideEffect[] = [];
     if (result.kind === "resumed" && result.conversation.id !== activeConversation?.id) {
       // Displace the destination's prior runtime (if any) and invalidate any
       // stale runner keyed by the resumed conversation before creating a fresh
@@ -454,6 +444,48 @@ const resumeHandler: CommandHandler = async ({ deps, surface, conversation: acti
       : result.kind === "not-found" || result.kind === "ambiguous" || result.kind === "incompatible" ? "warn"
       : "info";
     return replied(result.reply, sideEffects, tag);
+  };
+
+  try {
+    const { compatible, incompatible } = await lifecycle.getResumeCandidates(surface);
+
+    // A bound Surface is already admitted through the runtime's queued
+    // Binding-authority path. An unbound Surface has no runtime machine, so
+    // lifecycle must record ownership synchronously before disposal can
+    // stall. Return that admission separately from its completion so the
+    // Telegram update receives its structural handoff immediately.
+    if (activeConversation === null) {
+      const selection = selectResumeConversation({
+        rawText,
+        conversations: compatible,
+        incompatibleConversations: incompatible,
+      });
+      if (selection.kind !== "selected") return finishResume(selection);
+
+      const admitted = lifecycle.admitResume(surface, selection.conversation.id as ConversationId);
+      const completion = admitted.completion.then(
+        (conversation) => finishResume({
+          kind: "resumed",
+          conversation,
+          reply: `Resumed conversation \`${conversation.id}\`${conversation.title ? ` — ${conversation.title}` : ""}`,
+        }),
+        (err: unknown) => {
+          log.error("resume failed", { error: String(err), sessionId: undefined });
+          return replied("Failed to resume conversation. Please try again.", [], "error");
+        },
+      );
+      return { kind: "admission", admission: runtimeAdmission.handoff(completion) };
+    }
+
+    const bindConversation = (conversationId: string): Promise<ConversationState> =>
+      lifecycle.resume(surface, conversationId as ConversationId);
+    const result = await executeResume({
+      rawText,
+      conversations: compatible,
+      incompatibleConversations: incompatible,
+      bindConversation,
+    });
+    return finishResume(result);
   } catch (err) {
     log.error("resume failed", { error: String(err), sessionId: activeConversation?.id });
     return replied("Failed to resume conversation. Please try again.", [], "error");

@@ -825,6 +825,36 @@ describe("MemoryStore", () => {
       (ms as unknown as { db: { close: () => void } }).db.close();
     });
 
+    it("preserves the overflow result when overflow telemetry fails", async () => {
+      const metrics = new MetricsStore(tmp, "abcdef1234");
+      const metricFailure = new Error("metrics disk full");
+      const increment = spyOn(metrics, "incrementCounter").mockImplementation(() => {
+        throw metricFailure;
+      });
+      const warn = spyOn(log, "warn").mockImplementation(() => {});
+      const ms = new MemoryStore(tmp, metrics);
+
+      try {
+        const result = await ms.add("general", "x".repeat(5001));
+
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain("memory overflow");
+        expect(warn).toHaveBeenCalledWith(
+          "memory overflow metric failed; overflow result preserved",
+          {
+            operation: "add",
+            scope: "general",
+            counter: "memory_write_overflow_total",
+            error: metricFailure.message,
+          },
+        );
+      } finally {
+        increment.mockRestore();
+        warn.mockRestore();
+        (ms as unknown as { db: { close: () => void } }).db.close();
+      }
+    });
+
     it("records safety reject counter", () => {
       const metrics = new MetricsStore(tmp, "abcdef1234");
       const ms = new MemoryStore(tmp, metrics);

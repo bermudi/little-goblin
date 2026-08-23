@@ -73,6 +73,40 @@ describe("SubagentRunner.cancel", () => {
     expect(host.latest().stopCalls).toBe(1);
   });
 
+  it("shares pending cancellation cleanup and its failure with a concurrent caller", async () => {
+    const cleanupFailure = new Error("stop cleanup failed");
+    host.stopFailure = cleanupFailure;
+    let releaseStop!: () => void;
+    host.stopBarrier = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
+    await flush();
+
+    let firstSettled = false;
+    let secondSettled = false;
+    const first = runner.cancel(handle.id).finally(() => {
+      firstSettled = true;
+    });
+    const second = runner.cancel(handle.id).finally(() => {
+      secondSettled = true;
+    });
+    await flush();
+
+    expect(host.latest().stopCalls).toBe(1);
+    expect(firstSettled).toBe(false);
+    expect(secondSettled).toBe(false);
+
+    releaseStop();
+    const outcomes = await Promise.allSettled([first, second]);
+    expect(firstSettled).toBe(true);
+    expect(secondSettled).toBe(true);
+    expect(outcomes).toEqual([
+      { status: "rejected", reason: cleanupFailure },
+      { status: "rejected", reason: cleanupFailure },
+    ]);
+  });
+
   it("retains host registration when cancellation persistence fails, allowing a later invalidation retry", async () => {
     const handle = await runner.spawn({ prompt: "work", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();

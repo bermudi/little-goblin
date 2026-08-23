@@ -562,6 +562,7 @@ export class SubagentRunner {
       resolveSettlement: () => settlement.resolve(undefined),
       rejectSettlement: settlement.reject,
       stopPromise: null,
+      cancellationPromise: null,
       settlementStarted: false,
       result: result.promise,
       resolveResult: result.resolve,
@@ -844,6 +845,7 @@ export class SubagentRunner {
       resolveSettlement: () => settlement.resolve(undefined),
       rejectSettlement: settlement.reject,
       stopPromise: null,
+      cancellationPromise: null,
       settlementStarted: false,
       result: result.promise,
       resolveResult: result.resolve,
@@ -1282,6 +1284,9 @@ export class SubagentRunner {
       throw new SubagentCancellationRejectedError("Subagent not found");
     }
     if (instance.status !== "running") {
+      if (instance.status === "cancelled" && instance.cancellationPromise !== null) {
+        return instance.cancellationPromise;
+      }
       if (instance.status === "completed" && instance.deliveryState === "pending") {
         const failures: unknown[] = [];
         this.suppressPendingDelivery(instance, failures);
@@ -1304,7 +1309,9 @@ export class SubagentRunner {
     instance.status = "cancelled";
     instance.deliveryState = "suppressed";
     instance.rejectResult(new Error("Subagent was cancelled"));
-    return this.finishCancellationCleanup(instance, id);
+    const cancellation = this.finishCancellationCleanup(instance, id);
+    instance.cancellationPromise = cancellation;
+    return cancellation;
   }
 
   private async finishClaimedCancellation(instance: SubagentInstance): Promise<void> {

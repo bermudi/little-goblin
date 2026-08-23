@@ -200,6 +200,60 @@ describe("MetricsStore", () => {
       assertShortWritePropagates(() => store.record(event), metricsFilePath(tmp), line);
     });
 
+    it("removes a short-write prefix before the next append", () => {
+      const first = { type: "counter" as const, name: "first", scope: null, value: 1 };
+      const interrupted = { type: "counter" as const, name: "interrupted", scope: null, value: 2 };
+      const last = { type: "counter" as const, name: "last", scope: null, value: 3 };
+      store.record(first);
+
+      const realWriteSync = fs.writeSync.bind(fs);
+      const writeSpy = spyOn(fs, "writeSync").mockImplementation(((...args: unknown[]): number => {
+        const fd = args[0];
+        const data = args[1];
+        if (typeof fd !== "number" || !Buffer.isBuffer(data)) {
+          throw new Error("unexpected writeSync test arguments");
+        }
+        const prefix = data.subarray(0, 7);
+        return realWriteSync(fd, prefix);
+      }) as unknown as typeof fs.writeSync);
+      try {
+        expect(() => store.record(interrupted)).toThrow("Short metrics append");
+      } finally {
+        writeSpy.mockRestore();
+      }
+
+      store.record(last);
+      const events = readFileSync(metricsFilePath(tmp), "utf-8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as unknown);
+      expect(events).toEqual([first, last]);
+    });
+
+    it("preserves append and rollback failures together", () => {
+      const writeFailure = new Error("append failed");
+      const rollbackFailure = new Error("truncate failed");
+      const writeSpy = spyOn(fs, "writeSync").mockImplementation((): never => {
+        throw writeFailure;
+      });
+      const truncateSpy = spyOn(fs, "ftruncateSync").mockImplementation((): never => {
+        throw rollbackFailure;
+      });
+
+      let caught: unknown;
+      try {
+        store.record({ type: "counter", name: "test", scope: null, value: 1 });
+      } catch (error) {
+        caught = error;
+      } finally {
+        writeSpy.mockRestore();
+        truncateSpy.mockRestore();
+      }
+
+      expect(caught).toBeInstanceOf(AggregateError);
+      expect((caught as AggregateError).errors).toEqual([writeFailure, rollbackFailure]);
+    });
+
     it("persists a turn event with nested usage", () => {
       store.record(makeTurnEvent());
       const summary = readMetricsSummary(tmp, VALID_ID);

@@ -144,6 +144,28 @@ describe("ScheduleStore", () => {
       })).toThrow(/invalid legacy surface/);
       expect(readFileSync(path, "utf-8")).toBe(persisted);
     });
+
+    it("rejects conflicting canonical and legacy Surface authorities", () => {
+      const path = schedulesPath(tmpDir);
+      const persisted = JSON.stringify({
+        schedules: [{
+          id: "conflicting-surface",
+          surfaceId: surfaceId(LOC),
+          surface: OTHER_LOC,
+          kind: "once",
+          prompt: "do not run",
+          enabled: true,
+          state: "enabled",
+          nextRunAt: FUTURE_ISO,
+          createdAt: NOW_ISO,
+        }],
+      });
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, persisted);
+
+      expect(() => loadStore(tmpDir)).toThrow(/conflicting surfaceId and legacy surface/);
+      expect(readFileSync(path, "utf-8")).toBe(persisted);
+    });
   });
 
   describe("legacy Surface persistence", () => {

@@ -2544,6 +2544,42 @@ describe("createMessageBuffer factory", () => {
     expect(existsSync(join(cfg.goblinHome, "state/sessions", target.id))).toBe(true);
   });
 
+  it("hands off an unbound /resume before runtime disposal settles", async () => {
+    const { intake, runtimeHost } = makeHarness();
+    const sourceReplies: string[] = [];
+    const destinationReplies: string[] = [];
+    const source = makeMessage(sourceReplies, { surface: dmSurface(1) });
+    const destination = makeMessage(destinationReplies, { surface: dmSurface(2) });
+    await completeAdmission(intake.handleText(source, "/new"));
+    const target = intake.lifecycle.inspect(dmSurface(1))!;
+
+    let releaseDisposal!: () => void;
+    const disposalBarrier = new Promise<void>((resolve) => {
+      releaseDisposal = resolve;
+    });
+    const originalDispose = runtimeHost.disposeRuntime.bind(runtimeHost);
+    const disposeSpy = spyOn(runtimeHost, "disposeRuntime").mockImplementation(async (conversationId, options) => {
+      await disposalBarrier;
+      return originalDispose(conversationId, options);
+    });
+
+    try {
+      const admission = await intake.handleText(destination, `/resume ${target.id}`);
+
+      expect(admission.kind).toBe("handoff");
+      expect(intake.lifecycle.inspect(dmSurface(1))?.id).toBe(target.id);
+      expect(intake.lifecycle.inspect(dmSurface(2))).toBeNull();
+
+      releaseDisposal();
+      await admission.completion;
+      expect(intake.lifecycle.inspect(dmSurface(1))).toBeNull();
+      expect(intake.lifecycle.inspect(dmSurface(2))?.id).toBe(target.id);
+    } finally {
+      releaseDisposal();
+      disposeSpy.mockRestore();
+    }
+  });
+
   it("handles unknown commands locally on active topic and supergroup surfaces", async () => {
     // Decision 0046: unknown commands are adapter-owned completions on every
     // reply-capable active surface, not just DMs.

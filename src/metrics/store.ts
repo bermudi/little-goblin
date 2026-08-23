@@ -1,4 +1,13 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  ftruncateSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { metricsPath } from "../sessions/paths.ts";
 
@@ -176,7 +185,9 @@ export class MetricsStore {
     }
     const fd = openSync(path, "a");
     let writeError: unknown;
+    let originalLength: number | undefined;
     try {
+      originalLength = fstatSync(fd).size;
       const bytes = Buffer.from(line, "utf8");
       const written = writeSync(fd, bytes);
       if (written !== bytes.byteLength) {
@@ -186,7 +197,17 @@ export class MetricsStore {
       }
     } catch (error) {
       writeError = error;
-      throw error;
+      if (originalLength !== undefined) {
+        try {
+          ftruncateSync(fd, originalLength);
+        } catch (rollbackError) {
+          writeError = new AggregateError(
+            [error, rollbackError],
+            `Metrics append failed and rollback failed: path=${path}`,
+          );
+        }
+      }
+      throw writeError;
     } finally {
       try {
         closeSync(fd);

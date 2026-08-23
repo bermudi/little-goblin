@@ -16,6 +16,10 @@ export type ResumeCommandResult =
   | { kind: "incompatible"; conversation: ConversationState; reply: string }
   | { kind: "resumed"; conversation: ConversationState; reply: string };
 
+export type ResumeSelectionResult =
+  | Exclude<ResumeCommandResult, { kind: "resumed" }>
+  | { kind: "selected"; conversation: ConversationState };
+
 export const NO_NAMED_SESSIONS_REPLY = "No named conversations yet. Use /name <conversation name> in an active conversation to name it.";
 
 export function parseResumeTarget(rawText: string): string | undefined {
@@ -42,7 +46,9 @@ function formatIncompatibleReply(session: ConversationState): string {
   return `Conversation \`${session.id}\`${title} cannot be resumed on this surface: its execution environment is incompatible.`;
 }
 
-export async function executeResume(deps: ResumeCommandDeps): Promise<ResumeCommandResult> {
+export function selectResumeConversation(
+  deps: Pick<ResumeCommandDeps, "rawText" | "conversations" | "incompatibleConversations">,
+): ResumeSelectionResult {
   const target = parseResumeTarget(deps.rawText);
   if (!target) return { kind: "list", reply: formatNamedSessionsList(deps.conversations) };
 
@@ -64,7 +70,14 @@ export async function executeResume(deps: ResumeCommandDeps): Promise<ResumeComm
   }
 
   const [match] = compatible;
-  const conversation = await deps.bindConversation(match!.id);
+  return { kind: "selected", conversation: match! };
+}
+
+export async function executeResume(deps: ResumeCommandDeps): Promise<ResumeCommandResult> {
+  const selection = selectResumeConversation(deps);
+  if (selection.kind !== "selected") return selection;
+
+  const conversation = await deps.bindConversation(selection.conversation.id);
   return {
     kind: "resumed",
     conversation,

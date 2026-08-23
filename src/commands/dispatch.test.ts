@@ -1038,7 +1038,9 @@ describe("handleCommand", () => {
       const harness = makeHarness();
       const target = await createSession(harness);
       harness.conversationStore.setTitle(target.id, "my-target");
-      const result = expectReplied(await dispatch({ command: "/resume", rawText: `/resume ${target.id}`, harness }));
+      const result = await expectAdmissionReplied(
+        await dispatch({ command: "/resume", rawText: `/resume ${target.id}`, harness }),
+      );
       expect(result.tag).toBe("ok");
     });
 

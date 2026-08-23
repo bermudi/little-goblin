@@ -818,9 +818,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           const completion = admission.completion.then(
             async (result) => {
               const finished = await finishCommand(result);
-              if (finished.kind !== "completed") {
-                throw new Error("admitted command attempted a second runtime admission");
-              }
+              // The command's structural admission remains authoritative.
+              // Lifecycle-owned work such as an unbound /resume may attach a
+              // follow-on runner side effect after its binding transition
+              // completes; that nested admission contributes completion only.
               await finished.completion;
             },
             async (err: unknown) => {

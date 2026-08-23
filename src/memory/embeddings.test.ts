@@ -113,6 +113,42 @@ describe("EmbeddingProvider", () => {
     expect(secondResult.embedding).toEqual(firstResult.embedding);
   });
 
+  it("evicts the oldest fetched cache entry when the cap is exceeded", async () => {
+    const fetchMock = successFetch();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const texts = Array.from({ length: 257 }, (_, i) => `text-${i}`);
+    await provider.embedBatch(texts);
+    expect(fetchMock.mock.calls.length).toBe(1);
+
+    await provider.embedBatch([texts[0]!]);
+    expect(fetchMock.mock.calls.length).toBe(2);
+
+    await provider.embedBatch([texts[128]!]);
+    expect(fetchMock.mock.calls.length).toBe(2);
+  });
+
+  it("refreshes fetched cache recency on hits before evicting", async () => {
+    const fetchMock = successFetch();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const texts = Array.from({ length: 256 }, (_, i) => `text-${i}`);
+    await provider.embedBatch(texts);
+    expect(fetchMock.mock.calls.length).toBe(1);
+
+    await provider.embedBatch([texts[0]!]);
+    expect(fetchMock.mock.calls.length).toBe(1);
+
+    await provider.embedBatch(["text-256"]);
+    expect(fetchMock.mock.calls.length).toBe(2);
+
+    await provider.embedBatch([texts[0]!]);
+    expect(fetchMock.mock.calls.length).toBe(2);
+
+    await provider.embedBatch([texts[1]!]);
+    expect(fetchMock.mock.calls.length).toBe(3);
+  });
+
   it("reindexIfNeeded with no entries completes without fetch", async () => {
     const fetchMock = successFetch();
     globalThis.fetch = fetchMock as unknown as typeof fetch;

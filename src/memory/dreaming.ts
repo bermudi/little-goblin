@@ -19,6 +19,7 @@ import { sessionDir } from "../sessions/paths.ts";
 import { countTranscriptLines, readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
 import { parseSurfaceId } from "../surface.ts";
 import { MemoryStore } from "./store.ts";
+import { MemoryOverflowError } from "./budget.ts";
 import { MemoryArtifactStore } from "./artifacts.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
 import { checkMemorySafety } from "./safety.ts";
@@ -609,26 +610,10 @@ export class DreamingPipeline {
     atomicWrite(this.dreamingCursorPath(sessionId), JSON.stringify(cursor));
   }
 
-  private advanceCursorBy(sessionId: string, cursor: DreamingCursor, processedDelta: number): void {
-    const advanced: DreamingCursor = {
-      processedLines: cursor.processedLines + processedDelta,
-      lastDreamedAt: new Date().toISOString(),
-    };
-    this.writeCursor(sessionId, advanced);
-  }
-
-  private filterLines(lines: TranscriptLine[]): TranscriptLine[] {
-    if (this.lookbackHours <= 0) return lines;
-    const cutoff = Date.now() - this.lookbackHours * 60 * 60 * 1000;
-    const filtered = lines.filter((line) => new Date(line.ts).getTime() >= cutoff);
-    if (filtered.length > this.maxModelLines) return filtered.slice(0, this.maxModelLines);
-    return filtered;
-  }
-
   private async processSession(sessionId: string): Promise<void> {
     if (this.extractor === null) return;
 
-    const cursor = this.readCursor(sessionId);
+    let cursor = this.readCursor(sessionId);
 
     if (cursor === null) {
       const total = countTranscriptLines(this.home, sessionId);
@@ -641,35 +626,62 @@ export class DreamingPipeline {
       return;
     }
 
-    const rawLines = readTranscriptAfter(this.home, sessionId, cursor.processedLines);
-    if (rawLines.length === 0) return;
-
     const home = resolve(this.home);
-    const newLines = this.filterLines(rawLines);
-    if (newLines.length === 0) {
-      this.advanceCursorBy(sessionId, cursor, rawLines.length);
-      pruneProcessedCandidates(home, sessionId);
-      return;
+    const snapshot = readTranscriptAfter(this.home, sessionId, cursor.processedLines);
+    const cutoff = this.lookbackHours > 0
+      ? Date.now() - this.lookbackHours * 60 * 60 * 1000
+      : null;
+    const configuredBatchLimit = Math.floor(this.maxModelLines);
+    const batchLimit = Number.isFinite(configuredBatchLimit) && configuredBatchLimit > 0
+      ? configuredBatchLimit
+      : 1;
+    let snapshotOffset = 0;
+
+    while (snapshotOffset < snapshot.length) {
+      const newLines: TranscriptLine[] = [];
+      let skippedExpired = 0;
+      while (snapshotOffset < snapshot.length && newLines.length < batchLimit) {
+        const line = snapshot[snapshotOffset++]!;
+        if (cutoff !== null && !(new Date(line.ts).getTime() >= cutoff)) {
+          skippedExpired++;
+        } else {
+          newLines.push(line);
+        }
+      }
+
+      const batchEndIndex = snapshot[snapshotOffset - 1]!.index + 1;
+      if (skippedExpired > 0) {
+        this.emitExpiredLinesWarning(sessionId, skippedExpired);
+      }
+      if (newLines.length === 0) {
+        cursor = { processedLines: batchEndIndex, lastDreamedAt: new Date().toISOString() };
+        this.writeCursor(sessionId, cursor);
+        break;
+      }
+
+      const candidates = await this.extractor(newLines, { sessionId });
+      const newCandidates = candidates.filter((c) => !isProcessedCandidate(home, sessionId, c));
+
+      for (const candidate of newCandidates) {
+        await this.processCandidate(candidate);
+        markCandidateProcessed(home, sessionId, candidate);
+        this.metrics?.incrementCounter("memory_dreaming_candidate_total", null, 1);
+      }
+
+      cursor = { processedLines: batchEndIndex, lastDreamedAt: new Date().toISOString() };
+      this.writeCursor(sessionId, cursor);
     }
 
-    const candidates = await this.extractor(newLines, { sessionId });
-    const newCandidates = candidates.filter((c) => !isProcessedCandidate(home, sessionId, c));
-
-    for (const candidate of newCandidates) {
-      await this.processCandidate(candidate);
-      markCandidateProcessed(home, sessionId, candidate);
-      this.metrics?.incrementCounter("memory_dreaming_candidate_total", null, 1);
-    }
-
-    // Advance the cursor past the lines we actually processed, including any
-    // leading lines that fell outside the lookback window. Unprocessed tail
-    // lines (when the filtered window exceeded maxModelLines) remain for the
-    // next pass.
-    const lastIndex = newLines[newLines.length - 1]?.index;
-    const processedDelta =
-      lastIndex === undefined ? rawLines.length : lastIndex - cursor.processedLines + 1;
-    this.advanceCursorBy(sessionId, cursor, processedDelta);
     pruneProcessedCandidates(home, sessionId);
+  }
+
+  private emitExpiredLinesWarning(sessionId: string, count: number): void {
+    log.warn("dreaming: skipped transcript lines outside lookback window", {
+      sessionId,
+      count,
+      lookbackHours: this.lookbackHours,
+    });
+    this.metrics?.incrementCounter("memory_dreaming_expired_lines_total", null, count);
   }
 
   private readTranscriptLinesInRange(sessionId: string, start: number, end: number): TranscriptLine[] {
@@ -725,7 +737,18 @@ export class DreamingPipeline {
 
   private async processCandidate(candidate: Candidate, forcedScope?: MemoryScope | "user"): Promise<void> {
     if (isProceduralNoise(candidate.text)) {
+      const scopeResolution = this.resolveCandidateScope(candidate, forcedScope);
+      const targetScopeTag = scopeResolution.kind === "scope" ? scopeTag(scopeResolution.scope) : scopeResolution.targetScopeTag;
       this.metrics?.incrementCounter("memory_dreaming_quarantine_total", "procedural_noise", 1);
+      appendQuarantine({
+        goblinHome: this.home,
+        sourceSession: candidate.source.sessionId,
+        targetScope: targetScopeTag,
+        category: candidate.category,
+        reason: "procedural_noise",
+        content: candidate.text,
+      });
+      this.appendDreamDiary("quarantine:procedural_noise", candidate, targetScopeTag);
       return;
     }
 
@@ -817,6 +840,22 @@ export class DreamingPipeline {
         this.metrics?.incrementCounter("memory_dreaming_persisted_total", null, 1);
         return "persisted:updated";
       }
+      if (result.reason === "budget_exhausted") {
+        this.metrics?.incrementCounter("memory_dreaming_quarantine_total", "budget_exhausted", 1);
+        appendQuarantine({
+          goblinHome: this.home,
+          sourceSession: candidate.source.sessionId,
+          targetScope: tag,
+          category: candidate.category,
+          reason: "budget_exhausted",
+          content: candidate.text,
+        });
+        log.warn("dreaming: update failed; quarantined as budget_exhausted", {
+          scope: tag,
+          error: result.error,
+        });
+        return "quarantine:budget_exhausted";
+      }
       this.metrics?.incrementCounter("memory_dreaming_quarantine_total", "review", 1);
       appendQuarantine({
         goblinHome: this.home,
@@ -851,6 +890,22 @@ export class DreamingPipeline {
       this.metrics?.incrementCounter("memory_dreaming_persisted_total", null, 1);
       return "persisted:added";
     } catch (err) {
+      if (err instanceof MemoryOverflowError) {
+        this.metrics?.incrementCounter("memory_dreaming_quarantine_total", "budget_exhausted", 1);
+        appendQuarantine({
+          goblinHome: this.home,
+          sourceSession: candidate.source.sessionId,
+          targetScope: tag,
+          category: candidate.category,
+          reason: "budget_exhausted",
+          content: candidate.text,
+        });
+        log.warn("dreaming: add failed; quarantined as budget_exhausted", {
+          scope: tag,
+          error: err.message,
+        });
+        return "quarantine:budget_exhausted";
+      }
       const error = err instanceof Error ? err.message : String(err);
       this.metrics?.incrementCounter("memory_dreaming_quarantine_total", "review", 1);
       appendQuarantine({

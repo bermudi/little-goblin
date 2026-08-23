@@ -10,6 +10,7 @@ import {
   type PersonaPolicy,
 } from "./search.ts";
 import { formatReflectedEntry, type EntryMetadata } from "./entry.ts";
+import { EmbeddingProvider } from "./embeddings.ts";
 import { memoryDir } from "./paths.ts";
 import type { ActiveScope } from "./scope.ts";
 
@@ -502,6 +503,96 @@ describe("memory search", () => {
       expect(row!.last_recalled_at).not.toBeNull();
       expect(row!.last_recalled_at).toBeGreaterThanOrEqual(before);
       expect(row!.updated_at).toBeLessThanOrEqual(before);
+    });
+  });
+
+  describe("searchMemoryEntries — MMR selection target", () => {
+    it("diversifies near-duplicate candidates for a small final target", async () => {
+      const mmrTmp = mkdtempSync(join(tmpdir(), "goblin-memory-mmr-"));
+      try {
+        const prevModel = process.env.GOBLIN_MEMORY_EMBEDDING_MODEL;
+        const prevProvider = process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER;
+        const prevApiKey = process.env.GOBLIN_MEMORY_EMBEDDING_API_KEY;
+        process.env.GOBLIN_MEMORY_EMBEDDING_MODEL = "test-model";
+        process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER = "test-provider";
+        process.env.GOBLIN_MEMORY_EMBEDDING_API_KEY = "dummy";
+
+        try {
+          function hashText(text: string): string {
+            return new Bun.CryptoHasher("sha256").update(text).digest("hex");
+          }
+
+          function vectorFor(text: string): Float32Array {
+            if (text === "alpha beta gamma") return new Float32Array([1, 0, 0]);
+            if (text === "alpha beta gamma variant") {
+              return new Float32Array([0.5, Math.sqrt(0.75), 0]);
+            }
+            if (text === "delta epsilon zeta") return new Float32Array([0.8, 0.6, 0]);
+            return new Float32Array([0, 0, 1]);
+          }
+
+          class FakeEmbeddingProvider extends EmbeddingProvider {
+            override async embedBatch(
+              texts: string[],
+              _model?: string,
+            ): Promise<Array<{ hash: string; embedding: Float32Array | null }>> {
+              return texts.map((text) => ({ hash: hashText(text), embedding: vectorFor(text) }));
+            }
+          }
+
+          const dbStore = new MemoryStore(mmrTmp);
+          const embeddings = new FakeEmbeddingProvider(dbStore.db);
+          const store = new MemoryStore(dbStore.db, undefined, { embeddings });
+
+          const now = Date.now();
+          const entries: { scope: string; text: string }[] = [
+            { scope: "topics/-100/7", text: "alpha beta gamma" },
+            { scope: "topics/-100/8", text: "alpha beta gamma variant" },
+            { scope: "topics/-100/9", text: "delta epsilon zeta" },
+          ];
+          for (const entry of entries) {
+            await store.addEntry({
+              scope: entry.scope,
+              entryKind: "memory",
+              text: entry.text,
+              chatId: "-100",
+              origin: "user",
+              createdAt: now,
+              updatedAt: now,
+              recallCount: 0,
+              displayOrder: now,
+            });
+          }
+
+          const out = await searchMemoryEntries({
+            store,
+            activeScope: ACTIVE_TOPIC,
+            persona: MAIN_PERSONA,
+            query: "alpha beta gamma",
+            corpus: "memory",
+            limit: 2,
+            mmrLimit: 2,
+          });
+
+          expect(out.results).toHaveLength(2);
+          const texts = out.results.map((r) => r.text);
+          expect(texts).toContain("alpha beta gamma");
+          expect(texts).toContain("delta epsilon zeta");
+          expect(texts).not.toContain("alpha beta gamma variant");
+
+          await new Promise((resolve) => setImmediate(resolve));
+          store.close();
+        } finally {
+          if (prevModel === undefined) delete process.env.GOBLIN_MEMORY_EMBEDDING_MODEL;
+          else process.env.GOBLIN_MEMORY_EMBEDDING_MODEL = prevModel;
+          if (prevProvider === undefined) delete process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER;
+          else process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER = prevProvider;
+          if (prevApiKey === undefined) delete process.env.GOBLIN_MEMORY_EMBEDDING_API_KEY;
+          else process.env.GOBLIN_MEMORY_EMBEDDING_API_KEY = prevApiKey;
+        }
+      } finally {
+        rmSync(mmrTmp, { recursive: true, force: true });
+      }
     });
   });
 });

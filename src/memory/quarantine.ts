@@ -20,6 +20,7 @@ export type QuarantineReason =
   | "procedural_noise"
   | "skip"
   | "review"
+  | "budget_exhausted"
   | "malformed"
   | "ambiguous_source_scope"
   | "no_agent_authority";

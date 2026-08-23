@@ -492,8 +492,13 @@ export async function searchMemoryEntries(args: {
   nowMs?: number;
   /** Optional metrics store to record the search event. */
   metrics?: MetricsStore;
+  mmrLimit?: number;
 }): Promise<MemorySearchOutput> {
   const limit = clampLimit(args.limit);
+  const requestedMmrTarget = Math.floor(args.mmrLimit ?? limit);
+  const mmrTarget = Number.isFinite(requestedMmrTarget) && requestedMmrTarget > 0
+    ? Math.min(requestedMmrTarget, limit)
+    : limit;
   const corpus = args.corpus ?? "all";
   const allChats = args.allChats ?? false;
   const noChatId = args.activeScope.chatId === 0;
@@ -564,8 +569,8 @@ export async function searchMemoryEntries(args: {
     temporalDecay: parseTemporalDecayConfig(),
   });
 
-  // Apply MMR re-ranking when the candidate pool is more than twice the requested limit.
-  if (merged.length > limit * 2) {
+  // Apply MMR re-ranking when the candidate pool exceeds the final selection target.
+  if (merged.length > mmrTarget) {
     merged = applyMMR(merged, { enabled: true, lambda: 0.7 });
   }
 

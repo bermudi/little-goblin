@@ -63,10 +63,34 @@ Memory audit artifacts are owned by one narrow module, `MemoryArtifactStore` in 
 
 ### Dead cursor path
 
-The public `DreamingPipeline.advanceCursor`, private `advanceCursorNow`, and `SessionState.pendingAdvance` state are removed, along with the unreachable deferred `finally` branch and the misleading comment. Light sleep continues to own the cursor via `processSession`/`advanceCursorBy`. The `runLightSleep` session state tracks only `running` and `pending`.
+The public `DreamingPipeline.advanceCursor`, private `advanceCursorNow`, and `SessionState.pendingAdvance` state are removed, along with the unreachable deferred `finally` branch and the misleading comment. Light sleep continues to own the cursor via `processSession`/`writeCursor`. The `runLightSleep` session state tracks only `running` and `pending`.
+
+### Light sleep backlog draining
+
+`DreamingPipeline.processSession` captures the unread transcript lines once at invocation start and drains that finite snapshot by invoking the extractor on successive batches of at most `maxModelLines` lines. Lines appended after the snapshot are left for a later invocation. The lookback filter is applied first, then the batch is capped to `maxModelLines`. After each batch the cursor advances past the processed lines. Lines that fall outside the lookback window are skipped and recorded: a structured warning is emitted and the `memory_dreaming_expired_lines_total` metric is incremented by the number of skipped lines. Eligible lines present in the captured snapshot are never left waiting for another scheduled pass.
+
+### Search diversity target
+
+`searchMemoryEntries` accepts an internal `mmrLimit` argument that represents the diversity/selection target for MMR re-ranking. It defaults to the returned result `limit`. MMR is applied whenever the merged candidate count exceeds `mmrLimit`, allowing small final selections to be diversified while still fetching a wider net. The per-turn relevant-memory builder passes its actual final relevant-memory limit as `mmrLimit` while retaining `limit: 50` for post-search deduplication.
+
+### Procedural-noise audit trail
+
+A candidate classified as procedural noise continues to increment the `memory_dreaming_quarantine_total` metric with reason `procedural_noise`. It also appends a redacted quarantine record and a dream-diary outcome line, using the correctly resolved target scope. The rejection reason remains `procedural_noise`.
+
+### Durable budget overflow status
+
+`MemoryStore` owns a durable `memory_budget_blocked` marker in `memory_meta`. The marker is set after rollback on any curated `MemoryOverflowError` from `addEntry`, `updateEntry`, `addEntries`, and the `add`/`replace`/`remove`/`rewrite` mutation paths. It is cleared inside the same transaction as a successful curated write, removal, or rewrite that restores headroom. Transcript-only writes neither enforce the curated-memory budget nor change the marker. `MemoryStore.isBudgetBlocked()` provides the canonical read path.
+
+Dreaming records a `budget_exhausted` quarantine reason (and diary outcome) when `persistCandidate` encounters a `MemoryOverflowError`, instead of the generic `review` reason. The `QuarantineReason` union includes `budget_exhausted`.
+
+On the next ordinary Surface-backed turn, `formatRelevantMemory` includes a hidden `## memory alert` section when the budget is blocked, even if there are no relevant search results. The alert instructs the model to tell the user that automatic memory learning is blocked and to consolidate or remove stale memory before retrying. No proactive Telegram delivery or parallel notification subsystem is added; the existing `sendCustomMessage(..., { deliverAs: "nextTurn" })` path is reused.
+
+### Bounded embedding cache
+
+`EmbeddingProvider.fetchedCache` is a fixed-size LRU with a 256-entry cap, implemented as a simple `Map` where accesses refresh recency and insertions evict the oldest key when at capacity.
 
 ## Consequences
 
 Memory lifetime and ownership are now explicit: only transient entries decay, short-term entries age out deliberately, audit artifacts are append-only with bounded retention, and `MemoryStore` owns the canonical mutation surface for both lifecycle and recall. `DreamingPipeline` no longer orchestrates database internals for promotion or cursor state; its role is phase scheduling and calling the deep `MemoryStore` method.
 
-Tests in `src/memory/hybrid.test.ts`, `src/memory/store.test.ts`, `src/memory/dreaming.test.ts`, `src/memory/search.test.ts`, `src/memory/artifacts.test.ts`, and `src/agent/mod.test.ts` cover category eligibility, decay disable values, promotion/expiration branches with index cleanup, recall updates after the deferred tick, artifact append/rotation/retention/no-overwrite, and the removal of the dead cursor method.
+Tests in `src/memory/hybrid.test.ts`, `src/memory/store.test.ts`, `src/memory/dreaming.test.ts`, `src/memory/search.test.ts`, `src/memory/artifacts.test.ts`, `src/memory/embeddings.test.ts`, `src/memory/quarantine.test.ts`, `src/memory/snapshot.test.ts`, and `src/agent/mod.test.ts` cover category eligibility, decay disable values, promotion/expiration branches with index cleanup, recall updates after the deferred tick, artifact append/rotation/retention/no-overwrite, the removal of the dead cursor method, light-sleep backlog draining, expired-line observability, MMR selection-target diversification, procedural-noise quarantine/diary audit, budget-blocked durable marker behavior, budget-exhausted quarantine, and the next-turn memory alert.

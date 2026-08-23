@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DreamingPipeline, type CandidateExtractor } from "./dreaming.ts";
 import { MemoryStore } from "./store.ts";
-import { sessionDir, transcriptPath } from "../sessions/paths.ts";
+import { MemoryBudget } from "./budget.ts";
+import { MetricsStore } from "../metrics/store.ts";
+import { sessionDir, transcriptPath, metricsPath } from "../sessions/paths.ts";
 import { surfaceId, topicSurface } from "../surface.ts";
+import { quarantinePath, dreamDiaryPath } from "./paths.ts";
 
 // Keep the global budget high so overflow/compaction behaviour does not
 // interfere with the deterministic assertions in this file.
@@ -14,10 +17,10 @@ process.env.GOBLIN_MEMORY_BUDGET_CHARS = "1000000";
 function writeTranscriptLine(
   home: string,
   sessionId: string,
-  line: { text: string; sourceSurfaceId?: string; role?: "user" | "assistant" },
+  line: { text: string; sourceSurfaceId?: string; role?: "user" | "assistant"; ts?: string },
 ): void {
   const entry: Record<string, unknown> = {
-    ts: new Date().toISOString(),
+    ts: line.ts ?? new Date().toISOString(),
     role: line.role ?? "user",
     content: [{ type: "text", text: line.text }],
   };
@@ -392,5 +395,240 @@ describe("DreamingPipeline", () => {
       .query<{ count: number }, Record<string, never>>("SELECT COUNT(*) AS count FROM memory_entries WHERE entry_kind = 'memory'")
       .all({});
     expect(memoryRows[0]?.count).toBe(0);
+  });
+
+  it("drains eligible transcript backlog in bounded batches", async () => {
+    const sessionId = "batch-drain";
+    for (let i = 0; i < 5; i++) {
+      writeTranscriptLine(tmp, sessionId, { text: `fact ${i}` });
+    }
+
+    store.db.setMeta(
+      `dreaming_cursor:${sessionId}`,
+      JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
+    );
+
+    const extractor: CandidateExtractor = (lines) =>
+      lines.map((line) => ({
+        target: "user" as const,
+        category: "fact" as const,
+        confidence: 0.9,
+        text: line.text,
+        source: {
+          sessionId,
+          lineRange: [line.index, line.index] as [number, number],
+          sourceRole: "user" as const,
+        },
+      }));
+
+    const drainPipeline = new DreamingPipeline({
+      goblinHome: tmp,
+      store,
+      extractor,
+      maxModelLines: 2,
+    });
+    await drainPipeline.runLightSleep(sessionId);
+
+    const user = store.read("user").body;
+    const entries = user.length === 0 ? [] : user.split("\n§\n");
+    expect(entries).toHaveLength(5);
+    for (let i = 0; i < 5; i++) {
+      expect(user).toContain(`fact ${i}`);
+    }
+  });
+
+  it("leaves transcript lines appended during extraction for the next invocation", async () => {
+    const sessionId = "finite-snapshot";
+    writeTranscriptLine(tmp, sessionId, { text: "initial one" });
+    writeTranscriptLine(tmp, sessionId, { text: "initial two" });
+    store.db.setMeta(
+      `dreaming_cursor:${sessionId}`,
+      JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
+    );
+
+    let appended = false;
+    const extractor: CandidateExtractor = (lines) => {
+      if (!appended) {
+        writeTranscriptLine(tmp, sessionId, { text: "appended during extraction" });
+        appended = true;
+      }
+      return lines.map((line) => ({
+        target: "user" as const,
+        category: "fact" as const,
+        confidence: 0.9,
+        text: line.text,
+        source: {
+          sessionId,
+          lineRange: [line.index, line.index] as [number, number],
+          sourceRole: "user" as const,
+        },
+      }));
+    };
+
+    const snapshotPipeline = new DreamingPipeline({
+      goblinHome: tmp,
+      store,
+      extractor,
+      maxModelLines: 1,
+    });
+    await snapshotPipeline.runLightSleep(sessionId);
+
+    expect(store.read("user").body).toContain("initial one");
+    expect(store.read("user").body).toContain("initial two");
+    expect(store.read("user").body).not.toContain("appended during extraction");
+
+    await snapshotPipeline.runLightSleep(sessionId);
+    expect(store.read("user").body).toContain("appended during extraction");
+  });
+
+  it("skips expired transcript lines and records a metric", async () => {
+    const sessionId = "expired-lines";
+    const now = Date.now();
+    const twoHoursAgo = new Date(now - 2 * 60 * 60 * 1000).toISOString();
+    const recent = new Date(now).toISOString();
+
+    writeTranscriptLine(tmp, sessionId, { text: "old one", ts: twoHoursAgo });
+    writeTranscriptLine(tmp, sessionId, { text: "old two", ts: twoHoursAgo });
+    writeTranscriptLine(tmp, sessionId, { text: "recent one", ts: recent });
+
+    store.db.setMeta(
+      `dreaming_cursor:${sessionId}`,
+      JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
+    );
+
+    const metrics = new MetricsStore(tmp, "expired-session");
+    const extractor: CandidateExtractor = (lines) =>
+      lines.map((line) => ({
+        target: "user" as const,
+        category: "fact" as const,
+        confidence: 0.9,
+        text: line.text,
+        source: {
+          sessionId,
+          lineRange: [line.index, line.index] as [number, number],
+          sourceRole: "user" as const,
+        },
+      }));
+
+    const expiredPipeline = new DreamingPipeline({
+      goblinHome: tmp,
+      store,
+      extractor,
+      metrics,
+      lookbackHours: 1,
+      maxModelLines: 10,
+    });
+    await expiredPipeline.runLightSleep(sessionId);
+
+    expect(store.read("user").body).toBe("recent one");
+
+    const lines = readFileSync(metricsPath(tmp, "expired-session"), "utf-8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { type: string; name: string; value: number });
+    const counters = lines.filter(
+      (event) => event.type === "counter" && event.name === "memory_dreaming_expired_lines_total",
+    );
+    expect(counters[counters.length - 1]?.value).toBe(2);
+  });
+
+  it("audits procedural noise with a quarantine record and dream diary entry", async () => {
+    const sessionId = "noise-audit";
+    writeTranscriptLine(tmp, sessionId, { text: "add more memory" });
+
+    store.db.setMeta(
+      `dreaming_cursor:${sessionId}`,
+      JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
+    );
+
+    const extractor: CandidateExtractor = (lines) =>
+      lines.map((line) => ({
+        target: "user" as const,
+        category: "fact" as const,
+        confidence: 0.9,
+        text: line.text,
+        source: {
+          sessionId,
+          lineRange: [line.index, line.index] as [number, number],
+          sourceRole: "user" as const,
+        },
+      }));
+
+    const noisePipeline = new DreamingPipeline({
+      goblinHome: tmp,
+      store,
+      extractor,
+    });
+    await noisePipeline.runLightSleep(sessionId);
+
+    expect(store.read("user").body).toBe("");
+
+    const quarantineLines = readFileSync(quarantinePath(tmp), "utf-8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const noiseRecord = quarantineLines.find(
+      (record: Record<string, unknown>) => record.reason === "procedural_noise",
+    );
+    expect(noiseRecord).toBeDefined();
+    expect(noiseRecord.targetScope).toBe("user");
+
+    const today = new Date().toISOString().slice(0, 10);
+    const diary = readFileSync(dreamDiaryPath(tmp, today), "utf-8");
+    expect(diary).toContain("procedural_noise");
+  });
+
+  it("quarantines dreaming overflow as budget_exhausted", async () => {
+    const overflowTmp = mkdtempSync(join(tmpdir(), "goblin-dreaming-overflow-"));
+    try {
+      const sessionId = "budget-overflow";
+      writeTranscriptLine(overflowTmp, sessionId, {
+        text: "this is a very long fact that will overflow the memory budget",
+      });
+
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "10" });
+      const overflowStore = new MemoryStore(overflowTmp, undefined, { budget });
+      overflowStore.db.setMeta(
+        `dreaming_cursor:${sessionId}`,
+        JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
+      );
+
+      const extractor: CandidateExtractor = (lines) =>
+        lines.map((line) => ({
+          target: "user" as const,
+          category: "fact" as const,
+          confidence: 0.9,
+          text: line.text,
+          source: {
+            sessionId,
+            lineRange: [line.index, line.index] as [number, number],
+            sourceRole: "user" as const,
+          },
+        }));
+
+      const overflowPipeline = new DreamingPipeline({
+        goblinHome: overflowTmp,
+        store: overflowStore,
+        extractor,
+      });
+      await overflowPipeline.runLightSleep(sessionId);
+
+      const quarantineLines = readFileSync(quarantinePath(overflowTmp), "utf-8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      const overflowRecord = quarantineLines.find(
+        (record: Record<string, unknown>) => record.reason === "budget_exhausted",
+      );
+      expect(overflowRecord).toBeDefined();
+      expect(overflowRecord.targetScope).toBe("user");
+
+      overflowStore.close();
+    } finally {
+      rmSync(overflowTmp, { recursive: true, force: true });
+    }
   });
 });

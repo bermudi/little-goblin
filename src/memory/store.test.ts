@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
 import { EmbeddingProvider } from "./embeddings.ts";
 import { MemoryDatabase } from "./db.ts";
+import { MemoryBudget } from "./budget.ts";
 import { MetricsStore, readMetricsSummary } from "../metrics/store.ts";
 import { log } from "../log.ts";
 import { surfaceId, dmSurface, topicSurface } from "../surface.ts";
@@ -1230,6 +1231,145 @@ describe("MemoryStore", () => {
         .get({ $id: "recall-dedup" });
       expect(row?.recall_count).toBe(1);
       expect(row?.last_recalled_at).toBe(now);
+    });
+  });
+
+  describe("budget blockage", () => {
+    it("sets a durable marker when a curated write overflows and clears it when room is restored", async () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "5" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      try {
+        expect(budgetStore.isBudgetBlocked()).toBe(false);
+
+        const okAdd = await budgetStore.add("user", "1234");
+        expect(okAdd.ok).toBe(true);
+        expect(budgetStore.isBudgetBlocked()).toBe(false);
+
+        const overflow = await budgetStore.add("user", "56789");
+        expect(overflow.ok).toBe(false);
+        if (!overflow.ok) {
+          expect(overflow.reason).toBe("budget_exhausted");
+        }
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+
+        const restored = await budgetStore.remove("user", "1234");
+        expect(restored.ok).toBe(true);
+        expect(budgetStore.isBudgetBlocked()).toBe(false);
+      } finally {
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    it("marks budget_exhausted on addEntry and updateEntry overflows", async () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "4" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      try {
+        const id = await budgetStore.addEntry({
+          scope: "user",
+          entryKind: "user",
+          text: "1234",
+          chatId: null,
+          origin: "user",
+          recallCount: 0,
+          promotedAt: 0,
+          displayOrder: 0,
+        });
+        expect(budgetStore.isBudgetBlocked()).toBe(false);
+
+        const update = await budgetStore.updateEntry(id, { text: "123456" });
+        expect(update.ok).toBe(false);
+        if (!update.ok) {
+          expect(update.reason).toBe("budget_exhausted");
+        }
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+      } finally {
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    it("clears a pre-existing marker after each successful curated entry write path", async () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budgetStore = new MemoryStore(budgetTmp);
+      try {
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+        const id = await budgetStore.addEntry({
+          scope: "user",
+          entryKind: "user",
+          text: "first",
+        });
+        expect(budgetStore.isBudgetBlocked()).toBe(false);
+
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+        expect(await budgetStore.updateEntry(id, { text: "updated" })).toEqual({ ok: true });
+        expect(budgetStore.isBudgetBlocked()).toBe(false);
+
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+        await budgetStore.addEntries([{
+          scope: "general",
+          entryKind: "memory",
+          text: "second",
+        }]);
+        expect(budgetStore.isBudgetBlocked()).toBe(false);
+      } finally {
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    it("does not enforce or clear the curated budget marker for transcript writes", async () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "4" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      try {
+        expect((await budgetStore.add("user", "1234")).ok).toBe(true);
+        expect((await budgetStore.add("user", "5")).ok).toBe(false);
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+
+        const id = await budgetStore.addEntry({
+          scope: "transcript/one",
+          entryKind: "transcript",
+          text: "transcript content exceeds the curated budget",
+        });
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+
+        expect(await budgetStore.updateEntry(id, { text: "updated transcript content" })).toEqual({ ok: true });
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+
+        await budgetStore.addEntries([{
+          scope: "transcript/two",
+          entryKind: "transcript",
+          text: "another transcript",
+        }]);
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+      } finally {
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    it("rolls back a curated write when clearing its marker fails", async () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budgetStore = new MemoryStore(budgetTmp);
+      budgetStore.db.setMeta("memory_budget_blocked", "true");
+      const setMeta = budgetStore.db.setMeta.bind(budgetStore.db);
+      const metaSpy = spyOn(budgetStore.db, "setMeta").mockImplementation((key, value) => {
+        if (key === "memory_budget_blocked" && value === "false") throw new Error("marker write failed");
+        setMeta(key, value);
+      });
+      try {
+        const result = await budgetStore.add("user", "new memory");
+        expect(result.ok).toBe(false);
+        expect(budgetStore.readBody("user")).toBe("");
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+      } finally {
+        metaSpy.mockRestore();
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
     });
   });
 });

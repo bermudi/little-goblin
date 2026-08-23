@@ -728,6 +728,27 @@ describe("AgentRunner", () => {
       expect(sessionHolder.sendCustomMessage).not.toHaveBeenCalled();
     });
 
+    it("delivers a hidden memory alert when the curated budget is blocked", async () => {
+      const store = new MemoryStore(tmpDir);
+      try {
+        store.db.setMeta("memory_budget_blocked", "true");
+      } finally {
+        store.close();
+      }
+
+      const runner = await makeRunner(tmpDir);
+      await runner.prompt("hello", nopCallbacks());
+
+      expect(sessionHolder.sendCustomMessage).toHaveBeenCalledTimes(1);
+      const [payload, opts] = sessionHolder.sendCustomMessage.mock.calls[0]!;
+      expect((opts as { deliverAs?: string }).deliverAs).toBe("nextTurn");
+      const p = payload as { customType: string; content: string; display: boolean };
+      expect(p.customType).toBe("goblin.memory.relevant");
+      expect(p.content).toContain("## memory alert");
+      expect(p.content).not.toContain("## relevant memory");
+      expect(p.display).toBe(false);
+    });
+
     it("calls sendCustomMessage with deliverAs:nextTurn and a relevant-memory payload when memory is non-empty and matches", async () => {
       // General scope has no match for "hello", but the active scope (general)
       // plus a peer topic containing "backups" lets the prompt text match.

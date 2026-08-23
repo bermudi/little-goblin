@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "./store.ts";
 import { MetricsStore, readMetricsSummary } from "../metrics/mod.ts";
-import { formatSnapshot, SNAPSHOT_GUARDRAIL } from "./snapshot.ts";
+import { formatSnapshot, formatRelevantMemory, SNAPSHOT_GUARDRAIL } from "./snapshot.ts";
 import { memoryDir } from "./paths.ts";
 import { metricsPath } from "../sessions/paths.ts";
 import type { ActiveScope, MemoryScope } from "./scope.ts";
+import type { CapturedMemoryContext } from "./runtime-context.ts";
+import type { SurfaceId } from "../surface.ts";
 import { formatReflectedEntry, type EntryMetadata } from "./entry.ts";
 
 describe("formatSnapshot", () => {
@@ -395,5 +397,67 @@ describe("formatSnapshot", () => {
       expect(relSection).toContain("topics/-100123/8");
       expect(relSection).not.toContain("backups run nightly");
     });
+  });
+});
+
+describe("formatRelevantMemory", () => {
+  let tmp: string;
+  let store: MemoryStore;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-memory-relevant-"));
+    mkdirSync(memoryDir(tmp), { recursive: true });
+    store = new MemoryStore(tmp);
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function makeContext(activeScope: ActiveScope): CapturedMemoryContext {
+    return {
+      kind: "surface" as const,
+      authority: {
+        kind: "surface" as const,
+        sourceSurfaceId: "tg:-100:42@1" as SurfaceId,
+        activeScope,
+      },
+      caller: { kind: "main" as const },
+      frozenSummary: null,
+      frozenUserBody: "",
+      frozenActiveMemoryBody: "",
+    };
+  }
+
+  it("returns null when there is no prompt text", async () => {
+    const context: CapturedMemoryContext = makeContext({ chatId: -100123, topicScope: { topicId: 42 } });
+    const relevant = await formatRelevantMemory({ store, context });
+    expect(relevant).toBeNull();
+  });
+
+  it("includes an alert-only payload when the budget is blocked and there are no matches", async () => {
+    store.db.setMeta("memory_budget_blocked", "true");
+
+    const context: CapturedMemoryContext = makeContext({ chatId: -100123, topicScope: { topicId: 42 } });
+    const relevant = await formatRelevantMemory({ store, context, promptText: "anything" });
+
+    expect(relevant).not.toBeNull();
+    expect(relevant!.content).toContain("## memory alert");
+    expect(relevant!.content).toContain("Automatic memory learning is blocked.");
+    expect(relevant!.content).not.toContain("## relevant memory");
+    expect(relevant!.display).toBe(false);
+  });
+
+  it("includes the budget alert alongside relevant memory when blocked", async () => {
+    await store.add({ topic: { chatId: -100123, topicId: 7 } }, "backups run nightly");
+    store.db.setMeta("memory_budget_blocked", "true");
+
+    const context: CapturedMemoryContext = makeContext({ chatId: -100123, topicScope: { topicId: 42 } });
+    const relevant = await formatRelevantMemory({ store, context, promptText: "backups" });
+
+    expect(relevant).not.toBeNull();
+    expect(relevant!.content).toContain("## memory alert");
+    expect(relevant!.content).toContain("## relevant memory");
+    expect(relevant!.content).toContain("Automatic memory learning is blocked.");
   });
 });

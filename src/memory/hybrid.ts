@@ -231,11 +231,6 @@ export function applyMMR(results: HybridResult[], config: Partial<MMRConfig> = {
     content: r.text,
   }));
   const reranked = mmrRerank(mmrItems, config);
-  const byId = new Map<string, HybridResult>();
-  for (const r of results) {
-    byId.set(`${r.entryId}:${results.indexOf(r)}`, r);
-  }
-  // Map back preserving the original ordering stable id: index match.
   const resultById = new Map<string, HybridResult>();
   for (let i = 0; i < results.length; i++) {
     const r = results[i]!;

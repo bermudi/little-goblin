@@ -44,6 +44,9 @@ export interface MemorySnapshotPayload {
 export const SNAPSHOT_GUARDRAIL =
   "Memory may be stale or incomplete. Current user messages, recent tool results, and explicit instructions override memory.";
 
+const MEMORY_BUDGET_ALERT =
+  "The memory budget is exhausted. Automatic memory learning is blocked. You must tell the user: \"Automatic memory learning is blocked. Consolidate or remove stale memory, then retry.\"";
+
 export interface FormatSnapshotArgs {
   store: MemoryStore;
   activeScope: ActiveScope;
@@ -128,8 +131,8 @@ export interface FormatRelevantMemoryArgs {
 /**
  * Build the per-turn `## relevant memory` aside. Uses hybrid search on the
  * current prompt text, deduplicates against the active scope body, and bounds
- * the result count (default 3, max 5). Returns `null` when there are no
- * relevant curated entries.
+ * the result count (default 3, max 5). Returns `null` when there is neither
+ * relevant curated memory nor a budget alert.
  *
  * Production callers pass the whole {@link CapturedMemoryContext} so the
  * active scope, caller, and frozen deduplication bodies cannot be supplied
@@ -165,11 +168,20 @@ export async function formatRelevantMemory(
   const activeMemoryBody = frozenActiveMemoryBody ?? args.store.read(activeMemoryScope).body;
   const userMemoryBody = frozenUserBody ?? args.store.read("user").body;
   const lines = await buildRelevantMemoryLines(resolved, activeMemoryBody, userMemoryBody);
-  if (lines.length === 0) return null;
+  const budgetBlocked = args.store.isBudgetBlocked();
+  if (lines.length === 0 && !budgetBlocked) return null;
+
+  const sections: string[] = [];
+  if (budgetBlocked) {
+    sections.push(`## memory alert\n${MEMORY_BUDGET_ALERT}`);
+  }
+  if (lines.length > 0) {
+    sections.push(`## relevant memory\n${lines.join("\n")}`);
+  }
 
   return {
     customType: "goblin.memory.relevant",
-    content: `## relevant memory\n${lines.join("\n")}`,
+    content: sections.join("\n\n"),
     display: false,
     details: undefined,
   };
@@ -445,6 +457,7 @@ async function buildRelevantMemoryLines(
     query: args.promptText ?? "",
     corpus: "memory", // per-turn relevant memory is curated-only; transcripts never appear here
     limit: 50, // fetch a wide net, then dedup + bound
+    mmrLimit: limit,
     metrics: args.metrics,
   });
 

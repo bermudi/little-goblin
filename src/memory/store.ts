@@ -15,7 +15,9 @@ import type { TranscriptChunk } from "../sessions/transcript.ts";
 const DESCRIPTION_CAP = 200;
 const DELIMITER = "\n§\n";
 
-export type StoreResult = { ok: true } | { ok: false; error: string };
+export type StoreResult =
+  | { ok: true }
+  | { ok: false; error: string; reason?: "budget_exhausted" };
 
 export interface ParsedMemory {
   description?: string;
@@ -128,6 +130,14 @@ export class MemoryStore {
 
   get embeddingProvider(): EmbeddingProvider | null {
     return this.embeddings;
+  }
+
+  private setBudgetBlocked(blocked: boolean): void {
+    this.db.setMeta("memory_budget_blocked", blocked ? "true" : "false");
+  }
+
+  isBudgetBlocked(): boolean {
+    return this.db.getMeta("memory_budget_blocked") === "true";
   }
 
   read(scope: StoreScope): ParsedMemory {
@@ -257,15 +267,22 @@ export class MemoryStore {
     const now = Date.now();
     const createdAt = input.createdAt ?? now;
     const updatedAt = input.updatedAt ?? now;
+    const curated = input.entryKind === "memory" || input.entryKind === "user";
     let id: string;
     this.db.database.exec("BEGIN");
     try {
-      const currentChars = this.budget.currentChars(this.db);
-      this.budget.enforce(this.db, currentChars + input.text.length);
+      if (curated) {
+        const currentChars = this.budget.currentChars(this.db);
+        this.budget.enforce(this.db, currentChars + input.text.length);
+      }
       id = this.addEntryInTransaction({ ...input, createdAt, updatedAt });
+      if (curated) this.setBudgetBlocked(false);
       this.db.database.exec("COMMIT");
     } catch (err) {
       this.db.database.exec("ROLLBACK");
+      if (curated && err instanceof MemoryOverflowError) {
+        this.setBudgetBlocked(true);
+      }
       throw err;
     }
 
@@ -292,6 +309,7 @@ export class MemoryStore {
       updatedAt?: number;
     },
   ): Promise<StoreResult> {
+    let curated = false;
     this.db.database.exec("BEGIN");
     try {
       const existing = this.db.database
@@ -323,9 +341,10 @@ export class MemoryStore {
         return { ok: false, error: `entry not found: ${id}` };
       }
 
+      curated = existing.entry_kind === "memory" || existing.entry_kind === "user";
       const now = Date.now();
       const textDelta = input.text.length - existing.text.length;
-      if (existing.entry_kind !== "transcript" && textDelta > 0) {
+      if (curated && textDelta > 0) {
         const current = this.budget.currentChars(this.db);
         this.budget.enforce(this.db, current + textDelta, [id]);
       }
@@ -362,11 +381,13 @@ export class MemoryStore {
 
       this.insertIndexAndTags(id, existing.scope, existing.entry_kind, input.text, existing.chat_id);
 
+      if (curated) this.setBudgetBlocked(false);
       this.db.database.exec("COMMIT");
     } catch (err) {
       this.db.database.exec("ROLLBACK");
-      if (err instanceof MemoryOverflowError) {
-        return { ok: false, error: err.message };
+      if (curated && err instanceof MemoryOverflowError) {
+        this.setBudgetBlocked(true);
+        return { ok: false, error: err.message, reason: "budget_exhausted" };
       }
       throw err;
     }
@@ -385,7 +406,7 @@ export class MemoryStore {
     try {
       // Only enforce the curated-memory budget when adding user/dreaming entries.
       // Transcript chunks are not subject to the global character budget.
-      if (curatedChars > 0) {
+      if (curatedInputs.length > 0) {
         const currentChars = this.budget.currentChars(this.db);
         this.budget.enforce(this.db, currentChars + curatedChars);
       }
@@ -397,9 +418,13 @@ export class MemoryStore {
         this.addEntryInTransaction({ ...input, id, createdAt, updatedAt });
         ids.push(id);
       }
+      if (curatedInputs.length > 0) this.setBudgetBlocked(false);
       this.db.database.exec("COMMIT");
     } catch (err) {
       this.db.database.exec("ROLLBACK");
+      if (curatedInputs.length > 0 && err instanceof MemoryOverflowError) {
+        this.setBudgetBlocked(true);
+      }
       throw err;
     }
     await this.runEmbeddingAfterCommit("addEntries", () => this.embeddings?.embedEntries(
@@ -1044,11 +1069,13 @@ export class MemoryStore {
           .run({ $scope: tag, $description: next.description, $updated_at: Date.now() });
       }
 
+      this.setBudgetBlocked(false);
       this.db.database.exec("COMMIT");
     } catch (err) {
       this.db.database.exec("ROLLBACK");
-      log.error("memory store transaction failed", { action, error: err instanceof Error ? err.message : String(err) });
       if (err instanceof MemoryOverflowError) {
+        this.setBudgetBlocked(true);
+        log.warn("memory store budget exhausted", { action, error: err.message });
         try {
           this.metrics?.incrementCounter("memory_write_overflow_total", tag);
         } catch (metricError) {
@@ -1059,8 +1086,9 @@ export class MemoryStore {
             error: metricError instanceof Error ? metricError.message : String(metricError),
           });
         }
-        return { ok: false, error: err.message };
+        return { ok: false, error: err.message, reason: "budget_exhausted" };
       }
+      log.error("memory store transaction failed", { action, error: err instanceof Error ? err.message : String(err) });
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
 

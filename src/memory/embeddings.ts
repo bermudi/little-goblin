@@ -1,6 +1,8 @@
 import { log } from "../log.ts";
 import type { MemoryDatabase } from "./db.ts";
 
+const FETCHED_CACHE_CAP = 256;
+
 interface EmbeddingResponse {
   data: Array<{ embedding: number[]; index: number }>;
   model: string;
@@ -127,6 +129,8 @@ export class EmbeddingProvider {
       const fetchedKey = `${model}:${hash}`;
       const cached = this.fetchedCache.get(fetchedKey);
       if (cached) {
+        this.fetchedCache.delete(fetchedKey);
+        this.fetchedCache.set(fetchedKey, cached);
         cache.set(hash, cached);
       } else {
         toFetch.push(text);
@@ -138,7 +142,13 @@ export class EmbeddingProvider {
         const fetched = await this.fetchEmbeddings(toFetch, model);
         for (const [hash, embedding] of fetched.entries()) {
           cache.set(hash, embedding);
-          this.fetchedCache.set(`${model}:${hash}`, embedding);
+          const fetchedKey = `${model}:${hash}`;
+          this.fetchedCache.delete(fetchedKey);
+          this.fetchedCache.set(fetchedKey, embedding);
+          if (this.fetchedCache.size > FETCHED_CACHE_CAP) {
+            const oldest = this.fetchedCache.keys().next().value;
+            if (oldest !== undefined) this.fetchedCache.delete(oldest);
+          }
         }
       } catch (err) {
         this.markDegraded(err instanceof Error ? err.message : String(err));

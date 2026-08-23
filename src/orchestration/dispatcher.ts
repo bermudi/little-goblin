@@ -444,9 +444,8 @@ export class TurnDispatcher {
     // failed-before-decision exception (decision 0046). Check openness
     // synchronously and map to runtimeAdmission.rejected(). The completion
     // settles immediately: callers branch on rejection before consuming the
-    // value, and the gate does not await a rejected completion, so a
-    // never-resolving promise would hang the shutdown drain without anyone
-    // ever reading its value.
+    // value, while the gate still awaits the completion independently so a
+    // never-settling rejection would hang the update drain.
     if (!this.runtimeHost.isAdmissionOpen()) {
       return runtimeAdmission.rejected(undefined as unknown as AgentRunner);
     }

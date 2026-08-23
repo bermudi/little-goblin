@@ -7,7 +7,10 @@ import type { CascadeResult } from "../interrupt.ts";
 import { type ConversationState } from "../sessions/mod.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
-import { createConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
+import {
+  BindingFencedError,
+  createConversationLifecycle,
+} from "../orchestration/conversation-lifecycle.ts";
 import type { TurnDispatcher } from "../orchestration/dispatcher.ts";
 import { dmSurface, surfaceId, type Surface } from "../surface.ts";
 import type { CapturedMemoryContext } from "../memory/mod.ts";
@@ -364,6 +367,32 @@ describe("handleCommand", () => {
     if (subagent.kind !== "admission") throw new Error("expected command admission");
     expect(subagent.admission.kind).toBe("fenced");
     expect((await subagent.admission.completion).kind).toBe("handled");
+  });
+
+  it("maps a fenced revive admission to a no-op completion", async () => {
+    // Regression: a superseded binding used to produce a user-facing
+    // "Failed to revive subagent" reply. /revive follows the same fenced
+    // policy as /cancel and /cancel_subagent: stay silent (decision 0046).
+    const harness = makeHarness();
+    const session = await createSession(harness);
+    (harness.deps.dispatcher as unknown as {
+      admitReviveSubagent: () => unknown;
+    }).admitReviveSubagent = () =>
+      runtimeAdmission.fenced(
+        Promise.reject(
+          new BindingFencedError(surfaceId(dmSurface(1)), session.id, null),
+        ),
+      );
+
+    const result = await dispatch({
+      command: "/revive",
+      rawText: "/revive abc continue working",
+      session,
+      harness,
+    });
+    if (result.kind !== "admission") throw new Error("expected command admission");
+    expect(result.admission.kind).toBe("fenced");
+    expect((await result.admission.completion).kind).toBe("handled");
   });
 
   it("/new with a prior session disposes prior and creates a new runner", async () => {

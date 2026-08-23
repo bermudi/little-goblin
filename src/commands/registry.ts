@@ -567,7 +567,14 @@ const reviveHandler: CommandHandler = async ({ deps, rawText, surface, conversat
   switch (attachment.kind) {
     case "handoff": return { kind: "admission", admission: runtimeAdmission.handoff(completion) };
     case "busy": return { kind: "admission", admission: runtimeAdmission.busy(completion) };
-    case "fenced": return { kind: "admission", admission: runtimeAdmission.fenced(completion) };
+    case "fenced": return {
+      kind: "admission",
+      // A fenced binding belongs to a superseded conversation; stay silent,
+      // matching the cancel handlers, instead of replying with a failure.
+      admission: runtimeAdmission.fenced(
+        attachment.completion.then(noopCommandCompletion, noopCommandCompletion),
+      ),
+    };
     case "rejected": return { kind: "admission", admission: runtimeAdmission.rejected(completion) };
   }
 };

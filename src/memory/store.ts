@@ -751,6 +751,11 @@ export class MemoryStore {
       const current = this.budget.currentChars(this.db);
       const needed = Math.max(0, current - this.budget.budgetChars);
       const result = this.budget.compact(this.db, needed);
+      // Reconcile the budget-blocked marker with the post-compaction reality.
+      // `stillOver` is computed from the same uncommitted total, so this also
+      // clears a stale marker when compaction was a no-op because the store
+      // was already under budget.
+      if (!result.stillOver) this.setBudgetBlocked(false);
       this.db.database.exec("COMMIT");
       return result;
     } catch (err) {
@@ -805,6 +810,12 @@ export class MemoryStore {
       }
       for (const id of toDelete) {
         this.deleteRow(id);
+      }
+      // Deletions of curated rows may have freed budget headroom. Reconcile
+      // the budget-blocked marker inside the same transaction so a later
+      // turn does not surface a stale "memory alert" while headroom exists.
+      if (toDelete.length > 0 && this.budget.currentChars(this.db) <= this.budget.budgetChars) {
+        this.setBudgetBlocked(false);
       }
       this.db.database.exec("COMMIT");
       return { promoted: toPromote.length, expired: toDelete.length };

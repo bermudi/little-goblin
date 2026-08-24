@@ -79,7 +79,7 @@ A candidate classified as procedural noise continues to increment the `memory_dr
 
 ### Durable budget overflow status
 
-`MemoryStore` owns a durable `memory_budget_blocked` marker in `memory_meta`. The marker is set after rollback on any curated `MemoryOverflowError` from `addEntry`, `updateEntry`, `addEntries`, and the `add`/`replace`/`remove`/`rewrite` mutation paths. It is cleared inside the same transaction as a successful curated write, removal, or rewrite that restores headroom. Transcript-only writes neither enforce the curated-memory budget nor change the marker. `MemoryStore.isBudgetBlocked()` provides the canonical read path.
+`MemoryStore` owns a durable `memory_budget_blocked` marker in `memory_meta`. The marker is set after rollback on any curated `MemoryOverflowError` from `addEntry`, `updateEntry`, `addEntries`, and the `add`/`replace`/`remove`/`rewrite` mutation paths. It is cleared inside the same transaction as a successful curated write, removal, or rewrite that restores headroom. `applyShortTermLifecycle` also clears the marker when its expirations bring curated usage at or under budget. `compact()` clears the marker whenever the post-compaction total is at or under budget, including the no-op case where the store was already under budget (stale-marker reconciliation). Transcript-only writes neither enforce the curated-memory budget nor change the marker. `MemoryStore.isBudgetBlocked()` provides the canonical read path.
 
 Dreaming records a `budget_exhausted` quarantine reason (and diary outcome) when `persistCandidate` encounters a `MemoryOverflowError`, instead of the generic `review` reason. The `QuarantineReason` union includes `budget_exhausted`.
 

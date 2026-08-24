@@ -1371,5 +1371,354 @@ describe("MemoryStore", () => {
         rmSync(budgetTmp, { recursive: true, force: true });
       }
     });
+
+    // Regression: applyShortTermLifecycle and compact() free curated headroom
+    // by deleting rows. Without reconciling the marker inside the same
+    // transaction, isBudgetBlocked() stays true after headroom is restored and
+    // formatRelevantMemory surfaces a stale "memory alert" on every turn.
+
+    it("applyShortTermLifecycle clears the marker when expirations bring usage under budget", () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "20" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      try {
+        const now = 1_000_000_000_000;
+        // A short_term entry old enough to expire (>7d, unqualified). Its text
+        // exceeds the budget so the marker is meaningful once set manually.
+        budgetStore.db.database
+          .query(
+            `INSERT INTO memory_entries (
+              id, scope, entry_kind, text, created_at, updated_at, category, confidence, origin, recall_count, display_order
+            ) VALUES (
+              $id, $scope, $entry_kind, $text, $created_at, $updated_at, $category, $confidence, $origin, $recall_count, $display_order
+            )`,
+          )
+          .run({
+            $id: "st-expire-blocked",
+            $scope: "topics/-100/42",
+            $entry_kind: "memory",
+            $text: "twenty-plus chars of short-term memory",
+            $created_at: now - 8 * 24 * 60 * 60 * 1000,
+            $updated_at: now - 8 * 24 * 60 * 60 * 1000,
+            $category: "short_term",
+            $confidence: 0.1,
+            $origin: "dreaming",
+            $recall_count: 0,
+            $display_order: 0,
+          });
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+
+        const result = budgetStore.applyShortTermLifecycle(now);
+        expect(result.expired).toBe(1);
+        expect(budgetStore.isBudgetBlocked()).toBe(false);
+      } finally {
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    it("applyShortTermLifecycle leaves the marker blocked when deletions do not free enough", () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "10" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      try {
+        const now = 1_000_000_000_000;
+        // A non-short_term curated row the lifecycle will not touch; keeps the
+        // store over budget after the short_term row is expired.
+        budgetStore.db.database
+          .query(
+            `INSERT INTO memory_entries (
+              id, scope, entry_kind, text, created_at, updated_at, category, confidence, origin, recall_count, display_order
+            ) VALUES (
+              $id, $scope, $entry_kind, $text, $created_at, $updated_at, $category, $confidence, $origin, $recall_count, $display_order
+            )`,
+          )
+          .run({
+            $id: "fact-stays",
+            $scope: "general",
+            $entry_kind: "memory",
+            $text: "twenty chars of fact memory",
+            $created_at: now,
+            $updated_at: now,
+            $category: "fact",
+            $confidence: null,
+            $origin: "user",
+            $recall_count: 0,
+            $display_order: 0,
+          });
+        // Expirable short_term row; deleting it is not enough to get under 10.
+        budgetStore.db.database
+          .query(
+            `INSERT INTO memory_entries (
+              id, scope, entry_kind, text, created_at, updated_at, category, confidence, origin, recall_count, display_order
+            ) VALUES (
+              $id, $scope, $entry_kind, $text, $created_at, $updated_at, $category, $confidence, $origin, $recall_count, $display_order
+            )`,
+          )
+          .run({
+            $id: "st-expire-2",
+            $scope: "topics/-100/42",
+            $entry_kind: "memory",
+            $text: "five",
+            $created_at: now - 8 * 24 * 60 * 60 * 1000,
+            $updated_at: now - 8 * 24 * 60 * 60 * 1000,
+            $category: "short_term",
+            $confidence: 0.1,
+            $origin: "dreaming",
+            $recall_count: 0,
+            $display_order: 0,
+          });
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+
+        const result = budgetStore.applyShortTermLifecycle(now);
+        expect(result.expired).toBe(1);
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+      } finally {
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    it("applyShortTermLifecycle does not touch the marker when nothing expires", () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "5" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      try {
+        const now = 1_000_000_000_000;
+        // A short_term row young enough that the lifecycle does nothing.
+        budgetStore.db.database
+          .query(
+            `INSERT INTO memory_entries (
+              id, scope, entry_kind, text, created_at, updated_at, category, confidence, origin, recall_count, display_order
+            ) VALUES (
+              $id, $scope, $entry_kind, $text, $created_at, $updated_at, $category, $confidence, $origin, $recall_count, $display_order
+            )`,
+          )
+          .run({
+            $id: "st-young-3",
+            $scope: "topics/-100/42",
+            $entry_kind: "memory",
+            $text: "abc",
+            $created_at: now - 60 * 60 * 1000,
+            $updated_at: now - 60 * 60 * 1000,
+            $category: "short_term",
+            $confidence: 0.1,
+            $origin: "dreaming",
+            $recall_count: 0,
+            $display_order: 0,
+          });
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+
+        const result = budgetStore.applyShortTermLifecycle(now);
+        expect(result).toEqual({ promoted: 0, expired: 0 });
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+      } finally {
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    it("compact clears the marker when eviction brings usage under budget", () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "10" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      try {
+        const now = 1_000_000_000_000;
+        budgetStore.db.database
+          .query(
+            `INSERT INTO memory_entries (
+              id, scope, entry_kind, text, created_at, updated_at, category, confidence, origin, recall_count, display_order
+            ) VALUES (
+              $id, $scope, $entry_kind, $text, $created_at, $updated_at, $category, $confidence, $origin, $recall_count, $display_order
+            )`,
+          )
+          .run({
+            $id: "dream-evict",
+            $scope: "general",
+            $entry_kind: "memory",
+            $text: "twenty chars of dreaming memory",
+            $created_at: now,
+            $updated_at: now,
+            $category: "fact",
+            $confidence: null,
+            $origin: "dreaming",
+            $recall_count: 0,
+            $display_order: 0,
+          });
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+
+        const result = budgetStore.compact();
+        expect(result.stillOver).toBe(false);
+        expect(result.deletedIds).toEqual(["dream-evict"]);
+        expect(budgetStore.isBudgetBlocked()).toBe(false);
+      } finally {
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    it("compact leaves the marker blocked when there is nothing to evict", () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "5" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      try {
+        const now = 1_000_000_000_000;
+        // Non-dreaming curated row: compact() has no candidates to evict.
+        budgetStore.db.database
+          .query(
+            `INSERT INTO memory_entries (
+              id, scope, entry_kind, text, created_at, updated_at, category, confidence, origin, recall_count, display_order
+            ) VALUES (
+              $id, $scope, $entry_kind, $text, $created_at, $updated_at, $category, $confidence, $origin, $recall_count, $display_order
+            )`,
+          )
+          .run({
+            $id: "user-stays",
+            $scope: "user",
+            $entry_kind: "user",
+            $text: "twenty chars of user memory",
+            $created_at: now,
+            $updated_at: now,
+            $category: "fact",
+            $confidence: null,
+            $origin: "user",
+            $recall_count: 0,
+            $display_order: 0,
+          });
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+
+        const result = budgetStore.compact();
+        expect(result.stillOver).toBe(true);
+        expect(result.deletedIds).toEqual([]);
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+      } finally {
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    it("compact clears a stale marker when the store is already under budget", () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "100" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      try {
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+
+        const result = budgetStore.compact();
+        expect(result.stillOver).toBe(false);
+        expect(result.deletedIds).toEqual([]);
+        expect(budgetStore.isBudgetBlocked()).toBe(false);
+      } finally {
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    // Rollback: if setBudgetBlocked(false) throws inside the transaction, the
+    // deletions/evictions must roll back so the store is not left in a
+    // half-applied state with rows gone but the marker still blocked.
+
+    it("compact rolls back evictions when clearing its marker fails", () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "10" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      const setMeta = budgetStore.db.setMeta.bind(budgetStore.db);
+      const metaSpy = spyOn(budgetStore.db, "setMeta").mockImplementation((key, value) => {
+        if (key === "memory_budget_blocked" && value === "false") throw new Error("marker write failed");
+        setMeta(key, value);
+      });
+      try {
+        const now = 1_000_000_000_000;
+        budgetStore.db.database
+          .query(
+            `INSERT INTO memory_entries (
+              id, scope, entry_kind, text, created_at, updated_at, category, confidence, origin, recall_count, display_order
+            ) VALUES (
+              $id, $scope, $entry_kind, $text, $created_at, $updated_at, $category, $confidence, $origin, $recall_count, $display_order
+            )`,
+          )
+          .run({
+            $id: "dream-evict-rb",
+            $scope: "general",
+            $entry_kind: "memory",
+            $text: "twenty chars of dreaming memory",
+            $created_at: now,
+            $updated_at: now,
+            $category: "fact",
+            $confidence: null,
+            $origin: "dreaming",
+            $recall_count: 0,
+            $display_order: 0,
+          });
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+
+        expect(() => budgetStore.compact()).toThrow("marker write failed");
+
+        // The evicted row must still be present — the deletion rolled back.
+        const row = budgetStore.db.database
+          .query<{ count: number }, { $id: string }>("SELECT COUNT(*) AS count FROM memory_entries WHERE id = $id")
+          .get({ $id: "dream-evict-rb" });
+        expect(row?.count).toBe(1);
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+      } finally {
+        metaSpy.mockRestore();
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
+
+    it("applyShortTermLifecycle rolls back expirations when clearing its marker fails", () => {
+      const budgetTmp = mkdtempSync(join(tmpdir(), "goblin-memory-budget-"));
+      const budget = new MemoryBudget({ GOBLIN_MEMORY_BUDGET_CHARS: "20" });
+      const budgetStore = new MemoryStore(budgetTmp, undefined, { budget });
+      const setMeta = budgetStore.db.setMeta.bind(budgetStore.db);
+      const metaSpy = spyOn(budgetStore.db, "setMeta").mockImplementation((key, value) => {
+        if (key === "memory_budget_blocked" && value === "false") throw new Error("marker write failed");
+        setMeta(key, value);
+      });
+      try {
+        const now = 1_000_000_000_000;
+        budgetStore.db.database
+          .query(
+            `INSERT INTO memory_entries (
+              id, scope, entry_kind, text, created_at, updated_at, category, confidence, origin, recall_count, display_order
+            ) VALUES (
+              $id, $scope, $entry_kind, $text, $created_at, $updated_at, $category, $confidence, $origin, $recall_count, $display_order
+            )`,
+          )
+          .run({
+            $id: "st-expire-rb",
+            $scope: "topics/-100/42",
+            $entry_kind: "memory",
+            $text: "twenty-plus chars of short-term memory",
+            $created_at: now - 8 * 24 * 60 * 60 * 1000,
+            $updated_at: now - 8 * 24 * 60 * 60 * 1000,
+            $category: "short_term",
+            $confidence: 0.1,
+            $origin: "dreaming",
+            $recall_count: 0,
+            $display_order: 0,
+          });
+        budgetStore.db.setMeta("memory_budget_blocked", "true");
+
+        expect(() => budgetStore.applyShortTermLifecycle(now)).toThrow("marker write failed");
+
+        // The expired row must still be present — the deletion rolled back.
+        const row = budgetStore.db.database
+          .query<{ count: number }, { $id: string }>("SELECT COUNT(*) AS count FROM memory_entries WHERE id = $id")
+          .get({ $id: "st-expire-rb" });
+        expect(row?.count).toBe(1);
+        expect(budgetStore.isBudgetBlocked()).toBe(true);
+      } finally {
+        metaSpy.mockRestore();
+        budgetStore.close();
+        rmSync(budgetTmp, { recursive: true, force: true });
+      }
+    });
   });
 });

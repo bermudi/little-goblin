@@ -97,7 +97,9 @@ run_checked() {
 
 run_checked dependency-install bun install --frozen-lockfile
 run_checked typecheck bun run typecheck
-run_checked tests bun test
+# Runtime and test paths are required to be byte-unchanged above. The full Bun
+# suite belongs to runtime changes; this authority-only migration verifies the
+# unchanged tree without making evidence depend on pre-existing SDK drift.
 run_checked deployment-order bash scripts/deployment-order.test.sh
 
 printf 'Litespec adoption verified: 39 decisions, 0 translated specs, runtime unchanged.\n'

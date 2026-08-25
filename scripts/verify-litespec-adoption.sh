@@ -43,8 +43,9 @@ if rg -n 'nospec: true|nospec-|Nospec' AGENTS.md ARCHITECTURE.md README.md PARKE
   fail "active authority still refers to Nospec"
 fi
 
-validation_json="$(mktemp)"
-trap 'trash "$validation_json"' EXIT
+evidence_dir="$(mktemp -d)"
+trap 'trash "$evidence_dir"' EXIT
+validation_json="$evidence_dir/validation.json"
 litespec validate --all --strict --json >"$validation_json"
 jq -e '
   .valid == true
@@ -68,8 +69,21 @@ fi
 # beta.8's generator intentionally reproduces its embedded templates byte-for-byte,
 # including their existing terminal blank line. Check every hand-maintained path.
 git diff --check "$BASE_SHA"..HEAD -- . ':(exclude).agents/skills/litespec-*'
-bun run typecheck
-bun test
-bash scripts/deployment-order.test.sh
+
+run_checked() {
+  local label="$1"
+  shift
+  local output="$evidence_dir/${label// /-}.out"
+  if ! "$@" >"$output" 2>&1; then
+    cat "$output"
+    fail "$label failed"
+  fi
+  printf '%s passed; output tail:\n' "$label"
+  tail -n 4 "$output"
+}
+
+run_checked typecheck bun run typecheck
+run_checked tests bun test
+run_checked deployment-order bash scripts/deployment-order.test.sh
 
 printf 'Litespec adoption verified: 39 decisions, 0 translated specs, runtime unchanged.\n'

@@ -1,5 +1,4 @@
 ---
-nospec: true
 role: record
 owns: system-architecture
 ---
@@ -22,11 +21,13 @@ Never silently present TARGET or OPEN behavior as implemented. During stabilizat
 |---|---|
 | `AGENTS.md` | Engineering guardrails and stabilization gate |
 | `ARCHITECTURE.md` | Whole-system ownership, lifetime, authority, and dependency map |
-| `decisions/` | Accepted architectural rulings and their rationale |
-| `glossary.md` | Canonical domain language |
-| `BACKLOG.md` | Current priority, next cycle, parked scope, and open questions |
+| `specs/product.md` | Product boundary, authority map, and core flows |
+| `specs/decisions/` | Accepted architectural rulings and their rationale |
+| `specs/glossary.md` | Canonical domain language |
+| labeled Litespec issues | Active delivery work on dedicated branches |
+| `PARKED.md` | Unshaped candidates and open questions; never an active queue |
 | code, tests, and designated contracts | Current implemented behavior and explicit promises |
-| `specs/` | Frozen Litespec-era history and design input; not active authority |
+| frozen trees named in `specs/README.md` | Historical v1 records and design input; not active authority |
 
 Detailed current behavior belongs in code/tests or an explicitly designated contract record; consequential rulings belong in decisions. This file links concepts and exposes contradictions rather than copying every requirement.
 
@@ -259,7 +260,7 @@ Three constraints bound the authority:
 
 Recovery is git in `$GOBLIN_HOME/workspace`, documented for the operator. Goblin builds no snapshot or undo store.
 
-The archived `agent-owned-prompt-files` change amended the legacy canon statements that previously called `SOUL.md` "deployment-owned" (`glossary.md`, formerly `specs/glossary.md`, and `specs/canon/agent/spec.md`), implemented the bounded Surface notice, filtered Goblin's agent-owned prompt files out of subagent bootstrap, and documented the `git-in-workspace/` recovery path.
+The archived `agent-owned-prompt-files` change amended the legacy canon statements that previously called `SOUL.md` "deployment-owned" (the canonical `specs/glossary.md` and frozen `specs/canon/agent/spec.md`), implemented the bounded Surface notice, filtered Goblin's agent-owned prompt files out of subagent bootstrap, and documented the `git-in-workspace/` recovery path.
 
 ## Skill architecture
 
@@ -438,7 +439,7 @@ The frozen `pi-native-skill-layout` proposal remains historical input and contai
 
 ## Stabilization dependency graph
 
-Dependencies in the stabilization train are explicit only when a phase consumes a type, persisted format, or module interface from an earlier phase. Shared vocabulary, deferred scope, and correctness sequencing are recorded here or in `BACKLOG.md`; they do not create phantom work. Keep each phase narrow enough to verify and deliver along the train below.
+Dependencies in the stabilization train are explicit only when a phase consumes a type, persisted format, or module interface from an earlier phase. Shared vocabulary, deferred scope, and correctness sequencing are recorded here or in `PARKED.md`; they do not create phantom work. Keep each phase narrow enough to verify and deliver along the train below.
 
 ### Historical dependency map
 
@@ -477,17 +478,17 @@ One ordered sequence, walked end to end. Historical change names and task counts
 | 6 | `conversation-lifecycle` | 48 | **archived** | Surface/Binding/Conversation split; compatible movement; Surface-owned preferences and automation; filesystem state version 4 |
 | 6a | Persistence and runtime-authority closure | authority corruption + pending-assignment fence | **complete** | Fail closed on canonical authority corruption; recover only intent-owned planned directories; require lifecycle authority for every Surface runtime |
 | 6b | Command/lifecycle authority closure | architectural review D1–D2 | **complete** | Commands use complete lifecycle operations; Surface preference writes invalidate runtime authority without direct runner mutation |
-| 7 | `pi-native-skill-layout` | fresh Nospec slice | **implemented** | Native scoped roots; operator-owned one-time move |
-| 8 | `skill-catalog-resolution` | fresh Nospec slice | **implemented** | Explicit catalog roots; `SkillCatalogResolver`; `skillSources` switch dies |
-| 9 | `surface-skill-policy` | fresh Nospec slice | **implemented** | Per-Surface `/skills` selection |
+| 7 | `pi-native-skill-layout` | bounded delivery slice | **implemented** | Native scoped roots; operator-owned one-time move |
+| 8 | `skill-catalog-resolution` | bounded delivery slice | **implemented** | Explicit catalog roots; `SkillCatalogResolver`; `skillSources` switch dies |
+| 9 | `surface-skill-policy` | bounded delivery slice | **implemented** | Per-Surface `/skills` selection |
 | 10 | `subagent-skill-inheritance` | patch | **implemented** | Generic subagents inherit frozen runtime authority; named agents use isolated pi-native catalogs |
-| 10a | `delegated-run-records` | fresh Nospec cycle | **implemented** | Decision 0045: host-owned store at `state/delegated-work/runs/`; attached subagent records; revival appends invocations; v5 layout break abandons legacy trees in place; startup reconciliation interrupts non-terminal attached invocations |
-| 10b | `runtime-authority-consolidation` | fresh Nospec cycle (5 units) | **implemented** | Decision 0046: per-conversation `RuntimeMachine` behind `ConversationRuntimeHost`; epoch tickets at commit points; explicit entry-list queue; `ShutdownCoordinator` + `UpdateGate`; synchronous steer; atomic scheduler admission |
+| 10a | `delegated-run-records` | bounded delivery cycle | **implemented** | Decision 0045: host-owned store at `state/delegated-work/runs/`; attached subagent records; revival appends invocations; v5 layout break abandons legacy trees in place; startup reconciliation interrupts non-terminal attached invocations |
+| 10b | `runtime-authority-consolidation` | bounded delivery cycle (5 units) | **implemented** | Decision 0046: per-conversation `RuntimeMachine` behind `ConversationRuntimeHost`; epoch tickets at commit points; explicit entry-list queue; `ShutdownCoordinator` + `UpdateGate`; synchronous steer; atomic scheduler admission |
 | 11 | `inner-life` | 25 | **parked** | Bounded wake/effect authority |
 | 12 | `delegated-work-ownership` | 36 | **parked** | Remaining durable lifetime, completion delivery, claim/ack/release (record store carved out as 10a) |
 | 13 | `visible-dreaming` | — | **deferred; prior placeholder deleted** | Rewrite against `inner-life`; recover historical notes from Git only if needed |
 
-Steps 1–10b, including attachment intake, agent-owned prompt files, the persistence/runtime-authority and command/lifecycle authority closures, native skill layout, catalog resolution, Surface skill policy, subagent skill inheritance, the delegated-run record store, and runtime authority consolidation, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
+Steps 1–10b, including attachment intake, agent-owned prompt files, the persistence/runtime-authority and command/lifecycle authority closures, native skill layout, catalog resolution, Surface skill policy, subagent skill inheritance, the delegated-run record store, and runtime authority consolidation, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `PARKED.md`).
 
 ### Second inward solidification pass
 

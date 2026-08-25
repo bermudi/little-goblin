@@ -1,5 +1,4 @@
 ---
-nospec: true
 role: view
 ---
 
@@ -144,7 +143,7 @@ The core ownership boundary is `Surface → Binding → Conversation → Convers
 2. **Lifecycle/orchestration** (`src/orchestration/`) owns binding transitions, pending-assignment recovery, runtime authority, and queue invalidation.
 3. **Persistence** (`src/sessions/`) owns Conversations, bindings, and Surface settings; **agent** (`src/agent/`) owns pi runtime construction.
 
-Read `ARCHITECTURE.md` for current/target boundaries. Code/tests and explicitly designated contract records own current behavior; accepted architectural rulings live in `decisions/`. Internal guardrails are in <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" />.
+Read `ARCHITECTURE.md` for current/target boundaries. Code/tests and explicitly designated contract records own current behavior; accepted architectural rulings live in `specs/decisions/`. Internal guardrails are in <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" />.
 
 ## Documentation map
 
@@ -154,11 +153,12 @@ Read `ARCHITECTURE.md` for current/target boundaries. Code/tests and explicitly 
 | <ref_file file="/home/daniel/build/little-goblin/features.md" /> | Full user guide: Surfaces, Conversations, tools, memory, subagents, media, config, security. |
 | <ref_file file="/home/daniel/build/little-goblin/goblin.json5.example" /> | Annotated configuration example. |
 | <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" /> | Project guardrails and planning discipline. |
-| `ARCHITECTURE.md` | Current/target/open system map and delivery order. |
-| `BACKLOG.md` | Current priority, next cycle, parked scope, and open questions. |
-| `decisions/` | Accepted architectural rulings. |
-| `glossary.md` | Canonical domain language. |
-| `specs/` | Frozen Litespec-era contracts, plans, decisions, and archives retained as historical input. |
+| `specs/product.md` | Product boundary, authority map, and core flows. |
+| `ARCHITECTURE.md` | Current/target/open system map and stabilization order. |
+| `PARKED.md` | Unshaped candidates, completed context, and open questions; not an active queue. |
+| `specs/decisions/` | Accepted architectural rulings. |
+| `specs/glossary.md` | Canonical domain language. |
+| `specs/README.md` | Boundary between active Litespec v2 authority and frozen v1 records. |
 
 ---
 

@@ -1,5 +1,4 @@
 ---
-nospec: true
 role: record
 owns: operational-context
 ---
@@ -16,7 +15,7 @@ Goblin lives in Telegram. You message it, it thinks, it responds. It can spawn s
 
 Before proposing or implementing feature work:
 
-- Read the current code and tests, [`ARCHITECTURE.md`](ARCHITECTURE.md), relevant accepted decisions and designated contract records, and the current priorities in [`BACKLOG.md`](BACKLOG.md). Frozen legacy material may supply historical context, but it does not override those authorities.
+- Read the current code and tests, [`specs/product.md`](specs/product.md), [`ARCHITECTURE.md`](ARCHITECTURE.md), relevant accepted decisions and designated contract records, and the active labeled Litespec issue when one exists. Frozen legacy material and [`PARKED.md`](PARKED.md) may supply historical context, but they do not override those authorities.
 - Name the owner and lifetime of every new piece of state: Surface, Conversation, conversation runtime, Execution Environment, delegated run, or deployment.
 - Name its authority source and persistence location. Do not infer authority from convenience fields or duplicate it across callers.
 - Put cross-cutting behavior behind a deep module with one interface; do not add orchestration choreography to commands, Telegram intake, or other callers.
@@ -28,11 +27,11 @@ New feature work resumes when its architectural dependencies are explicit and th
 
 ### Planning discipline
 
-- **WIP limit: one implementation cycle in progress, one plainly described next.** Follow the delivery order in [`ARCHITECTURE.md`](ARCHITECTURE.md); keep everything further out in [`BACKLOG.md`](BACKLOG.md).
-- **Nospec is the active work process.** Project-local workflow skills are tracked by `skills-lock.json`.
-- Work interactively by default. A clear bounded change needs no queue. Use `.loop/<cycle>/` only when cross-session coordination or AFK execution adds value; `QUEUE.md`, `HANDOFF.md`, `REVIEW.md`, and scratch work specs are disposable, while runner-produced `EVIDENCE.md` is the retained ledger.
-- Authority is role-based: code and tests own current implemented behavior; explicitly designated contract records own their promises; root `decisions/` owns accepted architectural rulings; `ARCHITECTURE.md` owns the system map; `glossary.md` owns domain language; this file owns repository practice; `BACKLOG.md` owns work priority.
-- `specs/` is a frozen Litespec-era reference tree. Do not create, update, archive, or mechanically translate its canon, changes, parked plans, or status-ambiguous decisions. Before retiring historical material, extract still-valid behavior into code/tests or an explicitly designated contract record. Git is the archive.
+- **WIP limit: one active Litespec issue, with at most one plainly described candidate next.** Labeled GitHub issues own active delivery work. [`PARKED.md`](PARKED.md) contains unshaped candidates and historical context, not a queue.
+- **Litespec v2 is the sole work-delivery process.** Use the generated `litespec-plan`, `litespec-build`, and `litespec-review` skills. Small fixes use the zero-ceremony lane; shaped work uses one dedicated `litespec/<change-name>` branch per issue.
+- A shaped issue records immutable `Base:` and `Branch:` ownership, contains demo-able units with exact `Done means:` and `Verify:`, and builds one unit at a time. Build commits first, verifies the clean committed tree, then posts the verbatim red-green evidence receipt. A fresh reviewer returns `PASS` before closure.
+- Authority is role-based: code and tests own current implemented behavior; explicitly designated contract records own their promises; `specs/decisions/` owns accepted architectural rulings; `ARCHITECTURE.md` owns the system map; `specs/glossary.md` owns domain language; this file owns repository practice; labeled Litespec issues own active work.
+- `specs/product.md`, `specs/glossary.md`, and `specs/decisions/` are active v2 records. The nested `specs/canon/`, `specs/changes/`, `specs/parked/`, `specs/v1-decisions/`, and `specs/research/` trees are frozen v1 input. Do not update, archive, or mechanically translate them. Before retiring historical material, extract still-valid behavior into code/tests or an explicitly designated contract record. Git is the archive.
 - A bug fix may land during stabilization, but it must move toward the target architecture or explicitly document why it is a containment patch.
 
 ## Run

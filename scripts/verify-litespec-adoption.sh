@@ -19,7 +19,7 @@ fail() {
 [[ ! -e skills-lock.json ]] || fail "Nospec skills lock still exists"
 
 mapfile -t current_decisions < <(find specs/decisions -maxdepth 1 -type f -name '*.md' -print | sort)
-[[ ${#current_decisions[@]} -eq 38 ]] || fail "expected 38 current decisions, found ${#current_decisions[@]}"
+[[ ${#current_decisions[@]} -eq 39 ]] || fail "expected 39 current decisions, found ${#current_decisions[@]}"
 mapfile -t frozen_decisions < <(find specs/v1-decisions -maxdepth 1 -type f -name '*.md' -print | sort)
 [[ ${#frozen_decisions[@]} -eq 8 ]] || fail "expected 8 frozen v1 decisions, found ${#frozen_decisions[@]}"
 
@@ -48,15 +48,15 @@ trap 'trash "$validation_json"' EXIT
 litespec validate --all --strict --json >"$validation_json"
 jq -e '
   .valid == true
-  and .summary.decisions == 38
+  and .summary.decisions == 39
   and .summary.capabilities == 0
   and .summary.requirements == 0
-' "$validation_json" >/dev/null || fail "strict validation summary is not 38 decisions and zero translated specs"
+' "$validation_json" >/dev/null || fail "strict validation summary is not 39 decisions and zero translated specs"
 
 litespec view --json | jq -e '
   .product.exists == true
-  and .summary.decisions.active == 38
-  and .summary.decisions.total == 38
+  and .summary.decisions.active == 39
+  and .summary.decisions.total == 39
   and .summary.specs == 0
   and .summary.requirements == 0
 ' >/dev/null || fail "Litespec view does not discover the intended authority"
@@ -65,9 +65,11 @@ if git diff --name-only "$BASE_SHA"..HEAD -- src e2e package.json bun.lock tscon
   fail "runtime, tests, or dependencies changed during workflow migration"
 fi
 
-git diff --check "$BASE_SHA"..HEAD
+# beta.8's generator intentionally reproduces its embedded templates byte-for-byte,
+# including their existing terminal blank line. Check every hand-maintained path.
+git diff --check "$BASE_SHA"..HEAD -- . ':(exclude).agents/skills/litespec-*'
 bun run typecheck
 bun test
 bash scripts/deployment-order.test.sh
 
-printf 'Litespec adoption verified: 38 decisions, 0 translated specs, runtime unchanged.\n'
+printf 'Litespec adoption verified: 39 decisions, 0 translated specs, runtime unchanged.\n'

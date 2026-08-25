@@ -45,22 +45,30 @@ fi
 
 evidence_dir="$(mktemp -d)"
 trap 'trash "$evidence_dir"' EXIT
-validation_json="$evidence_dir/validation.json"
-litespec validate --all --strict --json >"$validation_json"
+specs_validation_json="$evidence_dir/specs-validation.json"
+decisions_validation_json="$evidence_dir/decisions-validation.json"
+# Validate only repository-owned records. --all also reads mutable GitHub queues,
+# so it cannot be replayed deterministically at an evidence SHA.
+litespec validate --specs --strict --json >"$specs_validation_json"
+litespec validate --decisions --strict --json >"$decisions_validation_json"
+jq -e '
+  .valid == true
+  and .summary.capabilities == 0
+  and .summary.requirements == 0
+' "$specs_validation_json" >/dev/null || fail "strict spec validation found a mechanically translated feature spec"
 jq -e '
   .valid == true
   and .summary.decisions == 39
-  and .summary.capabilities == 0
-  and .summary.requirements == 0
-' "$validation_json" >/dev/null || fail "strict validation summary is not 39 decisions and zero translated specs"
+' "$decisions_validation_json" >/dev/null || fail "strict decision validation did not discover 39 decisions"
 
-litespec view --json | jq -e '
-  .product.exists == true
-  and .summary.decisions.active == 39
-  and .summary.decisions.total == 39
-  and .summary.specs == 0
-  and .summary.requirements == 0
-' >/dev/null || fail "Litespec view does not discover the intended authority"
+if rg -q 'external-agent execution hosts.*durable run record' specs/product.md; then
+  fail "product flow presents target external-agent ownership as current"
+fi
+rg -q 'legacy external-agent runner' specs/product.md || fail "product flow does not state current external-agent behavior"
+if rg -q 'one implementation phase in progress|next approved carve' ARCHITECTURE.md; then
+  fail "architecture still assigns pre-Litespec work priority"
+fi
+rg -q 'ACP external agents.*candidate.*re-scout' ARCHITECTURE.md || fail "architecture does not classify ACP as an unapproved candidate"
 
 if git diff --name-only "$BASE_SHA"..HEAD -- src e2e package.json bun.lock tsconfig.json | grep -q .; then
   fail "runtime, tests, or dependencies changed during workflow migration"

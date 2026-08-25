@@ -189,6 +189,7 @@ export function standardPiMock() {
     defineTool: <T>(definition: T) => definition,
     ModelRuntime: {
       create: async (_opts?: unknown) => ({
+        registerProvider: (_provider: string, _config: unknown) => {},
         setRuntimeApiKey: async (_provider: string, _key: string) => {},
       }),
     },

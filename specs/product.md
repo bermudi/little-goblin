@@ -28,6 +28,6 @@ The nested legacy trees documented in `specs/README.md` are historical input onl
 
 1. A Telegram update resolves a Surface and its current Conversation binding, then enters the conversation runtime under machine-held admission authority.
 2. A conversation runtime prepares the model session, frozen memory context, tools, skills, and Telegram delivery for one Conversation and immutable Execution Environment.
-3. The operator can delegate bounded work to pi subagents or external-agent execution hosts while Goblin retains the owning lifetime and durable run record.
+3. The operator can delegate bounded work to pi subagents or the legacy external-agent runner. Pi subagents use Goblin's host-owned delegated-run records today; the shared external-agent execution host and record integration remain TARGET work for a future ACP issue.
 4. Scheduled wakes and memory dreaming run through explicit internal runtime authority rather than borrowing whichever Telegram conversation happens to be active.
 5. Repository changes use either the small-fix lane or a dedicated Litespec issue branch with bounded units, red-green evidence, and adversarial review.

@@ -69,6 +69,11 @@ if rg -q 'one implementation phase in progress|next approved carve' ARCHITECTURE
   fail "architecture still assigns pre-Litespec work priority"
 fi
 rg -q 'ACP external agents.*candidate.*re-scout' ARCHITECTURE.md || fail "architecture does not classify ACP as an unapproved candidate"
+if rg -q 'Scheduled wakes.*explicit internal runtime authority' specs/product.md; then
+  fail "product flow presents target scheduling authority as current"
+fi
+rg -q 'Scheduled turns.*current Conversation runtime' specs/product.md || fail "product flow does not state current scheduled-turn authority"
+rg -q 'Memory dreaming.*compatibility internal session' specs/product.md || fail "product flow does not state current dreaming authority"
 
 if git diff --name-only "$BASE_SHA"..HEAD -- src e2e package.json bun.lock tsconfig.json | grep -q .; then
   fail "runtime, tests, or dependencies changed during workflow migration"
@@ -90,6 +95,7 @@ run_checked() {
   tail -n 4 "$output"
 }
 
+run_checked dependency-install bun install --frozen-lockfile
 run_checked typecheck bun run typecheck
 run_checked tests bun test
 run_checked deployment-order bash scripts/deployment-order.test.sh

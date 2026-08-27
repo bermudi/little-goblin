@@ -78,7 +78,7 @@ describe("resolveConfigValue", () => {
     // Lowercase / mixed / symbolic values are not env-style names, so they
     // pass through unchanged regardless of whether an env var is set.
     expect(resolveConfigValue("hello")).toBe("hello");
-    expect(resolveConfigValue("poe/Claude-Sonnet-4.6")).toBe("poe/Claude-Sonnet-4.6");
+    expect(resolveConfigValue("anthropic/claude-sonnet-4.6")).toBe("anthropic/claude-sonnet-4.6");
     expect(resolveConfigValue("123:token")).toBe("123:token");
     // Single uppercase char is too short to be an env-style name.
     expect(resolveConfigValue("X")).toBe("X");

@@ -17,8 +17,6 @@ export interface Config {
   allowedTgUserIds: Set<number>;
   /** Model id — must be a key in `MODELS` (see src/agent/models.ts). */
   modelName: string;
-  /** Poe API key. Required iff selected model uses it. */
-  poeApiKey?: string;
   /** OpenRouter API key. Required iff selected model uses it. */
   openrouterApiKey?: string;
   /** OpenAI API key. Required iff selected model uses it. */
@@ -93,7 +91,6 @@ export function loadConfig(): Config {
     botToken: cfg.botToken,
     allowedTgUserIds: new Set(cfg.allowedUsers),
     modelName: cfg.model,
-    poeApiKey: cfg.poeApiKey,
     openrouterApiKey: cfg.openrouterApiKey,
     openaiApiKey: cfg.openaiApiKey,
     anthropicApiKey: cfg.anthropicApiKey,

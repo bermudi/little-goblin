@@ -510,17 +510,7 @@ export class AgentRunner {
       throw new ModelNotCapableError(this.modelName, "image");
     }
 
-    if (model?.provider !== "poe" || model.api !== "openai-completions") return content;
-    if (!hasImage) return content;
-
-    const text = content
-      .filter((part): part is TextContent => part.type === "text")
-      .map((part) => part.text)
-      .join("\n")
-      .trim();
-    if (text.length > 0) return content;
-
-    return [{ type: "text", text: "What do you see in this image?" }, ...content];
+    return content;
   }
 
   private async cachedTopicName(chatId: number, topicId: number): Promise<string | null> {

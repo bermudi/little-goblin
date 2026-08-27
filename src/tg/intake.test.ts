@@ -227,8 +227,8 @@ function makeConfig(): Config {
   return {
     botToken: "123:token",
     allowedTgUserIds: new Set([1]),
-    modelName: "poe/GPT-4o",
-    poeApiKey: "poe-key",
+    modelName: "openai/gpt-5.4",
+    openaiApiKey: "test-key",
     goblinHome,
     logLevel: "error",
     toolVisibility: "standard",
@@ -1250,7 +1250,7 @@ describe("Telegram intake", () => {
     // /model <n> is queue-timing: while streaming, it acks "Queued." and
     // defers; once the turn settles it runs and sends the follow-up reply.
     const cfg = makeConfig();
-    cfg.favorites = ["poe/GPT-4o"];
+    cfg.favorites = ["openai/gpt-5.4"];
     const { intake } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);
@@ -1275,12 +1275,12 @@ describe("Telegram intake", () => {
     // Release the turn. The deferred command re-dispatches and replies.
     slow.resolve();
     await waitFor(() => replies.at(-1)!.includes("Switched to"));
-    expect(replies.at(-1)).toContain("Switched to `poe/GPT-4o`");
+    expect(replies.at(-1)).toContain("Switched to `openai/gpt-5.4`");
   });
 
   it("does not start a binding-authorized queued command after runtime shutdown", async () => {
     const cfg = makeConfig();
-    cfg.favorites = ["poe/GPT-4o"];
+    cfg.favorites = ["openai/gpt-5.4"];
     const { intake, runtimeHost } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);
@@ -1306,7 +1306,7 @@ describe("Telegram intake", () => {
   it("runs an instant-timing command (read-only) while a turn is streaming", async () => {
     // /model with no arg is instant: it lists favorites without touching the turn.
     const cfg = makeConfig();
-    cfg.favorites = ["poe/GPT-4o"];
+    cfg.favorites = ["openai/gpt-5.4"];
     const { intake } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);
@@ -1643,7 +1643,7 @@ describe("Telegram intake", () => {
     // This pins the documented behavior so a future change to stale-runner
     // orphaning is intentional.
     const cfg = makeConfig();
-    cfg.favorites = ["poe/GPT-4o"];
+    cfg.favorites = ["openai/gpt-5.4"];
     const { intake } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);
@@ -1675,7 +1675,7 @@ describe("Telegram intake", () => {
     // The later /new therefore remains serialized behind it and executes next;
     // acknowledged lifecycle commands must not disappear with model work.
     const cfg = makeConfig();
-    cfg.favorites = ["poe/GPT-4o"];
+    cfg.favorites = ["openai/gpt-5.4"];
     const { intake } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);
@@ -1698,7 +1698,7 @@ describe("Telegram intake", () => {
     await waitFor(() => replies.filter((r) => r.includes("Created new conversation")).length === 2);
 
     expect(runners[0]!.dispose).toHaveBeenCalledTimes(1);
-    expect(replies.some((r) => r.includes("Switched to `poe/GPT-4o`"))).toBe(true);
+    expect(replies.some((r) => r.includes("Switched to `openai/gpt-5.4`"))).toBe(true);
     expect(replies.findIndex((r) => r.includes("Switched to"))).toBeLessThan(
       replies.findLastIndex((r) => r.includes("Created new conversation")),
     );
@@ -1710,7 +1710,7 @@ describe("Telegram intake", () => {
     // delivers it as the follow-up. This confirms deferred failures don't
     // silently drop; the user sees the handler's error reply after the turn.
     const cfg = makeConfig();
-    cfg.favorites = ["poe/GPT-4o"];
+    cfg.favorites = ["openai/gpt-5.4"];
     const { intake } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);

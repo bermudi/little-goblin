@@ -149,7 +149,7 @@ describe("PiSubagentHost contract", () => {
     const second = host.prepare(genericPreparation(home, join(home, "second"))).run(invocation({ prompt: "two" }));
     await flush();
     expect(serviceCreates).toBe(1);
-    expect(authCalls[0]).toEqual(["poe", "test-key"]);
+    expect(authCalls[0]).toEqual(["openai", "test-key"]);
     expect(authCalls).toHaveLength(2);
 
     getSessionHolder(0).complete();

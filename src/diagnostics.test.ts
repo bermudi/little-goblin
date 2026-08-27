@@ -41,7 +41,7 @@ const baseDiagnostics: Diagnostics = {
   sessionId: "abc1234567",
   sessionName: null,
   createdAt: "2026-04-29T00:00:00.000Z",
-  model: "poe/Claude-Sonnet-4.6",
+  model: "anthropic/claude-sonnet-4.6",
   thinkingLevel: null,
   runnerInitialized: true,
   tools: ["bash", "memory"],
@@ -62,7 +62,7 @@ describe("formatDiagnostics", () => {
     const out = formatDiagnostics(baseDiagnostics);
     expect(out).toContain("Conversation: abc1234567");
     expect(out).toContain("Conversation Name: unavailable");
-    expect(out).toContain("Model: poe/Claude-Sonnet-4.6");
+    expect(out).toContain("Model: anthropic/claude-sonnet-4.6");
     expect(out).toContain("Thinking level: (model default)");
     expect(out).toContain("Tools: bash, memory");
     expect(out).toContain("Transcript: /tmp/transcript.jsonl");

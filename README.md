@@ -114,14 +114,13 @@ For full details see <ref_file file="/home/daniel/build/little-goblin/features.m
 
 Goblin supports multiple provider namespaces via prefixed model IDs:
 
-- `poe/Claude-Sonnet-4.6`, `poe/GPT-5`, `poe/Gemini-2.5-Pro`
 - `or/anthropic/claude-sonnet-4.5`, `or/openai/gpt-5`
 - `openai/gpt-5.4`, `openai/gpt-5.4-mini`, `openai/o4`
 - `anthropic/claude-opus-4`, `anthropic/claude-sonnet-4.6`
 - `zai/glm-5.2`, `zai/glm-5.1`
 - `opencode-go/glm-5.2`, `opencode-go/minimax-m3`, `opencode-go/kimi-k2.6`
 
-Pattern-built entries are also available for unknown `poe/<id>`, `or/<slug>`, `openai/<id>`, `anthropic/<id>`, `zai/<id>`, and `opencode-go/<id>` models. Set the matching API key in `goblin.json5`.
+Pattern-built entries are also available for unknown `or/<slug>`, `openai/<id>`, `anthropic/<id>`, `zai/<id>`, and `opencode-go/<id>` models. Set the matching API key in `goblin.json5`.
 
 ## Development
 

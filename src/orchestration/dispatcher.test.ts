@@ -624,8 +624,7 @@ describe("TurnDispatcher async runner creation", () => {
       cfg: {
         botToken: "test-token",
         allowedTgUserIds: new Set([1]),
-        modelName: "poe/TestModel",
-        poeApiKey: "test-key",
+        modelName: "openai/test-model",
         openrouterApiKey: "test-key",
         openaiApiKey: "test-key",
         anthropicApiKey: "test-key",
@@ -708,7 +707,7 @@ describe("TurnDispatcher async runner creation", () => {
     expect(plan.surfaceId).toBe(surfaceId(surface));
     expect(plan.executionEnvironment).toEqual(personalEnvironment());
     expect(plan.cwd).toBe(join(tmpDir, "workspace"));
-    expect(plan.modelName).toBe("poe/TestModel");
+    expect(plan.modelName).toBe("openai/test-model");
     expect(plan.thinkingLevel).toBe(plan.resolvedModel.thinkingLevel);
     expect(plan.systemPrompt.sources).toEqual([join(tmpDir, "workspace", "SOUL.md")]);
     expect(plan.prompt).toContain("prepared runtime test identity");
@@ -873,8 +872,8 @@ describe("TurnDispatcher async runner creation", () => {
     const dispatcher = new TurnDispatcher({
       cfg: {
         goblinHome: tmpDir,
-        modelName: "poe/TestModel",
-        poeApiKey: "test-key",
+        modelName: "openai/test-model",
+        openaiApiKey: "test-key",
       } as Config,
       surfaceSettings,
       subagentRunner: new FakeSubagentRunner() as unknown as SubagentRunner,
@@ -942,8 +941,8 @@ describe("TurnDispatcher async runner creation", () => {
     const dispatcher = new TurnDispatcher({
       cfg: {
         goblinHome: tmpDir,
-        modelName: "poe/TestModel",
-        poeApiKey: "test-key",
+        modelName: "openai/test-model",
+        openaiApiKey: "test-key",
       } as Config,
       surfaceSettings,
       subagentRunner: new FakeSubagentRunner() as unknown as SubagentRunner,
@@ -1828,8 +1827,7 @@ describe("TurnDispatcher rejected admission settlement", () => {
       cfg: {
         botToken: "test-token",
         allowedTgUserIds: new Set([1]),
-        modelName: "poe/TestModel",
-        poeApiKey: "test-key",
+        modelName: "openai/test-model",
         openrouterApiKey: "test-key",
         openaiApiKey: "test-key",
         anthropicApiKey: "test-key",

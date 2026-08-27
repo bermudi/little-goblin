@@ -119,7 +119,7 @@ class FakeAgentRunner {
     return false;
   }
   get modelName() {
-    return "poe/test-model";
+    return "openai/test-model";
   }
 
   async prompt() {}
@@ -1356,8 +1356,8 @@ describe("ConversationLifecycle", () => {
     } {
       const cfg = {
         goblinHome: runtimeHome,
-        modelName: "poe/TestModel",
-        poeApiKey: "test-key",
+        modelName: "openai/test-model",
+        openaiApiKey: "test-key",
       } as Config;
       const subagentRunner = new SubagentRunner(cfg);
       const surfaceSettings = staticSettings(personalEnvironment());
@@ -1398,8 +1398,8 @@ describe("ConversationLifecycle", () => {
     it("does not let runtime acquisition reopen old authority after a failed project assignment", async () => {
       const cfg = {
         goblinHome: runtimeHome,
-        modelName: "poe/TestModel",
-        poeApiKey: "test-key",
+        modelName: "openai/test-model",
+        openaiApiKey: "test-key",
       } as Config;
       const surface = dmSurface(1);
       const projectRoot = join(runtimeHome, "project");

@@ -40,7 +40,6 @@ export const ConfigFileSchema = z
     botToken: z.string(),
     allowedUsers: z.array(z.number().int().positive()).min(1),
     model: z.string(),
-    poeApiKey: z.string().optional(),
     openrouterApiKey: z.string().optional(),
     openaiApiKey: z.string().optional(),
     anthropicApiKey: z.string().optional(),

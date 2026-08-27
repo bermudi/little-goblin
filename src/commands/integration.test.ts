@@ -37,8 +37,8 @@ function makeTestConfig(home: string): Config {
   return {
     botToken: "test-token",
     allowedTgUserIds: new Set([123]),
-    modelName: "poe/Claude-Sonnet-4.6",
-    poeApiKey: "test-key",
+    modelName: "anthropic/claude-sonnet-4.6",
+    anthropicApiKey: "test-key",
     goblinHome: home,
     logLevel: "info",
     toolVisibility: "standard",

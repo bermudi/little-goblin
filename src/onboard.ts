@@ -8,14 +8,13 @@ import { ConfigFileSchema } from "./schema.ts";
 import { runMigrations } from "./migrate.ts";
 import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
 
-const DEFAULT_MODEL = "poe/Claude-Sonnet-4.6";
+const DEFAULT_MODEL = "anthropic/claude-sonnet-4.6";
 
 interface Answers {
   botToken: string;
   userId: number;
   model: string;
   logLevel: "debug" | "info" | "warn" | "error";
-  poeApiKey?: string;
   openrouterApiKey?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
@@ -79,7 +78,6 @@ async function collectAnswers(): Promise<Answers> {
   const envUsers = getEnvDefault("ALLOWED_TG_USER_IDS") ? parseIdList(getEnvDefault("ALLOWED_TG_USER_IDS")!) : undefined;
   const envModel = getEnvDefault("MODEL_NAME");
   const envLogLevel = getEnvDefault("LOG_LEVEL");
-  const envPoe = getEnvDefault("POE_API_KEY");
   const envOr = getEnvDefault("OPENROUTER_API_KEY");
   const envOa = getEnvDefault("OPENAI_API_KEY");
   const envAn = getEnvDefault("ANTHROPIC_API_KEY");
@@ -104,7 +102,6 @@ async function collectAnswers(): Promise<Answers> {
 
   console.log("\n📡 API Keys (optional, supports env var names or !commands):");
 
-  const poeApiKey = await prompt(rl, "  Poe API key", envPoe);
   const openrouterApiKey = await prompt(rl, "  OpenRouter API key", envOr);
   const openaiApiKey = await prompt(rl, "  OpenAI API key", envOa);
   const anthropicApiKey = await prompt(rl, "  Anthropic API key", envAn);
@@ -118,7 +115,6 @@ async function collectAnswers(): Promise<Answers> {
     userId,
     model,
     logLevel,
-    poeApiKey: poeApiKey || undefined,
     openrouterApiKey: openrouterApiKey || undefined,
     openaiApiKey: openaiApiKey || undefined,
     anthropicApiKey: anthropicApiKey || undefined,
@@ -195,7 +191,7 @@ export function buildConfig(answers: Answers): string {
   lines.push(`  model: ${JSON.stringify(answers.model)},`);
   lines.push(`  logLevel: ${JSON.stringify(answers.logLevel)},`);
 
-  const optionalKeys = ["poeApiKey", "openrouterApiKey", "openaiApiKey", "anthropicApiKey", "zaiApiKey"] as const;
+  const optionalKeys = ["openrouterApiKey", "openaiApiKey", "anthropicApiKey", "zaiApiKey"] as const;
   for (const key of optionalKeys) {
     const value = answers[key];
     if (value) {
@@ -254,7 +250,6 @@ export async function main(): Promise<void> {
     allowedUsers: [answers.userId],
     model: answers.model,
     logLevel: answers.logLevel,
-    poeApiKey: answers.poeApiKey,
     openrouterApiKey: answers.openrouterApiKey,
     openaiApiKey: answers.openaiApiKey,
     anthropicApiKey: answers.anthropicApiKey,

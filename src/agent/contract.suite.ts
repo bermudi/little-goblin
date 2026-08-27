@@ -26,7 +26,6 @@ function makeConfig(home: string): Config {
     botToken: "test-token",
     allowedTgUserIds: new Set([1]),
     modelName: "faux/faux-1",
-    poeApiKey: "test-key",
     openrouterApiKey: "test-key",
     openaiApiKey: "test-key",
     anthropicApiKey: "test-key",

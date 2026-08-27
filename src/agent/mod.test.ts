@@ -267,8 +267,7 @@ function makeConfig(home: string): Config {
   return {
     botToken: "test-token",
     allowedTgUserIds: new Set([1]),
-    modelName: "poe/Claude-Sonnet-4.6",
-    poeApiKey: "test-key",
+    modelName: "anthropic/claude-sonnet-4.6",
     openrouterApiKey: "test-key",
     openaiApiKey: "test-key",
     anthropicApiKey: "test-key",
@@ -991,7 +990,7 @@ describe("AgentRunner", () => {
       // metadata rather than aliases into the provider registry.
       writeFileSync(soulMdPath(tmpDir), "replacement identity\n", "utf-8");
       rmSync(skillPath);
-      cfg.modelName = "poe/GPT-4o";
+      cfg.modelName = "openai/gpt-5.4";
       expect(Object.isFrozen(plan.resolvedModel.model)).toBe(true);
       expect(Object.isFrozen(plan.resolvedModel.model.input)).toBe(true);
       expect(Object.isFrozen(plan.resolvedModel.model.cost)).toBe(true);
@@ -1129,7 +1128,7 @@ describe("AgentRunner", () => {
     });
 
     it("unpacks multimodal content into session.followUp(text, images) on an image-capable model", async () => {
-      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
+      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "openai/gpt-5.4");
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
 
@@ -1220,45 +1219,6 @@ describe("AgentRunner", () => {
       await expect(runner.prompt("recovery", nopCallbacks())).rejects.toThrow(
         "still running after a failed cancel",
       );
-    });
-  });
-
-  describe("Poe image-only prompt normalization", () => {
-    const image: ImageContent = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
-
-    it("adds default text before image-only messages for Poe chat completions", async () => {
-      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
-      await runner.prompt([image], nopCallbacks());
-
-      expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith([
-        { type: "text", text: "What do you see in this image?" },
-        image,
-      ]);
-    });
-
-    it("does not rewrite captioned Poe chat completion image messages", async () => {
-      const content: (TextContent | ImageContent)[] = [{ type: "text", text: "caption" }, image];
-      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
-      await runner.prompt(content, nopCallbacks());
-
-      expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith(content);
-    });
-
-    it("does not rewrite image-only messages for non-Poe models", async () => {
-      const content: ImageContent[] = [image];
-      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "openai/gpt-5.4");
-      await runner.prompt(content, nopCallbacks());
-
-      expect(sessionHolder.sendUserMessage).toHaveBeenCalledWith(content);
-    });
-
-    it("uses the default text for Poe chat completion image follow-ups", async () => {
-      const runner = await makeRunner(tmpDir, [], dmSurface(123), undefined, "poe/kimi-k2.6");
-      await runner.prompt("hi", nopCallbacks());
-      sessionHolder.streaming = true;
-      await runner.followUp([image]);
-
-      expect(sessionHolder.followUp).toHaveBeenCalledWith("What do you see in this image?", [image]);
     });
   });
 

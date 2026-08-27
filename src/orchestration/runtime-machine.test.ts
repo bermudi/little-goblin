@@ -318,6 +318,91 @@ describe("RuntimeMachine transitions", () => {
 
 // ─── queue / serial executor tests ───────────────────────────────────
 
+describe("RuntimeMachine epoch tickets", () => {
+  it("captureEpoch('runtime') returns the generation and changes on creation reservation and registration", () => {
+    const m = makeMachine();
+    expect(m.captureEpoch("runtime")).toBe(m.epoch);
+    const initial = m.captureEpoch("runtime");
+    expect(m.isEpochCurrent("runtime", initial)).toBe(true);
+
+    m.reserveCreation(surfaceId(dmSurface(1)), "fp");
+    const afterReservation = m.captureEpoch("runtime");
+    expect(afterReservation).toBeGreaterThan(initial);
+    expect(m.isEpochCurrent("runtime", initial)).toBe(false);
+
+    registerSurface(m);
+    expect(m.captureEpoch("runtime")).toBeGreaterThan(afterReservation);
+    expect(m.isEpochCurrent("runtime", afterReservation)).toBe(false);
+    expect(m.isEpochCurrent("runtime", m.captureEpoch("runtime"))).toBe(true);
+  });
+
+  it("captureEpoch('binding') is axis-scoped: registration does not bump the binding epoch", () => {
+    const m = makeMachine();
+    const binding = m.captureEpoch("binding");
+    registerSurface(m);
+    // Runtime epoch moved, binding epoch did not.
+    expect(m.captureEpoch("binding")).toBe(binding);
+    expect(m.isEpochCurrent("binding", binding)).toBe(true);
+  });
+
+  it("settings-change invalidation bumps the runtime epoch but preserves the binding epoch", async () => {
+    const m = makeMachine();
+    registerSurface(m);
+    const runtime = m.captureEpoch("runtime");
+    const binding = m.captureEpoch("binding");
+
+    await m.invalidate("settings-change");
+
+    expect(m.captureEpoch("runtime")).toBeGreaterThan(runtime);
+    expect(m.isEpochCurrent("runtime", runtime)).toBe(false);
+    // Same-binding invalidation (e.g. /model) preserves acknowledged
+    // binding-authority command order (decision 0046).
+    expect(m.captureEpoch("binding")).toBe(binding);
+    expect(m.isEpochCurrent("binding", binding)).toBe(true);
+  });
+
+  it("binding-change invalidation bumps both epochs", async () => {
+    const m = makeMachine();
+    registerSurface(m);
+    const runtime = m.captureEpoch("runtime");
+    const binding = m.captureEpoch("binding");
+
+    await m.invalidate("binding-change");
+
+    expect(m.captureEpoch("runtime")).toBeGreaterThan(runtime);
+    expect(m.captureEpoch("binding")).toBeGreaterThan(binding);
+    expect(m.isEpochCurrent("runtime", runtime)).toBe(false);
+    expect(m.isEpochCurrent("binding", binding)).toBe(false);
+  });
+
+  it("shutdown invalidation bumps both epochs", async () => {
+    const m = makeMachine();
+    registerSurface(m);
+    const runtime = m.captureEpoch("runtime");
+    const binding = m.captureEpoch("binding");
+
+    await m.invalidate("shutdown");
+
+    expect(m.isEpochCurrent("runtime", runtime)).toBe(false);
+    expect(m.isEpochCurrent("binding", binding)).toBe(false);
+  });
+
+  it("idle no-op invalidation does not bump either epoch", async () => {
+    const m = makeMachine();
+    // idle → idle invalidate is a documented no-op: with no runner, no
+    // creation, and an empty queue there is nothing to fence.
+    const runtime = m.captureEpoch("runtime");
+    const binding = m.captureEpoch("binding");
+
+    await m.invalidate("binding-change");
+
+    expect(m.captureEpoch("runtime")).toBe(runtime);
+    expect(m.captureEpoch("binding")).toBe(binding);
+    expect(m.isEpochCurrent("runtime", runtime)).toBe(true);
+    expect(m.isEpochCurrent("binding", binding)).toBe(true);
+  });
+});
+
 describe("RuntimeMachine queue and serial executor", () => {
   it("processes entries in order", async () => {
     const m = makeMachine();

@@ -50,6 +50,39 @@ function registerRunner(
   }
 }
 
+describe("ConversationRuntimeHost epoch tickets", () => {
+  it("captureEpoch returns 0 for an unknown conversation and isEpochCurrent returns false", () => {
+    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
+    expect(host.captureEpoch("missing", "runtime")).toBe(0);
+    expect(host.captureEpoch("missing", "binding")).toBe(0);
+    // Epoch 0 is a valid ticket on a live idle machine, but an unknown
+    // conversation holds no authority: comparison must fail closed.
+    expect(host.isEpochCurrent("missing", "runtime", 0)).toBe(false);
+    expect(host.isEpochCurrent("missing", "binding", 0)).toBe(false);
+  });
+
+  it("delegates epoch capture to the per-conversation machine", async () => {
+    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
+    const conv: ConversationId = "epoch-conv";
+    expect(host.captureEpoch(conv, "runtime")).toBe(0);
+
+    registerRunner(host, conv, fakeRunner());
+
+    const afterRegistration = host.captureEpoch(conv, "runtime");
+    expect(afterRegistration).toBeGreaterThan(0);
+    // The pre-registration ticket (0) is now stale; the binding axis is not
+    // moved by registration.
+    expect(host.isEpochCurrent(conv, "runtime", 0)).toBe(false);
+    expect(host.isEpochCurrent(conv, "runtime", afterRegistration)).toBe(true);
+    expect(host.isEpochCurrent(conv, "binding", 0)).toBe(true);
+
+    await host.disposeRuntime(conv);
+
+    expect(host.isEpochCurrent(conv, "runtime", afterRegistration)).toBe(false);
+    expect(host.isEpochCurrent(conv, "binding", 0)).toBe(false);
+  });
+});
+
 describe("ConversationRuntimeHost immediate runtime admission", () => {
   it("forwards atomic accepted, busy, and closed classifications", async () => {
     const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });

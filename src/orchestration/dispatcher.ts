@@ -147,10 +147,13 @@ export interface TurnDispatcherOptions {
  * through this kernel so a due scheduled prompt and a Telegram message share
  * the same serialization boundary.
  *
- * The stale-runner guard (`isCurrent()`) is the linchpin: when a runner is
- * swapped (by `/new` or `/resume`) before a queued turn starts, the queued work
- * detects it is no longer current and aborts before producing user-visible side
- * effects.
+ * Epoch tickets are the linchpin (decision 0046): admitted work captures
+ * the machine's epoch for its authority domain, and the `isCurrent()`
+ * closure compares the captured and current epochs at commit points —
+ * before and after awaits that cross the boundary. When a runtime is
+ * swapped or invalidated (by `/new`, `/resume`, or `/model`) while work sits
+ * queued or mid-turn, the bumped epoch makes the ticket stale and the work
+ * aborts before producing user-visible side effects.
  *
  * Lives in `src/orchestration/` — turn serialization is an orchestration
  * concern, not a Telegram concern. The dispatcher does not import the

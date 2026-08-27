@@ -984,6 +984,15 @@ export class RuntimeMachine {
     // dropped a creation or fenced the queue. Bump the epoch so tickets
     // captured before the fence become stale, then return without creating
     // a spurious drain entry.
+    //
+    // Note on decision 0046's "bumped on every invalidation": an idle no-op
+    // invalidation (the documented idle → idle transition) bumps neither
+    // axis. Every raw-ticket holder today captures against live machine
+    // state (a creation reservation or a registered runner), so an idle
+    // invalidation has no ticket-holding state to fence; queue-scoped
+    // tickets still fence because fenceQueue() unconditionally bumps
+    // queueEpoch. runtime-machine.test.ts pins this carve-out — if you
+    // change it, reconcile the ruling here and in the decision record.
     if (priorRunner === undefined && this.pendingDelegatedInvalidations.size === 0) {
       const droppedCreation = hadCreation && !preservesCreation;
       const fencedQueue = reason !== "settings-change" && this.queue.length > 0;

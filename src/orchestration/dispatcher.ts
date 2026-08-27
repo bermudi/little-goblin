@@ -150,10 +150,13 @@ export interface TurnDispatcherOptions {
  * Epoch tickets are the linchpin (decision 0046): admitted work captures
  * the machine's epoch for its authority domain, and the `isCurrent()`
  * closure compares the captured and current epochs at commit points —
- * before and after awaits that cross the boundary. When a runtime is
- * swapped or invalidated (by `/new`, `/resume`, or `/model`) while work sits
- * queued or mid-turn, the bumped epoch makes the ticket stale and the work
- * aborts before producing user-visible side effects.
+ * synchronous sections before and after awaits. The serial executor
+ * repeats the comparison after each work callback settles, so an epoch
+ * bump that lands mid-turn is still observed. When a runtime is swapped
+ * or invalidated (by `/new`, `/resume`, or `/model`) while work sits
+ * queued, the bumped epoch makes the ticket stale and the work aborts
+ * before producing user-visible side effects; mid-turn, the bump fences
+ * further commits (partial output already streamed is not retracted).
  *
  * Lives in `src/orchestration/` — turn serialization is an orchestration
  * concern, not a Telegram concern. The dispatcher does not import the

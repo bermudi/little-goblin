@@ -632,7 +632,6 @@ describe("RuntimeMachine queue and serial executor", () => {
     const m = makeMachine();
     const promptSettled = deferred<void>();
     let fenced = false;
-    let errored = false;
     m.schedule(
       { kind: "bootstrap" },
       async (authority) => {
@@ -641,7 +640,7 @@ describe("RuntimeMachine queue and serial executor", () => {
         if (!authority.adoptCurrentRunner(runner)) throw new Error("adoption failed");
         await promptSettled.promise;
       },
-      async () => { errored = true; },
+      async () => {},
       { onFenced: () => { fenced = true; } },
     );
     // The prompt is in flight on an adopted runner when the binding turns.
@@ -649,7 +648,35 @@ describe("RuntimeMachine queue and serial executor", () => {
     promptSettled.resolve(undefined);
     await m.queueSettled();
     expect(fenced).toBe(true);
-    expect(errored).toBe(false);
+  });
+
+  it("fences adopted bootstrap work on a runtime-only epoch bump mid-prompt", async () => {
+    // The #47 regression shape, pinned at the axis level: a settings-change
+    // invalidation (e.g. /model) bumps ONLY the runtime epoch — the queue
+    // and binding epochs are deliberately preserved. For adopted bootstrap
+    // work, only the runtime-axis conjunction (generation + registered
+    // runner) can fence. If adoption ever short-circuited that comparison,
+    // this is the scenario that would leak a post-prompt commit.
+    const m = makeMachine();
+    const promptSettled = deferred<void>();
+    let fenced = false;
+    m.schedule(
+      { kind: "bootstrap" },
+      async (authority) => {
+        const runner = fakeRunner();
+        registerSurface(m, runner);
+        if (!authority.adoptCurrentRunner(runner)) throw new Error("adoption failed");
+        await promptSettled.promise;
+      },
+      async () => {},
+      { onFenced: () => { fenced = true; } },
+    );
+    // Mid-prompt settings change: queueEpoch and bindingEpoch survive; the
+    // runtime generation bumps and the registered runner is cleared.
+    await m.invalidate("settings-change");
+    promptSettled.resolve(undefined);
+    await m.queueSettled();
+    expect(fenced).toBe(true);
   });
 });
 

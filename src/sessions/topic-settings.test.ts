@@ -287,15 +287,15 @@ describe("topic-settings", () => {
 
   describe("model and thinking preferences", () => {
     it("stores and reads a surface model override", () => {
-      setModelName(tmpDir, topic, "poe/Claude-Sonnet-4.6");
-      expect(getModelName(tmpDir, topic)).toBe("poe/Claude-Sonnet-4.6");
+      setModelName(tmpDir, topic, "anthropic/claude-sonnet-4.6");
+      expect(getModelName(tmpDir, topic)).toBe("anthropic/claude-sonnet-4.6");
 
       const loaded = loadTopicSettings(tmpDir);
-      expect(loaded.surfaces[topicKey]).toEqual({ modelName: "poe/Claude-Sonnet-4.6" });
+      expect(loaded.surfaces[topicKey]).toEqual({ modelName: "anthropic/claude-sonnet-4.6" });
     });
 
     it("clears a surface model override", () => {
-      setModelName(tmpDir, topic, "poe/Claude-Sonnet-4.6");
+      setModelName(tmpDir, topic, "anthropic/claude-sonnet-4.6");
       setModelName(tmpDir, topic, undefined);
       expect(getModelName(tmpDir, topic)).toBeUndefined();
     });

@@ -33,7 +33,7 @@ describe("loadConfig", () => {
     const configContent = `{
       botToken: "test-token-123",
       allowedUsers: [123456, 789012],
-      model: "poe/Claude-Sonnet-4.6",
+      model: "anthropic/claude-sonnet-4.6",
       logLevel: "debug",
     }`;
     writeFileSync(join(tempDir, "goblin.json5"), configContent);
@@ -42,7 +42,7 @@ describe("loadConfig", () => {
 
     expect(cfg.botToken).toBe("test-token-123");
     expect(cfg.allowedTgUserIds).toEqual(new Set([123456, 789012]));
-    expect(cfg.modelName).toBe("poe/Claude-Sonnet-4.6");
+    expect(cfg.modelName).toBe("anthropic/claude-sonnet-4.6");
     expect(cfg.logLevel).toBe("debug");
     expect(cfg.goblinHome).toBe(tempDir);
   });
@@ -177,7 +177,6 @@ describe("loadConfig", () => {
       botToken: "test",
       allowedUsers: [123],
       model: "poe/test",
-      poeApiKey: "poe-key",
       openrouterApiKey: "or-key",
       openaiApiKey: "oa-key",
       anthropicApiKey: "anth-key",
@@ -185,7 +184,6 @@ describe("loadConfig", () => {
     writeFileSync(join(tempDir, "goblin.json5"), configContent);
 
     const cfg = loadConfig();
-    expect(cfg.poeApiKey).toBe("poe-key");
     expect(cfg.openrouterApiKey).toBe("or-key");
     expect(cfg.openaiApiKey).toBe("oa-key");
     expect(cfg.anthropicApiKey).toBe("anth-key");

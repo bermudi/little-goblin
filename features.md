@@ -56,14 +56,13 @@ Model IDs are prefixed by provider. Set the matching API key in `goblin.json5`.
 
 | Provider | Prefix | Examples |
 |----------|--------|----------|
-| **Poe** | `poe/` | `poe/Claude-Sonnet-4.6`, `poe/GPT-5`, `poe/Gemini-2.5-Pro` |
 | **OpenRouter** | `or/` | `or/anthropic/claude-sonnet-4.5`, `or/openai/gpt-5` |
 | **OpenAI** | `openai/` | `openai/gpt-5.4`, `openai/gpt-5.4-mini`, `openai/o4` |
 | **Anthropic** | `anthropic/` | `anthropic/claude-opus-4`, `anthropic/claude-sonnet-4.6` |
 | **Z.AI Coding Plan** | `zai/` | `zai/glm-5.2`, `zai/glm-5.1` |
 | **OpenCode Go** | `opencode-go/` | `opencode-go/glm-5.2`, `opencode-go/minimax-m3`, `opencode-go/kimi-k2.6` |
 
-Poe, OpenRouter, direct OpenAI, and direct Anthropic accept arbitrary model IDs via pattern matching (`poe/<bot-id>`, `or/<slug>`, `openai/<id>`, `anthropic/<id>`). Z.AI and OpenCode Go also fall back to pattern-built entries for unknown IDs.
+OpenRouter, direct OpenAI, and direct Anthropic accept arbitrary model IDs via pattern matching (`or/<slug>`, `openai/<id>`, `anthropic/<id>`). Z.AI and OpenCode Go also fall back to pattern-built entries for unknown IDs.
 
 Use `favorites` in `goblin.json5` to populate `/model` quick-switch list.
 
@@ -170,8 +169,8 @@ Key options:
 |-----|---------|
 | `botToken` | Telegram BotFather token. |
 | `allowedUsers` | Array of Telegram user IDs allowed to use the bot. |
-| `model` | Default model ID (e.g. `poe/Claude-Sonnet-4.6`). |
-| `poeApiKey` / `openrouterApiKey` / `openaiApiKey` / `anthropicApiKey` / `zaiApiKey` / `opencodeApiKey` | Provider API keys. |
+| `model` | Default model ID (e.g. `anthropic/claude-sonnet-4.6`). |
+| `openrouterApiKey` / `openaiApiKey` / `anthropicApiKey` / `zaiApiKey` / `opencodeApiKey` | Provider API keys. |
 | `favorites` | Model IDs available to `/model`. |
 | `logLevel` | `debug`, `info`, `warn`, `error`. |
 | `toolVisibility` | Status-line detail level. |

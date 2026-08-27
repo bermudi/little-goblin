@@ -103,7 +103,7 @@ function makeFakeAgentRunner(opts: ConstructorParameters<typeof AgentRunner>[0])
       return false;
     },
     get modelName() {
-      return "poe/test-model";
+      return "openai/test-model";
     },
     async prompt() {},
     async abort() {},

@@ -2,7 +2,6 @@ import { loadConfig, ensureGoblinHome } from "./config.ts";
 import { buildBot } from "./bot.ts";
 import { log, initLog } from "./log.ts";
 import { MemoryEngine } from "./memory/mod.ts";
-import { validateModelAtStartup } from "./agent/poe-validate.ts";
 import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
 import { syncTelegramMenu } from "./commands/registry.ts";
 import { SchedulerLoop, DEFAULT_TRANSCRIPT_SYNC_MAX_MS } from "./scheduler/loop.ts";
@@ -29,7 +28,6 @@ async function main(): Promise<void> {
   reconcileProjectAssignmentAtColdStart(cfg.goblinHome);
   await memoryEngine.embeddingProvider.reindexIfNeeded();
   await runPreflight(cfg);
-  await validateModelAtStartup(cfg, log);
   const {
     bot,
     gate,

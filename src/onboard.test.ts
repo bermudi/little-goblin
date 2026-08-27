@@ -175,11 +175,9 @@ describe("onboard helpers", () => {
         userId: 123456,
         model: "poe/test",
         logLevel: "debug" as const,
-        poeApiKey: "poe-key",
         openrouterApiKey: "or-key",
       };
       const config = buildConfig(answers);
-      expect(config).toContain('poeApiKey: "poe-key"');
       expect(config).toContain('openrouterApiKey: "or-key"');
     });
 
@@ -191,7 +189,7 @@ describe("onboard helpers", () => {
         logLevel: "warn" as const,
       };
       const config = buildConfig(answers);
-      expect(config).not.toContain("poeApiKey");
+      expect(config).not.toContain("anthropicApiKey");
       expect(config).not.toContain("openaiApiKey");
     });
   });

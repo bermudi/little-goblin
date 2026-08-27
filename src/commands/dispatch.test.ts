@@ -48,14 +48,13 @@ function makeConfig(): Config {
   return {
     botToken: "token",
     allowedTgUserIds: new Set([1]),
-    modelName: "poe/GPT-4o",
-    poeApiKey: "poe-key",
+    modelName: "openai/gpt-5.4",
     openaiApiKey: "openai-key",
     goblinHome,
     logLevel: "error",
     toolVisibility: "standard",
     voiceName: "en-US-AriaNeural",
-    favorites: ["poe/GPT-4o"],
+    favorites: ["openai/gpt-5.4"],
   };
 }
 
@@ -74,7 +73,7 @@ function baseCascade(overrides: Partial<CascadeResult> = {}): CascadeResult {
 
 function makeRunner(streaming = false): AgentRunner {
   return {
-    modelName: "poe/GPT-4o",
+    modelName: "openai/gpt-5.4",
     compact: mock(async () => ({ tokensBefore: 42_000 })),
     getActiveToolNames: mock(() => []),
     skillsLoaded: null,
@@ -445,9 +444,9 @@ describe("handleCommand", () => {
     const session = await createSession(harness);
     harness.runtimeHost.hasRuntime = () => true;
     const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, harness }));
-    expect(result.reply).toContain("Switched to `poe/GPT-4o`");
+    expect(result.reply).toContain("Switched to `openai/gpt-5.4`");
     expect(result.sideEffects).toEqual([]);
-    expect(harness.lifecycle.settings.getModelName(harness.surface)).toBe("poe/GPT-4o");
+    expect(harness.lifecycle.settings.getModelName(harness.surface)).toBe("openai/gpt-5.4");
     expect(harness.runtimeHost.disposed).toContain(session.id);
   });
 
@@ -456,7 +455,7 @@ describe("handleCommand", () => {
     const session = await createSession(harness);
     // No runner passed — session exists but runner not yet created.
     const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", session, harness }));
-    expect(result.reply).toContain("Switched to `poe/GPT-4o`");
+    expect(result.reply).toContain("Switched to `openai/gpt-5.4`");
     expect(result.sideEffects).toEqual([]);
   });
 
@@ -481,8 +480,8 @@ describe("handleCommand", () => {
   it("/model without a session persists the Surface model override", async () => {
     const harness = makeHarness();
     const result = expectReplied(await dispatch({ command: "/model", rawText: "/model 1", harness }));
-    expect(result.reply).toContain("Switched to `poe/GPT-4o`");
-    expect(harness.lifecycle.settings.getModelName(harness.surface)).toBe("poe/GPT-4o");
+    expect(result.reply).toContain("Switched to `openai/gpt-5.4`");
+    expect(harness.lifecycle.settings.getModelName(harness.surface)).toBe("openai/gpt-5.4");
   });
 
   it("/think without a session persists the Surface thinking override", async () => {
@@ -927,7 +926,7 @@ describe("handleCommand", () => {
       const harness = makeHarness();
       const original = harness.lifecycle.setSurfacePreferences.bind(harness.lifecycle);
       harness.lifecycle.setSurfacePreferences = async () => ({
-        modelName: "poe/GPT-4o",
+        modelName: "openai/gpt-5.4",
         runtime: "invalidated",
         cleanupError: `cleanup failed ${"x".repeat(300)}`,
       });

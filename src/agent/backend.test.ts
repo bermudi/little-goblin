@@ -28,8 +28,7 @@ function makeConfig(home: string): Config {
   return {
     botToken: "test-token",
     allowedTgUserIds: new Set([1]),
-    modelName: "poe/test-model",
-    poeApiKey: "test-key",
+    modelName: "openai/test-model",
     goblinHome: home,
     logLevel: "info",
     toolVisibility: "standard",

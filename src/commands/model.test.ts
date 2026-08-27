@@ -11,11 +11,10 @@ function makeConfig(favorites: string[]): Config {
   return {
     botToken: "test",
     allowedTgUserIds: new Set([1]),
-    modelName: "poe/Claude-Sonnet-4.6",
-    poeApiKey: "test-poe",
+    modelName: "anthropic/claude-sonnet-4.6",
     openrouterApiKey: undefined,
-    openaiApiKey: undefined,
-    anthropicApiKey: undefined,
+    openaiApiKey: "test-key",
+    anthropicApiKey: "test-key",
     goblinHome: "/tmp",
     logLevel: "info",
     toolVisibility: "standard",
@@ -30,7 +29,7 @@ function makeDeps(overrides: Partial<Parameters<typeof executeModel>[0]> = {}): 
     rawText: "/model",
     favorites: [],
     cfg: makeConfig([]),
-    currentModelName: "poe/Claude-Sonnet-4.6",
+    currentModelName: "anthropic/claude-sonnet-4.6",
     currentThinkingLevel: undefined,
     currentResolvedModel: undefined,
     ...overrides,
@@ -41,9 +40,9 @@ describe("executeModel", () => {
   it("switches by index even without an active conversation", () => {
     const result = executeModel(makeDeps({
       rawText: "/model 1",
-      favorites: ["poe/Claude-Sonnet-4.6"],
-      cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
-      currentModelName: "poe/Claude-Sonnet-4.6",
+      favorites: ["anthropic/claude-sonnet-4.6"],
+      cfg: makeConfig(["anthropic/claude-sonnet-4.6"]),
+      currentModelName: "anthropic/claude-sonnet-4.6",
     }));
     expect(result.kind).toBe("set");
   });
@@ -53,7 +52,7 @@ describe("executeModel", () => {
       rawText: "/model",
       favorites: [],
       cfg: makeConfig([]),
-      currentModelName: "poe/Claude-Sonnet-4.6",
+      currentModelName: "anthropic/claude-sonnet-4.6",
     }));
     expect(result.kind).toBe("no-favorites");
     expect(result.reply).toBe(NO_FAVORITES_REPLY);
@@ -62,14 +61,14 @@ describe("executeModel", () => {
   it("lists favorites when no argument", () => {
     const result = executeModel(makeDeps({
       rawText: "/model",
-      favorites: ["poe/A", "poe/B"],
-      cfg: makeConfig(["poe/A", "poe/B"]),
-      currentModelName: "poe/A",
+      favorites: ["openai/model-a", "openai/model-b"],
+      cfg: makeConfig(["openai/model-a", "openai/model-b"]),
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("list");
-    expect(result.reply).toContain("Current: `poe/A`");
-    expect(result.reply).toContain("1. poe/A ✅");
-    expect(result.reply).toContain("2. poe/B");
+    expect(result.reply).toContain("Current: `openai/model-a`");
+    expect(result.reply).toContain("1. openai/model-a ✅");
+    expect(result.reply).toContain("2. openai/model-b");
   });
 
   it("lists favorites when @bot suffix is present with no argument", () => {
@@ -77,9 +76,9 @@ describe("executeModel", () => {
     // /model@bot with no arg must list, not error with "Unknown MODEL_NAME".
     const result = executeModel(makeDeps({
       rawText: "/model@bermudi_little_goblin_bot",
-      favorites: ["poe/A", "poe/B"],
-      cfg: makeConfig(["poe/A", "poe/B"]),
-      currentModelName: "poe/A",
+      favorites: ["openai/model-a", "openai/model-b"],
+      cfg: makeConfig(["openai/model-a", "openai/model-b"]),
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("list");
   });
@@ -87,9 +86,9 @@ describe("executeModel", () => {
   it("switches by index when @bot suffix is present", () => {
     const result = executeModel(makeDeps({
       rawText: "/model@bermudi_little_goblin_bot 1",
-      favorites: ["poe/Claude-Sonnet-4.6"],
-      cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
-      currentModelName: "poe/Claude-Sonnet-4.6",
+      favorites: ["anthropic/claude-sonnet-4.6"],
+      cfg: makeConfig(["anthropic/claude-sonnet-4.6"]),
+      currentModelName: "anthropic/claude-sonnet-4.6",
     }));
     expect(result.kind).toBe("set");
   });
@@ -97,22 +96,22 @@ describe("executeModel", () => {
   it("switches to a valid model by index", () => {
     const result = executeModel(makeDeps({
       rawText: "/model 1",
-      favorites: ["poe/Claude-Sonnet-4.6"],
-      cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
-      currentModelName: "poe/Claude-Sonnet-4.6",
+      favorites: ["anthropic/claude-sonnet-4.6"],
+      cfg: makeConfig(["anthropic/claude-sonnet-4.6"]),
+      currentModelName: "anthropic/claude-sonnet-4.6",
     }));
     expect(result.kind).toBe("set");
     if (result.kind === "set") {
-      expect(result.modelName).toBe("poe/Claude-Sonnet-4.6");
+      expect(result.modelName).toBe("anthropic/claude-sonnet-4.6");
     }
   });
 
   it("rejects out-of-range index", () => {
     const result = executeModel(makeDeps({
       rawText: "/model 5",
-      favorites: ["poe/A", "poe/B"],
-      cfg: makeConfig(["poe/A", "poe/B"]),
-      currentModelName: "poe/A",
+      favorites: ["openai/model-a", "openai/model-b"],
+      cfg: makeConfig(["openai/model-a", "openai/model-b"]),
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("bad-index");
     expect(result.reply).toContain("Invalid index");
@@ -121,9 +120,9 @@ describe("executeModel", () => {
   it("rejects zero index", () => {
     const result = executeModel(makeDeps({
       rawText: "/model 0",
-      favorites: ["poe/A"],
-      cfg: makeConfig(["poe/A"]),
-      currentModelName: "poe/A",
+      favorites: ["openai/model-a"],
+      cfg: makeConfig(["openai/model-a"]),
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("bad-index");
   });
@@ -131,9 +130,9 @@ describe("executeModel", () => {
   it("rejects negative index", () => {
     const result = executeModel(makeDeps({
       rawText: "/model -1",
-      favorites: ["poe/A"],
-      cfg: makeConfig(["poe/A"]),
-      currentModelName: "poe/A",
+      favorites: ["openai/model-a"],
+      cfg: makeConfig(["openai/model-a"]),
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("bad-index");
   });
@@ -141,9 +140,9 @@ describe("executeModel", () => {
   it("rejects non-numeric argument for unknown model", () => {
     const result = executeModel(makeDeps({
       rawText: "/model foo",
-      favorites: ["poe/A"],
-      cfg: makeConfig(["poe/A"]),
-      currentModelName: "poe/A",
+      favorites: ["openai/model-a"],
+      cfg: makeConfig(["openai/model-a"]),
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("bad-model");
     expect(result.reply).toContain("Unknown MODEL_NAME");
@@ -151,26 +150,26 @@ describe("executeModel", () => {
 
   it("switches to a valid model by direct id", () => {
     const result = executeModel(makeDeps({
-      rawText: "/model poe/Claude-Sonnet-4.6",
-      favorites: ["poe/A"],
-      cfg: makeConfig(["poe/A"]),
-      currentModelName: "poe/A",
+      rawText: "/model anthropic/claude-sonnet-4.6",
+      favorites: ["openai/model-a"],
+      cfg: makeConfig(["openai/model-a"]),
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("set");
     if (result.kind === "set") {
-      expect(result.modelName).toBe("poe/Claude-Sonnet-4.6");
+      expect(result.modelName).toBe("anthropic/claude-sonnet-4.6");
     }
   });
 
   it("rejects model without required API key", () => {
     const result = executeModel(makeDeps({
       rawText: "/model 1",
-      favorites: ["anthropic/claude-sonnet-4.6"],
-      cfg: makeConfig(["anthropic/claude-sonnet-4.6"]),
-      currentModelName: "poe/A",
+      favorites: ["or/needs-or-key"],
+      cfg: makeConfig(["or/needs-or-key"]),
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("bad-model");
-    expect(result.reply).toContain("ANTHROPIC_API_KEY");
+    expect(result.reply).toContain("OPENROUTER_API_KEY");
   });
 
   it("rejects unknown model", () => {
@@ -178,7 +177,7 @@ describe("executeModel", () => {
       rawText: "/model 1",
       favorites: ["unknown/model"],
       cfg: makeConfig(["unknown/model"]),
-      currentModelName: "poe/A",
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("bad-model");
     expect(result.reply).toContain("Unknown MODEL_NAME");
@@ -187,9 +186,9 @@ describe("executeModel", () => {
   it("clears override with 'none'", () => {
     const result = executeModel(makeDeps({
       rawText: "/model none",
-      favorites: ["poe/A"],
-      cfg: makeConfig(["poe/A"]),
-      currentModelName: "poe/A",
+      favorites: ["openai/model-a"],
+      cfg: makeConfig(["openai/model-a"]),
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("cleared");
   });
@@ -197,32 +196,32 @@ describe("executeModel", () => {
   it("clears override with 'clear'", () => {
     const result = executeModel(makeDeps({
       rawText: "/model clear",
-      favorites: ["poe/A"],
-      cfg: makeConfig(["poe/A"]),
-      currentModelName: "poe/A",
+      favorites: ["openai/model-a"],
+      cfg: makeConfig(["openai/model-a"]),
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("cleared");
   });
 
   it("switches to a valid model by direct id even when favorites is empty", () => {
     const result = executeModel(makeDeps({
-      rawText: "/model poe/Claude-Sonnet-4.6",
+      rawText: "/model anthropic/claude-sonnet-4.6",
       favorites: [],
       cfg: makeConfig([]),
-      currentModelName: "poe/A",
+      currentModelName: "openai/model-a",
     }));
     expect(result.kind).toBe("set");
     if (result.kind === "set") {
-      expect(result.modelName).toBe("poe/Claude-Sonnet-4.6");
+      expect(result.modelName).toBe("anthropic/claude-sonnet-4.6");
     }
   });
 
   it("surfaces thinking level clamping when switching to a weaker model", () => {
     const result = executeModel(makeDeps({
-      rawText: "/model poe/gemini-2.5-pro",
-      favorites: ["poe/gemini-2.5-pro"],
-      cfg: makeConfig(["poe/gemini-2.5-pro"]),
-      currentModelName: "poe/Claude-Sonnet-4.6",
+      rawText: "/model openai/gemini-2.5-pro",
+      favorites: ["openai/gemini-2.5-pro"],
+      cfg: makeConfig(["openai/gemini-2.5-pro"]),
+      currentModelName: "anthropic/claude-sonnet-4.6",
       // User has an explicit override of xhigh on a Claude model
       currentThinkingLevel: "xhigh",
       currentResolvedModel: undefined,
@@ -236,10 +235,10 @@ describe("executeModel", () => {
 
   it("does not surface clamping when levels are compatible", () => {
     const result = executeModel(makeDeps({
-      rawText: "/model poe/Claude-Sonnet-4.6",
-      favorites: ["poe/Claude-Sonnet-4.6"],
-      cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
-      currentModelName: "poe/Claude-Sonnet-4.6",
+      rawText: "/model anthropic/claude-sonnet-4.6",
+      favorites: ["anthropic/claude-sonnet-4.6"],
+      cfg: makeConfig(["anthropic/claude-sonnet-4.6"]),
+      currentModelName: "anthropic/claude-sonnet-4.6",
       currentThinkingLevel: "high",
       currentResolvedModel: undefined,
     }));
@@ -251,12 +250,12 @@ describe("executeModel", () => {
   });
 
   it("clamps when switching from a resolved model with a higher default (no user override)", () => {
-    const currentResolved = resolveModel({ ...makeConfig([]), modelName: "poe/Claude-Sonnet-4.6" });
+    const currentResolved = resolveModel({ ...makeConfig([]), modelName: "anthropic/claude-sonnet-4.6" });
     const result = executeModel(makeDeps({
-      rawText: "/model poe/gemini-2.5-pro",
-      favorites: ["poe/gemini-2.5-pro"],
-      cfg: makeConfig(["poe/gemini-2.5-pro"]),
-      currentModelName: "poe/Claude-Sonnet-4.6",
+      rawText: "/model openai/gemini-2.5-pro",
+      favorites: ["openai/gemini-2.5-pro"],
+      cfg: makeConfig(["openai/gemini-2.5-pro"]),
+      currentModelName: "anthropic/claude-sonnet-4.6",
       currentThinkingLevel: undefined, // no user override — uses model default
       currentResolvedModel: currentResolved, // default is "high"
     }));
@@ -270,10 +269,10 @@ describe("executeModel", () => {
 
   it("does not clamp when both models can't be resolved and there's no override", () => {
     const result = executeModel(makeDeps({
-      rawText: "/model poe/Claude-Sonnet-4.6",
-      favorites: ["poe/Claude-Sonnet-4.6"],
-      cfg: makeConfig(["poe/Claude-Sonnet-4.6"]),
-      currentModelName: "poe/Claude-Sonnet-4.6",
+      rawText: "/model anthropic/claude-sonnet-4.6",
+      favorites: ["anthropic/claude-sonnet-4.6"],
+      cfg: makeConfig(["anthropic/claude-sonnet-4.6"]),
+      currentModelName: "anthropic/claude-sonnet-4.6",
       currentThinkingLevel: undefined,
       currentResolvedModel: undefined,
     }));
@@ -287,10 +286,10 @@ describe("executeModel", () => {
   it("surfaces clamping on /model clear when default model has lower support", () => {
     const result = executeModel(makeDeps({
       rawText: "/model clear",
-      // Default model in cfg is poe/Claude-Sonnet-4.6 — supports xhigh
+      // Default model in cfg is anthropic/claude-sonnet-4.6 — supports xhigh
       // so clearing from a model that had xhigh should not clamp
       cfg: makeConfig([]),
-      currentModelName: "poe/Claude-Sonnet-4.6",
+      currentModelName: "anthropic/claude-sonnet-4.6",
       currentThinkingLevel: "high",
       currentResolvedModel: undefined,
     }));

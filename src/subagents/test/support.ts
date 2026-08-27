@@ -244,8 +244,8 @@ export function makeConfig(home: string): Config {
   return Object.freeze({
     botToken: "test-token",
     allowedTgUserIds: new Set<number>([1]),
-    modelName: "poe/test-model",
-    poeApiKey: "test-key",
+    modelName: "openai/test-model",
+    openaiApiKey: "test-key",
     goblinHome: home,
     logLevel: "error",
     toolVisibility: "none",

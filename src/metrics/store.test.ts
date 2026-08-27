@@ -65,7 +65,7 @@ function makeTurnEvent(overrides?: {
     turnStart: overrides?.turnStart ?? "2026-01-01T00:00:00.000Z",
     turnEnd: overrides?.turnEnd ?? "2026-01-01T00:00:01.000Z",
     durationMs: overrides?.durationMs ?? 1000,
-    model: "poe/Claude-Sonnet-4.6",
+    model: "anthropic/claude-sonnet-4.6",
     provider: "poe",
     api: "anthropic-messages",
     usage,

@@ -8,7 +8,6 @@ function makeConfig(modelName: string): Config {
     modelName,
     botToken: "t",
     allowedTgUserIds: "1",
-    poeApiKey: "poe-key",
     openrouterApiKey: "or-key",
     openaiApiKey: "oai-key",
     anthropicApiKey: "ant-key",
@@ -18,20 +17,6 @@ function makeConfig(modelName: string): Config {
 }
 
 describe("resolveModel", () => {
-  it("resolves a hardcoded poe model", () => {
-    const r = resolveModel(makeConfig("poe/gemini-2.5-pro"));
-    expect(r.model.id).toBe("gemini-2.5-pro");
-    expect(r.model.provider).toBe("poe");
-    expect(r.apiKey).toBe("poe-key");
-  });
-
-  it("resolves a dynamic poe/ model not in the registry", () => {
-    const r = resolveModel(makeConfig("poe/some-future-model"));
-    expect(r.model.id).toBe("some-future-model");
-    expect(r.model.provider).toBe("poe");
-    expect(r.apiKey).toBe("poe-key");
-  });
-
   it("resolves a hardcoded or/ model", () => {
     const r = resolveModel(makeConfig("or/openai/gpt-5"));
     expect(r.model.id).toBe("openai/gpt-5");
@@ -83,10 +68,10 @@ describe("resolveModel", () => {
   });
 
   it("hardcoded entry takes priority over dynamic fallback", () => {
-    // poe/gemini-2.5-pro has an explicit entry with 1M context;
-    // dynamic poe/ fallback would give 128k.
-    const r = resolveModel(makeConfig("poe/gemini-2.5-pro"));
-    expect(r.model.contextWindow).toBe(1_000_000);
+    // or/openai/gpt-5 has an explicit entry; the dynamic or/ fallback would
+    // construct an equivalent but distinct Model object.
+    const r = resolveModel(makeConfig("or/openai/gpt-5"));
+    expect(r.model.provider).toBe("openrouter");
   });
 
   it("throws when required API key is missing", () => {
@@ -218,14 +203,14 @@ describe("resolveModel", () => {
 
   // --- thinkingLevelMap inheritance ---
 
-  it("inherits thinkingLevelMap from pi-ai registry for poe/gpt-5.5", () => {
-    const r = resolveModel(makeConfig("poe/gpt-5.5"));
+  it("inherits thinkingLevelMap from pi-ai registry for openai/gpt-5.5", () => {
+    const r = resolveModel(makeConfig("openai/gpt-5.5"));
     // pi-ai's openai provider has xhigh for gpt-5.5
     expect(r.model.thinkingLevelMap).toEqual({ off: null, xhigh: "xhigh" });
   });
 
   it("has no thinkingLevelMap for models without upstream entry", () => {
-    const r = resolveModel(makeConfig("poe/some-future-model"));
+    const r = resolveModel(makeConfig("openai/some-future-model"));
     expect(r.model.thinkingLevelMap).toBeUndefined();
   });
 });

@@ -97,8 +97,8 @@ function makeConfig(): Config {
   return {
     botToken: "123:token",
     allowedTgUserIds: new Set([1]),
-    modelName: "poe/GPT-4o",
-    poeApiKey: "poe-key",
+    modelName: "openai/gpt-5.4",
+    openaiApiKey: "test-key",
     goblinHome,
     logLevel: "error",
     toolVisibility: "standard",

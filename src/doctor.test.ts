@@ -9,8 +9,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Database } from "bun:sqlite";
 import { CURRENT_STATE_VERSION, writeStateVersion } from "./state-version.ts";
+import { MemoryDatabase } from "./memory/db.ts";
 import { memoryDbPath } from "./memory/paths.ts";
 import { sessionsDir } from "./sessions/paths.ts";
 import { ConversationStore } from "./sessions/conversation-store.ts";
@@ -48,7 +48,7 @@ function setupHealthyHome(): string {
   writeFileSync(agentsMdPath(home), "## Test Agents\n");
 
   // Create a valid, empty memory database with the canonical schema.
-  const db = new Database(memoryDbPath(home));
+  const db = new MemoryDatabase(memoryDbPath(home));
   db.close();
 
   // Create one active and one archived conversation.
@@ -126,7 +126,7 @@ describe("bun run doctor", () => {
         writeFileSync(soulMdPath(home), "# Test Goblin\n");
         writeFileSync(agentsMdPath(home), "## Test Agents\n");
 
-        const db = new Database(memoryDbPath(home));
+        const db = new MemoryDatabase(memoryDbPath(home));
         db.close();
 
         const result = runDoctor(home);

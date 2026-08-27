@@ -33,6 +33,14 @@ export interface InterruptableRunner {
    * re-attempt the same wedged abort.
    */
   markAbortTimedOut?(): void;
+  /**
+   * Optional recovery probe: clears the wedge when the runtime has been
+   * observably idle since the abort timed out (the timeout was a false
+   * positive). The cascade consults it before reporting `wedgedMain`, so
+   * a `/cancel` on a recovered runtime either finds nothing to cancel or
+   * legitimately aborts a newer turn.
+   */
+  tryClearAbortTimeout?(): boolean;
 }
 
 /** Minimal shape we need from `SubagentRunner` — keeps testing trivial. */
@@ -162,6 +170,14 @@ export async function interruptAndCascade(
     wedgedMain: false,
   };
 
+  // A wedge is only authoritative while the runtime is observably busy.
+  // If the abort timed out but the backend has since settled, clear the
+  // stale wedge first so `isStreaming` reports live state again and a
+  // newer turn (e.g. queued work that started afterwards) can still be
+  // aborted normally.
+  if (runner?.isAbortTimedOut) {
+    runner.tryClearAbortTimeout?.();
+  }
   if (runner?.isStreaming || runner?.isAbortTimedOut) {
     result.attemptedMain = true;
     if (runner.isAbortTimedOut) {

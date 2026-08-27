@@ -342,7 +342,18 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
   }
 
   const WEDGED_RUNNER_REPLY =
-    "A previous turn is wedged after a failed abort. Use /new or /archive to recover.";
+    "The current turn is still running after a failed cancel. It recovers automatically once it finishes; use /new or /archive to recover now.";
+
+  /**
+   * A wedge only blocks intake while the runtime is observably busy. If
+   * the abort timed out but the backend has since settled, the wedge is
+   * a stale false positive — clear it and treat the runner as healthy,
+   * so the surface recovers on the next message instead of staying
+   * locked until /new or /archive.
+   */
+  function runnerWedged(runner: AgentRunner): boolean {
+    return runner.isAbortTimedOut && !runner.tryClearAbortTimeout();
+  }
 
   function tryResolveModel(cfg: Config, modelName: string): ResolvedModel | undefined {
     try {
@@ -546,7 +557,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         let admittedRunner: AgentRunner | undefined;
         const execute = async (runner: AgentRunner, authority: WorkAuthority): Promise<void> => {
           admittedRunner = runner;
-          if (runner.isAbortTimedOut) {
+          if (runnerWedged(runner)) {
             if (!authority.isCurrent()) return;
             await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
             return;
@@ -569,7 +580,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         // is attempted. Check synchronously via the registered runner to
         // avoid awaiting runner acquisition.
         const existingRunner = dispatcher.getRunner(session.id);
-        if (existingRunner !== null && existingRunner.isAbortTimedOut) {
+        if (existingRunner !== null && runnerWedged(existingRunner)) {
           if (creationLease !== null) lifecycle.sealCreation(creationLease);
           return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
         }
@@ -719,7 +730,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       };
 
       const timing = resolveTiming(def, rawText ?? "");
-      const runnerIsWedged = existingRunner?.isAbortTimedOut === true;
+      const runnerIsWedged = existingRunner !== null && runnerWedged(existingRunner);
       if (timing === "queue" && session && runnerIsWedged && !def?.mayRecoverWedgedRuntime) {
         return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
       }
@@ -870,7 +881,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     // runtime-admission drain (decision 0046).
     const existingRunner = dispatcher.getRunner(session.id);
     if (existingRunner !== null) {
-      if (existingRunner.isAbortTimedOut) {
+      if (runnerWedged(existingRunner)) {
         if (creationLease !== null) lifecycle.sealCreation(creationLease);
         return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
       }
@@ -884,7 +895,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         session,
         surface,
         async (runner, authority) => {
-          if (runner.isAbortTimedOut) {
+          if (runnerWedged(runner)) {
             if (authority.isCurrent()) await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
             return;
           }

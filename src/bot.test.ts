@@ -59,6 +59,12 @@ class MockAgentRunner {
   readonly markAbortTimedOut = mock(() => {
     this.abortTimedOut = true;
   });
+  readonly tryClearAbortTimeout = mock((): boolean => {
+    if (!this.abortTimedOut) return false;
+    if (this.isPrompting || this.streaming) return false;
+    this.abortTimedOut = false;
+    return true;
+  });
   readonly modelName?: string;
   readonly skillsLoaded = null;
   readonly contextTokens = null;

@@ -232,6 +232,58 @@ describe("interruptAndCascade", () => {
     expect(runner.abort).not.toHaveBeenCalled();
   });
 
+  it("clears a stale wedge before deciding and reports nothing to cancel when the runtime settled", async () => {
+    // The abort timed out earlier, but the backend has since gone idle.
+    // tryClearAbortTimeout flips both flags, so the cascade must not
+    // report a wedged main or attempt anything.
+    let cleared = false;
+    const runner: InterruptableRunner = {
+      get isStreaming() {
+        return false;
+      },
+      get isAbortTimedOut() {
+        return !cleared;
+      },
+      abort: mock(async () => {}),
+      tryClearAbortTimeout: mock(() => {
+        cleared = true;
+        return true;
+      }),
+    };
+    const sr = makeSubagentRunner([]);
+    const res = await interruptAndCascade(runner, sr);
+    expect(runner.tryClearAbortTimeout).toHaveBeenCalledTimes(1);
+    expect(res.attemptedMain).toBe(false);
+    expect(res.wedgedMain).toBe(false);
+    expect(res.timedOutMain).toBe(false);
+  });
+
+  it("re-attempts abort on a recovered wedge when a newer turn is streaming", async () => {
+    // A queued turn started after the abort timed out; the stale wedge is
+    // cleared, and the cascade aborts the new turn normally.
+    let cleared = false;
+    const abort = mock(async () => {});
+    const runner: InterruptableRunner = {
+      get isStreaming() {
+        return cleared;
+      },
+      get isAbortTimedOut() {
+        return !cleared;
+      },
+      abort,
+      tryClearAbortTimeout: mock(() => {
+        cleared = true;
+        return true;
+      }),
+    };
+    const sr = makeSubagentRunner([]);
+    const res = await interruptAndCascade(runner, sr);
+    expect(res.attemptedMain).toBe(true);
+    expect(res.wedgedMain).toBe(false);
+    expect(res.timedOutMain).toBe(false);
+    expect(abort).toHaveBeenCalledTimes(1);
+  });
+
   it("tolerates a runner without markAbortTimedOut (optional hook)", async () => {
     // The interface marks markAbortTimedOut as optional; a legacy runner
     // without it shouldn't crash the cascade when abort times out.

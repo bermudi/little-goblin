@@ -36,7 +36,7 @@ export function cancelReply(args: CancelReplyArgs): string {
   // cascade touched anything, be honest about it regardless of session binding.
   if (!attemptedMain && attemptedSubagents === 0 && attemptedExternalAgents === 0) return "Nothing to cancel.";
   if (wedgedMain) {
-    return `The main agent is wedged after a previous abort timed out. Use /new or /archive to recover.${formatCascadeTimeoutSuffix(args.cascade, args.cascadeTimeoutMs)}`;
+    return `The main agent is wedged after a previous abort timed out. It recovers automatically once the current turn finishes; use /new or /archive to recover now.${formatCascadeTimeoutSuffix(args.cascade, args.cascadeTimeoutMs)}`;
   }
   return `Cancelled.${formatCascadeTimeoutSuffix(args.cascade, args.cascadeTimeoutMs)}`;
 }

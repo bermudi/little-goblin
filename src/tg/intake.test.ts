@@ -80,6 +80,12 @@ class MockAgentRunner {
   readonly markAbortTimedOut = mock(() => {
     this.abortTimedOut = true;
   });
+  readonly tryClearAbortTimeout = mock((): boolean => {
+    if (!this.abortTimedOut) return false;
+    if (this.isPrompting || this.streaming) return false;
+    this.abortTimedOut = false;
+    return true;
+  });
   readonly modelName?: string;
 
   constructor(opts: {
@@ -1420,15 +1426,57 @@ describe("Telegram intake", () => {
     const textAdmission = await intake.handleText(message, "what about now");
     expect(textAdmission.kind).toBe("completed");
     await textAdmission.completion;
-    expect(replies.at(-1)).toBe("`[error]` A previous turn is wedged after a failed abort\\. Use /new or /archive to recover\\.");
+    expect(replies.at(-1)).toBe(
+      "`[error]` The current turn is still running after a failed cancel\\. It recovers automatically once it finishes; use /new or /archive to recover now\\.",
+    );
 
     const mediaAdmission = await intake.handlePhoto(message, fakeApi(), ["photo"]);
     expect(mediaAdmission.kind).toBe("completed");
     await mediaAdmission.completion;
-    expect(replies.at(-1)).toBe("`[error]` A previous turn is wedged after a failed abort\\. Use /new or /archive to recover\\.");
+    expect(replies.at(-1)).toBe(
+      "`[error]` The current turn is still running after a failed cancel\\. It recovers automatically once it finishes; use /new or /archive to recover now\\.",
+    );
 
     pending.resolve();
     await flushMicrotasks();
+  });
+
+  it("clears a stale abort-timeout wedge once the turn settles and admits new messages", async () => {
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
+
+    await completeAdmission(intake.handleText(message, "/new"));
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    // The abort cascade gave up while the turn was genuinely still running.
+    runners[0]!.markAbortTimedOut();
+    const blocked = await intake.handleText(message, "hello?");
+    expect(blocked.kind).toBe("completed");
+    await blocked.completion;
+    expect(replies.at(-1)).toContain("still running after a failed cancel");
+
+    // The turn settles: the abort timeout was a false positive, so the
+    // wedge is now stale. The next message clears it and prompts normally
+    // instead of demanding /new or /archive (issue #50).
+    pending.resolve();
+    await flushMicrotasks();
+    expect(runners[0]!.isStreaming).toBe(false);
+
+    MockAgentRunner.nextPrompt = undefined;
+    const promptCallsBefore = runners[0]!.prompt.mock.calls.length;
+    const repliesBefore = replies.length;
+    const admitted = await intake.handleText(message, "sorry mate");
+    await admitted.completion;
+
+    expect(runners[0]!.isAbortTimedOut).toBe(false);
+    expect(runners[0]!.prompt.mock.calls.length).toBe(promptCallsBefore + 1);
+    // The message was admitted as a normal model turn: no new system reply
+    // (wedge guidance or otherwise) was sent.
+    expect(replies.length).toBe(repliesBefore);
   });
 
   it("propagates revival attachment failure before any admission decision", async () => {
@@ -1494,7 +1542,9 @@ describe("Telegram intake", () => {
     const compactAdmission = await intake.handleText(message, "/compact");
     expect(compactAdmission.kind).toBe("completed");
     await compactAdmission.completion;
-    expect(replies.at(-1)).toBe("`[error]` A previous turn is wedged after a failed abort\\. Use /new or /archive to recover\\.");
+    expect(replies.at(-1)).toBe(
+      "`[error]` The current turn is still running after a failed cancel\\. It recovers automatically once it finishes; use /new or /archive to recover now\\.",
+    );
 
     await completeAdmission(intake.handleText(message, "/archive"));
 

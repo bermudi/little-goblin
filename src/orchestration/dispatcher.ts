@@ -1054,7 +1054,10 @@ export class TurnDispatcher {
         if (!authority.adoptCurrentRunner(runner)) return;
       }
       if (!authority.isCurrent()) return;
-      if (runner.isAbortTimedOut) {
+      // A wedge only holds while the runtime is observably busy; a stale
+      // wedge (the abort timed out but the turn has since settled) is
+      // cleared so scheduled work proceeds on the recovered runtime.
+      if (runner.isAbortTimedOut && !runner.tryClearAbortTimeout()) {
         const error = new Error("Scheduled turn dropped: runner is wedged after abort timed out");
         log.warn(error.message, {
           sessionId: session.id,

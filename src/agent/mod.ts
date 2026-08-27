@@ -196,11 +196,16 @@ export class AgentRunner {
   private goblinSystemPrompt: GoblinSystemPrompt | null = null;
   /**
    * Sticky flag set by the interrupt layer when a prior `abort()` did not
-   * resolve within the cascade timeout. Once set, `isStreaming` reports
+   * resolve within the cascade timeout. While set, `isStreaming` reports
    * false and `abort()` is a no-op — we've already given up on the
    * in-flight abort, so a second call (from another cancel-capable
    * command) would just hit pi's abort path again on a session in an
    * undefined state.
+   *
+   * The flag is a liveness claim ("a turn may still be unsettled"), not a
+   * permanent verdict: `tryClearAbortTimeout()` clears it once the
+   * runtime is observably idle again, because a settled turn proves the
+   * abort timeout was a false positive.
    */
   private _abortTimedOut: boolean = false;
   /**
@@ -545,10 +550,31 @@ export class AgentRunner {
   /**
    * Mark this runner's current abort as having timed out. Called by the
    * interrupt layer when `abort()` didn't resolve within the cascade
-   * budget. Sticky until `dispose()`.
+   * budget. Held until the runtime is observably idle again (see
+   * `tryClearAbortTimeout`) or `dispose()`.
    */
   markAbortTimedOut(): void {
     this._abortTimedOut = true;
+  }
+
+  /**
+   * Attempt to clear the abort-timeout wedge by re-checking runtime
+   * liveness. The wedge claims "a turn may still be unsettled because we
+   * stopped waiting for its abort"; once no `prompt()` is in flight, no
+   * initialization is in flight, and the backend is not streaming, the
+   * outstanding turn has settled and the wedge is stale — the cascade
+   * timeout was a false positive (the abort may even have landed late).
+   *
+   * Clearing re-enables `abort()`, `prompt()`, and `compact()`. Synchronous
+   * so callers can fold it into a guard check atomically. Returns true
+   * iff a wedge was present and has just been cleared.
+   */
+  tryClearAbortTimeout(): boolean {
+    if (!this._abortTimedOut) return false;
+    if (this._prompting || this._initInProgress || this.backend.isStreaming) return false;
+    this._abortTimedOut = false;
+    log.info("cleared stale abort-timeout wedge: runtime settled", { sessionId: this.sessionId });
+    return true;
   }
 
   /**

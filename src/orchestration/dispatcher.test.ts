@@ -69,6 +69,13 @@ class FakeAgentRunner {
     return this._isAbortTimedOut;
   }
 
+  tryClearAbortTimeout(): boolean {
+    if (!this._isAbortTimedOut) return false;
+    if (this._isPrompting || this._isStreaming) return false;
+    this._isAbortTimedOut = false;
+    return true;
+  }
+
   get modelName(): string {
     return this._modelName;
   }
@@ -85,7 +92,10 @@ class FakeAgentRunner {
 
   async setModel(_modelName: string): Promise<void> {}
   setThinkingLevel(_level: string | undefined): void {}
-  async prompt(_content: unknown, _sink: unknown): Promise<void> {}
+  promptCalls = 0;
+  async prompt(_content: unknown, _sink: unknown): Promise<void> {
+    this.promptCalls += 1;
+  }
   async abort(): Promise<void> {}
   async followUp(_content: unknown): Promise<void> {}
   async compact(_instructions?: string): Promise<unknown> {
@@ -308,6 +318,9 @@ it("reports a wedged scheduled runner as an error instead of silently dropping i
   const conversation = makeSession("scheduled-wedged");
   const runner = new FakeAgentRunner();
   runner._isAbortTimedOut = true;
+  // The wedge only holds while the runtime is observably busy: the turn
+  // the abort gave up on is still streaming.
+  runner._isStreaming = true;
   registerTestSurfaceRunner(runtimeHost, conversation.id, runner as unknown as AgentRunner);
   const errors: unknown[] = [];
 
@@ -324,6 +337,30 @@ it("reports a wedged scheduled runner as an error instead of silently dropping i
   expect(errors).toHaveLength(1);
   expect(errors[0]).toBeInstanceOf(Error);
   expect((errors[0] as Error).message).toContain("runner is wedged");
+});
+
+it("clears a stale abort-timeout wedge and runs the scheduled turn on the recovered runtime", async () => {
+  const { dispatcher, runtimeHost } = buildDispatcher();
+  const conversation = makeSession("scheduled-stale-wedge");
+  const runner = new FakeAgentRunner();
+  // The abort timed out earlier, but the runtime has since settled: the
+  // wedge is a stale false positive and must not drop scheduled work.
+  runner._isAbortTimedOut = true;
+  registerTestSurfaceRunner(runtimeHost, conversation.id, runner as unknown as AgentRunner);
+  const errors: unknown[] = [];
+
+  const admission = dispatcher.enqueueScheduledTurn(
+    conversation,
+    dmSurface(1),
+    "scheduled work",
+    (error) => { errors.push(error); },
+  );
+
+  if (typeof admission === "boolean") throw new Error("expected scheduled turn admission handle");
+  expect(await admission.started).toBe(true);
+  await runtimeHost.disposeAll();
+  expect(errors).toHaveLength(0);
+  expect(runner.promptCalls).toBe(1);
 });
 
 class FakeBindingGuard implements SurfaceRuntimeAuthority {

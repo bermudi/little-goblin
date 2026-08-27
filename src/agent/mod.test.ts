@@ -1188,6 +1188,39 @@ describe("AgentRunner", () => {
       }).toThrow("Cannot steer: session is not streaming.");
       expect(sessionHolder.followUp).not.toHaveBeenCalled();
     });
+
+    it("tryClearAbortTimeout clears the wedge once the backend settles and re-enables the runner", async () => {
+      const runner = await makeRunner(tmpDir);
+      await runner.prompt("first", nopCallbacks());
+      sessionHolder.streaming = true;
+      runner.markAbortTimedOut();
+
+      // The turn settles: the abort timeout was a false positive.
+      sessionHolder.streaming = false;
+      expect(runner.tryClearAbortTimeout()).toBe(true);
+      expect(runner.isAbortTimedOut).toBe(false);
+      // Nothing left to clear — a healthy runner reports false.
+      expect(runner.tryClearAbortTimeout()).toBe(false);
+
+      // prompt() and abort() work again on the recovered runtime.
+      await runner.prompt("second", nopCallbacks());
+      expect(sessionHolder.sendUserMessage).toHaveBeenCalledTimes(2);
+      await runner.abort();
+      expect(sessionHolder.abort).toHaveBeenCalledTimes(1);
+    });
+
+    it("tryClearAbortTimeout refuses while the backend is still streaming", async () => {
+      const runner = await makeRunner(tmpDir);
+      await runner.prompt("first", nopCallbacks());
+      sessionHolder.streaming = true;
+      runner.markAbortTimedOut();
+
+      expect(runner.tryClearAbortTimeout()).toBe(false);
+      expect(runner.isAbortTimedOut).toBe(true);
+      await expect(runner.prompt("recovery", nopCallbacks())).rejects.toThrow(
+        "wedged after a failed abort",
+      );
+    });
   });
 
   describe("Poe image-only prompt normalization", () => {

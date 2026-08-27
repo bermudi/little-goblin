@@ -97,6 +97,8 @@ describe("cancelReply", () => {
         cascade: { attemptedMain: true, attemptedSubagents: 0, attemptedExternalAgents: 0, timedOutMain: false, timedOutSubagents: 0, timedOutExternalAgents: 0, wedgedMain: true },
         cascadeTimeoutMs: 5000,
       }),
-    ).toBe("The main agent is wedged after a previous abort timed out. Use /new or /archive to recover.");
+    ).toBe(
+      "The main agent is wedged after a previous abort timed out. It recovers automatically once the current turn finishes; use /new or /archive to recover now.",
+    );
   });
 });

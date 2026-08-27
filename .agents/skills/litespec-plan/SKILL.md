@@ -53,9 +53,29 @@ Grill by default: load `references/grilling.md` and ask one question at a time t
 
 1. Run `git status --porcelain`. If it is not empty, stop: planning must start from a clean tree so pre-existing work cannot enter the issue.
 2. Record `Base:` from `git rev-parse HEAD`, create and switch to the dedicated `litespec/<change-name>` branch, and record it as `Branch:`. Stop if that branch already exists; do not reuse it.
-3. Write the GH issue body with the `litespec` label — `Base: <sha>` and `Branch: <branch>` near the top, then one `## <outcome>` per unit, each with `Done means:` + `Verify:` + `- [ ]` checkbox and optional `Read first:` / `Constraints:` / `Depends:`. One unit = one demo + one Verify that fails without it. `Read first:` is context (areas/rulings, not file lists), `Constraints:` is boundaries (what must stay true or out of bounds — never what to edit); both optional, unique, nonempty — omit rather than placeholder. If `gh` is unavailable, write the same body to `specs/queues/<name>.md`, where `<name>` is the change name chosen during `plan[clear]`.
+3. Write the GH issue body with the `litespec` label — `Base: <sha>` and `Branch: <branch>` near the top, then one `## <outcome>` per unit, each with `Done means:` + `Verify:` + `- [ ]` checkbox and optional `Read first:` / `Constraints:` / `Depends:`. One unit = one demo + one Verify that fails without it. Prose-only units are banned — documentation and explanation ride along with the unit whose behavior they describe, never as their own unit. `Read first:` is context (areas/rulings, not file lists), `Constraints:` is boundaries (what must stay true or out of bounds — never what to edit); both optional, unique, nonempty — omit rather than placeholder. If `gh` is unavailable, write the same body to `specs/queues/<name>.md`, where `<name>` is the change name chosen during `plan[clear]`.
 4. If load-bearing (CLI shape, API, file format that breaks things when wrong), edit `specs/<feature>/spec.md` directly — 3-5 SHALL requirements with WHEN/THEN scenarios.
 5. Run `litespec validate`. Fix formatting before handing off.
+
+---
+
+## Amending a unit contract
+
+Plan is the only actor that may change a unit contract; build and review never do. A contract change is witnessed, append-only:
+
+1. Run `litespec digest --issue <N>` (or `--queue <path>`) and record the unit's current digest.
+2. Edit the unit's contract fields (heading, `Read first:`, `Constraints:`, `Depends:`, `Done means:`, `Verify:`) directly in the queue — on GitHub this is a deliberate plan-owned body edit, locally an edit to `specs/queues/<name>.md`.
+3. Re-run `litespec digest` and post the witness — GitHub: one comment with the record below; local: append the same block at the end of the queue file as a separate clean metadata commit:
+   ```text
+   Amendment:
+   Unit occurrence: <positive 1-based occurrence>
+   Unit heading: <exact post-amendment heading>
+   Old digest: <64 lowercase hex>
+   New digest: <64 lowercase hex>
+   Reason: <one line>
+   ```
+   Identity fields carry the post-amendment identity because the heading itself may have renamed.
+4. The amendment leaves the checked unit selectable but unresolved until build posts a fresh identity-bearing receipt whose `unit digest:` equals `New digest:`. Validate enforces the chain: every observed digest must connect to the current contract digest through amendment edges.
 
 ---
 

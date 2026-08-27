@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly BASE_SHA="9d57a5ce1cd410e552ad9cbc2f9df6cd5ccf4a87"
-readonly EXPECTED_LITESPEC_VERSION="litespec v2.0.0-beta.8"
+readonly EXPECTED_LITESPEC_VERSION="litespec v2.0.0-beta.10"
 
 fail() {
   printf 'litespec adoption verification failed: %s\n' "$*" >&2
@@ -79,7 +79,7 @@ if git diff --name-only "$BASE_SHA"..HEAD -- src e2e package.json bun.lock tscon
   fail "runtime, tests, or dependencies changed during workflow migration"
 fi
 
-# beta.8's generator intentionally reproduces its embedded templates byte-for-byte,
+# beta.10's generator intentionally reproduces its embedded templates byte-for-byte,
 # including their existing terminal blank line. Check every hand-maintained path.
 git diff --check "$BASE_SHA"..HEAD -- . ':(exclude).agents/skills/litespec-*'
 

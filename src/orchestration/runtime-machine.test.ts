@@ -622,6 +622,35 @@ describe("RuntimeMachine queue and serial executor", () => {
     await m.queueSettled();
     expect(fenced).toBe(true);
   });
+
+  it("fences a bootstrap entry after adoption when the epoch bumps mid-prompt", async () => {
+    // Cold scheduled work (no runner at enqueue) adopts the registered
+    // runner before prompting. Adoption must not short-circuit the
+    // post-await fence: if the epoch bumps while the prompt is in flight
+    // (e.g. a concurrent /new), the executor's post-run authority check
+    // still reports the entry fenced instead of settling it as current.
+    const m = makeMachine();
+    const promptSettled = deferred<void>();
+    let fenced = false;
+    let errored = false;
+    m.schedule(
+      { kind: "bootstrap" },
+      async (authority) => {
+        const runner = fakeRunner();
+        registerSurface(m, runner);
+        if (!authority.adoptCurrentRunner(runner)) throw new Error("adoption failed");
+        await promptSettled.promise;
+      },
+      async () => { errored = true; },
+      { onFenced: () => { fenced = true; } },
+    );
+    // The prompt is in flight on an adopted runner when the binding turns.
+    m.invalidate("binding-change");
+    promptSettled.resolve(undefined);
+    await m.queueSettled();
+    expect(fenced).toBe(true);
+    expect(errored).toBe(false);
+  });
 });
 
 describe("RuntimeMachine immediate runtime admission", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 import {
+  archiveDir,
   sessionsDir,
   sessionDir,
   statePath,
@@ -22,6 +23,10 @@ describe("sessions paths", () => {
 
   it("resolves the sessions root under state/", () => {
     expect(sessionsDir(home)).toBe(join(home, "state", "sessions"));
+  });
+
+  it("resolves the archive directory under sessions/", () => {
+    expect(archiveDir(home)).toBe(join(home, "state", "sessions", "archive"));
   });
 
   it("resolves a session directory by id", () => {

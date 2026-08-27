@@ -27,6 +27,10 @@ export function sessionsDir(home: string): string {
   return join(home, "state", "sessions");
 }
 
+export function archiveDir(home: string): string {
+  return join(sessionsDir(home), "archive");
+}
+
 export function sessionDir(home: string, id: string): string {
   validateSessionId(id);
   return join(sessionsDir(home), id);

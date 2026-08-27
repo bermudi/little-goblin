@@ -270,4 +270,23 @@ describe("MemoryDatabase", () => {
     const d = createDb();
     expect(() => d.close()).not.toThrow();
   });
+
+  it("readonly mode opens an existing database without running migrations", () => {
+    if (!tmp) throw new Error("tmp directory not initialized");
+    const path = join(tmp, "readonly.sqlite");
+    const created = new MemoryDatabase(path);
+    created.setMeta("test-key", "test-value");
+    created.close();
+
+    const ro = new MemoryDatabase(path, { readonly: true });
+    expect(ro.getMeta("test-key")).toBe("test-value");
+    expect(() => ro.setMeta("other", "value")).toThrow("readonly");
+    ro.close();
+  });
+
+  it("readonly mode rejects a missing database file", () => {
+    if (!tmp) throw new Error("tmp directory not initialized");
+    const path = join(tmp, "nonexistent.sqlite");
+    expect(() => new MemoryDatabase(path, { readonly: true })).toThrow();
+  });
 });

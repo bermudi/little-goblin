@@ -11,15 +11,15 @@
 import { readdirSync, statSync, statfsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Database } from "bun:sqlite";
 import { loadConfig } from "./config.ts";
 import type { Config } from "./config.ts";
 import { resolveModel } from "./agent/models.ts";
 import type { ResolvedModel } from "./agent/models.ts";
 import { ConversationStore } from "./sessions/conversation-store.ts";
 import { isValidConversationId } from "./sessions/conversation.ts";
-import { sessionsDir } from "./sessions/paths.ts";
+import { archiveDir } from "./sessions/paths.ts";
 import { memoryDbPath } from "./memory/paths.ts";
+import { MemoryDatabase } from "./memory/db.ts";
 import { MemoryBudget } from "./memory/budget.ts";
 import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
 import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
@@ -129,10 +129,10 @@ async function checkGoblinHomeDirs(home: string): Promise<Check> {
 
 async function checkMemory(home: string): Promise<Check> {
   const dbPath = memoryDbPath(home);
-  let db: Database | undefined;
+  let db: MemoryDatabase | undefined;
 
   try {
-    db = new Database(dbPath, { readonly: true });
+    db = new MemoryDatabase(dbPath, { readonly: true });
   } catch (err) {
     return {
       name: "memory",
@@ -142,29 +142,21 @@ async function checkMemory(home: string): Promise<Check> {
   }
 
   try {
-    const countRow = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM memory_entries").get();
-    const entryCount = countRow?.count ?? 0;
+    const entryCount = db.database
+      .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM memory_entries")
+      .get()?.count ?? 0;
 
-    const usageRow = db
-      .query<{ total: number }, []>(
-        "SELECT COALESCE(SUM(LENGTH(text)), 0) AS total FROM memory_entries WHERE entry_kind IN ('memory', 'user') AND scope NOT LIKE 'archive/%'",
-      )
-      .get();
-    const current = usageRow?.total ?? 0;
-    const budget = new MemoryBudget().budgetChars;
+    const budget = new MemoryBudget();
+    const usage = budget.usage(db);
 
-    const modelMeta = db.query<{ value: string }, []>("SELECT value FROM memory_meta WHERE key = 'embedding_model'").get();
-    const providerMeta = db.query<{ value: string }, []>("SELECT value FROM memory_meta WHERE key = 'embedding_provider'").get();
-    const reindexingMeta = db.query<{ value: string }, []>("SELECT value FROM memory_meta WHERE key = 'reindexing'").get();
-
-    const model = modelMeta?.value ?? process.env.GOBLIN_MEMORY_EMBEDDING_MODEL ?? "text-embedding-3-small";
-    const provider = providerMeta?.value ?? process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER ?? "openai";
-    const reindexing = reindexingMeta?.value === "true";
+    const model = db.getMeta("embedding_model") ?? process.env.GOBLIN_MEMORY_EMBEDDING_MODEL ?? "text-embedding-3-small";
+    const provider = db.getMeta("embedding_provider") ?? process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER ?? "openai";
+    const reindexing = db.getMeta("reindexing") === "true";
     const degraded = reindexing;
 
-    const syncMeta = db.query<{ value: string }, []>("SELECT value FROM memory_meta WHERE key = 'last_transcript_sync'").get();
-    const lastSync = syncMeta?.value
-      ? new Date(Number.parseInt(syncMeta.value, 10)).toISOString()
+    const syncMeta = db.getMeta("last_transcript_sync");
+    const lastSync = syncMeta
+      ? new Date(Number.parseInt(syncMeta, 10)).toISOString()
       : "never";
 
     const size = (() => {
@@ -178,7 +170,7 @@ async function checkMemory(home: string): Promise<Check> {
     return {
       name: "memory",
       ok: true,
-      detail: `${entryCount} entries, budget ${current} / ${budget} chars, embedding ${model} (${provider}) ${degraded ? "degraded" : "ok"}, last sync ${lastSync}, db ${formatBytes(size)}`,
+      detail: `${entryCount} entries, budget ${usage.current} / ${usage.budget} chars, embedding ${model} (${provider}) ${degraded ? "degraded" : "ok"}, last sync ${lastSync}, db ${formatBytes(size)}`,
     };
   } catch (err) {
     return {
@@ -196,12 +188,12 @@ async function checkConversations(home: string): Promise<Check> {
     const store = new ConversationStore(home);
     const active = store.list().length;
 
-    const archiveDir = join(sessionsDir(home), "archive");
+    const archive = archiveDir(home);
     let archived = 0;
     try {
-      for (const id of readdirSync(archiveDir)) {
+      for (const id of readdirSync(archive)) {
         if (!isValidConversationId(id)) continue;
-        const stateFile = join(archiveDir, id, "state.json");
+        const stateFile = join(archive, id, "state.json");
         try {
           if (statSync(stateFile).isFile()) archived++;
         } catch {

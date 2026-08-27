@@ -12,14 +12,33 @@ export class MemoryDatabase {
   private db: Database;
   private vectorWeight: number;
   private textWeight: number;
+  private readonly readOnly: boolean;
 
-  constructor(dbPath: string) {
-    this.db = new Database(dbPath, { create: true });
+  constructor(dbPath: string, options?: { readonly?: boolean }) {
+    this.readOnly = options?.readonly ?? false;
+    this.db = new Database(dbPath, this.readOnly ? { readonly: true } : { create: true });
     this.vectorWeight = clampWeight(process.env.GOBLIN_MEMORY_VECTOR_WEIGHT, 0.7);
     this.textWeight = clampWeight(process.env.GOBLIN_MEMORY_TEXT_WEIGHT, 0.3);
     if (this.vectorWeight + this.textWeight === 0) {
       this.vectorWeight = 0.7;
       this.textWeight = 0.3;
+    }
+
+    if (this.readOnly) {
+      // Readonly mode: verify the schema is present but do not run DDL or
+      // migrations. The database must already be initialized.
+      try {
+        const current = this.readSchemaVersion();
+        if (current > MEMORY_SCHEMA_VERSION) {
+          throw new Error(
+            `memory schema version ${current} is newer than supported ${MEMORY_SCHEMA_VERSION}`,
+          );
+        }
+      } catch (error) {
+        this.db.close();
+        throw error;
+      }
+      return;
     }
 
     try {
@@ -140,6 +159,7 @@ export class MemoryDatabase {
   }
 
   setMeta(key: string, value: string): void {
+    if (this.readOnly) throw new Error("cannot setMeta on a readonly MemoryDatabase");
     this.db
       .query(
         `INSERT OR REPLACE INTO memory_meta (key, value, updated_at) VALUES ($key, $value, $updated_at)`,

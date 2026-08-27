@@ -5,7 +5,7 @@ import { environmentsEqual, type ExecutionEnvironment } from "./environment.ts";
 import type { ConversationId, ConversationState } from "./types.ts";
 import { isValidConversationId, makeConversationId, validateConversationId } from "./conversation.ts";
 import { loadConversationState, saveConversationState } from "./state.ts";
-import { metricsPath, sessionDir, sessionsDir, statePath, transcriptPath } from "./paths.ts";
+import { archiveDir, metricsPath, sessionDir, sessionsDir, statePath, transcriptPath } from "./paths.ts";
 
 /**
  * Initialize the on-disk artifacts for a new conversation in the legacy
@@ -70,7 +70,7 @@ export class ConversationStore {
    */
   createWithId(env: ExecutionEnvironment, id: ConversationId, title?: string): ConversationState {
     validateConversationId(id);
-    if (existsSync(sessionDir(this.home, id)) || existsSync(join(sessionsDir(this.home), "archive", id))) {
+    if (existsSync(sessionDir(this.home, id)) || existsSync(join(archiveDir(this.home), id))) {
       throw new Error(`conversation ${id} already exists`);
     }
     return this.writeNewConversation(env, id, title);
@@ -84,7 +84,7 @@ export class ConversationStore {
    */
   createPlannedWithId(env: ExecutionEnvironment, id: ConversationId, title?: string): ConversationState {
     validateConversationId(id);
-    if (existsSync(join(sessionsDir(this.home), "archive", id))) {
+    if (existsSync(join(archiveDir(this.home), id))) {
       throw new Error(`planned conversation ${id} is already archived`);
     }
     if (existsSync(statePath(this.home, id))) {
@@ -189,7 +189,7 @@ export class ConversationStore {
     if (!existsSync(src)) {
       throw new Error(`conversation not found or already archived: ${id}`);
     }
-    const archiveBase = join(sessionsDir(this.home), "archive");
+    const archiveBase = archiveDir(this.home);
     mkdirSync(archiveBase, { recursive: true });
     const dst = join(archiveBase, id);
     if (existsSync(dst)) {
@@ -204,7 +204,7 @@ export class ConversationStore {
   deleteConversation(id: ConversationId): void {
     validateConversationId(id);
     const src = sessionDir(this.home, id);
-    const archivePath = join(sessionsDir(this.home), "archive", id);
+    const archivePath = join(archiveDir(this.home), id);
     try {
       if (existsSync(src)) {
         rmSync(src, { recursive: true, force: true });
@@ -225,7 +225,7 @@ export class ConversationStore {
   allocateId(): ConversationId {
     for (let attempts = 0; attempts < 100; attempts += 1) {
       const id = makeConversationId();
-      if (!existsSync(sessionDir(this.home, id)) && !existsSync(join(sessionsDir(this.home), "archive", id))) {
+      if (!existsSync(sessionDir(this.home, id)) && !existsSync(join(archiveDir(this.home), id))) {
         return id;
       }
     }

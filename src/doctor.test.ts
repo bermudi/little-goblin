@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -12,29 +11,22 @@ import { join } from "node:path";
 import { CURRENT_STATE_VERSION, writeStateVersion } from "./state-version.ts";
 import { MemoryDatabase } from "./memory/db.ts";
 import { memoryDbPath } from "./memory/paths.ts";
-import { sessionsDir } from "./sessions/paths.ts";
+import { archiveDir, sessionsDir } from "./sessions/paths.ts";
 import { ConversationStore } from "./sessions/conversation-store.ts";
 import { personalEnvironment } from "./sessions/environment.ts";
 import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
-import "./doctor.ts";
+import { runDoctor, type ConnectivityProbes } from "./doctor.ts";
 
-interface TestConnectivityProbes {
-  checkTelegramToken?: (...args: unknown[]) => Promise<void>;
-  checkModelProvider?: (...args: unknown[]) => Promise<void>;
-  checkEdgeTtsAvailable?: (...args: unknown[]) => Promise<void>;
-  checkGroqAsrAvailable?: (...args: unknown[]) => Promise<void>;
-  checkExternalAgents?: (...args: unknown[]) => Promise<void>;
-  checkMcp?: (...args: unknown[]) => Promise<void>;
-}
-
-type TestDoctorResult = {
+interface TestDoctorResult {
   exitCode: number;
   lines: readonly string[];
+}
+
+const noopProbes: ConnectivityProbes = {
+  checkTelegramToken: async () => {},
+  checkModelProvider: async () => {},
+  checkEdgeTtsAvailable: async () => {},
 };
-
-const repoRoot = join(import.meta.dir, "..");
-
-type SpawnEnv = Record<string, string | undefined>;
 
 function buildConfigContent(): string {
   return `{
@@ -75,41 +67,42 @@ function setupHealthyHome(): string {
   if (!existsSync(join(sessionsDir(home), active.id))) {
     throw new Error("active conversation directory was not created");
   }
-  if (!existsSync(join(sessionsDir(home), "archive", toArchive.id))) {
+  if (!existsSync(join(archiveDir(home), toArchive.id))) {
     throw new Error("archived conversation directory was not created");
   }
 
   return home;
 }
 
-function runDoctor(home: string, extraEnv: SpawnEnv = {}): ReturnType<typeof spawnSync> {
-  return spawnSync(process.execPath, [join(import.meta.dir, "doctor.ts")], {
-    cwd: repoRoot,
-    encoding: "utf-8",
-    timeout: 15_000,
-    env: {
-      GOBLIN_HOME: home,
-      HOME: process.env.HOME,
-      PATH: process.env.PATH,
-      NO_COLOR: "1",
-      ...extraEnv,
-    },
-  });
+async function callDoctor(
+  home: string,
+  opts?: { strict?: boolean; probes?: ConnectivityProbes },
+): Promise<TestDoctorResult> {
+  const previousHome = process.env.GOBLIN_HOME;
+  try {
+    process.env.GOBLIN_HOME = home;
+    const result = await runDoctor(opts);
+    return { exitCode: result.exitCode, lines: result.lines };
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.GOBLIN_HOME;
+    } else {
+      process.env.GOBLIN_HOME = previousHome;
+    }
+  }
 }
 
 describe("bun run doctor", () => {
   it(
     "exits 0 in a healthy GOBLIN_HOME and prints the required checks",
-    () => {
+    async () => {
       const home = setupHealthyHome();
       try {
-        const result = runDoctor(home);
+        const result = await callDoctor(home, { probes: noopProbes });
 
-        const output = `${result.stdout}\n${result.stderr}`;
+        const output = result.lines.join("\n");
 
-        expect(result.error).toBeUndefined();
-        expect(result.signal).toBeNull();
-        expect(result.status).toBe(0);
+        expect(result.exitCode).toBe(0);
         expect(output).toContain("state version");
         expect(output).toContain("memory");
         expect(output).toContain("config");
@@ -125,7 +118,7 @@ describe("bun run doctor", () => {
 
   it(
     "exits 1 and names the state version failure when state-version is mismatched",
-    () => {
+    async () => {
       const home = mkdtempSync(join(tmpdir(), "goblin-doctor-mismatch-"));
       try {
         mkdirSync(join(home, "workspace"), { recursive: true });
@@ -143,12 +136,10 @@ describe("bun run doctor", () => {
         const db = new MemoryDatabase(memoryDbPath(home));
         db.close();
 
-        const result = runDoctor(home);
-        const output = `${result.stdout}\n${result.stderr}`;
+        const result = await callDoctor(home, { probes: noopProbes });
+        const output = result.lines.join("\n");
 
-        expect(result.error).toBeUndefined();
-        expect(result.signal).toBeNull();
-        expect(result.status).toBe(1);
+        expect(result.exitCode).toBe(1);
         expect(output).toContain("state version");
       } finally {
         rmSync(home, { recursive: true, force: true });
@@ -163,26 +154,10 @@ describe("runDoctor connectivity", () => {
     "exits 0 in strict mode when all configured probes pass",
     async () => {
       const home = setupHealthyHome();
-      const previousHome = process.env.GOBLIN_HOME;
       try {
-        process.env.GOBLIN_HOME = home;
-        const mod = (await import("./doctor.ts")) as unknown as Record<string, unknown>;
-        expect(typeof mod.runDoctor).toBe("function");
-
-        const runDoctor = mod.runDoctor as unknown as (
-          opts?: {
-            strict?: boolean;
-            probes?: TestConnectivityProbes;
-          },
-        ) => Promise<TestDoctorResult>;
-
-        const result = await runDoctor({
+        const result = await callDoctor(home, {
           strict: true,
-          probes: {
-            checkTelegramToken: async () => {},
-            checkModelProvider: async () => {},
-            checkEdgeTtsAvailable: async () => {},
-          },
+          probes: noopProbes,
         });
 
         expect(result.exitCode).toBe(0);
@@ -191,11 +166,6 @@ describe("runDoctor connectivity", () => {
         expect(output).toContain("model provider");
         expect(output).toContain("Edge TTS");
       } finally {
-        if (previousHome === undefined) {
-          delete process.env.GOBLIN_HOME;
-        } else {
-          process.env.GOBLIN_HOME = previousHome;
-        }
         rmSync(home, { recursive: true, force: true });
       }
     },
@@ -206,20 +176,8 @@ describe("runDoctor connectivity", () => {
     "exits 1 in strict mode when the model provider is unreachable",
     async () => {
       const home = setupHealthyHome();
-      const previousHome = process.env.GOBLIN_HOME;
       try {
-        process.env.GOBLIN_HOME = home;
-        const mod = (await import("./doctor.ts")) as unknown as Record<string, unknown>;
-        expect(typeof mod.runDoctor).toBe("function");
-
-        const runDoctor = mod.runDoctor as unknown as (
-          opts?: {
-            strict?: boolean;
-            probes?: TestConnectivityProbes;
-          },
-        ) => Promise<TestDoctorResult>;
-
-        const result = await runDoctor({
+        const result = await callDoctor(home, {
           strict: true,
           probes: {
             checkTelegramToken: async () => {},
@@ -235,11 +193,6 @@ describe("runDoctor connectivity", () => {
         expect(output).toContain("model provider");
         expect(output).toContain("unreachable");
       } finally {
-        if (previousHome === undefined) {
-          delete process.env.GOBLIN_HOME;
-        } else {
-          process.env.GOBLIN_HOME = previousHome;
-        }
         rmSync(home, { recursive: true, force: true });
       }
     },

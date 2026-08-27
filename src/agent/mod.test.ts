@@ -1170,7 +1170,7 @@ describe("AgentRunner", () => {
 
       // A wedged turn is treated as broken — do not start another turn.
       await expect(runner.prompt("recovery", nopCallbacks())).rejects.toThrow(
-        "wedged after a failed abort",
+        "still running after a failed cancel",
       );
       expect(sessionHolder.sendUserMessage).toHaveBeenCalledTimes(1);
     });
@@ -1218,7 +1218,7 @@ describe("AgentRunner", () => {
       expect(runner.tryClearAbortTimeout()).toBe(false);
       expect(runner.isAbortTimedOut).toBe(true);
       await expect(runner.prompt("recovery", nopCallbacks())).rejects.toThrow(
-        "wedged after a failed abort",
+        "still running after a failed cancel",
       );
     });
   });
@@ -1849,7 +1849,7 @@ describe("AgentRunner", () => {
       await runner.prompt("hi", nopCallbacks());
       runner.markAbortTimedOut();
 
-      await expect(runner.compact()).rejects.toThrow("previous abort timed out");
+      await expect(runner.compact()).rejects.toThrow("Cannot compact: the previous turn is still running");
       expect(sessionHolder.compact).not.toHaveBeenCalled();
     });
 

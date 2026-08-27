@@ -404,11 +404,17 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           // admitPromptTurn enqueues synchronously and acquires the runner
           // inside the queued work, so a stalled creation is cancelled by
           // shutdown disposal rather than deadlocking the admission drain.
+          // /queue is instant-timing, so the queue-timing wedge guard never
+          // screens it — probe here so a stale wedge (abort timed out but the
+          // runtime settled) recovers instead of failing the queued prompt.
           return dispatcher.admitPromptTurn(
             effect.conversation,
             effect.surface,
             (runner, authority) => {
               if (!authority.isCurrent()) return Promise.resolve();
+              if (runnerWedged(runner)) {
+                return sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
+              }
               const buffer = dispatcher.createMessageBuffer(effect.surface, effect.conversation);
               return runner.prompt(message.prepare(effect.text), buffer);
             },
@@ -459,6 +465,12 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       surface,
       async (authority) => {
         if (!authority.isCurrent()) return;
+        // A wedge marked after this command was accepted may be stale by the
+        // time the chain drains: deferred commands run once the turn settles,
+        // and a settled turn proves the abort timeout was a false positive.
+        // Clear it so the command executes on the recovered runtime instead
+        // of failing with recovery guidance (issue #50 review finding).
+        dispatcher.getRunner(session.id)?.tryClearAbortTimeout();
         const result = await handleCommand({
           command,
           deps: dispatchDeps,

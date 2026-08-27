@@ -436,7 +436,7 @@ export class AgentRunner {
       this.assertCurrent();
       if (this.isAbortTimedOut) {
         throw new Error(
-          "The previous turn is wedged after a failed abort. Use /new or /archive to recover.",
+          "The previous turn is still running after a failed cancel. Use /new or /archive to recover now.",
         );
       }
       if (this.isStreaming) {
@@ -665,7 +665,7 @@ export class AgentRunner {
       throw new Error("Failed to initialize backend");
     }
     if (this.isAbortTimedOut) {
-      throw new Error("Cannot compact because the previous abort timed out. Try /new or /archive.");
+      throw new Error("Cannot compact: the previous turn is still running after a failed cancel. Use /new or /archive to recover now.");
     }
     if (this.backend.isStreaming) {
       throw new Error("Cannot compact while the agent is still streaming. Try /cancel first.");

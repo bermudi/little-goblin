@@ -152,7 +152,8 @@ export interface CommandDef {
    * This queue-timing command owns a lifecycle transition that invalidates a
    * broken runtime, so it may run directly after that runtime's abort timed
    * out. All other queue-timing commands must report the recovery guidance
-   * rather than queue work behind an unrecoverable runtime.
+   * rather than queue work behind a runtime whose failed cancel may still
+   * be running. The wedge clears automatically once the turn settles.
    */
   mayRecoverWedgedRuntime?: boolean;
   /** Dispatched from the message:text handler. Mutually exclusive with grammyHandler. */

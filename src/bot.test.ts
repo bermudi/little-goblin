@@ -77,7 +77,9 @@ class MockAgentRunner {
   }
 
   get isStreaming(): boolean {
-    return this.streaming;
+    // Mirrors AgentRunner: a wedged runner reports not-streaming so
+    // scheduling treats it as broken rather than steerable.
+    return this.abortTimedOut ? false : this.streaming;
   }
 
   get isAbortTimedOut(): boolean {

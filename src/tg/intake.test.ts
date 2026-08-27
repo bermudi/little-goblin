@@ -56,6 +56,10 @@ class MockAgentRunner {
       this.abortBeforeInit = false;
       throw new Error("Turn aborted before it started.");
     }
+    // Mirrors AgentRunner.prompt: refuse to start a turn while wedged.
+    if (this.abortTimedOut) {
+      throw new Error("The previous turn is still running after a failed cancel. Use /new or /archive to recover now.");
+    }
     this.isPrompting = true;
     this.streaming = true;
     try {
@@ -72,6 +76,13 @@ class MockAgentRunner {
     return next ?? Promise.resolve();
   });
   readonly setModel = mock(async (_name: string) => {});
+  readonly compact = mock(async () => {
+    // Mirrors AgentRunner.compact: refuse while wedged.
+    if (this.abortTimedOut) {
+      throw new Error("Cannot compact: the previous turn is still running after a failed cancel. Use /new or /archive to recover now.");
+    }
+    return { tokensBefore: 10_000 };
+  });
   readonly dispose = mock(() => {});
   readonly abort = mock(async () => {
     if (!this.streaming) this.abortBeforeInit = true;
@@ -111,7 +122,9 @@ class MockAgentRunner {
   }
 
   get isStreaming(): boolean {
-    return this.streaming;
+    // Mirrors AgentRunner: a wedged runner reports not-streaming so
+    // scheduling treats it as broken rather than steerable.
+    return this.abortTimedOut ? false : this.streaming;
   }
 
   get isAbortTimedOut(): boolean {
@@ -1477,6 +1490,69 @@ describe("Telegram intake", () => {
     // The message was admitted as a normal model turn: no new system reply
     // (wedge guidance or otherwise) was sent.
     expect(replies.length).toBe(repliesBefore);
+  });
+
+  it("runs a /queue-enqueued prompt on a recovered runtime instead of dropping it", async () => {
+    // /queue is instant-timing: its queue-prompt side effect bypasses the
+    // queue-timing wedge guard, so a stale wedge must be probed inside the
+    // side-effect closure — a literal replay of the #50 incident sequence.
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
+
+    await completeAdmission(intake.handleText(message, "/new"));
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+    runners[0]!.markAbortTimedOut();
+
+    // The queued text is acknowledged (the runner reports not-streaming
+    // while wedged) and chained behind the unsettled turn.
+    const queueAdmission = await intake.handleText(message, "/queue do this after");
+    await queueAdmission.completion;
+    expect(replies.some((r) => r.includes("do this after") || r.includes("Running"))).toBe(true);
+
+    MockAgentRunner.nextPrompt = undefined;
+    const promptCallsBefore = runners[0]!.prompt.mock.calls.length;
+    pending.resolve();
+    await flushMicrotasks();
+
+    // The stale wedge cleared and the queued prompt ran on the recovered
+    // runtime — no drop, no wedge guidance.
+    expect(runners[0]!.isAbortTimedOut).toBe(false);
+    expect(runners[0]!.prompt.mock.calls.length).toBe(promptCallsBefore + 1);
+    expect(replies.some((r) => r.includes("recover now"))).toBe(false);
+  });
+
+  it("clears a stale wedge before a deferred queue-timing command executes", async () => {
+    const { intake } = makeHarness();
+    const replies: string[] = [];
+    const message = makeMessage(replies);
+    const pending = deferred();
+    MockAgentRunner.nextPrompt = async () => { await pending.promise; };
+
+    await completeAdmission(intake.handleText(message, "/new"));
+    await intake.handleText(message, "slow turn");
+    await waitFor(() => runners[0]!.isStreaming);
+
+    // /compact defers behind the turn; the abort then times out while the
+    // turn is genuinely still running.
+    const compactAdmission = await intake.handleText(message, "/compact");
+    expect(compactAdmission.kind).toBe("handoff");
+    runners[0]!.markAbortTimedOut();
+
+    MockAgentRunner.nextPrompt = undefined;
+    pending.resolve();
+    await compactAdmission.completion;
+    await flushMicrotasks();
+
+    // The turn settled, so the wedge was stale: the deferred command runs on
+    // the recovered runtime instead of failing with recovery guidance.
+    expect(runners[0]!.isAbortTimedOut).toBe(false);
+    expect(runners[0]!.compact).toHaveBeenCalledTimes(1);
+    expect(replies.some((r) => r.includes("failed after the turn"))).toBe(false);
+    expect(replies.some((r) => r.includes("recover now"))).toBe(false);
   });
 
   it("propagates revival attachment failure before any admission decision", async () => {

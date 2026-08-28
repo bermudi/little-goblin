@@ -23,8 +23,16 @@ function validateSessionId(id: string): void {
   }
 }
 
+export function stateDir(home: string): string {
+  return join(home, "state");
+}
+
+export function scratchDir(home: string): string {
+  return join(home, "scratch");
+}
+
 export function sessionsDir(home: string): string {
-  return join(home, "state", "sessions");
+  return join(stateDir(home), "sessions");
 }
 
 export function archiveDir(home: string): string {
@@ -38,6 +46,11 @@ export function sessionDir(home: string, id: string): string {
 
 export function statePath(home: string, id: string): string {
   return join(sessionDir(home, id), "state.json");
+}
+
+export function archivedStatePath(home: string, id: string): string {
+  validateSessionId(id);
+  return join(archiveDir(home), id, "state.json");
 }
 
 export function transcriptPath(home: string, id: string): string {
@@ -55,6 +68,15 @@ export function piSessionDir(home: string, id: string): string {
 
 export function configPath(home: string): string {
   return join(home, "state", "bindings.json");
+}
+
+/**
+ * Path to the operator config file `goblin.json5` at the `$GOBLIN_HOME` root.
+ * Distinct from the legacy `configPath` helper above, which is the Surface
+ * bindings store under `state/`.
+ */
+export function goblinConfigPath(home: string): string {
+  return join(home, "goblin.json5");
 }
 
 export function topicSettingsPath(home: string): string {

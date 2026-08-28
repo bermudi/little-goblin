@@ -7,9 +7,8 @@
  *   bun run src/memory/cli.ts search <query>
  */
 
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { mkdirSync, statSync } from "node:fs";
+import { resolveGoblinHome } from "../config.ts";
 import { MemoryDatabase } from "./db.ts";
 import { MemoryStore } from "./store.ts";
 import { EmbeddingProvider } from "./embeddings.ts";
@@ -18,7 +17,7 @@ import { exportToMarkdown } from "./export.ts";
 import { memoryDbPath, memoryDir } from "./paths.ts";
 
 function goblinHome(): string {
-  return process.env.GOBLIN_HOME ?? join(homedir(), ".goblin");
+  return resolveGoblinHome();
 }
 
 function ensureMemoryDir(home: string): void {

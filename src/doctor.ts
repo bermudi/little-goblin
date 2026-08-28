@@ -9,19 +9,24 @@
  */
 
 import { readdirSync, statSync, statfsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { loadConfig } from "./config.ts";
+import { loadConfig, resolveGoblinHome } from "./config.ts";
 import type { Config } from "./config.ts";
 import { resolveModel } from "./agent/models.ts";
 import type { ResolvedModel } from "./agent/models.ts";
 import { ConversationStore } from "./sessions/conversation-store.ts";
 import { isValidConversationId } from "./sessions/conversation.ts";
-import { archiveDir } from "./sessions/paths.ts";
-import { memoryDbPath } from "./memory/paths.ts";
+import {
+  archivedStatePath,
+  archiveDir,
+  goblinConfigPath,
+  scratchDir,
+  sessionsDir,
+  stateDir,
+} from "./sessions/paths.ts";
+import { memoryDbPath, memoryDir } from "./memory/paths.ts";
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_PROVIDER, MemorySnapshot } from "./memory/db.ts";
 import { MemoryBudget } from "./memory/budget.ts";
-import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
+import { agentsMdPath, soulMdPath, workspacePath } from "./workspace/paths.ts";
 import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
 import { log } from "./log.ts";
 import { prepareEnv } from "./external-agents/env.ts";
@@ -37,7 +42,7 @@ export interface Check {
 }
 
 function goblinHome(): string {
-  return process.env.GOBLIN_HOME ?? join(homedir(), ".goblin");
+  return resolveGoblinHome();
 }
 
 function out(line: string): void {
@@ -89,7 +94,13 @@ async function checkStateVersion(home: string): Promise<Check> {
 }
 
 async function checkGoblinHomeDirs(home: string): Promise<Check> {
-  const required = ["workspace", "state", "state/memory", "state/sessions", "scratch"];
+  const required: readonly [label: string, path: string][] = [
+    ["workspace", workspacePath(home)],
+    ["state", stateDir(home)],
+    ["state/memory", memoryDir(home)],
+    ["state/sessions", sessionsDir(home)],
+    ["scratch", scratchDir(home)],
+  ];
   const missing: string[] = [];
 
   try {
@@ -106,14 +117,13 @@ async function checkGoblinHomeDirs(home: string): Promise<Check> {
     };
   }
 
-  for (const sub of required) {
-    const path = join(home, sub);
+  for (const [label, path] of required) {
     try {
       if (!statSync(path).isDirectory()) {
-        missing.push(`${sub} is not a directory`);
+        missing.push(`${label} is not a directory`);
       }
-    } catch (err) {
-      missing.push(`${sub} is missing`);
+    } catch {
+      missing.push(`${label} is missing`);
     }
   }
 
@@ -121,7 +131,7 @@ async function checkGoblinHomeDirs(home: string): Promise<Check> {
     return {
       name: "GOBLIN_HOME",
       ok: true,
-      detail: `home exists at ${home}; subdirs: ${required.join(", ")}`,
+      detail: `home exists at ${home}; subdirs: ${required.map(([label]) => label).join(", ")}`,
     };
   }
   return { name: "GOBLIN_HOME", ok: false, detail: missing.join("; ") };
@@ -193,9 +203,8 @@ async function checkConversations(home: string): Promise<Check> {
     try {
       for (const id of readdirSync(archive)) {
         if (!isValidConversationId(id)) continue;
-        const stateFile = join(archive, id, "state.json");
         try {
-          if (statSync(stateFile).isFile()) archived++;
+          if (statSync(archivedStatePath(home, id)).isFile()) archived++;
         } catch {
           // skip archived entries with no state file
         }
@@ -231,7 +240,7 @@ async function checkConfig(): Promise<Check> {
     return {
       name: "config",
       ok: true,
-      detail: `loaded ${join(cfg.goblinHome, "goblin.json5")}; default model ${cfg.modelName} resolves to ${resolved.model.id} (${resolved.model.provider})`,
+      detail: `loaded ${goblinConfigPath(cfg.goblinHome)}; default model ${cfg.modelName} resolves to ${resolved.model.id} (${resolved.model.provider})`,
     };
   } catch (err) {
     return {

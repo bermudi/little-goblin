@@ -4,13 +4,18 @@ import { join } from "node:path";
 import JSON5 from "json5";
 import { ConfigFileSchema, type ExternalAgentsConfig, type McpConfig } from "./schema.ts";
 import { resolveConfigValue } from "./resolve-value.ts";
-import { sessionsDir } from "./sessions/paths.ts";
+import { goblinConfigPath, sessionsDir, stateDir, scratchDir } from "./sessions/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
-import { goblinSkillsPath, personalEnvironmentSkillsPath } from "./workspace/paths.ts";
+import { goblinSkillsPath, personalEnvironmentSkillsPath, workspacePath } from "./workspace/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
 import { namedAgentsRoot } from "./subagents/paths.ts";
 import { externalAgentsRoot } from "./external-agents/paths.ts";
 import { delegatedWorkRunsRoot } from "./delegated-work/paths.ts";
+
+/** Resolve `$GOBLIN_HOME` from the environment with the shared default. */
+export function resolveGoblinHome(): string {
+  return process.env.GOBLIN_HOME ?? join(homedir(), ".goblin");
+}
 
 export interface Config {
   botToken: string;
@@ -60,17 +65,17 @@ export interface Config {
  */
 export function loadConfig(): Config {
   // Resolve goblinHome first (not from config file, but from env/default)
-  const goblinHome = process.env.GOBLIN_HOME ?? join(homedir(), ".goblin");
-  const configPath = join(goblinHome, "goblin.json5");
+  const goblinHome = resolveGoblinHome();
+  const configFilePath = goblinConfigPath(goblinHome);
 
   // Read and parse config file
   let raw: unknown;
   try {
-    const content = readFileSync(configPath, "utf-8");
+    const content = readFileSync(configFilePath, "utf-8");
     raw = JSON5.parse(content);
   } catch (err) {
     if (err instanceof Error && "code" in err && err.code === "ENOENT") {
-      throw new Error(`Config file not found: ${configPath}`);
+      throw new Error(`Config file not found: ${configFilePath}`);
     }
     throw new Error(`Failed to parse config file: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -170,15 +175,15 @@ export function ensureGoblinHome(cfg: Config): void {
   const home = cfg.goblinHome;
   const dirs = [
     home,
-    join(home, "workspace"),
+    workspacePath(home),
     goblinSkillsPath(home),
     personalEnvironmentSkillsPath(home),
     namedAgentsRoot(home),
-    join(home, "state"),
+    stateDir(home),
     sessionsDir(home),
     memoryDir(home),
     piAgentDir(home),
-    join(home, "scratch"),
+    scratchDir(home),
     externalAgentsRoot(home),
     delegatedWorkRunsRoot(home),
   ];

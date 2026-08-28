@@ -381,6 +381,31 @@ export interface ConnectivityProbes {
   readonly checkMcp?: (cfg: Config, home: string) => Promise<void>;
 }
 
+/**
+ * Hermetic test seam for subprocess runs of the CLI: when
+ * `GOBLIN_DOCTOR_PROBE_STUB=pass|fail` is set and no explicit probes were
+ * injected, every connectivity probe resolves (pass) or rejects (fail)
+ * without touching the network. Any other value is ignored.
+ */
+function stubProbes(mode: "pass" | "fail"): ConnectivityProbes {
+  const fn = async (): Promise<void> => {
+    if (mode === "fail") throw new Error(`stubbed probe failure (${mode})`);
+  };
+  return {
+    checkTelegramToken: fn,
+    checkModelProvider: fn,
+    checkEdgeTtsAvailable: fn,
+    checkGroqAsrAvailable: fn,
+    checkExternalAgents: fn,
+    checkMcp: fn,
+  };
+}
+
+function resolveStubEnv(): "pass" | "fail" | null {
+  const value = process.env.GOBLIN_DOCTOR_PROBE_STUB;
+  return value === "pass" || value === "fail" ? value : null;
+}
+
 export interface DoctorResult {
   readonly checks: readonly Check[];
   readonly exitCode: number;
@@ -535,7 +560,7 @@ async function runProbe(name: string, fn: () => Promise<void>): Promise<Check> {
 
 async function runConnectivityChecks(
   home: string,
-  probes: ConnectivityProbes = {},
+  explicitProbes?: ConnectivityProbes,
 ): Promise<Check[]> {
   let cfg: Config;
   try {
@@ -544,24 +569,28 @@ async function runConnectivityChecks(
     return [];
   }
 
+  const stub = resolveStubEnv();
+  const probes: ConnectivityProbes | undefined =
+    explicitProbes ?? (stub !== null ? stubProbes(stub) : undefined);
+
   const promises: Promise<Check>[] = [];
 
   promises.push(
     runProbe("Telegram", () =>
-      (probes.checkTelegramToken ?? defaultCheckTelegramToken)(cfg.botToken),
+      (probes?.checkTelegramToken ?? defaultCheckTelegramToken)(cfg.botToken),
     ),
   );
 
   promises.push(
     runProbe("model provider", async () => {
       const resolved = resolveModel(cfg);
-      await (probes.checkModelProvider ?? defaultCheckModelProvider)(resolved);
+      await (probes?.checkModelProvider ?? defaultCheckModelProvider)(resolved);
     }),
   );
 
   promises.push(
     runProbe("Edge TTS", () =>
-      (probes.checkEdgeTtsAvailable ?? defaultCheckEdgeTtsAvailable)(),
+      (probes?.checkEdgeTtsAvailable ?? defaultCheckEdgeTtsAvailable)(),
     ),
   );
 
@@ -569,7 +598,7 @@ async function runConnectivityChecks(
     const groqApiKey = cfg.groqApiKey;
     promises.push(
       runProbe("Groq ASR", () =>
-        (probes.checkGroqAsrAvailable ?? defaultCheckGroqAsrAvailable)(groqApiKey),
+        (probes?.checkGroqAsrAvailable ?? defaultCheckGroqAsrAvailable)(groqApiKey),
       ),
     );
   }
@@ -577,7 +606,7 @@ async function runConnectivityChecks(
   if (cfg.externalAgents?.backends.length) {
     promises.push(
       runProbe("external agents", () =>
-        (probes.checkExternalAgents ?? defaultCheckExternalAgents)(cfg),
+        (probes?.checkExternalAgents ?? defaultCheckExternalAgents)(cfg),
       ),
     );
   }
@@ -585,7 +614,7 @@ async function runConnectivityChecks(
   if (cfg.mcp) {
     promises.push(
       runProbe("MCP servers", () =>
-        (probes.checkMcp ?? defaultCheckMcp)(cfg, home),
+        (probes?.checkMcp ?? defaultCheckMcp)(cfg, home),
       ),
     );
   }

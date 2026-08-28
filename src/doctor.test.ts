@@ -3,14 +3,16 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CURRENT_STATE_VERSION, writeStateVersion } from "./state-version.ts";
 import { MemoryDatabase } from "./memory/db.ts";
-import { memoryDbPath } from "./memory/paths.ts";
+import { memoryDbPath, memoryDir } from "./memory/paths.ts";
 import { archiveDir, sessionsDir } from "./sessions/paths.ts";
 import { ConversationStore } from "./sessions/conversation-store.ts";
 import { personalEnvironment } from "./sessions/environment.ts";
@@ -92,6 +94,41 @@ async function callDoctor(
   }
 }
 
+interface CliResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Run `bun run doctor` as a real subprocess with a hermetic environment.
+ * Connectivity probes are controlled through GOBLIN_DOCTOR_PROBE_STUB
+ * ("pass" | "fail") so no real network access is attempted.
+ */
+function runDoctorCli(
+  home: string,
+  args: readonly string[] = [],
+  extraEnv: Record<string, string> = {},
+): CliResult {
+  const result = Bun.spawnSync({
+    cmd: ["bun", "run", "doctor", ...args],
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    env: {
+      PATH: process.env.PATH ?? "",
+      TMPDIR: process.env.TMPDIR ?? tmpdir(),
+      GOBLIN_HOME: home,
+      ...extraEnv,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout?.toString() ?? "",
+    stderr: result.stderr?.toString() ?? "",
+  };
+}
+
 describe("bun run doctor", () => {
   it(
     "exits 0 in a healthy GOBLIN_HOME and prints the required checks",
@@ -105,10 +142,13 @@ describe("bun run doctor", () => {
         expect(result.exitCode).toBe(0);
         expect(output).toContain("state version");
         expect(output).toContain("memory");
+        expect(output).toContain("GOBLIN_HOME: pass");
+        expect(output).toContain("conversations: pass");
         expect(output).toContain("config");
         expect(output).toContain("favorites");
         expect(output).toContain("prompt files");
         expect(output).toContain("disk");
+        expect(output).toMatch(/\b0 failed\b/);
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
@@ -197,5 +237,83 @@ describe("runDoctor connectivity", () => {
       }
     },
     20_000,
+  );
+});
+
+describe("doctor read-only behavior", () => {
+  it(
+    "leaves the memory directory file set unchanged after a doctor run",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        const dir = memoryDir(home);
+        const before = readdirSync(dir).sort();
+
+        await callDoctor(home, { probes: noopProbes });
+
+        const after = readdirSync(dir).sort();
+        expect(after).toEqual(before);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+});
+
+describe("bun run doctor subprocess", () => {
+  it(
+    "exits 0 with the full report when every probe passes (stubbed)",
+    () => {
+      const home = setupHealthyHome();
+      try {
+        const res = runDoctorCli(home, ["--strict"], { GOBLIN_DOCTOR_PROBE_STUB: "pass" });
+
+        expect(res.exitCode).toBe(0);
+        expect(res.stdout).toContain("GOBLIN_HOME: pass");
+        expect(res.stdout).toContain("conversations: pass");
+        expect(res.stdout).toMatch(/0 failed \(strict\)/);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "exits 1 in strict mode and 0 otherwise when stubbed probes fail",
+    () => {
+      const home = setupHealthyHome();
+      try {
+        const strict = runDoctorCli(home, ["--strict"], { GOBLIN_DOCTOR_PROBE_STUB: "fail" });
+        expect(strict.exitCode).toBe(1);
+        expect(strict.stdout).toMatch(/failed \(strict\)/);
+
+        const lax = runDoctorCli(home, [], { GOBLIN_DOCTOR_PROBE_STUB: "fail" });
+        expect(lax.exitCode).toBe(0);
+        expect(lax.stdout).toMatch(/warned/);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "exits 1 when the state version mismatches",
+    () => {
+      const home = setupHealthyHome();
+      try {
+        writeStateVersion(home, CURRENT_STATE_VERSION - 1);
+
+        const res = runDoctorCli(home);
+
+        expect(res.exitCode).toBe(1);
+        expect(res.stdout).toContain("state version: fail");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    60_000,
   );
 });

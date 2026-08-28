@@ -282,31 +282,40 @@ async function checkFavorites(): Promise<Check> {
 }
 
 async function checkPromptFiles(home: string): Promise<Check> {
-  const soulPath = soulMdPath(home);
-  const agentsPath = agentsMdPath(home);
-  const missing: string[] = [];
-
-  for (const [label, path] of [
-    ["SOUL.md", soulPath] as const,
-    ["AGENTS.md", agentsPath] as const,
-  ]) {
+  const present = (path: string): boolean => {
     try {
-      if (!statSync(path).isFile()) {
-        missing.push(`${label} not a file`);
-      }
+      return statSync(path).isFile();
     } catch {
-      missing.push(`${label} missing`);
+      return false;
     }
-  }
+  };
 
-  if (missing.length === 0) {
+  const soulPresent = present(soulMdPath(home));
+  const agentsPresent = present(agentsMdPath(home));
+
+  if (soulPresent && agentsPresent) {
     return {
       name: "prompt files",
       ok: true,
       detail: `SOUL.md and AGENTS.md present`,
     };
   }
-  return { name: "prompt files", ok: false, detail: missing.join("; ") };
+
+  // SOUL.md is mandatory at runtime (decision 0010: preflight throws on its
+  // absence); AGENTS.md is optional, so its absence is a warn-level finding
+  // that only fails under --strict, mirroring connectivity probes.
+  if (!soulPresent) {
+    const detail = agentsPresent
+      ? "SOUL.md missing (critical)"
+      : "SOUL.md missing (critical); AGENTS.md missing";
+    return { name: "prompt files", ok: false, detail };
+  }
+  return {
+    name: "prompt files",
+    ok: false,
+    warn: true,
+    detail: "AGENTS.md missing (optional per decision 0010)",
+  };
 }
 
 async function checkDisk(home: string): Promise<Check> {

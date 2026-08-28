@@ -2,6 +2,15 @@ import type { MemoryDatabase } from "./db.ts";
 
 export const DEFAULT_MEMORY_BUDGET_CHARS = 50_000;
 
+/**
+ * Minimal read surface the budget needs. Implemented by `MemoryDatabase`
+ * (writable) and `MemorySnapshot` (side-effect-free diagnostics), so usage
+ * queries work identically against either handle kind.
+ */
+export interface MemoryUsageReader {
+  selectOne<T>(sql: string): T | null;
+}
+
 export interface MemoryOverflowDetails {
   current: number;
   budget: number;
@@ -56,16 +65,14 @@ export class MemoryBudget {
   /**
    * Total characters across all curated (memory + user) entries.
    */
-  currentChars(db: MemoryDatabase): number {
-    const row = db.database
-      .query<{ total: number }, []>(
-        "SELECT COALESCE(SUM(LENGTH(text)), 0) AS total FROM memory_entries WHERE entry_kind IN ('memory', 'user') AND scope NOT LIKE 'archive/%'",
-      )
-      .get();
+  currentChars(db: MemoryUsageReader): number {
+    const row = db.selectOne<{ total: number }>(
+      "SELECT COALESCE(SUM(LENGTH(text)), 0) AS total FROM memory_entries WHERE entry_kind IN ('memory', 'user') AND scope NOT LIKE 'archive/%'",
+    );
     return row?.total ?? 0;
   }
 
-  usage(db: MemoryDatabase): { current: number; budget: number } {
+  usage(db: MemoryUsageReader): { current: number; budget: number } {
     return { current: this.currentChars(db), budget: this.budgetChars };
   }
 

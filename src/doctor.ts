@@ -19,7 +19,7 @@ import { ConversationStore } from "./sessions/conversation-store.ts";
 import { isValidConversationId } from "./sessions/conversation.ts";
 import { archiveDir } from "./sessions/paths.ts";
 import { memoryDbPath } from "./memory/paths.ts";
-import { MemoryDatabase } from "./memory/db.ts";
+import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_PROVIDER, MemorySnapshot } from "./memory/db.ts";
 import { MemoryBudget } from "./memory/budget.ts";
 import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
 import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
@@ -129,10 +129,10 @@ async function checkGoblinHomeDirs(home: string): Promise<Check> {
 
 async function checkMemory(home: string): Promise<Check> {
   const dbPath = memoryDbPath(home);
-  let db: MemoryDatabase | undefined;
+  let snapshot: MemorySnapshot | undefined;
 
   try {
-    db = new MemoryDatabase(dbPath, { readonly: true });
+    snapshot = new MemorySnapshot(dbPath);
   } catch (err) {
     return {
       name: "memory",
@@ -142,19 +142,19 @@ async function checkMemory(home: string): Promise<Check> {
   }
 
   try {
-    const entryCount = db.database
-      .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM memory_entries")
-      .get()?.count ?? 0;
+    const entryCount = snapshot.selectOne<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM memory_entries",
+    )?.count ?? 0;
 
     const budget = new MemoryBudget();
-    const usage = budget.usage(db);
+    const usage = budget.usage(snapshot);
 
-    const model = db.getMeta("embedding_model") ?? process.env.GOBLIN_MEMORY_EMBEDDING_MODEL ?? "text-embedding-3-small";
-    const provider = db.getMeta("embedding_provider") ?? process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER ?? "openai";
-    const reindexing = db.getMeta("reindexing") === "true";
+    const model = snapshot.getMeta("embedding_model") ?? process.env.GOBLIN_MEMORY_EMBEDDING_MODEL ?? DEFAULT_EMBEDDING_MODEL;
+    const provider = snapshot.getMeta("embedding_provider") ?? process.env.GOBLIN_MEMORY_EMBEDDING_PROVIDER ?? DEFAULT_EMBEDDING_PROVIDER;
+    const reindexing = snapshot.getMeta("reindexing") === "true";
     const degraded = reindexing;
 
-    const syncMeta = db.getMeta("last_transcript_sync");
+    const syncMeta = snapshot.getMeta("last_transcript_sync");
     const lastSync = syncMeta
       ? new Date(Number.parseInt(syncMeta, 10)).toISOString()
       : "never";
@@ -179,7 +179,7 @@ async function checkMemory(home: string): Promise<Check> {
       detail: `failed to query memory DB: ${errorMessage(err)}`,
     };
   } finally {
-    db.close();
+    snapshot.close();
   }
 }
 

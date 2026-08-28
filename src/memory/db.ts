@@ -1,6 +1,11 @@
 import { Database } from "bun:sqlite";
+import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { log } from "../log.ts";
 import { DDL, INDEX_DDL, MEMORY_SCHEMA_VERSION } from "./schema.ts";
+
+export const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+export const DEFAULT_EMBEDDING_PROVIDER = "openai";
 
 function clampWeight(value: unknown, fallback: number): number {
   const n = typeof value === "string" ? Number.parseFloat(value) : Number(value);
@@ -143,15 +148,20 @@ export class MemoryDatabase {
     // is computed. This makes the database self-describing and lets search
     // pick a dimension-compatible query model from the first call.
     if (this.getMeta("embedding_provider") === undefined) {
-      this.setMeta("embedding_provider", "openai");
+      this.setMeta("embedding_provider", DEFAULT_EMBEDDING_PROVIDER);
     }
     if (this.getMeta("embedding_model") === undefined) {
-      this.setMeta("embedding_model", process.env.GOBLIN_MEMORY_EMBEDDING_MODEL ?? "text-embedding-3-small");
+      this.setMeta("embedding_model", process.env.GOBLIN_MEMORY_EMBEDDING_MODEL ?? DEFAULT_EMBEDDING_MODEL);
     }
   }
 
   get database(): Database {
     return this.db;
+  }
+
+  /** Run a parameterless SELECT and return the first row, or null. */
+  selectOne<T>(sql: string): T | null {
+    return this.db.query<T, []>(sql).get() ?? null;
   }
 
   get weights(): { vectorWeight: number; textWeight: number } {
@@ -172,6 +182,43 @@ export class MemoryDatabase {
       .query<{ value: string }, { $key: string }>("SELECT value FROM memory_meta WHERE key = $key")
       .get({ $key: key });
     return row?.value;
+  }
+
+  close(): void {
+    this.db.close();
+  }
+}
+
+/**
+ * Side-effect-free read-only view of the memory database for diagnostics.
+ *
+ * bun:sqlite cannot open a WAL-mode database without creating `-shm`/`-wal`
+ * sidecar files (URI filenames are not enabled there), but node:sqlite can
+ * via the `?immutable=1` URI parameter. Read-only tools (doctor) use this
+ * snapshot so a diagnostic read never mutates `$GOBLIN_HOME`. The open
+ * assumes the file is immutable while held: never use it from a process
+ * that is writing the same database.
+ */
+export class MemorySnapshot {
+  private readonly db: DatabaseSync;
+
+  constructor(dbPath: string) {
+    this.db = new DatabaseSync(`${pathToFileURL(dbPath).href}?immutable=1`, {
+      readOnly: true,
+    });
+  }
+
+  /** Run a parameterless SELECT and return the first row, or null. */
+  selectOne<T>(sql: string): T | null {
+    const row: unknown = this.db.prepare(sql).get();
+    return (row as T | undefined) ?? null;
+  }
+
+  getMeta(key: string): string | undefined {
+    const row: unknown = this.db
+      .prepare("SELECT value FROM memory_meta WHERE key = ?")
+      .get(key);
+    return (row as { value: string } | undefined)?.value;
   }
 
   close(): void {

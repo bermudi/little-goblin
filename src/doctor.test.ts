@@ -317,3 +317,44 @@ describe("bun run doctor subprocess", () => {
     60_000,
   );
 });
+
+describe("prompt files classification", () => {
+  it(
+    "warns and exits 0 without --strict when optional AGENTS.md is missing",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        rmSync(agentsMdPath(home));
+
+        const lax = await callDoctor(home, { probes: noopProbes });
+        expect(lax.exitCode).toBe(0);
+        expect(lax.lines.join("\n")).toContain("prompt files: warn");
+        expect(lax.lines.join("\n")).toContain("AGENTS.md missing");
+
+        const strict = await callDoctor(home, { strict: true, probes: noopProbes });
+        expect(strict.exitCode).toBe(1);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "fails critically when mandatory SOUL.md is missing",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        rmSync(soulMdPath(home));
+
+        const result = await callDoctor(home, { probes: noopProbes });
+        expect(result.exitCode).toBe(1);
+        expect(result.lines.join("\n")).toContain("prompt files: fail");
+        expect(result.lines.join("\n")).toContain("SOUL.md missing");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+});

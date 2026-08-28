@@ -306,7 +306,7 @@ describe("bun run doctor subprocess", () => {
       try {
         writeStateVersion(home, CURRENT_STATE_VERSION - 1);
 
-        const res = runDoctorCli(home);
+        const res = runDoctorCli(home, [], { GOBLIN_DOCTOR_PROBE_STUB: "pass" });
 
         expect(res.exitCode).toBe(1);
         expect(res.stdout).toContain("state version: fail");

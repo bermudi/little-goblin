@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CURRENT_STATE_VERSION, writeStateVersion } from "./state-version.ts";
-import { MemoryDatabase } from "./memory/db.ts";
+import { MemoryDatabase, MemorySnapshot } from "./memory/db.ts";
 import { memoryDbPath, memoryDir } from "./memory/paths.ts";
 import { archiveDir, sessionsDir } from "./sessions/paths.ts";
 import { ConversationStore } from "./sessions/conversation-store.ts";
@@ -573,6 +573,67 @@ describe("mcp and external agent construction", () => {
         rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
+    },
+    20_000,
+  );
+});
+
+describe("doctor timeout edge cases", () => {
+  it(
+    "times out a fetch with a stalled response body before 6 seconds",
+    async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => ({
+        ok: true,
+        status: 200,
+        text: () => new Promise<string>((resolve) => setTimeout(() => resolve("body"), 10_000)),
+      } as unknown as Response);
+
+      const home = setupHealthyHome();
+      try {
+        const start = performance.now();
+        const result = await callDoctor(home, { strict: true });
+        const elapsed = performance.now() - start;
+        expect(result.exitCode).toBe(1);
+        expect(result.lines.join("\n")).toContain("Telegram: timeout");
+        expect(elapsed).toBeLessThan(6_000);
+      } finally {
+        globalThis.fetch = originalFetch;
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+});
+
+describe("MemorySnapshot cleanup", () => {
+  it(
+    "removes the temp copy when schema validation fails",
+    () => {
+      const home = setupHealthyHome();
+      const db = new MemoryDatabase(memoryDbPath(home));
+      try {
+        db.setMeta("schema_version", "999");
+      } finally {
+        db.close();
+      }
+
+      const before = new Set(
+        readdirSync(tmpdir())
+          .filter((name) => name.startsWith("goblin-memory-snapshot-"))
+          .sort(),
+      );
+
+      expect(() => new MemorySnapshot(memoryDbPath(home))).toThrow("schema version 999");
+
+      const after = readdirSync(tmpdir())
+        .filter((name) => name.startsWith("goblin-memory-snapshot-"))
+        .sort();
+      const added = after.filter((name) => !before.has(name));
+      expect(added).toEqual([]);
+
+      rmSync(home, { recursive: true, force: true });
     },
     20_000,
   );

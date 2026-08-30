@@ -461,18 +461,31 @@ describe("doctor memory WAL awareness", () => {
       try {
         const dir = memoryDir(home);
         const before = readdirSync(dir).sort();
+        const beforeHashes = Object.fromEntries(
+          before.map((f) => [
+            f,
+            createHash("sha256").update(readFileSync(join(dir, f))).digest("hex"),
+          ]),
+        );
 
         const ts = Date.now();
         db.setMeta("last_transcript_sync", String(ts));
 
         const result = await callDoctor(home, { probes: noopProbes });
         const after = readdirSync(dir).sort();
+        const afterHashes = Object.fromEntries(
+          after.map((f) => [
+            f,
+            createHash("sha256").update(readFileSync(join(dir, f))).digest("hex"),
+          ]),
+        );
 
         expect(result.exitCode).toBe(0);
         expect(result.lines.join("\n")).toContain(
           `last sync ${new Date(ts).toISOString()}`,
         );
         expect(after).toEqual(before);
+        expect(afterHashes).toEqual(beforeHashes);
       } finally {
         db.close();
         rmSync(home, { recursive: true, force: true });

@@ -20,7 +20,9 @@ import { archiveDir, sessionsDir } from "./sessions/paths.ts";
 import { ConversationStore } from "./sessions/conversation-store.ts";
 import { personalEnvironment } from "./sessions/environment.ts";
 import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
+import { buildMcporterCommand } from "./mcp/runner.ts";
 import { runDoctor, type ConnectivityProbes } from "./doctor.ts";
+import JSON5 from "json5";
 
 interface TestDoctorResult {
   exitCode: number;
@@ -514,6 +516,61 @@ describe("doctor memory schema validation", () => {
         expect(result.lines.join("\n")).toContain("memory: fail");
         expect(result.lines.join("\n")).toContain("schema version 999");
       } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+});
+
+describe("mcp and external agent construction", () => {
+  it(
+    "builds the MCP list command with the same argv as McpRunner",
+    () => {
+      const cmd = buildMcporterCommand(["list", "--json"], "/tmp/mcporter.json");
+      expect(cmd).toEqual([
+        "bunx",
+        "--silent",
+        "mcporter",
+        "--log-level",
+        "error",
+        "--config",
+        "/tmp/mcporter.json",
+        "list",
+        "--json",
+      ]);
+    },
+    20_000,
+  );
+
+  it(
+    "runs external agent probes concurrently",
+    async () => {
+      const home = setupHealthyHome();
+      const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-backends-"));
+      writeFileSync(join(tmpBin, "codex"), "#!/bin/sh\nsleep 3\nexit 0\n");
+      writeFileSync(join(tmpBin, "claude"), "#!/bin/sh\nsleep 3\nexit 0\n");
+      chmodSync(join(tmpBin, "codex"), 0o755);
+      chmodSync(join(tmpBin, "claude"), 0o755);
+
+      const raw = JSON5.parse(buildConfigContent());
+      raw.externalAgents = { backends: ["codex", "claude"] };
+      writeFileSync(join(home, "goblin.json5"), JSON5.stringify(raw, { space: 2 }));
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${tmpBin}:${originalPath ?? ""}`;
+
+      try {
+        const start = performance.now();
+        const result = await callDoctor(home, { probes: noopProbes });
+        const elapsed = performance.now() - start;
+
+        expect(result.lines.join("\n")).toContain("external agents: pass");
+        expect(result.exitCode).toBe(0);
+        expect(elapsed).toBeLessThan(5_500);
+      } finally {
+        process.env.PATH = originalPath;
+        rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
     },

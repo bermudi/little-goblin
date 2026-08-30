@@ -4,10 +4,12 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -243,17 +245,30 @@ describe("runDoctor connectivity", () => {
 
 describe("doctor read-only behavior", () => {
   it(
-    "leaves the memory directory file set unchanged after a doctor run",
+    "leaves the memory directory file set and contents unchanged after a doctor run",
     async () => {
       const home = setupHealthyHome();
       try {
         const dir = memoryDir(home);
         const before = readdirSync(dir).sort();
+        const beforeHashes = Object.fromEntries(
+          before.map((f) => [
+            f,
+            createHash("sha256").update(readFileSync(join(dir, f))).digest("hex"),
+          ]),
+        );
 
         await callDoctor(home, { probes: noopProbes });
 
         const after = readdirSync(dir).sort();
+        const afterHashes = Object.fromEntries(
+          after.map((f) => [
+            f,
+            createHash("sha256").update(readFileSync(join(dir, f))).digest("hex"),
+          ]),
+        );
         expect(after).toEqual(before);
+        expect(afterHashes).toEqual(beforeHashes);
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
@@ -409,6 +424,32 @@ describe("connectivity probe timeout reporting", () => {
     },
     20_000,
   );
+
+  it(
+    "does not classify 'timeout' in a generic error message as a timeout",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        const result = await callDoctor(home, {
+          probes: {
+            checkTelegramToken: async () => {},
+            checkModelProvider: async () => {},
+            checkEdgeTtsAvailable: async () => {
+              throw new Error("configuration timeout is disabled");
+            },
+          },
+        });
+
+        expect(result.exitCode).toBe(1);
+        const edgeLine = result.lines.find((l) => l.startsWith("Edge TTS"));
+        expect(edgeLine).toContain("Edge TTS: warn");
+        expect(edgeLine).not.toContain("timeout");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
 });
 
 describe("doctor memory WAL awareness", () => {
@@ -434,6 +475,31 @@ describe("doctor memory WAL awareness", () => {
         expect(after).toEqual(before);
       } finally {
         db.close();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+});
+
+describe("doctor memory schema validation", () => {
+  it(
+    "fails the memory check when the schema version is unsupported",
+    async () => {
+      const home = setupHealthyHome();
+      const db = new MemoryDatabase(memoryDbPath(home));
+      try {
+        db.setMeta("schema_version", "999");
+      } finally {
+        db.close();
+      }
+
+      try {
+        const result = await callDoctor(home, { probes: noopProbes });
+        expect(result.exitCode).toBe(1);
+        expect(result.lines.join("\n")).toContain("memory: fail");
+        expect(result.lines.join("\n")).toContain("schema version 999");
+      } finally {
         rmSync(home, { recursive: true, force: true });
       }
     },

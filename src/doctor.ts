@@ -438,6 +438,34 @@ function modelProviderHeaders(resolved: ResolvedModel): Record<string, string> {
   return { Authorization: `Bearer ${resolved.apiKey}` };
 }
 
+async function runProcessProbe(opts: {
+  cmd: readonly string[];
+  env?: Record<string, string>;
+  timeout: number;
+  label: string;
+  pipeStderr?: boolean;
+}): Promise<string> {
+  const start = Date.now();
+  const proc = Bun.spawn({
+    cmd: [...opts.cmd],
+    env: opts.env,
+    stdout: "ignore",
+    stderr: opts.pipeStderr ? "pipe" : "ignore",
+    timeout: opts.timeout,
+  });
+  const stderrPromise = opts.pipeStderr ? new Response(proc.stderr).text() : Promise.resolve("");
+  const [exitCode, stderr] = await Promise.all([
+    proc.exited as Promise<number | null>,
+    stderrPromise,
+  ]);
+  const elapsed = Date.now() - start;
+  if (exitCode === 0) return stderr;
+  if (exitCode === null || exitCode === 143 || elapsed >= opts.timeout) {
+    throw new Error(`${opts.label} timed out after ${elapsed}ms${stderr ? `: ${stderr.trim()}` : ""}`);
+  }
+  throw new Error(`${opts.label} exited ${exitCode}${stderr ? `: ${stderr.trim()}` : ""}`);
+}
+
 async function defaultCheckTelegramToken(token: string): Promise<void> {
   const req = new Request(`https://api.telegram.org/bot${token}/getMe`, {
     signal: AbortSignal.timeout(5_000),
@@ -474,18 +502,11 @@ async function defaultCheckModelProvider(resolved: ResolvedModel): Promise<void>
 }
 
 async function defaultCheckEdgeTtsAvailable(): Promise<void> {
-  const proc = Bun.spawn({
+  await runProcessProbe({
     cmd: ["uvx", "edge-tts", "--version"],
-    stdout: "ignore",
-    stderr: "ignore",
     timeout: 5_000,
+    label: "uvx edge-tts --version",
   });
-  const exitCode = (await proc.exited) as number | null;
-  if (exitCode === 0) return;
-  if (exitCode === null) {
-    throw new Error("uvx edge-tts --version timed out");
-  }
-  throw new Error(`uvx edge-tts --version exited ${exitCode}`);
 }
 
 async function defaultCheckGroqAsrAvailable(apiKey: string): Promise<void> {
@@ -509,19 +530,12 @@ async function defaultCheckExternalAgents(cfg: Config): Promise<void> {
   const errors: string[] = [];
   for (const backend of cfg.externalAgents.backends) {
     try {
-      const proc = Bun.spawn({
+      await runProcessProbe({
         cmd: [backend, "--version"],
         env: prepareEnv(),
-        stdout: "ignore",
-        stderr: "ignore",
         timeout: 5_000,
+        label: `${backend} --version`,
       });
-      const exitCode = (await proc.exited) as number | null;
-      if (exitCode === 0) continue;
-      if (exitCode === null) {
-        throw new Error(`${backend} --version timed out`);
-      }
-      throw new Error(`${backend} --version exited ${exitCode}`);
     } catch (err) {
       errors.push(`${backend}: ${errorMessage(err)}`);
     }
@@ -533,27 +547,19 @@ async function defaultCheckExternalAgents(cfg: Config): Promise<void> {
 
 async function defaultCheckMcp(cfg: Config, home: string): Promise<void> {
   if (!cfg.mcp) return;
-  const cmd = ["bunx", "--silent", "mcporter", "--log-level", "error"];
+  const cmd = ["mcporter", "--log-level", "error"];
   const configPath = resolveMcporterConfigPath(cfg.mcp.configPath, home);
   if (configPath) {
     cmd.push("--config", configPath);
   }
   cmd.push("list", "--json");
-  const proc = Bun.spawn({
+  await runProcessProbe({
     cmd,
     env: prepareMcpEnv(home),
-    stdout: "pipe",
-    stderr: "pipe",
     timeout: 5_000,
+    label: "mcporter list",
+    pipeStderr: true,
   });
-  const exitCode = (await proc.exited) as number | null;
-  const stderr = await new Response(proc.stderr).text();
-  if (exitCode === null) {
-    throw new Error(`MCP server list timed out: ${stderr.trim()}`);
-  }
-  if (exitCode !== 0) {
-    throw new Error(`mcporter list failed with exit code ${exitCode}: ${stderr.trim()}`);
-  }
 }
 
 async function runProbe(name: string, fn: () => Promise<void>): Promise<Check> {

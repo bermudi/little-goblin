@@ -50,6 +50,10 @@ function out(line: string): void {
   process.stdout.write(`${line}\n`);
 }
 
+class TimeoutError extends Error {
+  readonly timedOut = true;
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   try {
@@ -462,22 +466,41 @@ async function runProcessProbe(opts: {
   const elapsed = performance.now() - start;
   if (exitCode === 0) return stderr;
   if (exitCode === null || elapsed >= opts.timeout) {
-    throw new Error(`${opts.label} timed out after ${Math.round(elapsed)}ms${stderr ? `: ${stderr.trim()}` : ""}`);
+    throw new TimeoutError(`${opts.label} timed out after ${Math.round(elapsed)}ms${stderr ? `: ${stderr.trim()}` : ""}`);
   }
   throw new Error(`${opts.label} exited ${exitCode}${stderr ? `: ${stderr.trim()}` : ""}`);
 }
 
-async function defaultCheckTelegramToken(token: string): Promise<void> {
-  const req = new Request(`https://api.telegram.org/bot${token}/getMe`, {
-    signal: AbortSignal.timeout(5_000),
-  });
+async function fetchWithTimeout(
+  label: string,
+  input: string | Request,
+  init: RequestInit = {},
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutError = new TimeoutError(`${label} timed out after 5_000ms`);
+  const timer = setTimeout(() => controller.abort(timeoutError), 5_000);
   try {
-    const res = await fetch(req);
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (controller.signal.aborted && controller.signal.reason === timeoutError) {
+      throw timeoutError;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function defaultCheckTelegramToken(token: string): Promise<void> {
+  const url = `https://api.telegram.org/bot${token}/getMe`;
+  try {
+    const res = await fetchWithTimeout("Telegram API", url);
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Telegram API returned ${res.status}: ${body}`);
     }
   } catch (err) {
+    if (err instanceof TimeoutError) throw err;
     throw new Error(`Telegram API unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
@@ -485,15 +508,11 @@ async function defaultCheckTelegramToken(token: string): Promise<void> {
 async function defaultCheckModelProvider(resolved: ResolvedModel): Promise<void> {
   const endpoint = buildProviderEndpoint(resolved.model.baseUrl);
   const headers = modelProviderHeaders(resolved);
-  const req = new Request(endpoint, {
-    method: "GET",
-    headers,
-    signal: AbortSignal.timeout(5_000),
-  });
   let res: Response;
   try {
-    res = await fetch(req);
+    res = await fetchWithTimeout("model provider", endpoint, { method: "GET", headers });
   } catch (err) {
+    if (err instanceof TimeoutError) throw err;
     throw new Error(`model provider unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) {
@@ -511,14 +530,13 @@ async function defaultCheckEdgeTtsAvailable(): Promise<void> {
 }
 
 async function defaultCheckGroqAsrAvailable(apiKey: string): Promise<void> {
-  const req = new Request("https://api.groq.com/openai/v1/models", {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(5_000),
-  });
+  const url = "https://api.groq.com/openai/v1/models";
+  const headers = { Authorization: `Bearer ${apiKey}` };
   let res: Response;
   try {
-    res = await fetch(req);
+    res = await fetchWithTimeout("Groq ASR", url, { headers });
   } catch (err) {
+    if (err instanceof TimeoutError) throw err;
     throw new Error(`Groq ASR unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) {
@@ -538,13 +556,15 @@ async function defaultCheckExternalAgents(cfg: Config): Promise<void> {
       });
       return null;
     } catch (err) {
-      return `${backend}: ${errorMessage(err)}`;
+      return { text: `${backend}: ${errorMessage(err)}`, timeout: err instanceof TimeoutError };
     }
   });
   const results = await Promise.all(probes);
-  const errors = results.filter((r): r is string => r !== null);
+  const errors = results.filter((r): r is { text: string; timeout: boolean } => r !== null);
+  const message = errors.map((e) => e.text).join("; ");
   if (errors.length > 0) {
-    throw new Error(errors.join("; "));
+    if (errors.some((e) => e.timeout)) throw new TimeoutError(message);
+    throw new Error(message);
   }
 }
 
@@ -567,7 +587,7 @@ async function runProbe(name: string, fn: () => Promise<void>): Promise<Check> {
     return { name, ok: true, detail: "reachable" };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const timedOut = /timed?\s*out|timeout/i.test(message);
+    const timedOut = err instanceof TimeoutError;
     return { name, ok: false, warn: true, timedOut, detail: message };
   }
 }

@@ -1,6 +1,14 @@
 import { Database } from "bun:sqlite";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { log } from "../log.ts";
 import { DDL, INDEX_DDL, MEMORY_SCHEMA_VERSION } from "./schema.ts";
@@ -12,6 +20,66 @@ function clampWeight(value: unknown, fallback: number): number {
   const n = typeof value === "string" ? Number.parseFloat(value) : Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(0, Math.min(1, n));
+}
+
+interface SchemaReader {
+  selectOne<T>(sql: string): T | null;
+}
+
+function readSchemaVersion(reader: SchemaReader): number {
+  const hasMetaTable = reader.selectOne<{ present: number }>(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'memory_meta'",
+  );
+  if (!hasMetaTable) return 0;
+
+  const row = reader.selectOne<{ value: string | null }>(
+    "SELECT value FROM memory_meta WHERE key = 'schema_version'",
+  );
+  if (!row) return 0;
+  if (row.value === null || !/^(0|[1-9]\d*)$/.test(row.value)) {
+    throw new Error(`invalid memory schema version: ${String(row.value)}`);
+  }
+
+  const current = Number(row.value);
+  if (!Number.isSafeInteger(current)) {
+    throw new Error(`invalid memory schema version: ${row.value}`);
+  }
+  if (current > MEMORY_SCHEMA_VERSION) {
+    throw new Error(
+      `memory schema version ${current} is newer than supported ${MEMORY_SCHEMA_VERSION}`,
+    );
+  }
+  return current;
+}
+
+interface FileSnapshot {
+  readonly name: string;
+  readonly size: number;
+}
+
+function listMemoryFiles(dbPath: string): FileSnapshot[] {
+  const dir = dirname(dbPath);
+  const base = basename(dbPath);
+  const suffixes = ["", "-wal", "-shm"];
+  const files: FileSnapshot[] = [];
+  for (const suffix of suffixes) {
+    const name = `${base}${suffix}`;
+    const p = join(dir, name);
+    if (existsSync(p)) {
+      files.push({ name, size: statSync(p).size });
+    }
+  }
+  return files;
+}
+
+function snapshotsEqual(a: readonly FileSnapshot[], b: readonly FileSnapshot[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const aItem = a[i];
+    const bItem = b[i];
+    if (!aItem || !bItem || aItem.name !== bItem.name || aItem.size !== bItem.size) return false;
+  }
+  return true;
 }
 
 export class MemoryDatabase {
@@ -63,33 +131,7 @@ export class MemoryDatabase {
   }
 
   private readSchemaVersion(): number {
-    const hasMetaTable = this.db
-      .query<{ present: number }, []>(
-        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'memory_meta'",
-      )
-      .get();
-    if (!hasMetaTable) return 0;
-
-    const row = this.db
-      .query<{ value: string | null }, { $key: string }>(
-        "SELECT value FROM memory_meta WHERE key = $key",
-      )
-      .get({ $key: "schema_version" });
-    if (!row) return 0;
-    if (row.value === null || !/^(0|[1-9]\d*)$/.test(row.value)) {
-      throw new Error(`invalid memory schema version: ${String(row.value)}`);
-    }
-
-    const current = Number(row.value);
-    if (!Number.isSafeInteger(current)) {
-      throw new Error(`invalid memory schema version: ${row.value}`);
-    }
-    if (current > MEMORY_SCHEMA_VERSION) {
-      throw new Error(
-        `memory schema version ${current} is newer than supported ${MEMORY_SCHEMA_VERSION}`,
-      );
-    }
-    return current;
+    return readSchemaVersion(this);
   }
 
   private migrate(current: number): void {
@@ -194,18 +236,55 @@ export class MemoryDatabase {
  * Side-effect-free, WAL-aware read-only view of the memory database for
  * diagnostics.
  *
- * `-wal`/`-shm` sidecar files mean an active writer has uncheckpointed data.
- * `?mode=ro` is then safe (it follows the existing WAL) and sees the latest
- * writes. If no sidecars are present, the data is already in the main file,
- * and `?immutable=1` prevents this snapshot from creating sidecars.
+ * The source files are never opened in place. They are copied to a private
+ * temp directory while the source file set is stable, then queried there.
+ * This keeps `$GOBLIN_HOME` completely unchanged and lets us use `?mode=ro`
+ * to read any uncheckpointed WAL data safely.
  */
 export class MemorySnapshot {
   private readonly db: DatabaseSync;
+  private readonly tempDir: string;
 
   constructor(dbPath: string) {
-    const hasWal = existsSync(`${dbPath}-wal`);
-    const uri = `${pathToFileURL(dbPath).href}${hasWal ? "?mode=ro" : "?immutable=1"}`;
+    const sourceDir = dirname(dbPath);
+    const base = basename(dbPath);
+    this.tempDir = mkdtempSync(join(tmpdir(), "goblin-memory-snapshot-"));
+
+    let stable: FileSnapshot[] = [];
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const before = listMemoryFiles(dbPath);
+      for (const { name } of before) {
+        const src = join(sourceDir, name);
+        const dst = join(this.tempDir, name);
+        copyFileSync(src, dst);
+      }
+      const after = listMemoryFiles(dbPath);
+      if (snapshotsEqual(before, after)) {
+        stable = after;
+        break;
+      }
+    }
+
+    if (stable.length === 0) {
+      throw new Error("could not get a stable copy of the memory database");
+    }
+
+    const copiedDb = join(this.tempDir, base);
+    const hasWal = stable.some((f) => f.name === `${base}-wal`);
+    const uri = `${pathToFileURL(copiedDb).href}${hasWal ? "?mode=ro" : "?immutable=1"}`;
     this.db = new DatabaseSync(uri, { readOnly: true });
+
+    try {
+      const version = readSchemaVersion(this);
+      if (version > MEMORY_SCHEMA_VERSION) {
+        throw new Error(
+          `memory schema version ${version} is newer than supported ${MEMORY_SCHEMA_VERSION}`,
+        );
+      }
+    } catch (err) {
+      this.db.close();
+      throw err;
+    }
   }
 
   /** Run a parameterless SELECT and return the first row, or null. */
@@ -223,5 +302,6 @@ export class MemorySnapshot {
 
   close(): void {
     this.db.close();
+    rmSync(this.tempDir, { recursive: true, force: true });
   }
 }

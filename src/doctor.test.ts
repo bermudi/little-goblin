@@ -440,10 +440,10 @@ describe("connectivity probe timeout reporting", () => {
           },
         });
 
-        expect(result.exitCode).toBe(1);
+        expect(result.exitCode).toBe(0);
         const edgeLine = result.lines.find((l) => l.startsWith("Edge TTS"));
         expect(edgeLine).toContain("Edge TTS: warn");
-        expect(edgeLine).not.toContain("timeout");
+        expect(edgeLine).not.toContain("Edge TTS: timeout");
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
@@ -460,6 +460,10 @@ describe("doctor memory WAL awareness", () => {
       const db = new MemoryDatabase(memoryDbPath(home));
       try {
         const dir = memoryDir(home);
+
+        const ts = Date.now();
+        db.setMeta("last_transcript_sync", String(ts));
+
         const before = readdirSync(dir).sort();
         const beforeHashes = Object.fromEntries(
           before.map((f) => [
@@ -467,9 +471,6 @@ describe("doctor memory WAL awareness", () => {
             createHash("sha256").update(readFileSync(join(dir, f))).digest("hex"),
           ]),
         );
-
-        const ts = Date.now();
-        db.setMeta("last_transcript_sync", String(ts));
 
         const result = await callDoctor(home, { probes: noopProbes });
         const after = readdirSync(dir).sort();

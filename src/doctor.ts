@@ -458,36 +458,97 @@ async function runProcessProbe(opts: {
     stderr: opts.pipeStderr ? "pipe" : "ignore",
     timeout: opts.timeout,
   });
-  const stderrPromise = opts.pipeStderr ? new Response(proc.stderr).text() : Promise.resolve("");
-  const [exitCode, stderr] = await Promise.all([
-    proc.exited as Promise<number | null>,
-    stderrPromise,
-  ]);
-  const elapsed = performance.now() - start;
-  if (exitCode === 0) return stderr;
-  if (exitCode === null || elapsed >= opts.timeout) {
-    throw new TimeoutError(`${opts.label} timed out after ${Math.round(elapsed)}ms${stderr ? `: ${stderr.trim()}` : ""}`);
+
+  const reader = opts.pipeStderr ? (proc.stderr as ReadableStream<Uint8Array>).getReader() : undefined;
+  let stderr = "";
+  let stderrReaderCanceled = false;
+
+  const collectStderr = async (): Promise<string> => {
+    if (!reader) return "";
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        stderr += decoder.decode(value, { stream: true });
+      }
+    } catch {
+      // Canceled by timeout below; stderr is partial but usable.
+    }
+    return stderr;
+  };
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // Process may already be gone.
+      }
+      if (!stderrReaderCanceled && reader) {
+        reader.cancel().then(() => { stderrReaderCanceled = true; }).catch(() => {});
+      }
+      reject(new TimeoutError(`${opts.label} timed out after ${Math.round(performance.now() - start)}ms`));
+    }, opts.timeout);
+  });
+
+  try {
+    const [exitCode] = await Promise.race([
+      Promise.all([proc.exited as Promise<number | null>, collectStderr()]),
+      timeoutPromise,
+    ]);
+    const elapsed = performance.now() - start;
+    if (exitCode === 0) return stderr;
+    if (exitCode === null || elapsed >= opts.timeout) {
+      throw new TimeoutError(`${opts.label} timed out after ${Math.round(elapsed)}ms${stderr ? `: ${stderr.trim()}` : ""}`);
+    }
+    throw new Error(`${opts.label} exited ${exitCode}${stderr ? `: ${stderr.trim()}` : ""}`);
+  } finally {
+    if (reader && !stderrReaderCanceled) {
+      reader.cancel().catch(() => {});
+    }
   }
-  throw new Error(`${opts.label} exited ${exitCode}${stderr ? `: ${stderr.trim()}` : ""}`);
+}
+
+interface TimedResponse {
+  ok: boolean;
+  status: number;
+  body: string;
 }
 
 async function fetchWithTimeout(
   label: string,
   input: string | Request,
   init: RequestInit = {},
-): Promise<Response> {
+): Promise<TimedResponse> {
   const controller = new AbortController();
-  const timeoutError = new TimeoutError(`${label} timed out after 5_000ms`);
-  const timer = setTimeout(() => controller.abort(timeoutError), 5_000);
+  const start = performance.now();
+  const deadline = start + 5_000;
+  const timeout = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      controller.abort();
+      reject(new TimeoutError(`${label} timed out after 5_000ms`));
+    }, 5_000);
+  });
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } catch (err) {
-    if (controller.signal.aborted && controller.signal.reason === timeoutError) {
-      throw timeoutError;
-    }
-    throw err;
+    const res = await Promise.race([
+      fetch(input, { ...init, signal: controller.signal }),
+      timeout,
+    ]);
+    const body = await Promise.race([
+      res.text(),
+      new Promise<never>((_, reject) => {
+        const remaining = Math.max(0, deadline - performance.now());
+        setTimeout(() => {
+          res.body?.cancel().catch(() => {});
+          reject(new TimeoutError(`${label} timed out after 5_000ms`));
+        }, remaining);
+      }),
+    ]);
+    return { ok: res.ok, status: res.status, body };
   } finally {
-    clearTimeout(timer);
+    // If any pending fetch/body promise is still going, abort it.
+    controller.abort();
   }
 }
 
@@ -496,8 +557,7 @@ async function defaultCheckTelegramToken(token: string): Promise<void> {
   try {
     const res = await fetchWithTimeout("Telegram API", url);
     if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Telegram API returned ${res.status}: ${body}`);
+      throw new Error(`Telegram API returned ${res.status}: ${res.body}`);
     }
   } catch (err) {
     if (err instanceof TimeoutError) throw err;
@@ -508,7 +568,7 @@ async function defaultCheckTelegramToken(token: string): Promise<void> {
 async function defaultCheckModelProvider(resolved: ResolvedModel): Promise<void> {
   const endpoint = buildProviderEndpoint(resolved.model.baseUrl);
   const headers = modelProviderHeaders(resolved);
-  let res: Response;
+  let res: TimedResponse;
   try {
     res = await fetchWithTimeout("model provider", endpoint, { method: "GET", headers });
   } catch (err) {
@@ -516,8 +576,7 @@ async function defaultCheckModelProvider(resolved: ResolvedModel): Promise<void>
     throw new Error(`model provider unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`model provider returned ${res.status}: ${body}`);
+    throw new Error(`model provider returned ${res.status}: ${res.body}`);
   }
 }
 
@@ -532,7 +591,7 @@ async function defaultCheckEdgeTtsAvailable(): Promise<void> {
 async function defaultCheckGroqAsrAvailable(apiKey: string): Promise<void> {
   const url = "https://api.groq.com/openai/v1/models";
   const headers = { Authorization: `Bearer ${apiKey}` };
-  let res: Response;
+  let res: TimedResponse;
   try {
     res = await fetchWithTimeout("Groq ASR", url, { headers });
   } catch (err) {
@@ -540,7 +599,7 @@ async function defaultCheckGroqAsrAvailable(apiKey: string): Promise<void> {
     throw new Error(`Groq ASR unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) {
-    throw new Error(`Groq ASR API returned HTTP ${res.status}`);
+    throw new Error(`Groq ASR API returned HTTP ${res.status}: ${res.body}`);
   }
 }
 

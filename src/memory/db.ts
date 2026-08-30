@@ -248,41 +248,54 @@ export class MemorySnapshot {
   constructor(dbPath: string) {
     const sourceDir = dirname(dbPath);
     const base = basename(dbPath);
-    this.tempDir = mkdtempSync(join(tmpdir(), "goblin-memory-snapshot-"));
 
-    let stable: FileSnapshot[] = [];
-    for (let attempt = 0; attempt < 10; attempt++) {
-      const before = listMemoryFiles(dbPath);
-      for (const { name } of before) {
-        const src = join(sourceDir, name);
-        const dst = join(this.tempDir, name);
-        copyFileSync(src, dst);
-      }
-      const after = listMemoryFiles(dbPath);
-      if (snapshotsEqual(before, after)) {
-        stable = after;
-        break;
-      }
-    }
-
-    if (stable.length === 0) {
-      throw new Error("could not get a stable copy of the memory database");
-    }
-
-    const copiedDb = join(this.tempDir, base);
-    const hasWal = stable.some((f) => f.name === `${base}-wal`);
-    const uri = `${pathToFileURL(copiedDb).href}${hasWal ? "?mode=ro" : "?immutable=1"}`;
-    this.db = new DatabaseSync(uri, { readOnly: true });
-
+    let tempDir: string | undefined;
+    let db: DatabaseSync | undefined;
     try {
-      const version = readSchemaVersion(this);
+      tempDir = mkdtempSync(join(tmpdir(), "goblin-memory-snapshot-"));
+
+      let stable: FileSnapshot[] = [];
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const before = listMemoryFiles(dbPath);
+        for (const { name } of before) {
+          const src = join(sourceDir, name);
+          const dst = join(tempDir, name);
+          copyFileSync(src, dst);
+        }
+        const after = listMemoryFiles(dbPath);
+        if (snapshotsEqual(before, after)) {
+          stable = after;
+          break;
+        }
+      }
+
+      if (stable.length === 0) {
+        throw new Error("could not get a stable copy of the memory database");
+      }
+
+      const copiedDb = join(tempDir, base);
+      const hasWal = stable.some((f) => f.name === `${base}-wal`);
+      const uri = `${pathToFileURL(copiedDb).href}${hasWal ? "?mode=ro" : "?immutable=1"}`;
+      db = new DatabaseSync(uri, { readOnly: true });
+
+      const reader: SchemaReader = {
+        selectOne: <T>(sql: string): T | null => {
+          const row: unknown = db!.prepare(sql).get();
+          return (row as T | undefined) ?? null;
+        },
+      };
+      const version = readSchemaVersion(reader);
       if (version > MEMORY_SCHEMA_VERSION) {
         throw new Error(
           `memory schema version ${version} is newer than supported ${MEMORY_SCHEMA_VERSION}`,
         );
       }
+
+      this.tempDir = tempDir;
+      this.db = db;
     } catch (err) {
-      this.db.close();
+      if (db) db.close();
+      if (tempDir) rmSync(tempDir, { recursive: true, force: true });
       throw err;
     }
   }

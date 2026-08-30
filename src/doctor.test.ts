@@ -583,11 +583,11 @@ describe("doctor timeout edge cases", () => {
     "times out a fetch with a stalled response body before 6 seconds",
     async () => {
       const originalFetch = globalThis.fetch;
-      globalThis.fetch = async () => ({
+      globalThis.fetch = (async () => ({
         ok: true,
         status: 200,
         text: () => new Promise<string>((resolve) => setTimeout(() => resolve("body"), 10_000)),
-      } as unknown as Response);
+      } as unknown as Response)) as unknown as typeof globalThis.fetch;
 
       const home = setupHealthyHome();
       try {

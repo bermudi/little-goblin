@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -352,6 +353,38 @@ describe("prompt files classification", () => {
         expect(result.lines.join("\n")).toContain("prompt files: fail");
         expect(result.lines.join("\n")).toContain("SOUL.md missing");
       } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+});
+
+describe("connectivity probe timeout reporting", () => {
+  it(
+    "reports a Bun.spawn timeout (exit 143) as timeout, not as a generic failure",
+    async () => {
+      const home = setupHealthyHome();
+      const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-uvx-"));
+      const fakeUvx = join(tmpBin, "uvx");
+      writeFileSync(fakeUvx, "#!/bin/sh\nexit 143\n");
+      chmodSync(fakeUvx, 0o755);
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${tmpBin}:${originalPath ?? ""}`;
+
+      try {
+        const result = await callDoctor(home, { strict: true });
+
+        expect(result.exitCode).toBe(1);
+        expect(result.lines.join("\n")).toContain("Edge TTS: timeout");
+      } finally {
+        if (originalPath === undefined) {
+          delete process.env.PATH;
+        } else {
+          process.env.PATH = originalPath;
+        }
+        rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
     },

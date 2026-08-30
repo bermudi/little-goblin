@@ -32,6 +32,7 @@ import { log } from "./log.ts";
 import { prepareEnv } from "./external-agents/env.ts";
 import { prepareMcpEnv } from "./mcp/env.ts";
 import { resolveMcporterConfigPath } from "./mcp/paths.ts";
+import { buildMcporterCommand } from "./mcp/runner.ts";
 
 export interface Check {
   readonly name: string;
@@ -445,7 +446,7 @@ async function runProcessProbe(opts: {
   label: string;
   pipeStderr?: boolean;
 }): Promise<string> {
-  const start = Date.now();
+  const start = performance.now();
   const proc = Bun.spawn({
     cmd: [...opts.cmd],
     env: opts.env,
@@ -458,10 +459,10 @@ async function runProcessProbe(opts: {
     proc.exited as Promise<number | null>,
     stderrPromise,
   ]);
-  const elapsed = Date.now() - start;
+  const elapsed = performance.now() - start;
   if (exitCode === 0) return stderr;
-  if (exitCode === null || exitCode === 143 || elapsed >= opts.timeout) {
-    throw new Error(`${opts.label} timed out after ${elapsed}ms${stderr ? `: ${stderr.trim()}` : ""}`);
+  if (exitCode === null || elapsed >= opts.timeout) {
+    throw new Error(`${opts.label} timed out after ${Math.round(elapsed)}ms${stderr ? `: ${stderr.trim()}` : ""}`);
   }
   throw new Error(`${opts.label} exited ${exitCode}${stderr ? `: ${stderr.trim()}` : ""}`);
 }
@@ -527,8 +528,7 @@ async function defaultCheckGroqAsrAvailable(apiKey: string): Promise<void> {
 
 async function defaultCheckExternalAgents(cfg: Config): Promise<void> {
   if (!cfg.externalAgents || cfg.externalAgents.backends.length === 0) return;
-  const errors: string[] = [];
-  for (const backend of cfg.externalAgents.backends) {
+  const probes = cfg.externalAgents.backends.map(async (backend) => {
     try {
       await runProcessProbe({
         cmd: [backend, "--version"],
@@ -536,10 +536,13 @@ async function defaultCheckExternalAgents(cfg: Config): Promise<void> {
         timeout: 5_000,
         label: `${backend} --version`,
       });
+      return null;
     } catch (err) {
-      errors.push(`${backend}: ${errorMessage(err)}`);
+      return `${backend}: ${errorMessage(err)}`;
     }
-  }
+  });
+  const results = await Promise.all(probes);
+  const errors = results.filter((r): r is string => r !== null);
   if (errors.length > 0) {
     throw new Error(errors.join("; "));
   }
@@ -547,12 +550,8 @@ async function defaultCheckExternalAgents(cfg: Config): Promise<void> {
 
 async function defaultCheckMcp(cfg: Config, home: string): Promise<void> {
   if (!cfg.mcp) return;
-  const cmd = ["mcporter", "--log-level", "error"];
   const configPath = resolveMcporterConfigPath(cfg.mcp.configPath, home);
-  if (configPath) {
-    cmd.push("--config", configPath);
-  }
-  cmd.push("list", "--json");
+  const cmd = buildMcporterCommand(["list", "--json"], configPath);
   await runProcessProbe({
     cmd,
     env: prepareMcpEnv(home),

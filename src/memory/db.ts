@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { DatabaseSync } from "node:sqlite";
+import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { log } from "../log.ts";
 import { DDL, INDEX_DDL, MEMORY_SCHEMA_VERSION } from "./schema.ts";
@@ -190,22 +191,21 @@ export class MemoryDatabase {
 }
 
 /**
- * Side-effect-free read-only view of the memory database for diagnostics.
+ * Side-effect-free, WAL-aware read-only view of the memory database for
+ * diagnostics.
  *
- * bun:sqlite cannot open a WAL-mode database without creating `-shm`/`-wal`
- * sidecar files (URI filenames are not enabled there), but node:sqlite can
- * via the `?immutable=1` URI parameter. Read-only tools (doctor) use this
- * snapshot so a diagnostic read never mutates `$GOBLIN_HOME`. The open
- * assumes the file is immutable while held: never use it from a process
- * that is writing the same database.
+ * `-wal`/`-shm` sidecar files mean an active writer has uncheckpointed data.
+ * `?mode=ro` is then safe (it follows the existing WAL) and sees the latest
+ * writes. If no sidecars are present, the data is already in the main file,
+ * and `?immutable=1` prevents this snapshot from creating sidecars.
  */
 export class MemorySnapshot {
   private readonly db: DatabaseSync;
 
   constructor(dbPath: string) {
-    this.db = new DatabaseSync(`${pathToFileURL(dbPath).href}?immutable=1`, {
-      readOnly: true,
-    });
+    const hasWal = existsSync(`${dbPath}-wal`);
+    const uri = `${pathToFileURL(dbPath).href}${hasWal ? "?mode=ro" : "?immutable=1"}`;
+    this.db = new DatabaseSync(uri, { readOnly: true });
   }
 
   /** Run a parameterless SELECT and return the first row, or null. */

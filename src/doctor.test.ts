@@ -362,7 +362,7 @@ describe("prompt files classification", () => {
 
 describe("connectivity probe timeout reporting", () => {
   it(
-    "reports a Bun.spawn timeout (exit 143) as timeout, not as a generic failure",
+    "reports immediate exit 143 as a warning, not a timeout",
     async () => {
       const home = setupHealthyHome();
       const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-uvx-"));
@@ -370,8 +370,30 @@ describe("connectivity probe timeout reporting", () => {
       writeFileSync(fakeUvx, "#!/bin/sh\nexit 143\n");
       chmodSync(fakeUvx, 0o755);
 
-      const originalPath = process.env.PATH;
-      process.env.PATH = `${tmpBin}:${originalPath ?? ""}`;
+      try {
+        const result = runDoctorCli(home, ["--strict"], {
+          PATH: `${tmpBin}:${process.env.PATH ?? ""}`,
+        });
+
+        expect(result.exitCode).toBe(1);
+        expect(result.stdout).toContain("Edge TTS: warn");
+        expect(result.stdout).not.toContain("Edge TTS: timeout");
+      } finally {
+        rmSync(tmpBin, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "reports a process that overruns the five-second deadline as a timeout",
+    async () => {
+      const home = setupHealthyHome();
+      const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-uvx-"));
+      const fakeUvx = join(tmpBin, "uvx");
+      writeFileSync(fakeUvx, "#!/bin/sh\nsleep 6\n");
+      chmodSync(fakeUvx, 0o755);
 
       try {
         const result = runDoctorCli(home, ["--strict"], {
@@ -381,12 +403,37 @@ describe("connectivity probe timeout reporting", () => {
         expect(result.exitCode).toBe(1);
         expect(result.stdout).toContain("Edge TTS: timeout");
       } finally {
-        if (originalPath === undefined) {
-          delete process.env.PATH;
-        } else {
-          process.env.PATH = originalPath;
-        }
         rmSync(tmpBin, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+});
+
+describe("doctor memory WAL awareness", () => {
+  it(
+    "sees uncheckpointed writes while a writer keeps the WAL open",
+    async () => {
+      const home = setupHealthyHome();
+      const db = new MemoryDatabase(memoryDbPath(home));
+      try {
+        const dir = memoryDir(home);
+        const before = readdirSync(dir).sort();
+
+        const ts = Date.now();
+        db.setMeta("last_transcript_sync", String(ts));
+
+        const result = await callDoctor(home, { probes: noopProbes });
+        const after = readdirSync(dir).sort();
+
+        expect(result.exitCode).toBe(0);
+        expect(result.lines.join("\n")).toContain(
+          `last sync ${new Date(ts).toISOString()}`,
+        );
+        expect(after).toEqual(before);
+      } finally {
+        db.close();
         rmSync(home, { recursive: true, force: true });
       }
     },

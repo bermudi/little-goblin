@@ -374,10 +374,12 @@ describe("connectivity probe timeout reporting", () => {
       process.env.PATH = `${tmpBin}:${originalPath ?? ""}`;
 
       try {
-        const result = await callDoctor(home, { strict: true });
+        const result = runDoctorCli(home, ["--strict"], {
+          PATH: `${tmpBin}:${process.env.PATH ?? ""}`,
+        });
 
         expect(result.exitCode).toBe(1);
-        expect(result.lines.join("\n")).toContain("Edge TTS: timeout");
+        expect(result.stdout).toContain("Edge TTS: timeout");
       } finally {
         if (originalPath === undefined) {
           delete process.env.PATH;

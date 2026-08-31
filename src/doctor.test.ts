@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
@@ -154,6 +155,22 @@ describe("bun run doctor", () => {
         expect(output).toContain("prompt files");
         expect(output).toContain("disk");
         expect(output).toMatch(/\b0 failed\b/);
+
+        // [L1] every required check reports its one-line detail.
+        expect(output).toContain(
+          `state version ${CURRENT_STATE_VERSION} matches expected ${CURRENT_STATE_VERSION}`,
+        );
+        expect(output).toContain(
+          "subdirs: workspace, state, state/memory, state/sessions, scratch",
+        );
+        expect(output).toMatch(
+          /memory: pass \(0 entries, budget \d+ \/ \d+ chars, embedding .+ \(.+\) ok, last sync never, db .+\)/,
+        );
+        expect(output).toContain("1 active, 1 archived");
+        expect(output).toContain("default model openai/gpt-5.4 resolves to");
+        expect(output).toContain("1 favorites resolve");
+        expect(output).toContain("SOUL.md and AGENTS.md present");
+        expect(output).toMatch(/disk: pass \(.+ free \/ .+ total on /);
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
@@ -333,6 +350,111 @@ describe("bun run doctor subprocess", () => {
       }
     },
     60_000,
+  );
+});
+
+describe("non-ENOENT filesystem error retention", () => {
+  // chmod 000 on a directory leaves the directory itself statable but makes
+  // every child path unstatable (EACCES), which is how a permission problem
+  // reaches these checks. Skip under root, where permissions do not bind.
+  const skipAsRoot = process.getuid?.() === 0;
+
+  it.skipIf(skipAsRoot)(
+    "fails prompt files with the underlying error when SOUL.md cannot be statted",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        chmodSync(join(home, "workspace"), 0o000);
+
+        const result = await callDoctor(home, { probes: noopProbes });
+        const line = result.lines.find((l) => l.startsWith("prompt files"));
+
+        expect(result.exitCode).toBe(1);
+        expect(line).toContain("prompt files: fail");
+        expect(line).toContain("cannot stat SOUL.md");
+        expect(line).toMatch(/permission denied/i);
+      } finally {
+        chmodSync(join(home, "workspace"), 0o755);
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it.skipIf(skipAsRoot)(
+    "fails prompt files with the underlying error when AGENTS.md cannot be statted",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        // A self-referencing symlink makes stat fail with ELOOP (a non-ENOENT
+        // error) for AGENTS.md only, while SOUL.md stays readable.
+        rmSync(agentsMdPath(home));
+        symlinkSync(agentsMdPath(home), agentsMdPath(home));
+
+        const result = await callDoctor(home, { probes: noopProbes });
+        const line = result.lines.find((l) => l.startsWith("prompt files"));
+
+        expect(result.exitCode).toBe(1);
+        expect(line).toContain("prompt files: fail");
+        expect(line).toContain("cannot stat AGENTS.md");
+        expect(line).toMatch(/too many levels/i);
+        expect(line).not.toContain("missing");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it.skipIf(skipAsRoot)(
+    "fails GOBLIN_HOME with the underlying error when a required subdir cannot be statted",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        chmodSync(join(home, "state"), 0o000);
+
+        const result = await callDoctor(home, { probes: noopProbes });
+        const line = result.lines.find((l) => l.startsWith("GOBLIN_HOME"));
+
+        expect(result.exitCode).toBe(1);
+        expect(line).toContain("GOBLIN_HOME: fail");
+        expect(line).toMatch(/state\/memory: .*permission denied/i);
+        expect(line).not.toContain("state/memory is missing");
+      } finally {
+        chmodSync(join(home, "state"), 0o755);
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it.skipIf(skipAsRoot)(
+    "fails conversations with the underlying error when an archived state file cannot be statted",
+    async () => {
+      const home = setupHealthyHome();
+      const archive = archiveDir(home);
+      const archivedIds = readdirSync(archive).filter((id) =>
+        /^[0-9a-f]{10}$/.test(id),
+      );
+      expect(archivedIds.length).toBe(1);
+      const archivedId = archivedIds[0]!;
+      const archivedDir = join(archive, archivedId);
+      try {
+        chmodSync(archivedDir, 0o000);
+
+        const result = await callDoctor(home, { probes: noopProbes });
+        const line = result.lines.find((l) => l.startsWith("conversations"));
+
+        expect(result.exitCode).toBe(1);
+        expect(line).toContain("conversations: fail");
+        expect(line).toContain(archivedId);
+        expect(line).toMatch(/permission denied/i);
+      } finally {
+        chmodSync(archivedDir, 0o755);
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
   );
 });
 

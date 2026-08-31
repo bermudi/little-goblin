@@ -226,7 +226,7 @@ describe("DelegatedWorkHost", () => {
   it("enforces delivery transitions at the host boundary", () => {
     const host = new DelegatedWorkHost(tempHome());
 
-    host.createAttachedRecord(
+    host.createRecord(
       "delivery-pending",
       "generic-subagent",
       null,
@@ -243,7 +243,7 @@ describe("DelegatedWorkHost", () => {
       "delivery is suppressed",
     );
 
-    host.createAttachedRecord(
+    host.createRecord(
       "delivery-accepted",
       "generic-subagent",
       null,
@@ -409,7 +409,12 @@ describe("DelegatedWorkHost", () => {
 
   it("rejects durable ownership on attached reservations", () => {
     const host = new DelegatedWorkHost(tempHome());
-    expect(() => host.reserveAttached("durable-reject-1", durableOwnership("runtime-durable-reject"))).toThrow(
+    // The reservation boundary validates lifetime at runtime; the cast models
+    // a caller that lies about its ownership type.
+    const durable = durableOwnership("runtime-durable-reject") as unknown as Parameters<
+      DelegatedWorkHost["reserveAttached"]
+    >[1];
+    expect(() => host.reserveAttached("durable-reject-1", durable)).toThrow(
       "only accepts attached",
     );
   });

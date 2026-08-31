@@ -23,7 +23,7 @@ import {
   delegatedWorkRunsRoot,
 } from "./paths.ts";
 import type {
-  AttachedDelegatedWorkOwnership,
+  DelegatedWorkOwnership,
   DelegatedDeliveryState,
 } from "./types.ts";
 
@@ -69,7 +69,7 @@ const delegatedWorkInvocationSchema = z.object({
   ownerConversationId: z.string().min(1),
   runtimeId: z.string().min(1),
   ownershipEpochId: z.string().min(1),
-  lifetime: z.literal("attached"),
+  lifetime: z.union([z.literal("attached"), z.literal("durable")]),
   originSurfaceId: surfaceIdSchema,
   executionEnvironment: executionEnvironmentSchema,
   status: z.enum(SUBAGENT_STATUSES),
@@ -332,7 +332,7 @@ export class DelegatedWorkRecordStore {
     kind: DelegatedWorkKind,
     name: string | null,
     depth: number,
-    ownership: AttachedDelegatedWorkOwnership,
+    ownership: DelegatedWorkOwnership,
     startedAt = new Date().toISOString(),
   ): RecordStoreResult {
     assertSafeRunId(id);
@@ -373,7 +373,7 @@ export class DelegatedWorkRecordStore {
    */
   appendInvocation(
     id: string,
-    ownership: AttachedDelegatedWorkOwnership,
+    ownership: DelegatedWorkOwnership,
     startedAt = new Date().toISOString(),
   ): RecordStoreResult {
     assertSafeRunId(id);

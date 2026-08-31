@@ -8,10 +8,10 @@ import type { ResolvedSkillSet } from "../agent/skills/mod.ts";
 import type { SurfaceMemoryAuthority, CapturedMemoryContext, SurfaceMemoryCaller } from "../memory/mod.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import type {
-  AttachedDelegatedWorkOwnership,
-  AttachedWorkRegistration,
   DelegatedDeliveryState,
   DelegatedRuntimeContext,
+  DelegatedWorkOwnership,
+  DelegatedWorkRegistration,
 } from "../delegated-work/mod.ts";
 import type { SubagentExecution } from "./host.ts";
 
@@ -72,6 +72,13 @@ interface SpawnOptionsBase {
    * returned to the LLM.
    */
   timeoutMs?: number;
+  /**
+   * Code-owned lifetime grant at the spawn boundary (decision 0036). The
+   * model requests background mode through the `spawn_subagent` tool schema;
+   * the runner grants durable lifetime only here, validated against the
+   * delegated runtime context. Omitted means attached (blocking) work.
+   */
+  lifetime?: "durable";
 }
 
 /**
@@ -145,7 +152,7 @@ export interface SubagentInfo {
   /** Captured delegated ownership; absent only on legacy compatibility records. */
   ownerConversationId?: string;
   runtimeId?: string;
-  lifetime?: "attached";
+  lifetime?: "attached" | "durable";
   originSurfaceId?: string;
   executionEnvironment?: ExecutionEnvironment;
   ownershipEpochId?: string;
@@ -214,10 +221,10 @@ export interface SubagentInstance {
   inheritance: GenericSubagentInheritance | null;
   /** Opaque invocation-lifetime Pi lease created by the host. */
   execution: SubagentExecution | null;
-  /** Immutable delegated ownership for the current invocation, when attached. */
-  delegatedOwnership: AttachedDelegatedWorkOwnership | null;
+  /** Immutable delegated ownership for the current invocation. */
+  delegatedOwnership: DelegatedWorkOwnership | null;
   /** Registration with DelegatedWorkHost, held until terminal cleanup. */
-  delegatedRegistration: AttachedWorkRegistration | null;
+  delegatedRegistration: DelegatedWorkRegistration | null;
   /** True after runtime invalidation fences this invocation epoch. */
   runtimeFenced: boolean;
   /** Terminal execution outcome and delivery are separate pieces of state. */

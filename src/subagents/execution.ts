@@ -16,7 +16,7 @@ import {
 } from "../memory/mod.ts";
 import { boundedError, log } from "../log.ts";
 import type { SubagentInvocation } from "./host.ts";
-import type { AttachedDelegatedWorkOwnership, DelegatedRuntimeContext } from "../delegated-work/mod.ts";
+import type { DelegatedWorkOwnership } from "../delegated-work/mod.ts";
 import type { DelegatedWorkHost } from "../delegated-work/host.ts";
 import type { GenericSubagentInheritance, SubagentInstance } from "./types.ts";
 
@@ -52,7 +52,7 @@ export interface ExecutionDeps {
     parentCapture: CapturedMemoryContext,
     inheritance: GenericSubagentInheritance | null,
     onStatusUpdate?: (msg: string) => void,
-    delegatedContext?: DelegatedRuntimeContext | AttachedDelegatedWorkOwnership,
+    delegatedContext?: DelegatedWorkOwnership,
     parentSubagentId?: string,
   ) => SubagentInvocation["customTools"];
 }

@@ -23,4 +23,8 @@ export {
   type ConversationRuntimeId,
   type DelegatedDeliveryState,
   type DelegatedRuntimeContext,
+  type DelegatedWorkOwnership,
+  type DelegatedWorkRegistration,
+  type DurableDelegatedWorkOwnership,
+  type DurableWorkRegistration,
 } from "./types.ts";

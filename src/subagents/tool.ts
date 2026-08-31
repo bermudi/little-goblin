@@ -76,13 +76,21 @@ const spawnSubagentSchema = Type.Object({
         "Named agent to spawn (e.g. 'researcher'). Loads AGENTS.md and isolated skills from ~/goblin/agents/<name>/. Omit to request a generic subagent when this runtime has inheritance authority.",
     }),
   ),
+  background: Type.Optional(
+    Type.Boolean({
+      description:
+        "Run the subagent in the background with durable lifetime: the tool returns the run id immediately instead of blocking, and the result is delivered to the originating chat when the run completes. Use for long-running work that should outlive this turn.",
+    }),
+  ),
 });
 
 type SpawnSubagentInput = Static<typeof spawnSubagentSchema>;
 
 const BASE_DESCRIPTION = `Spawn a subagent to perform a focused task. The subagent runs to completion and its final response is returned.
 
-Subagents are sandboxed: they have no access to Telegram and run with standard tools (read, bash, edit, write, memory). They can spawn their own subagents, up to depth 3.`;
+Subagents are sandboxed: they have no access to Telegram and run with standard tools (read, bash, edit, write, memory). They can spawn their own subagents, up to depth 3.
+
+Set background: true for long-running work that should not block this turn: the spawn returns the run id at once and the result is delivered to the originating chat when the subagent completes.`;
 
 /** Build dynamic description listing available named agents and caller capability. */
 function buildDescription(home: string, canSpawnGeneric: boolean): string {
@@ -104,6 +112,7 @@ function promptGuidelines(canSpawnGeneric: boolean): string[] {
   if (canSpawnGeneric) {
     guidelines.push("For ad-hoc tasks, omit the name to spawn a generic subagent with your execution environment and skills.");
   }
+  guidelines.push("For long-running tasks, pass background: true so the turn is not blocked; the completed result is delivered to the originating chat.");
   return guidelines;
 }
 
@@ -147,9 +156,33 @@ export function createSpawnSubagentTool(
         onStatusUpdate,
         timeoutMs,
       };
+      // Lifetime is code-owned at the spawn boundary: background mode is
+      // granted here as durable lifetime; the record is never patched after
+      // creation.
+      const background = params.background === true;
       const handle = params.name !== undefined
-        ? await runner.spawn({ ...base, name: params.name })
-        : await runner.spawn({ ...base, inheritance: requireGenericInheritance(inheritance) });
+        ? await runner.spawn({ ...base, name: params.name, ...(background ? { lifetime: "durable" as const } : {}) })
+        : await runner.spawn({
+          ...base,
+          inheritance: requireGenericInheritance(inheritance),
+          ...(background ? { lifetime: "durable" as const } : {}),
+        });
+
+      // A background spawn must not block: return the run id to the calling
+      // turn immediately. The blocking-call timeout does not apply, and no
+      // delivery acknowledgement is taken on the background run's behalf —
+      // its completion is delivered through the completion wake instead.
+      if (background) {
+        log.debug("subagent spawned in background", { id: handle.id });
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `Subagent ${handle.id} spawned in the background. Its result will be delivered to this chat when it completes.`,
+          }],
+          details: { subagentId: handle.id },
+        };
+      }
 
       // Block until the subagent finishes or the timeout fires.
       // Errors propagate as tool errors that the LLM can read and decide

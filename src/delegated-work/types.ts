@@ -14,15 +14,31 @@ export interface DelegatedRuntimeContext {
 }
 
 /**
- * Ownership for the first delegated-work slice. The lifetime is deliberately
- * not model input: generic subagents are attached by code because their result
- * is returned through the blocking caller.
+ * Attached ownership for the first delegated-work slice. The runtime identity
+ * is the fence key: runtime invalidation cancels attached work.
  */
 export interface AttachedDelegatedWorkOwnership extends DelegatedRuntimeContext {
   readonly lifetime: "attached";
   /** One immutable root epoch shared by recursively spawned children. */
   readonly ownershipEpochId: string;
 }
+
+/**
+ * Durable ownership (decision 0036): the run is not owned by a Conversation
+ * runtime. The captured runtime identity is spawn-time provenance only —
+ * runtime invalidation and Conversation rotation must not cancel, fence, or
+ * retarget durable registrations; explicit owner cancellation stays the only
+ * destructive authority.
+ */
+export interface DurableDelegatedWorkOwnership extends DelegatedRuntimeContext {
+  readonly lifetime: "durable";
+  /** One immutable root epoch shared by recursively spawned durable children. */
+  readonly ownershipEpochId: string;
+}
+
+export type DelegatedWorkOwnership =
+  | AttachedDelegatedWorkOwnership
+  | DurableDelegatedWorkOwnership;
 
 export type DelegatedDeliveryState = "pending" | "delivered" | "suppressed";
 
@@ -39,9 +55,14 @@ export interface AttachedWorkAdapter {
   quiesce(): Promise<void>;
 }
 
-export interface AttachedWorkRegistration {
+/**
+ * Registration handle for one delegated-work reservation. The ownership type
+ * parameter is attached for attached reservations and durable for durable
+ * reservations; the fence/attach/release mechanics are shared.
+ */
+export interface DelegatedWorkRegistration<O extends DelegatedWorkOwnership = DelegatedWorkOwnership> {
   readonly runId: string;
-  readonly ownership: AttachedDelegatedWorkOwnership;
+  readonly ownership: O;
   /** True after host or adapter fencing has won the race. */
   readonly fenced: boolean;
   /** Attach execution mechanics before the invocation is started. */
@@ -49,6 +70,9 @@ export interface AttachedWorkRegistration {
   /** Remove a reservation after terminal completion or setup failure. */
   release(): void;
 }
+
+export type AttachedWorkRegistration = DelegatedWorkRegistration<AttachedDelegatedWorkOwnership>;
+export type DurableWorkRegistration = DelegatedWorkRegistration<DurableDelegatedWorkOwnership>;
 
 export function asConversationRuntimeId(value: string): ConversationRuntimeId {
   if (value.length === 0) throw new Error("Conversation runtime id must not be empty");

@@ -278,7 +278,7 @@ export interface SubagentRecordView {
   errorMessage: string | undefined;
   ownerConversationId: string | undefined;
   runtimeId: string | undefined;
-  lifetime: "attached" | undefined;
+  lifetime: "attached" | "durable" | undefined;
   originSurfaceId: string | undefined;
   executionEnvironment: unknown;
   deliveryState: string | undefined;

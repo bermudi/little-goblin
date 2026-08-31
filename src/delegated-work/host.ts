@@ -14,8 +14,11 @@ import {
   asConversationRuntimeId,
   type AttachedDelegatedWorkOwnership,
   type AttachedWorkAdapter,
-  type AttachedWorkRegistration,
+  type DelegatedWorkOwnership,
+  type DelegatedWorkRegistration,
   type ConversationRuntimeId,
+  type DurableDelegatedWorkOwnership,
+  type DurableWorkRegistration,
 } from "./types.ts";
 
 /** A rejected registration cannot be mistaken for a run that was cancelled. */
@@ -42,7 +45,7 @@ export class DelegatedWorkEpochCancelledError extends Error {
 
 interface RegistrationEntry {
   readonly runId: string;
-  readonly ownership: AttachedDelegatedWorkOwnership;
+  readonly ownership: DelegatedWorkOwnership;
   readonly ready: Promise<AttachedWorkAdapter | null>;
   resolveReady: (adapter: AttachedWorkAdapter | null) => void;
   adapter: AttachedWorkAdapter | null;
@@ -50,18 +53,18 @@ interface RegistrationEntry {
   released: boolean;
 }
 
-function validateOwnership(ownership: AttachedDelegatedWorkOwnership): void {
-  if (ownership.lifetime !== "attached") {
-    throw new Error("DelegatedWorkHost only accepts attached registrations in this slice");
+function validateOwnership(ownership: DelegatedWorkOwnership): void {
+  if (ownership.lifetime !== "attached" && ownership.lifetime !== "durable") {
+    throw new Error("Delegated work requires an attached or durable lifetime");
   }
   if (ownership.ownerConversationId.length === 0) {
-    throw new Error("Attached delegated work requires an owner Conversation");
+    throw new Error("Delegated work requires an owner Conversation");
   }
   if (ownership.runtimeId.length === 0) {
-    throw new Error("Attached delegated work requires a runtime identity");
+    throw new Error("Delegated work requires a runtime identity");
   }
   if (ownership.ownershipEpochId.length === 0) {
-    throw new Error("Attached delegated work requires an ownership epoch");
+    throw new Error("Delegated work requires an ownership epoch");
   }
   // SurfaceId is a branded type inside the process, but this is still a deep
   // module boundary. Validate it rather than trusting a cast from a caller.
@@ -71,10 +74,10 @@ function validateOwnership(ownership: AttachedDelegatedWorkOwnership): void {
       ownership.executionEnvironment.projectRoot.length === 0 ||
       !isAbsolute(ownership.executionEnvironment.projectRoot)
     ) {
-      throw new Error("Attached delegated work requires an absolute project root");
+      throw new Error("Delegated work requires an absolute project root");
     }
   } else if (ownership.executionEnvironment.kind !== "personal") {
-    throw new Error("Attached delegated work has an invalid execution environment");
+    throw new Error("Delegated work has an invalid execution environment");
   }
 }
 
@@ -117,15 +120,19 @@ export class DelegatedWorkHost {
   }
 
   /**
-   * Reserve a run before its adapter creates execution state. A runtime fence
-   * therefore wins before metadata, a Pi session, or a descendant can exist.
+   * Reserve attached work before its adapter creates execution state. A
+   * runtime fence therefore wins before metadata, a Pi session, or a
+   * descendant can exist.
    */
   reserveAttached(
     runId: string,
     ownership: AttachedDelegatedWorkOwnership,
-  ): AttachedWorkRegistration {
+  ): DelegatedWorkRegistration<AttachedDelegatedWorkOwnership> {
     if (runId.length === 0) throw new Error("Delegated work run id must not be empty");
     validateOwnership(ownership);
+    if (ownership.lifetime !== "attached") {
+      throw new Error("DelegatedWorkHost only accepts attached registrations in this slice");
+    }
     if (this.invalidatedRuntimes.has(ownership.runtimeId)) {
       throw new DelegatedWorkRuntimeInvalidatedError(ownership.runtimeId);
     }
@@ -135,7 +142,45 @@ export class DelegatedWorkHost {
     if (this.registrations.has(runId)) {
       throw new Error(`Delegated work run ${runId} is already registered`);
     }
+    return this.createRegistration(runId, ownership);
+  }
 
+  /**
+   * Reserve durable work before its adapter creates execution state.
+   *
+   * Durable registrations (decision 0036) are not owned by a Conversation
+   * runtime: the captured runtime identity is spawn-time provenance, so a
+   * prior invalidation of that runtime must not block the reservation, and
+   * later runtime invalidation must not fence, cancel, or retarget the entry.
+   * Only explicit epoch cancellation (owner cancellation) fences it here.
+   */
+  reserveDurable(
+    runId: string,
+    ownership: DurableDelegatedWorkOwnership,
+  ): DurableWorkRegistration {
+    if (runId.length === 0) throw new Error("Delegated work run id must not be empty");
+    validateOwnership(ownership);
+    if (ownership.lifetime !== "durable") {
+      throw new Error("DelegatedWorkHost durable reservations require durable ownership");
+    }
+    if (this.cancelledEpochs.has(ownership.ownershipEpochId)) {
+      throw new DelegatedWorkEpochCancelledError(ownership.ownershipEpochId);
+    }
+    if (this.registrations.has(runId)) {
+      throw new Error(`Delegated work run ${runId} is already registered`);
+    }
+    return this.createRegistration(runId, ownership);
+  }
+
+  /**
+   * Shared registration mechanics. Runtime-invalidation fencing applies only
+   * to attached ownership; durable entries in the same map are excluded from
+   * invalidation by the `invalidateRuntime` filter.
+   */
+  private createRegistration<O extends DelegatedWorkOwnership>(
+    runId: string,
+    ownership: O,
+  ): DelegatedWorkRegistration<O> {
     let resolveReady!: (adapter: AttachedWorkAdapter | null) => void;
     const ready = new Promise<AttachedWorkAdapter | null>((resolve) => {
       resolveReady = resolve;
@@ -163,15 +208,14 @@ export class DelegatedWorkHost {
       },
       attach: (adapter) => {
         if (entry.released) throw new Error(`Delegated work run ${runId} was released`);
-        if (
-          entry.fenced ||
-          this.invalidatedRuntimes.has(ownership.runtimeId) ||
-          this.cancelledEpochs.has(ownership.ownershipEpochId)
-        ) {
+        const runtimeInvalidated = ownership.lifetime === "attached" &&
+          this.invalidatedRuntimes.has(ownership.runtimeId);
+        const epochCancelled = this.cancelledEpochs.has(ownership.ownershipEpochId);
+        if (entry.fenced || runtimeInvalidated || epochCancelled) {
           entry.fenced = true;
           adapter.fence();
           entry.resolveReady(null);
-          if (this.invalidatedRuntimes.has(ownership.runtimeId)) {
+          if (runtimeInvalidated) {
             throw new DelegatedWorkRuntimeInvalidatedError(ownership.runtimeId);
           }
           throw new DelegatedWorkEpochCancelledError(ownership.ownershipEpochId);
@@ -190,8 +234,11 @@ export class DelegatedWorkHost {
 
   /**
    * Fence one runtime synchronously, then stop every attached registration in
-   * that runtime. There is deliberately no timeout-success path: a failed
-   * quiescence proof is returned to lifecycle orchestration as a failure.
+   * that runtime. Durable registrations are excluded: their captured runtime
+   * identity is spawn-time provenance (decision 0036), so runtime invalidation
+   * must not cancel, fence, or retarget them. There is deliberately no
+   * timeout-success path: a failed quiescence proof is returned to lifecycle
+   * orchestration as a failure.
    */
   invalidateRuntime(runtimeId: ConversationRuntimeId): Promise<void> {
     const prior = this.invalidations.get(runtimeId);
@@ -199,7 +246,8 @@ export class DelegatedWorkHost {
 
     this.invalidatedRuntimes.add(runtimeId);
     const entries = [...this.registrations.values()].filter(
-      (entry) => entry.ownership.runtimeId === runtimeId,
+      (entry) =>
+        entry.ownership.lifetime === "attached" && entry.ownership.runtimeId === runtimeId,
     );
     this.fenceEntries(entries);
 
@@ -302,25 +350,29 @@ export class DelegatedWorkHost {
     if (this.registrations.get(entry.runId) === entry) this.registrations.delete(entry.runId);
   }
 
-  /** Exposed for diagnostics/tests without exposing adapter mechanics. */
+  /** Exposed for diagnostics/tests without exposing adapter mechanics. Only
+   * attached registrations are counted: they are the work a runtime
+   * invalidation fences. */
   registeredForRuntime(runtimeId: ConversationRuntimeId): number {
     return [...this.registrations.values()].filter(
-      (entry) => entry.ownership.runtimeId === runtimeId,
+      (entry) =>
+        entry.ownership.lifetime === "attached" && entry.ownership.runtimeId === runtimeId,
     ).length;
   }
 
   /**
-   * Create a new delegated-run record with its first attached invocation.
+   * Create a new delegated-run record with its first invocation.
    *
    * The returned run directory is where kind-specific state (e.g., the Pi
-   * session file) must live.
+   * session file) must live. The invocation's lifetime comes from the
+   * ownership: attached for blocking work, durable for background work.
    */
-  createAttachedRecord(
+  createRecord(
     runId: string,
     kind: DelegatedWorkKind,
     name: string | null,
     depth: number,
-    ownership: AttachedDelegatedWorkOwnership,
+    ownership: DelegatedWorkOwnership,
   ): { record: DelegatedWorkRecord; runDir: string } {
     return this.recordStore.createRecord(runId, kind, name, depth, ownership);
   }

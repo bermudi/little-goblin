@@ -28,12 +28,14 @@ import {
   type AttachedWorkAdapter,
   type DelegatedRuntimeContext,
   type DelegatedWorkKind,
+  type DelegatedWorkOwnership,
   type DelegatedWorkRecord,
 } from "../delegated-work/mod.ts";
 import {
   MemoryStore,
   EmbeddingProvider,
   type CapturedMemoryContext,
+  type SurfaceMemoryAuthority,
   type SurfaceMemoryCaller,
 } from "../memory/mod.ts";
 import {
@@ -70,13 +72,6 @@ import {
   type SubagentStatus,
 } from "./types.ts";
 
-/**
- * Factory that produces tools to inject into spawned subagents.
- *
- * `inheritance` is the frozen environment and skill authority this subagent
- * received: recursive generic spawns pass it on unchanged; it is `null` for
- * named agents.
- */
 export type SubagentToolFactory = (
   runner: SubagentRunner,
   depth: number,
@@ -87,6 +82,65 @@ export type SubagentToolFactory = (
   delegatedContext?: DelegatedRuntimeContext,
   parentSubagentId?: string,
 ) => SubagentInvocation["customTools"];
+
+/**
+ * Resolve the invocation ownership at the spawn boundary (decision 0036).
+ *
+ * Lifetime is code-owned here: the model may request background work through
+ * the tool schema, but durable lifetime is granted only against a validated
+ * delegated runtime context. Top-level durable spawns start a fresh durable
+ * epoch; a background request inside an attached runtime also starts a fresh
+ * durable epoch so attached epoch cancellation cannot sweep the durable child;
+ * recursive children otherwise inherit their parent's ownership verbatim
+ * (attached children share the root attached epoch, durable children share the
+ * root durable epoch).
+ */
+function resolveSpawnOwnership(
+  options: SpawnOptions,
+  parent: SubagentInstance | undefined,
+  authority: SurfaceMemoryAuthority,
+): DelegatedWorkOwnership {
+  if (options.delegatedContext !== undefined) {
+    if (parent !== undefined) {
+      if (parent.delegatedOwnership === null) {
+        throw new Error("delegated child has no attached parent ownership");
+      }
+      if (!sameDelegatedRuntimeContext(options.delegatedContext, parent.delegatedOwnership)) {
+        throw new Error("delegated child authority differs from its attached parent");
+      }
+      if (options.lifetime === "durable" && parent.delegatedOwnership.lifetime === "attached") {
+        return {
+          ...options.delegatedContext,
+          lifetime: "durable",
+          ownershipEpochId: randomUUID(),
+        };
+      }
+      return parent.delegatedOwnership;
+    }
+    return {
+      ...options.delegatedContext,
+      lifetime: options.lifetime === "durable" ? "durable" : "attached",
+      ownershipEpochId: randomUUID(),
+    };
+  }
+  if (options.lifetime === "durable") {
+    throw new Error(
+      "durable spawn requires a delegated runtime context: durable lifetime is granted only at a validated runtime boundary",
+    );
+  }
+  if (parent?.delegatedOwnership !== undefined && parent.delegatedOwnership !== null) {
+    return parent.delegatedOwnership;
+  }
+  const inherited = "inheritance" in options ? options.inheritance : undefined;
+  return {
+    ownerConversationId: authority.sourceSurfaceId,
+    runtimeId: DelegatedWorkHost.newRuntimeId(),
+    originSurfaceId: authority.sourceSurfaceId,
+    executionEnvironment: inherited?.executionEnvironment ?? personalEnvironment(),
+    lifetime: "attached",
+    ownershipEpochId: randomUUID(),
+  };
+}
 
 export type SubagentMemoryStoreFactory = (
   home: string,
@@ -448,40 +502,11 @@ export class SubagentRunner {
       inheritance = options.inheritance;
     }
 
-    // A delegated context is trusted runtime authority, not model input. A
-    // recursive child inherits the root epoch; a top-level invocation starts a
-    // fresh epoch. Tests and legacy callers that omit a context are bridged to
-    // an attached ownership derived from the captured authority; production
-    // callers always provide an explicit delegated runtime context.
-    let delegatedOwnership: AttachedDelegatedWorkOwnership;
-    if (options.delegatedContext !== undefined) {
-      if (parent !== undefined) {
-        if (parent.delegatedOwnership === null) {
-          throw new Error("delegated child has no attached parent ownership");
-        }
-        if (!sameDelegatedRuntimeContext(options.delegatedContext, parent.delegatedOwnership)) {
-          throw new Error("delegated child authority differs from its attached parent");
-        }
-        delegatedOwnership = parent.delegatedOwnership;
-      } else {
-        delegatedOwnership = {
-          ...options.delegatedContext,
-          lifetime: "attached",
-          ownershipEpochId: randomUUID(),
-        };
-      }
-    } else if (parent?.delegatedOwnership !== undefined && parent.delegatedOwnership !== null) {
-      delegatedOwnership = parent.delegatedOwnership;
-    } else {
-      delegatedOwnership = {
-        ownerConversationId: authority.sourceSurfaceId,
-        runtimeId: DelegatedWorkHost.newRuntimeId(),
-        originSurfaceId: authority.sourceSurfaceId,
-        executionEnvironment: inheritance?.executionEnvironment ?? personalEnvironment(),
-        lifetime: "attached",
-        ownershipEpochId: randomUUID(),
-      };
-    }
+    // Lifetime is code-owned at this boundary (decision 0036): the model may
+    // request background work through the tool schema, but the ownership below
+    // is granted only from a validated delegated runtime context. See
+    // resolveSpawnOwnership for the epoch rules.
+    const delegatedOwnership = resolveSpawnOwnership(options, parent, authority);
 
     if (delegatedOwnership.originSurfaceId !== authority.sourceSurfaceId) {
       throw new Error("delegated origin Surface does not match captured memory authority");
@@ -496,13 +521,15 @@ export class SubagentRunner {
     // `spawnedBy` is the caller's identity for cascade cancellation: either a
     // parent subagent id or the owning session id for a top-level spawn.
     const spawnedBy = options.spawnedBy ?? null;
-    const delegatedRegistration = this.delegatedWorkHost.reserveAttached(id, delegatedOwnership);
+    const delegatedRegistration = delegatedOwnership.lifetime === "durable"
+      ? this.delegatedWorkHost.reserveDurable(id, delegatedOwnership)
+      : this.delegatedWorkHost.reserveAttached(id, delegatedOwnership);
 
     // Create the host-owned record before any kind-specific execution state.
     // The record's run directory is where the Pi session files live.
     let runDir: string;
     try {
-      const recordResult = this.delegatedWorkHost.createAttachedRecord(
+      const recordResult = this.delegatedWorkHost.createRecord(
         id,
         kind,
         displayName,
@@ -1482,13 +1509,21 @@ export class SubagentRunner {
   }
 
   /**
-   * Gracefully shut down all active subagents. Quiescent instances are
+   * Gracefully shut down active attached subagents. Quiescent instances are
    * removed; failed instances retain their delegated registration and map
    * entry so runtime invalidation can retry durable cleanup.
+   *
+   * Durable registrations are deliberately left untouched (decision 0036, no
+   * graceful shutdown drain): a durable run outlives runner disposal, its
+   * record stays truthful on disk, and process death is recorded as
+   * interruption by the next startup reconciliation rather than as a graceful
+   * cancellation.
    */
   async dispose(): Promise<void> {
     this.disposed = true;
-    const entries = [...this.activeSubagents.entries()];
+    const entries = [...this.activeSubagents.entries()].filter(
+      ([, instance]) => instance.delegatedOwnership?.lifetime !== "durable",
+    );
     const claims = new Map<string, CancellationClaim>();
 
     // Claim all running instances before starting cleanup, just as cascade

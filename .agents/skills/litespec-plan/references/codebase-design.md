@@ -4,7 +4,7 @@ Keep it plain — no theory links.
 
 ## Heuristics
 
-- **Thin slice first.** Prove one end-to-end path with the smallest demo you can. One happy path across the real boundaries, not a layer. If you can't demo it, it's not a slice.
+- **Thin slice first.** Prove one external boundary or one failure policy per unit. A broader end-to-end demo is a queue of those units, not one unit that hides independent failure surfaces.
 - **Vertical, not horizontal.** Touch CLI → validation → view for *one* feature before finishing all validation. Horizontal phases ("finish all DB, then all API") hide integration bugs until week 3.
 - **Reuse the existing path.** Find what already does 80% and extend it. A new helper/parser/matcher next to an existing one is a smell — you'll reintroduce bugs the old code already fixed. If the new code is larger than the machinery it parallels, you're rebuilding it poorly.
 - **Smallest coherent change.** No wrapper, no abstraction unless this unit needs it. More code is more bug surface, not more thoroughness. Complete is not speculative — handle real edge cases, skip invented ones.

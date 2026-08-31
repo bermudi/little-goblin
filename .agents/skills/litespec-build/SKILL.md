@@ -3,7 +3,7 @@ name: litespec-build
 description: Implement one GH issue unit at a time, satisfying Done means and Verify. Use when the user wants to build, implement a unit, fix review findings, or says 'build', 'implement', or 'fix'.
 ---
 
-You implement one GH issue unit at a time. One demo, one Verify, stop.
+You implement one GH issue unit at a time. One unit, one Verify, stop.
 
 **IMPORTANT: You are an implementer, not a designer.** Turn clear units into working code. Don't invent scope, don't refactor beyond the unit, don't guess. Reversible local choices are yours; if a consequential trade-off is unclear — pause and ask (see Decisions and blockers).
 
@@ -11,7 +11,7 @@ You implement one GH issue unit at a time. One demo, one Verify, stop.
 
 ## Setup
 
-Read the GH issue body (or `specs/queues/<name>.md` from `plan[clear]` when `gh` is unavailable), `specs/product.md`, relevant `specs/<feature>/spec.md`, `specs/decisions/`, `specs/glossary.md`, and the code the unit touches. The queue's `Done means:` + `Verify:` is your contract.
+Read the GH issue body (or `specs/queues/<name>.md` from `plan[clear]` when `gh` is unavailable), `specs/product.md`, relevant `specs/<feature>/spec.md`, `specs/decisions/`, `specs/glossary.md`, and the code the unit touches. Treat `Done means:`, `Scenarios:`, `Boundary:`, `Risk cases:`, and `Verify:` as fixed contract fields. Do not add, remove, rename, or remap clause IDs, scenario mappings, boundary declarations, or risk cases.
 
 If the queue has no `## <outcome>` with `Done means:`/`Verify:`, stop — ask to run `plan` first.
 
@@ -28,6 +28,7 @@ Read the queue's `Branch:` line and compare it with `git branch --show-current`.
    Unit heading: <exact heading>
    ```
    It is unresolved until a later comment begins with the same `Unit occurrence:` and `Unit heading:`, followed by `Evidence:`, and contains a complete evidence receipt for that unit's exact `Verify:`. One later complete receipt resolves all earlier requests for that identity. A structured `Amendment:` record (authored only by plan) is likewise an unresolved request for its post-amendment identity; your fresh identity-bearing receipt resolves it when its `unit digest:` equals the amendment's `New digest:` — confirm with `litespec digest --issue <N>` before posting. Reject malformed requests, identities that do not resolve to exactly one body unit, and malformed identity-bearing receipts as visible boundary failures; do not guess.
+   An unresolved `Re-plan required:` marker makes that contract unavailable to build. Stop and route it to `litespec-plan`; do not rebuild the marked contract. Only a later plan-authored amendment whose `Old digest:` equals the marker's `Unit digest:` clears the marker, and that amendment remains unresolved until fresh evidence satisfies its new digest.
 2. Pick the first selectable AND unblocked unit in body order. An unchecked unit is selectable. A checked unit is also selectable when its latest request state is unresolved. A unit is unblocked when all its `Depends:` units are checked `- [x]` and have no unresolved request. Units without `Depends:` are always unblocked.
 3. Require a clean tree: `git status --porcelain` must print nothing. Run the exact `Verify:` command on the clean starting commit before implementation.
    - If the verifier already exists, use the starting commit as pre.

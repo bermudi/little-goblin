@@ -3,7 +3,9 @@ import { chmodSync, rmSync } from "node:fs";
 import { SubagentCancellationRejectedError, SubagentRunner } from "../mod.ts";
 import { FakeSubagentHost } from "./fake-host.ts";
 import { markCompleted, SubagentTerminalError } from "../execution.ts";
-import type { SubagentInstance } from "../types.ts";
+import type { SpawnOptions, SubagentInstance } from "../types.ts";
+import { asConversationRuntimeId, type DelegatedRuntimeContext } from "../../delegated-work/mod.ts";
+import { personalEnvironment } from "../../sessions/environment.ts";
 import {
   delegatedWorkRecordPath,
   delegatedWorkRunDir,
@@ -12,10 +14,12 @@ import {
   completeAndAcknowledge,
   createTestHome,
   DEFAULT_AUTHORITY,
+  DEFAULT_PARENT_CAPTURE,
   EMPTY_GENERIC_SUBAGENT_INHERITANCE,
   flush,
   makeConfig,
   readRecord,
+  writeSessionFile,
 } from "./support.ts";
 
 describe("SubagentRunner.cancel", () => {
@@ -964,5 +968,172 @@ describe("SubagentRunner.cancelBySession", () => {
     expect(record.deliveryState).toBe("suppressed");
     expect(runner.list().find((entry) => entry.id === a.id)?.deliveryState).toBe("suppressed");
     expect(runner.delegatedWorkHost.registeredForRuntime(runtimeId)).toBe(0);
+  });
+});
+
+describe("SubagentRunner — durable lifetime spawn", () => {
+  let tmp: string;
+  let runner: SubagentRunner;
+  let host: FakeSubagentHost;
+
+  const DURABLE_DELEGATED_CONTEXT: DelegatedRuntimeContext = {
+    ownerConversationId: "conversation-durable",
+    runtimeId: asConversationRuntimeId("runtime-durable"),
+    originSurfaceId: DEFAULT_AUTHORITY.sourceSurfaceId,
+    executionEnvironment: personalEnvironment(),
+  };
+
+  function durableSpawnOptions(): SpawnOptions {
+    return {
+      prompt: "long background work",
+      authority: DEFAULT_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      delegatedContext: DURABLE_DELEGATED_CONTEXT,
+      lifetime: "durable",
+    };
+  }
+
+  beforeEach(() => {
+    tmp = createTestHome("goblin-subagents-durable-");
+    host = new FakeSubagentHost();
+    runner = new SubagentRunner(makeConfig(tmp), undefined, undefined, host);
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("records a durable invocation with the full decision-0036 capture set", async () => {
+    const handle = await runner.spawn(durableSpawnOptions());
+    handle.result.catch(() => {});
+    await flush();
+
+    const meta = readRecord(tmp, handle.id);
+    expect(meta.lifetime).toBe("durable");
+    expect(meta.ownerConversationId).toBe("conversation-durable");
+    expect(meta.runtimeId).toBe("runtime-durable");
+    expect(meta.originSurfaceId).toBe(DEFAULT_AUTHORITY.sourceSurfaceId);
+    expect(meta.executionEnvironment).toEqual({ kind: "personal" });
+    expect(meta.status).toBe("running");
+    expect(meta.deliveryState).toBe("pending");
+    expect(runner.list()[0]?.lifetime).toBe("durable");
+  });
+
+  it("runtime invalidation of the spawning runtime does not stop a durable run", async () => {
+    const handle = await runner.spawn(durableSpawnOptions());
+    handle.result.catch(() => {});
+    await flush();
+
+    await runner.delegatedWorkHost.invalidateRuntime(asConversationRuntimeId("runtime-durable"));
+
+    expect(host.latest().stopCalls).toBe(0);
+    host.latest().complete("durable result");
+    await expect(handle.result).resolves.toBe("durable result");
+
+    const meta = readRecord(tmp, handle.id);
+    expect(meta.status).toBe("completed");
+    expect(meta.deliveryState).toBe("pending");
+  });
+
+  it("records a durable run killed by process death as interrupted after restart and revives as today", async () => {
+    const handle = await runner.spawn(durableSpawnOptions());
+    handle.result.catch(() => {});
+    await flush();
+    expect(readRecord(tmp, handle.id).lifetime).toBe("durable");
+    expect(readRecord(tmp, handle.id).status).toBe("running");
+
+    // Simulate process death: a fresh runner over the same home reconciles
+    // startup state from disk before anything else touches the record.
+    const restartedHost = new FakeSubagentHost();
+    const restarted = new SubagentRunner(makeConfig(tmp), undefined, undefined, restartedHost);
+
+    const interrupted = readRecord(tmp, handle.id);
+    expect(interrupted.status).toBe("interrupted");
+    expect(interrupted.deliveryState).toBe("suppressed");
+
+    // Revival continues the persisted session as a new attached invocation.
+    writeSessionFile(tmp, handle.id, "2026-01-01T00-00-00.jsonl");
+    const revived = restarted.revive(
+      DEFAULT_PARENT_CAPTURE,
+      EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      handle.id,
+      "continue the durable work",
+    );
+    await flush();
+    restartedHost.latest().complete("revived result");
+    const text = await revived;
+    expect(text).toBe("revived result");
+    restarted.acknowledgeDelivery(handle.id);
+
+    const meta = readRecord(tmp, handle.id);
+    expect(meta.invocations).toHaveLength(2);
+    expect(meta.invocations[0]?.status).toBe("interrupted");
+    expect(meta.invocations[1]?.status).toBe("completed");
+    expect(meta.invocations[1]?.lifetime).toBe("attached");
+  });
+
+  it("does not cancel or suppress durable runs on dispose", async () => {
+    const handle = await runner.spawn(durableSpawnOptions());
+    handle.result.catch(() => {});
+    await flush();
+
+    await runner.dispose();
+
+    const meta = readRecord(tmp, handle.id);
+    expect(meta.status).toBe("running");
+    expect(runner.list()[0]?.status).toBe("running");
+  });
+
+  it("rejects a durable spawn without delegated runtime authority", async () => {
+    await expect(runner.spawn({
+      prompt: "no runtime authority",
+      authority: DEFAULT_AUTHORITY,
+      inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      lifetime: "durable",
+    })).rejects.toThrow(/durable spawn requires/i);
+  });
+
+  it("spawn_subagent background mode returns the run id immediately without blocking", async () => {
+    const { createSpawnSubagentTool } = await import("../tool.ts");
+    const tool = createSpawnSubagentTool(
+      runner,
+      0,
+      "sess-1",
+      DEFAULT_PARENT_CAPTURE,
+      EMPTY_GENERIC_SUBAGENT_INHERITANCE,
+      undefined,
+      undefined,
+      DURABLE_DELEGATED_CONTEXT,
+    );
+
+    let settled = false;
+    const execPromise = tool.execute(
+      "tc-background",
+      { prompt: "background work", background: true },
+      undefined,
+      undefined,
+      {} as never,
+    ).finally(() => { settled = true; });
+    await flush();
+
+    // No completion was injected: the tool must already have returned the run
+    // id instead of blocking on the subagent result.
+    expect(settled).toBe(true);
+
+    const result = await execPromise;
+    const details = result.details as { subagentId: string };
+    expect(details.subagentId).toMatch(/^[0-9a-f-]{36}$/);
+    expect((result.content[0] as { type: string; text: string }).text).toContain(details.subagentId);
+
+    // The run continues in the background on a durable record; the tool never
+    // acknowledges delivery on the background run's behalf.
+    expect(readRecord(tmp, details.subagentId).lifetime).toBe("durable");
+    expect(readRecord(tmp, details.subagentId).status).toBe("running");
+
+    host.latest().complete("background result");
+    await flush();
+    expect(readRecord(tmp, details.subagentId).status).toBe("completed");
+    expect(readRecord(tmp, details.subagentId).deliveryState).toBe("pending");
+    expect(runner.list()[0]?.deliveryState).toBe("pending");
   });
 });

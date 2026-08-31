@@ -28,6 +28,17 @@ function ownership(runtimeId: string, ownerConversationId = "conversation-a", ep
   };
 }
 
+function durableOwnership(runtimeId: string, ownerConversationId = "conversation-durable", epochId = `epoch-${runtimeId}`) {
+  return {
+    lifetime: "durable" as const,
+    ownerConversationId,
+    runtimeId: asConversationRuntimeId(runtimeId),
+    originSurfaceId: surfaceId(dmSurface(1)),
+    executionEnvironment: personalEnvironment(),
+    ownershipEpochId: epochId,
+  };
+}
+
 function adapter(overrides: Partial<AttachedWorkAdapter> = {}): AttachedWorkAdapter & {
   fenceCalls: number;
   cancelCalls: number;
@@ -297,5 +308,109 @@ describe("DelegatedWorkHost", () => {
     expect(invocation.outcome).toBeNull();
     expect(invocation.deliveryState).toBe("suppressed");
     expect(invocation.completedAt).not.toBeNull();
+  });
+
+  it("does not fence, cancel, or quiesce durable registrations on runtime invalidation", async () => {
+    const host = new DelegatedWorkHost(tempHome());
+    const registration = host.reserveDurable("durable-inval-1", durableOwnership("runtime-durable-inval"));
+    const work = adapter();
+    registration.attach(work);
+
+    await host.invalidateRuntime(asConversationRuntimeId("runtime-durable-inval"));
+
+    expect(work.fenceCalls).toBe(0);
+    expect(work.cancelCalls).toBe(0);
+    expect(work.quiesceCalls).toBe(0);
+    expect(registration.fenced).toBe(false);
+  });
+
+  it("reserves durable registrations even after their captured runtime was invalidated", async () => {
+    const host = new DelegatedWorkHost(tempHome());
+    await host.invalidateRuntime(asConversationRuntimeId("runtime-gone"));
+
+    const registration = host.reserveDurable("durable-inval-2", durableOwnership("runtime-gone"));
+    registration.release();
+  });
+
+  it("captures the full decision-0036 ownership set on durable records", () => {
+    const host = new DelegatedWorkHost(tempHome());
+    const ownership = durableOwnership("runtime-durable-capture", "conversation-durable", "epoch-durable-capture");
+    host.createRecord("durable-capture-1", "generic-subagent", null, 1, ownership);
+
+    const record = host.loadRecord("durable-capture-1");
+    expect(record).not.toBeNull();
+    const invocation = record!.invocations[0]!;
+    expect(invocation.lifetime).toBe("durable");
+    expect(invocation.ownerConversationId).toBe("conversation-durable");
+    expect(invocation.runtimeId).toBe("runtime-durable-capture");
+    expect(invocation.ownershipEpochId).toBe("epoch-durable-capture");
+    expect(invocation.originSurfaceId).toBe(ownership.originSurfaceId);
+    expect(invocation.executionEnvironment).toEqual({ kind: "personal" });
+    expect(invocation.status).toBe("running");
+    expect(invocation.deliveryState).toBe("pending");
+  });
+
+  it("marks non-terminal durable invocations interrupted at startup reconciliation", () => {
+    const home = tempHome();
+    const runId = "recon-durable-0000-0000-0000-000000000003";
+    const dir = delegatedWorkRunDir(home, runId);
+    mkdirSync(dir, { recursive: true });
+
+    const now = new Date().toISOString();
+    writeFileSync(delegatedWorkRecordPath(home, runId), JSON.stringify({
+      id: runId,
+      kind: "generic-subagent",
+      name: null,
+      depth: 1,
+      createdAt: now,
+      invocations: [{
+        index: 0,
+        ownerConversationId: "conversation-durable",
+        runtimeId: "runtime-dead-durable",
+        ownershipEpochId: "epoch-dead-durable",
+        lifetime: "durable",
+        originSurfaceId: surfaceId(dmSurface(1)),
+        executionEnvironment: personalEnvironment(),
+        status: "running",
+        outcome: null,
+        deliveryState: "pending",
+        startedAt: now,
+        completedAt: null,
+      }],
+    }));
+
+    const host = new DelegatedWorkHost(home);
+
+    const record = host.loadRecord(runId);
+    const invocation = record!.invocations[0]!;
+    expect(invocation.status).toBe("interrupted");
+    expect(invocation.outcome).toBeNull();
+    expect(invocation.deliveryState).toBe("suppressed");
+    expect(invocation.completedAt).not.toBeNull();
+  });
+
+  it("closes a durable invocation completed with delivery pending", () => {
+    const host = new DelegatedWorkHost(tempHome());
+    host.createRecord(
+      "durable-complete-1",
+      "generic-subagent",
+      null,
+      1,
+      durableOwnership("runtime-durable-complete"),
+    );
+
+    host.completeInvocation("durable-complete-1", 0, "durable result");
+
+    const invocation = host.loadRecord("durable-complete-1")!.invocations[0]!;
+    expect(invocation.status).toBe("completed");
+    expect(invocation.outcome).toEqual({ kind: "success", text: "durable result" });
+    expect(invocation.deliveryState).toBe("pending");
+  });
+
+  it("rejects durable ownership on attached reservations", () => {
+    const host = new DelegatedWorkHost(tempHome());
+    expect(() => host.reserveAttached("durable-reject-1", durableOwnership("runtime-durable-reject"))).toThrow(
+      "only accepts attached",
+    );
   });
 });

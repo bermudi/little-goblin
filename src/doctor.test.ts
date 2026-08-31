@@ -397,7 +397,7 @@ describe("non-ENOENT filesystem error retention", () => {
         expect(result.exitCode).toBe(1);
         expect(line).toContain("prompt files: fail");
         expect(line).toContain("cannot stat AGENTS.md");
-        expect(line).toMatch(/too many levels/i);
+        expect(line).toMatch(/too many symbolic links/i);
         expect(line).not.toContain("missing");
       } finally {
         rmSync(home, { recursive: true, force: true });

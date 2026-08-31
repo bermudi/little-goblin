@@ -67,6 +67,29 @@ function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && "code" in err;
 }
 
+/** Result of probing a path's existence without swallowing real errors. */
+type PathPresence =
+  | { kind: "present"; isFile: boolean }
+  | { kind: "missing" }
+  | { kind: "error"; error: unknown };
+
+/**
+ * Stat a path and classify the outcome. Only ENOENT counts as "missing";
+ * every other failure (EACCES, ELOOP, ...) is retained as an error so the
+ * caller can surface the underlying problem instead of misreporting the
+ * path as absent (unit [L3]).
+ */
+function statPresence(path: string): PathPresence {
+  try {
+    return { kind: "present", isFile: statSync(path).isFile() };
+  } catch (err) {
+    if (isNodeErrnoException(err) && err.code === "ENOENT") {
+      return { kind: "missing" };
+    }
+    return { kind: "error", error: err };
+  }
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -123,12 +146,15 @@ async function checkGoblinHomeDirs(home: string): Promise<Check> {
   }
 
   for (const [label, path] of required) {
-    try {
-      if (!statSync(path).isDirectory()) {
-        missing.push(`${label} is not a directory`);
-      }
-    } catch {
+    const presence = statPresence(path);
+    if (presence.kind === "missing") {
       missing.push(`${label} is missing`);
+    } else if (presence.kind === "error") {
+      missing.push(`${label}: ${errorMessage(presence.error)}`);
+    } else if (!presence.isFile && !presence.kind) {
+      missing.push(`${label} is not a directory`);
+    } else if (!statSync(path).isDirectory()) {
+      missing.push(`${label} is not a directory`);
     }
   }
 
@@ -205,14 +231,17 @@ async function checkConversations(home: string): Promise<Check> {
 
     const archive = archiveDir(home);
     let archived = 0;
+    const archiveErrors: string[] = [];
     try {
       for (const id of readdirSync(archive)) {
         if (!isValidConversationId(id)) continue;
-        try {
-          if (statSync(archivedStatePath(home, id)).isFile()) archived++;
-        } catch {
-          // skip archived entries with no state file
+        const presence = statPresence(archivedStatePath(home, id));
+        if (presence.kind === "present" && presence.isFile) {
+          archived++;
+        } else if (presence.kind === "error") {
+          archiveErrors.push(`${id}: ${errorMessage(presence.error)}`);
         }
+        // A missing state file is not an error; the entry is skipped.
       }
     } catch (err) {
       if (!isNodeErrnoException(err) || err.code !== "ENOENT") {
@@ -222,6 +251,14 @@ async function checkConversations(home: string): Promise<Check> {
           detail: `cannot read archived conversations: ${errorMessage(err)}`,
         };
       }
+    }
+
+    if (archiveErrors.length > 0) {
+      return {
+        name: "conversations",
+        ok: false,
+        detail: `cannot read archived conversations: ${archiveErrors.join("; ")}`,
+      };
     }
 
     return {
@@ -287,16 +324,26 @@ async function checkFavorites(): Promise<Check> {
 }
 
 async function checkPromptFiles(home: string): Promise<Check> {
-  const present = (path: string): boolean => {
-    try {
-      return statSync(path).isFile();
-    } catch {
-      return false;
-    }
-  };
+  const soul = statPresence(soulMdPath(home));
+  const agents = statPresence(agentsMdPath(home));
 
-  const soulPresent = present(soulMdPath(home));
-  const agentsPresent = present(agentsMdPath(home));
+  // Non-ENOENT stat failures are retained with their underlying error
+  // (unit [L3]); they are critical because the file's state is unknown.
+  for (const [label, presence] of [
+    ["SOUL.md", soul],
+    ["AGENTS.md", agents],
+  ] as const) {
+    if (presence.kind === "error") {
+      return {
+        name: "prompt files",
+        ok: false,
+        detail: `cannot stat ${label}: ${errorMessage(presence.error)}`,
+      };
+    }
+  }
+
+  const soulPresent = soul.kind === "present" && soul.isFile;
+  const agentsPresent = agents.kind === "present" && agents.isFile;
 
   if (soulPresent && agentsPresent) {
     return {

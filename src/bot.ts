@@ -24,7 +24,7 @@ import {
 import { createTelegramRuntimeAdapters } from "./tg/runtime-adapters.ts";
 import { ExternalAgentRunner } from "./external-agents/mod.ts";
 import { McpRunner } from "./mcp/mod.ts";
-import { DelegatedWorkHost } from "./delegated-work/mod.ts";
+import { DelegatedWorkHost, type PendingCompletionClaim } from "./delegated-work/mod.ts";
 import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
 import type { ConversationLifecycle } from "./orchestration/conversation-lifecycle.ts";
 import { createConversationOrchestration } from "./orchestration/composition.ts";
@@ -193,6 +193,7 @@ export interface BuiltBot {
   externalAgentRunner: ExternalAgentRunner | undefined;
   mcpRunner: McpRunner | undefined;
   memoryEngine: MemoryEngine;
+  pendingClaim: PendingCompletionClaim;
 }
 
 export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
@@ -250,6 +251,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     lifecycle: orchestration.lifecycle,
     scheduleStore,
     externalAgentRunner,
+    pendingClaim: orchestration.pendingClaim,
   });
 
   // Text coalescer: merges Telegram-split fragments before they reach intake.
@@ -386,6 +388,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     subagentRunner,
     scheduleStore,
     dispatcher: intake.dispatcher,
+    pendingClaim: orchestration.pendingClaim,
     externalAgentRunner,
     mcpRunner,
     memoryEngine,

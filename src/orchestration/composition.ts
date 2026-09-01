@@ -3,7 +3,7 @@ import type { Config } from "../config.ts";
 import { AgentRunner } from "../agent/mod.ts";
 import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
-import { DurableCompletionWake } from "../delegated-work/mod.ts";
+import { DurableCompletionWake, PendingCompletionClaim } from "../delegated-work/mod.ts";
 import type { ConversationState } from "../sessions/types.ts";
 import type { Surface } from "../surface.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
@@ -37,6 +37,7 @@ export interface ConversationOrchestration {
   readonly runtimeHost: ConversationRuntimeHost;
   readonly lifecycle: ConversationLifecycle;
   readonly dispatcher: TurnDispatcher;
+  readonly pendingClaim: PendingCompletionClaim;
 }
 
 /**
@@ -87,16 +88,19 @@ export function createConversationOrchestration(
   // surface-bound system-turn rail (resolveCurrent + scheduled turns). The
   // runner was built before this kernel, so the wake is wired here, once,
   // from the same single delegated-work host the kernel already derived.
-  options.subagentRunner.setCompletionWake(
-    new DurableCompletionWake(
-      {
-        resolveCurrent: (surface) => lifecycle.resolveCurrent(surface),
-        enqueueScheduledTurn: (conversation, surface, content) =>
-          dispatcher.enqueueScheduledTurn(conversation, surface, content),
-      },
-      delegatedWorkHost,
-    ),
+  const completionWake = new DurableCompletionWake(
+    {
+      resolveCurrent: (surface) => lifecycle.resolveCurrent(surface),
+      enqueueScheduledTurn: (conversation, surface, content) =>
+        dispatcher.enqueueScheduledTurn(conversation, surface, content),
+    },
+    delegatedWorkHost,
   );
+  options.subagentRunner.setCompletionWake(completionWake);
+  // Decision-0036 pending claim: completions the wake left pending claim on
+  // an authorized ordinary interaction, an authorized guest summon, or the
+  // startup re-arm — through the same wake and the same host.
+  const pendingClaim = new PendingCompletionClaim(completionWake, delegatedWorkHost);
 
-  return { runtimeHost, lifecycle, dispatcher };
+  return { runtimeHost, lifecycle, dispatcher, pendingClaim };
 }

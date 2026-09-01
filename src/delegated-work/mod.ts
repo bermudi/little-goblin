@@ -7,6 +7,11 @@ export {
   DELEGATED_COMPLETION_PROMPT_PREFIX,
   DurableCompletionWake,
 } from "./delivery.ts";
+export {
+  PENDING_COMPLETIONS_PER_CLAIM_CAP,
+  PendingCompletionClaim,
+} from "./claim.ts";
+export type { PendingCompletionRef } from "./claim.ts";
 export type {
   CompletionWakeOutcome,
   CompletionWakeRail,

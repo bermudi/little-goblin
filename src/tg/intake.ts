@@ -3,7 +3,7 @@ import type { Bot } from "grammy";
 import type { InlineQueryResult } from "@grammyjs/types";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
-import { log } from "../log.ts";
+import { boundedError, log } from "../log.ts";
 import { AgentRunner, appendAssistantTranscriptEntry, ModelNotCapableError } from "../agent/mod.ts";
 import { resolveModel, type ResolvedModel } from "../agent/models.ts";
 import { handleCommand, type DispatchDeps } from "../commands/dispatch.ts";
@@ -21,6 +21,7 @@ import { surfaceId, type Surface, type GuestSurface } from "../surface.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from "./attachments.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
+import type { PendingCompletionClaim } from "../delegated-work/mod.ts";
 import {
   RuntimeAdmissionFailedBeforeDecisionError,
   type TurnDispatcher,
@@ -94,6 +95,12 @@ export interface TelegramIntakeOptions {
   scheduleStore?: ScheduleStore;
   /** Shared external agent runner. Wired in Phase 6 (bot.ts). */
   externalAgentRunner?: ExternalAgentRunner;
+  /**
+   * Decision-0036 pending-claim protocol. Ordinary content interactions and
+   * authorized guest summons claim retained durable completions for their
+   * exact Surface through the composition-wired completion wake.
+   */
+  pendingClaim: PendingCompletionClaim;
 }
 
 type ActiveTurn = {
@@ -317,7 +324,34 @@ export function replyNoActiveSession(
 }
 
 export function createTelegramIntake(options: TelegramIntakeOptions) {
-  const { cfg, bot, subagentRunner, memoryStore, dispatcher, lifecycle } = options;
+  const { cfg, bot, subagentRunner, memoryStore, dispatcher, lifecycle, pendingClaim } = options;
+
+  /**
+   * Claim retained durable completions on an authorized ordinary interaction.
+   * Fire-and-forget with observed failures: the claim must never block or
+   * fail the user's own turn; a failed claim stays pending for the next one.
+   */
+  function claimPendingCompletions(surface: Surface): void {
+    void pendingClaim.claimForInteraction(surface).catch((err: unknown) => {
+      log.error("pending completion claim failed", {
+        surfaceId: surfaceId(surface),
+        ...boundedError(err),
+      });
+    });
+  }
+
+  /**
+   * Claim retained durable completions on an authorized guest summon from
+   * this guest Surface. Same fire-and-forget failure posture.
+   */
+  function claimPendingGuestCompletions(surface: GuestSurface): void {
+    void pendingClaim.claimForGuestSummon(surface).catch((err: unknown) => {
+      log.error("pending guest summon claim failed", {
+        surfaceId: surfaceId(surface),
+        ...boundedError(err),
+      });
+    });
+  }
 
   function recordAssistantReply(
     sessionId: string,
@@ -560,6 +594,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const conversation = resolution.conversation;
     const creationLease = resolution.creationLease;
     const session = conversation;
+    claimPendingCompletions(surface);
 
     return {
       surface,
@@ -880,6 +915,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const conversation = resolution.conversation;
     const creationLease = resolution.creationLease;
     const session = conversation;
+    claimPendingCompletions(surface);
     if (!rawText) {
       if (creationLease !== null) lifecycle.sealCreation(creationLease);
       return completed(undefined);
@@ -1252,6 +1288,10 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
       log.error("guest resolve failed", { error: String(error), surfaceId: surfaceId(surface) });
       return completed(replyOnce(errorArticle(), "guest error reply failed"));
     }
+
+    // The guest query itself is the authorized summon: retained completions
+    // for this exact guest Surface claim alongside the summoned turn.
+    claimPendingGuestCompletions(surface);
 
     const sink = new GuestReplySink();
     const admission = await attemptCreationAdmission(

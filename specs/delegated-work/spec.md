@@ -100,6 +100,14 @@ fallback routing SHALL occur.
 - **THEN** no pending completions are claimed and no fallback routing
   occurs
 
+#### Scenario: Startup re-arm
+
+- **WHEN** the process starts while durable completions are retained pending
+- **THEN** completions whose origin Surface is currently bound are
+  re-delivered oldest-first under the per-claim cap without waiting for
+  interaction, unbound ones stay pending for the next claim, and guest
+  Surfaces are not re-armed without an authorized summon
+
 ### Requirement: Startup Reconciliation, Revival, And Owner Cancellation
 
 WHEN the process starts AND a durable invocation is non-terminal, startup

@@ -1,6 +1,6 @@
 import { loadConfig, ensureGoblinHome } from "./config.ts";
 import { buildBot } from "./bot.ts";
-import { log, initLog } from "./log.ts";
+import { log, initLog, boundedError } from "./log.ts";
 import { MemoryEngine } from "./memory/mod.ts";
 import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
 import { syncTelegramMenu } from "./commands/registry.ts";
@@ -36,8 +36,18 @@ async function main(): Promise<void> {
     runtimeHost,
     scheduleStore,
     dispatcher,
+    pendingClaim,
     externalAgentRunner,
   } = buildBot(cfg, { memoryEngine });
+
+  // Decision-0036 startup re-arm: durable completions retained pending whose
+  // origin Surface is still bound (bindings persist across restarts) are
+  // re-delivered without waiting for an interaction; unbound ones wait for
+  // the next authorized interaction or summon. Fire-and-forget with observed
+  // failures — startup must not depend on delivery succeeding.
+  void pendingClaim.rearmAtStartup().catch((err: unknown) => {
+    log.error("pending completion startup re-arm failed", { ...boundedError(err) });
+  });
 
   await memoryEngine.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS });
   await externalAgentRunner?.init();

@@ -200,6 +200,7 @@ function createTestIntake(options: TestIntakeOptions): TestIntake {
     lifecycle: orchestration.lifecycle,
     scheduleStore: options.scheduleStore,
     externalAgentRunner: options.externalAgentRunner,
+    pendingClaim: orchestration.pendingClaim,
   });
   return Object.assign(intake, { runtimeHost: orchestration.runtimeHost });
 }

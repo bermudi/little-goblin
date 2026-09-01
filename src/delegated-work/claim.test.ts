@@ -111,6 +111,7 @@ describe("Pending claim and startup re-arm", () => {
 
     // Exactness: a different Surface sharing the same Conversation claims
     // nothing, and each exact origin Surface claims only its own completion.
+    rail.bindings.set(originA, boundConversation("conversation-claim"));
     rail.bindings.set(originB, boundConversation("conversation-claim"));
     rail.bindings.set(bystander, boundConversation("conversation-claim"));
     expect(await claim.claimForInteraction(dmSurface(213))).toBe(0);

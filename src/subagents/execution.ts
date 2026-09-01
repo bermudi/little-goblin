@@ -16,7 +16,7 @@ import {
 } from "../memory/mod.ts";
 import { boundedError, log } from "../log.ts";
 import type { SubagentInvocation } from "./host.ts";
-import type { DelegatedWorkOwnership } from "../delegated-work/mod.ts";
+import type { DurableCompletionWake, DelegatedWorkOwnership } from "../delegated-work/mod.ts";
 import type { DelegatedWorkHost } from "../delegated-work/host.ts";
 import type { GenericSubagentInheritance, SubagentInstance } from "./types.ts";
 
@@ -46,6 +46,12 @@ export class SubagentTerminalError extends Error {
 export interface ExecutionDeps {
   memoryStore: MemoryStore;
   delegatedWorkHost: DelegatedWorkHost;
+  /**
+   * Decision-0036 completion wake for durable invocations. Present only when
+   * the composition root wired the surface-bound system-turn rail; absent in
+   * tests and legacy callers, where durable completions stay pending.
+   */
+  completionWake?: DurableCompletionWake;
   buildTools: (
     depth: number,
     sessionId: string,
@@ -144,7 +150,23 @@ export async function runInstance(
     instance.completionClaimed = true;
     markCompleted(instance, deps.delegatedWorkHost, text ?? "");
   }
+  wakeDurableCompletion(instance, deps);
   return text ?? "";
+}
+
+/**
+ * Fire the decision-0036 completion wake after a durable invocation closed
+ * `completed` with delivery pending. Fire-and-forget with observed failures:
+ * the run is already terminal on disk, so a failed wake must not fail the
+ * execution — the completion stays pending for the pending-claim protocol.
+ */
+function wakeDurableCompletion(instance: SubagentInstance, deps: ExecutionDeps): void {
+  if (deps.completionWake === undefined) return;
+  if (instance.delegatedOwnership?.lifetime !== "durable") return;
+  if (instance.deliveryState !== "pending") return;
+  void deps.completionWake.deliverCompletion(instance.id, instance.invocationIndex).catch((err) => {
+    log.error("durable completion wake failed", { id: instance.id, ...boundedError(err) });
+  });
 }
 
 function combineFailures(failures: readonly unknown[], message: string): Error | null {

@@ -24,6 +24,7 @@ import type { Config } from "../config.ts";
 import { boundedError, log } from "../log.ts";
 import {
   DelegatedWorkHost,
+  type DurableCompletionWake,
   type AttachedDelegatedWorkOwnership,
   type AttachedWorkAdapter,
   type DelegatedRuntimeContext,
@@ -384,6 +385,8 @@ export class SubagentRunner {
   private readonly invocationTerminalPromises = new Map<string, Promise<void>>();
   /** One shared delegated-work policy host for runtime invalidation. */
   readonly delegatedWorkHost: DelegatedWorkHost;
+  /** Decision-0036 completion wake, wired once by the composition root. */
+  private completionWake: DurableCompletionWake | null = null;
 
   constructor(
     cfg: Config,
@@ -405,6 +408,16 @@ export class SubagentRunner {
     // substitution from freezing vendor constructors at runner creation.
     this.host = host ?? null;
     this.delegatedWorkHost = delegatedWorkHost ?? new DelegatedWorkHost(cfg.goblinHome);
+  }
+
+  /**
+   * Wire the decision-0036 completion wake. Composition-owned one-time
+   * wiring: the wake needs the surface-bound system-turn rail, which is
+   * assembled after this runner. Without it, durable completions stay
+   * pending — the pending-claim protocol still owns them.
+   */
+  setCompletionWake(wake: DurableCompletionWake): void {
+    this.completionWake = wake;
   }
 
   /**
@@ -1695,6 +1708,7 @@ export class SubagentRunner {
           : [],
       memoryStore,
       delegatedWorkHost: this.delegatedWorkHost,
+      completionWake: this.completionWake ?? undefined,
     };
   }
 }

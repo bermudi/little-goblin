@@ -3,6 +3,7 @@ import type { Config } from "../config.ts";
 import { AgentRunner } from "../agent/mod.ts";
 import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
+import { DurableCompletionWake } from "../delegated-work/mod.ts";
 import type { ConversationState } from "../sessions/types.ts";
 import type { Surface } from "../surface.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
@@ -81,6 +82,21 @@ export function createConversationOrchestration(
     dreamingPipeline: options.dreamingPipeline,
     surfaceRuntimeAuthority: lifecycle,
   });
+
+  // Decision-0036 completion wake: durable delegated completions ride the
+  // surface-bound system-turn rail (resolveCurrent + scheduled turns). The
+  // runner was built before this kernel, so the wake is wired here, once,
+  // from the same single delegated-work host the kernel already derived.
+  options.subagentRunner.setCompletionWake(
+    new DurableCompletionWake(
+      {
+        resolveCurrent: (surface) => lifecycle.resolveCurrent(surface),
+        enqueueScheduledTurn: (conversation, surface, content) =>
+          dispatcher.enqueueScheduledTurn(conversation, surface, content),
+      },
+      delegatedWorkHost,
+    ),
+  );
 
   return { runtimeHost, lifecycle, dispatcher };
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dmSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
+import { dmSurface, surfaceId, topicSurface, type Surface, type SurfaceId } from "../surface.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import type { ConversationState } from "../sessions/types.ts";
 import { DelegatedWorkHost } from "./host.ts";
@@ -18,7 +18,7 @@ function tempHome(): string {
   return mkdtempSync(join(tmpdir(), "goblin-delegated-delivery-"));
 }
 
-function durableOwnership(originSurfaceId: string): DurableDelegatedWorkOwnership {
+function durableOwnership(originSurfaceId: SurfaceId): DurableDelegatedWorkOwnership {
   return {
     lifetime: "durable",
     ownerConversationId: "conversation-durable",

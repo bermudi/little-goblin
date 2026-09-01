@@ -4,6 +4,15 @@ export {
   DelegatedWorkRuntimeInvalidatedError,
 } from "./host.ts";
 export {
+  DELEGATED_COMPLETION_PROMPT_PREFIX,
+  DurableCompletionWake,
+} from "./delivery.ts";
+export type {
+  CompletionWakeOutcome,
+  CompletionWakeRail,
+  WakeTurnAdmission,
+} from "./delivery.ts";
+export {
   delegatedWorkRecordPath,
   delegatedWorkRunDir,
   delegatedWorkRunsRoot,

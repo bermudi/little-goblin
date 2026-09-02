@@ -156,6 +156,33 @@ function resolveValue(value: unknown): unknown {
   return value;
 }
 
+export interface GoblinHomeDirectory {
+  /** Stable diagnostic label relative to `$GOBLIN_HOME`. */
+  readonly label: string;
+  /** Absolute path constructed through the owning path helper. */
+  readonly path: string;
+}
+
+/**
+ * Canonical deployment-owned inventory of directories startup materializes.
+ * Layout validation must use this rather than reproducing a partial list.
+ */
+export function requiredGoblinHomeDirectories(home: string): readonly GoblinHomeDirectory[] {
+  return [
+    { label: "workspace", path: workspacePath(home) },
+    { label: ".agents/skills", path: goblinSkillsPath(home) },
+    { label: "workspace/.agents/skills", path: personalEnvironmentSkillsPath(home) },
+    { label: "workspace/agents", path: namedAgentsRoot(home) },
+    { label: "state", path: stateDir(home) },
+    { label: "state/sessions", path: sessionsDir(home) },
+    { label: "state/memory", path: memoryDir(home) },
+    { label: "state/pi", path: piAgentDir(home) },
+    { label: "state/delegated-work/runs", path: delegatedWorkRunsRoot(home) },
+    { label: "scratch", path: scratchDir(home) },
+    { label: "scratch/external-agents", path: externalAgentsRoot(home) },
+  ];
+}
+
 /**
  * Ensure GOBLIN_HOME directory exists with required subdirectories.
  * Call once at startup before any consumer tries to use the paths.
@@ -173,21 +200,7 @@ function resolveValue(value: unknown): unknown {
  */
 export function ensureGoblinHome(cfg: Config): void {
   const home = cfg.goblinHome;
-  const dirs = [
-    home,
-    workspacePath(home),
-    goblinSkillsPath(home),
-    personalEnvironmentSkillsPath(home),
-    namedAgentsRoot(home),
-    stateDir(home),
-    sessionsDir(home),
-    memoryDir(home),
-    piAgentDir(home),
-    scratchDir(home),
-    externalAgentsRoot(home),
-    delegatedWorkRunsRoot(home),
-  ];
-  for (const dir of dirs) {
+  for (const dir of [home, ...requiredGoblinHomeDirectories(home).map(({ path }) => path)]) {
     mkdirSync(dir, { recursive: true });
   }
 }

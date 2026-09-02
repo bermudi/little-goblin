@@ -3,7 +3,7 @@ import { writeFileSync, rmSync, existsSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, ensureGoblinHome } from "./config.ts";
+import { loadConfig, ensureGoblinHome, requiredGoblinHomeDirectories } from "./config.ts";
 import { clearResolveCache } from "./resolve-value.ts";
 
 describe("loadConfig", () => {
@@ -402,8 +402,8 @@ function homeConfig(goblinHome: string) {
 
 /** Every directory ensureGoblinHome must leave on disk, as paths under home. */
 const EXPECTED_DIRS = [
-  ".agents/skills",
   "workspace",
+  ".agents/skills",
   "workspace/.agents/skills",
   "workspace/agents",
   "state",
@@ -412,6 +412,7 @@ const EXPECTED_DIRS = [
   "state/pi",
   "state/delegated-work/runs",
   "scratch",
+  "scratch/external-agents",
 ];
 
 describe("ensureGoblinHome", () => {
@@ -427,6 +428,10 @@ describe("ensureGoblinHome", () => {
     } catch {
       // ignore cleanup errors
     }
+  });
+
+  it("exposes every startup-created directory through the shared inventory", () => {
+    expect(requiredGoblinHomeDirectories(tempDir).map(({ label }) => label)).toEqual(EXPECTED_DIRS);
   });
 
   it("creates the new tree on a fresh install", () => {

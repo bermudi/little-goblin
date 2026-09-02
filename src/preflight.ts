@@ -2,15 +2,11 @@ import { access, constants, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import type { Config } from "./config.ts";
+import { requiredGoblinHomeDirectories, type Config } from "./config.ts";
 import { resolveModel } from "./agent/models.ts";
 import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
 import { atomicWrite } from "./fs.ts";
 import { log } from "./log.ts";
-import { goblinSkillsPath, personalEnvironmentSkillsPath } from "./workspace/paths.ts";
-import { sessionsDir } from "./sessions/paths.ts";
-import { memoryDir } from "./memory/paths.ts";
-import { delegatedWorkRunsRoot } from "./delegated-work/paths.ts";
 import { runExternalAgentsPreflight } from "./external-agents/preflight.ts";
 
 export interface PreflightContext {
@@ -76,14 +72,9 @@ export async function runPreflight(
 
   await ctx.check("GOBLIN_HOME directories are writable", async () => {
     await checkDirectoryWritable(cfg.goblinHome);
-    await checkDirectoryWritable(join(cfg.goblinHome, "workspace"));
-    await checkDirectoryWritable(join(cfg.goblinHome, "scratch"));
-    await checkDirectoryWritable(goblinSkillsPath(cfg.goblinHome));
-    await checkDirectoryWritable(personalEnvironmentSkillsPath(cfg.goblinHome));
-    await checkDirectoryWritable(join(cfg.goblinHome, "state"));
-    await checkDirectoryWritable(sessionsDir(cfg.goblinHome));
-    await checkDirectoryWritable(memoryDir(cfg.goblinHome));
-    await checkDirectoryWritable(delegatedWorkRunsRoot(cfg.goblinHome));
+    for (const { path } of requiredGoblinHomeDirectories(cfg.goblinHome)) {
+      await checkDirectoryWritable(path);
+    }
   });
 
   await ctx.check("atomic write works in state/", async () => {

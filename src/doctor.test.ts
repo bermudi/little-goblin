@@ -13,14 +13,20 @@ import {
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { CURRENT_STATE_VERSION, writeStateVersion } from "./state-version.ts";
 import { MemoryDatabase, MemorySnapshot } from "./memory/db.ts";
 import { memoryDbPath, memoryDir } from "./memory/paths.ts";
 import { archiveDir, sessionsDir } from "./sessions/paths.ts";
 import { ConversationStore } from "./sessions/conversation-store.ts";
 import { personalEnvironment } from "./sessions/environment.ts";
-import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
+import {
+  agentsMdPath,
+  goblinSkillsPath,
+  personalEnvironmentSkillsPath,
+  soulMdPath,
+} from "./workspace/paths.ts";
+import { delegatedWorkRunsRoot } from "./delegated-work/paths.ts";
+import { ensureGoblinHome, type Config } from "./config.ts";
 import { buildMcporterCommand } from "./mcp/runner.ts";
 import { runDoctor, type ConnectivityProbes } from "./doctor.ts";
 import JSON5 from "json5";
@@ -36,6 +42,12 @@ const noopProbes: ConnectivityProbes = {
   checkEdgeTtsAvailable: async () => {},
 };
 
+/** Keep network probes hermetic while exercising the real local process probe. */
+const networkOnlyProbes: ConnectivityProbes = {
+  checkTelegramToken: async () => {},
+  checkModelProvider: async () => {},
+};
+
 function buildConfigContent(): string {
   return `{
     botToken: "test-token",
@@ -47,14 +59,23 @@ function buildConfigContent(): string {
   }`;
 }
 
+function homeConfig(goblinHome: string): Config {
+  return {
+    botToken: "test-token",
+    allowedTgUserIds: new Set([123456]),
+    modelName: "openai/gpt-5.4",
+    openaiApiKey: "test-key",
+    goblinHome,
+    logLevel: "info",
+    toolVisibility: "standard",
+    favorites: [],
+    voiceName: "en-US-EmmaMultilingualNeural",
+  };
+}
+
 function setupHealthyHome(): string {
   const home = mkdtempSync(join(tmpdir(), "goblin-doctor-healthy-"));
-
-  mkdirSync(join(home, "workspace"), { recursive: true });
-  mkdirSync(join(home, "state"), { recursive: true });
-  mkdirSync(join(home, "state", "memory"), { recursive: true });
-  mkdirSync(join(home, "state", "sessions"), { recursive: true });
-  mkdirSync(join(home, "scratch"), { recursive: true });
+  ensureGoblinHome(homeConfig(home));
 
   writeStateVersion(home, CURRENT_STATE_VERSION);
   writeFileSync(join(home, "goblin.json5"), buildConfigContent());
@@ -82,9 +103,22 @@ function setupHealthyHome(): string {
   return home;
 }
 
+interface TestDoctorOptions {
+  readonly strict?: boolean;
+  readonly probes?: ConnectivityProbes;
+  /** Test seam for deterministic local filesystem conditions. */
+  readonly dependencies?: {
+    readonly statfs?: (path: string) => {
+      readonly bsize: number;
+      readonly blocks: number;
+      readonly bavail: number;
+    };
+  };
+}
+
 async function callDoctor(
   home: string,
-  opts?: { strict?: boolean; probes?: ConnectivityProbes },
+  opts?: TestDoctorOptions,
 ): Promise<TestDoctorResult> {
   const previousHome = process.env.GOBLIN_HOME;
   try {
@@ -100,39 +134,8 @@ async function callDoctor(
   }
 }
 
-interface CliResult {
-  exitCode: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-/**
- * Run `bun run doctor` as a real subprocess with a hermetic environment.
- * Connectivity probes are controlled through GOBLIN_DOCTOR_PROBE_STUB
- * ("pass" | "fail") so no real network access is attempted.
- */
-function runDoctorCli(
-  home: string,
-  args: readonly string[] = [],
-  extraEnv: Record<string, string> = {},
-): CliResult {
-  const result = Bun.spawnSync({
-    cmd: ["bun", "run", "doctor", ...args],
-    cwd: fileURLToPath(new URL("..", import.meta.url)),
-    env: {
-      PATH: process.env.PATH ?? "",
-      TMPDIR: process.env.TMPDIR ?? tmpdir(),
-      GOBLIN_HOME: home,
-      ...extraEnv,
-    },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return {
-    exitCode: result.exitCode,
-    stdout: result.stdout?.toString() ?? "",
-    stderr: result.stderr?.toString() ?? "",
-  };
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 describe("bun run doctor", () => {
@@ -161,7 +164,7 @@ describe("bun run doctor", () => {
           `state version ${CURRENT_STATE_VERSION} matches expected ${CURRENT_STATE_VERSION}`,
         );
         expect(output).toContain(
-          "subdirs: workspace, state, state/memory, state/sessions, scratch",
+          "subdirs: workspace, .agents/skills, workspace/.agents/skills, workspace/agents, state, state/sessions, state/memory, state/pi, state/delegated-work/runs, scratch, scratch/external-agents",
         );
         expect(output).toMatch(
           /memory: pass \(0 entries, budget \d+ \/ \d+ chars, embedding .+ \(.+\) ok, last sync never, db .+\)/,
@@ -181,28 +184,72 @@ describe("bun run doctor", () => {
   it(
     "exits 1 and names the state version failure when state-version is mismatched",
     async () => {
-      const home = mkdtempSync(join(tmpdir(), "goblin-doctor-mismatch-"));
+      const home = setupHealthyHome();
       try {
-        mkdirSync(join(home, "workspace"), { recursive: true });
-        mkdirSync(join(home, "state"), { recursive: true });
-        mkdirSync(join(home, "state", "memory"), { recursive: true });
-        mkdirSync(join(home, "state", "sessions"), { recursive: true });
-        mkdirSync(join(home, "scratch"), { recursive: true });
-
         // Intentionally set an older state version so only this check fails.
         writeStateVersion(home, CURRENT_STATE_VERSION - 1);
-        writeFileSync(join(home, "goblin.json5"), buildConfigContent());
-        writeFileSync(soulMdPath(home), "# Test Goblin\n");
-        writeFileSync(agentsMdPath(home), "## Test Agents\n");
-
-        const db = new MemoryDatabase(memoryDbPath(home));
-        db.close();
 
         const result = await callDoctor(home, { probes: noopProbes });
         const output = result.lines.join("\n");
 
         expect(result.exitCode).toBe(1);
         expect(output).toContain("state version");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+});
+
+describe("startup directory inventory", () => {
+  it(
+    "fails when startup-required skill or delegated-work roots are absent",
+    async () => {
+      const home = setupHealthyHome();
+      const requiredRoots: readonly [label: string, path: string][] = [
+        [".agents/skills", goblinSkillsPath(home)],
+        ["workspace/.agents/skills", personalEnvironmentSkillsPath(home)],
+        ["state/delegated-work/runs", delegatedWorkRunsRoot(home)],
+      ];
+
+      try {
+        for (const [label, path] of requiredRoots) {
+          rmSync(path, { recursive: true, force: true });
+          const result = await callDoctor(home, { probes: noopProbes });
+          const line = result.lines.find((candidate) => candidate.startsWith("GOBLIN_HOME"));
+
+          expect(result.exitCode).toBe(1);
+          expect(line).toContain("GOBLIN_HOME: fail");
+          expect(line).toContain(`${label} is missing`);
+
+          ensureGoblinHome(homeConfig(home));
+        }
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+});
+
+describe("disk availability", () => {
+  it(
+    "fails critically when the GOBLIN_HOME volume has zero available blocks",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        const result = await callDoctor(home, {
+          probes: noopProbes,
+          dependencies: {
+            statfs: () => ({ bsize: 4096, blocks: 256, bavail: 0 }),
+          },
+        });
+        const line = result.lines.find((candidate) => candidate.startsWith("disk"));
+
+        expect(result.exitCode).toBe(1);
+        expect(line).toContain("disk: fail");
+        expect(line).toContain("0 available blocks");
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
@@ -296,67 +343,51 @@ describe("doctor read-only behavior", () => {
   );
 });
 
-describe("bun run doctor subprocess", () => {
+describe("live connectivity probe policy", () => {
   it(
-    "exits 0 with the full report when every probe passes (stubbed)",
-    () => {
+    "does not let an environment variable bypass live probes",
+    async () => {
       const home = setupHealthyHome();
-      try {
-        const res = runDoctorCli(home, ["--strict"], { GOBLIN_DOCTOR_PROBE_STUB: "pass" });
+      const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-uvx-"));
+      const fakeUvx = join(tmpBin, "uvx");
+      const previousPath = process.env.PATH;
+      const previousStub = process.env.GOBLIN_DOCTOR_PROBE_STUB;
+      const previousFetch = globalThis.fetch;
+      writeFileSync(fakeUvx, "#!/bin/sh\nexit 1\n");
+      chmodSync(fakeUvx, 0o755);
 
-        expect(res.exitCode).toBe(0);
-        expect(res.stdout).toContain("GOBLIN_HOME: pass");
-        expect(res.stdout).toContain("conversations: pass");
-        expect(res.stdout).toMatch(/0 failed \(strict\)/);
+      try {
+        process.env.PATH = `${tmpBin}:${previousPath ?? ""}`;
+        process.env.GOBLIN_DOCTOR_PROBE_STUB = "pass";
+        globalThis.fetch = (async () => new Response("{}", { status: 200 })) as unknown as typeof globalThis.fetch;
+
+        const result = await callDoctor(home, { strict: true });
+        expect(result.exitCode).toBe(1);
+        expect(result.lines.join("\n")).toContain("Edge TTS: warn");
       } finally {
+        globalThis.fetch = previousFetch;
+        if (previousPath === undefined) {
+          delete process.env.PATH;
+        } else {
+          process.env.PATH = previousPath;
+        }
+        if (previousStub === undefined) {
+          delete process.env.GOBLIN_DOCTOR_PROBE_STUB;
+        } else {
+          process.env.GOBLIN_DOCTOR_PROBE_STUB = previousStub;
+        }
+        rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
     },
-    60_000,
-  );
-
-  it(
-    "exits 1 in strict mode and 0 otherwise when stubbed probes fail",
-    () => {
-      const home = setupHealthyHome();
-      try {
-        const strict = runDoctorCli(home, ["--strict"], { GOBLIN_DOCTOR_PROBE_STUB: "fail" });
-        expect(strict.exitCode).toBe(1);
-        expect(strict.stdout).toMatch(/failed \(strict\)/);
-
-        const lax = runDoctorCli(home, [], { GOBLIN_DOCTOR_PROBE_STUB: "fail" });
-        expect(lax.exitCode).toBe(0);
-        expect(lax.stdout).toMatch(/warned/);
-      } finally {
-        rmSync(home, { recursive: true, force: true });
-      }
-    },
-    60_000,
-  );
-
-  it(
-    "exits 1 when the state version mismatches",
-    () => {
-      const home = setupHealthyHome();
-      try {
-        writeStateVersion(home, CURRENT_STATE_VERSION - 1);
-
-        const res = runDoctorCli(home, [], { GOBLIN_DOCTOR_PROBE_STUB: "pass" });
-
-        expect(res.exitCode).toBe(1);
-        expect(res.stdout).toContain("state version: fail");
-      } finally {
-        rmSync(home, { recursive: true, force: true });
-      }
-    },
-    60_000,
+    20_000,
   );
 });
 
 describe("MCP gateway status connectivity probe", () => {
   it(
-    "hermetic MCP gateway status probe records --status and --exit-code and preserves lax/strict exits",
-    () => {
+    "records --status and --exit-code, captures gateway output, and preserves lax/strict exits",
+    async () => {
       const home = setupHealthyHome();
       const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-mcporter-"));
       const argvPath = join(tmpBin, "gateway-argv");
@@ -368,16 +399,13 @@ describe("MCP gateway status connectivity probe", () => {
         fakeBunx,
         `#!/bin/sh
 printf '%s\\n' "$@" > ${JSON.stringify(argvPath)}
-printf '%s\\n' 'tavily: unhealthy (gateway unavailable)' >&2
+printf '%s\\n' 'gateway stdout: tavily status unavailable'
+printf '%s\\n' 'gateway stderr: tavily unhealthy' >&2
 exit 1
 `,
       );
       chmodSync(fakeBunx, 0o755);
 
-      const extraEnv = {
-        PATH: `${tmpBin}:${process.env.PATH ?? ""}`,
-        GOBLIN_DOCTOR_PROBE_STUB: "pass-except-mcp",
-      };
       const expectedArgv = [
         "--silent",
         "mcporter",
@@ -390,25 +418,80 @@ exit 1
         "--status",
         "--exit-code",
       ];
+      const previousPath = process.env.PATH;
 
       try {
-        const lax = runDoctorCli(home, [], extraEnv);
+        process.env.PATH = `${tmpBin}:${previousPath ?? ""}`;
+
+        const lax = await callDoctor(home, { probes: noopProbes });
         expect(lax.exitCode).toBe(0);
-        expect(lax.stdout).toContain("MCP servers: warn");
-        expect(lax.stdout).toContain("tavily: unhealthy (gateway unavailable)");
+        expect(lax.lines.join("\n")).toContain("MCP servers: warn");
+        expect(lax.lines.join("\n")).toContain("gateway stdout: tavily status unavailable");
+        expect(lax.lines.join("\n")).toContain("gateway stderr: tavily unhealthy");
         expect(readFileSync(argvPath, "utf8").trim().split("\n")).toEqual(expectedArgv);
 
-        const strict = runDoctorCli(home, ["--strict"], extraEnv);
+        const strict = await callDoctor(home, { strict: true, probes: noopProbes });
         expect(strict.exitCode).toBe(1);
-        expect(strict.stdout).toContain("MCP servers: warn");
-        expect(strict.stdout).toContain("tavily: unhealthy (gateway unavailable)");
+        expect(strict.lines.join("\n")).toContain("MCP servers: warn");
+        expect(strict.lines.join("\n")).toContain("gateway stdout: tavily status unavailable");
+        expect(strict.lines.join("\n")).toContain("gateway stderr: tavily unhealthy");
         expect(readFileSync(argvPath, "utf8").trim().split("\n")).toEqual(expectedArgv);
       } finally {
+        if (previousPath === undefined) {
+          delete process.env.PATH;
+        } else {
+          process.env.PATH = previousPath;
+        }
         rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
     },
-    60_000,
+    20_000,
+  );
+
+  it(
+    "bounds captured stdout and stderr while retaining their trailing diagnostic detail",
+    async () => {
+      const home = setupHealthyHome();
+      const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-mcporter-output-"));
+      const fakeBunx = join(tmpBin, "bunx");
+      const raw = JSON5.parse(buildConfigContent());
+      raw.mcp = {};
+      writeFileSync(join(home, "goblin.json5"), JSON5.stringify(raw, { space: 2 }));
+      writeFileSync(
+        fakeBunx,
+        `#!/bin/sh
+printf '%*s' 20000 '' | tr ' ' x
+printf '%s\\n' 'stdout trailing diagnostic'
+printf '%*s' 20000 '' | tr ' ' y >&2
+printf '%s\\n' 'stderr trailing diagnostic' >&2
+exit 1
+`,
+      );
+      chmodSync(fakeBunx, 0o755);
+      const previousPath = process.env.PATH;
+
+      try {
+        process.env.PATH = `${tmpBin}:${previousPath ?? ""}`;
+        const result = await callDoctor(home, { probes: noopProbes });
+        const line = result.lines.find((candidate) => candidate.startsWith("MCP servers"));
+
+        expect(line).toContain("MCP servers: warn");
+        expect(line).toContain("stdout trailing diagnostic");
+        expect(line).toContain("stderr trailing diagnostic");
+        expect(line).toContain("[truncated]");
+        expect(line?.length).toBeLessThan(20_000);
+      } finally {
+        if (previousPath === undefined) {
+          delete process.env.PATH;
+        } else {
+          process.env.PATH = previousPath;
+        }
+        rmSync(tmpBin, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
   );
 });
 
@@ -440,7 +523,7 @@ describe("non-ENOENT filesystem error retention", () => {
     20_000,
   );
 
-  it.skipIf(skipAsRoot)(
+  it(
     "fails prompt files with the underlying error when AGENTS.md cannot be statted",
     async () => {
       const home = setupHealthyHome();
@@ -459,6 +542,28 @@ describe("non-ENOENT filesystem error retention", () => {
         expect(line).toMatch(/too many symbolic links/i);
         expect(line).not.toContain("missing");
       } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it.skipIf(skipAsRoot)(
+    "fails prompt files critically when AGENTS.md is unreadable",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        chmodSync(agentsMdPath(home), 0o000);
+
+        const result = await callDoctor(home, { probes: noopProbes });
+        const line = result.lines.find((l) => l.startsWith("prompt files"));
+
+        expect(result.exitCode).toBe(1);
+        expect(line).toContain("prompt files: fail");
+        expect(line).toContain("AGENTS.md");
+        expect(line).toMatch(/permission denied/i);
+      } finally {
+        chmodSync(agentsMdPath(home), 0o644);
         rmSync(home, { recursive: true, force: true });
       }
     },
@@ -540,6 +645,27 @@ describe("prompt files classification", () => {
   );
 
   it(
+    "fails critically when optional AGENTS.md is not a regular file",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        rmSync(agentsMdPath(home));
+        mkdirSync(agentsMdPath(home));
+
+        const result = await callDoctor(home, { probes: noopProbes });
+        const line = result.lines.find((candidate) => candidate.startsWith("prompt files"));
+
+        expect(result.exitCode).toBe(1);
+        expect(line).toContain("prompt files: fail");
+        expect(line).toMatch(/AGENTS\.md.*regular/i);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it(
     "fails critically when mandatory SOUL.md is missing",
     async () => {
       const home = setupHealthyHome();
@@ -568,15 +694,21 @@ describe("connectivity probe timeout reporting", () => {
       writeFileSync(fakeUvx, "#!/bin/sh\nexit 143\n");
       chmodSync(fakeUvx, 0o755);
 
+      const previousPath = process.env.PATH;
       try {
-        const result = runDoctorCli(home, ["--strict"], {
-          PATH: `${tmpBin}:${process.env.PATH ?? ""}`,
-        });
+        process.env.PATH = `${tmpBin}:${previousPath ?? ""}`;
+        const result = await callDoctor(home, { strict: true, probes: networkOnlyProbes });
+        const output = result.lines.join("\n");
 
         expect(result.exitCode).toBe(1);
-        expect(result.stdout).toContain("Edge TTS: warn");
-        expect(result.stdout).not.toContain("Edge TTS: timeout");
+        expect(output).toContain("Edge TTS: warn");
+        expect(output).not.toContain("Edge TTS: timeout");
       } finally {
+        if (previousPath === undefined) {
+          delete process.env.PATH;
+        } else {
+          process.env.PATH = previousPath;
+        }
         rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
@@ -593,14 +725,60 @@ describe("connectivity probe timeout reporting", () => {
       writeFileSync(fakeUvx, "#!/bin/sh\nsleep 6\n");
       chmodSync(fakeUvx, 0o755);
 
+      const previousPath = process.env.PATH;
       try {
-        const result = runDoctorCli(home, ["--strict"], {
-          PATH: `${tmpBin}:${process.env.PATH ?? ""}`,
-        });
+        process.env.PATH = `${tmpBin}:${previousPath ?? ""}`;
+        const result = await callDoctor(home, { strict: true, probes: networkOnlyProbes });
 
         expect(result.exitCode).toBe(1);
-        expect(result.stdout).toContain("Edge TTS: timeout");
+        expect(result.lines.join("\n")).toContain("Edge TTS: timeout");
       } finally {
+        if (previousPath === undefined) {
+          delete process.env.PATH;
+        } else {
+          process.env.PATH = previousPath;
+        }
+        rmSync(tmpBin, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "terminates process-group descendants when an Edge TTS probe times out",
+    async () => {
+      const home = setupHealthyHome();
+      const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-uvx-group-"));
+      const fakeUvx = join(tmpBin, "uvx");
+      const descendantMarker = join(tmpBin, "descendant-survived");
+      const previousPath = process.env.PATH;
+      writeFileSync(
+        fakeUvx,
+        `#!/bin/sh
+(
+  sleep 6
+  printf '%s\\n' survived > ${JSON.stringify(descendantMarker)}
+) &
+sleep 30
+`,
+      );
+      chmodSync(fakeUvx, 0o755);
+
+      try {
+        process.env.PATH = `${tmpBin}:${previousPath ?? ""}`;
+        const result = await callDoctor(home, { strict: true, probes: networkOnlyProbes });
+
+        expect(result.exitCode).toBe(1);
+        expect(result.lines.join("\n")).toContain("Edge TTS: timeout");
+        await delay(1_500);
+        expect(existsSync(descendantMarker)).toBe(false);
+      } finally {
+        if (previousPath === undefined) {
+          delete process.env.PATH;
+        } else {
+          process.env.PATH = previousPath;
+        }
         rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }

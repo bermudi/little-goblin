@@ -42,12 +42,6 @@ const noopProbes: ConnectivityProbes = {
   checkEdgeTtsAvailable: async () => {},
 };
 
-/** Keep network probes hermetic while exercising the real local process probe. */
-const networkOnlyProbes: ConnectivityProbes = {
-  checkTelegramToken: async () => {},
-  checkModelProvider: async () => {},
-};
-
 function buildConfigContent(): string {
   return `{
     botToken: "test-token",
@@ -132,6 +126,54 @@ async function callDoctor(
       process.env.GOBLIN_HOME = previousHome;
     }
   }
+}
+
+interface ChildDoctorResult {
+  readonly exitCode: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/**
+ * Start a fresh Bun process so the default Edge probe inherits the fake PATH
+ * at process launch. Connectivity is injected in the child; the mock-fetch
+ * mode exercises all production defaults without leaving the test network.
+ */
+function runDoctorInChild(
+  home: string,
+  extraEnv: Record<string, string>,
+  mode: "injected-network-probes" | "mock-fetch",
+): ChildDoctorResult {
+  const doctorUrl = new URL("./doctor.ts", import.meta.url).href;
+  const setup = mode === "mock-fetch"
+    ? 'globalThis.fetch = async () => new Response("{}", { status: 200 });'
+    : "";
+  const options = mode === "injected-network-probes"
+    ? "{ strict: true, probes: { checkTelegramToken: async () => {}, checkModelProvider: async () => {} } }"
+    : "{ strict: true }";
+  const script = `
+import { runDoctor } from ${JSON.stringify(doctorUrl)};
+${setup}
+const result = await runDoctor(${options});
+process.stdout.write(result.lines.join("\\n"));
+process.exit(result.exitCode);
+`;
+  const result = Bun.spawnSync({
+    cmd: ["bun", "--eval", script],
+    env: {
+      PATH: process.env.PATH ?? "",
+      TMPDIR: process.env.TMPDIR ?? tmpdir(),
+      GOBLIN_HOME: home,
+      ...extraEnv,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout?.toString() ?? "",
+    stderr: result.stderr?.toString() ?? "",
+  };
 }
 
 function delay(ms: number): Promise<void> {
@@ -346,36 +388,25 @@ describe("doctor read-only behavior", () => {
 describe("live connectivity probe policy", () => {
   it(
     "does not let an environment variable bypass live probes",
-    async () => {
+    () => {
       const home = setupHealthyHome();
       const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-uvx-"));
       const fakeUvx = join(tmpBin, "uvx");
-      const previousPath = process.env.PATH;
-      const previousStub = process.env.GOBLIN_DOCTOR_PROBE_STUB;
-      const previousFetch = globalThis.fetch;
       writeFileSync(fakeUvx, "#!/bin/sh\nexit 1\n");
       chmodSync(fakeUvx, 0o755);
 
       try {
-        process.env.PATH = `${tmpBin}:${previousPath ?? ""}`;
-        process.env.GOBLIN_DOCTOR_PROBE_STUB = "pass";
-        globalThis.fetch = (async () => new Response("{}", { status: 200 })) as unknown as typeof globalThis.fetch;
-
-        const result = await callDoctor(home, { strict: true });
+        const result = runDoctorInChild(
+          home,
+          {
+            PATH: `${tmpBin}:${process.env.PATH ?? ""}`,
+            GOBLIN_DOCTOR_PROBE_STUB: "pass",
+          },
+          "mock-fetch",
+        );
         expect(result.exitCode).toBe(1);
-        expect(result.lines.join("\n")).toContain("Edge TTS: warn");
+        expect(result.stdout).toContain("Edge TTS: warn");
       } finally {
-        globalThis.fetch = previousFetch;
-        if (previousPath === undefined) {
-          delete process.env.PATH;
-        } else {
-          process.env.PATH = previousPath;
-        }
-        if (previousStub === undefined) {
-          delete process.env.GOBLIN_DOCTOR_PROBE_STUB;
-        } else {
-          process.env.GOBLIN_DOCTOR_PROBE_STUB = previousStub;
-        }
         rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
@@ -687,28 +718,24 @@ describe("prompt files classification", () => {
 describe("connectivity probe timeout reporting", () => {
   it(
     "reports immediate exit 143 as a warning, not a timeout",
-    async () => {
+    () => {
       const home = setupHealthyHome();
       const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-uvx-"));
       const fakeUvx = join(tmpBin, "uvx");
       writeFileSync(fakeUvx, "#!/bin/sh\nexit 143\n");
       chmodSync(fakeUvx, 0o755);
 
-      const previousPath = process.env.PATH;
       try {
-        process.env.PATH = `${tmpBin}:${previousPath ?? ""}`;
-        const result = await callDoctor(home, { strict: true, probes: networkOnlyProbes });
-        const output = result.lines.join("\n");
+        const result = runDoctorInChild(
+          home,
+          { PATH: `${tmpBin}:${process.env.PATH ?? ""}` },
+          "injected-network-probes",
+        );
 
         expect(result.exitCode).toBe(1);
-        expect(output).toContain("Edge TTS: warn");
-        expect(output).not.toContain("Edge TTS: timeout");
+        expect(result.stdout).toContain("Edge TTS: warn");
+        expect(result.stdout).not.toContain("Edge TTS: timeout");
       } finally {
-        if (previousPath === undefined) {
-          delete process.env.PATH;
-        } else {
-          process.env.PATH = previousPath;
-        }
         rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
@@ -718,26 +745,23 @@ describe("connectivity probe timeout reporting", () => {
 
   it(
     "reports a process that overruns the five-second deadline as a timeout",
-    async () => {
+    () => {
       const home = setupHealthyHome();
       const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-uvx-"));
       const fakeUvx = join(tmpBin, "uvx");
       writeFileSync(fakeUvx, "#!/bin/sh\nsleep 6\n");
       chmodSync(fakeUvx, 0o755);
 
-      const previousPath = process.env.PATH;
       try {
-        process.env.PATH = `${tmpBin}:${previousPath ?? ""}`;
-        const result = await callDoctor(home, { strict: true, probes: networkOnlyProbes });
+        const result = runDoctorInChild(
+          home,
+          { PATH: `${tmpBin}:${process.env.PATH ?? ""}` },
+          "injected-network-probes",
+        );
 
         expect(result.exitCode).toBe(1);
-        expect(result.lines.join("\n")).toContain("Edge TTS: timeout");
+        expect(result.stdout).toContain("Edge TTS: timeout");
       } finally {
-        if (previousPath === undefined) {
-          delete process.env.PATH;
-        } else {
-          process.env.PATH = previousPath;
-        }
         rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
@@ -752,7 +776,6 @@ describe("connectivity probe timeout reporting", () => {
       const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-uvx-group-"));
       const fakeUvx = join(tmpBin, "uvx");
       const descendantMarker = join(tmpBin, "descendant-survived");
-      const previousPath = process.env.PATH;
       writeFileSync(
         fakeUvx,
         `#!/bin/sh
@@ -766,19 +789,17 @@ sleep 30
       chmodSync(fakeUvx, 0o755);
 
       try {
-        process.env.PATH = `${tmpBin}:${previousPath ?? ""}`;
-        const result = await callDoctor(home, { strict: true, probes: networkOnlyProbes });
+        const result = runDoctorInChild(
+          home,
+          { PATH: `${tmpBin}:${process.env.PATH ?? ""}` },
+          "injected-network-probes",
+        );
 
         expect(result.exitCode).toBe(1);
-        expect(result.lines.join("\n")).toContain("Edge TTS: timeout");
+        expect(result.stdout).toContain("Edge TTS: timeout");
         await delay(1_500);
         expect(existsSync(descendantMarker)).toBe(false);
       } finally {
-        if (previousPath === undefined) {
-          delete process.env.PATH;
-        } else {
-          process.env.PATH = previousPath;
-        }
         rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }

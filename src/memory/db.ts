@@ -1,5 +1,4 @@
 import { Database } from "bun:sqlite";
-import { DatabaseSync } from "node:sqlite";
 import {
   copyFileSync,
   existsSync,
@@ -9,7 +8,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { log } from "../log.ts";
 import { DDL, INDEX_DDL, MEMORY_SCHEMA_VERSION } from "./schema.ts";
 
@@ -237,12 +235,13 @@ export class MemoryDatabase {
  * diagnostics.
  *
  * The source files are never opened in place. They are copied to a private
- * temp directory while the source file set is stable, then queried there.
- * This keeps `$GOBLIN_HOME` completely unchanged and lets us use `?mode=ro`
- * to read any uncheckpointed WAL data safely.
+ * temp directory while the source file set is stable, then queried through
+ * the canonical `bun:sqlite` engine in readonly mode. This keeps
+ * `$GOBLIN_HOME` completely unchanged while retaining uncheckpointed WAL
+ * data in the copy.
  */
 export class MemorySnapshot {
-  private readonly db: DatabaseSync;
+  private readonly db: Database;
   private readonly tempDir: string;
 
   constructor(dbPath: string) {
@@ -250,7 +249,7 @@ export class MemorySnapshot {
     const base = basename(dbPath);
 
     let tempDir: string | undefined;
-    let db: DatabaseSync | undefined;
+    let db: Database | undefined;
     try {
       tempDir = mkdtempSync(join(tmpdir(), "goblin-memory-snapshot-"));
 
@@ -274,15 +273,10 @@ export class MemorySnapshot {
       }
 
       const copiedDb = join(tempDir, base);
-      const hasWal = stable.some((f) => f.name === `${base}-wal`);
-      const uri = `${pathToFileURL(copiedDb).href}${hasWal ? "?mode=ro" : "?immutable=1"}`;
-      db = new DatabaseSync(uri, { readOnly: true });
+      db = new Database(copiedDb, { readonly: true });
 
       const reader: SchemaReader = {
-        selectOne: <T>(sql: string): T | null => {
-          const row: unknown = db!.prepare(sql).get();
-          return (row as T | undefined) ?? null;
-        },
+        selectOne: <T>(sql: string): T | null => db!.query<T, []>(sql).get() ?? null,
       };
       const version = readSchemaVersion(reader);
       if (version > MEMORY_SCHEMA_VERSION) {
@@ -302,15 +296,14 @@ export class MemorySnapshot {
 
   /** Run a parameterless SELECT and return the first row, or null. */
   selectOne<T>(sql: string): T | null {
-    const row: unknown = this.db.prepare(sql).get();
-    return (row as T | undefined) ?? null;
+    return this.db.query<T, []>(sql).get() ?? null;
   }
 
   getMeta(key: string): string | undefined {
-    const row: unknown = this.db
-      .prepare("SELECT value FROM memory_meta WHERE key = ?")
+    const row = this.db
+      .query<{ value: string }, string>("SELECT value FROM memory_meta WHERE key = ?")
       .get(key);
-    return (row as { value: string } | undefined)?.value;
+    return row?.value;
   }
 
   close(): void {

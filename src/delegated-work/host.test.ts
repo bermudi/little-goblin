@@ -12,6 +12,12 @@ import {
 import { DelegatedWorkRecordError } from "./store.ts";
 import { asConversationRuntimeId, type AttachedWorkAdapter } from "./types.ts";
 import { delegatedWorkRecordPath, delegatedWorkRunDir } from "./paths.ts";
+import {
+  DEFAULT_CASCADE_TIMEOUT_MS,
+  interruptAndCascade,
+  type InterruptableSubagentRunner,
+} from "../interrupt.ts";
+import { cancelReply } from "../commands/cancel.ts";
 
 function tempHome(): string {
   return mkdtempSync(join(tmpdir(), "goblin-delegated-host-"));
@@ -417,5 +423,127 @@ describe("DelegatedWorkHost", () => {
     expect(() => host.reserveAttached("durable-reject-1", durable)).toThrow(
       "only accepts attached",
     );
+  });
+});
+
+describe("Owner cancellation of durable runs", () => {
+  it("owner cancellation fences a durable run to terminal cancelled with delivery suppressed", async () => {
+    const host = new DelegatedWorkHost(tempHome());
+    const ownership = durableOwnership(
+      "runtime-durable-cancel",
+      "conversation-durable",
+      "epoch-durable-cancel",
+    );
+    const registration = host.reserveDurable("durable-cancel-1", ownership);
+    host.createRecord("durable-cancel-1", "generic-subagent", null, 1, ownership);
+    const before = host.loadRecord("durable-cancel-1")!.invocations[0]!;
+    expect(before.status).toBe("running");
+    expect(before.deliveryState).toBe("pending");
+    const work = adapter();
+    registration.attach(work);
+
+    // The /cancel cascade owns routing: a running durable run explicitly owned
+    // by the cancelling Conversation goes through the owner-scoped path, and
+    // the cancellation itself is entirely host-owned.
+    let individualCancelCalls = 0;
+    const subagentRunner: InterruptableSubagentRunner = {
+      list: () => [
+        { id: "durable-cancel-1", status: "running", ownerConversationId: "conversation-durable" },
+      ],
+      cancel: async () => {
+        individualCancelCalls += 1;
+      },
+      cancelByConversation: (conversationId: string) => host.cancelByConversation(conversationId),
+    };
+
+    const cascade = await interruptAndCascade(
+      null,
+      subagentRunner,
+      DEFAULT_CASCADE_TIMEOUT_MS,
+      "conversation-durable",
+    );
+    expect(cascade.attemptedSubagents).toBe(1);
+    expect(cascade.timedOutSubagents).toBe(0);
+    expect(individualCancelCalls).toBe(0);
+
+    // Fence before cancel: the durable registration was fenced and its adapter
+    // was destructively stopped and proven quiescent.
+    expect(registration.fenced).toBe(true);
+    expect(work.fenceCalls).toBe(1);
+    expect(work.cancelCalls).toBe(1);
+    expect(work.quiesceCalls).toBe(1);
+
+    // Durable cancellation is destructive for the epoch: a late descendant
+    // reservation cannot escape the owner's cancellation.
+    expect(() =>
+      host.reserveDurable(
+        "durable-cancel-2",
+        durableOwnership("runtime-durable-cancel", "conversation-durable", "epoch-durable-cancel"),
+      ),
+    ).toThrow(DelegatedWorkEpochCancelledError);
+
+    // The execution coordinator closes the invocation through the host when
+    // its cancellation cleanup runs (SubagentRunner.finishCancellationCleanup).
+    const invocation = host.cancelInvocation("durable-cancel-1", 0).invocations[0]!;
+    expect(invocation.status).toBe("cancelled");
+    expect(invocation.outcome).toBeNull();
+    expect(invocation.deliveryState).toBe("suppressed");
+    const persisted = host.loadRecord("durable-cancel-1")!.invocations[0]!;
+    expect(persisted.status).toBe("cancelled");
+    expect(persisted.deliveryState).toBe("suppressed");
+
+    // /cancel's honest-reply contract: the cascade attempted the durable run
+    // and its cancellation resolved, so the reply is exactly "Cancelled." —
+    // never "Nothing to cancel." and no invented timeout suffix.
+    expect(cancelReply({ cascade, cascadeTimeoutMs: DEFAULT_CASCADE_TIMEOUT_MS })).toBe(
+      "Cancelled.",
+    );
+  });
+
+  it("cancellation from one conversation leaves other conversations' durable runs untouched", async () => {
+    const host = new DelegatedWorkHost(tempHome());
+    const mine = durableOwnership("runtime-durable-mine", "conversation-durable-a", "epoch-durable-a");
+    const theirs = durableOwnership(
+      "runtime-durable-theirs",
+      "conversation-durable-b",
+      "epoch-durable-b",
+    );
+
+    const mineRegistration = host.reserveDurable("durable-scope-mine", mine);
+    host.createRecord("durable-scope-mine", "generic-subagent", null, 1, mine);
+    const mineWork = adapter();
+    mineRegistration.attach(mineWork);
+
+    const theirsRegistration = host.reserveDurable("durable-scope-theirs", theirs);
+    host.createRecord("durable-scope-theirs", "generic-subagent", null, 1, theirs);
+    const theirsWork = adapter();
+    theirsRegistration.attach(theirsWork);
+
+    await host.cancelByConversation("conversation-durable-a");
+
+    // The cancelling owner's own durable run is fenced and destructively stopped.
+    expect(mineRegistration.fenced).toBe(true);
+    expect(mineWork.cancelCalls).toBe(1);
+    expect(mineWork.quiesceCalls).toBe(1);
+
+    // Another conversation's durable run is neither fenced, cancelled, nor
+    // retargeted: its adapter is untouched and its record stays running with
+    // delivery still pending.
+    expect(theirsRegistration.fenced).toBe(false);
+    expect(theirsWork.cancelCalls).toBe(0);
+    expect(theirsWork.quiesceCalls).toBe(0);
+    const theirsInvocation = host.loadRecord("durable-scope-theirs")!.invocations[0]!;
+    expect(theirsInvocation.status).toBe("running");
+    expect(theirsInvocation.deliveryState).toBe("pending");
+
+    // Their epoch was not poisoned: it still accepts durable reservations and
+    // a fresh registration still attaches.
+    const lateTheirs = host.reserveDurable(
+      "durable-scope-theirs-2",
+      durableOwnership("runtime-durable-theirs", "conversation-durable-b", "epoch-durable-b"),
+    );
+    lateTheirs.attach(adapter());
+    expect(lateTheirs.fenced).toBe(false);
+    lateTheirs.release();
   });
 });

@@ -353,6 +353,65 @@ describe("bun run doctor subprocess", () => {
   );
 });
 
+describe("MCP gateway status connectivity probe", () => {
+  it(
+    "hermetic MCP gateway status probe records --status and --exit-code and preserves lax/strict exits",
+    () => {
+      const home = setupHealthyHome();
+      const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-mcporter-"));
+      const argvPath = join(tmpBin, "gateway-argv");
+      const fakeBunx = join(tmpBin, "bunx");
+      const raw = JSON5.parse(buildConfigContent());
+      raw.mcp = { configPath: "mcporter.json" };
+      writeFileSync(join(home, "goblin.json5"), JSON5.stringify(raw, { space: 2 }));
+      writeFileSync(
+        fakeBunx,
+        `#!/bin/sh
+printf '%s\\n' "$@" > ${JSON.stringify(argvPath)}
+printf '%s\\n' 'tavily: unhealthy (gateway unavailable)' >&2
+exit 1
+`,
+      );
+      chmodSync(fakeBunx, 0o755);
+
+      const extraEnv = {
+        PATH: `${tmpBin}:${process.env.PATH ?? ""}`,
+        GOBLIN_DOCTOR_PROBE_STUB: "pass-except-mcp",
+      };
+      const expectedArgv = [
+        "--silent",
+        "mcporter",
+        "--log-level",
+        "error",
+        "--config",
+        join(home, "mcporter.json"),
+        "list",
+        "--json",
+        "--status",
+        "--exit-code",
+      ];
+
+      try {
+        const lax = runDoctorCli(home, [], extraEnv);
+        expect(lax.exitCode).toBe(0);
+        expect(lax.stdout).toContain("MCP servers: warn");
+        expect(lax.stdout).toContain("tavily: unhealthy (gateway unavailable)");
+        expect(readFileSync(argvPath, "utf8").trim().split("\n")).toEqual(expectedArgv);
+
+        const strict = runDoctorCli(home, ["--strict"], extraEnv);
+        expect(strict.exitCode).toBe(1);
+        expect(strict.stdout).toContain("MCP servers: warn");
+        expect(strict.stdout).toContain("tavily: unhealthy (gateway unavailable)");
+        expect(readFileSync(argvPath, "utf8").trim().split("\n")).toEqual(expectedArgv);
+      } finally {
+        rmSync(tmpBin, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
+});
+
 describe("non-ENOENT filesystem error retention", () => {
   // chmod 000 on a directory leaves the directory itself statable but makes
   // every child path unstatable (EACCES), which is how a permission problem

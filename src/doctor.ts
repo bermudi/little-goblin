@@ -444,11 +444,12 @@ export interface ConnectivityProbes {
 
 /**
  * Hermetic test seam for subprocess runs of the CLI: when
- * `GOBLIN_DOCTOR_PROBE_STUB=pass|fail` is set and no explicit probes were
- * injected, every connectivity probe resolves (pass) or rejects (fail)
- * without touching the network. Any other value is ignored.
+ * `GOBLIN_DOCTOR_PROBE_STUB=pass|fail|pass-except-mcp` is set and no explicit
+ * probes were injected, connectivity probes resolve (pass), reject (fail), or
+ * resolve except for the real MCP gateway probe (pass-except-mcp), without
+ * touching the network. Any other value is ignored.
  */
-function stubProbes(mode: "pass" | "fail"): ConnectivityProbes {
+function stubProbes(mode: "pass" | "fail" | "pass-except-mcp"): ConnectivityProbes {
   const fn = async (): Promise<void> => {
     if (mode === "fail") throw new Error(`stubbed probe failure (${mode})`);
   };
@@ -458,13 +459,13 @@ function stubProbes(mode: "pass" | "fail"): ConnectivityProbes {
     checkEdgeTtsAvailable: fn,
     checkGroqAsrAvailable: fn,
     checkExternalAgents: fn,
-    checkMcp: fn,
+    ...(mode === "pass-except-mcp" ? {} : { checkMcp: fn }),
   };
 }
 
-function resolveStubEnv(): "pass" | "fail" | null {
+function resolveStubEnv(): "pass" | "fail" | "pass-except-mcp" | null {
   const value = process.env.GOBLIN_DOCTOR_PROBE_STUB;
-  return value === "pass" || value === "fail" ? value : null;
+  return value === "pass" || value === "fail" || value === "pass-except-mcp" ? value : null;
 }
 
 export interface DoctorResult {
@@ -677,7 +678,7 @@ async function defaultCheckExternalAgents(cfg: Config): Promise<void> {
 async function defaultCheckMcp(cfg: Config, home: string): Promise<void> {
   if (!cfg.mcp) return;
   const configPath = resolveMcporterConfigPath(cfg.mcp.configPath, home);
-  const cmd = buildMcporterCommand(["list", "--json"], configPath);
+  const cmd = buildMcporterCommand(["list", "--json", "--status", "--exit-code"], configPath);
   await runProcessProbe({
     cmd,
     env: prepareMcpEnv(home),

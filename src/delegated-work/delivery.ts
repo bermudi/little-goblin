@@ -71,6 +71,13 @@ function completionPrompt(resultText: string): string {
 export class DurableCompletionWake {
   private readonly rail: CompletionWakeRail;
   private readonly host: DelegatedWorkHost;
+  /**
+   * Process-lifetime reservations for pending invocations. The record remains
+   * pending until a reserved rail turn starts, so a rejected/fenced turn can
+   * still be claimed later; while reserved, every delivery path joins the
+   * winner rather than enqueueing another turn.
+   */
+  private readonly pendingDeliveries = new Map<string, Promise<CompletionWakeOutcome>>();
 
   constructor(rail: CompletionWakeRail, host: DelegatedWorkHost) {
     this.rail = rail;
@@ -141,24 +148,46 @@ export class DurableCompletionWake {
       });
       return "pending";
     }
+    const key = `${runId}\u0000${index}`;
+    const reserved = this.pendingDeliveries.get(key);
+    if (reserved !== undefined) return reserved;
+
+    // Calling an async function runs synchronously through its first await,
+    // so install this reservation before binding resolution or rail admission
+    // can yield to a racing wake, claim, or startup re-arm.
+    const delivery = this.deliverReserved(runId, index, surface, invocation.originSurfaceId, invocation.outcome?.kind === "success" ? invocation.outcome.text : "");
+    this.pendingDeliveries.set(key, delivery);
+    try {
+      return await delivery;
+    } finally {
+      if (this.pendingDeliveries.get(key) === delivery) this.pendingDeliveries.delete(key);
+    }
+  }
+
+  private async deliverReserved(
+    runId: string,
+    index: number,
+    surface: Surface,
+    originSurfaceId: string,
+    resultText: string,
+  ): Promise<CompletionWakeOutcome> {
     const conversation = await this.rail.resolveCurrent(surface);
     if (conversation === null) {
       log.info("durable completion wake left pending: origin Surface unbound", {
         runId,
         index,
-        surfaceId: invocation.originSurfaceId,
+        surfaceId: originSurfaceId,
       });
       return "pending";
     }
 
-    const resultText = invocation.outcome?.kind === "success" ? invocation.outcome.text : "";
     const admission = this.rail.enqueueScheduledTurn(conversation, surface, completionPrompt(resultText));
     if (typeof admission === "boolean") {
       if (!admission) {
         log.info("durable completion wake left pending: rail admission closed", {
           runId,
           index,
-          surfaceId: invocation.originSurfaceId,
+          surfaceId: originSurfaceId,
         });
         return "pending";
       }
@@ -170,7 +199,7 @@ export class DurableCompletionWake {
       log.info("durable completion wake left pending: rail fenced the turn before start", {
         runId,
         index,
-        surfaceId: invocation.originSurfaceId,
+        surfaceId: originSurfaceId,
       });
       return "pending";
     }

@@ -108,6 +108,23 @@ fallback routing SHALL occur.
   interaction, unbound ones stay pending for the next claim, and guest
   Surfaces are not re-armed without an authorized summon
 
+### Requirement: Concurrent Completion Delivery Is Idempotent
+
+WHEN completion wake, interaction claim, guest summon claim, or startup
+re-arm concurrently attempt the same pending durable invocation, THE SYSTEM
+SHALL reserve that invocation before enqueuing a system turn. One attempt
+SHALL enqueue the turn, and every losing attempt SHALL send nothing while
+observing the resulting delivery state. Concurrent claims on one Surface
+SHALL preserve oldest-first order and the per-claim cap while delivering each
+retained completion at most once.
+
+#### Scenario: Racing delivery paths
+
+- **WHEN** a completion wake races an authorized interaction claim for the
+  same pending invocation
+- **THEN** exactly one system turn is enqueued and the invocation becomes
+  delivered
+
 ### Requirement: Startup Reconciliation, Revival, And Owner Cancellation
 
 WHEN the process starts AND a durable invocation is non-terminal, startup

@@ -158,7 +158,7 @@ For every checked unit, cross-check its receipt `unit digest:` against the unit'
 
 **CHANGES REQUESTED** — at least one blocking finding remains, even if every unit is checked.
 
-Appending a unit to the parent queue and recording rule-2 routing are the only permitted routing mutations; do not change source, specs, decisions, existing unit contracts, evidence, or unaffected checkboxes. Write `## <outcome>`, `Done means:`, `Verify:`, and `Depends:` if needed. Do not invent units for trivial findings.
+Appending a unit to the parent queue, appending a coverage record, and recording rule-2 routing are the only permitted mutations; do not change source, specs, decisions, existing unit contracts, evidence, or unaffected checkboxes. Write `## <outcome>`, `Done means:`, `Verify:`, and `Depends:` if needed. Do not invent units for trivial findings.
 
 The issue closes only when every unit checkbox is checked, no rebuild request, re-plan marker, or amendment is unresolved, **and** review returns `PASS`. Routed non-blocking findings never block closure.
 
@@ -167,4 +167,3 @@ The issue closes only when every unit checkbox is checked, no rebuild request, r
 ## References
 
 `references/adversarial-review.md` — load when probing interaction bugs, state transitions, wiring gaps, or multi-entity scenarios. Suspends the "no speculation" rule: surface candidate bugs, let the user triage.
-

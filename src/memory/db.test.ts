@@ -127,6 +127,28 @@ describe("copyStableMemoryFiles", () => {
 
     expect(() => copyStableMemoryFiles(source, target, () => { throw failure; })).toThrow(failure);
   });
+
+  it("reports a missing primary database directly", () => {
+    const source = join(tmp, "memory.sqlite");
+    const target = join(tmp, "copy");
+    mkdirSync(target);
+
+    expect(() => copyStableMemoryFiles(source, target)).toThrow(
+      `memory database not found: ${source}`,
+    );
+  });
+
+  it("rejects orphaned sidecars when the primary database is missing", () => {
+    const source = join(tmp, "memory.sqlite");
+    const target = join(tmp, "copy");
+    mkdirSync(target);
+    writeFileSync(`${source}-wal`, "orphaned wal");
+
+    expect(() => copyStableMemoryFiles(source, target)).toThrow(
+      `memory database not found: ${source}`,
+    );
+    expect(existsSync(join(target, "memory.sqlite-wal"))).toBe(false);
+  });
 });
 
 describe("MemoryDatabase", () => {

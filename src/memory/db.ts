@@ -127,6 +127,9 @@ export function copyStableMemoryFiles(
     removeCopiedMemoryFiles(tempDir, base);
 
     const before = listMemoryFiles(dbPath);
+    if (!before.some(({ name }) => name === base)) {
+      throw new Error(`memory database not found: ${dbPath}`);
+    }
     let retry = false;
     for (const { name } of before) {
       try {

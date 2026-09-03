@@ -1,8 +1,5 @@
----
-role: view
----
-
 # Little Goblin
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/bermudi/little-goblin)
 
 > Telegram-native personal AI agent. Single user, single process, homelab.
 

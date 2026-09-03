@@ -12,7 +12,7 @@
  */
 
 import { log } from "../log.ts";
-import { parseSurfaceId, type Surface } from "../surface.ts";
+import { parseSurfaceId, surfaceId, type GuestSurface, type Surface } from "../surface.ts";
 import type { ConversationState } from "../sessions/types.ts";
 import type { DelegatedWorkHost } from "./host.ts";
 
@@ -88,6 +88,27 @@ export class DurableCompletionWake {
    * persistence errors; those propagate to the caller.
    */
   async deliverCompletion(runId: string, index: number): Promise<CompletionWakeOutcome> {
+    return this.deliver(runId, index, null);
+  }
+
+  /**
+   * Deliver a completion claimed by an authorized guest summon. The summon
+   * Surface is checked against the immutable origin before the shared wake
+   * transition can use the rail.
+   */
+  async deliverGuestSummonCompletion(
+    runId: string,
+    index: number,
+    summonedSurface: GuestSurface,
+  ): Promise<CompletionWakeOutcome> {
+    return this.deliver(runId, index, summonedSurface);
+  }
+
+  private async deliver(
+    runId: string,
+    index: number,
+    summonedGuestSurface: GuestSurface | null,
+  ): Promise<CompletionWakeOutcome> {
     const record = this.host.loadRecord(runId);
     if (record === null) {
       throw new Error(`Completion wake requires a record for run ${runId}`);
@@ -108,8 +129,11 @@ export class DurableCompletionWake {
     const surface = parseSurfaceId(invocation.originSurfaceId);
     // A completion wake has no guest-summon authority. Even when the guest
     // Surface remains bound, decision 0036 retains the completion until a
-    // later authorized summon claims it through PendingCompletionClaim.
-    if (surface.kind === "guest") {
+    // later authorized summon from this exact Surface claims it.
+    if (
+      surface.kind === "guest" &&
+      (summonedGuestSurface === null || surfaceId(summonedGuestSurface) !== invocation.originSurfaceId)
+    ) {
       log.info("durable completion wake left pending: guest Surface requires an authorized summon", {
         runId,
         index,

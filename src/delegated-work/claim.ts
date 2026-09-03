@@ -14,7 +14,7 @@
  */
 
 import { boundedError, log } from "../log.ts";
-import { parseSurfaceId, surfaceId, type Surface } from "../surface.ts";
+import { parseSurfaceId, surfaceId, type GuestSurface, type Surface } from "../surface.ts";
 import type { DelegatedWorkHost } from "./host.ts";
 import { DurableCompletionWake } from "./delivery.ts";
 
@@ -86,7 +86,7 @@ export class PendingCompletionClaim {
    */
   async claimForGuestSummon(surface: Surface): Promise<number> {
     if (surface.kind !== "guest") return 0;
-    return this.claimSurface(surfaceId(surface));
+    return this.claimSurface(surfaceId(surface), surface);
   }
 
   /**
@@ -119,12 +119,17 @@ export class PendingCompletionClaim {
   /**
    * Claim up to the cap for one exact SurfaceId, oldest-first.
    */
-  private async claimSurface(originSurfaceId: string): Promise<number> {
+  private async claimSurface(
+    originSurfaceId: string,
+    summonedGuestSurface: GuestSurface | null = null,
+  ): Promise<number> {
     const refs = this.listPendingForSurface(originSurfaceId)
       .slice(0, PENDING_COMPLETIONS_PER_CLAIM_CAP);
     let delivered = 0;
     for (const ref of refs) {
-      const outcome = await this.wake.deliverCompletion(ref.runId, ref.index);
+      const outcome = summonedGuestSurface === null
+        ? await this.wake.deliverCompletion(ref.runId, ref.index)
+        : await this.wake.deliverGuestSummonCompletion(ref.runId, ref.index, summonedGuestSurface);
       if (outcome === "delivered") delivered++;
     }
     return delivered;

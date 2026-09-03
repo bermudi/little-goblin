@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dmSurface, surfaceId, topicSurface, type Surface, type SurfaceId } from "../surface.ts";
+import { dmSurface, guestSurface, surfaceId, topicSurface, type Surface, type SurfaceId } from "../surface.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import type { ConversationState } from "../sessions/types.ts";
 import { DelegatedWorkHost } from "./host.ts";
@@ -135,6 +135,21 @@ describe("Completion wake delivery", () => {
     expect(await wake.deliverCompletion("wake-run-3", 0)).toBe("pending");
     expect(rail.enqueued.length).toBe(0);
     expect(host.loadRecord("wake-run-3")!.invocations[0]!.deliveryState).toBe("pending");
+  });
+
+  it("an unsummoned guest origin Surface stays pending with nothing sent", async () => {
+    const host = new DelegatedWorkHost(tempHome());
+    const origin = surfaceId(guestSurface(115));
+    host.createRecord("wake-run-guest", "generic-subagent", null, 1, durableOwnership(origin));
+    host.completeInvocation("wake-run-guest", 0, "result awaiting a guest summon");
+
+    const rail = new FakeRail();
+    rail.bindings.set(origin, boundConversation("conversation-guest"));
+
+    const wake = new DurableCompletionWake(rail, host);
+    expect(await wake.deliverCompletion("wake-run-guest", 0)).toBe("pending");
+    expect(rail.enqueued.length).toBe(0);
+    expect(host.loadRecord("wake-run-guest")!.invocations[0]!.deliveryState).toBe("pending");
   });
 
   it("never auto-delivers a failed execution that stays suppressed", async () => {

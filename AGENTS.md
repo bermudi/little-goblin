@@ -83,6 +83,7 @@ This file (`AGENTS.md`) is **not** auto-injected into the system prompt today; t
 
 ## Things not to do
 
+- Agents running inside herdr-managed panes must not create, modify, or close herdr layout (`herdr workspace close`, `tab close`, `pane close`, splits, moves). Closing a workspace kills every sibling pane and agent in it — including yourself and unrelated work. Report stale layout to the operator instead of cleaning it up. (2026-09-03 incident: an agent closed workspace w6D mid-turn, killing itself, a sleeping supervisor agent, and three other agent panes.)
 - No web UI, no multi-channel, no plugin SDK, no Docker, no k8s
 - No security audit system
 - No multi-agent gateway

@@ -13,6 +13,7 @@ import {
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CURRENT_STATE_VERSION, writeStateVersion } from "./state-version.ts";
 import { MemoryDatabase, MemorySnapshot } from "./memory/db.ts";
 import { memoryDbPath, memoryDir } from "./memory/paths.ts";
@@ -176,6 +177,60 @@ process.exit(result.exitCode);
   };
 }
 
+interface CliResult {
+  readonly exitCode: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly elapsedMs: number;
+}
+
+const doctorCliHarnessPath = fileURLToPath(
+  new URL("./doctor-cli.test-support.ts", import.meta.url),
+);
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+
+/**
+ * Make the nested `bun run src/doctor.ts` in the package script preload the
+ * test-only network transport. The outer command remains `bun run doctor`, so
+ * this exercises package wiring and CLI argument handling. Doctor itself has
+ * no environment-driven probe bypass: without this test-only PATH wrapper it
+ * always runs the production probes.
+ */
+function installDoctorCliHarness(binDir: string): void {
+  const fakeBun = join(binDir, "bun");
+  writeFileSync(
+    fakeBun,
+    `#!/bin/sh\nif [ "$1" = run ]; then\n  shift\n  exec ${JSON.stringify(process.execPath)} run --preload ${JSON.stringify(doctorCliHarnessPath)} "$@"\nfi\nexec ${JSON.stringify(process.execPath)} --preload ${JSON.stringify(doctorCliHarnessPath)} "$@"\n`,
+  );
+  chmodSync(fakeBun, 0o755);
+}
+
+function runDoctorCli(
+  home: string,
+  args: readonly string[] = [],
+  extraEnv: Record<string, string> = {},
+): CliResult {
+  const start = performance.now();
+  const result = Bun.spawnSync({
+    cmd: [process.execPath, "run", "doctor", ...args],
+    cwd: repositoryRoot,
+    env: {
+      PATH: process.env.PATH ?? "",
+      TMPDIR: process.env.TMPDIR ?? tmpdir(),
+      GOBLIN_HOME: home,
+      ...extraEnv,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout?.toString() ?? "",
+    stderr: result.stderr?.toString() ?? "",
+    elapsedMs: performance.now() - start,
+  };
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -237,6 +292,92 @@ describe("bun run doctor", () => {
         expect(result.exitCode).toBe(1);
         expect(output).toContain("state version");
       } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+});
+
+describe("bun run doctor subprocess", () => {
+  it(
+    "uses package wiring to parse --strict and render a healthy full report",
+    () => {
+      const home = setupHealthyHome();
+      const tmpBin = mkdtempSync(join(tmpdir(), "goblin-doctor-cli-"));
+      const fakeUvx = join(tmpBin, "uvx");
+      writeFileSync(fakeUvx, "#!/bin/sh\nexit 0\n");
+      chmodSync(fakeUvx, 0o755);
+      installDoctorCliHarness(tmpBin);
+
+      try {
+        const result = runDoctorCli(home, ["--strict"], {
+          PATH: `${tmpBin}:${process.env.PATH ?? ""}`,
+        });
+
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain("state version: pass");
+        expect(result.stdout).toContain("GOBLIN_HOME: pass");
+        expect(result.stdout).toContain("memory: pass");
+        expect(result.stdout).toContain("conversations: pass");
+        expect(result.stdout).toContain("config: pass");
+        expect(result.stdout).toContain("favorites: pass");
+        expect(result.stdout).toContain("prompt files: pass");
+        expect(result.stdout).toContain("disk: pass");
+        expect(result.stdout).toContain("Telegram: pass");
+        expect(result.stdout).toContain("model provider: pass");
+        expect(result.stdout).toContain("Edge TTS: pass");
+        expect(result.stdout).toMatch(/\b0 failed \(strict\)/);
+        expect(result.elapsedMs).toBeLessThan(4_000);
+      } finally {
+        rmSync(tmpBin, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "bounds oversized HTTP warnings without dropping later checks or the summary",
+    () => {
+      const home = setupHealthyHome();
+      const tmpBin = mkdtempSync(join(tmpdir(), "goblin-doctor-cli-output-"));
+      const fakeUvx = join(tmpBin, "uvx");
+      const cancelMarker = join(tmpBin, "http-body-canceled");
+      writeFileSync(fakeUvx, "#!/bin/sh\nexit 0\n");
+      chmodSync(fakeUvx, 0o755);
+      installDoctorCliHarness(tmpBin);
+      const probeEnv = {
+        PATH: `${tmpBin}:${process.env.PATH ?? ""}`,
+        GOBLIN_DOCTOR_TEST_HTTP_ERROR_BYTES: String(1024 * 1024),
+        GOBLIN_DOCTOR_TEST_HTTP_CANCEL_MARKER: cancelMarker,
+      };
+
+      try {
+        const lax = runDoctorCli(home, [], probeEnv);
+
+        expect(lax.exitCode).toBe(0);
+        expect(lax.stdout).toContain("Telegram: warn");
+        expect(lax.stdout).toContain("model provider: warn");
+        expect(lax.stdout).toContain("[truncated]");
+        expect(lax.stdout).toContain("Edge TTS: pass");
+        expect(lax.stdout).toContain("0 failed, 2 warned");
+        expect(lax.stdout.indexOf("Edge TTS: pass")).toBeGreaterThan(
+          lax.stdout.indexOf("Telegram: warn"),
+        );
+        expect(lax.stdout.lastIndexOf("0 failed, 2 warned")).toBeGreaterThan(
+          lax.stdout.indexOf("Edge TTS: pass"),
+        );
+        expect(lax.stdout.length).toBeLessThan(40_000);
+        expect(lax.elapsedMs).toBeLessThan(4_000);
+        expect(existsSync(cancelMarker)).toBe(true);
+
+        const strict = runDoctorCli(home, ["--strict"], probeEnv);
+        expect(strict.exitCode).toBe(1);
+        expect(strict.stdout).toContain("Edge TTS: pass");
+        expect(strict.stdout).toContain("2 failed (strict)");
+      } finally {
+        rmSync(tmpBin, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
     },
@@ -417,7 +558,7 @@ describe("live connectivity probe policy", () => {
 
 describe("MCP gateway status connectivity probe", () => {
   it(
-    "records --status and --exit-code, captures gateway output, and preserves lax/strict exits",
+    "hermetic MCP gateway status probe records --status and --exit-code and preserves lax/strict exits",
     async () => {
       const home = setupHealthyHome();
       const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-mcporter-"));
@@ -572,6 +713,32 @@ describe("non-ENOENT filesystem error retention", () => {
         expect(line).toContain("cannot stat AGENTS.md");
         expect(line).toMatch(/too many symbolic links/i);
         expect(line).not.toContain("missing");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "fails memory diagnostics with ELOOP instead of suppressing the stat error",
+    async () => {
+      const home = setupHealthyHome();
+      const dbPath = memoryDbPath(home);
+      try {
+        rmSync(dbPath);
+        rmSync(`${dbPath}-wal`, { force: true });
+        rmSync(`${dbPath}-shm`, { force: true });
+        symlinkSync(dbPath, dbPath);
+
+        const result = await callDoctor(home, { probes: noopProbes });
+        const line = result.lines.find((candidate) => candidate.startsWith("memory"));
+
+        expect(result.exitCode).toBe(1);
+        expect(line).toContain("memory: fail");
+        expect(line).toContain("cannot open memory DB");
+        expect(line).toMatch(/too many .*symbolic links/i);
+        expect(line).not.toContain("could not get a stable copy");
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
@@ -960,14 +1127,22 @@ describe("mcp and external agent construction", () => {
 
 describe("doctor timeout edge cases", () => {
   it(
-    "times out a fetch with a stalled response body before 6 seconds",
+    "times out an error response with a stalled body and cancels the reader",
     async () => {
       const originalFetch = globalThis.fetch;
-      globalThis.fetch = (async () => ({
-        ok: true,
-        status: 200,
-        text: () => new Promise<string>((resolve) => setTimeout(() => resolve("body"), 10_000)),
-      } as unknown as Response)) as unknown as typeof globalThis.fetch;
+      let cancellations = 0;
+      const stalledFetch = Object.assign(
+        async (): Promise<Response> => new Response(
+          new ReadableStream<Uint8Array>({
+            cancel(): void {
+              cancellations++;
+            },
+          }),
+          { status: 503 },
+        ),
+        { preconnect: originalFetch.preconnect },
+      );
+      globalThis.fetch = stalledFetch;
 
       const home = setupHealthyHome();
       try {
@@ -976,6 +1151,7 @@ describe("doctor timeout edge cases", () => {
         const elapsed = performance.now() - start;
         expect(result.exitCode).toBe(1);
         expect(result.lines.join("\n")).toContain("Telegram: timeout");
+        expect(cancellations).toBeGreaterThanOrEqual(2);
         expect(elapsed).toBeLessThan(6_000);
       } finally {
         globalThis.fetch = originalFetch;

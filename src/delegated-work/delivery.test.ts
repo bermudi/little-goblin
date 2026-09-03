@@ -46,9 +46,14 @@ class FakeRail implements CompletionWakeRail {
   readonly enqueued: EnqueuedTurn[] = [];
   lastOnError: ((err: unknown) => void) | undefined;
   private heldStarted: Promise<boolean> | null = null;
+  private heldSettled: Promise<boolean> | null = null;
 
   holdNextStarted(started: Promise<boolean>): void {
     this.heldStarted = started;
+  }
+
+  holdNextSettled(settled: Promise<boolean>): void {
+    this.heldSettled = settled;
   }
 
   async resolveCurrent(surface: Surface): Promise<ConversationState | null> {
@@ -64,8 +69,14 @@ class FakeRail implements CompletionWakeRail {
     this.enqueued.push({ conversation, surface, content });
     this.lastOnError = onError;
     const started = this.heldStarted;
+    const settled = this.heldSettled;
     this.heldStarted = null;
-    return { accepted: true, started: started ?? Promise.resolve(true) };
+    this.heldSettled = null;
+    return {
+      accepted: true,
+      started: started ?? Promise.resolve(true),
+      settled: settled ?? Promise.resolve(true),
+    };
   }
 }
 
@@ -112,7 +123,7 @@ describe("Completion wake delivery", () => {
     expect(host.loadRecord("wake-run-1")!.invocations[0]!.deliveryState).toBe("delivered");
   });
 
-  it("logs a scheduled-turn failure with the pending completion's run and Surface context", async () => {
+  it("logs a started scheduled-turn failure with run and Surface context without acknowledging delivery", async () => {
     const host = new DelegatedWorkHost(tempHome());
     const origin = surfaceId(dmSurface(116));
     host.createRecord("wake-run-logging", "generic-subagent", null, 1, durableOwnership(origin));
@@ -120,9 +131,9 @@ describe("Completion wake delivery", () => {
 
     const rail = new FakeRail();
     rail.bindings.set(origin, boundConversation("conversation-durable"));
-    let resolveStarted!: (started: boolean) => void;
-    rail.holdNextStarted(new Promise((resolve) => {
-      resolveStarted = resolve;
+    let resolveSettled!: (settled: boolean) => void;
+    rail.holdNextSettled(new Promise((resolve) => {
+      resolveSettled = resolve;
     }));
 
     const wake = new DurableCompletionWake(rail, host);
@@ -135,6 +146,8 @@ describe("Completion wake delivery", () => {
     log.error = (msg: string, extra?: unknown) => { calls.push({ msg, extra }); };
     try {
       rail.lastOnError?.(new Error("scheduled delivery failed"));
+      resolveSettled(false);
+      expect(await delivery).toBe("pending");
       expect(calls).toEqual([{
         msg: "durable completion wake delivery failed",
         extra: {
@@ -148,9 +161,6 @@ describe("Completion wake delivery", () => {
     } finally {
       log.error = originalError;
     }
-
-    resolveStarted(false);
-    expect(await delivery).toBe("pending");
   });
 
   it("keeps the completion pending when the rail fences the turn before it starts", async () => {

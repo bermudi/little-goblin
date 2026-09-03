@@ -48,7 +48,11 @@ class FakeRail implements CompletionWakeRail {
     content: string,
   ): boolean | WakeTurnAdmission {
     this.enqueued.push({ surface, content });
-    return { accepted: true, started: Promise.resolve(true) };
+    return {
+      accepted: true,
+      started: Promise.resolve(true),
+      settled: Promise.resolve(true),
+    };
   }
 }
 

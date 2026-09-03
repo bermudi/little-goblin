@@ -72,7 +72,11 @@ class FakeRail implements CompletionWakeRail {
     this.enqueued.push({ conversation, surface, content });
     const started = this.heldStarted;
     this.heldStarted = null;
-    return { accepted: true, started: started ?? Promise.resolve(true) };
+    return {
+      accepted: true,
+      started: started ?? Promise.resolve(true),
+      settled: Promise.resolve(true),
+    };
   }
 }
 

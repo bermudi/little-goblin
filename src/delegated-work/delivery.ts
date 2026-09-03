@@ -25,13 +25,14 @@ import type { DelegatedWorkHost } from "./host.ts";
 export const DELEGATED_COMPLETION_PROMPT_PREFIX = "[delegated-run]";
 
 /**
- * Start handle of an accepted rail admission. Structural twin of the
- * dispatcher's scheduled-turn admission: `started` resolves false when
- * shutdown fences the queued turn before it executes.
+ * Admission handle of an accepted rail turn. `started` preserves the
+ * scheduler's existing structural-admission signal; `settled` is owned by
+ * TurnDispatcher and resolves true only after the runner prompt completes.
  */
 export interface WakeTurnAdmission {
   readonly accepted: true;
   readonly started: Promise<boolean>;
+  readonly settled: Promise<boolean>;
 }
 
 /**
@@ -74,9 +75,9 @@ export class DurableCompletionWake {
   private readonly host: DelegatedWorkHost;
   /**
    * Process-lifetime reservations for pending invocations. The record remains
-   * pending until a reserved rail turn starts, so a rejected/fenced turn can
-   * still be claimed later; while reserved, every delivery path joins the
-   * winner rather than enqueueing another turn.
+   * pending until a reserved rail turn settles successfully, so a rejected,
+   * fenced, or failed turn can still be claimed later; while reserved, every
+   * delivery path joins the winner rather than enqueueing another turn.
    */
   private readonly pendingDeliveries = new Map<string, Promise<CompletionWakeOutcome>>();
 
@@ -89,8 +90,8 @@ export class DurableCompletionWake {
    * Attempt wake delivery for one terminal invocation.
    *
    * Returns the observed delivery outcome. `pending` means nothing was sent
-   * (origin Surface unbound, rail admission closed, or the turn was fenced
-   * before it started) and the completion remains claimable. `suppressed`
+   * (origin Surface unbound, rail admission closed, or the turn was fenced or
+   * failed) and the completion remains claimable. `suppressed`
    * means the execution failed or was cancelled: failed work is never
    * auto-delivered. Fails loud on records that do not exist and on
    * persistence errors; those propagate to the caller.
@@ -196,20 +197,25 @@ export class DurableCompletionWake {
       },
     );
     if (typeof admission === "boolean") {
-      if (!admission) {
-        log.info("durable completion wake left pending: rail admission closed", {
-          runId,
-          index,
-          surfaceId: originSurfaceId,
-        });
-        return "pending";
-      }
-      this.host.acknowledgeDelivery(runId, index);
-      return "delivered";
+      log.info("durable completion wake left pending: rail has no settlement signal", {
+        runId,
+        index,
+        surfaceId: originSurfaceId,
+      });
+      return "pending";
     }
     const started = await admission.started;
     if (!started) {
       log.info("durable completion wake left pending: rail fenced the turn before start", {
+        runId,
+        index,
+        surfaceId: originSurfaceId,
+      });
+      return "pending";
+    }
+    const settled = await admission.settled;
+    if (!settled) {
+      log.info("durable completion wake left pending: scheduled turn did not settle", {
         runId,
         index,
         surfaceId: originSurfaceId,

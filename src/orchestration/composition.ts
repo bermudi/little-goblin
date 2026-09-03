@@ -91,8 +91,8 @@ export function createConversationOrchestration(
   const completionWake = new DurableCompletionWake(
     {
       resolveCurrent: (surface) => lifecycle.resolveCurrent(surface),
-      enqueueScheduledTurn: (conversation, surface, content) =>
-        dispatcher.enqueueScheduledTurn(conversation, surface, content),
+      enqueueScheduledTurn: (conversation, surface, content, onError) =>
+        dispatcher.enqueueScheduledTurn(conversation, surface, content, onError),
     },
     delegatedWorkHost,
   );

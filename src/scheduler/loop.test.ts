@@ -305,7 +305,11 @@ describe("SchedulerLoop", () => {
       const started = deferred<boolean>();
       dispatcher = {
         ...dispatcher,
-        enqueueScheduledTurn: () => ({ accepted: true, started: started.promise }),
+        enqueueScheduledTurn: () => ({
+          accepted: true,
+          started: started.promise,
+          settled: Promise.resolve(true),
+        }),
       };
       const loop = makeLoop();
 
@@ -417,7 +421,11 @@ describe("SchedulerLoop", () => {
       const started = deferred<boolean>();
       dispatcher = {
         ...dispatcher,
-        enqueueScheduledTurn: () => ({ accepted: true, started: started.promise }),
+        enqueueScheduledTurn: () => ({
+          accepted: true,
+          started: started.promise,
+          settled: Promise.resolve(true),
+        }),
       };
       store.restoreClaim = () => {
         throw new Error("restore failed");
@@ -445,7 +453,11 @@ describe("SchedulerLoop", () => {
       const started = deferred<boolean>();
       dispatcher = {
         ...dispatcher,
-        enqueueScheduledTurn: () => ({ accepted: true, started: started.promise }),
+        enqueueScheduledTurn: () => ({
+          accepted: true,
+          started: started.promise,
+          settled: Promise.resolve(true),
+        }),
       };
       const loop = makeLoop();
 

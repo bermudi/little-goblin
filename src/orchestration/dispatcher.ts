@@ -55,6 +55,8 @@ export interface ScheduledTurnAdmission {
   readonly accepted: true;
   /** Resolves false when shutdown fences the queued entry before it starts. */
   readonly started: Promise<boolean>;
+  /** Resolves true only after the prompt completes under current authority. */
+  readonly settled: Promise<boolean>;
 }
 
 export interface ImmediateTurnDelivery {
@@ -1030,8 +1032,9 @@ export class TurnDispatcher {
    * method fire-and-forget — the scheduler does not await the model turn.
    *
    * Returns an admission handle when the runtime queue accepted the turn, or
-   * `false` when runtime admission is closed. The handle reports whether the
-   * queued entry reached execution before shutdown fenced it.
+   * `false` when runtime admission is closed. The handle reports both whether
+   * the queued entry reached execution and whether its prompt settled
+   * successfully; scheduler callers retain their existing start-only semantics.
    */
   enqueueScheduledTurn(
     session: ConversationState,
@@ -1050,6 +1053,14 @@ export class TurnDispatcher {
     const existingRunner = this.runtimeHost.getRunner(session.id);
     let resolveStarted!: (started: boolean) => void;
     const started = new Promise<boolean>((resolve) => { resolveStarted = resolve; });
+    let resolveSettled!: (settled: boolean) => void;
+    const settled = new Promise<boolean>((resolve) => { resolveSettled = resolve; });
+    let settlementResolved = false;
+    const settle = (successful: boolean): void => {
+      if (settlementResolved) return;
+      settlementResolved = true;
+      resolveSettled(successful);
+    };
 
     const execute = async (authority: WorkAuthority): Promise<void> => {
       let runner: AgentRunner;
@@ -1085,19 +1096,27 @@ export class TurnDispatcher {
         : { kind: "current-runtime", runner: existingRunner },
       execute,
       (err) => {
-        onError?.(err);
+        try {
+          onError?.(err);
+        } finally {
+          settle(false);
+        }
       },
       {
         isPrompt: true,
         onStart: () => resolveStarted(true),
-        onFenced: () => resolveStarted(false),
+        onFenced: () => {
+          resolveStarted(false);
+          settle(false);
+        },
+        onSettled: () => settle(true),
       },
     );
     if (!admitted) {
       log.info("scheduled turn rejected at queue admission", { sessionId: session.id });
     }
     return admitted
-      ? { accepted: true, started }
+      ? { accepted: true, started, settled }
       : false;
   }
 }

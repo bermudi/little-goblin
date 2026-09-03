@@ -44,7 +44,7 @@ function oldestFirst(a: PendingCompletionRef, b: PendingCompletionRef): number {
  * retention enumeration, exact-Surface attribution, claim authorization, the
  * per-claim cap, and startup re-arm. Delivery and acknowledgement ride the
  * completion wake, so a claimed completion becomes delivered only after the
- * rail accepts and starts the send.
+ * rail turn settles successfully.
  */
 export class PendingCompletionClaim {
   private readonly wake: DurableCompletionWake;

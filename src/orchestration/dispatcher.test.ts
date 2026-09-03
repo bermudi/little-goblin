@@ -333,6 +333,7 @@ it("reports a wedged scheduled runner as an error instead of silently dropping i
 
   if (typeof admission === "boolean") throw new Error("expected scheduled turn admission handle");
   expect(await admission.started).toBe(true);
+  expect(await admission.settled).toBe(false);
   await runtimeHost.disposeAll();
   expect(errors).toHaveLength(1);
   expect(errors[0]).toBeInstanceOf(Error);
@@ -358,9 +359,36 @@ it("clears a stale abort-timeout wedge and runs the scheduled turn on the recove
 
   if (typeof admission === "boolean") throw new Error("expected scheduled turn admission handle");
   expect(await admission.started).toBe(true);
+  expect(await admission.settled).toBe(true);
   await runtimeHost.disposeAll();
   expect(errors).toHaveLength(0);
   expect(runner.promptCalls).toBe(1);
+});
+
+it("settles a started scheduled turn as failed when runner.prompt rejects", async () => {
+  const { dispatcher, runtimeHost } = buildDispatcher();
+  const conversation = makeSession("scheduled-prompt-failure");
+  const runner = new FakeAgentRunner();
+  runner.prompt = async () => {
+    runner.promptCalls += 1;
+    throw new Error("scheduled prompt failed");
+  };
+  registerTestSurfaceRunner(runtimeHost, conversation.id, runner as unknown as AgentRunner);
+  const errors: unknown[] = [];
+
+  const admission = dispatcher.enqueueScheduledTurn(
+    conversation,
+    dmSurface(1),
+    "scheduled work",
+    (error) => { errors.push(error); },
+  );
+
+  if (typeof admission === "boolean") throw new Error("expected scheduled turn admission handle");
+  expect(await admission.started).toBe(true);
+  expect(await admission.settled).toBe(false);
+  expect(errors).toHaveLength(1);
+  expect((errors[0] as Error).message).toBe("scheduled prompt failed");
+  await runtimeHost.disposeAll();
 });
 
 class FakeBindingGuard implements SurfaceRuntimeAuthority {
@@ -1691,6 +1719,7 @@ describe("TurnDispatcher async runner creation", () => {
 
     expect(await admission.started).toBe(true);
     await promptCalled;
+    expect(await admission.settled).toBe(true);
     expect(prompted).toEqual(["cold scheduled"]);
     expect(runtimeHost.hasRunner(session.id)).toBe(true);
   });
@@ -1720,6 +1749,7 @@ describe("TurnDispatcher async runner creation", () => {
     releaseBlocker();
 
     expect(await admission.started).toBe(false);
+    expect(await admission.settled).toBe(false);
     await runtimeHost.awaitSettled(session.id);
     expect(prompted).toEqual([]);
   });

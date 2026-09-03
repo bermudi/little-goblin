@@ -12,13 +12,14 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { replyNoActiveSession, buildBot } from "./bot.ts";
-import { dmSurface, guestSurface, supergroupSurface, topicSurface } from "./surface.ts";
+import { dmSurface, guestSurface, supergroupSurface, surfaceId, topicSurface } from "./surface.ts";
 import { projectRootOf } from "./sessions/environment.ts";
 import { MemoryStore } from "./memory/store.ts";
 import { metricsPath } from "./sessions/paths.ts";
 import { attachmentsPath, workspacePath, soulMdPath } from "./workspace/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
 import { TEXT_SPLIT_THRESHOLD, TEXT_SPLIT_WINDOW_MS } from "./tg/mod.ts";
+import { asConversationRuntimeId } from "./delegated-work/mod.ts";
 
 const runnerInstances: MockAgentRunner[] = [];
 
@@ -462,6 +463,29 @@ describe("buildBot integration", () => {
     // buildBot exposes no second DelegatedWorkHost input: composition can only
     // derive runtime cleanup authority from SubagentRunner's owner.
     expect(built.runtimeHost.delegatedWorkHost).toBe(built.subagentRunner.delegatedWorkHost);
+  });
+
+  it("keeps a durable completion pending when the production scheduled turn starts then fails", async () => {
+    const built = await makeBot();
+    await built.bot.handleUpdate(textUpdate("/new"));
+    const conversation = built.lifecycle.inspect(dmSurface(1))!;
+    const runId = "production-completion-failure";
+    const host = built.subagentRunner.delegatedWorkHost;
+    host.createRecord(runId, "generic-subagent", null, 1, {
+      lifetime: "durable",
+      ownerConversationId: conversation.id,
+      runtimeId: asConversationRuntimeId("runtime-production-completion"),
+      originSurfaceId: surfaceId(dmSurface(1)),
+      executionEnvironment: conversation.executionEnvironment,
+      ownershipEpochId: "epoch-production-completion",
+    });
+    host.completeInvocation(runId, 0, "completion that must remain pending");
+    MockAgentRunner.nextPrompt = async () => {
+      throw new Error("production scheduled prompt failed");
+    };
+
+    expect(await built.pendingClaim.claimForInteraction(dmSurface(1))).toBe(0);
+    expect(host.loadRecord(runId)!.invocations[0]!.deliveryState).toBe("pending");
   });
 
   it("authorizes the full guest_message path and does no work for a denied summoner", async () => {

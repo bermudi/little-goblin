@@ -11,7 +11,7 @@
  * pending for the pending-claim protocol.
  */
 
-import { log } from "../log.ts";
+import { boundedError, log } from "../log.ts";
 import { parseSurfaceId, surfaceId, type GuestSurface, type Surface } from "../surface.ts";
 import type { ConversationState } from "../sessions/types.ts";
 import type { DelegatedWorkHost } from "./host.ts";
@@ -48,6 +48,7 @@ export interface CompletionWakeRail {
     conversation: ConversationState,
     surface: Surface,
     content: string,
+    onError?: (err: unknown) => void,
   ): boolean | WakeTurnAdmission;
 }
 
@@ -181,7 +182,19 @@ export class DurableCompletionWake {
       return "pending";
     }
 
-    const admission = this.rail.enqueueScheduledTurn(conversation, surface, completionPrompt(resultText));
+    const admission = this.rail.enqueueScheduledTurn(
+      conversation,
+      surface,
+      completionPrompt(resultText),
+      (err) => {
+        log.error("durable completion wake delivery failed", {
+          runId,
+          index,
+          surfaceId: originSurfaceId,
+          ...boundedError(err),
+        });
+      },
+    );
     if (typeof admission === "boolean") {
       if (!admission) {
         log.info("durable completion wake left pending: rail admission closed", {

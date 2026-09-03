@@ -61,6 +61,15 @@ describe("resolveModel", () => {
     expect(r.apiKey).toBe("ant-key");
   });
 
+  it("gives migration routes for retired poe/ model names", () => {
+    const resolveRetired = () => resolveModel(makeConfig("poe/claude-3.7-sonnet"));
+    expect(resolveRetired).toThrow(/retired Poe namespace/);
+    expect(resolveRetired).toThrow(/configured model and persisted Surface preferences/);
+    expect(resolveRetired).toThrow(/anthropic\/<model>.*ANTHROPIC_API_KEY/);
+    expect(resolveRetired).toThrow(/openai\/<model>.*OPENAI_API_KEY/);
+    expect(resolveRetired).toThrow(/or\/<provider>\/<model>.*OPENROUTER_API_KEY/);
+  });
+
   it("throws for unknown prefix", () => {
     expect(() => resolveModel(makeConfig("grok/whatever"))).toThrow(
       /Unknown MODEL_NAME/,

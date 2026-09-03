@@ -388,6 +388,11 @@ export function resolveModel(cfg: Config): ResolvedModel {
     zaiPatternMatch(cfg.modelName) ??
     opencodeGoPatternMatch(cfg.modelName);
   if (!entry) {
+    if (cfg.modelName.startsWith("poe/")) {
+      throw new Error(
+        `MODEL_NAME "${cfg.modelName}" uses the retired Poe namespace. Update the configured model and persisted Surface preferences to use anthropic/<model> with ANTHROPIC_API_KEY, openai/<model> with OPENAI_API_KEY, or OpenRouter or/<provider>/<model> with OPENROUTER_API_KEY.`,
+      );
+    }
     const known = Object.keys(MODELS).sort().join(", ");
     throw new Error(
       `Unknown MODEL_NAME "${cfg.modelName}". Known: ${known}.`,

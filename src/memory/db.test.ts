@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryDatabase } from "./db.ts";
+import { copyStableMemoryFiles, MemoryDatabase } from "./db.ts";
 import { MEMORY_SCHEMA_VERSION } from "./schema.ts";
 
 const PRE_V2_ENTRIES_DDL = `
@@ -52,6 +52,80 @@ describe("memory SQLite engine", () => {
 
     expect(source).toContain('from "bun:sqlite"');
     expect(source).not.toContain('from "node:sqlite"');
+  });
+});
+
+describe("copyStableMemoryFiles", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "goblin-memory-copy-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("retries when a listed sidecar disappears during copy", () => {
+    const source = join(tmp, "memory.sqlite");
+    const target = join(tmp, "copy");
+    mkdirSync(target);
+    writeFileSync(source, "database");
+    writeFileSync(`${source}-wal`, "wal");
+    writeFileSync(`${source}-shm`, "shm");
+
+    let disappeared = false;
+    const copy = (from: string, to: string): void => {
+      if (from.endsWith("-wal") && !disappeared) {
+        disappeared = true;
+        rmSync(from);
+        const error = new Error("sidecar disappeared");
+        error.name = "SystemError";
+        Object.assign(error, { code: "ENOENT" });
+        throw error;
+      }
+      copyFileSync(from, to);
+    };
+
+    expect(() => copyStableMemoryFiles(source, target, copy)).not.toThrow();
+    expect(readFileSync(join(target, "memory.sqlite"), "utf8")).toBe("database");
+    expect(readFileSync(join(target, "memory.sqlite-shm"), "utf8")).toBe("shm");
+    expect(existsSync(join(target, "memory.sqlite-wal"))).toBe(false);
+  });
+
+  it("removes stale database sidecars before an unstable retry", () => {
+    const source = join(tmp, "memory.sqlite");
+    const target = join(tmp, "copy");
+    mkdirSync(target);
+    writeFileSync(source, "database");
+    writeFileSync(`${source}-wal`, "wal");
+    writeFileSync(`${source}-shm`, "shm");
+
+    let changed = false;
+    const copy = (from: string, to: string): void => {
+      copyFileSync(from, to);
+      if (from.endsWith("-shm") && !changed) {
+        changed = true;
+        rmSync(`${source}-wal`);
+        rmSync(`${source}-shm`);
+      }
+    };
+
+    expect(() => copyStableMemoryFiles(source, target, copy)).not.toThrow();
+    expect(readFileSync(join(target, "memory.sqlite"), "utf8")).toBe("database");
+    expect(existsSync(join(target, "memory.sqlite-wal"))).toBe(false);
+    expect(existsSync(join(target, "memory.sqlite-shm"))).toBe(false);
+  });
+
+  it("propagates non-ENOENT copy failures", () => {
+    const source = join(tmp, "memory.sqlite");
+    const target = join(tmp, "copy");
+    mkdirSync(target);
+    writeFileSync(source, "database");
+    const failure = new Error("permission denied");
+    Object.assign(failure, { code: "EACCES" });
+
+    expect(() => copyStableMemoryFiles(source, target, () => { throw failure; })).toThrow(failure);
   });
 });
 

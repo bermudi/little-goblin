@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   rmSync,
   statSync,
+  unlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -89,6 +90,65 @@ function snapshotsEqual(a: readonly FileSnapshot[], b: readonly FileSnapshot[]):
     if (!aItem || !bItem || aItem.name !== bItem.name || aItem.size !== bItem.size) return false;
   }
   return true;
+}
+
+type CopyFile = (source: string, destination: string) => void;
+
+function isSidecar(name: string, base: string): boolean {
+  return name !== base && (name.endsWith("-wal") || name.endsWith("-shm"));
+}
+
+function removeCopiedMemoryFiles(tempDir: string, base: string): void {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      unlinkSync(join(tempDir, `${base}${suffix}`));
+    } catch (err) {
+      if (!(isNodeErrnoException(err) && err.code === "ENOENT")) throw err;
+    }
+  }
+}
+
+/**
+ * Copy the database and its sidecars only after observing a stable source set.
+ * The copy function is injectable for deterministic race tests; production
+ * callers use the filesystem copy operation directly.
+ */
+export function copyStableMemoryFiles(
+  dbPath: string,
+  tempDir: string,
+  copyFile: CopyFile = copyFileSync,
+): void {
+  const sourceDir = dirname(dbPath);
+  const base = basename(dbPath);
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    // A retry must not inherit a sidecar (or database) copied by an earlier,
+    // unstable attempt. Otherwise SQLite could consume a stale WAL/SHM pair.
+    removeCopiedMemoryFiles(tempDir, base);
+
+    const before = listMemoryFiles(dbPath);
+    let retry = false;
+    for (const { name } of before) {
+      try {
+        copyFile(join(sourceDir, name), join(tempDir, name));
+      } catch (err) {
+        // A sidecar can disappear between the source listing and its copy.
+        // That is the same transient race as an unstable post-copy listing;
+        // retry it. The primary database and all other failures stay loud.
+        if (isSidecar(name, base) && isNodeErrnoException(err) && err.code === "ENOENT") {
+          retry = true;
+          break;
+        }
+        throw err;
+      }
+    }
+    if (retry) continue;
+
+    const after = listMemoryFiles(dbPath);
+    if (before.length > 0 && snapshotsEqual(before, after)) return;
+  }
+
+  throw new Error("could not get a stable copy of the memory database");
 }
 
 export class MemoryDatabase {
@@ -256,7 +316,6 @@ export class MemorySnapshot {
   private readonly tempDir: string;
 
   constructor(dbPath: string) {
-    const sourceDir = dirname(dbPath);
     const base = basename(dbPath);
 
     let tempDir: string | undefined;
@@ -264,24 +323,7 @@ export class MemorySnapshot {
     try {
       tempDir = mkdtempSync(join(tmpdir(), "goblin-memory-snapshot-"));
 
-      let stable: FileSnapshot[] = [];
-      for (let attempt = 0; attempt < 10; attempt++) {
-        const before = listMemoryFiles(dbPath);
-        for (const { name } of before) {
-          const src = join(sourceDir, name);
-          const dst = join(tempDir, name);
-          copyFileSync(src, dst);
-        }
-        const after = listMemoryFiles(dbPath);
-        if (snapshotsEqual(before, after)) {
-          stable = after;
-          break;
-        }
-      }
-
-      if (stable.length === 0) {
-        throw new Error("could not get a stable copy of the memory database");
-      }
+      copyStableMemoryFiles(dbPath, tempDir);
 
       const copiedDb = join(tempDir, base);
       db = new Database(copiedDb, { readonly: true });

@@ -106,6 +106,17 @@ export class DurableCompletionWake {
     }
 
     const surface = parseSurfaceId(invocation.originSurfaceId);
+    // A completion wake has no guest-summon authority. Even when the guest
+    // Surface remains bound, decision 0036 retains the completion until a
+    // later authorized summon claims it through PendingCompletionClaim.
+    if (surface.kind === "guest") {
+      log.info("durable completion wake left pending: guest Surface requires an authorized summon", {
+        runId,
+        index,
+        surfaceId: invocation.originSurfaceId,
+      });
+      return "pending";
+    }
     const conversation = await this.rail.resolveCurrent(surface);
     if (conversation === null) {
       log.info("durable completion wake left pending: origin Surface unbound", {

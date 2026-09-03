@@ -17,6 +17,37 @@ completion contact, not proactive contact), graceful shutdown drain of
 durable runs (process death is honestly recorded as interruption), and any
 status-listing command surface.
 
+## Authority and lifetimes
+
+The canonical binding authority is the `BindingStore`, persisted at
+`$GOBLIN_HOME/state/bindings.json`. `ConversationLifecycle.resolveCurrent`
+reads that store non-creating for an exact `Surface`; a missing binding remains
+unbound and does not create a Conversation. This is durable deployment state,
+not interaction authorization.
+
+Ordinary interaction and guest-summon authority are ephemeral Telegram intake
+authority. Intake obtains it only after the allowed-user and, for guests, the
+summon checks succeed. It passes that authority directly to
+`PendingCompletionClaim`; claim code never infers it from a persisted binding.
+The binding store is consulted separately only to determine whether the exact
+origin Surface currently has a Conversation through which delivery can run.
+
+The delivery paths use these sources as follows:
+
+- **Wake:** `DurableCompletionWake` uses the canonical binding authority via
+  `ConversationLifecycle.resolveCurrent`. A wake has no interaction or guest
+  summon authority, so a guest completion remains pending.
+- **Interaction claim:** authorized ordinary Telegram intake passes the exact
+  Surface directly to `PendingCompletionClaim.claimForInteraction`; the claim
+  does not derive authorization from a binding.
+- **Guest claim:** authorized guest Telegram intake passes the exact guest
+  Surface directly to `PendingCompletionClaim.claimForGuestSummon`; the summon
+  itself is the ephemeral claim authority, not a persisted binding.
+- **Startup re-arm:** with no Telegram interaction authority, the claim path
+  uses the canonical binding lookup through the wake for currently bound
+  non-guest Surfaces. Guest Surfaces are not re-armed and wait for a later
+  authorized summon.
+
 ## Requirements
 
 ### Requirement: Durable Spawn Capture And Invalidation Immunity

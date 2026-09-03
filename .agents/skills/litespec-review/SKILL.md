@@ -129,6 +129,8 @@ If a finding needs a decision, report `needs decision: <question>` before applyi
 
 After classification, collect every checked unit routed by rule 2, deduplicated by identity: its exact heading plus its positive 1-based occurrence among units with that exact heading. Preserve prior evidence and every unaffected unit. Never create routing metadata for a SUGGESTION, DISPUTED finding, finding outside that unit's contract, or any route other than rule 2. Scan existing requests, identity-bearing receipts, re-plan markers, and amendments oldest to newest before choosing the route.
 
+An unresolved rebuild request is already the routing decision for that unit identity. Preserve it and do not post a duplicate rebuild request or any new route for the same identity; new routing occurs only after the prior request is resolved. Once it is resolved, apply the completed-cycle count below normally.
+
 After two completed review-requested rebuild cycles against the current digest, record a re-plan marker instead of another rebuild request. Do not post a duplicate unresolved marker; preserve the existing plan route. Use this exact form:
 ```text
 Re-plan required:

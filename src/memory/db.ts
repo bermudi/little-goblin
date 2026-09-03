@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite";
 import {
   copyFileSync,
-  existsSync,
   mkdtempSync,
   rmSync,
   statSync,
@@ -55,6 +54,15 @@ interface FileSnapshot {
   readonly size: number;
 }
 
+function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && "code" in err;
+}
+
+/**
+ * List the primary database and WAL sidecars without collapsing an unhealthy
+ * path into absence. Only ENOENT means an optional sidecar is absent; ELOOP,
+ * EACCES, and other filesystem faults must reach the diagnostic caller.
+ */
 function listMemoryFiles(dbPath: string): FileSnapshot[] {
   const dir = dirname(dbPath);
   const base = basename(dbPath);
@@ -63,8 +71,11 @@ function listMemoryFiles(dbPath: string): FileSnapshot[] {
   for (const suffix of suffixes) {
     const name = `${base}${suffix}`;
     const p = join(dir, name);
-    if (existsSync(p)) {
+    try {
       files.push({ name, size: statSync(p).size });
+    } catch (err) {
+      if (isNodeErrnoException(err) && err.code === "ENOENT") continue;
+      throw err;
     }
   }
   return files;

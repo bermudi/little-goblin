@@ -235,13 +235,7 @@ async function checkMemory(home: string): Promise<Check> {
       ? new Date(Number.parseInt(syncMeta, 10)).toISOString()
       : "never";
 
-    const size = (() => {
-      try {
-        return statSync(dbPath).size;
-      } catch {
-        return 0;
-      }
-    })();
+    const size = statSync(dbPath).size;
 
     return {
       name: "memory",
@@ -736,10 +730,101 @@ async function runProcessProbe(opts: ProcessProbeOptions): Promise<string> {
   throw new Error(`${opts.label} exited ${exitCode}${detail ? `: ${detail}` : ""}`);
 }
 
+const HTTP_PROBE_TIMEOUT_MS = 5_000;
+const MAX_HTTP_ERROR_BODY_BYTES = 8 * 1024;
+
+interface CapturedHttpBody {
+  readonly text: string;
+  readonly truncated: boolean;
+}
+
+interface HttpBodyCollector {
+  readonly completed: Promise<CapturedHttpBody>;
+  cancel(): Promise<void>;
+}
+
+function decodeHttpBody(chunks: readonly Uint8Array[], byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Read only a bounded diagnostic prefix. Once the cap is reached, cancel the
+ * reader so an unhealthy endpoint cannot keep streaming data into doctor.
+ */
+function createHttpBodyCollector(
+  stream: ReadableStream<Uint8Array> | null | undefined,
+): HttpBodyCollector {
+  if (stream === null || stream === undefined) {
+    return {
+      completed: Promise.resolve({ text: "", truncated: false }),
+      cancel: async (): Promise<void> => {},
+    };
+  }
+
+  const reader = stream.getReader();
+  let canceled = false;
+  let finished = false;
+  const completed = (async (): Promise<CapturedHttpBody> => {
+    const chunks: Uint8Array[] = [];
+    let byteLength = 0;
+    let truncated = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const remaining = MAX_HTTP_ERROR_BODY_BYTES - byteLength;
+        if (remaining <= 0 || value.byteLength >= remaining) {
+          if (remaining > 0) {
+            chunks.push(value.slice(0, remaining));
+            byteLength += remaining;
+          }
+          // At the exact cap, conservatively mark the diagnostic as
+          // truncated before canceling rather than issuing another read.
+          truncated = true;
+          canceled = true;
+          await reader.cancel();
+          break;
+        }
+
+        chunks.push(value.slice());
+        byteLength += value.byteLength;
+      }
+    } catch (err) {
+      if (!canceled) throw err;
+    } finally {
+      finished = true;
+      reader.releaseLock();
+    }
+    return { text: decodeHttpBody(chunks, byteLength), truncated };
+  })();
+
+  return {
+    completed,
+    cancel: async (): Promise<void> => {
+      if (finished) return;
+      canceled = true;
+      await reader.cancel();
+    },
+  };
+}
+
+function formatHttpErrorBody(body: CapturedHttpBody): string {
+  const text = body.text.trim();
+  if (!body.truncated) return text;
+  return text.length === 0 ? "[truncated]" : `${text} … [truncated]`;
+}
+
 interface TimedResponse {
-  ok: boolean;
-  status: number;
-  body: string;
+  readonly ok: boolean;
+  readonly status: number;
+  readonly body: CapturedHttpBody;
 }
 
 async function fetchWithTimeout(
@@ -748,33 +833,41 @@ async function fetchWithTimeout(
   init: RequestInit = {},
 ): Promise<TimedResponse> {
   const controller = new AbortController();
-  const start = performance.now();
-  const deadline = start + 5_000;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => {
-      controller.abort();
-      reject(new TimeoutError(`${label} timed out after 5_000ms`));
-    }, 5_000);
+    timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      reject(new TimeoutError(`${label} timed out after ${HTTP_PROBE_TIMEOUT_MS}ms`));
+    }, HTTP_PROBE_TIMEOUT_MS);
   });
+  let bodyCollector: HttpBodyCollector | undefined;
+
   try {
     const res = await Promise.race([
       fetch(input, { ...init, signal: controller.signal }),
       timeout,
     ]);
-    const body = await Promise.race([
-      res.text(),
-      new Promise<never>((_, reject) => {
-        const remaining = Math.max(0, deadline - performance.now());
-        setTimeout(() => {
-          res.body?.cancel().catch(() => {});
-          reject(new TimeoutError(`${label} timed out after 5_000ms`));
-        }, remaining);
-      }),
-    ]);
-    return { ok: res.ok, status: res.status, body };
+    if (res.ok) {
+      return { ok: true, status: res.status, body: { text: "", truncated: false } };
+    }
+
+    bodyCollector = createHttpBodyCollector(res.body);
+    const body = await Promise.race([bodyCollector.completed, timeout]);
+    return { ok: false, status: res.status, body };
   } finally {
-    // If any pending fetch/body promise is still going, abort it.
-    controller.abort();
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    try {
+      if (bodyCollector !== undefined) await bodyCollector.cancel();
+    } catch (err) {
+      // A timeout remains the actionable result when abort cleanup races a
+      // stream error. Non-timeout cancellation failures still propagate.
+      if (!timedOut) throw err;
+    } finally {
+      // A successful response body is intentionally unread; aborting releases
+      // its transport without delaying the connectivity result.
+      controller.abort();
+    }
   }
 }
 
@@ -783,7 +876,7 @@ async function defaultCheckTelegramToken(token: string): Promise<void> {
   try {
     const res = await fetchWithTimeout("Telegram API", url);
     if (!res.ok) {
-      throw new Error(`Telegram API returned ${res.status}: ${res.body}`);
+      throw new Error(`Telegram API returned ${res.status}: ${formatHttpErrorBody(res.body)}`);
     }
   } catch (err) {
     if (err instanceof TimeoutError) throw err;
@@ -802,7 +895,7 @@ async function defaultCheckModelProvider(resolved: ResolvedModel): Promise<void>
     throw new Error(`model provider unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) {
-    throw new Error(`model provider returned ${res.status}: ${res.body}`);
+    throw new Error(`model provider returned ${res.status}: ${formatHttpErrorBody(res.body)}`);
   }
 }
 
@@ -825,7 +918,7 @@ async function defaultCheckGroqAsrAvailable(apiKey: string): Promise<void> {
     throw new Error(`Groq ASR unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) {
-    throw new Error(`Groq ASR API returned HTTP ${res.status}: ${res.body}`);
+    throw new Error(`Groq ASR API returned HTTP ${res.status}: ${formatHttpErrorBody(res.body)}`);
   }
 }
 
@@ -960,13 +1053,14 @@ export async function main(): Promise<void> {
   for (const line of lines) {
     out(line);
   }
-  process.exit(exitCode);
+  // Let stdout drain instead of truncating a report when its destination is a pipe.
+  process.exitCode = exitCode;
 }
 
 if (import.meta.main) {
   main().catch((err) => {
     log.error("doctor failed:", { error: errorMessage(err) });
     out(`unexpected error: ${errorMessage(err)}`);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }

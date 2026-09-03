@@ -4,6 +4,15 @@ import { resolveMcporterConfigPath } from "./paths.ts";
 import { prepareMcpEnv } from "./env.ts";
 import type { McpConfig } from "../schema.ts";
 
+export function buildMcporterCommand(args: string[], configPath?: string): string[] {
+  const cmd = ["bunx", "--silent", "mcporter", "--log-level", "error"];
+  if (configPath) {
+    cmd.push("--config", configPath);
+  }
+  cmd.push(...args);
+  return cmd;
+}
+
 interface McpToolEntry {
   name: string;
   description: string;
@@ -155,11 +164,7 @@ export class McpRunner {
   }
 
   private async runMcporter(args: string[], callerSignal?: AbortSignal): Promise<RunResult> {
-    const cmd = ["bunx", "--silent", "mcporter", "--log-level", "error"];
-    if (this.configPath) {
-      cmd.push("--config", this.configPath);
-    }
-    cmd.push(...args);
+    const cmd = buildMcporterCommand(args, this.configPath);
 
     const controller = new AbortController();
     const cleanup: (() => void)[] = [];

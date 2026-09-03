@@ -1,6 +1,12 @@
 import { Database } from "bun:sqlite";
-import { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
+import {
+  copyFileSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { log } from "../log.ts";
 import { DDL, INDEX_DDL, MEMORY_SCHEMA_VERSION } from "./schema.ts";
 
@@ -11,6 +17,78 @@ function clampWeight(value: unknown, fallback: number): number {
   const n = typeof value === "string" ? Number.parseFloat(value) : Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(0, Math.min(1, n));
+}
+
+interface SchemaReader {
+  selectOne<T>(sql: string): T | null;
+}
+
+function readSchemaVersion(reader: SchemaReader): number {
+  const hasMetaTable = reader.selectOne<{ present: number }>(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'memory_meta'",
+  );
+  if (!hasMetaTable) return 0;
+
+  const row = reader.selectOne<{ value: string | null }>(
+    "SELECT value FROM memory_meta WHERE key = 'schema_version'",
+  );
+  if (!row) return 0;
+  if (row.value === null || !/^(0|[1-9]\d*)$/.test(row.value)) {
+    throw new Error(`invalid memory schema version: ${String(row.value)}`);
+  }
+
+  const current = Number(row.value);
+  if (!Number.isSafeInteger(current)) {
+    throw new Error(`invalid memory schema version: ${row.value}`);
+  }
+  if (current > MEMORY_SCHEMA_VERSION) {
+    throw new Error(
+      `memory schema version ${current} is newer than supported ${MEMORY_SCHEMA_VERSION}`,
+    );
+  }
+  return current;
+}
+
+interface FileSnapshot {
+  readonly name: string;
+  readonly size: number;
+}
+
+function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && "code" in err;
+}
+
+/**
+ * List the primary database and WAL sidecars without collapsing an unhealthy
+ * path into absence. Only ENOENT means an optional sidecar is absent; ELOOP,
+ * EACCES, and other filesystem faults must reach the diagnostic caller.
+ */
+function listMemoryFiles(dbPath: string): FileSnapshot[] {
+  const dir = dirname(dbPath);
+  const base = basename(dbPath);
+  const suffixes = ["", "-wal", "-shm"];
+  const files: FileSnapshot[] = [];
+  for (const suffix of suffixes) {
+    const name = `${base}${suffix}`;
+    const p = join(dir, name);
+    try {
+      files.push({ name, size: statSync(p).size });
+    } catch (err) {
+      if (isNodeErrnoException(err) && err.code === "ENOENT") continue;
+      throw err;
+    }
+  }
+  return files;
+}
+
+function snapshotsEqual(a: readonly FileSnapshot[], b: readonly FileSnapshot[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const aItem = a[i];
+    const bItem = b[i];
+    if (!aItem || !bItem || aItem.name !== bItem.name || aItem.size !== bItem.size) return false;
+  }
+  return true;
 }
 
 export class MemoryDatabase {
@@ -62,33 +140,7 @@ export class MemoryDatabase {
   }
 
   private readSchemaVersion(): number {
-    const hasMetaTable = this.db
-      .query<{ present: number }, []>(
-        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'memory_meta'",
-      )
-      .get();
-    if (!hasMetaTable) return 0;
-
-    const row = this.db
-      .query<{ value: string | null }, { $key: string }>(
-        "SELECT value FROM memory_meta WHERE key = $key",
-      )
-      .get({ $key: "schema_version" });
-    if (!row) return 0;
-    if (row.value === null || !/^(0|[1-9]\d*)$/.test(row.value)) {
-      throw new Error(`invalid memory schema version: ${String(row.value)}`);
-    }
-
-    const current = Number(row.value);
-    if (!Number.isSafeInteger(current)) {
-      throw new Error(`invalid memory schema version: ${row.value}`);
-    }
-    if (current > MEMORY_SCHEMA_VERSION) {
-      throw new Error(
-        `memory schema version ${current} is newer than supported ${MEMORY_SCHEMA_VERSION}`,
-      );
-    }
-    return current;
+    return readSchemaVersion(this);
   }
 
   private migrate(current: number): void {
@@ -190,38 +242,83 @@ export class MemoryDatabase {
 }
 
 /**
- * Side-effect-free read-only view of the memory database for diagnostics.
+ * Side-effect-free, WAL-aware read-only view of the memory database for
+ * diagnostics.
  *
- * bun:sqlite cannot open a WAL-mode database without creating `-shm`/`-wal`
- * sidecar files (URI filenames are not enabled there), but node:sqlite can
- * via the `?immutable=1` URI parameter. Read-only tools (doctor) use this
- * snapshot so a diagnostic read never mutates `$GOBLIN_HOME`. The open
- * assumes the file is immutable while held: never use it from a process
- * that is writing the same database.
+ * The source files are never opened in place. They are copied to a private
+ * temp directory while the source file set is stable, then queried through
+ * the canonical `bun:sqlite` engine in readonly mode. This keeps
+ * `$GOBLIN_HOME` completely unchanged while retaining uncheckpointed WAL
+ * data in the copy.
  */
 export class MemorySnapshot {
-  private readonly db: DatabaseSync;
+  private readonly db: Database;
+  private readonly tempDir: string;
 
   constructor(dbPath: string) {
-    this.db = new DatabaseSync(`${pathToFileURL(dbPath).href}?immutable=1`, {
-      readOnly: true,
-    });
+    const sourceDir = dirname(dbPath);
+    const base = basename(dbPath);
+
+    let tempDir: string | undefined;
+    let db: Database | undefined;
+    try {
+      tempDir = mkdtempSync(join(tmpdir(), "goblin-memory-snapshot-"));
+
+      let stable: FileSnapshot[] = [];
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const before = listMemoryFiles(dbPath);
+        for (const { name } of before) {
+          const src = join(sourceDir, name);
+          const dst = join(tempDir, name);
+          copyFileSync(src, dst);
+        }
+        const after = listMemoryFiles(dbPath);
+        if (snapshotsEqual(before, after)) {
+          stable = after;
+          break;
+        }
+      }
+
+      if (stable.length === 0) {
+        throw new Error("could not get a stable copy of the memory database");
+      }
+
+      const copiedDb = join(tempDir, base);
+      db = new Database(copiedDb, { readonly: true });
+
+      const reader: SchemaReader = {
+        selectOne: <T>(sql: string): T | null => db!.query<T, []>(sql).get() ?? null,
+      };
+      const version = readSchemaVersion(reader);
+      if (version > MEMORY_SCHEMA_VERSION) {
+        throw new Error(
+          `memory schema version ${version} is newer than supported ${MEMORY_SCHEMA_VERSION}`,
+        );
+      }
+
+      this.tempDir = tempDir;
+      this.db = db;
+    } catch (err) {
+      if (db) db.close();
+      if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+      throw err;
+    }
   }
 
   /** Run a parameterless SELECT and return the first row, or null. */
   selectOne<T>(sql: string): T | null {
-    const row: unknown = this.db.prepare(sql).get();
-    return (row as T | undefined) ?? null;
+    return this.db.query<T, []>(sql).get() ?? null;
   }
 
   getMeta(key: string): string | undefined {
-    const row: unknown = this.db
-      .prepare("SELECT value FROM memory_meta WHERE key = ?")
+    const row = this.db
+      .query<{ value: string }, string>("SELECT value FROM memory_meta WHERE key = ?")
       .get(key);
-    return (row as { value: string } | undefined)?.value;
+    return row?.value;
   }
 
   close(): void {
     this.db.close();
+    rmSync(this.tempDir, { recursive: true, force: true });
   }
 }

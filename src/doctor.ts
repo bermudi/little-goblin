@@ -8,8 +8,8 @@
  *   bun run src/doctor.ts
  */
 
-import { readdirSync, statSync, statfsSync } from "node:fs";
-import { loadConfig, resolveGoblinHome } from "./config.ts";
+import { accessSync, constants, lstatSync, readdirSync, statSync, statfsSync } from "node:fs";
+import { loadConfig, requiredGoblinHomeDirectories, resolveGoblinHome } from "./config.ts";
 import type { Config } from "./config.ts";
 import { resolveModel } from "./agent/models.ts";
 import type { ResolvedModel } from "./agent/models.ts";
@@ -19,19 +19,17 @@ import {
   archivedStatePath,
   archiveDir,
   goblinConfigPath,
-  scratchDir,
-  sessionsDir,
-  stateDir,
 } from "./sessions/paths.ts";
-import { memoryDbPath, memoryDir } from "./memory/paths.ts";
+import { memoryDbPath } from "./memory/paths.ts";
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_PROVIDER, MemorySnapshot } from "./memory/db.ts";
 import { MemoryBudget } from "./memory/budget.ts";
-import { agentsMdPath, soulMdPath, workspacePath } from "./workspace/paths.ts";
+import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
 import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
 import { log } from "./log.ts";
 import { prepareEnv } from "./external-agents/env.ts";
 import { prepareMcpEnv } from "./mcp/env.ts";
 import { resolveMcporterConfigPath } from "./mcp/paths.ts";
+import { buildMcporterCommand } from "./mcp/runner.ts";
 
 export interface Check {
   readonly name: string;
@@ -49,6 +47,10 @@ function out(line: string): void {
   process.stdout.write(`${line}\n`);
 }
 
+class TimeoutError extends Error {
+  readonly timedOut = true;
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   try {
@@ -60,6 +62,75 @@ function errorMessage(err: unknown): string {
 
 function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && "code" in err;
+}
+
+/** Result of probing a path's existence without swallowing real errors. */
+type PathPresence =
+  | { kind: "present"; isFile: boolean; isDirectory: boolean }
+  | { kind: "missing" }
+  | { kind: "error"; error: unknown };
+
+/**
+ * Stat a path and classify the outcome. Only ENOENT counts as "missing";
+ * every other failure (EACCES, ELOOP, ...) is retained as an error so the
+ * caller can surface the underlying problem instead of misreporting the
+ * path as absent.
+ */
+function statPresence(path: string): PathPresence {
+  try {
+    const stats = statSync(path);
+    return {
+      kind: "present",
+      isFile: stats.isFile(),
+      isDirectory: stats.isDirectory(),
+    };
+  } catch (err) {
+    if (isNodeErrnoException(err) && err.code === "ENOENT") {
+      return { kind: "missing" };
+    }
+    return { kind: "error", error: err };
+  }
+}
+
+type PromptFilePresence =
+  | { kind: "regular" }
+  | { kind: "missing" }
+  | { kind: "not-regular" }
+  | { kind: "error"; operation: "stat" | "read"; error: unknown };
+
+/**
+ * Inspect a prompt file without collapsing bad filesystem states into absence.
+ * A dangling symlink is not a true ENOENT: lstat can still see the link, so it
+ * is reported as non-regular rather than as an optional missing file.
+ */
+function inspectPromptFile(path: string): PromptFilePresence {
+  const presence = statPresence(path);
+  if (presence.kind === "error") {
+    return { kind: "error", operation: "stat", error: presence.error };
+  }
+  if (presence.kind === "missing") {
+    try {
+      lstatSync(path);
+      return { kind: "not-regular" };
+    } catch (err) {
+      if (isNodeErrnoException(err) && err.code === "ENOENT") {
+        return { kind: "missing" };
+      }
+      return { kind: "error", operation: "stat", error: err };
+    }
+  }
+  if (!presence.isFile) {
+    return { kind: "not-regular" };
+  }
+  try {
+    accessSync(path, constants.R_OK);
+    return { kind: "regular" };
+  } catch (err) {
+    if (isNodeErrnoException(err) && err.code === "ENOENT") {
+      return { kind: "missing" };
+    }
+    return { kind: "error", operation: "read", error: err };
+  }
 }
 
 function formatBytes(bytes: number): string {
@@ -94,36 +165,31 @@ async function checkStateVersion(home: string): Promise<Check> {
 }
 
 async function checkGoblinHomeDirs(home: string): Promise<Check> {
-  const required: readonly [label: string, path: string][] = [
-    ["workspace", workspacePath(home)],
-    ["state", stateDir(home)],
-    ["state/memory", memoryDir(home)],
-    ["state/sessions", sessionsDir(home)],
-    ["scratch", scratchDir(home)],
-  ];
-  const missing: string[] = [];
-
-  try {
-    if (!statSync(home).isDirectory()) {
-      return { name: "GOBLIN_HOME", ok: false, detail: `not a directory: ${home}` };
-    }
-  } catch (err) {
+  const homePresence = statPresence(home);
+  if (homePresence.kind === "missing") {
+    return { name: "GOBLIN_HOME", ok: false, detail: `missing: ${home}` };
+  }
+  if (homePresence.kind === "error") {
     return {
       name: "GOBLIN_HOME",
       ok: false,
-      detail: isNodeErrnoException(err) && err.code === "ENOENT"
-        ? `missing: ${home}`
-        : `cannot stat GOBLIN_HOME: ${errorMessage(err)}`,
+      detail: `cannot stat GOBLIN_HOME: ${errorMessage(homePresence.error)}`,
     };
   }
+  if (!homePresence.isDirectory) {
+    return { name: "GOBLIN_HOME", ok: false, detail: `not a directory: ${home}` };
+  }
 
-  for (const [label, path] of required) {
-    try {
-      if (!statSync(path).isDirectory()) {
-        missing.push(`${label} is not a directory`);
-      }
-    } catch {
+  const required = requiredGoblinHomeDirectories(home);
+  const missing: string[] = [];
+  for (const { label, path } of required) {
+    const presence = statPresence(path);
+    if (presence.kind === "missing") {
       missing.push(`${label} is missing`);
+    } else if (presence.kind === "error") {
+      missing.push(`${label}: ${errorMessage(presence.error)}`);
+    } else if (!presence.isDirectory) {
+      missing.push(`${label} is not a directory`);
     }
   }
 
@@ -131,7 +197,7 @@ async function checkGoblinHomeDirs(home: string): Promise<Check> {
     return {
       name: "GOBLIN_HOME",
       ok: true,
-      detail: `home exists at ${home}; subdirs: ${required.map(([label]) => label).join(", ")}`,
+      detail: `home exists at ${home}; subdirs: ${required.map(({ label }) => label).join(", ")}`,
     };
   }
   return { name: "GOBLIN_HOME", ok: false, detail: missing.join("; ") };
@@ -169,13 +235,7 @@ async function checkMemory(home: string): Promise<Check> {
       ? new Date(Number.parseInt(syncMeta, 10)).toISOString()
       : "never";
 
-    const size = (() => {
-      try {
-        return statSync(dbPath).size;
-      } catch {
-        return 0;
-      }
-    })();
+    const size = statSync(dbPath).size;
 
     return {
       name: "memory",
@@ -200,14 +260,17 @@ async function checkConversations(home: string): Promise<Check> {
 
     const archive = archiveDir(home);
     let archived = 0;
+    const archiveErrors: string[] = [];
     try {
       for (const id of readdirSync(archive)) {
         if (!isValidConversationId(id)) continue;
-        try {
-          if (statSync(archivedStatePath(home, id)).isFile()) archived++;
-        } catch {
-          // skip archived entries with no state file
+        const presence = statPresence(archivedStatePath(home, id));
+        if (presence.kind === "present" && presence.isFile) {
+          archived++;
+        } else if (presence.kind === "error") {
+          archiveErrors.push(`${id}: ${errorMessage(presence.error)}`);
         }
+        // A missing state file is not an error; the entry is skipped.
       }
     } catch (err) {
       if (!isNodeErrnoException(err) || err.code !== "ENOENT") {
@@ -217,6 +280,14 @@ async function checkConversations(home: string): Promise<Check> {
           detail: `cannot read archived conversations: ${errorMessage(err)}`,
         };
       }
+    }
+
+    if (archiveErrors.length > 0) {
+      return {
+        name: "conversations",
+        ok: false,
+        detail: `cannot read archived conversations: ${archiveErrors.join("; ")}`,
+      };
     }
 
     return {
@@ -282,47 +353,88 @@ async function checkFavorites(): Promise<Check> {
 }
 
 async function checkPromptFiles(home: string): Promise<Check> {
-  const present = (path: string): boolean => {
-    try {
-      return statSync(path).isFile();
-    } catch {
-      return false;
+  const soul = inspectPromptFile(soulMdPath(home));
+  const agents = inspectPromptFile(agentsMdPath(home));
+
+  for (const [label, presence] of [
+    ["SOUL.md", soul],
+    ["AGENTS.md", agents],
+  ] as const) {
+    if (presence.kind === "error") {
+      return {
+        name: "prompt files",
+        ok: false,
+        detail: `cannot ${presence.operation} ${label}: ${errorMessage(presence.error)}`,
+      };
     }
-  };
-
-  const soulPresent = present(soulMdPath(home));
-  const agentsPresent = present(agentsMdPath(home));
-
-  if (soulPresent && agentsPresent) {
-    return {
-      name: "prompt files",
-      ok: true,
-      detail: `SOUL.md and AGENTS.md present`,
-    };
   }
 
   // SOUL.md is mandatory at runtime (decision 0010: preflight throws on its
-  // absence); AGENTS.md is optional, so its absence is a warn-level finding
-  // that only fails under --strict, mirroring connectivity probes.
-  if (!soulPresent) {
-    const detail = agentsPresent
-      ? "SOUL.md missing (critical)"
-      : "SOUL.md missing (critical); AGENTS.md missing";
+  // absence), and it must be a readable regular file when present.
+  if (soul.kind === "missing") {
+    const detail = agents.kind === "missing"
+      ? "SOUL.md missing (critical); AGENTS.md missing"
+      : "SOUL.md missing (critical)";
     return { name: "prompt files", ok: false, detail };
+  }
+  if (soul.kind === "not-regular") {
+    return {
+      name: "prompt files",
+      ok: false,
+      detail: "SOUL.md is not a regular readable file (critical)",
+    };
+  }
+
+  if (agents.kind === "regular") {
+    return {
+      name: "prompt files",
+      ok: true,
+      detail: "SOUL.md and AGENTS.md present",
+    };
+  }
+  if (agents.kind === "missing") {
+    // Decision 0010 makes AGENTS.md optional. This is the only warning path:
+    // bad file types and unreadable files remain critical diagnostics.
+    return {
+      name: "prompt files",
+      ok: false,
+      warn: true,
+      detail: "AGENTS.md missing (optional per decision 0010)",
+    };
   }
   return {
     name: "prompt files",
     ok: false,
-    warn: true,
-    detail: "AGENTS.md missing (optional per decision 0010)",
+    detail: "AGENTS.md is not a regular readable file (critical)",
   };
 }
 
-async function checkDisk(home: string): Promise<Check> {
+export interface DoctorDiskStats {
+  readonly bsize: number;
+  readonly blocks: number;
+  readonly bavail: number;
+}
+
+/** Injectable boundary for deterministic local diagnostics tests. */
+export interface DoctorDependencies {
+  readonly statfs?: (path: string) => DoctorDiskStats;
+}
+
+async function checkDisk(
+  home: string,
+  statfs: (path: string) => DoctorDiskStats,
+): Promise<Check> {
   try {
-    const stats = statfsSync(home);
+    const stats = statfs(home);
     const total = stats.blocks * stats.bsize;
     const free = stats.bavail * stats.bsize;
+    if (stats.bavail <= 0) {
+      return {
+        name: "disk",
+        ok: false,
+        detail: `0 available blocks on ${home} (${formatBytes(free)} free / ${formatBytes(total)} total)`,
+      };
+    }
     return {
       name: "disk",
       ok: true,
@@ -337,7 +449,7 @@ async function checkDisk(home: string): Promise<Check> {
   }
 }
 
-async function runChecks(home: string): Promise<Check[]> {
+async function runChecks(home: string, dependencies: DoctorDependencies): Promise<Check[]> {
   return Promise.all([
     checkStateVersion(home),
     checkGoblinHomeDirs(home),
@@ -346,7 +458,7 @@ async function runChecks(home: string): Promise<Check[]> {
     checkConfig(),
     checkFavorites(),
     checkPromptFiles(home),
-    checkDisk(home),
+    checkDisk(home, dependencies.statfs ?? statfsSync),
   ]);
 }
 
@@ -381,6 +493,10 @@ function computeExitCode(checks: Check[], strict: boolean): number {
   return hasHardFailure || (strict && hasWarning) ? 1 : 0;
 }
 
+/**
+ * Injectable connectivity boundary for tests and embedded callers. Production
+ * omits it and always executes the configured live probes.
+ */
 export interface ConnectivityProbes {
   readonly checkTelegramToken?: (token: string) => Promise<void>;
   readonly checkModelProvider?: (resolved: ResolvedModel) => Promise<void>;
@@ -388,31 +504,6 @@ export interface ConnectivityProbes {
   readonly checkGroqAsrAvailable?: (apiKey: string) => Promise<void>;
   readonly checkExternalAgents?: (cfg: Config) => Promise<void>;
   readonly checkMcp?: (cfg: Config, home: string) => Promise<void>;
-}
-
-/**
- * Hermetic test seam for subprocess runs of the CLI: when
- * `GOBLIN_DOCTOR_PROBE_STUB=pass|fail` is set and no explicit probes were
- * injected, every connectivity probe resolves (pass) or rejects (fail)
- * without touching the network. Any other value is ignored.
- */
-function stubProbes(mode: "pass" | "fail"): ConnectivityProbes {
-  const fn = async (): Promise<void> => {
-    if (mode === "fail") throw new Error(`stubbed probe failure (${mode})`);
-  };
-  return {
-    checkTelegramToken: fn,
-    checkModelProvider: fn,
-    checkEdgeTtsAvailable: fn,
-    checkGroqAsrAvailable: fn,
-    checkExternalAgents: fn,
-    checkMcp: fn,
-  };
-}
-
-function resolveStubEnv(): "pass" | "fail" | null {
-  const value = process.env.GOBLIN_DOCTOR_PROBE_STUB;
-  return value === "pass" || value === "fail" ? value : null;
 }
 
 export interface DoctorResult {
@@ -438,17 +529,357 @@ function modelProviderHeaders(resolved: ResolvedModel): Record<string, string> {
   return { Authorization: `Bearer ${resolved.apiKey}` };
 }
 
-async function defaultCheckTelegramToken(token: string): Promise<void> {
-  const req = new Request(`https://api.telegram.org/bot${token}/getMe`, {
-    signal: AbortSignal.timeout(5_000),
-  });
+const MAX_PROCESS_PROBE_OUTPUT_CHARS = 8 * 1024;
+
+interface CapturedProcessOutput {
+  readonly text: string;
+  readonly truncated: boolean;
+}
+
+interface OutputCollector {
+  readonly completed: Promise<CapturedProcessOutput>;
+  cancel(): Promise<void>;
+}
+
+function createOutputCollector(stream: ReadableStream<Uint8Array> | undefined): OutputCollector {
+  if (stream === undefined) {
+    return {
+      completed: Promise.resolve({ text: "", truncated: false }),
+      cancel: async () => {},
+    };
+  }
+
+  const reader = stream.getReader();
+  let canceled = false;
+  const completed = (async (): Promise<CapturedProcessOutput> => {
+    const decoder = new TextDecoder();
+    let text = "";
+    let truncated = false;
+    const append = (chunk: string): void => {
+      if (chunk.length === 0) return;
+      const combined = text + chunk;
+      if (combined.length > MAX_PROCESS_PROBE_OUTPUT_CHARS) {
+        text = combined.slice(-MAX_PROCESS_PROBE_OUTPUT_CHARS);
+        truncated = true;
+      } else {
+        text = combined;
+      }
+    };
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        append(decoder.decode(value, { stream: true }));
+      }
+      append(decoder.decode());
+    } catch (err) {
+      if (!canceled) throw err;
+    } finally {
+      reader.releaseLock();
+    }
+    return { text, truncated };
+  })();
+
+  return {
+    completed,
+    cancel: async (): Promise<void> => {
+      canceled = true;
+      try {
+        await reader.cancel();
+      } catch {
+        // The stream may already have closed or released its lock.
+      }
+    },
+  };
+}
+
+function formatCapturedOutput(output: CapturedProcessOutput): string {
+  const text = output.text.trim();
+  if (text.length === 0) return "";
+  return `${output.truncated ? "… [truncated] " : ""}${text}`;
+}
+
+function formatProcessOutput(
+  stdout: CapturedProcessOutput,
+  stderr: CapturedProcessOutput,
+): string {
+  const output: string[] = [];
+  const stdoutText = formatCapturedOutput(stdout);
+  if (stdoutText.length > 0) output.push(`stdout: ${stdoutText}`);
+  const stderrText = formatCapturedOutput(stderr);
+  if (stderrText.length > 0) output.push(`stderr: ${stderrText}`);
+  return output.join("; ");
+}
+
+interface OwnedProbeProcess {
+  readonly pid: number;
+  readonly exited: Promise<number | null>;
+  kill(signal?: NodeJS.Signals): void;
+}
+
+/**
+ * A detached Bun subprocess leads its own POSIX process group. Signaling the
+ * negative leader PID terminates only that owned group, including descendants,
+ * and awaiting `exited` reaps the direct child before the probe returns.
+ */
+async function terminateOwnedProcessGroup(
+  proc: OwnedProbeProcess,
+  collectors: readonly OutputCollector[],
+): Promise<void> {
+  let groupSignaled = false;
   try {
-    const res = await fetch(req);
+    process.kill(-proc.pid, "SIGKILL");
+    groupSignaled = true;
+  } catch {
+    // The group may already be gone, or the platform may not support group signals.
+  }
+  if (!groupSignaled) {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // The direct child may already be gone.
+    }
+  }
+  await Promise.all([proc.exited, ...collectors.map((collector) => collector.cancel())]);
+}
+
+interface ProcessProbeOptions {
+  readonly cmd: readonly string[];
+  readonly env?: Record<string, string>;
+  readonly timeout: number;
+  readonly label: string;
+  /** Capture bounded stdout and stderr for diagnostics on failure. */
+  readonly captureOutput?: boolean;
+}
+
+interface ProcessProbeCompletion {
+  readonly exitCode: number | null;
+  readonly stdout: CapturedProcessOutput;
+  readonly stderr: CapturedProcessOutput;
+}
+
+async function runProcessProbe(opts: ProcessProbeOptions): Promise<string> {
+  const start = performance.now();
+  const captureOutput = opts.captureOutput ?? false;
+  const proc = Bun.spawn({
+    cmd: [...opts.cmd],
+    env: opts.env,
+    stdin: "ignore",
+    stdout: captureOutput ? "pipe" : "ignore",
+    stderr: captureOutput ? "pipe" : "ignore",
+    detached: true,
+  });
+  const stdout = createOutputCollector(
+    captureOutput ? proc.stdout as ReadableStream<Uint8Array> : undefined,
+  );
+  const stderr = createOutputCollector(
+    captureOutput ? proc.stderr as ReadableStream<Uint8Array> : undefined,
+  );
+  const collectors = [stdout, stderr] as const;
+  const completed = Promise.all([
+    proc.exited as Promise<number | null>,
+    stdout.completed,
+    stderr.completed,
+  ]).then(([exitCode, capturedStdout, capturedStderr]): ProcessProbeCompletion => ({
+    exitCode,
+    stdout: capturedStdout,
+    stderr: capturedStderr,
+  }));
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timeoutHandle = setTimeout(resolve, opts.timeout);
+  });
+
+  let outcome:
+    | { readonly kind: "completed"; readonly result: ProcessProbeCompletion }
+    | { readonly kind: "timed-out" };
+  try {
+    outcome = await Promise.race([
+      completed.then((result) => ({ kind: "completed" as const, result })),
+      deadline.then(() => ({ kind: "timed-out" as const })),
+    ]);
+  } catch (err) {
+    await terminateOwnedProcessGroup(proc, collectors);
+    await Promise.allSettled([completed]);
+    throw err;
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
+
+  if (outcome.kind === "timed-out") {
+    await terminateOwnedProcessGroup(proc, collectors);
+    const settled = (await Promise.allSettled([completed]))[0]!;
+    const detail = settled.status === "fulfilled"
+      ? formatProcessOutput(settled.value.stdout, settled.value.stderr)
+      : "";
+    throw new TimeoutError(
+      `${opts.label} timed out after ${Math.round(performance.now() - start)}ms${detail ? `: ${detail}` : ""}`,
+    );
+  }
+
+  const { exitCode, stdout: capturedStdout, stderr: capturedStderr } = outcome.result;
+  const detail = formatProcessOutput(capturedStdout, capturedStderr);
+  if (exitCode === 0) return detail;
+  if (exitCode === null) {
+    throw new TimeoutError(
+      `${opts.label} timed out after ${Math.round(performance.now() - start)}ms${detail ? `: ${detail}` : ""}`,
+    );
+  }
+  throw new Error(`${opts.label} exited ${exitCode}${detail ? `: ${detail}` : ""}`);
+}
+
+const HTTP_PROBE_TIMEOUT_MS = 5_000;
+const MAX_HTTP_ERROR_BODY_BYTES = 8 * 1024;
+
+interface CapturedHttpBody {
+  readonly text: string;
+  readonly truncated: boolean;
+}
+
+interface HttpBodyCollector {
+  readonly completed: Promise<CapturedHttpBody>;
+  cancel(): Promise<void>;
+}
+
+function decodeHttpBody(chunks: readonly Uint8Array[], byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Read only a bounded diagnostic prefix. Once the cap is reached, cancel the
+ * reader so an unhealthy endpoint cannot keep streaming data into doctor.
+ */
+function createHttpBodyCollector(
+  stream: ReadableStream<Uint8Array> | null | undefined,
+): HttpBodyCollector {
+  if (stream === null || stream === undefined) {
+    return {
+      completed: Promise.resolve({ text: "", truncated: false }),
+      cancel: async (): Promise<void> => {},
+    };
+  }
+
+  const reader = stream.getReader();
+  let canceled = false;
+  let finished = false;
+  const completed = (async (): Promise<CapturedHttpBody> => {
+    const chunks: Uint8Array[] = [];
+    let byteLength = 0;
+    let truncated = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const remaining = MAX_HTTP_ERROR_BODY_BYTES - byteLength;
+        if (remaining <= 0 || value.byteLength >= remaining) {
+          if (remaining > 0) {
+            chunks.push(value.slice(0, remaining));
+            byteLength += remaining;
+          }
+          // At the exact cap, conservatively mark the diagnostic as
+          // truncated before canceling rather than issuing another read.
+          truncated = true;
+          canceled = true;
+          await reader.cancel();
+          break;
+        }
+
+        chunks.push(value.slice());
+        byteLength += value.byteLength;
+      }
+    } catch (err) {
+      if (!canceled) throw err;
+    } finally {
+      finished = true;
+      reader.releaseLock();
+    }
+    return { text: decodeHttpBody(chunks, byteLength), truncated };
+  })();
+
+  return {
+    completed,
+    cancel: async (): Promise<void> => {
+      if (finished) return;
+      canceled = true;
+      await reader.cancel();
+    },
+  };
+}
+
+function formatHttpErrorBody(body: CapturedHttpBody): string {
+  const text = body.text.trim();
+  if (!body.truncated) return text;
+  return text.length === 0 ? "[truncated]" : `${text} … [truncated]`;
+}
+
+interface TimedResponse {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly body: CapturedHttpBody;
+}
+
+async function fetchWithTimeout(
+  label: string,
+  input: string | Request,
+  init: RequestInit = {},
+): Promise<TimedResponse> {
+  const controller = new AbortController();
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      reject(new TimeoutError(`${label} timed out after ${HTTP_PROBE_TIMEOUT_MS}ms`));
+    }, HTTP_PROBE_TIMEOUT_MS);
+  });
+  let bodyCollector: HttpBodyCollector | undefined;
+
+  try {
+    const res = await Promise.race([
+      fetch(input, { ...init, signal: controller.signal }),
+      timeout,
+    ]);
+    if (res.ok) {
+      return { ok: true, status: res.status, body: { text: "", truncated: false } };
+    }
+
+    bodyCollector = createHttpBodyCollector(res.body);
+    const body = await Promise.race([bodyCollector.completed, timeout]);
+    return { ok: false, status: res.status, body };
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    try {
+      if (bodyCollector !== undefined) await bodyCollector.cancel();
+    } catch (err) {
+      // A timeout remains the actionable result when abort cleanup races a
+      // stream error. Non-timeout cancellation failures still propagate.
+      if (!timedOut) throw err;
+    } finally {
+      // A successful response body is intentionally unread; aborting releases
+      // its transport without delaying the connectivity result.
+      controller.abort();
+    }
+  }
+}
+
+async function defaultCheckTelegramToken(token: string): Promise<void> {
+  const url = `https://api.telegram.org/bot${token}/getMe`;
+  try {
+    const res = await fetchWithTimeout("Telegram API", url);
     if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Telegram API returned ${res.status}: ${body}`);
+      throw new Error(`Telegram API returned ${res.status}: ${formatHttpErrorBody(res.body)}`);
     }
   } catch (err) {
+    if (err instanceof TimeoutError) throw err;
     throw new Error(`Telegram API unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
@@ -456,104 +887,76 @@ async function defaultCheckTelegramToken(token: string): Promise<void> {
 async function defaultCheckModelProvider(resolved: ResolvedModel): Promise<void> {
   const endpoint = buildProviderEndpoint(resolved.model.baseUrl);
   const headers = modelProviderHeaders(resolved);
-  const req = new Request(endpoint, {
-    method: "GET",
-    headers,
-    signal: AbortSignal.timeout(5_000),
-  });
-  let res: Response;
+  let res: TimedResponse;
   try {
-    res = await fetch(req);
+    res = await fetchWithTimeout("model provider", endpoint, { method: "GET", headers });
   } catch (err) {
+    if (err instanceof TimeoutError) throw err;
     throw new Error(`model provider unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`model provider returned ${res.status}: ${body}`);
+    throw new Error(`model provider returned ${res.status}: ${formatHttpErrorBody(res.body)}`);
   }
 }
 
 async function defaultCheckEdgeTtsAvailable(): Promise<void> {
-  const proc = Bun.spawn({
+  await runProcessProbe({
     cmd: ["uvx", "edge-tts", "--version"],
-    stdout: "ignore",
-    stderr: "ignore",
     timeout: 5_000,
+    label: "uvx edge-tts --version",
   });
-  const exitCode = (await proc.exited) as number | null;
-  if (exitCode === 0) return;
-  if (exitCode === null) {
-    throw new Error("uvx edge-tts --version timed out");
-  }
-  throw new Error(`uvx edge-tts --version exited ${exitCode}`);
 }
 
 async function defaultCheckGroqAsrAvailable(apiKey: string): Promise<void> {
-  const req = new Request("https://api.groq.com/openai/v1/models", {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(5_000),
-  });
-  let res: Response;
+  const url = "https://api.groq.com/openai/v1/models";
+  const headers = { Authorization: `Bearer ${apiKey}` };
+  let res: TimedResponse;
   try {
-    res = await fetch(req);
+    res = await fetchWithTimeout("Groq ASR", url, { headers });
   } catch (err) {
+    if (err instanceof TimeoutError) throw err;
     throw new Error(`Groq ASR unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) {
-    throw new Error(`Groq ASR API returned HTTP ${res.status}`);
+    throw new Error(`Groq ASR API returned HTTP ${res.status}: ${formatHttpErrorBody(res.body)}`);
   }
 }
 
 async function defaultCheckExternalAgents(cfg: Config): Promise<void> {
   if (!cfg.externalAgents || cfg.externalAgents.backends.length === 0) return;
-  const errors: string[] = [];
-  for (const backend of cfg.externalAgents.backends) {
+  const probes = cfg.externalAgents.backends.map(async (backend) => {
     try {
-      const proc = Bun.spawn({
+      await runProcessProbe({
         cmd: [backend, "--version"],
         env: prepareEnv(),
-        stdout: "ignore",
-        stderr: "ignore",
         timeout: 5_000,
+        label: `${backend} --version`,
       });
-      const exitCode = (await proc.exited) as number | null;
-      if (exitCode === 0) continue;
-      if (exitCode === null) {
-        throw new Error(`${backend} --version timed out`);
-      }
-      throw new Error(`${backend} --version exited ${exitCode}`);
+      return null;
     } catch (err) {
-      errors.push(`${backend}: ${errorMessage(err)}`);
+      return { text: `${backend}: ${errorMessage(err)}`, timeout: err instanceof TimeoutError };
     }
-  }
+  });
+  const results = await Promise.all(probes);
+  const errors = results.filter((r): r is { text: string; timeout: boolean } => r !== null);
+  const message = errors.map((e) => e.text).join("; ");
   if (errors.length > 0) {
-    throw new Error(errors.join("; "));
+    if (errors.some((e) => e.timeout)) throw new TimeoutError(message);
+    throw new Error(message);
   }
 }
 
 async function defaultCheckMcp(cfg: Config, home: string): Promise<void> {
   if (!cfg.mcp) return;
-  const cmd = ["bunx", "--silent", "mcporter", "--log-level", "error"];
   const configPath = resolveMcporterConfigPath(cfg.mcp.configPath, home);
-  if (configPath) {
-    cmd.push("--config", configPath);
-  }
-  cmd.push("list", "--json");
-  const proc = Bun.spawn({
+  const cmd = buildMcporterCommand(["list", "--json", "--status", "--exit-code"], configPath);
+  await runProcessProbe({
     cmd,
     env: prepareMcpEnv(home),
-    stdout: "pipe",
-    stderr: "pipe",
     timeout: 5_000,
+    label: "mcporter list",
+    captureOutput: true,
   });
-  const exitCode = (await proc.exited) as number | null;
-  const stderr = await new Response(proc.stderr).text();
-  if (exitCode === null) {
-    throw new Error(`MCP server list timed out: ${stderr.trim()}`);
-  }
-  if (exitCode !== 0) {
-    throw new Error(`mcporter list failed with exit code ${exitCode}: ${stderr.trim()}`);
-  }
 }
 
 async function runProbe(name: string, fn: () => Promise<void>): Promise<Check> {
@@ -562,7 +965,7 @@ async function runProbe(name: string, fn: () => Promise<void>): Promise<Check> {
     return { name, ok: true, detail: "reachable" };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const timedOut = /timed?\s*out|timeout/i.test(message);
+    const timedOut = err instanceof TimeoutError;
     return { name, ok: false, warn: true, timedOut, detail: message };
   }
 }
@@ -578,9 +981,7 @@ async function runConnectivityChecks(
     return [];
   }
 
-  const stub = resolveStubEnv();
-  const probes: ConnectivityProbes | undefined =
-    explicitProbes ?? (stub !== null ? stubProbes(stub) : undefined);
+  const probes = explicitProbes;
 
   const promises: Promise<Check>[] = [];
 
@@ -631,10 +1032,14 @@ async function runConnectivityChecks(
   return Promise.all(promises);
 }
 
-export async function runDoctor(options: { strict?: boolean; probes?: ConnectivityProbes } = {}): Promise<DoctorResult> {
+export async function runDoctor(options: {
+  strict?: boolean;
+  probes?: ConnectivityProbes;
+  dependencies?: DoctorDependencies;
+} = {}): Promise<DoctorResult> {
   const home = goblinHome();
   const strict = options.strict ?? false;
-  const local = await runChecks(home);
+  const local = await runChecks(home, options.dependencies ?? {});
   const connectivity = await runConnectivityChecks(home, options.probes);
   const checks = [...local, ...connectivity];
   const lines = formatLines(checks, strict);
@@ -648,13 +1053,14 @@ export async function main(): Promise<void> {
   for (const line of lines) {
     out(line);
   }
-  process.exit(exitCode);
+  // Let stdout drain instead of truncating a report when its destination is a pipe.
+  process.exitCode = exitCode;
 }
 
 if (import.meta.main) {
   main().catch((err) => {
     log.error("doctor failed:", { error: errorMessage(err) });
     out(`unexpected error: ${errorMessage(err)}`);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }

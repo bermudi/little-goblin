@@ -26,11 +26,13 @@ function setupHome(): string {
   mkdirSync(join(home, "workspace"), { recursive: true });
   mkdirSync(join(home, ".agents", "skills"), { recursive: true });
   mkdirSync(join(home, "workspace", ".agents", "skills"), { recursive: true });
+  mkdirSync(join(home, "workspace", "agents"), { recursive: true });
   mkdirSync(join(home, "state"), { recursive: true });
   mkdirSync(join(home, "state", "sessions"), { recursive: true });
   mkdirSync(join(home, "state", "memory"), { recursive: true });
+  mkdirSync(join(home, "state", "pi"), { recursive: true });
   mkdirSync(join(home, "state", "delegated-work", "runs"), { recursive: true });
-  mkdirSync(join(home, "scratch"), { recursive: true });
+  mkdirSync(join(home, "scratch", "external-agents"), { recursive: true });
   writeFileSync(join(home, "workspace", "SOUL.md"), "# Test Goblin\n");
   return home;
 }
@@ -96,6 +98,15 @@ describe("runPreflight", () => {
     writeFileSync(join(home, "state"), "not a directory");
     const cfg = buildConfig({ goblinHome: home });
     await expect(runPreflightForTest(cfg)).rejects.toThrow("Preflight failed: GOBLIN_HOME directories are writable");
+  });
+
+  test("fails when a startup-created pi directory is not writable", async () => {
+    rmSync(join(home, "state", "pi"), { recursive: true, force: true });
+    writeFileSync(join(home, "state", "pi"), "not a directory");
+
+    await expect(runPreflightForTest(buildConfig({ goblinHome: home }))).rejects.toThrow(
+      "Preflight failed: GOBLIN_HOME directories are writable",
+    );
   });
 
   test("warns, but does not fail, when injected Telegram validation fails", async () => {

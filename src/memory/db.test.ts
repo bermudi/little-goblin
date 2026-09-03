@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryDatabase } from "./db.ts";
@@ -45,6 +45,15 @@ const HISTORICAL_V4_ENTRIES_DDL = PRE_V2_ENTRIES_DDL.replace(
   "  updated_at INTEGER NOT NULL,\n",
   "  updated_at INTEGER NOT NULL,\n  display_order INTEGER NOT NULL DEFAULT 0,\n",
 );
+
+describe("memory SQLite engine", () => {
+  it("keeps diagnostics on the canonical bun:sqlite engine", () => {
+    const source = readFileSync(new URL("./db.ts", import.meta.url), "utf8");
+
+    expect(source).toContain('from "bun:sqlite"');
+    expect(source).not.toContain('from "node:sqlite"');
+  });
+});
 
 describe("MemoryDatabase", () => {
   let db: MemoryDatabase | undefined;

@@ -512,11 +512,9 @@ export interface DoctorResult {
   readonly lines: readonly string[];
 }
 
-function buildProviderEndpoint(baseUrl: string): string {
-  if (new RegExp("\\/v\\d+$", "i").test(baseUrl)) {
-    return `${baseUrl}/models`;
-  }
-  return `${baseUrl}/v1/models`;
+export function buildProviderEndpoint(baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, "");
+  return /\/v\d+$/i.test(base) ? `${base}/models` : `${base}/v1/models`;
 }
 
 function modelProviderHeaders(resolved: ResolvedModel): Record<string, string> {

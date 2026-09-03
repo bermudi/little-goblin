@@ -29,7 +29,7 @@ import {
 import { delegatedWorkRunsRoot } from "./delegated-work/paths.ts";
 import { ensureGoblinHome, type Config } from "./config.ts";
 import { buildMcporterCommand } from "./mcp/runner.ts";
-import { runDoctor, type ConnectivityProbes } from "./doctor.ts";
+import { buildProviderEndpoint, runDoctor, type ConnectivityProbes } from "./doctor.ts";
 import JSON5 from "json5";
 
 interface TestDoctorResult {
@@ -42,6 +42,17 @@ const noopProbes: ConnectivityProbes = {
   checkModelProvider: async () => {},
   checkEdgeTtsAvailable: async () => {},
 };
+
+describe("model provider probe endpoint", () => {
+  it("normalizes trailing slashes without duplicating the API version", () => {
+    expect(buildProviderEndpoint("https://provider.example/v1/")).toBe(
+      "https://provider.example/v1/models",
+    );
+    expect(buildProviderEndpoint("https://provider.example/")).toBe(
+      "https://provider.example/v1/models",
+    );
+  });
+});
 
 function buildConfigContent(): string {
   return `{

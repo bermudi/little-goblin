@@ -199,7 +199,7 @@ export interface BuiltBot {
 export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   configureVoice(cfg);
   const bot = new Bot(cfg.botToken);
-  const memoryEngine = options.memoryEngine ?? new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
+  const memoryEngine = options.memoryEngine ?? new MemoryEngine(cfg.goblinHome, cfg.embeddings);
   const memoryStore = memoryEngine.readStore;
   const delegatedWorkHost = new DelegatedWorkHost(cfg.goblinHome);
   const subagentHost = new PiSubagentHost(cfg);

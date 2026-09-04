@@ -8,7 +8,7 @@
  */
 
 import { mkdirSync, statSync } from "node:fs";
-import { resolveGoblinHome } from "../config.ts";
+import { loadConfig, resolveGoblinHome } from "../config.ts";
 import { MemoryDatabase } from "./db.ts";
 import { MemoryStore } from "./store.ts";
 import { EmbeddingProvider } from "./embeddings.ts";
@@ -22,6 +22,18 @@ function goblinHome(): string {
 
 function ensureMemoryDir(home: string): void {
   mkdirSync(memoryDir(home), { recursive: true });
+}
+
+/** Build an EmbeddingProvider honoring the `embeddings` config block. */
+function configuredEmbeddings(db: MemoryDatabase): EmbeddingProvider {
+  try {
+    const cfg = loadConfig();
+    return new EmbeddingProvider(db, cfg.embeddings);
+  } catch {
+    // No/invalid config file: fall back to env-only resolution so read-only
+    // CLI inspection keeps working without a deployable config.
+    return new EmbeddingProvider(db);
+  }
 }
 
 function out(line: string): void {
@@ -55,7 +67,7 @@ async function statusCommand(): Promise<void> {
   const home = goblinHome();
   ensureMemoryDir(home);
   const db = new MemoryDatabase(memoryDbPath(home));
-  const embeddings = new EmbeddingProvider(db);
+  const embeddings = configuredEmbeddings(db);
   const store = new MemoryStore(db, undefined, { embeddings });
   try {
     const dbSize = statSync(memoryDbPath(home)).size;
@@ -86,7 +98,7 @@ async function searchCommand(query: string): Promise<void> {
   const home = goblinHome();
   ensureMemoryDir(home);
   const db = new MemoryDatabase(memoryDbPath(home));
-  const embeddings = new EmbeddingProvider(db);
+  const embeddings = configuredEmbeddings(db);
   const store = new MemoryStore(db, undefined, { embeddings });
   try {
     const persona: PersonaPolicy = { kind: "all" };

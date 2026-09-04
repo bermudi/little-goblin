@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import JSON5 from "json5";
-import { ConfigFileSchema, type ExternalAgentsConfig, type McpConfig } from "./schema.ts";
+import { ConfigFileSchema, type EmbeddingsConfig, type ExternalAgentsConfig, type McpConfig } from "./schema.ts";
 import { resolveConfigValue } from "./resolve-value.ts";
 import { goblinConfigPath, sessionsDir, stateDir, scratchDir } from "./sessions/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
@@ -52,6 +52,8 @@ export interface Config {
   externalAgents?: ExternalAgentsConfig;
   /** MCP bridge configuration. */
   mcp?: McpConfig;
+  /** Memory embeddings endpoint configuration (overrides env fallbacks per key). */
+  embeddings?: EmbeddingsConfig;
 }
 
 /**
@@ -110,6 +112,7 @@ export function loadConfig(): Config {
     asrModel: cfg.asrModel,
     externalAgents: cfg.externalAgents,
     mcp: cfg.mcp,
+    embeddings: cfg.embeddings,
   });
 
   if (config.externalAgents) {
@@ -122,6 +125,10 @@ export function loadConfig(): Config {
     if (config.mcp.enabled) {
       Object.freeze(config.mcp.enabled);
     }
+  }
+
+  if (config.embeddings) {
+    Object.freeze(config.embeddings);
   }
 
   return config;

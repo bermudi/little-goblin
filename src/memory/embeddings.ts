@@ -32,15 +32,34 @@ interface EmbeddingProviderState {
 }
 
 /**
- * OpenAI embedding provider with SQLite caching.
+ * Operator-config overrides for the embedding endpoint. Each key overrides its
+ * environment-variable fallback; the `goblin.json5` `embeddings` block maps
+ * straight onto this interface.
+ */
+export interface EmbeddingOptions {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+  provider?: string;
+  cooldownSeconds?: number;
+}
+
+/**
+ * OpenAI-compatible embedding provider with SQLite caching.
  *
- * - API key from GOBLIN_MEMORY_EMBEDDING_API_KEY, fallback OPENAI_API_KEY.
- * - Optional base URL from GOBLIN_MEMORY_EMBEDDING_BASE_URL, fallback OPENAI_BASE_URL.
- * - Model from GOBLIN_MEMORY_EMBEDDING_MODEL, default text-embedding-3-small.
- * - Provider label from GOBLIN_MEMORY_EMBEDDING_PROVIDER, default openai. Used as
- *   the `provider` column in memory_embeddings and as a reindex trigger: changing
- *   it (or the model) forces a full reindex. Set to e.g. "ollama" when serving
- *   embeddings from a local inference server so metadata stays accurate.
+ * - Config overrides (the `embeddings` block in `goblin.json5`) take precedence
+ *   per key; environment variables remain the fallback so existing deployments
+ *   keep working:
+ *   - apiKey:    embeddings.apiKey ?? GOBLIN_MEMORY_EMBEDDING_API_KEY ?? OPENAI_API_KEY
+ *   - baseUrl:   embeddings.baseUrl ?? GOBLIN_MEMORY_EMBEDDING_BASE_URL ?? OPENAI_BASE_URL (default https://api.openai.com)
+ *   - model:     embeddings.model ?? GOBLIN_MEMORY_EMBEDDING_MODEL (default text-embedding-3-small)
+ *   - provider:  embeddings.provider ?? GOBLIN_MEMORY_EMBEDDING_PROVIDER (default "openai")
+ *   - cooldown:  embeddings.cooldownSeconds ?? GOBLIN_MEMORY_EMBEDDING_COOLDOWN_SECONDS (default 60)
+ * - baseUrl has no trailing /v1: the client appends /v1/embeddings itself.
+ * - provider is the `provider` column in memory_embeddings and a reindex
+ *   trigger: changing it (or the model) forces a full reindex. Set it to
+ *   reflect the real upstream (e.g. "openrouter", "ollama") so metadata
+ *   stays accurate.
  * - Degraded state with a cooldown after network/auth failures.
  *
  * Embeddings are cached in memory_embeddings keyed by the entry's id (foreign
@@ -57,16 +76,21 @@ export class EmbeddingProvider {
   private state: EmbeddingProviderState;
   private fetchedCache: Map<string, Float32Array>;
 
-  constructor(db: MemoryDatabase, apiKey?: string) {
+  constructor(db: MemoryDatabase, options: EmbeddingOptions = {}) {
     this.db = db;
-    this.apiKey = env("GOBLIN_MEMORY_EMBEDDING_API_KEY") ?? apiKey ?? env("OPENAI_API_KEY");
-    this.baseUrl = env("GOBLIN_MEMORY_EMBEDDING_BASE_URL", env("OPENAI_BASE_URL", "https://api.openai.com"))!;
-    this.model = env("GOBLIN_MEMORY_EMBEDDING_MODEL", "text-embedding-3-small")!;
-    this.provider = env("GOBLIN_MEMORY_EMBEDDING_PROVIDER", "openai")!;
-    const cooldown = Number(env("GOBLIN_MEMORY_EMBEDDING_COOLDOWN_SECONDS", "60"));
+    this.apiKey = options.apiKey ?? env("GOBLIN_MEMORY_EMBEDDING_API_KEY") ?? env("OPENAI_API_KEY");
+    this.baseUrl = options.baseUrl ?? env("GOBLIN_MEMORY_EMBEDDING_BASE_URL", env("OPENAI_BASE_URL", "https://api.openai.com"))!;
+    this.model = options.model ?? env("GOBLIN_MEMORY_EMBEDDING_MODEL", "text-embedding-3-small")!;
+    this.provider = options.provider ?? env("GOBLIN_MEMORY_EMBEDDING_PROVIDER", "openai")!;
+    const cooldownSetting = options.cooldownSeconds ?? env("GOBLIN_MEMORY_EMBEDDING_COOLDOWN_SECONDS");
+    const cooldown = Number(cooldownSetting ?? "60");
     this.cooldownSeconds = Number.isFinite(cooldown) && cooldown >= 0 ? cooldown : 60;
     this.state = { degraded: false, degradedUntil: 0, errorCount: 0, lastError: "" };
     this.fetchedCache = new Map();
+  }
+
+  get cooldownSecondsValue(): number {
+    return this.cooldownSeconds;
   }
 
   get modelName(): string {

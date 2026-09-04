@@ -205,6 +205,50 @@ describe("EmbeddingProvider", () => {
     expect(provider.providerName).toBe("openai");
   });
 
+  it("options override env per key", () => {
+    const overridden = new EmbeddingProvider(db, {
+      apiKey: "opt-key",
+      baseUrl: "https://embed.example.com",
+      model: "opt-model",
+      provider: "opt-provider",
+      cooldownSeconds: 30,
+    });
+    expect(overridden.status().model).toBe("opt-model");
+    expect(overridden.providerName).toBe("opt-provider");
+    expect(overridden.cooldownSecondsValue).toBe(30);
+  });
+
+  it("partial options leave other keys on env fallback", () => {
+    const partial = new EmbeddingProvider(db, { model: "opt-model" });
+    expect(partial.status().model).toBe("opt-model");
+    expect(partial.providerName).toBe("openai");
+  });
+
+  it("options apiKey takes precedence over env and OPENAI_API_KEY fallback", async () => {
+    delete process.env.GOBLIN_MEMORY_EMBEDDING_API_KEY;
+    let authHeader = "";
+    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+      authHeader = new Headers(init?.headers).get("Authorization") ?? "";
+      return successFetch()("", init) as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const opted = new EmbeddingProvider(db, { apiKey: "opt-key", model: "opt-model" });
+    await opted.embedBatch(["hello world"]);
+    expect(authHeader).toBe("Bearer opt-key");
+  });
+
+  it("embedBatch sends the configured model to the endpoint", async () => {
+    let sentModel = "";
+    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+      sentModel = (JSON.parse(String(init?.body)) as { model: string }).model;
+      return successFetch()("", init) as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const opted = new EmbeddingProvider(db, { apiKey: "k", model: "opt-model" });
+    await opted.embedBatch(["hello world"]);
+    expect(sentModel).toBe("opt-model");
+  });
+
   it("setting a different provider via env triggers reindex and stores the new provider label", async () => {
     const insertEntry = db.database.query(
       "INSERT INTO memory_entries (id, scope, entry_kind, text, created_at, updated_at, origin) VALUES ($id, $scope, $kind, $text, $created, $updated, $origin)",

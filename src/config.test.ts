@@ -189,6 +189,64 @@ describe("loadConfig", () => {
     expect(cfg.anthropicApiKey).toBe("anth-key");
   });
 
+  it("loads the embeddings block and freezes it", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      embeddings: {
+        apiKey: "emb-key",
+        baseUrl: "https://openrouter.ai/api",
+        model: "perplexity/pplx-embed-v1-0.6b",
+        provider: "openrouter",
+        cooldownSeconds: 30,
+      },
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.embeddings).toEqual({
+      apiKey: "emb-key",
+      baseUrl: "https://openrouter.ai/api",
+      model: "perplexity/pplx-embed-v1-0.6b",
+      provider: "openrouter",
+      cooldownSeconds: 30,
+    });
+    expect(Object.isFrozen(cfg.embeddings)).toBe(true);
+  });
+
+  it("resolves !commands and env names inside the embeddings block", () => {
+    process.env.TEST_EMBEDDINGS_KEY = "resolved-emb-key";
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      embeddings: {
+        apiKey: "TEST_EMBEDDINGS_KEY",
+        model: "test-embed-model",
+      },
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    const cfg = loadConfig();
+    expect(cfg.embeddings?.apiKey).toBe("resolved-emb-key");
+    expect(cfg.embeddings?.model).toBe("test-embed-model");
+  });
+
+  it("rejects invalid embeddings block values", () => {
+    const configContent = `{
+      botToken: "test",
+      allowedUsers: [123],
+      model: "poe/test",
+      embeddings: {
+        cooldownSeconds: -5,
+      },
+    }`;
+    writeFileSync(join(tempDir, "goblin.json5"), configContent);
+
+    expect(() => loadConfig()).toThrow("Config validation failed");
+  });
+
   it("returns frozen config object", () => {
     const configContent = `{
       botToken: "test",

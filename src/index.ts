@@ -23,7 +23,7 @@ async function main(): Promise<void> {
     });
     process.exit(1);
   }
-  const memoryEngine = new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
+  const memoryEngine = new MemoryEngine(cfg.goblinHome, cfg.embeddings);
   await memoryEngine.migrate();
   reconcileProjectAssignmentAtColdStart(cfg.goblinHome);
   await memoryEngine.embeddingProvider.reindexIfNeeded();

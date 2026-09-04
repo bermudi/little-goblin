@@ -72,4 +72,18 @@
   // sessions). Omit to leave voice intake unconfigured.
   // groqApiKey: "GROQ_API_KEY",
   // asrModel: "whisper-large-v3-turbo",  // or "whisper-large-v3"
+
+  // --- Memory embeddings (hybrid semantic + FTS search) ---
+  // Optional. Any OpenAI-compatible /v1/embeddings endpoint. All keys optional;
+  // each falls back to its GOBLIN_MEMORY_EMBEDDING_* env var, then the client
+  // default (api.openai.com + text-embedding-3-small). Omit the whole block to
+  // run without semantic memory search. baseUrl has NO trailing /v1.
+  // Values support env var names and !commands just like the keys above.
+  // embeddings: {
+  //   // apiKey: "!pass-cli item view 'pass://Keys/OpenRouter/Api Key'",
+  //   // baseUrl: "https://openrouter.ai/api",
+  //   // model: "perplexity/pplx-embed-v1-0.6b",
+  //   // provider: "openrouter",  // label in memory_embeddings; model/provider change triggers reindex
+  //   // cooldownSeconds: 60,
+  // },
 }

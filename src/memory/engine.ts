@@ -1,7 +1,7 @@
 /**
  * Bundles the SQLite-backed memory store pieces used by the rest of the app.
  *
- * - One shared `EmbeddingProvider` for cached OpenAI embeddings.
+ * - One shared `EmbeddingProvider` for cached OpenAI-compatible embeddings.
  * - A read-only-ish `MemoryStore` for lookups/intake.
  * - A `TranscriptIndexer` for syncing session transcripts.
  *
@@ -12,7 +12,7 @@
 
 import { mkdirSync } from "node:fs";
 import { MemoryDatabase } from "./db.ts";
-import { EmbeddingProvider } from "./embeddings.ts";
+import { EmbeddingProvider, type EmbeddingOptions } from "./embeddings.ts";
 import { MemoryStore } from "./store.ts";
 import { TranscriptIndexer } from "./transcript-index.ts";
 import { DreamingPipeline } from "./dreaming.ts";
@@ -27,11 +27,11 @@ export class MemoryEngine {
   readonly transcriptIndexer: TranscriptIndexer;
   readonly dreaming: DreamingPipeline;
 
-  constructor(home: string, apiKey?: string) {
+  constructor(home: string, embeddingOptions: EmbeddingOptions = {}) {
     this.home = home;
     mkdirSync(memoryDir(home), { recursive: true });
     this.readDatabase = new MemoryDatabase(memoryDbPath(home));
-    this.embeddingProvider = new EmbeddingProvider(this.readDatabase, apiKey);
+    this.embeddingProvider = new EmbeddingProvider(this.readDatabase, embeddingOptions);
     this.readStore = new MemoryStore(this.readDatabase, undefined, { embeddings: this.embeddingProvider });
     this.transcriptIndexer = new TranscriptIndexer(home, this.readStore);
     this.dreaming = new DreamingPipeline({ goblinHome: home, store: this.newStore() });

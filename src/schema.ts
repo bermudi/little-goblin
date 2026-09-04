@@ -22,6 +22,21 @@ export const ExternalAgentsConfigSchema = z.object({
 
 export type ExternalAgentsConfig = z.infer<typeof ExternalAgentsConfigSchema>;
 
+export const EmbeddingsConfigSchema = z.object({
+  /** API key for the embeddings endpoint. Falls back to GOBLIN_MEMORY_EMBEDDING_API_KEY, then OPENAI_API_KEY. */
+  apiKey: z.string().optional(),
+  /** Base URL without /v1 (the client appends /v1/embeddings). Falls back to GOBLIN_MEMORY_EMBEDDING_BASE_URL, then OPENAI_BASE_URL. */
+  baseUrl: z.string().optional(),
+  /** Embedding model id. Falls back to GOBLIN_MEMORY_EMBEDDING_MODEL, then text-embedding-3-small. */
+  model: z.string().optional(),
+  /** Provider label stored in memory_embeddings; changing it (or the model) triggers a full reindex. */
+  provider: z.string().optional(),
+  /** Degraded-state cooldown after a failed embeddings call. */
+  cooldownSeconds: z.number().int().min(0).max(3600).optional(),
+});
+
+export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
+
 export const McpConfigSchema = z.object({
   enabled: z.array(z.string()).optional(),
   configPath: z.string().optional(),
@@ -54,6 +69,8 @@ export const ConfigFileSchema = z
     groqApiKey: z.string().optional(),
     /** Groq Whisper model for voice-note ASR. */
     asrModel: z.enum(["whisper-large-v3-turbo", "whisper-large-v3"]).default("whisper-large-v3-turbo"),
+    /** Memory embeddings endpoint configuration. Optional; env fallbacks apply per key. */
+    embeddings: EmbeddingsConfigSchema.optional(),
     externalAgents: ExternalAgentsConfigSchema.optional(),
     mcp: McpConfigSchema.optional(),
     /**

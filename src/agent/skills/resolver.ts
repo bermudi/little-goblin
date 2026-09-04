@@ -16,6 +16,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { open, opendir, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import {
+  BACKGROUND_CONTEXT,
   loadSourcedSkills,
   type Skill,
   type SkillDiagnostic,
@@ -110,7 +111,7 @@ export async function resolveSkillSet(
   try {
     return await resolveWithEnv(env, environment, policy, home, options);
   } finally {
-    await env.cleanup();
+    await env.cleanup(BACKGROUND_CONTEXT);
   }
 }
 
@@ -135,7 +136,7 @@ async function resolveWithEnv(
     }
   }
 
-  const loaded = await loadSourcedSkills<SkillSource>(env, inputs);
+  const loaded = await loadSourcedSkills<SkillSource>(env, inputs, undefined, BACKGROUND_CONTEXT);
 
   // Group skills by source for selection and missing-name detection.
   const bySource = new Map<SkillSource, Array<{ skill: Skill; source: SkillSource }>>();
@@ -315,7 +316,7 @@ async function verifyCapturedSkill(
     const loaded = await loadSourcedSkills<SkillSource>(env, [{
       path: resolve(root, "0"),
       source: candidate.resolved.source,
-    }]);
+    }], undefined, BACKGROUND_CONTEXT);
     const actual = loaded.skills.find(
       (entry) => resolve(entry.skill.filePath) === resolve(materializedEntry),
     )?.skill;

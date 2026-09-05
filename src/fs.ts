@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -12,8 +12,14 @@ import { randomBytes } from "node:crypto";
  *
  * POSIX rename is atomic, so readers either see the old or the new file,
  * never a partial write.
+ *
+ * Permission preservation: when the target already exists, the replacement
+ * inherits the existing file's mode (e.g. a hardened `0600` goblin.json5
+ * stays `0600` instead of downgrading to `0644` under a typical umask).
+ * Pass `options.mode` to force a mode for a new file; otherwise new files
+ * use the process default (`0666 & ~umask`).
  */
-export function atomicWrite(filePath: string, data: string): void {
+export function atomicWrite(filePath: string, data: string, options?: { mode?: number }): void {
   const dir = dirname(filePath);
   try {
     mkdirSync(dir, { recursive: true });
@@ -25,6 +31,18 @@ export function atomicWrite(filePath: string, data: string): void {
   }
 
   const tmpPath = join(dir, `.${randomBytes(6).toString("hex")}.tmp`);
+  // Capture the existing mode before creating the tmp file so a sensitive
+  // file (e.g. goblin.json5 with credentials) keeps its permissions across
+  // replacement. `statSync` follows the symlink target, matching the
+  // realpath resolution used for the final rename below.
+  let targetMode: number | undefined = options?.mode;
+  if (targetMode === undefined) {
+    try {
+      targetMode = statSync(filePath).mode & 0o777;
+    } catch {
+      targetMode = undefined;
+    }
+  }
   const fd = openSync(tmpPath, "w");
   try {
     try {
@@ -32,6 +50,10 @@ export function atomicWrite(filePath: string, data: string): void {
       fsyncSync(fd);
     } finally {
       closeSync(fd);
+    }
+
+    if (targetMode !== undefined) {
+      chmodSync(tmpPath, targetMode);
     }
 
     // Resolve symlinks on the existing target so we replace the real file,

@@ -192,6 +192,45 @@ describe("McpRunner catalog", () => {
     expect(discoverCalls).toBe(1);
     expect(runner.buildCatalogText()).toContain("fresh");
   });
+
+  it("refreshCatalog with a new deny-list hides a newly disabled server", async () => {
+    setOutput(JSON.stringify({
+      servers: [
+        { name: "tavily", tools: [{ name: "tavily_search", description: "Search" }] },
+        { name: "grep", tools: [{ name: "searchGitHub", description: "Grep" }] },
+      ],
+    }));
+    const runner = new McpRunner(baseConfig, "/tmp/goblin");
+    await runner.ready;
+    expect(runner.buildCatalogText()).toContain("tavily");
+    expect(runner.buildCatalogText()).toContain("grep");
+
+    // Same gateway output, but the operator disabled grep in goblin.json5.
+    await runner.refreshCatalog({ disabledServers: ["grep"] });
+    const text = runner.buildCatalogText();
+    expect(text).toContain("tavily");
+    expect(text).not.toContain("grep");
+    expect(runner.getSelection().disabledServers).toEqual(["grep"]);
+  });
+
+  it("setSelection updates the policy used by the next refresh", async () => {
+    setOutput(JSON.stringify({
+      servers: [
+        { name: "tavily", tools: [{ name: "tavily_search", description: "Search" }] },
+        { name: "grep", tools: [{ name: "searchGitHub", description: "Grep" }] },
+      ],
+    }));
+    const runner = new McpRunner({ ...baseConfig, enabled: ["tavily"] }, "/tmp/goblin");
+    await runner.ready;
+    expect(runner.buildCatalogText()).toContain("tavily");
+    expect(runner.buildCatalogText()).not.toContain("grep");
+
+    runner.setSelection({ enabled: ["grep"] });
+    await runner.refreshCatalog();
+    const text = runner.buildCatalogText();
+    expect(text).toContain("grep");
+    expect(text).not.toContain("tavily");
+  });
 });
 
 describe("McpRunner.callTool", () => {

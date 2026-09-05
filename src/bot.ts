@@ -143,6 +143,7 @@ function intakeMessageFromCtx(
   };
   return {
     surface,
+    invokingUserId: ctx.from?.id,
     reply: wrapReply(async (text, opts) => {
       await ctx.reply(text, opts as Record<string, unknown> | undefined);
     }, getMetrics),

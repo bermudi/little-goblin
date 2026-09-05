@@ -79,6 +79,15 @@ export function goblinConfigPath(home: string): string {
   return join(home, "goblin.json5");
 }
 
+/**
+ * Cooperative lock file serializing `goblin.json5` MCP selection writers.
+ * Owned by `src/mcp/selection-store.ts`; the lock lives alongside the
+ * config so it shares its filesystem and lifetime.
+ */
+export function goblinConfigLockPath(home: string): string {
+  return `${goblinConfigPath(home)}.lock`;
+}
+
 export function topicSettingsPath(home: string): string {
   return join(home, "state", "topic-settings.json");
 }

@@ -149,6 +149,7 @@ type ExecutionEnvironment =
 | External-agent working directory, invocation parameters, and permission profile | Main model through structured launch input **(TARGET — decision 0041)** |
 | Explicit delegated-run control | Owner Conversation |
 | Automatic delegated completion destination | Origin Surface |
+| MCP server selection (`mcp.enabled` / `mcp.disabledServers` in `goblin.json5`) | Deployment; sole writer `McpSelectionStore` (`src/mcp/selection-store.ts`), reader `loadConfig()`, runtime cache `McpRunner` **(CURRENT)** |
 | Wake/reflection/effect history | Inner-life wake store **(TARGET — decision 0035)** |
 
 If new state has no unambiguous row, stop and design its lifetime before implementing it.
@@ -283,6 +284,8 @@ The operator moved legacy `workspace/skills/` to the Goblin catalog because it h
 ## MCP
 
 **CURRENT and TARGET — accepted by decision 0042.** `mcporter` is Goblin's sole MCP gateway. It owns MCP transport, OAuth, server configuration, and server lifecycle. Goblin's `McpRunner` may invoke the gateway, select configured servers, cache and describe its catalog, normalize and bound results, and enforce timeouts; Goblin does not implement a direct MCP client or alternate gateway.
+
+Deployment server selection lives in the `mcp` section of `goblin.json5` (`enabled` allow-list, `disabledServers` deny-list with deny-wins). `McpSelectionStore` (`src/mcp/selection-store.ts`) is the sole writer (lock + compare-and-swap + mode-preserving `atomicWrite`); `loadConfig()` is the reader; `McpRunner` caches the policy in memory and must be updated before any catalog refresh that claims to reflect a new selection. `/mcp enable|disable` is operator-only (invoking-user allowlist check at the command boundary) and reports refresh success honestly.
 
 The current `bunx --silent mcporter` command is implementation rather than architecture. Installation, version pinning, preflight, media normalization, and catalog UX may change without moving the gateway boundary. A direct stdio/HTTP/SSE client or another gateway requires a superseding decision.
 

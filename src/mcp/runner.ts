@@ -31,12 +31,18 @@ export interface McpToolResult {
   text: string;
 }
 
+/** Allow/deny selection applied to gateway catalog discovery. Deny wins. */
+export interface McpSelection {
+  readonly enabled?: readonly string[] | undefined;
+  readonly disabledServers?: readonly string[] | undefined;
+}
+
 export class McpRunner {
   private readonly configPath: string | undefined;
   private readonly defaultTimeoutMs: number;
   private readonly maxResultChars: number;
-  private readonly enabled: string[] | undefined;
-  private readonly disabled: readonly string[];
+  private enabled: string[] | undefined;
+  private disabled: readonly string[];
   private readonly goblinHome: string;
   private catalog: Map<string, McpToolEntry[]>;
   private refreshInFlight: Promise<void> | null = null;
@@ -46,8 +52,8 @@ export class McpRunner {
     this.configPath = resolveMcporterConfigPath(config.configPath, goblinHome);
     this.defaultTimeoutMs = config.defaultTimeoutMs;
     this.maxResultChars = config.maxResultChars;
-    this.enabled = config.enabled;
-    this.disabled = config.disabledServers ?? [];
+    this.enabled = config.enabled === undefined ? undefined : [...config.enabled];
+    this.disabled = config.disabledServers ? [...config.disabledServers] : [];
     this.goblinHome = goblinHome;
     this.catalog = new Map();
     this.ready = this.discoverCatalog()
@@ -119,10 +125,41 @@ export class McpRunner {
     }
   }
 
-  async refreshCatalog(): Promise<void> {
+  /**
+   * Update the allow/deny selection used by the next catalog discovery.
+   * The runner retains the selection it was constructed with until this is
+   * called — `refreshCatalog()` alone never invents a new policy. Callers
+   * that persist a new selection (e.g. `/mcp enable|disable`) must update
+   * the runner before refreshing, or pass the selection to `refreshCatalog`
+   * directly.
+   */
+  setSelection(selection: McpSelection): void {
+    this.enabled = selection.enabled === undefined ? undefined : [...selection.enabled];
+    this.disabled = selection.disabledServers ? [...selection.disabledServers] : [];
+  }
+
+  /** Current allow/deny policy (copies; mutating the result is safe). */
+  getSelection(): McpSelection {
+    return {
+      enabled: this.enabled === undefined ? undefined : [...this.enabled],
+      disabledServers: [...this.disabled],
+    };
+  }
+
+  async refreshCatalog(selection?: McpSelection): Promise<void> {
+    if (selection !== undefined) {
+      this.setSelection(selection);
+    }
     if (this.refreshInFlight) {
+      // A plain concurrent refresh shares the in-flight discovery. A refresh
+      // carrying a new selection cannot share it — the in-flight run used
+      // the previous policy — so await it and fall through to a second
+      // discovery under the new policy instead of returning stale data.
+      if (selection === undefined) {
+        await this.refreshInFlight;
+        return;
+      }
       await this.refreshInFlight;
-      return;
     }
     const p = this.discoverCatalog()
       .then((catalog) => {

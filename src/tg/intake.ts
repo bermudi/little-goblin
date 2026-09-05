@@ -52,6 +52,13 @@ export interface TelegramIntakeMessage {
   surface: Surface | null;
   reply: (text: string, opts?: ReplyOpts) => Promise<void>;
   prepare: (content: PromptContent) => PromptContent;
+  /**
+   * Telegram user id that sent the update (`ctx.from.id`). Threaded through
+   * to command dispatch so deployment-wide mutations (e.g. `/mcp
+   * enable|disable`) can enforce operator identity even when group @mentions
+   * or replies let non-allowlisted users reach the handler.
+   */
+  invokingUserId?: number;
 }
 
 export interface TelegramDocumentInput {
@@ -513,7 +520,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           deps: dispatchDeps,
           rawText,
           surface,
-
+          invokingUserId: message.invokingUserId,
           conversation: session,
           existingRunner: dispatcher.getRunner(session.id),
           bot,
@@ -818,6 +825,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             deps: dispatchDeps,
             rawText: rawText ?? "",
             surface,
+            invokingUserId: message.invokingUserId,
             conversation: session,
             existingRunner,
             bot,
@@ -847,6 +855,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           deps: dispatchDeps,
           rawText: rawText ?? "",
           surface,
+          invokingUserId: message.invokingUserId,
           conversation: session,
           existingRunner,
           bot,

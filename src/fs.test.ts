@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -38,6 +39,22 @@ describe("atomicWrite", () => {
     writeFileSync(target, "old", "utf-8");
     atomicWrite(target, "new");
     expect(readFileSync(target, "utf-8")).toBe("new");
+  });
+
+  it("preserves a hardened 0600 mode across replacement", () => {
+    const target = join(tmpDir, "secret.json");
+    writeFileSync(target, "old", "utf-8");
+    chmodSync(target, 0o600);
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+    atomicWrite(target, "new");
+    expect(readFileSync(target, "utf-8")).toBe("new");
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+  });
+
+  it("applies an explicit mode for a new file", () => {
+    const target = join(tmpDir, "new-secret.json");
+    atomicWrite(target, "data", { mode: 0o600 });
+    expect(statSync(target).mode & 0o777).toBe(0o600);
   });
 
   it("leaves no temp file behind", () => {

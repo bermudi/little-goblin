@@ -28,6 +28,7 @@ import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
 import { log } from "./log.ts";
 import { prepareEnv } from "./external-agents/env.ts";
 import { prepareMcpEnv } from "./mcp/env.ts";
+import { formatMcpSelection } from "./mcp/selection-store.ts";
 import { resolveMcporterConfigPath } from "./mcp/paths.ts";
 import { buildMcporterCommand } from "./mcp/runner.ts";
 
@@ -370,13 +371,9 @@ function checkMcpConfig(): Check {
       };
     }
     const resolved = resolveMcporterConfigPath(mcp.configPath, cfg.goblinHome);
-    const selection = mcp.enabled === undefined
-      ? (mcp.disabledServers && mcp.disabledServers.length > 0
-        ? `all servers except: ${mcp.disabledServers.join(", ")}`
-        : "all servers in the gateway config")
-      : mcp.enabled.length > 0
-        ? mcp.enabled.join(", ")
-        : "none (empty allow-list)";
+    // Shared formatter owns deny-wins honesty (allow minus deny) so doctor
+    // and /mcp cannot drift into showing a denied server as selected.
+    const selection = formatMcpSelection(mcp);
     return {
       name: "mcp config",
       ok: true,

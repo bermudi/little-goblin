@@ -48,7 +48,7 @@ import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import { parseMcpCommand, McpCommandSyntaxError } from "./mcp-cmd.ts";
-import { setMcpServerEnabled } from "./mcp-config-writer.ts";
+import { formatMcpSelection, setMcpServerEnabled } from "../mcp/selection-store.ts";
 import {
   completed,
   runtimeAdmission,
@@ -111,6 +111,15 @@ export interface DispatchOpts {
   conversation: ConversationState | null;
   existingRunner: AgentRunner | null;
   bot?: Bot;
+  /**
+   * Telegram user id that invoked the command (from `ctx.from.id`).
+   * Required for deployment-wide mutations such as `/mcp enable|disable`:
+   * group @mentions and replies can reach dispatch from non-allowlisted
+   * users, so the handler must enforce operator identity itself instead of
+   * relying on the allowlist middleware alone. Undefined in unit tests and
+   * non-Telegram callers — treated as unauthorized for mutations.
+   */
+  invokingUserId?: number;
 }
 
 export type CommandHandler = (opts: DispatchOpts) => Promise<DispatchResult>;
@@ -651,9 +660,12 @@ const skillsHandler: CommandHandler = async ({ deps, surface, rawText }) => {
   }
 };
 
-const mcpHandler: CommandHandler = async ({ deps, rawText }) => {
-  // /mcp is instant-timing and surface-independent: it reads and mutates
-  // process-wide MCP config, not the bound conversation.
+const mcpHandler: CommandHandler = async ({ deps, rawText, invokingUserId, surface }) => {
+  // /mcp is instant-timing and surface-independent: it reads deployment-wide
+  // MCP config, not the bound conversation. Enable/disable mutate
+  // process-wide capability state, so they require operator identity here —
+  // group @mentions and replies can reach dispatch from non-allowlisted
+  // users (see tg/middleware.ts), and the middleware alone cannot gate them.
   let intent;
   try {
     intent = parseMcpCommand(rawText);
@@ -674,11 +686,7 @@ const mcpHandler: CommandHandler = async ({ deps, rawText }) => {
     if (!runner) {
       return replied("MCP is configured but the gateway runner is unavailable.", [], "warn");
     }
-    const enabled = deps.cfg.mcp.enabled;
-    const disabled = deps.cfg.mcp.disabledServers ?? [];
-    const selection = enabled === undefined
-      ? (disabled.length > 0 ? `all except: ${disabled.join(", ")}` : "all configured servers")
-      : enabled.length > 0 ? enabled.join(", ") : "(none)";
+    const selection = formatMcpSelection(deps.cfg.mcp);
     await runner.ready;
     const catalog = runner.buildCatalogText();
     const lines = [
@@ -703,26 +711,50 @@ const mcpHandler: CommandHandler = async ({ deps, rawText }) => {
     }
   }
 
-  // enable/disable: persist the selection in goblin.json5, then refresh the
-  // in-memory catalog so the new selection is visible without a restart's
-  // full config reload. Tool registration still requires a restart.
+  // enable/disable: operator-only persistence in goblin.json5 via the owned
+  // McpSelectionStore, then install the new policy into the live runner
+  // before refreshing so the reply describes the running process (not just
+  // the file). Tool registration still requires a service restart.
   const enabledServer = intent.kind === "enable";
+  if (invokingUserId === undefined || !deps.cfg.allowedTgUserIds.has(invokingUserId)) {
+    log.warn("rejecting /mcp mutation from non-operator", {
+      server: intent.server,
+      action: intent.kind,
+      invokingUserId,
+      surfaceId: surfaceId(surface),
+    });
+    return replied("Only the operator can enable or disable MCP servers.", [], "warn");
+  }
   try {
     const { config } = setMcpServerEnabled(deps.cfg.goblinHome, intent.server, enabledServer);
+    // Install the persisted policy into the shared dispatch deps so later
+    // /mcp inspects in this process see the new selection without a restart.
+    // Config is frozen, so replace the reference rather than mutating it.
+    deps.cfg = { ...deps.cfg, mcp: config };
     const runner = deps.mcpRunner;
-    if (runner) {
+    let refreshNote: string;
+    if (!runner) {
+      refreshNote = "No live gateway runner; restart the service to apply the change.";
+    } else {
       try {
-        await runner.refreshCatalog();
+        await runner.refreshCatalog({ enabled: config.enabled, disabledServers: config.disabledServers });
+        refreshNote = "The in-memory catalog is refreshed; a restart is still needed for tool registration changes.";
       } catch (err) {
         log.warn("mcp catalog refresh after /mcp mutation failed", { error: boundedError(err).error });
+        refreshNote = `The config was saved, but the live catalog refresh failed (${errorMessage(err)}); restart the service to apply the change.`;
+        const state = enabledServer ? "enabled" : "disabled";
+        const scope = formatMcpSelection(config);
+        return replied(
+          `\`${intent.server}\` ${state}. Selection: ${scope}.\n${refreshNote}`,
+          [],
+          "warn",
+        );
       }
     }
     const state = enabledServer ? "enabled" : "disabled";
-    const scope = config.enabled === undefined
-      ? (config.disabledServers?.length ? `all except: ${config.disabledServers.join(", ")}` : "all configured servers")
-      : config.enabled.join(", ") || "(none)";
+    const scope = formatMcpSelection(config);
     return replied(
-      `\`${intent.server}\` ${state}. Selection: ${scope}.\nThe catalog is refreshed; a restart is still needed for tool registration changes.`,
+      `\`${intent.server}\` ${state}. Selection: ${scope}.\n${refreshNote}`,
       [],
       "ok",
     );

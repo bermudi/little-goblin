@@ -454,6 +454,56 @@ describe("disk availability", () => {
 
 describe("runDoctor connectivity", () => {
   it(
+    "mcp config check reports unconfigured state without failing (lax or strict)",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        const lax = await callDoctor(home, { probes: noopProbes });
+        expect(lax.exitCode).toBe(0);
+        expect(lax.lines.join("\n")).toContain(
+          "mcp config: pass (not configured",
+        );
+
+        const strict = await callDoctor(home, { strict: true, probes: noopProbes });
+        expect(strict.exitCode).toBe(0);
+        expect(strict.lines.join("\n")).toContain("mcp config: pass");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "mcp config check summarizes selection and gateway config when configured",
+    async () => {
+      const home = setupHealthyHome();
+      try {
+        const raw = JSON5.parse(buildConfigContent());
+        raw.mcp = {
+          enabled: ["tavily", "grep"],
+          disabledServers: ["grep"],
+          configPath: "mcporter.json",
+          defaultTimeoutMs: 30_000,
+          maxResultChars: 8_000,
+        };
+        writeFileSync(join(home, "goblin.json5"), JSON5.stringify(raw, { space: 2 }));
+
+        const result = await callDoctor(home, { probes: noopProbes });
+        const line = result.lines.find((candidate) => candidate.startsWith("mcp config"));
+        expect(line).toBeDefined();
+        expect(line).toContain("tavily, grep");
+        expect(line).toContain(join(home, "mcporter.json"));
+        expect(line).toContain("30000ms");
+        expect(line).toContain("8000 chars");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it(
     "exits 0 in strict mode when all configured probes pass",
     async () => {
       const home = setupHealthyHome();

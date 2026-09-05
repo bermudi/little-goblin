@@ -21,6 +21,7 @@ import { surfaceId, type Surface, type GuestSurface } from "../surface.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from "./attachments.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
+import type { McpRunner } from "../mcp/mod.ts";
 import type { PendingCompletionClaim } from "../delegated-work/mod.ts";
 import {
   RuntimeAdmissionFailedBeforeDecisionError,
@@ -95,6 +96,8 @@ export interface TelegramIntakeOptions {
   scheduleStore?: ScheduleStore;
   /** Shared external agent runner. Wired in Phase 6 (bot.ts). */
   externalAgentRunner?: ExternalAgentRunner;
+  /** Shared MCP gateway runner for `/mcp`. Optional; absent when MCP is unconfigured. */
+  mcpRunner?: McpRunner;
   /**
    * Decision-0036 pending-claim protocol. Ordinary content interactions and
    * authorized guest summons claim retained durable completions for their
@@ -664,6 +667,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     scheduleStore: options.scheduleStore,
     dispatcher,
     externalAgentRunner: options.externalAgentRunner,
+    mcpRunner: options.mcpRunner,
   };
 
   async function runPrompt(message: TelegramIntakeMessage, surface: Surface, runner: AgentRunner, session: ConversationState, content: PromptContent): Promise<void> {

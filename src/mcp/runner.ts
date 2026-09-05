@@ -36,6 +36,7 @@ export class McpRunner {
   private readonly defaultTimeoutMs: number;
   private readonly maxResultChars: number;
   private readonly enabled: string[] | undefined;
+  private readonly disabled: readonly string[];
   private readonly goblinHome: string;
   private catalog: Map<string, McpToolEntry[]>;
   private refreshInFlight: Promise<void> | null = null;
@@ -46,6 +47,7 @@ export class McpRunner {
     this.defaultTimeoutMs = config.defaultTimeoutMs;
     this.maxResultChars = config.maxResultChars;
     this.enabled = config.enabled;
+    this.disabled = config.disabledServers ?? [];
     this.goblinHome = goblinHome;
     this.catalog = new Map();
     this.ready = this.discoverCatalog()
@@ -157,7 +159,7 @@ export class McpRunner {
     }
     try {
       const parsed = JSON.parse(result.stdout);
-      return filterCatalog(parseCatalog(parsed), this.enabled);
+      return filterCatalog(parseCatalog(parsed), this.enabled, this.disabled);
     } catch (err) {
       throw new Error(`Failed to parse mcporter list output: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -333,10 +335,23 @@ function parseCatalog(raw: unknown): Map<string, McpToolEntry[]> {
   return catalog;
 }
 
-function filterCatalog(catalog: Map<string, McpToolEntry[]>, enabled: string[] | undefined): Map<string, McpToolEntry[]> {
-  if (!enabled) return catalog;
+function filterCatalog(
+  catalog: Map<string, McpToolEntry[]>,
+  enabled: string[] | undefined,
+  disabled: readonly string[] = [],
+): Map<string, McpToolEntry[]> {
+  const denied = new Set(disabled);
+  if (!enabled) {
+    if (denied.size === 0) return catalog;
+    const filtered = new Map<string, McpToolEntry[]>();
+    for (const [name, tools] of catalog) {
+      if (!denied.has(name)) filtered.set(name, tools);
+    }
+    return filtered;
+  }
   const filtered = new Map<string, McpToolEntry[]>();
   for (const name of enabled) {
+    if (denied.has(name)) continue;
     const tools = catalog.get(name);
     if (tools) {
       filtered.set(name, tools);

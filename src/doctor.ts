@@ -352,6 +352,45 @@ async function checkFavorites(): Promise<Check> {
   }
 }
 
+/**
+ * Local (non-network) MCP configuration report. Deliberately never fails in
+ * lax mode when MCP is simply unconfigured — MCP is optional (decision 0042)
+ * and the "MCP servers" connectivity probe is skipped when unconfigured. The
+ * line exists so the knob is visible from `bun run doctor` alone.
+ */
+function checkMcpConfig(): Check {
+  try {
+    const cfg = loadConfig();
+    const mcp = cfg.mcp;
+    if (!mcp) {
+      return {
+        name: "mcp config",
+        ok: true,
+        detail: "not configured (add an mcp block to goblin.json5 to enable; /mcp in Telegram once running)",
+      };
+    }
+    const resolved = resolveMcporterConfigPath(mcp.configPath, cfg.goblinHome);
+    const selection = mcp.enabled === undefined
+      ? (mcp.disabledServers && mcp.disabledServers.length > 0
+        ? `all servers except: ${mcp.disabledServers.join(", ")}`
+        : "all servers in the gateway config")
+      : mcp.enabled.length > 0
+        ? mcp.enabled.join(", ")
+        : "none (empty allow-list)";
+    return {
+      name: "mcp config",
+      ok: true,
+      detail: `enabled for ${selection}; gateway config: ${resolved ?? "mcporter default (~/.mcporter/mcporter.json)"}; timeout ${mcp.defaultTimeoutMs}ms; result cap ${mcp.maxResultChars} chars`,
+    };
+  } catch (err) {
+    return {
+      name: "mcp config",
+      ok: false,
+      detail: `mcp config check failed: ${errorMessage(err)}`,
+    };
+  }
+}
+
 async function checkPromptFiles(home: string): Promise<Check> {
   const soul = inspectPromptFile(soulMdPath(home));
   const agents = inspectPromptFile(agentsMdPath(home));
@@ -457,6 +496,7 @@ async function runChecks(home: string, dependencies: DoctorDependencies): Promis
     checkConversations(home),
     checkConfig(),
     checkFavorites(),
+    checkMcpConfig(),
     checkPromptFiles(home),
     checkDisk(home, dependencies.statfs ?? statfsSync),
   ]);

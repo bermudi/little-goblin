@@ -251,6 +251,7 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     lifecycle: orchestration.lifecycle,
     scheduleStore,
     externalAgentRunner,
+    mcpRunner,
     pendingClaim: orchestration.pendingClaim,
   });
 

@@ -66,6 +66,23 @@
   // voiceName: "VOICE_NAME",
   // voiceName: "en-US-AndrewMultilingualNeural",
 
+  // --- MCP (Model Context Protocol tools via mcporter) ---
+  // Optional. Goblin wraps the `mcporter` CLI (invoked as `bunx mcporter`),
+  // which owns server definitions, transports, and OAuth. Enable in two steps:
+  //   1. Configure servers for the user running goblin, e.g.:
+  //        bunx mcporter config add tavily https://mcp.tavily.com/mcp
+  //      (writes ~/.mcporter/mcporter.json — or point mcp.configPath at a file)
+  //   2. Add this block and restart:
+  // mcp: {
+  //   // Omit `enabled` to expose every server in the mcporter config.
+  //   // enabled: ["tavily", "deepwiki"],
+  //   // disabledServers: ["noisy-server"],  // deny-list; wins over `enabled`
+  //   // configPath: "mcporter.json",        // relative paths resolve in $GOBLIN_HOME
+  //   // defaultTimeoutMs: 120000,
+  //   // maxResultChars: 16000,
+  // },
+  // Then `/mcp` in Telegram shows the live catalog; `/mcp refresh` re-scans.
+
   // --- Voice-note ASR (Groq Whisper) ---
   // Optional. When set, Telegram voice messages are transcribed and prompted
   // as a transcript turn (with the original file still saved for project-bound

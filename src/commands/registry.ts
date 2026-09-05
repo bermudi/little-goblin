@@ -46,6 +46,9 @@ import {
 } from "./skills.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { ExternalAgentRunner } from "../external-agents/mod.ts";
+import type { McpRunner } from "../mcp/mod.ts";
+import { parseMcpCommand, McpCommandSyntaxError } from "./mcp-cmd.ts";
+import { setMcpServerEnabled } from "./mcp-config-writer.ts";
 import {
   completed,
   runtimeAdmission,
@@ -93,6 +96,11 @@ export interface DispatchDeps {
    * isolation.
    */
   externalAgentRunner?: ExternalAgentRunner;
+  /**
+   * MCP gateway runner, used by `/mcp` for live catalog inspection and
+   * refresh. Optional; absent when MCP is unconfigured.
+   */
+  mcpRunner?: McpRunner;
 }
 
 export interface DispatchOpts {
@@ -643,6 +651,87 @@ const skillsHandler: CommandHandler = async ({ deps, surface, rawText }) => {
   }
 };
 
+const mcpHandler: CommandHandler = async ({ deps, rawText }) => {
+  // /mcp is instant-timing and surface-independent: it reads and mutates
+  // process-wide MCP config, not the bound conversation.
+  let intent;
+  try {
+    intent = parseMcpCommand(rawText);
+  } catch (err) {
+    const usage = err instanceof McpCommandSyntaxError ? err.message : "Usage: /mcp [refresh|enable <server>|disable <server>]";
+    return replied(usage, [], "info");
+  }
+
+  if (intent.kind === "inspect") {
+    if (!deps.cfg.mcp) {
+      return replied(
+        "MCP is not configured.\n\nTo enable:\n1. Add an mcporter config (default ~/.mcporter/mcporter.json or set mcp.configPath).\n2. Add an `mcp: {}` section to goblin.json5.\n3. Restart the service.",
+        [],
+        "info",
+      );
+    }
+    const runner = deps.mcpRunner;
+    if (!runner) {
+      return replied("MCP is configured but the gateway runner is unavailable.", [], "warn");
+    }
+    const enabled = deps.cfg.mcp.enabled;
+    const disabled = deps.cfg.mcp.disabledServers ?? [];
+    const selection = enabled === undefined
+      ? (disabled.length > 0 ? `all except: ${disabled.join(", ")}` : "all configured servers")
+      : enabled.length > 0 ? enabled.join(", ") : "(none)";
+    await runner.ready;
+    const catalog = runner.buildCatalogText();
+    const lines = [
+      `MCP selection: ${selection}`,
+      `Gateway config: ${deps.cfg.mcp.configPath ?? "~/.mcporter/mcporter.json (mcporter default)"}`,
+      `Timeout: ${deps.cfg.mcp.defaultTimeoutMs}ms, result cap: ${deps.cfg.mcp.maxResultChars} chars`,
+      "",
+      catalog,
+    ];
+    return replied(lines.join("\n"), [], "info");
+  }
+
+  if (intent.kind === "refresh") {
+    const runner = deps.mcpRunner;
+    if (!runner) return replied("MCP is not configured.", [], "info");
+    try {
+      await runner.refreshCatalog();
+      return replied(runner.buildCatalogText(), [], "ok");
+    } catch (err) {
+      log.error("mcp refresh failed", { error: boundedError(err).error });
+      return replied(`MCP catalog refresh failed: ${errorMessage(err)}`, [], "warn");
+    }
+  }
+
+  // enable/disable: persist the selection in goblin.json5, then refresh the
+  // in-memory catalog so the new selection is visible without a restart's
+  // full config reload. Tool registration still requires a restart.
+  const enabledServer = intent.kind === "enable";
+  try {
+    const { config } = setMcpServerEnabled(deps.cfg.goblinHome, intent.server, enabledServer);
+    const runner = deps.mcpRunner;
+    if (runner) {
+      try {
+        await runner.refreshCatalog();
+      } catch (err) {
+        log.warn("mcp catalog refresh after /mcp mutation failed", { error: boundedError(err).error });
+      }
+    }
+    const state = enabledServer ? "enabled" : "disabled";
+    const scope = config.enabled === undefined
+      ? (config.disabledServers?.length ? `all except: ${config.disabledServers.join(", ")}` : "all configured servers")
+      : config.enabled.join(", ") || "(none)";
+    return replied(
+      `\`${intent.server}\` ${state}. Selection: ${scope}.\nThe catalog is refreshed; a restart is still needed for tool registration changes.`,
+      [],
+      "ok",
+    );
+  } catch (err) {
+    log.error("mcp config mutation failed", { error: boundedError(err).error });
+    return replied(`MCP config update failed: ${errorMessage(err)}`, [], "error");
+  }
+};
+
 const scheduleHandler: CommandHandler = async ({ deps, surface, rawText }) => {
   // `/schedule` is instant-timing and surface-owned: it mutates the schedule
   // store for the invoking Surface and does not require a bound conversation.
@@ -803,6 +892,13 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
     description: "manage scheduled turns and heartbeat for this surface",
     timing: "instant",
     handler: scheduleHandler,
+  },
+  {
+    name: "mcp",
+    argsHint: "[refresh|enable <server>|disable <server>]",
+    description: "inspect the MCP gateway catalog or toggle servers (persisted in goblin.json5)",
+    timing: "instant",
+    handler: mcpHandler,
   },
   {
     name: "skills",

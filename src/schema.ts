@@ -38,7 +38,10 @@ export const EmbeddingsConfigSchema = z.object({
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
 
 export const McpConfigSchema = z.object({
+  /** Positive allow-list. Undefined = every server in the mcporter config is exposed. */
   enabled: z.array(z.string()).optional(),
+  /** Negative deny-list applied after `enabled`. Deny wins over the allow-list. */
+  disabledServers: z.array(z.string()).optional(),
   configPath: z.string().optional(),
   defaultTimeoutMs: z.number().int().min(5000).max(1800000).default(120000),
   maxResultChars: z.number().int().min(1000).max(100000).default(16000),

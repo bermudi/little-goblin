@@ -31,8 +31,8 @@ export const EmbeddingsConfigSchema = z.object({
   model: z.string().optional(),
   /** Provider label stored in memory_embeddings; changing it (or the model) triggers a full reindex. */
   provider: z.string().optional(),
-  /** Degraded-state cooldown after a failed embeddings call. */
-  cooldownSeconds: z.number().int().min(0).max(3600).optional(),
+  /** Degraded-state cooldown after a failed embeddings call. Any finite non-negative number of seconds; mirrors the runtime boundary. */
+  cooldownSeconds: z.number().min(0).optional(),
 });
 
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;

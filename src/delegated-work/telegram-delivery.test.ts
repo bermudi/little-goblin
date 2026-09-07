@@ -566,6 +566,37 @@ describe("production Telegram delivery before acknowledgement", () => {
     }
   });
 
+  it("N2: rejects split response where the earlier segment fails persistently", async () => {
+    const mockBot = makeMockBot();
+    let sends = 0;
+    const origSend = mockBot.bot.api.sendRichMessage.bind(mockBot.bot.api);
+    (mockBot.bot.api as unknown as Record<string, unknown>).sendRichMessage = async (chatId: number | string, msg: { markdown?: string }, opts?: unknown) => {
+      sends += 1;
+      if (sends === 1) throw new Error("first split part failed");
+      return (origSend as (c: number | string, m: { markdown?: string }, o?: unknown) => Promise<{ message_id: number }>)(chatId, msg, opts);
+    };
+    const itg = buildIntegration({
+      mockBot,
+      promptImpl: async (_c, sink) => {
+        sink.onTextDelta("first bubble text");
+        await tick();
+        await tick();
+        sink.onMessageStart();
+        sink.onTextDelta("second bubble text");
+        sink.onAgentEnd();
+      },
+    });
+    try {
+      const origin = surfaceId(itg.surface);
+      itg.host.createRecord("run-n2-split-early", "generic-subagent", null, 1, durableOwnership(origin));
+      itg.host.completeInvocation("run-n2-split-early", 0, "finished work");
+      expect(await itg.wake.deliverCompletion("run-n2-split-early", 0)).toBe("pending");
+      expect(itg.host.loadRecord("run-n2-split-early")!.invocations[0]!.deliveryState).toBe("pending");
+    } finally {
+      await itg.cleanup();
+    }
+  });
+
   it("N2: rejects incomplete file fallback delivery", async () => {
     const mockBot = makeMockBot();
     const docErr = new Error("document upload failed");

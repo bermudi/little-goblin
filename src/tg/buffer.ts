@@ -268,6 +268,19 @@ export class MessageBuffer implements TurnCallbacks {
    */
   private inSeal: boolean = false;
 
+  /**
+   * Per-turn Telegram acceptance evidence (issue #54 unit 1). Owned by the
+   * response sink for this exact Surface turn. `responseAccepted` is set only
+   * by confirmed persistent sends/edits, confirmed message-not-modified, or
+   * confirmed file fallback. Draft/status writes never set it. `responseFailed`
+   * records a terminal persistent failure; a later persistent success clears
+   * it so a retry can recover. The buffer freezes after onAgentEnd, so
+   * evidence cannot leak to another turn sharing the instance.
+   */
+  private responseAccepted = false;
+  private responseFailed = false;
+  private responseFailureCause: unknown = undefined;
+
   constructor(bot: Bot, surface: Surface, options?: MessageBufferOptions) {
     this.bot = bot;
     this.surface = surface;
@@ -486,6 +499,44 @@ export class MessageBuffer implements TurnCallbacks {
         retryAfterSec,
       });
       throw err;
+    }
+  }
+
+  private markResponseAccepted(): void {
+    this.responseAccepted = true;
+    this.responseFailed = false;
+    this.responseFailureCause = undefined;
+  }
+
+  private markResponseFailed(cause: unknown): void {
+    this.responseFailed = true;
+    this.responseFailureCause = cause;
+  }
+
+  /**
+   * Await confirmation of the complete final user-visible response for this
+   * turn. Resolves only when a persistent response was confirmed and no
+   * terminal failure remains; rejects otherwise (absent response, send/edit
+   * rejection, timeout, topic-not-found, incomplete split/file fallback).
+   * Draft/status success alone never resolves; status failures never reject.
+   */
+  async awaitResponseAcceptance(): Promise<void> {
+    await Promise.resolve();
+    for (let i = 0; i < 20; i++) {
+      const pending: Promise<unknown>[] = [];
+      if (this.sealingResponse !== null) pending.push(this.sealingResponse.catch(() => {}));
+      if (this.flushingResponse !== null) pending.push(this.flushingResponse.catch(() => {}));
+      if (this.creatingResponse !== null) pending.push(this.creatingResponse.catch(() => {}));
+      if (this.editingResponse !== null) pending.push(this.editingResponse.catch(() => {}));
+      if (pending.length === 0) break;
+      await Promise.all(pending);
+    }
+    if (!this.responseAccepted) {
+      throw new Error("Telegram response not accepted: no confirmed final response");
+    }
+    if (this.responseFailed) {
+      const cause = this.responseFailureCause;
+      throw cause instanceof Error ? cause : new Error(`Telegram response not accepted: ${String(cause ?? "delivery failed")}`);
     }
   }
 
@@ -955,6 +1006,9 @@ export class MessageBuffer implements TurnCallbacks {
         draftId: this.responseDraftId,
         accLen: text.length,
       });
+      // Confirmed unchanged persistent message counts as acceptance without
+      // a new Telegram write. Draft-only no-ops do not.
+      if (this.responseMessageId !== undefined) this.markResponseAccepted();
       return;
     }
 
@@ -983,6 +1037,7 @@ export class MessageBuffer implements TurnCallbacks {
                 this.lastRenderedResponseText = text;
                 const fallbackOp: "sendRichMessage" | "sendMessage" = this.responseIsPlainText ? "sendMessage" : "sendRichMessage";
                 this.recordTelegramEvent({ type: "telegram", op: fallbackOp, channel: "response", outcome: "success" });
+                this.markResponseAccepted();
               } catch (fallbackErr) {
                 throw fallbackErr;
               }
@@ -1056,6 +1111,7 @@ export class MessageBuffer implements TurnCallbacks {
             // guard compares raw-to-raw and correctly detects no-op edits.
             this.lastRenderedResponseText = text;
             this.recordTelegramEvent({ type: "telegram", op: initialOp, channel: "response", outcome: "success" });
+            this.markResponseAccepted();
             log.debug("response: sent", {
               msgId: msg.message_id,
               accLen: text.length,
@@ -1123,11 +1179,16 @@ export class MessageBuffer implements TurnCallbacks {
       // Document upload failures are not recorded as `sendMessage` metrics.
       // Still apply response error handling (e.g. backoff / topic-not-found).
       await this.handleApiError(documentError, "response", null, () => this.resetResponse());
+      this.markResponseFailed(documentError);
       // The active text has been "spent" — clear regardless of outcome.
       this.resetResponse();
       this.accumulatedText = overflow;
       return true;
     }
+    // Document upload confirmed. Record tentative acceptance without clearing
+    // a prior finalize failure: in draft mode a failed summary finalize must
+    // still prevent acknowledgement even though the file landed.
+    this.responseAccepted = true;
 
     // In persistent mode there is no draft to finalize above, so surface the
     // summary. If a response message already exists, edit it in place so the
@@ -1148,6 +1209,7 @@ export class MessageBuffer implements TurnCallbacks {
           this.responseMessageId = msg.message_id;
         }
         this.recordTelegramEvent({ type: "telegram", op: summaryOp, channel: "response", outcome: "success" });
+        this.markResponseAccepted();
       } catch (err) {
         await this.handleResponseError(err, summaryOp, summary);
       }
@@ -1205,6 +1267,7 @@ export class MessageBuffer implements TurnCallbacks {
         }
         this.lastRenderedResponseText = text;
         this.recordTelegramEvent({ type: "telegram", op: retryOp, channel: "response", outcome: "success" });
+        if (retryOp === "sendMessage" || retryOp === "editMessageText") this.markResponseAccepted();
         return;
       } catch (retryErr) {
         log.warn("response plain-text retry failed", { error: String(retryErr) });
@@ -1232,6 +1295,23 @@ export class MessageBuffer implements TurnCallbacks {
   ): Promise<void> {
     const channel = kind === "status" ? "status" : "response";
     const { outcome, errorCode, errorDescription, retryAfterSec } = classifyTelegramError(err);
+
+    if (kind === "response") {
+      if (outcome === "message_not_modified") {
+        this.markResponseAccepted();
+      } else if (outcome === "message_gone") {
+        // Recoverable: the next flush recreates. Do not mark failed; final
+        // acceptance fails if no persistent write is ever confirmed.
+      } else if (op === null) {
+        // Document/file fallback failure.
+        this.markResponseFailed(err);
+      } else if (op === "sendMessageDraft" || op === "sendRichMessageDraft") {
+        // Streaming draft preview failure alone never decides acceptance;
+        // the required persistent finalize decides.
+      } else {
+        this.markResponseFailed(err);
+      }
+    }
 
     if (op !== null) {
       this.recordTelegramEvent({

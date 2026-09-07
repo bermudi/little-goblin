@@ -226,7 +226,26 @@ export class DurableCompletionWake {
     // acknowledgement (e.g. explicit owner cancellation) keeps its authority:
     // the host rejects the late acknowledgement and the error propagates to
     // the caller instead of overwriting the authoritative delivery state.
-    this.host.acknowledgeDelivery(runId, index);
+    // Telegram acceptance and filesystem acknowledgement are not atomic: a
+    // write failure after the sink accepted leaves the persisted invocation
+    // pending for recovery, so the failure propagates with run, invocation,
+    // and Surface identity instead of inventing delivery.
+    try {
+      this.host.acknowledgeDelivery(runId, index);
+    } catch (error) {
+      log.error("durable completion wake acknowledgement failed", {
+        runId,
+        index,
+        surfaceId: originSurfaceId,
+        ...boundedError(error),
+      });
+      const detail = error instanceof Error ? error.message : String(error ?? "acknowledgement failed");
+      const enriched = new Error(
+        `Completion wake acknowledgement failed for run ${runId} invocation ${index} on ${originSurfaceId}: ${detail}`,
+      );
+      enriched.cause = error;
+      throw enriched;
+    }
     return "delivered";
   }
 }

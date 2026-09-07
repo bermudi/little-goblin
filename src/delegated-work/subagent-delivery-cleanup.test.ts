@@ -212,7 +212,10 @@ describe("subagent delivery cleanup after canonical acknowledgement", () => {
       expect(pending).toEqual([]);
       for (const id of ids) {
         expect(runner.delegatedWorkHost.loadRecord(id)!.invocations[0]!.deliveryState).toBe("delivered");
-        expect(getInstance(runner, id)?.delegatedRegistration).toBeNull();
+        // Delivered instances release their registration and are then
+        // eligible for pruneTerminal on the next spawn: either retained as
+        // delivered with a null registration or pruned entirely is success.
+        expect(getInstance(runner, id)?.delegatedRegistration ?? null).toBeNull();
       }
     } finally {
       rmSync(home, { recursive: true, force: true });

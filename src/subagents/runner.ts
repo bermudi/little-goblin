@@ -415,9 +415,45 @@ export class SubagentRunner {
    * wiring: the wake needs the surface-bound system-turn rail, which is
    * assembled after this runner. Without it, durable completions stay
    * pending — the pending-claim protocol still owns them.
+   *
+   * Wiring also installs this runner as the wake's retained-instance
+   * releaser, so the wake remains the single acknowledgement owner: after
+   * it persists canonical delivery it synchronizes and releases the
+   * matching live instance through this runner, scoped by invocation
+   * identity. Telegram intake and bot composition never coordinate the two
+   * steps themselves.
    */
   setCompletionWake(wake: DurableCompletionWake): void {
     this.completionWake = wake;
+    wake.setRetainedReleaser((runId, index) => {
+      this.releaseRetainedDelivery(runId, index);
+    });
+  }
+
+  /**
+   * Release the retained live instance matching one canonically acknowledged
+   * durable invocation.
+   *
+   * Scoped by invocation identity, not merely the reusable run id: a missing
+   * instance (acknowledgement after restart) and an index mismatch (late old
+   * acknowledgement versus a revived invocation) are successful no-ops. Only
+   * a completed instance still reporting pending delivery is synchronized to
+   * delivered and has its execution resources and registration released
+   * through this owner; persisted result/history stays readable on disk.
+   * Suppressed or already delivered instances are never double-released or
+   * resurrected. A release failure propagates so the wake can surface it
+   * with identity without rolling back the persisted delivered state.
+   */
+  releaseRetainedDelivery(runId: string, index: number): void {
+    const instance = this.activeSubagents.get(runId);
+    if (instance === undefined) return;
+    if (instance.invocationIndex !== index) return;
+    if (instance.status !== "completed") return;
+    if (instance.deliveryState !== "pending") return;
+    instance.deliveryState = "delivered";
+    teardownInstance(instance);
+    this.removeDisposedInstanceIfReleased(instance);
+    log.debug("subagent retained delivery released", { id: runId, index });
   }
 
   /**

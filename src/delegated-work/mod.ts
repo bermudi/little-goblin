@@ -15,6 +15,7 @@ export type { PendingCompletionRef } from "./claim.ts";
 export type {
   CompletionWakeOutcome,
   CompletionWakeRail,
+  DurableDeliveryRelease,
   WakeTurnAdmission,
 } from "./delivery.ts";
 export {

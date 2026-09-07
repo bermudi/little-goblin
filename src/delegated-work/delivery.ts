@@ -55,6 +55,18 @@ export interface CompletionWakeRail {
 
 export type CompletionWakeOutcome = "delivered" | "pending" | "suppressed";
 
+/**
+ * Release hook for the process-local retained subagent instance matching one
+ * acknowledged invocation. Scoped by invocation identity (run id + index);
+ * a missing instance is a successful no-op (restart), as is an index
+ * mismatch (old acknowledgement versus a revived invocation).
+ *
+ * Owned by the subagent execution owner and invoked by the wake after the
+ * canonical persisted acknowledgement. Failures propagate so the wake can
+ * surface them with identity without rolling back the persisted delivery.
+ */
+export type DurableDeliveryRelease = (runId: string, index: number) => void;
+
 function completionPrompt(resultText: string): string {
   return (
     `${DELEGATED_COMPLETION_PROMPT_PREFIX} A background subagent you spawned earlier has ` +
@@ -73,6 +85,7 @@ function completionPrompt(resultText: string): string {
 export class DurableCompletionWake {
   private readonly rail: CompletionWakeRail;
   private readonly host: DelegatedWorkHost;
+  private retainedReleaser: DurableDeliveryRelease | null = null;
   /**
    * Process-lifetime reservations for pending invocations. The record remains
    * pending until a reserved rail turn settles successfully, so a rejected,
@@ -84,6 +97,16 @@ export class DurableCompletionWake {
   constructor(rail: CompletionWakeRail, host: DelegatedWorkHost) {
     this.rail = rail;
     this.host = host;
+  }
+
+  /**
+   * Wire the retained-instance release hook. Called once by the subagent
+   * execution owner; the wake remains the single acknowledgement owner so
+   * Telegram intake and bot composition never coordinate host writes and
+   * runner cleanup themselves.
+   */
+  setRetainedReleaser(releaser: DurableDeliveryRelease): void {
+    this.retainedReleaser = releaser;
   }
 
   /**
@@ -245,6 +268,33 @@ export class DurableCompletionWake {
       );
       enriched.cause = error;
       throw enriched;
+    }
+    // Canonical acknowledgement is persisted. Synchronize and release the
+    // matching retained live instance through its owner, scoped by
+    // invocation identity. A missing instance (restart) or index mismatch
+    // (old acknowledgement versus a revived invocation) is a no-op. Failed
+    // sends and failed acknowledgement writes never reach here, so a pending
+    // instance is never released as delivered. A cleanup failure surfaces
+    // with identity; the already persisted delivered state is not rolled
+    // back or resent.
+    const releaser = this.retainedReleaser;
+    if (releaser !== null) {
+      try {
+        releaser(runId, index);
+      } catch (error) {
+        log.error("durable completion wake delivery cleanup failed", {
+          runId,
+          index,
+          surfaceId: originSurfaceId,
+          ...boundedError(error),
+        });
+        const detail = error instanceof Error ? error.message : String(error ?? "delivery cleanup failed");
+        const enriched = new Error(
+          `Completion wake delivery cleanup failed for run ${runId} invocation ${index} on ${originSurfaceId}: ${detail}`,
+        );
+        enriched.cause = error;
+        throw enriched;
+      }
     }
     return "delivered";
   }

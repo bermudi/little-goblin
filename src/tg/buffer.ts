@@ -280,6 +280,13 @@ export class MessageBuffer implements TurnCallbacks {
   private responseAccepted = false;
   private responseFailed = false;
   private responseFailureCause: unknown = undefined;
+  /**
+   * Segment epoch of the persistent failure. Bumped on every sealed
+   * segment; a later segment's success must not clear an earlier
+   * segment's failure, while a same-segment retry success recovers.
+   */
+  private responseEpoch = 0;
+  private responseFailedEpoch: number | undefined = undefined;
 
   constructor(bot: Bot, surface: Surface, options?: MessageBufferOptions) {
     this.bot = bot;
@@ -504,13 +511,20 @@ export class MessageBuffer implements TurnCallbacks {
 
   private markResponseAccepted(): void {
     this.responseAccepted = true;
-    this.responseFailed = false;
-    this.responseFailureCause = undefined;
+    // Sticky failure: a later segment's success must not erase an earlier
+    // segment's persistent failure. Only a same-segment retry success
+    // (same epoch) recovers.
+    if (this.responseFailedEpoch === undefined || this.responseFailedEpoch === this.responseEpoch) {
+      this.responseFailed = false;
+      this.responseFailureCause = undefined;
+      this.responseFailedEpoch = undefined;
+    }
   }
 
   private markResponseFailed(cause: unknown): void {
     this.responseFailed = true;
     this.responseFailureCause = cause;
+    this.responseFailedEpoch = this.responseEpoch;
   }
 
   /**
@@ -694,6 +708,9 @@ export class MessageBuffer implements TurnCallbacks {
       // empty accumulatedText and become the next segment.
       const overflow = this.accumulatedText.slice(sealedText.length);
       this.accumulatedText = overflow;
+      // New segment epoch: success in this segment must not clear a
+      // persistent failure recorded for an earlier segment.
+      this.responseEpoch++;
 
       this.inSeal = true;
       try {

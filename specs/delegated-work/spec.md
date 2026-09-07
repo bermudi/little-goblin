@@ -11,13 +11,18 @@ Implements the durable half of decision 0036 on top of the decision-0045
 record store. Attached-lifetime semantics are already CURRENT; this spec
 owns only the durable addition.
 
+Delivery-boundary clarification and retained-instance cleanup are tracked
+by [issue #54](https://github.com/bermudi/little-goblin/issues/54).
+Those repairs are planned, not yet verified as implemented; issue #53's
+completion alone does not establish final Telegram acceptance.
+
 Out of scope: external-agent durable runs (decision 0044 ACP cycle),
 inner-life consent layering (decision 0035 — this is decision-0036 reactive
 completion contact, not proactive contact), graceful shutdown drain of
 durable runs (process death is honestly recorded as interruption), and any
 status-listing command surface.
 
-## Authority and lifetimes
+### Authority and lifetimes
 
 The canonical binding authority is the `BindingStore`, persisted at
 `$GOBLIN_HOME/state/bindings.json`. `ConversationLifecycle.resolveCurrent`
@@ -93,6 +98,20 @@ SurfaceId through the surface-bound system-turn rail without creating a
 Conversation, and SHALL mark the invocation delivered only after the send
 is accepted. Failed executions SHALL be suppressed, never auto-delivered.
 
+Acceptance means the Telegram response sink has confirmed the complete final
+user-visible response for this completion turn, including any required
+split messages or file fallback. Model completion, queue settlement,
+drafts, status messages, and partial streamed output are not acceptance.
+An empty response is not acceptance. A successful final edit, or a
+confirmed unchanged final message, may establish acceptance without a
+new message. Optional status cleanup failures do not negate an accepted
+response.
+
+The Telegram sink owns this ephemeral, per-turn acceptance evidence;
+the runtime transports it without inventing delivery success. The
+delegated-work subsystem owns acknowledgement and canonical persisted
+delivery state. Callers SHALL NOT coordinate a second send path.
+
 #### Scenario: Completion wakes the bound origin Surface
 
 - **WHEN** a durable invocation completes while its origin Surface is
@@ -100,6 +119,34 @@ is accepted. Failed executions SHALL be suppressed, never auto-delivered.
 - **THEN** the result is delivered to that exact SurfaceId through the
   surface-bound system-turn rail without creating a Conversation, and the
   invocation is marked delivered only after the send is accepted
+
+#### Scenario: Model finishes before Telegram accepts
+
+- **WHEN** the model finishes a completion turn but its final Telegram
+  response is still in flight
+- **THEN** the invocation remains pending until the sink confirms the
+  complete final response on the exact origin Surface
+
+#### Scenario: Telegram rejects the final response
+
+- **WHEN** the final send or edit fails, times out, targets a deleted topic,
+  or only partially delivers a split response or required file fallback
+- **THEN** the invocation remains pending, the failure is observable with
+  run, invocation, and Surface identity, and no fallback Surface is used
+
+#### Scenario: Accepted completion releases its live instance
+
+- **WHEN** acceptance is persisted for a completed durable invocation with
+  a retained live subagent instance
+- **THEN** the instance no longer reports pending delivery and its retained
+  execution resources and registration are released through their owner;
+  the persisted result remains available
+
+#### Scenario: Failed acknowledgement preserves recovery
+
+- **WHEN** persisting acknowledgement fails after Telegram acceptance
+- **THEN** the failure propagates, the instance is not released as delivered,
+  and the persisted pending record remains eligible for recovery
 
 #### Scenario: Failed executions are suppressed
 
@@ -115,6 +162,13 @@ ordinary interaction occurs on that exact Surface, THE SYSTEM SHALL claim
 the pending completions oldest-first, bounded per claim, and deliver them.
 A guest Surface SHALL NOT claim without an authorized guest summon. No
 fallback routing SHALL occur.
+
+Known failed delivery attempts SHALL release their process-local reservation
+so a later authorized attempt can retry. Unknown acceptance after process
+loss SHALL remain pending: Telegram delivery and local persistence are not
+one transaction. Retrying after partial delivery or a crash between Telegram
+acceptance and local acknowledgement can repeat visible content; this
+contract does not promise exactly-once delivery across process loss.
 
 #### Scenario: Pending claim
 
@@ -138,6 +192,13 @@ fallback routing SHALL occur.
   re-delivered oldest-first under the per-claim cap without waiting for
   interaction, unbound ones stay pending for the next claim, and guest
   Surfaces are not re-armed without an authorized summon
+
+#### Scenario: Rejected final send survives restart
+
+- **WHEN** Telegram rejects a completion response and Goblin restarts
+- **THEN** the invocation is still pending and can be delivered through the
+  same exact-Surface claim or startup re-arm path, without creating a
+  Conversation or bypassing guest-summon authorization
 
 ### Requirement: Concurrent Completion Delivery Is Idempotent
 

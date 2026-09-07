@@ -21,6 +21,14 @@ export interface TurnCallbacks {
    * the turn's Telegram surface. Failure is handled by the caller.
    */
   sendNotice?: (text: string) => Promise<void>;
+  /**
+   * Optional per-turn Telegram acceptance evidence. Implemented by the
+   * Telegram response sink; the transport-neutral runtime awaits it after
+   * prompt() to confirm the complete final user-visible response for
+   * this exact turn before treating execution settlement as delivery.
+   * Absent in tests and non-Telegram sinks, where settlement alone applies.
+   */
+  awaitResponseAcceptance?: () => Promise<void>;
 }
 
 /**

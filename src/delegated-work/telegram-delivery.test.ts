@@ -400,7 +400,16 @@ describe("production Telegram delivery before acknowledgement", () => {
 
   it("N2: retains pending after final send rejection", async () => {
     const mockBot = makeMockBot();
-    mockBot.failNext.rich = new Error("network send failed");
+    // Persistent failure: the buffer retries the final seal, so a single-shot
+    // failure would recover and correctly deliver. Final rejection requires
+    // every send attempt to fail.
+    const sendErr = new Error("network send failed");
+    (mockBot.bot.api as unknown as Record<string, unknown>).sendRichMessage = async () => {
+      throw sendErr;
+    };
+    (mockBot.bot.api as unknown as Record<string, unknown>).sendMessage = async () => {
+      throw sendErr;
+    };
     const itg = buildIntegration({ mockBot, promptImpl: successPrompt });
     try {
       const origin = surfaceId(itg.surface);
@@ -433,11 +442,18 @@ describe("production Telegram delivery before acknowledgement", () => {
       const origin = surfaceId(itg.surface);
       itg.host.createRecord("run-n2-edit", "generic-subagent", null, 1, durableOwnership(origin));
       itg.host.completeInvocation("run-n2-edit", 0, "finished work");
-      // Fail the final edit (second write). The first send may succeed; the
-      // final rejection must still prevent acknowledgement.
-      mockBot.failNext.edit = new Error("network edit failed");
-      // If the turn coalesced to a single send, fail that instead.
-      mockBot.failNext.rich = new Error("network edit failed");
+      // Persistent final-edit failure: every send/edit attempt fails so the
+      // required final confirmation can never be established.
+      const editErr = new Error("network edit failed");
+      (mockBot.bot.api as unknown as Record<string, unknown>).editMessageText = async () => {
+        throw editErr;
+      };
+      (mockBot.bot.api as unknown as Record<string, unknown>).sendRichMessage = async () => {
+        throw editErr;
+      };
+      (mockBot.bot.api as unknown as Record<string, unknown>).sendMessage = async () => {
+        throw editErr;
+      };
       expect(await itg.wake.deliverCompletion("run-n2-edit", 0)).toBe("pending");
       expect(itg.host.loadRecord("run-n2-edit")!.invocations[0]!.deliveryState).toBe("pending");
     } finally {
@@ -447,7 +463,15 @@ describe("production Telegram delivery before acknowledgement", () => {
 
   it("N2: retains pending after timeout and releases reservation for retry", async () => {
     const mockBot = makeMockBot();
-    mockBot.failNext.rich = Object.assign(new Error("timeout"), { code: "ETIMEDOUT" });
+    const timeoutErr = Object.assign(new Error("timeout"), { code: "ETIMEDOUT" });
+    const origRich = mockBot.bot.api.sendRichMessage.bind(mockBot.bot.api);
+    const origSend = mockBot.bot.api.sendMessage.bind(mockBot.bot.api);
+    (mockBot.bot.api as unknown as Record<string, unknown>).sendRichMessage = async () => {
+      throw timeoutErr;
+    };
+    (mockBot.bot.api as unknown as Record<string, unknown>).sendMessage = async () => {
+      throw timeoutErr;
+    };
     const itg = buildIntegration({ mockBot, promptImpl: successPrompt });
     try {
       const origin = surfaceId(itg.surface);
@@ -456,6 +480,8 @@ describe("production Telegram delivery before acknowledgement", () => {
       expect(await itg.wake.deliverCompletion("run-n2-timeout", 0)).toBe("pending");
       expect(itg.host.loadRecord("run-n2-timeout")!.invocations[0]!.deliveryState).toBe("pending");
       // Reservation released: a later attempt with a healthy transport succeeds.
+      (mockBot.bot.api as unknown as Record<string, unknown>).sendRichMessage = origRich;
+      (mockBot.bot.api as unknown as Record<string, unknown>).sendMessage = origSend;
       expect(await itg.wake.deliverCompletion("run-n2-timeout", 0)).toBe("delivered");
       expect(itg.host.loadRecord("run-n2-timeout")!.invocations[0]!.deliveryState).toBe("delivered");
     } finally {
@@ -465,7 +491,16 @@ describe("production Telegram delivery before acknowledgement", () => {
 
   it("N2: retains pending for deleted topic without fallback routing", async () => {
     const mockBot = makeMockBot();
-    mockBot.failNext.rich = telegramError(400, "Bad Request: topic not found");
+    const topicErr = telegramError(400, "Bad Request: topic not found");
+    (mockBot.bot.api as unknown as Record<string, unknown>).sendRichMessage = async () => {
+      throw topicErr;
+    };
+    (mockBot.bot.api as unknown as Record<string, unknown>).sendMessage = async () => {
+      throw topicErr;
+    };
+    (mockBot.bot.api as unknown as Record<string, unknown>).editMessageText = async () => {
+      throw topicErr;
+    };
     const itg = buildIntegration({ mockBot, promptImpl: successPrompt });
     try {
       const origin = surfaceId(itg.surface);
@@ -533,7 +568,10 @@ describe("production Telegram delivery before acknowledgement", () => {
 
   it("N2: rejects incomplete file fallback delivery", async () => {
     const mockBot = makeMockBot();
-    mockBot.failNext.document = new Error("document upload failed");
+    const docErr = new Error("document upload failed");
+    (mockBot.bot.api as unknown as Record<string, unknown>).sendDocument = async () => {
+      throw docErr;
+    };
     const itg = buildIntegration({
       mockBot,
       promptImpl: async (_c, sink) => {
@@ -724,16 +762,30 @@ describe("production Telegram delivery before acknowledgement", () => {
       itg.host.createRecord("run-n4-fence", "generic-subagent", null, 1, durableOwnership(origin));
       itg.host.completeInvocation("run-n4-fence", 0, "finished work");
       let done = false;
-      const delivery = itg.wake.deliverCompletion("run-n4-fence", 0).then((o) => {
-        done = true;
-        return o;
-      });
+      let rejected: unknown = undefined;
+      const delivery = itg.wake.deliverCompletion("run-n4-fence", 0).then(
+        (o) => {
+          done = true;
+          return o;
+        },
+        (e) => {
+          done = true;
+          rejected = e;
+          throw e;
+        },
+      );
+      // Attach a no-op catch so the rejection is observed; the assertion below
+      // still expects the throw.
+      delivery.catch(() => {});
       await sleep(30);
       expect(done).toBe(false);
       itg.host.suppressDelivery("run-n4-fence", 0);
       gate.resolve(undefined);
       mockBot.gateRich = null;
-      expect(await delivery).toBe("pending");
+      // Owner suppression wins: the late Telegram result cannot overwrite it.
+      // The wake propagates the host rejection instead of inventing delivery.
+      await expect(delivery).rejects.toThrow();
+      expect(String((rejected as Error)?.message ?? rejected)).toContain("suppressed");
       expect(itg.host.loadRecord("run-n4-fence")!.invocations[0]!.deliveryState).toBe("suppressed");
     } finally {
       await itg.cleanup();

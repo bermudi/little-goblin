@@ -1085,6 +1085,14 @@ export class TurnDispatcher {
         throw error;
       }
       await runner.prompt(content, buffer);
+      // Confirmed background delivery (issue #54 unit 1): a finished model
+      // turn is not proof of Telegram acceptance. Await the response sink's
+      // per-turn acceptance evidence before settling successfully; a rejection
+      // (absent response, send/edit failure, timeout, topic loss, incomplete
+      // split/file fallback) throws here, routes through onError, and leaves
+      // the durable invocation pending for retry. Sinks without evidence
+      // (tests, non-Telegram) keep existing settlement semantics.
+      await buffer.awaitResponseAcceptance?.();
     };
 
     // Chain onto the per-session prompt queue so scheduled turns serialize

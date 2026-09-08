@@ -7,7 +7,6 @@ import { DurableCompletionWake, PendingCompletionClaim } from "../delegated-work
 import type { ConversationState } from "../sessions/types.ts";
 import type { Surface } from "../surface.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import {
   createConversationLifecycle,
@@ -28,7 +27,6 @@ export interface ConversationOrchestrationOptions {
   readonly createMessageBuffer: (surface: Surface, conversation?: ConversationState) => TurnSink;
   readonly createBetaTools: (surface: Surface) => ToolDefinition[];
   readonly scheduleStore?: ScheduleStore;
-  readonly externalAgentRunner?: ExternalAgentRunner;
   readonly mcpRunner?: McpRunner;
 }
 
@@ -60,7 +58,6 @@ export function createConversationOrchestration(
   const surfaceSettings = new FileSurfaceSettings(options.cfg.goblinHome);
   const runtimeHost = new ConversationRuntimeHost({
     delegatedWorkHost,
-    externalAgentRunner: options.externalAgentRunner,
   });
   const lifecycle = createConversationLifecycle(
     options.cfg.goblinHome,
@@ -77,7 +74,6 @@ export function createConversationOrchestration(
     createMessageBuffer: options.createMessageBuffer,
     createBetaTools: options.createBetaTools,
     scheduleStore: options.scheduleStore,
-    externalAgentRunner: options.externalAgentRunner,
     mcpRunner: options.mcpRunner,
     embeddingProvider: options.embeddingProvider,
     dreamingPipeline: options.dreamingPipeline,

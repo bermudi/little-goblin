@@ -1,12 +1,11 @@
-export { ExternalAgentRunner } from "./runner.ts";
 export {
   continueExternalRun,
   ContinuationRefusedError,
   type ContinuedExternalRun,
   type ContinueExternalRunRequest,
 } from "./continuation.ts";
-export { createDelegatedExternalAgentTool, createExternalAgentTool, type DelegatedExternalAgentToolOptions } from "./tool.ts";
-export { runExternalAgentsPreflight } from "./preflight.ts";
+export { createDelegatedExternalAgentTool, type DelegatedExternalAgentToolOptions } from "./tool.ts";
+export { checkQualifiedBackend, runExternalAgentsPreflight } from "./preflight.ts";
 export {
   AcpAgentConnection,
   AcpHostError,
@@ -29,13 +28,8 @@ export type {
 } from "./host.ts";
 export type {
   ExternalAgentBackend,
-  ExternalAgentEvent,
-  ExternalAgentHandle,
-  ExternalAgentPermissionProfile,
-  ExternalAgentRunRecord,
   ExternalAgentRunSummary,
   ExternalAgentStatus,
-  ExternalRunDetail,
   ProcessHandle,
   ProcessHost,
 } from "./types.ts";

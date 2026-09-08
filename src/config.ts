@@ -9,7 +9,6 @@ import { piAgentDir } from "./pi-host.ts";
 import { goblinSkillsPath, personalEnvironmentSkillsPath, workspacePath } from "./workspace/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
 import { namedAgentsRoot } from "./subagents/paths.ts";
-import { externalAgentsRoot } from "./external-agents/paths.ts";
 import { delegatedWorkRunsRoot } from "./delegated-work/paths.ts";
 
 /** Resolve `$GOBLIN_HOME` from the environment with the shared default. */
@@ -186,7 +185,6 @@ export function requiredGoblinHomeDirectories(home: string): readonly GoblinHome
     { label: "state/pi", path: piAgentDir(home) },
     { label: "state/delegated-work/runs", path: delegatedWorkRunsRoot(home) },
     { label: "scratch", path: scratchDir(home) },
-    { label: "scratch/external-agents", path: externalAgentsRoot(home) },
   ];
 }
 

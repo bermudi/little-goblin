@@ -8,7 +8,6 @@ import type { ConversationRuntimeId } from "../delegated-work/mod.ts";
 import type { ResolvedModel } from "./models.ts";
 import type { GoblinSystemPrompt } from "./system-prompt.ts";
 import type { ResolvedSkillSet, SkillPolicy } from "./skills/mod.ts";
-import type { ExternalAgentBackend } from "../external-agents/mod.ts";
 
 /** Closed set of capabilities available to the current main-runtime implementation. */
 export type MainRuntimeCapability =
@@ -17,7 +16,6 @@ export type MainRuntimeCapability =
   | "memory"
   | "scheduling"
   | "subagents"
-  | "external-agent"
   | "mcp"
   | "prompt-file-notices";
 
@@ -25,7 +23,6 @@ export type MainRuntimeCapability =
 export interface MainRuntimeCapabilityManifest {
   readonly capabilities: readonly MainRuntimeCapability[];
   readonly surfaceTools: readonly ToolDefinition[];
-  readonly externalAgentBackends: readonly ExternalAgentBackend[];
 }
 
 export interface PreparedSurfaceRuntimePlan {
@@ -67,8 +64,7 @@ export const MANDATORY_SURFACE_CAPABILITIES = [
  * Assert that a Surface capability manifest is internally coherent before it is
  * trusted for tool assembly or frozen into a plan:
  * - every {@link MANDATORY_SURFACE_CAPABILITIES mandatory capability} is present;
- * - `surface-tools` is advertised iff at least one surface tool was captured;
- * - `external-agent` is advertised iff at least one backend was captured.
+ * - `surface-tools` is advertised iff at least one surface tool was captured.
  *
  * The assembler trusts a manifest that passes this check, so call it whenever a
  * manifest is frozen into a plan or consumed for tool assembly.
@@ -90,11 +86,6 @@ export function assertCapabilityManifestCoherence(
       'capability manifest is incoherent: "surface-tools" capability disagrees with the captured surfaceTools array',
     );
   }
-  if (advertised("external-agent") !== manifest.externalAgentBackends.length > 0) {
-    throw new Error(
-      'capability manifest is incoherent: "external-agent" capability disagrees with the captured externalAgentBackends array',
-    );
-  }
 }
 
 /**
@@ -111,12 +102,6 @@ export interface CapabilityManifestInputs {
   readonly hasScheduleStore: boolean;
   /** Shared subagent runner present ⇒ the `subagents` capability. */
   readonly hasSubagentRunner: boolean;
-  /**
-   * External-agent backends the runtime may expose. Non-empty only when an
-   * external-agent runner is present AND the conversation runs in a project
-   * execution environment; that gates the `external-agent` capability.
-   */
-  readonly externalAgentBackends: readonly ExternalAgentBackend[];
   /** MCP runner present AND MCP config enabled ⇒ the `mcp` capability. */
   readonly hasMcp: boolean;
 }
@@ -139,12 +124,10 @@ export function buildMainRuntimeCapabilityManifest(
   capabilities.push("prompt-file-notices");
   if (inputs.surfaceTools.length > 0) capabilities.push("surface-tools");
   if (inputs.hasScheduleStore) capabilities.push("scheduling");
-  if (inputs.externalAgentBackends.length > 0) capabilities.push("external-agent");
   if (inputs.hasMcp) capabilities.push("mcp");
   return {
     capabilities,
     surfaceTools: [...inputs.surfaceTools],
-    externalAgentBackends: [...inputs.externalAgentBackends],
   };
 }
 
@@ -158,7 +141,6 @@ export function freezePreparedSurfaceRuntimePlan(
   assertCapabilityManifestCoherence(plan.capabilityManifest);
   Object.freeze(plan.capabilityManifest.capabilities);
   Object.freeze(plan.capabilityManifest.surfaceTools);
-  Object.freeze(plan.capabilityManifest.externalAgentBackends);
   Object.freeze(plan.capabilityManifest);
   Object.freeze(plan.systemPrompt.sources);
   Object.freeze(plan.systemPrompt);

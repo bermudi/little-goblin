@@ -26,7 +26,7 @@ import { MemoryBudget } from "./memory/budget.ts";
 import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
 import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
 import { log } from "./log.ts";
-import { prepareEnv } from "./external-agents/env.ts";
+import { checkQualifiedBackend } from "./external-agents/preflight.ts";
 import { prepareMcpEnv } from "./mcp/env.ts";
 import { formatMcpSelection } from "./mcp/selection-store.ts";
 import { resolveMcporterConfigPath } from "./mcp/paths.ts";
@@ -961,12 +961,7 @@ async function defaultCheckExternalAgents(cfg: Config): Promise<void> {
   if (!cfg.externalAgents || cfg.externalAgents.backends.length === 0) return;
   const probes = cfg.externalAgents.backends.map(async (backend) => {
     try {
-      await runProcessProbe({
-        cmd: [backend, "--version"],
-        env: prepareEnv(),
-        timeout: 5_000,
-        label: `${backend} --version`,
-      });
+      await checkQualifiedBackend(backend);
       return null;
     } catch (err) {
       return { text: `${backend}: ${errorMessage(err)}`, timeout: err instanceof TimeoutError };

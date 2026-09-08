@@ -21,7 +21,6 @@ import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 import { createConversationOrchestration } from "../orchestration/composition.ts";
 import type { EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import { DelegatedWorkHost } from "../delegated-work/mod.ts";
 import {
   RuntimeAdmissionFailedBeforeDecisionError,
@@ -164,7 +163,6 @@ interface TestIntakeOptions {
   dreamingPipeline?: DreamingPipeline;
   createMessageBuffer?: (surface: Surface, conversation?: ConversationState) => TurnSink;
   scheduleStore?: ScheduleStore;
-  externalAgentRunner?: ExternalAgentRunner;
   delegatedWorkHost?: DelegatedWorkHost;
 }
 
@@ -189,7 +187,6 @@ function createTestIntake(options: TestIntakeOptions): TestIntake {
     createMessageBuffer: adapters.createMessageBuffer,
     createBetaTools: adapters.createBetaTools,
     scheduleStore: options.scheduleStore,
-    externalAgentRunner: options.externalAgentRunner,
   });
   const intake = createTelegramIntake({
     cfg: options.cfg,
@@ -199,7 +196,6 @@ function createTestIntake(options: TestIntakeOptions): TestIntake {
     dispatcher: orchestration.dispatcher,
     lifecycle: orchestration.lifecycle,
     scheduleStore: options.scheduleStore,
-    externalAgentRunner: options.externalAgentRunner,
     pendingClaim: orchestration.pendingClaim,
   });
   return Object.assign(intake, { runtimeHost: orchestration.runtimeHost });

@@ -5,7 +5,6 @@ import { DelegatedWorkHost } from "../delegated-work/mod.ts";
 import type { CapturedMemoryContext } from "../memory/mod.ts";
 import {
   environmentCwd,
-  projectRootOf,
   type ExecutionEnvironment,
 } from "../sessions/environment.ts";
 import { surfaceId, type Surface } from "../surface.ts";
@@ -19,7 +18,6 @@ import { buildGoblinSystemPrompt } from "./system-prompt.ts";
 import { DEFAULT_SKILL_POLICY, resolveSkillSet, skillPolicyFingerprint, type SkillPolicy } from "./skills/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 
 /** Test-only direct plan builder for AgentRunner unit and SDK contract tests. */
@@ -41,7 +39,6 @@ export async function prepareTestSurfaceRuntimePlan(args: {
    */
   subagentRunner?: SubagentRunner;
   scheduleStore?: ScheduleStore;
-  externalAgentRunner?: ExternalAgentRunner;
   mcpRunner?: McpRunner;
 }): Promise<PreparedSurfaceRuntimePlan> {
   const skillPolicy = args.skillPolicy ?? DEFAULT_SKILL_POLICY;
@@ -62,16 +59,10 @@ export async function prepareTestSurfaceRuntimePlan(args: {
     : `${systemPrompt.prompt}\n\n${args.memoryContext.frozenSummary}`;
   const policyFingerprint = skillPolicyFingerprint(skillPolicy);
   const surfaceTools = args.customTools ?? [];
-  const externalAgentBackends =
-    args.externalAgentRunner !== undefined &&
-      projectRootOf(args.executionEnvironment) !== undefined
-      ? [...(args.cfg.externalAgents?.backends ?? [])]
-      : [];
   const capabilityManifest = buildMainRuntimeCapabilityManifest({
     surfaceTools,
     hasScheduleStore: args.scheduleStore !== undefined,
     hasSubagentRunner: args.subagentRunner !== undefined,
-    externalAgentBackends,
     hasMcp: args.mcpRunner !== undefined && args.cfg.mcp !== undefined,
   });
   return freezePreparedSurfaceRuntimePlan({

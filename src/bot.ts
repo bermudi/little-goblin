@@ -22,7 +22,6 @@ import {
   type TelegramIntakeMessage,
 } from "./tg/intake.ts";
 import { createTelegramRuntimeAdapters } from "./tg/runtime-adapters.ts";
-import { ExternalAgentRunner } from "./external-agents/mod.ts";
 import { McpRunner } from "./mcp/mod.ts";
 import { DelegatedWorkHost, type PendingCompletionClaim } from "./delegated-work/mod.ts";
 import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
@@ -191,7 +190,6 @@ export interface BuiltBot {
   subagentRunner: SubagentRunner;
   scheduleStore: ScheduleStore;
   dispatcher: TurnDispatcher;
-  externalAgentRunner: ExternalAgentRunner | undefined;
   mcpRunner: McpRunner | undefined;
   memoryEngine: MemoryEngine;
   pendingClaim: PendingCompletionClaim;
@@ -216,8 +214,6 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
   // and the scheduler loop reads/claims from it. Constructed here so both
   // intake and the loop (wired in index.ts) share a single instance.
   const scheduleStore = new ScheduleStore(cfg.goblinHome);
-  // External agent runner is only created when at least one backend is enabled.
-  const externalAgentRunner = cfg.externalAgents?.backends.length ? new ExternalAgentRunner(cfg) : undefined;
   const mcpRunner = cfg.mcp ? new McpRunner(cfg.mcp, cfg.goblinHome) : undefined;
   const telegramAdapters = createTelegramRuntimeAdapters({ cfg, bot, memoryStore });
   const orchestration = createConversationOrchestration({
@@ -228,7 +224,6 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     createMessageBuffer: telegramAdapters.createMessageBuffer,
     createBetaTools: telegramAdapters.createBetaTools,
     scheduleStore,
-    externalAgentRunner,
     mcpRunner,
     embeddingProvider: memoryEngine.embeddingProvider,
     dreamingPipeline: memoryEngine.dreaming,
@@ -251,7 +246,6 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     dispatcher: orchestration.dispatcher,
     lifecycle: orchestration.lifecycle,
     scheduleStore,
-    externalAgentRunner,
     mcpRunner,
     pendingClaim: orchestration.pendingClaim,
   });
@@ -391,7 +385,6 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     scheduleStore,
     dispatcher: intake.dispatcher,
     pendingClaim: orchestration.pendingClaim,
-    externalAgentRunner,
     mcpRunner,
     memoryEngine,
   };

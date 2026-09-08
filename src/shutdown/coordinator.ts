@@ -18,7 +18,6 @@ export const SHUTDOWN_PHASE_NAMES = [
   "stop-telegram-polling",
   "drain-telegram-admission",
   "drain-scheduler",
-  "dispose-external-agents",
   "dispose-subagents",
   "close-memory-engine",
 ] as const;
@@ -40,8 +39,6 @@ export interface ShutdownCoordinatorOptions {
   disposeRuntimes: () => Promise<void>;
   /** Drain the scheduler (`scheduler.stopAndDrain()`). */
   drainScheduler: () => Promise<void>;
-  /** Dispose external agents (`externalAgentRunner?.dispose()`). */
-  disposeExternalAgents: () => Promise<void>;
   /** Dispose subagents (`subagentRunner.dispose()`). */
   disposeSubagents: () => Promise<void>;
   /** Close the memory engine (`memoryEngine.close()`). */
@@ -94,9 +91,8 @@ export class ShutdownCoordinator {
    * 6. Await `dispose-runtimes`.
    * 7. Await `drain-telegram-admission`.
    * 8. Await `drain-scheduler`.
-   * 9. Await `dispose-external-agents`.
-   * 10. Await `dispose-subagents`.
-   * 11. Await `close-memory-engine`.
+   * 9. Await `dispose-subagents`.
+   * 10. Await `close-memory-engine`.
    *
    * Runtime disposal starts before the Telegram drains are awaited so a
    * handler blocked on a model operation (notably steering via `followUp`)
@@ -165,8 +161,7 @@ export class ShutdownCoordinator {
     await attempt("drain-telegram-admission", () => closeGateAttempt);
     await attempt("drain-scheduler", () => schedulerAttempt);
 
-    // 9–11: Subsystem disposal in order.
-    await attempt("dispose-external-agents", this.options.disposeExternalAgents);
+    // 9–10: Subsystem disposal in order.
     await attempt("dispose-subagents", this.options.disposeSubagents);
     await attempt("close-memory-engine", this.options.closeMemoryEngine);
 

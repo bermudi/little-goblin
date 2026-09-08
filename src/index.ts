@@ -37,7 +37,6 @@ async function main(): Promise<void> {
     scheduleStore,
     dispatcher,
     pendingClaim,
-    externalAgentRunner,
   } = buildBot(cfg, { memoryEngine });
 
   // Decision-0036 startup re-arm: durable completions retained pending whose
@@ -50,7 +49,6 @@ async function main(): Promise<void> {
   });
 
   await memoryEngine.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS });
-  await externalAgentRunner?.init();
 
   // Scheduled turns resolve the current Conversation through the same
   // lifecycle authority as Telegram intake and serialize through the same
@@ -78,7 +76,6 @@ async function main(): Promise<void> {
     drainRuntimeAdmission: () => gate.runtimeAdmission(),
     disposeRuntimes: () => runtimeHost.disposeAll(),
     drainScheduler: () => scheduler.stopAndDrain(),
-    disposeExternalAgents: async () => { await externalAgentRunner?.dispose(); },
     disposeSubagents: () => subagentRunner.dispose(),
     closeMemoryEngine: async () => { memoryEngine.close(); },
   });

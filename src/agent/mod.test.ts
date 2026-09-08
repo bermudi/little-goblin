@@ -9,7 +9,6 @@ import { piAgentDir } from "../pi-host.ts";
 import { agentsMdPath, goblinSkillsPath, soulMdPath, workspacePath } from "../workspace/paths.ts";
 import { personalEnvironment, projectEnvironment, type ExecutionEnvironment } from "../sessions/environment.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
-import { ExternalAgentRunner } from "../external-agents/mod.ts";
 import { readMetricsSummary } from "../metrics/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import type { AgentBackend, AgentBackendOptions, AgentBackendInitArgs } from "./backend.ts";
@@ -310,7 +309,6 @@ type DirectSurfaceRunnerOptions = Omit<SurfaceAgentRunnerOptions, "plan" | "surf
   // Capability deps threaded to the plan fixture (manifest) and the tool source.
   subagentRunner?: SubagentRunner;
   scheduleStore?: ScheduleStore;
-  externalAgentRunner?: ExternalAgentRunner;
   mcpRunner?: McpRunner;
 };
 
@@ -328,7 +326,6 @@ async function makePreparedRunner(options: DirectSurfaceRunnerOptions): Promise<
     skillPolicy,
     subagentRunner,
     scheduleStore,
-    externalAgentRunner,
     mcpRunner,
     ...runnerOptions
   } = options;
@@ -347,10 +344,9 @@ async function makePreparedRunner(options: DirectSurfaceRunnerOptions): Promise<
     // manifest advertises only capabilities those deps can assemble.
     subagentRunner,
     scheduleStore,
-    externalAgentRunner,
     mcpRunner,
   });
-  return new AgentRunner({ cfg, sessionId, plan, surfaceToolSource: new CapabilityManifestToolSource(plan, { subagentRunner, scheduleStore, externalAgentRunner, mcpRunner }), ...runnerOptions });
+  return new AgentRunner({ cfg, sessionId, plan, surfaceToolSource: new CapabilityManifestToolSource(plan, { subagentRunner, scheduleStore, mcpRunner }), ...runnerOptions });
 }
 
 async function makeRunner(
@@ -2135,79 +2131,12 @@ describe("AgentRunner", () => {
   });
 
   describe("external_agent tool registration", () => {
-    it("registers external_agent when externalAgentRunner, enabled backends, and projectDir are present", async () => {
+    it("never registers external_agent: the legacy runner is removed and the delegated tool is not yet wired", async () => {
       const extCfg = {
         ...makeConfig(tmpDir),
         externalAgents: {
-          backends: ["codex" as const],
-          permissionProfile: "read-only" as const,
-          maxConcurrent: 1,
-          timeoutMs: 300_000,
-          ptyFallback: false,
-        },
-      };
-      const externalAgentRunner = new ExternalAgentRunner(extCfg);
-      const memoryContext = await makeMemoryContext(tmpDir);
-      const runner = await makePreparedRunner({
-        cfg: extCfg,
-        sessionId: "abcdef1234",
-        surface: dmSurface(123),
-        memoryContext,
-        isCurrent: () => true,
-        customTools: [],
-        executionEnvironment: projectEnvironment(tmpDir),
-        externalAgentRunner,
-        backendFactory: (opts) => new FakeAgentBackend(opts),
-      });
-      await runner.prompt("hi", nopCallbacks());
-
-      const opts = capturedCreateArgs[0] as Record<string, unknown>;
-      const tools = opts.customTools as Array<{ name: string }>;
-      const names = tools.map((t) => t.name);
-      expect(names).toContain("external_agent");
-    });
-
-    it("does not register external_agent when projectDir is absent", async () => {
-      const extCfg = {
-        ...makeConfig(tmpDir),
-        externalAgents: {
-          backends: ["codex" as const],
-          permissionProfile: "read-only" as const,
-          maxConcurrent: 1,
-          timeoutMs: 300_000,
-          ptyFallback: false,
-        },
-      };
-      const externalAgentRunner = new ExternalAgentRunner(extCfg);
-      const memoryContext = await makeMemoryContext(tmpDir);
-      const runner = await makePreparedRunner({
-        cfg: extCfg,
-        sessionId: "abcdef1234",
-        surface: dmSurface(123),
-        memoryContext,
-        isCurrent: () => true,
-        customTools: [],
-        executionEnvironment: personalEnvironment(),
-        externalAgentRunner,
-        backendFactory: (opts) => new FakeAgentBackend(opts),
-      });
-      await runner.prompt("hi", nopCallbacks());
-
-      const opts = capturedCreateArgs[0] as Record<string, unknown>;
-      const tools = opts.customTools as Array<{ name: string }>;
-      const names = tools.map((t) => t.name);
-      expect(names).not.toContain("external_agent");
-    });
-
-    it("does not register external_agent when externalAgentRunner is absent", async () => {
-      const extCfg = {
-        ...makeConfig(tmpDir),
-        externalAgents: {
-          backends: ["codex" as const],
-          permissionProfile: "read-only" as const,
-          maxConcurrent: 1,
-          timeoutMs: 300_000,
-          ptyFallback: false,
+          backends: ["claude" as const],
+          devinModel: "glm-5.2",
         },
       };
       const memoryContext = await makeMemoryContext(tmpDir);

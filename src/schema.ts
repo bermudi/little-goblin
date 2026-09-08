@@ -1,15 +1,16 @@
 import { z } from "zod";
 import { DEFAULT_VOICE_NAME } from "./voice.ts";
 
-const EXTERNAL_AGENT_BACKENDS = ["codex", "claude", "devin"] as const;
-const EXTERNAL_AGENT_PERMISSION_PROFILES = ["read-only", "workspace-write"] as const;
+const EXTERNAL_AGENT_BACKENDS = ["claude", "devin"] as const;
 
 export const ExternalAgentsConfigSchema = z.object({
   backends: z.array(z.enum(EXTERNAL_AGENT_BACKENDS)).default([]),
-  permissionProfile: z.enum(EXTERNAL_AGENT_PERMISSION_PROFILES).default("read-only"),
-  maxConcurrent: z.number().int().min(1).max(8).default(2),
-  timeoutMs: z.number().int().min(60000).max(7200000).default(1800000),
-  ptyFallback: z.boolean().default(false),
+  /**
+   * Operator-owned Settings deployment default for Devin (decision 0049),
+   * bootstrapped to `glm-5.2`. Resolved at admission and captured with each
+   * admitted run; the AI never selects or overrides it.
+   */
+  devinModel: z.string().min(1).default("glm-5.2"),
 }).superRefine((val, ctx) => {
   if (new Set(val.backends).size !== val.backends.length) {
     ctx.addIssue({

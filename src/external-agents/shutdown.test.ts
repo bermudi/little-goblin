@@ -146,7 +146,7 @@ describe("session retirement and bounded process shutdown", () => {
     const processHost = new MockShutdownProcessHost(
       () => new MockShutdownServer({ sessionId: "sess-claude-1", agentCapabilities: CLAUDE_CAPS, modes: CLAUDE_MODES }),
     );
-    const host = new ExternalAgentHost({ processHost });
+    const host = new ExternalAgentHost({ processHost, shutdownGraceMs: 20 });
     const claude = await host.connect({
       backend: "claude",
       workingDirectory: CWD,
@@ -169,7 +169,7 @@ describe("session retirement and bounded process shutdown", () => {
     const devinHost = new MockShutdownProcessHost(
       () => new MockShutdownServer({ sessionId: "sess-devin-1", agentCapabilities: DEVIN_CAPS }),
     );
-    const devinAgent = new ExternalAgentHost({ processHost: devinHost });
+    const devinAgent = new ExternalAgentHost({ processHost: devinHost, shutdownGraceMs: 20 });
     const devin = await devinAgent.connect({
       backend: "devin",
       workingDirectory: CWD,
@@ -220,7 +220,7 @@ describe("session retirement and bounded process shutdown", () => {
     const processHost = new MockShutdownProcessHost(
       () => new MockShutdownServer({ sessionId: "sess-claude-1", agentCapabilities: CLAUDE_CAPS, modes: CLAUDE_MODES }),
     );
-    const host = new ExternalAgentHost({ processHost });
+    const host = new ExternalAgentHost({ processHost, shutdownGraceMs: 20 });
     const first = await host.connect({
       backend: "claude",
       workingDirectory: CWD,

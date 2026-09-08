@@ -197,7 +197,20 @@ export class AcpHostError extends Error {
 
 export interface ExternalAgentHostOptions {
   processHost: ProcessHost;
+  /**
+   * Bound for graceful transport closure before local shutdown escalates to
+   * process termination (decision 0044). Defaults to 2s; tests use a small bound.
+   */
+  shutdownGraceMs?: number;
 }
+
+/**
+ * Default bound for graceful transport closure before kill escalation.
+ * Transport close travels over an already-open stdio pipe, so a live server
+ * exits within milliseconds; this bound only distinguishes a clean exit
+ * from an ignored closure. kill() itself still escalates SIGTERM to SIGKILL.
+ */
+export const DEFAULT_SHUTDOWN_GRACE_MS = 250;
 
 let goblinClientInfoCache: { name: string; version: string } | undefined;
 
@@ -244,7 +257,7 @@ export class ExternalAgentHost {
         mcpServers: [],
       }).start();
       await applyPermissionProfile(connection, spec.backend, permissionProfile, session.sessionId, session.modes);
-      return new AcpAgentConnection(spec, initializeResponse, handle, connection, session);
+      return new AcpAgentConnection(spec, initializeResponse, handle, connection, session, this.shutdownGraceMs());
     } catch (err) {
       await teardownTransport(connection, handle);
       throw err;
@@ -285,11 +298,15 @@ export class ExternalAgentHost {
         })).modes;
       const session = attachContinuationSession(connection, spec.providerSessionId, modes);
       await applyPermissionProfile(connection, spec.backend, permissionProfile, spec.providerSessionId, modes ?? null);
-      return new AcpAgentConnection(spec, initializeResponse, handle, connection, session);
+      return new AcpAgentConnection(spec, initializeResponse, handle, connection, session, this.shutdownGraceMs());
     } catch (err) {
       await teardownTransport(connection, handle);
       throw err;
     }
+  }
+
+  private shutdownGraceMs(): number {
+    return this.options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
   }
 
   /**
@@ -338,6 +355,8 @@ export class AcpAgentConnection {
   private readonly connection: ClientConnection;
   private readonly session: ActiveSession;
   private readonly abortListener: (() => void) | undefined;
+  private readonly shutdownGraceMs: number;
+  private retiredFlag = false;
 
   constructor(
     spec: AcpConnectSpec,
@@ -345,7 +364,9 @@ export class AcpAgentConnection {
     handle: ProcessHandle,
     connection: ClientConnection,
     session: ActiveSession,
+    shutdownGraceMs: number = DEFAULT_SHUTDOWN_GRACE_MS,
   ) {
+    this.shutdownGraceMs = shutdownGraceMs;
     this.spec = spec;
     this.backend = spec.backend;
     this.handle = handle;
@@ -410,9 +431,38 @@ export class AcpAgentConnection {
   }
 
   /**
-   * Bounded local cleanup: graceful transport closure first, then process
-   * termination via the process host's kill escalation. A local process exit
-   * never by itself retires completed provider context (decision 0044).
+   * Intentionally retire the provider context (decision 0044): Claude
+   * through `session/close`, Devin through `session/delete`, each gated on
+   * the backend advertising that capability. Recorded distinctly from process
+   * exit — the local server process is untouched until dispose() runs bounded
+   * cleanup, and a process exit never retires context on its own.
+   */
+  async retire(): Promise<void> {
+    if (this.disposed) {
+      throw new AcpHostError("ACP connection is already disposed", "disposed");
+    }
+    if (this.retiredFlag) {
+      return;
+    }
+    gateRetirementCapability(this.backend, this.agentCapabilities);
+    if (this.backend === "claude") {
+      await this.connection.agent.request(methods.agent.session.close, { sessionId: this.sessionId });
+    } else {
+      await this.connection.agent.request(methods.agent.session.delete, { sessionId: this.sessionId });
+    }
+    this.retiredFlag = true;
+  }
+
+  /** Whether retire() has intentionally retired this connection's provider context. */
+  get retired(): boolean {
+    return this.retiredFlag;
+  }
+
+  /**
+   * Bounded local cleanup (decision 0044): graceful transport closure first,
+   * then escalation to process termination when the server does not exit
+   * within the shutdown bound. Never retires provider context — use retire()
+   * for that; a local process exit leaves completed context resumable/loadable.
    */
   async dispose(): Promise<void> {
     if (this.disposed) {
@@ -431,6 +481,21 @@ export class AcpAgentConnection {
       this.connection.close();
     } catch {
       // best-effort teardown; the kill below is the guarantee
+    }
+    if (this.shutdownGraceMs > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          this.handle.waitForExit(),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, this.shutdownGraceMs);
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+      }
     }
     await this.handle.kill();
   }
@@ -519,6 +584,33 @@ function gateContinuationCapability(
   if (capabilities?.loadSession !== true) {
     throw new AcpHostError(
       `backend ${backend} does not advertise session/load; continuation refused`,
+      "protocol",
+    );
+  }
+}
+
+/**
+ * Refuse retirement honestly when the backend does not advertise the
+ * capability its contract requires (decision 0044): Claude retires through
+ * `session/close`, Devin through `session/delete`.
+ */
+function gateRetirementCapability(
+  backend: QualifiedBackend,
+  capabilities: AgentCapabilities | undefined,
+): void {
+  const method = BACKEND_CONTRACTS[backend].retirementMethod;
+  if (method === "session/close") {
+    if (capabilities?.sessionCapabilities?.close == null) {
+      throw new AcpHostError(
+        `backend ${backend} does not advertise session/close; retirement refused`,
+        "protocol",
+      );
+    }
+    return;
+  }
+  if (capabilities?.sessionCapabilities?.delete == null) {
+    throw new AcpHostError(
+      `backend ${backend} does not advertise session/delete; retirement refused`,
       "protocol",
     );
   }

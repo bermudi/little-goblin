@@ -9,7 +9,8 @@ Little Goblin is one Telegram-native personal AI assistant for one operator, run
 - Filesystem-backed persistence, except the canonical SQLite memory store.
 - pi-coding-agent is the main model runtime.
 - Project mode, subagents, external agents, memory, and automation are capabilities of the same assistant rather than separate products.
-- No web UI, plugin SDK, multi-agent gateway, Kubernetes, or distributed coordination.
+- Telegram is the UI, including Telegram Mini Apps. No standalone web UI,
+  plugin SDK, multi-agent gateway, Kubernetes, or distributed coordination.
 
 ## Authority
 

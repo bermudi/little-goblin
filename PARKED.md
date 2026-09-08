@@ -9,7 +9,12 @@ Unshaped candidates, completed stabilization context, and open questions. This f
 
 ## Candidate to scout next
 
-None named. The ACP external-agents candidate graduated to labeled issue #58 (`litespec/acp-external-agents`, spec `specs/external-agents/spec.md`) on 2026-09-07; that issue is the one active Litespec issue.
+Issue #59 (`litespec/telegram-settings`) is active: deployment-wide, non-secret
+settings inside a Telegram Mini App, starting with searchable Devin models.
+Issue #58 is paused, not complete, and is the one candidate to resume next.
+Its remaining ACP launch work is a prerequisite for #59's final launch
+integration; the catalog unit is independent. Do not build Mini App integration
+on the legacy external-agent runner.
 
 ## Completed inward solidification
 

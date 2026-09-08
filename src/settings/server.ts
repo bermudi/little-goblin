@@ -17,6 +17,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { discoverDevinCatalog, type DevinModelCatalog } from "./devin-catalog.ts";
+import { renderSettingsPage } from "./page.ts";
 import { readDeploymentSettings, saveDeploymentModel, SettingsStoreError } from "./store.ts";
 import { log } from "../log.ts";
 
@@ -199,6 +200,15 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
       const url = new URL(req.url);
       const route = url.pathname;
       if (closing) return fail(route, 503, "shutting-down");
+
+      // Static Mini App shell: no secrets, no config I/O, no discovery.
+      // Every settings/catalog call the page makes is authenticated below.
+      if (req.method === "GET" && route === "/") {
+        return new Response(renderSettingsPage(), {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+        });
+      }
 
       // Authenticate before any subprocess discovery or configuration I/O.
       const initData = extractInitData(req);

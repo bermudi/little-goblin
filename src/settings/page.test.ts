@@ -205,7 +205,7 @@ describe("Search and save inside Telegram", () => {
       expect(first.status).toBe(200);
 
       // Expired authentication cannot save.
-      const expired = validInitData(BOT_TOKEN, OPERATOR_ID, Math.floor(Date.now() / 1000) - 3600);
+      const expired = validInitData(BOT_TOKEN, OPERATOR_ID, Math.floor(Date.now() / 1000) - 4000);
       const expiredRes = await fetch(`${handle.url}/api/settings`, {
         method: "POST",
         headers: { authorization: `tma ${expired}`, origin: ORIGIN, "content-type": "application/json" },

@@ -45,7 +45,6 @@ import {
   parseSkillsCommand,
 } from "./skills.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import { parseMcpCommand, McpCommandSyntaxError } from "./mcp-cmd.ts";
 import { formatMcpSelection, setMcpServerEnabled } from "../mcp/selection-store.ts";
@@ -90,12 +89,6 @@ export interface DispatchDeps {
   scheduleStore?: ScheduleStore;
   /** Runtime/delegated-work authority owner for command admissions. */
   dispatcher: TurnDispatcher;
-  /**
-   * External agent runner, used by `/cancel` to cascade-cancels external runs
-   * owned by the session. Optional for callers that test command handling in
-   * isolation.
-   */
-  externalAgentRunner?: ExternalAgentRunner;
   /**
    * MCP gateway runner, used by `/mcp` for live catalog inspection and
    * refresh. Optional; absent when MCP is unconfigured.
@@ -237,7 +230,6 @@ const cancelHandler: CommandHandler = async ({ deps, surface, conversation, exis
       deps.subagentRunner,
       DEFAULT_CASCADE_TIMEOUT_MS,
       conversation.id,
-      deps.externalAgentRunner,
     ).then((cascade) => {
       if (!authority.isCurrent()) return noopCommandCompletion();
       if (cancelledPending) cascade.attemptedMain = true;

@@ -35,6 +35,13 @@ const externalAgentStateSchema = z.object({
   // Captured after ACP session creation, before the coordinator sends a prompt.
   // Kept in record.json so identity and kind-specific state share one atomic write.
   providerSessionId: providerSessionIdSchema.nullable(),
+  // Model-selected launch input (decision 0041): structural selections captured
+  // with the record so the actual execution context is observable. Optional to
+  // keep pre-launch records valid; launch coordinators always populate them.
+  workingDirectory: z.string().min(1).refine(isAbsolute, "must be an absolute path").optional(),
+  permissionProfile: z.enum(["default", "accept-edits", "dangerous"]).optional(),
+  devinModel: z.string().min(1).nullable().optional(),
+  task: z.string().min(1).max(8000).optional(),
 }).strict();
 
 export type ExternalAgentRecordState = z.infer<typeof externalAgentStateSchema>;

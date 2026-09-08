@@ -33,7 +33,6 @@ import type {
   ConversationLifecycle,
 } from "../orchestration/conversation-lifecycle.ts";
 import type { WorkAuthority } from "../orchestration/conversation-runtime-host.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 
 import { transcribeWithGroq } from "../asr/mod.ts";
 import { GuestReplySink } from "./guest-sink.ts";
@@ -101,8 +100,6 @@ export interface TelegramIntakeOptions {
   lifecycle: ConversationLifecycle;
   /** Shared schedule store for `/schedule`. */
   scheduleStore?: ScheduleStore;
-  /** Shared external agent runner. Wired in Phase 6 (bot.ts). */
-  externalAgentRunner?: ExternalAgentRunner;
   /** Shared MCP gateway runner for `/mcp`. Optional; absent when MCP is unconfigured. */
   mcpRunner?: McpRunner;
   /**
@@ -673,7 +670,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     interruptAndCascade,
     scheduleStore: options.scheduleStore,
     dispatcher,
-    externalAgentRunner: options.externalAgentRunner,
     mcpRunner: options.mcpRunner,
   };
 

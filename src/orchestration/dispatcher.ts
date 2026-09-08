@@ -19,7 +19,6 @@ import {
   SubagentRunner,
 } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
 import { runtimeAdmission, type RuntimeAdmissionResult } from "../shutdown/mod.ts";
@@ -127,11 +126,6 @@ export interface TurnDispatcherOptions {
   createBetaTools: (surface: Surface) => ToolDefinition[];
   /** Shared schedule store. When present, the `schedule_turn` tool is wired to the main agent. */
   scheduleStore?: ScheduleStore;
-  /**
-   * Shared external agent runner. When present, it is wired into every new
-   * `AgentRunner` and cancelled during `disposeRunner`.
-   */
-  externalAgentRunner?: ExternalAgentRunner;
   /** Shared MCP runner. When present and configured, it is wired into every new `AgentRunner`. */
   mcpRunner?: McpRunner;
   /**
@@ -179,7 +173,6 @@ export class TurnDispatcher {
   private readonly createBetaToolsFn: (surface: Surface) => ToolDefinition[];
   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
   private readonly scheduleStore: ScheduleStore | undefined;
-  private readonly externalAgentRunner: ExternalAgentRunner | undefined;
   private readonly mcpRunner: McpRunner | undefined;
   private readonly surfaceRuntimeAuthority: SurfaceRuntimeAuthority;
   private readonly runtimeAssembler: PreparedRuntimeAssembler;
@@ -196,7 +189,6 @@ export class TurnDispatcher {
     this.createBetaToolsFn = options.createBetaTools;
     this.getTopicName = buildGetTopicName(this.memoryStore);
     this.scheduleStore = options.scheduleStore;
-    this.externalAgentRunner = options.externalAgentRunner;
     this.mcpRunner = options.mcpRunner;
     this.runtimeHost = options.runtimeHost;
     this.surfaceRuntimeAuthority = options.surfaceRuntimeAuthority;
@@ -209,7 +201,6 @@ export class TurnDispatcher {
       createSurfaceTools: this.createBetaToolsFn,
       subagentRunner: this.subagentRunner,
       scheduleStore: this.scheduleStore,
-      externalAgentRunner: this.externalAgentRunner,
       mcpRunner: this.mcpRunner,
     });
   }
@@ -258,7 +249,6 @@ export class TurnDispatcher {
       surfaceToolSource: new CapabilityManifestToolSource(plan, {
         scheduleStore: this.scheduleStore,
         subagentRunner: this.subagentRunner,
-        externalAgentRunner: this.externalAgentRunner,
         mcpRunner: this.mcpRunner,
       }),
       getTopicName: this.getTopicName,

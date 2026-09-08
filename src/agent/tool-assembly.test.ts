@@ -30,7 +30,6 @@ import { prepareTestSurfaceRuntimePlan } from "./runtime-plan.test-support.ts";
 import type { GenericSubagentInheritance } from "../subagents/mod.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import type { ResolvedSkillSet } from "./skills/types.ts";
 import { makeConfig } from "../subagents/test/support.ts";
@@ -44,10 +43,6 @@ import { makeConfig } from "../subagents/test/support.ts";
 
 function makeSubagentRunnerStub(home: string): SubagentRunner {
   return { goblinHome: home } as unknown as SubagentRunner;
-}
-
-function makeExternalAgentRunnerStub(): ExternalAgentRunner {
-  return {} as unknown as ExternalAgentRunner;
 }
 
 function makeMcpRunnerStub(catalogText: string): McpRunner {
@@ -106,7 +101,7 @@ function makeInputs(
   manifest: MainRuntimeCapabilityManifest,
   overrides: Partial<SurfaceToolAssemblyInputs> = {},
 ): SurfaceToolAssemblyInputs {
-  const env = overrides.executionEnvironment ?? personalEnvironment();
+  const env = personalEnvironment();
   return {
     manifest,
     memoryContext,
@@ -117,10 +112,8 @@ function makeInputs(
     sessionId: "assembly-test",
     delegatedRuntimeContext: null,
     genericSubagentInheritance: makeInheritance(env),
-    executionEnvironment: env,
     scheduleStore: makeScheduleStoreStub(),
     subagentRunner: makeSubagentRunnerStub(home),
-    externalAgentRunner: makeExternalAgentRunnerStub(),
     mcpRunner: makeMcpRunnerStub("Available MCP servers (use mcp_call to invoke):\n- tavily: tavily_search"),
     guardTool: (tool) => tool,
     isCurrent: () => true,
@@ -130,20 +123,17 @@ function makeInputs(
   };
 }
 
-/** Strip capabilities from a full manifest, keeping it coherent: dropping a
- * paired capability also empties its data array. */
+/** Strip capabilities from a full manifest, keeping it coherent. */
 function manifestWithout(...omitted: MainRuntimeCapability[]): MainRuntimeCapabilityManifest {
   const full = buildMainRuntimeCapabilityManifest({
     surfaceTools: [{ name: "beta_tool" } as unknown as ToolDefinition],
     hasScheduleStore: true,
     hasSubagentRunner: true,
-    externalAgentBackends: ["codex" as never],
     hasMcp: true,
   });
   return {
     capabilities: full.capabilities.filter((c) => !omitted.includes(c)),
     surfaceTools: omitted.includes("surface-tools") ? [] : full.surfaceTools,
-    externalAgentBackends: omitted.includes("external-agent") ? [] : full.externalAgentBackends,
   };
 }
 
@@ -154,7 +144,6 @@ function manifestOnly(...caps: MainRuntimeCapability[]): MainRuntimeCapabilityMa
     surfaceTools: caps.includes("surface-tools")
       ? [{ name: "beta_tool" } as unknown as ToolDefinition]
       : [],
-    externalAgentBackends: caps.includes("external-agent") ? ["codex" as never] : [],
   };
 }
 
@@ -172,7 +161,7 @@ async function toolNames(manifest: MainRuntimeCapabilityManifest, overrides: Par
 describe("assembleSurfaceCustomTools — manifest is sole authority", () => {
   it("(a) omits every dep-gated capability's tools when the manifest omits them, even though all deps are passed", async () => {
     // All deps present, but the manifest advertises only memory.
-    const manifest = manifestWithout("surface-tools", "scheduling", "subagents", "external-agent", "mcp");
+    const manifest = manifestWithout("surface-tools", "scheduling", "subagents", "mcp");
     const names = await toolNames(manifest);
 
     expect(names).not.toContain("spawn_subagent");
@@ -191,7 +180,6 @@ describe("assembleSurfaceCustomTools — manifest is sole authority", () => {
     const manifest: MainRuntimeCapabilityManifest = {
       capabilities: ["pi-file-tools", "prompt-file-notices"],
       surfaceTools: [],
-      externalAgentBackends: [],
     };
     const names = await toolNames(manifest);
     expect(names).not.toContain("memory_search");
@@ -210,25 +198,6 @@ describe("assembleSurfaceCustomTools — manifest is sole authority", () => {
   it("(b) throws when scheduling is advertised but scheduleStore is absent", async () => {
     await expect(assembleSurfaceCustomTools(makeInputs(manifestOnly("scheduling"), { scheduleStore: undefined })))
       .rejects.toThrow(/scheduling capability advertised.*scheduleStore is absent/);
-  });
-
-  it("(b) throws when external-agent is advertised but externalAgentRunner is absent", async () => {
-    await expect(
-      assembleSurfaceCustomTools(
-        makeInputs(manifestOnly("external-agent"), {
-          externalAgentRunner: null,
-          executionEnvironment: projectEnvironment(join(home, "project")),
-        }),
-      ),
-    ).rejects.toThrow(/external-agent capability advertised.*externalAgentRunner is absent/);
-  });
-
-  it("(b) throws when external-agent is advertised but the environment is not a project", async () => {
-    await expect(
-      assembleSurfaceCustomTools(
-        makeInputs(manifestOnly("external-agent"), { executionEnvironment: personalEnvironment() }),
-      ),
-    ).rejects.toThrow(/external-agent capability advertised.*not a project/);
   });
 
   it("(b) throws when mcp is advertised but mcpRunner is absent", async () => {
@@ -251,14 +220,11 @@ describe("assembleSurfaceCustomTools — manifest is sole authority", () => {
       surfaceTools: [{ name: "beta_tool" } as unknown as ToolDefinition],
       hasScheduleStore: true,
       hasSubagentRunner: true,
-      externalAgentBackends: ["codex" as never],
       hasMcp: true,
     });
-    const names = await toolNames(manifest, {
-      executionEnvironment: projectEnvironment(join(home, "project")),
-    });
+    const names = await toolNames(manifest);
 
-    // surface-tools first, then memory, scheduling, subagents, external-agent, mcp.
+    // surface-tools first, then memory, scheduling, subagents, mcp.
     expect(names).toEqual([
       "beta_tool",
       "memory_search",
@@ -266,14 +232,13 @@ describe("assembleSurfaceCustomTools — manifest is sole authority", () => {
       "schedule_turn",
       "spawn_subagent",
       "revive_subagent",
-      "external_agent",
       "mcp_call",
       "mcp_describe",
     ]);
   });
 
   it("(c) registers memory_search before memory_write", async () => {
-    const manifest = manifestWithout("surface-tools", "scheduling", "subagents", "external-agent", "mcp");
+    const manifest = manifestWithout("surface-tools", "scheduling", "subagents", "mcp");
     const names = await toolNames(manifest);
     expect(names.indexOf("memory_search")).toBeLessThan(names.indexOf("memory_write"));
   });
@@ -290,7 +255,6 @@ describe("buildMainRuntimeCapabilityManifest", () => {
       surfaceTools: [{ name: "t" } as unknown as ToolDefinition],
       hasScheduleStore: true,
       hasSubagentRunner: true,
-      externalAgentBackends: ["codex" as never],
       hasMcp: true,
     });
     expect(manifest.capabilities).toEqual([
@@ -300,7 +264,6 @@ describe("buildMainRuntimeCapabilityManifest", () => {
       "prompt-file-notices",
       "surface-tools",
       "scheduling",
-      "external-agent",
       "mcp",
     ]);
   });
@@ -310,21 +273,9 @@ describe("buildMainRuntimeCapabilityManifest", () => {
       surfaceTools: [],
       hasScheduleStore: false,
       hasSubagentRunner: false,
-      externalAgentBackends: [],
       hasMcp: false,
     });
     expect(manifest.capabilities).toEqual(["pi-file-tools", "memory", "prompt-file-notices"]);
-  });
-
-  it("does not advertise external-agent without a project (empty backends)", () => {
-    const manifest = buildMainRuntimeCapabilityManifest({
-      surfaceTools: [],
-      hasScheduleStore: true,
-      hasSubagentRunner: true,
-      externalAgentBackends: [],
-      hasMcp: true,
-    });
-    expect(manifest.capabilities).not.toContain("external-agent");
   });
 
   it("always advertises every mandatory capability", () => {
@@ -332,7 +283,6 @@ describe("buildMainRuntimeCapabilityManifest", () => {
       surfaceTools: [],
       hasScheduleStore: false,
       hasSubagentRunner: false,
-      externalAgentBackends: [],
       hasMcp: false,
     });
     for (const mandatory of MANDATORY_SURFACE_CAPABILITIES) {
@@ -344,8 +294,8 @@ describe("buildMainRuntimeCapabilityManifest", () => {
 // ---------------------------------------------------------------------------
 // Coherence validation (findings #1 and #2): the manifest is a closed, trusted
 // object. Mandatory always-on capabilities must be present, and paired data
-// (surfaceTools / externalAgentBackends) must agree with their capability bits.
-// The validator is the consume gate (assemble) and the freeze gate.
+// (surfaceTools) must agree with its capability bit. The validator is the
+// consume gate (assemble) and the freeze gate.
 // ---------------------------------------------------------------------------
 
 describe("capability manifest coherence validation", () => {
@@ -354,7 +304,6 @@ describe("capability manifest coherence validation", () => {
     const manifest: MainRuntimeCapabilityManifest = {
       capabilities: ["memory", "prompt-file-notices"],
       surfaceTools: [],
-      externalAgentBackends: [],
     };
     await expect(toolNames(manifest)).rejects.toThrow(/missing mandatory capability "pi-file-tools"/);
   });
@@ -363,7 +312,6 @@ describe("capability manifest coherence validation", () => {
     const manifest: MainRuntimeCapabilityManifest = {
       capabilities: ["pi-file-tools", "memory"],
       surfaceTools: [],
-      externalAgentBackends: [],
     };
     await expect(toolNames(manifest)).rejects.toThrow(/missing mandatory capability "prompt-file-notices"/);
   });
@@ -373,7 +321,6 @@ describe("capability manifest coherence validation", () => {
     const manifest: MainRuntimeCapabilityManifest = {
       capabilities: ["pi-file-tools", "prompt-file-notices", "surface-tools"],
       surfaceTools: [],
-      externalAgentBackends: [],
     };
     await expect(toolNames(manifest)).rejects.toThrow(/"surface-tools" capability disagrees/);
   });
@@ -382,35 +329,14 @@ describe("capability manifest coherence validation", () => {
     const manifest: MainRuntimeCapabilityManifest = {
       capabilities: ["pi-file-tools", "prompt-file-notices"],
       surfaceTools: [{ name: "beta_tool" } as unknown as ToolDefinition],
-      externalAgentBackends: [],
     };
     await expect(toolNames(manifest)).rejects.toThrow(/"surface-tools" capability disagrees/);
-  });
-
-  // (finding #2) external-agent capability must agree with the backends array.
-  it("throws when external-agent is advertised but no backends were captured", async () => {
-    const manifest: MainRuntimeCapabilityManifest = {
-      capabilities: ["pi-file-tools", "prompt-file-notices", "external-agent"],
-      surfaceTools: [],
-      externalAgentBackends: [],
-    };
-    await expect(toolNames(manifest)).rejects.toThrow(/"external-agent" capability disagrees/);
-  });
-
-  it("throws when backends were captured but external-agent is not advertised", async () => {
-    const manifest: MainRuntimeCapabilityManifest = {
-      capabilities: ["pi-file-tools", "prompt-file-notices"],
-      surfaceTools: [],
-      externalAgentBackends: ["codex" as never],
-    };
-    await expect(toolNames(manifest)).rejects.toThrow(/"external-agent" capability disagrees/);
   });
 
   it("assembles an empty tool list for the minimal coherent manifest (mandatory caps only)", async () => {
     const manifest: MainRuntimeCapabilityManifest = {
       capabilities: [...MANDATORY_SURFACE_CAPABILITIES],
       surfaceTools: [],
-      externalAgentBackends: [],
     };
     expect(await toolNames(manifest)).toEqual([]);
   });
@@ -427,7 +353,6 @@ describe("capability manifest coherence validation", () => {
     const incoherent: MainRuntimeCapabilityManifest = {
       capabilities: ["memory", "prompt-file-notices"],
       surfaceTools: [],
-      externalAgentBackends: [],
     };
     expect(() =>
       freezePreparedSurfaceRuntimePlan({ ...coherent, capabilityManifest: incoherent }),
@@ -479,10 +404,8 @@ describe("CapabilityManifestToolSource", () => {
         memoryContext: plan.memoryContext,
         surface: plan.surface,
         sessionId: plan.conversationId,
-        executionEnvironment: plan.executionEnvironment,
         scheduleStore,
         subagentRunner,
-        externalAgentRunner: null,
         mcpRunner,
         ...runtimeInputs,
       })

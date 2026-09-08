@@ -383,11 +383,12 @@ export class DelegatedWorkHost {
     runId: string,
     backend: ExternalAgentRecordState["backend"],
     ownership: DurableDelegatedWorkOwnership,
+    launch?: Pick<ExternalAgentRecordState, "workingDirectory" | "permissionProfile" | "devinModel" | "task">,
   ): { record: DelegatedWorkRecord; runDir: string } {
     validateOwnership(ownership);
     return this.recordStore.createRecord(
       runId, "external-agent", null, 1, ownership, undefined,
-      { backend, providerSessionId: null },
+      { backend, providerSessionId: null, ...launch },
     );
   }
 
@@ -406,6 +407,24 @@ export class DelegatedWorkHost {
     runId: string,
     ownership: AttachedDelegatedWorkOwnership,
   ): { record: DelegatedWorkRecord; runDir: string } {
+    return this.recordStore.appendInvocation(runId, ownership);
+  }
+
+  /**
+   * Append a durable follow-up invocation to an external-agent record.
+   *
+   * The prior invocation stays terminally closed; provider context continues
+   * in the same run directory (decision 0044). Only durable ownership is
+   * accepted — the store schema rejects anything else on write.
+   */
+  appendExternalFollowup(
+    runId: string,
+    ownership: DurableDelegatedWorkOwnership,
+  ): { record: DelegatedWorkRecord; runDir: string } {
+    if (ownership.lifetime !== "durable") {
+      throw new Error("External-agent follow-up requires durable ownership");
+    }
+    validateOwnership(ownership);
     return this.recordStore.appendInvocation(runId, ownership);
   }
 

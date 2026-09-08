@@ -1,5 +1,4 @@
 import type { AgentRunner } from "../agent/mod.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import type { SurfaceId } from "../surface.ts";
 export type {
@@ -90,16 +89,13 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
    * its own possibly-divergent instance (decision: shared delegated host).
    */
   readonly delegatedWorkHost: DelegatedWorkHost;
-  private readonly externalAgentRunner: ExternalAgentRunner | undefined;
   private admissionOpen = true;
   private shutdownPromise: Promise<void> | undefined;
 
   constructor(options: {
     delegatedWorkHost: DelegatedWorkHost;
-    externalAgentRunner?: ExternalAgentRunner;
   }) {
     this.delegatedWorkHost = options.delegatedWorkHost;
-    this.externalAgentRunner = options.externalAgentRunner;
   }
 
   private machineFor(conversationId: ConversationId): RuntimeMachine {
@@ -108,7 +104,6 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
       machine = new RuntimeMachine({
         conversationId,
         delegatedWorkHost: this.delegatedWorkHost,
-        externalAgentRunner: this.externalAgentRunner,
         isAdmissionOpen: () => this.admissionOpen,
       });
       this.machines.set(conversationId, machine);

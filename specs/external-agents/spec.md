@@ -30,7 +30,9 @@ WHEN Goblin executes Claude Code or Devin work, THE SYSTEM SHALL connect
 through one external-agent execution host — separate from the Pi execution
 host — that spawns the exact-version-pinned
 `@agentclientprotocol/claude-agent-acp` bridge for Claude and the installed
-native `devin acp` server (configured model default `glm-5.2`) for Devin, and
+native `devin acp` server (operator-owned Settings deployment default per
+decision 0049, bootstrapped to `glm-5.2`; the AI never selects or overrides
+the model and each admitted run captures the resolved model) for Devin, and
 SHALL advertise no client filesystem or terminal capability and implement no
 such handlers. Exact-version pinning and per-backend capability expectations
 (Claude: `session/resume` and `session/close`; Devin: `session/load` and
@@ -49,14 +51,26 @@ tests; changing the pin requires re-running them.
 - **THEN** its version equals the pinned version and the per-backend
   capability expectations hold
 
+#### Scenario: Productive prompts outlive any timer
+
+- **WHEN** a backend keeps producing updates without completing
+- **THEN** the host keeps driving the turn until a backend stop reason,
+  explicit cancellation, abort, or transport loss; no elapsed-time cutoff
+  terminates it
+
 ### Requirement: Per-Connection Permission Profile
 
 WHEN any new, resumed, or loaded connection is made, THE SYSTEM SHALL
 explicitly apply the structured permission profile selected for the delegated
 run — including the unattended dangerous profile required by decision 0041 —
-and SHALL NOT infer the profile from prior connection state. Permission
+and SHALL NOT infer the profile from prior connection state. An omitted
+profile selection defaults to the unattended dangerous profile. Permission
 responses follow the selected profile; profiles are operational affordances,
 not a security boundary below the same-user OS floor.
+
+Productive prompts SHALL have no elapsed-time cutoff: a prompt ends by
+backend stop reason, explicit cancellation, abort, or transport loss — never
+by a timer. Bounded escalation applies only to local shutdown cleanup.
 
 #### Scenario: Profile applied on every connection
 
@@ -67,9 +81,14 @@ not a security boundary below the same-user OS floor.
 ### Requirement: Model-Selected Launch Input, Captured Not Confined
 
 WHEN the model starts an external-agent run, THE SYSTEM SHALL accept explicit
-working directory, permission profile, and bounded invocation parameters as
+working directory, permission profile (omitted defaults to the unattended
+dangerous profile), and bounded invocation parameters as
 structured launch input, validate them structurally, and capture them with
 the delegated-run record so the actual execution context is observable.
+The Devin model is not model-facing input: the launcher SHALL resolve the
+operator-owned Settings deployment default (decision 0049) at admission,
+capture it with the record, and SHALL NOT substitute another model when the
+selection is missing or unavailable.
 Validation SHALL NOT be presented as confinement (decision 0041's same-user
 OS floor), and child environments SHALL receive only the decision-0041
 allowlist — never ambient Goblin secrets.

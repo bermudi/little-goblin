@@ -262,7 +262,7 @@ describe("handleCommand", () => {
     expect(result.reply).toBe(cancelReply({ cascade, cascadeTimeoutMs: 5_000 }));
     expect(result.sideEffects).toEqual([]);
     // /cancel is self-contained: it calls interruptAndCascade, not a dispatch pre-check.
-    expect(harness.interrupt).toHaveBeenCalledWith(runner, expect.any(Object), 5_000, session.id, undefined);
+    expect(harness.interrupt).toHaveBeenCalledWith(runner, expect.any(Object), 5_000, session.id);
   });
 
   it("replies to /cancel without a session without invoking the cascade", async () => {

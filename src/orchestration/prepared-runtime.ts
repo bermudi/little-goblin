@@ -11,11 +11,10 @@ import { resolveModel } from "../agent/models.ts";
 import { buildGoblinSystemPrompt } from "../agent/system-prompt.ts";
 import { cloneSkillPolicy, resolveSkillSet, skillPolicyFingerprint } from "../agent/skills/mod.ts";
 import { captureRuntimeMemoryContext, type MemoryStore } from "../memory/mod.ts";
-import { environmentCwd, environmentsEqual, projectRootOf } from "../sessions/environment.ts";
+import { environmentCwd, environmentsEqual } from "../sessions/environment.ts";
 import type { ConversationState } from "../sessions/types.ts";
 import { surfaceId, type Surface, type SurfaceId } from "../surface.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import type { SubagentRunner } from "../subagents/mod.ts";
 import type { SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
@@ -31,7 +30,6 @@ export interface PreparedRuntimeAssemblerOptions {
   readonly createSurfaceTools: (surface: Surface) => ToolDefinition[];
   readonly subagentRunner: SubagentRunner;
   readonly scheduleStore?: ScheduleStore;
-  readonly externalAgentRunner?: ExternalAgentRunner;
   readonly mcpRunner?: McpRunner;
 }
 
@@ -112,7 +110,7 @@ export class PreparedRuntimeAssembler {
       snapshot.thinkingLevel ?? resolvedModel.thinkingLevel,
     );
     const runtimeId = DelegatedWorkHost.newRuntimeId();
-    const capabilityManifest = this.buildCapabilityManifest(surface, conversation);
+    const capabilityManifest = this.buildCapabilityManifest(surface);
     const prompt = memoryContext.frozenSummary === null
       ? systemPrompt.prompt
       : `${systemPrompt.prompt}\n\n${memoryContext.frozenSummary}`;
@@ -179,18 +177,11 @@ export class PreparedRuntimeAssembler {
 
   private buildCapabilityManifest(
     surface: Surface,
-    conversation: ConversationState,
   ): ReturnType<typeof buildMainRuntimeCapabilityManifest> {
-    const externalAgentBackends =
-      this.options.externalAgentRunner !== undefined &&
-        projectRootOf(conversation.executionEnvironment) !== undefined
-        ? [...(this.options.cfg.externalAgents?.backends ?? [])]
-        : [];
     return buildMainRuntimeCapabilityManifest({
       surfaceTools: this.options.createSurfaceTools(surface),
       hasScheduleStore: this.options.scheduleStore !== undefined,
       hasSubagentRunner: true,
-      externalAgentBackends,
       hasMcp: this.options.mcpRunner !== undefined && this.options.cfg.mcp !== undefined,
     });
   }

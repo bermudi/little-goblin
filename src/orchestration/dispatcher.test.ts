@@ -1587,7 +1587,6 @@ describe("TurnDispatcher async runner creation", () => {
         await runtimeHost.disposeAll();
       },
       drainScheduler: async () => {},
-      disposeExternalAgents: async () => {},
       disposeSubagents: async () => {},
       closeMemoryEngine: async () => {},
     });

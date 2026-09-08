@@ -1,5 +1,4 @@
 import { RunnerNotStreamingError, type AgentRunner } from "../agent/mod.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { ConversationId } from "../sessions/types.ts";
 import type { SurfaceId } from "../surface.ts";
 import type {
@@ -214,7 +213,6 @@ interface DrainingGeneration {
 export interface RuntimeMachineDeps {
   readonly conversationId: ConversationId;
   readonly delegatedWorkHost: DelegatedWorkHost;
-  readonly externalAgentRunner?: ExternalAgentRunner;
   /** Process-level admission gate. The machine reads it at commit points. */
   readonly isAdmissionOpen: () => boolean;
 }
@@ -1112,43 +1110,9 @@ export class RuntimeMachine {
 
     await delegatedInvalidation;
 
-    // External-agent cancellation with a bounded timeout.
-    let externalTimer: ReturnType<typeof setTimeout> | undefined;
-    const externalCancellation = this.deps.externalAgentRunner
-      ? this.deps.externalAgentRunner.cancelBySession(this.deps.conversationId)
-      : Promise.resolve();
-    let externalCancellationTimedOut = false;
-    let externalCancellationError: unknown;
-    let externalCancellationFailed = false;
-    const timeout = new Promise<void>((resolve) => {
-      externalTimer = setTimeout(() => {
-        externalCancellationTimedOut = true;
-        log.warn("external-agent cancellation timed out in runtime disposal", {
-          conversationId: this.deps.conversationId,
-        });
-        resolve();
-      }, 10_000);
-    });
-    try {
-      await Promise.race([externalCancellation, timeout]);
-    } catch (error) {
-      externalCancellationFailed = true;
-      externalCancellationError = error;
-      log.error("external-agent cancellation failed in runtime disposal", {
-        conversationId: this.deps.conversationId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      if (externalTimer !== undefined) clearTimeout(externalTimer);
-    }
-
     const failures: unknown[] = [];
     if (runnerFailed) failures.push(runnerError);
     failures.push(...delegatedFailures);
-    if (externalCancellationTimedOut) {
-      failures.push(new Error(`external-agent cancellation timed out for ${this.deps.conversationId}`));
-    }
-    if (externalCancellationFailed) failures.push(externalCancellationError);
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Conversation runtime cleanup failed");
   }

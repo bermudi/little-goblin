@@ -272,7 +272,7 @@ describe("bun run doctor", () => {
           `state version ${CURRENT_STATE_VERSION} matches expected ${CURRENT_STATE_VERSION}`,
         );
         expect(output).toContain(
-          "subdirs: workspace, .agents/skills, workspace/.agents/skills, workspace/agents, state, state/sessions, state/memory, state/pi, state/delegated-work/runs, scratch, scratch/external-agents",
+          "subdirs: workspace, .agents/skills, workspace/.agents/skills, workspace/agents, state, state/sessions, state/memory, state/pi, state/delegated-work/runs, scratch",
         );
         expect(output).toMatch(
           /memory: pass \(0 entries, budget \d+ \/ \d+ chars, embedding .+ \(.+\) ok, last sync never, db .+\)/,
@@ -1156,13 +1156,11 @@ describe("mcp and external agent construction", () => {
     async () => {
       const home = setupHealthyHome();
       const tmpBin = mkdtempSync(join(tmpdir(), "goblin-fake-backends-"));
-      writeFileSync(join(tmpBin, "codex"), "#!/bin/sh\nsleep 3\nexit 0\n");
-      writeFileSync(join(tmpBin, "claude"), "#!/bin/sh\nsleep 3\nexit 0\n");
-      chmodSync(join(tmpBin, "codex"), 0o755);
-      chmodSync(join(tmpBin, "claude"), 0o755);
+      writeFileSync(join(tmpBin, "devin"), "#!/bin/sh\nsleep 3\nexit 0\n");
+      chmodSync(join(tmpBin, "devin"), 0o755);
 
       const raw = JSON5.parse(buildConfigContent());
-      raw.externalAgents = { backends: ["codex", "claude"] };
+      raw.externalAgents = { backends: ["devin"] };
       writeFileSync(join(home, "goblin.json5"), JSON5.stringify(raw, { space: 2 }));
 
       const originalPath = process.env.PATH;

@@ -178,7 +178,7 @@ class MockAcpServer {
 }
 
 class MockProcessHost implements ProcessHost {
-  readonly spawns: { args: ProcessSpawnArgs; server: MockAcpServer }[] = [];
+  readonly spawns: { args: ProcessSpawnArgs; server: MockAcpServer; handle: ProcessHandle }[] = [];
 
   constructor(private readonly factory: (args: ProcessSpawnArgs) => MockAcpServer) {}
 
@@ -187,7 +187,7 @@ class MockProcessHost implements ProcessHost {
       throw new Error("Spawn aborted");
     }
     const server = this.factory(args);
-    this.spawns.push({ args, server });
+    this.spawns.push({ args, server, handle: server.handle });
     if (args.signal) {
       args.signal.addEventListener("abort", () => {
         void server.handle.kill().catch(() => {});
@@ -400,8 +400,12 @@ describe("ExternalAgentHost", () => {
 
     const server = processHost.spawns[0]?.server;
     expect(server).toBeDefined();
+    // The SDK normalizes omitted capability keys into explicit negatives on
+    // the wire; assert the semantics — nothing fs/terminal is advertised.
     const capabilities = server.initializeRequests[0]?.clientCapabilities;
-    expect(capabilities).toEqual({});
+    expect(capabilities?.fs?.readTextFile ?? false).toBe(false);
+    expect(capabilities?.fs?.writeTextFile ?? false).toBe(false);
+    expect(capabilities?.terminal ?? false).toBe(false);
     expect(server.clientMethodErrors).toEqual([
       "fs/read_text_file:-32601",
       "fs/write_text_file:-32601",

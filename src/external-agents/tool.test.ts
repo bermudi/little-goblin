@@ -291,4 +291,108 @@ describe("delegated external-agent launch input", () => {
     expect(toolText(continued)).toContain("completed");
     expect(workHost.loadRecord(runId)?.invocations[0]?.status).toBe("completed");
   });
+
+  it("launch connect failure closes the record as error instead of leaving it running", async () => {
+    const workHost = new DelegatedWorkHost(home);
+    const failingHost: ProcessHost = {
+      spawn: async () => {
+        throw new Error("spawn ENOENT");
+      },
+    };
+    const agentHost = new ExternalAgentHost({ processHost: failingHost });
+    const tool = createDelegatedExternalAgentTool({
+      workHost,
+      agentHost,
+      enabledBackends: ["claude"],
+      buildOwnership: delegatedOwnership,
+      resolveDevinModel: () => "glm-5.2",
+    });
+    const result = await tool.execute("call-1", {
+      action: "start",
+      agent: "claude",
+      task: "will not launch",
+      workingDirectory: cwd,
+      permissionProfile: "dangerous",
+    }, undefined, undefined, undefined as unknown as ExtensionContext);
+    expect(toolText(result).startsWith("Error:")).toBe(true);
+    const ids = workHost.listRecordIds();
+    expect(ids).toHaveLength(1);
+    const record = workHost.loadRecord(ids[0] ?? "");
+    expect(record?.invocations[0]?.status).toBe("error");
+    expect(record?.invocations[0]?.deliveryState).toBe("suppressed");
+    expect(tool.liveRuns?.size ?? 0).toBe(0);
+  });
+
+  it("message prompt failure closes the run as error and releases the live connection", async () => {
+    const workHost = new DelegatedWorkHost(home);
+    const processHost = new ToolMockProcessHost(() => new ToolMockServer("sess-msg-fail", TOOL_CLAUDE_CAPS, TOOL_CLAUDE_MODES, [
+      () => ({ stopReason: "input_required" }) as unknown as PromptResponse,
+      () => {
+        throw new Error("transport lost mid-message");
+      },
+    ]));
+    const agentHost = new ExternalAgentHost({ processHost });
+    const tool = createDelegatedExternalAgentTool({
+      workHost,
+      agentHost,
+      enabledBackends: ["claude"],
+      buildOwnership: delegatedOwnership,
+      resolveDevinModel: () => "glm-5.2",
+    });
+    const started = await tool.execute("call-1", {
+      action: "start",
+      agent: "claude",
+      task: "needs input",
+      workingDirectory: cwd,
+      permissionProfile: "dangerous",
+    }, undefined, undefined, undefined as unknown as ExtensionContext);
+    expect(toolText(started)).toContain("input_required");
+    const runId = workHost.listRecordIds()[0] ?? "";
+    const failed = await tool.execute("call-2", { action: "message", id: runId, message: "go on" }, undefined, undefined, undefined as unknown as ExtensionContext);
+    expect(toolText(failed).startsWith("Error:")).toBe(true);
+    expect(workHost.loadRecord(runId)?.invocations[0]?.status).toBe("error");
+    expect(workHost.loadRecord(runId)?.invocations[0]?.deliveryState).toBe("suppressed");
+    expect(tool.liveRuns?.has(runId) ?? false).toBe(false);
+  });
+
+  it("completion persistence failure closes the run as error instead of leaving it running", async () => {
+    const workHost = new DelegatedWorkHost(home);
+    const processHost = new ToolMockProcessHost(() => new ToolMockServer("sess-complete-fail", TOOL_CLAUDE_CAPS, TOOL_CLAUDE_MODES, [
+      async (ctx) => {
+        await ctx.client.notify(methods.client.session.update, {
+          sessionId: "sess-complete-fail",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } },
+        });
+        return { stopReason: "end_turn" };
+      },
+    ]));
+    const agentHost = new ExternalAgentHost({ processHost });
+    const tool = createDelegatedExternalAgentTool({
+      workHost,
+      agentHost,
+      enabledBackends: ["claude"],
+      buildOwnership: delegatedOwnership,
+      resolveDevinModel: () => "glm-5.2",
+    });
+    const originalComplete = workHost.completeInvocation.bind(workHost);
+    workHost.completeInvocation = () => {
+      throw new Error("completion write failed");
+    };
+    try {
+      const result = await tool.execute("call-1", {
+        action: "start",
+        agent: "claude",
+        task: "complete will fail",
+        workingDirectory: cwd,
+        permissionProfile: "dangerous",
+      }, undefined, undefined, undefined as unknown as ExtensionContext);
+      expect(toolText(result).startsWith("Error:")).toBe(true);
+    } finally {
+      workHost.completeInvocation = originalComplete;
+    }
+    const runId = workHost.listRecordIds()[0] ?? "";
+    expect(workHost.loadRecord(runId)?.invocations[0]?.status).toBe("error");
+    expect(workHost.loadRecord(runId)?.invocations[0]?.deliveryState).toBe("suppressed");
+    expect(tool.liveRuns?.has(runId) ?? false).toBe(false);
+  });
 });

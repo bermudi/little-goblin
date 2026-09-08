@@ -108,6 +108,20 @@ function isNodeErrno(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && "code" in err;
 }
 
+/** Coordinator-owned failures must never leave a running record behind a dead turn. */
+function markInvocationFailed(
+  workHost: DelegatedWorkHost,
+  runId: string,
+  index: number,
+  message: string,
+): void {
+  try {
+    workHost.failInvocation(runId, index, message);
+  } catch {
+    // The store already logged the secondary failure; report the original error.
+  }
+}
+
 function validateWorkingDirectory(dir: string): string | null {
   if (dir.length === 0 || !isAbsolute(dir)) {
     return "workingDirectory must be an absolute path";
@@ -199,12 +213,14 @@ async function handleDelegatedAction(
           ...(signal !== undefined ? { signal } : {}),
         });
       } catch (err) {
+        markInvocationFailed(workHost, recordId, 0, errorString(err));
         return delegatedInvalid(errorString(err));
       }
       try {
         workHost.captureExternalSession(recordId, connection.sessionId);
       } catch (err) {
         await connection.dispose().catch(() => {});
+        markInvocationFailed(workHost, recordId, 0, errorString(err));
         return delegatedInvalid(errorString(err));
       }
       let outcome: { stopReason: string; agentText: string };
@@ -227,6 +243,7 @@ async function handleDelegatedAction(
       try {
         workHost.completeInvocation(recordId, 0, outcome.agentText);
       } catch (err) {
+        markInvocationFailed(workHost, recordId, 0, errorString(err));
         await connection.dispose().catch(() => {});
         live.delete(recordId);
         return delegatedInvalid(errorString(err));
@@ -295,6 +312,9 @@ async function handleDelegatedAction(
         outcome = await entry.connection.prompt(text, () => {});
         options.onStatusUpdate?.("message sent to external agent");
       } catch (err) {
+        markInvocationFailed(workHost, id, last.index, errorString(err));
+        await entry.connection.dispose().catch(() => {});
+        live.delete(id);
         return delegatedInvalid(errorString(err));
       }
       entry.lastStopReason = outcome.stopReason;
@@ -305,6 +325,9 @@ async function handleDelegatedAction(
       try {
         workHost.completeInvocation(id, last.index, outcome.agentText);
       } catch (err) {
+        markInvocationFailed(workHost, id, last.index, errorString(err));
+        await entry.connection.dispose().catch(() => {});
+        live.delete(id);
         return delegatedInvalid(errorString(err));
       }
       await entry.connection.dispose().catch(() => {});

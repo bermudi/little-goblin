@@ -28,6 +28,16 @@ import {
   type TurnDispatcher,
   type PromptContent,
 } from "../orchestration/dispatcher.ts";
+
+/**
+ * Command replies may carry raw Telegram reply_markup (Settings web_app
+ * keyboard); pass it through to the sender when present.
+ */
+function commandReplyOpts(result: CommandCompletionResult): { reply_markup?: unknown } {
+  return result.kind === "replied" && result.replyMarkup !== undefined
+    ? { reply_markup: result.replyMarkup }
+    : {};
+}
 import type {
   ConversationCreationLease,
   ConversationLifecycle,
@@ -531,7 +541,9 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         if (sideEffectAdmission !== null) {
           await sideEffectAdmission.completion;
         }
-        if (result.kind === "replied") await sendSystemReply(message, result.reply, result.tag ?? "ok");
+        if (result.kind === "replied") {
+          await sendSystemReply(message, result.reply, result.tag ?? "ok", commandReplyOpts(result));
+        }
       },
       async (err) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -744,7 +756,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
               return;
             }
             if (result.kind === "replied") {
-              await sendSystemReply(message, result.reply, result.tag ?? "ok");
+              await sendSystemReply(message, result.reply, result.tag ?? "ok", commandReplyOpts(result));
             }
           },
           async (err: unknown) => {
@@ -769,7 +781,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
           },
         ) ?? (
           result.kind === "replied"
-            ? sendSystemReply(message, result.reply, result.tag ?? "ok")
+            ? sendSystemReply(message, result.reply, result.tag ?? "ok", commandReplyOpts(result))
             : Promise.resolve()
         );
         if (sideEffectAdmission !== null) {

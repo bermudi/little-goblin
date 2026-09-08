@@ -227,6 +227,26 @@ async function expectAdmissionReplied(
 }
 
 describe("handleCommand", () => {
+  it("offers the Settings web_app button when a public URL is configured", async () => {
+    const harness = makeHarness();
+    harness.deps.cfg.settings = { enabled: true, port: 3423, publicUrl: "https://goblin.tailnet.example/" };
+    const result = expectReplied(await dispatch({ command: "/settings", harness }));
+
+    expect(result.reply).toContain("https://goblin.tailnet.example/");
+    const markup = result.replyMarkup as {
+      inline_keyboard: { text: string; web_app?: { url: string } }[][];
+    };
+    expect(markup.inline_keyboard[0]?.[0]?.text).toBe("Open Settings");
+    expect(markup.inline_keyboard[0]?.[0]?.web_app?.url).toBe("https://goblin.tailnet.example/");
+  });
+
+  it("omits Settings markup when no public URL is configured", async () => {
+    const harness = makeHarness();
+    const result = expectReplied(await dispatch({ command: "/settings", harness }));
+
+    expect(result.replyMarkup).toBeUndefined();
+  });
+
   it("inspects skills without creating a conversation", async () => {
     const harness = makeHarness();
     const result = expectReplied(await dispatch({ command: "/skills", harness }));

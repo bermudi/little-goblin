@@ -66,7 +66,7 @@ export type SideEffect =
   | { kind: "queue-prompt"; conversation: ConversationState; surface: Surface; text: string };
 
 export type CommandCompletionResult =
-  | { kind: "replied"; reply: string; tag?: SystemTag; sideEffects: SideEffect[] }
+  | { kind: "replied"; reply: string; tag?: SystemTag; sideEffects: SideEffect[]; /** Optional raw Telegram reply_markup (e.g. Settings web_app keyboard). */ replyMarkup?: unknown }
   | { kind: "handled"; sideEffects: SideEffect[] }
   | { kind: "fallthrough" };
 
@@ -177,8 +177,10 @@ export interface CommandDef {
 // Helpers shared by handlers
 // ---------------------------------------------------------------------------
 
-function replied(reply: string, sideEffects: SideEffect[] = [], tag?: SystemTag): CommandCompletionResult {
-  return { kind: "replied", reply, sideEffects, tag };
+function replied(reply: string, sideEffects: SideEffect[] = [], tag?: SystemTag, replyMarkup?: unknown): CommandCompletionResult {
+  return replyMarkup === undefined
+    ? { kind: "replied", reply, sideEffects, tag }
+    : { kind: "replied", reply, sideEffects, tag, replyMarkup };
 }
 
 /**
@@ -771,10 +773,12 @@ const scheduleHandler: CommandHandler = async ({ deps, surface, rawText }) => {
 const settingsHandler: CommandHandler = async ({ deps }) => {
   // `/settings` is instant-timing and deployment-scoped: it advertises the
   // Telegram Mini App entry for deployment-wide defaults (decision 0049).
-  // The web_app button itself is synced via `syncSettingsMenuButton` at
-  // startup; this text reply keeps the entry discoverable via /help and the
-  // command menu and never carries secrets.
-  return replied(buildSettingsEntryReply(deps.cfg).text, [], "info");
+  // The web_app button opens the Mini App inside Telegram's webview, where
+  // initData authorizes the operator; the raw URL alone cannot. The menu
+  // button is also synced via `syncSettingsMenuButton` at startup. Never
+  // carries secrets.
+  const entry = buildSettingsEntryReply(deps.cfg);
+  return replied(entry.text, [], "info", entry.replyMarkup ?? undefined);
 };
 
 // ---------------------------------------------------------------------------

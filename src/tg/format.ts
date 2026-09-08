@@ -11,6 +11,8 @@ import type { TelegramMetricsEvent } from "../metrics/mod.ts";
 export interface ReplyOpts {
   parse_mode?: string;
   disable_notification?: boolean;
+  /** Raw Telegram `reply_markup` payload (e.g. an inline keyboard). */
+  reply_markup?: unknown;
 }
 
 /**
@@ -30,6 +32,8 @@ export interface SystemReplyOptions {
   silent?: boolean;
   /** Re-throw a final Telegram delivery failure after the plain-text retry. */
   propagateErrors?: boolean;
+  /** Raw Telegram `reply_markup` payload (e.g. an inline keyboard). */
+  reply_markup?: unknown;
 }
 
 const SPECIAL = new Set([
@@ -310,6 +314,7 @@ export async function sendSystemReply(
   const formatted = systemReply(text, tag);
   const sendOpts: ReplyOpts = { parse_mode: "MarkdownV2" };
   if (silent) sendOpts.disable_notification = true;
+  if (opts.reply_markup !== undefined) sendOpts.reply_markup = opts.reply_markup;
   try {
     await message.reply(formatted, sendOpts);
   } catch (err) {
@@ -319,6 +324,7 @@ export async function sendSystemReply(
       // silent); only parse_mode is dropped since the text is no longer markdown.
       const retryOpts: ReplyOpts = {};
       if (silent) retryOpts.disable_notification = true;
+      if (opts.reply_markup !== undefined) retryOpts.reply_markup = opts.reply_markup;
       try {
         await message.reply(plain, retryOpts);
       } catch (retryErr) {

@@ -188,6 +188,24 @@ describe("sendSystemReply", () => {
     expect(m.calls[0]!.opts).toEqual({ parse_mode: "MarkdownV2" });
   });
 
+  it("passes reply_markup through, including on the plain-text retry", async () => {
+    const markup = { inline_keyboard: [[{ text: "Open Settings", web_app: { url: "https://goblin.test/" } }]] };
+    const m = makeMessage();
+    let first = true;
+    m.reply.mockImplementation((text: string, opts?: ReplyOpts) => {
+      m.calls.push({ text, opts });
+      if (first) {
+        first = false;
+        return Promise.reject({ error_code: 400, description: "Bad Request: can't parse entities" });
+      }
+      return Promise.resolve();
+    });
+    await sendSystemReply({ reply: m.reply }, "Open Goblin Settings.", "info", { reply_markup: markup });
+    expect(m.calls).toHaveLength(2);
+    expect(m.calls[0]!.opts?.reply_markup).toBe(markup);
+    expect(m.calls[1]!.opts?.reply_markup).toBe(markup);
+  });
+
   it("falls back to plain text on a 400 parse error, keeping disable_notification", async () => {
     const m = makeMessage();
     let first = true;

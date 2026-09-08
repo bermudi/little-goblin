@@ -29,7 +29,15 @@ import type {
 
 const SUBAGENT_STATUSES = ["running", "completed", "cancelled", "error", "interrupted"] as const;
 const DELIVERY_STATES = ["pending", "delivered", "suppressed"] as const;
-const KINDS = ["generic-subagent", "named-subagent"] as const;
+const providerSessionIdSchema = z.string().min(1);
+const externalAgentStateSchema = z.object({
+  backend: z.enum(["claude", "devin"]),
+  // Captured after ACP session creation, before the coordinator sends a prompt.
+  // Kept in record.json so identity and kind-specific state share one atomic write.
+  providerSessionId: providerSessionIdSchema.nullable(),
+}).strict();
+
+export type ExternalAgentRecordState = z.infer<typeof externalAgentStateSchema>;
 
 const executionEnvironmentSchema = z.union([
   z.object({ kind: z.literal("personal") }).strict(),
@@ -79,14 +87,29 @@ const delegatedWorkInvocationSchema = z.object({
   completedAt: timestampSchema.nullable(),
 }).strict();
 
-const delegatedWorkRecordSchema = z.object({
+const delegatedWorkRecordBase = z.object({
   id: z.string().min(1).regex(SAFE_RUN_ID_RE, "must be a safe run ID"),
-  kind: z.enum(KINDS),
   name: z.string().nullable(),
   depth: z.number().int().min(1).max(3),
   createdAt: timestampSchema,
   invocations: z.array(delegatedWorkInvocationSchema).min(1),
-}).strict().superRefine((record, ctx) => {
+}).strict();
+
+const delegatedWorkRecordSchema = z.discriminatedUnion("kind", [
+  delegatedWorkRecordBase.extend({ kind: z.literal("generic-subagent") }),
+  delegatedWorkRecordBase.extend({ kind: z.literal("named-subagent") }),
+  delegatedWorkRecordBase.extend({
+    kind: z.literal("external-agent"),
+    external: externalAgentStateSchema,
+  }),
+]).superRefine((record, ctx) => {
+  if (record.kind === "external-agent" && record.name !== null) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["name"],
+      message: "external-agent records must have name = null",
+    });
+  }
   if (record.kind === "generic-subagent" && record.name !== null) {
     ctx.addIssue({
       code: "custom",
@@ -105,6 +128,24 @@ const delegatedWorkRecordSchema = z.object({
     const invocation = record.invocations[i];
     if (invocation === undefined) continue;
     const invocationPath = ["invocations", i] as const;
+    if (record.kind === "external-agent" && invocation.lifetime !== "durable") {
+      ctx.addIssue({
+        code: "custom",
+        path: [...invocationPath, "lifetime"],
+        message: "external-agent invocations require durable lifetime",
+      });
+    }
+    if (
+      record.kind === "external-agent" &&
+      invocation.status === "completed" &&
+      record.external.providerSessionId === null
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["external", "providerSessionId"],
+        message: "completed external-agent invocations require a captured provider session",
+      });
+    }
     if (invocation.index !== i) {
       ctx.addIssue({
         code: "custom",
@@ -257,7 +298,12 @@ export function parseDelegatedWorkRecord(
 /** Write a record to disk atomically (tmp + fsync + rename), after validating. */
 export function writeRecordAtomic(path: string, record: DelegatedWorkRecord): void {
   const validated = parseDelegatedWorkRecord(record, path);
-  atomicWrite(path, JSON.stringify(validated, null, 2));
+  try {
+    atomicWrite(path, JSON.stringify(validated, null, 2));
+  } catch (error) {
+    log.error("delegated work record write failed", { path, ...boundedError(error) });
+    throw error;
+  }
 }
 
 export interface RecordStoreResult {
@@ -321,11 +367,8 @@ export class DelegatedWorkRecordStore {
   }
 
   /**
-   * Create a new record with its first attached invocation.
-   *
-   * The run directory is not created here; the execution coordinator creates it
-   * side-by-side with the Pi session so an empty record never sits without its
-   * kind-specific state.
+   * Create a new record with its first invocation. Validation precedes directory
+   * creation; the atomic writer creates the parent directory when needed.
    */
   createRecord(
     id: string,
@@ -334,14 +377,17 @@ export class DelegatedWorkRecordStore {
     depth: number,
     ownership: DelegatedWorkOwnership,
     startedAt = new Date().toISOString(),
+    external?: ExternalAgentRecordState,
   ): RecordStoreResult {
     assertSafeRunId(id);
     if (this.load(id) !== null) {
       throw new Error(`Cannot create delegated work record ${id}: already exists`);
     }
-    const record: DelegatedWorkRecord = {
+    const path = this.recordPath(id);
+    const record = parseDelegatedWorkRecord({
       id,
       kind,
+      ...(external === undefined ? {} : { external }),
       name,
       depth,
       createdAt: startedAt,
@@ -359,10 +405,36 @@ export class DelegatedWorkRecordStore {
         startedAt,
         completedAt: null,
       }],
-    };
-    const path = this.recordPath(id);
+    }, path, id);
     writeRecordAtomic(path, record);
+    log.info("delegated work record created", { runId: id, kind, lifetime: ownership.lifetime });
     return { record, runDir: this.runDir(id) };
+  }
+
+  /** Persist provider identity without exposing record-file writes to an execution coordinator. */
+  captureExternalSession(id: string, providerSessionId: string): DelegatedWorkRecord {
+    const record = this.require(id);
+    if (record.kind !== "external-agent") {
+      throw recordError(this.recordPath(id), "provider session capture requires an external-agent record");
+    }
+    const parsed = providerSessionIdSchema.safeParse(providerSessionId);
+    if (!parsed.success) throw recordError(this.recordPath(id), formatIssues(parsed.error));
+    if (record.invocations.at(-1)?.status !== "running") {
+      throw recordError(this.recordPath(id), "provider session capture requires a running invocation");
+    }
+    if (record.external.providerSessionId !== null) {
+      if (record.external.providerSessionId === parsed.data) return record;
+      throw recordError(this.recordPath(id), "provider session identity is already captured");
+    }
+    const next: DelegatedWorkRecord = {
+      ...record,
+      external: { ...record.external, providerSessionId: parsed.data },
+    };
+    writeRecordAtomic(this.recordPath(id), next);
+    log.info("external delegated work provider session captured", {
+      runId: id, backend: record.external.backend,
+    });
+    return next;
   }
 
   /**
@@ -457,6 +529,7 @@ export class DelegatedWorkRecordStore {
       };
     });
     writeRecordAtomic(this.recordPath(id), next);
+    log.info("delegated work invocation closed", { runId: id, index, status, deliveryState });
     return next;
   }
 

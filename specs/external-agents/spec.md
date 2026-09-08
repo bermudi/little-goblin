@@ -92,6 +92,21 @@ reconciliation SHALL mark the invocation interrupted; nothing SHALL
 auto-resume an active turn. Completed invocations SHALL ride the existing
 completion-wake and exact-Surface pending-claim delivery unchanged.
 
+The record kind is `external-agent`. Its `external` state contains `backend`
+(`claude` or `devin`) and `providerSessionId`, initially null until the execution
+coordinator captures the ACP session identity through `DelegatedWorkHost`.
+That state lives in the same atomically replaced `record.json`; capture cannot
+replace a different provider identity or mutate terminal context. Completion
+requires captured provider identity. External records cannot be revived through
+the Pi subagent path.
+
+#### Scenario: Canonical external identity
+
+- **WHEN** the coordinator creates an external record and captures its ACP session
+- **THEN** the one host-owned record contains the qualified backend, provider
+  session identity, and full durable ownership capture; malformed identities
+  and attached external invocations are rejected before persistence
+
 #### Scenario: Restart truth
 
 - **WHEN** Goblin dies mid-run and restarts

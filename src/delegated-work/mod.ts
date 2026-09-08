@@ -29,6 +29,7 @@ export type {
   DelegatedWorkOutcome,
   DelegatedWorkRecord,
   DelegatedWorkStatus,
+  ExternalAgentRecordState,
 } from "./store.ts";
 export {
   asConversationRuntimeId,

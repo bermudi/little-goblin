@@ -168,6 +168,9 @@ describe("DelegatedWorkRecordStore", () => {
     host.createExternalRecord("external-capture", "claude", {
       ...ownership("runtime-external"), lifetime: "durable",
     });
+    expect(() => host.completeInvocation("external-capture", 0, "missing context"))
+      .toThrow(/captured provider session/);
+    expect(host.loadRecord("external-capture")?.invocations[0]?.status).toBe("running");
     expect(() => host.captureExternalSession("missing-external", "provider")).toThrow(/not found/);
     expect(() => host.captureExternalSession("external-capture", "")).toThrow();
     host.captureExternalSession("external-capture", "provider-first");

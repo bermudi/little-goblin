@@ -7,10 +7,9 @@
  * Authority: `goblin.json5` `mcp` section. `loadConfig()` remains the reader;
  * this module is the only writer. Commands never touch the file directly —
  * they call `setMcpServerEnabled()` here.
- * Persistence: `$GOBLIN_HOME/goblin.json5` via `goblinConfigPath()` +
- * `atomicWrite()` (tmp + fsync + rename, mode-preserving). Lock file
- * `<config>.lock` serializes intra-process writers; a pre-write re-read
- * aborts on concurrent manual edits instead of silently clobbering them.
+ * Persistence: `$GOBLIN_HOME/goblin.json5` via the shared
+ * `updateGoblinConfig()` coordination (one lock, one compare-and-swap, one
+ * mode-preserving durable write shared with the Settings store).
  *
  * Selection semantics (decision 0042: mcporter owns transport/config, Goblin
  * only selects servers):
@@ -26,24 +25,9 @@
  *   section (MCP stays unconfigured until explicitly enabled).
  */
 
-import { closeSync, existsSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import JSON5 from "json5";
 import { McpConfigSchema, type McpConfig } from "../schema.ts";
-import { goblinConfigLockPath, goblinConfigPath } from "../sessions/paths.ts";
-import { atomicWrite } from "../fs.ts";
-import { log } from "../log.ts";
-
-/**
- * Read the operator's goblin.json5 from disk as unparsed JSON5 text.
- * Throws when the file is missing — callers surface that as an error reply.
- */
-function readRawConfigText(goblinHome: string): string {
-  const path = goblinConfigPath(goblinHome);
-  if (!existsSync(path)) {
-    throw new Error(`Config file not found: ${path}`);
-  }
-  return readFileSync(path, "utf-8");
-}
+import { goblinConfigPath } from "../sessions/paths.ts";
+import { updateGoblinConfig } from "../goblin-config-file.ts";
 
 /**
  * Validate an mcp section against the config schema. Returns the parsed
@@ -85,86 +69,14 @@ export function formatMcpSelection(config: McpConfig): string {
   return `${effectiveText} (allow-list: ${allowText}; denied: ${disabled.join(", ")})`;
 }
 
-/** Path to the cooperative lock file serializing goblin.json5 MCP writers. */
-function lockPathFor(goblinHome: string): string {
-  return goblinConfigLockPath(goblinHome);
-}
-
-const LOCK_STALE_MS = 10_000;
-
-function sleepSyncMs(ms: number): void {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      // Busy-wait fallback when Atomics.wait is unavailable.
-    }
-  }
-}
-
-/**
- * Acquire the goblin.json5 MCP lock via exclusive creation (`"wx"` — an
- * atomic no-overwrite reservation, not replacement). Stale locks older than
- * 10s are reaped so a crashed writer cannot wedge future /mcp mutations.
- * Throws after ~5s when another writer holds the lock.
- */
-function acquireLockSync(lockPath: string): void {
-  const start = Date.now();
-  while (true) {
-    try {
-      const fd = openSync(lockPath, "wx", 0o600);
-      try {
-        writeFileSync(fd, `${process.pid}\n${Date.now()}\n`, "utf-8");
-      } finally {
-        closeSync(fd);
-      }
-      return;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      try {
-        const st = statSync(lockPath);
-        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-          try {
-            rmSync(lockPath, { force: true });
-          } catch {
-            // Another writer reaped first; retry acquisition.
-          }
-          continue;
-        }
-      } catch {
-        // Lock vanished between open and stat; retry immediately.
-        continue;
-      }
-      if (Date.now() - start > 5000) {
-        throw new Error(
-          `Config is locked (${lockPath}); another /mcp update is in progress. Retry shortly.`,
-        );
-      }
-      sleepSyncMs(50);
-    }
-  }
-}
-
-function releaseLockSync(lockPath: string): void {
-  try {
-    rmSync(lockPath, { force: true });
-  } catch {
-    // Best-effort: a stale-reaped lock is already gone.
-  }
-}
-
 /**
  * Enable or disable one mcporter server in goblin.json5 and persist the file.
  *
  * Only mutates the `mcp` section; all other top-level keys (including
- * credentials) are preserved byte-for-byte apart from JSON5 round-trip
- * (comments excluded). Writes via `atomicWrite` (mode-preserving) under the
- * MCP lock, with a pre-write re-read that aborts on concurrent manual edits
- * instead of silently losing them.
- *
- * The service still requires a restart for tool registration changes; the
- * caller refreshes the in-memory catalog for immediate visibility.
+ * credentials and the Settings-owned `devin` section) are preserved by the
+ * shared coordinated writer. The service still requires a restart for tool
+ * registration changes; the caller refreshes the in-memory catalog for
+ * immediate visibility.
  */
 export function setMcpServerEnabled(
   goblinHome: string,
@@ -172,15 +84,8 @@ export function setMcpServerEnabled(
   enabled: boolean,
 ): { config: McpConfig; path: string } {
   const path = goblinConfigPath(goblinHome);
-  const lockPath = lockPathFor(goblinHome);
-  acquireLockSync(lockPath);
-  try {
-    const originalText = readRawConfigText(goblinHome);
-    const raw = JSON5.parse(originalText) as Record<string, unknown>;
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-      throw new Error("Config file does not contain a top-level object");
-    }
-
+  let next: Record<string, unknown> = {};
+  updateGoblinConfig(goblinHome, raw => {
     const section = (raw.mcp ?? {}) as Record<string, unknown>;
     const current = validateMcpSection(section);
 
@@ -199,7 +104,7 @@ export function setMcpServerEnabled(
       if (allow !== undefined) allow = allow.filter((n) => n !== server);
     }
 
-    const next: Record<string, unknown> = { ...section };
+    next = { ...section };
     if (allow !== undefined) next.enabled = allow;
     else delete next.enabled;
     if (disabled.size > 0) next.disabledServers = [...disabled].sort();
@@ -216,25 +121,6 @@ export function setMcpServerEnabled(
 
     // Re-validate the merged section so a bad write can never persist.
     validateMcpSection(next);
-
-    // Compare-and-swap: abort when a manual edit landed between our read and
-    // the write instead of silently clobbering unrelated settings.
-    let currentText: string;
-    try {
-      currentText = readFileSync(path, "utf-8");
-    } catch (err) {
-      throw new Error(
-        `MCP config update aborted: cannot re-read config for conflict check: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    if (currentText !== originalText) {
-      log.warn("mcp config write conflict: file changed during update", { path });
-      throw new Error("Config changed during update (manual edit detected); retry /mcp enable|disable.");
-    }
-
-    atomicWrite(path, JSON5.stringify(raw, { space: 2 }) + "\n");
-    return { config: validateMcpSection(next), path };
-  } finally {
-    releaseLockSync(lockPath);
-  }
+  });
+  return { config: validateMcpSection(next), path };
 }

@@ -103,4 +103,19 @@
   //   // provider: "openrouter",  // label in memory_embeddings; model/provider change triggers reindex
   //   // cooldownSeconds: 60,
   // },
+
+  // --- Settings Mini App (deployment defaults inside Telegram) ---
+  // Optional. Disabled unless `enabled: true`. When enabled Goblin listens on
+  // loopback 127.0.0.1 at the stable `port` (default 3423) and exposes
+  // /settings plus a Telegram menu button opening `publicUrl` as a Mini App.
+  // Operator-managed Tailscale Serve supplies private HTTPS: map your tailnet
+  // HTTPS URL to http://127.0.0.1:3423 (do not configure Tailscale here).
+  // Restart Goblin after changing this block.
+  // settings: {
+  //   enabled: true,
+  //   port: 3423,
+  //   publicUrl: "https://<tailnet-name>/settings/",
+  //   // allowedOrigins defaults to the publicUrl origin; override only for custom setups.
+  //   // allowedOrigins: ["https://<tailnet-name>"],
+  // },
 }

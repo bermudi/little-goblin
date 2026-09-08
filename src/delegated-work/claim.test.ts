@@ -81,6 +81,74 @@ class FakeRail implements CompletionWakeRail {
 }
 
 describe("Pending claim and startup re-arm", () => {
+  it("external pending completion claimed and delivered on its exact origin Surface", async () => {
+    const home = tempHome();
+    const origin = dmSurface(251);
+    const bystander = dmSurface(252);
+    const before = new DelegatedWorkHost(home);
+    before.createExternalRecord("external-pending", "claude", durableOwnership(surfaceId(origin)));
+    before.captureExternalSession("external-pending", "provider-claim");
+    before.completeInvocation("external-pending", 0, "external result");
+    const unboundWake = new DurableCompletionWake(new FakeRail(), before);
+    expect(await unboundWake.deliverCompletion("external-pending", 0)).toBe("pending");
+
+    const host = new DelegatedWorkHost(home);
+    const rail = new FakeRail();
+    rail.bindings.set(surfaceId(origin), boundConversation("conversation-claim"));
+    rail.bindings.set(surfaceId(bystander), boundConversation("conversation-claim"));
+    const wake = new DurableCompletionWake(rail, host);
+    const claim = new PendingCompletionClaim(wake, host);
+    expect(await claim.claimForInteraction(bystander)).toBe(0);
+    expect(rail.enqueued).toHaveLength(0);
+    // Completion wakes and interaction claims share one reservation.
+    await Promise.all([
+      wake.deliverCompletion("external-pending", 0),
+      claim.claimForInteraction(origin),
+      claim.claimForInteraction(origin),
+    ]);
+    expect(rail.enqueued).toHaveLength(1);
+    expect(surfaceId(rail.enqueued[0]!.surface)).toBe(surfaceId(origin));
+    expect(rail.enqueued[0]!.content).toContain("external result");
+    expect(host.loadRecord("external-pending")?.invocations[0]?.deliveryState).toBe("delivered");
+    expect(await claim.claimForInteraction(origin)).toBe(0);
+  });
+
+  it("external completions use the shared oldest-first cap and guest-summon rules", async () => {
+    const home = tempHome();
+    const host = new DelegatedWorkHost(home);
+    const store = new DelegatedWorkRecordStore(home);
+    const origin = dmSurface(261);
+    const guest = guestSurface(262);
+    const total = PENDING_COMPLETIONS_PER_CLAIM_CAP + 2;
+    // Reverse creation order so the assertion distinguishes completion time from run-id order.
+    for (let i = total - 1; i >= 0; i--) {
+      const id = `external-cap-${i}`;
+      host.createExternalRecord(id, "devin", durableOwnership(surfaceId(origin)));
+      host.captureExternalSession(id, `provider-cap-${i}`);
+      store.closeInvocation(id, 0, "completed", { kind: "success", text: `external result ${i}` },
+        "pending", timestamp(20 + i));
+    }
+    host.createExternalRecord("external-guest", "claude", durableOwnership(surfaceId(guest)));
+    host.captureExternalSession("external-guest", "provider-guest");
+    host.completeInvocation("external-guest", 0, "guest external result");
+    const rail = new FakeRail();
+    rail.bindings.set(surfaceId(origin), boundConversation("conversation-claim"));
+    rail.bindings.set(surfaceId(guest), boundConversation("conversation-guest"));
+    const wake = new DurableCompletionWake(rail, host);
+    const claim = new PendingCompletionClaim(wake, host);
+    expect(await claim.rearmAtStartup()).toBe(PENDING_COMPLETIONS_PER_CLAIM_CAP);
+    expect(rail.enqueued.map((turn) => turn.content.split("\n\n").at(-1)))
+      .toEqual(Array.from({ length: PENDING_COMPLETIONS_PER_CLAIM_CAP }, (_, i) => `external result ${i}`));
+    expect(await claim.claimForInteraction(origin)).toBe(2);
+    expect(await wake.deliverCompletion("external-guest", 0)).toBe("pending");
+    expect(await claim.claimForInteraction(guest)).toBe(0);
+    expect(host.loadRecord("external-guest")?.invocations[0]?.deliveryState).toBe("pending");
+    expect(await claim.claimForGuestSummon(guestSurface(263))).toBe(0);
+    expect(await claim.claimForGuestSummon(guest)).toBe(1);
+    expect(surfaceId(rail.enqueued.at(-1)!.surface)).toBe(surfaceId(guest));
+    expect(host.loadRecord("external-guest")?.invocations[0]?.deliveryState).toBe("delivered");
+  });
+
   it("pending completions survive process restart retained for their exact origin Surface", async () => {
     const home = tempHome();
     const originA = surfaceId(dmSurface(211));

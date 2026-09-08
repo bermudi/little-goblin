@@ -1,15 +1,16 @@
 import { z } from "zod";
 import { DEFAULT_VOICE_NAME } from "./voice.ts";
 
-const EXTERNAL_AGENT_BACKENDS = ["codex", "claude", "devin"] as const;
-const EXTERNAL_AGENT_PERMISSION_PROFILES = ["read-only", "workspace-write"] as const;
+const EXTERNAL_AGENT_BACKENDS = ["claude", "devin"] as const;
 
 export const ExternalAgentsConfigSchema = z.object({
   backends: z.array(z.enum(EXTERNAL_AGENT_BACKENDS)).default([]),
-  permissionProfile: z.enum(EXTERNAL_AGENT_PERMISSION_PROFILES).default("read-only"),
-  maxConcurrent: z.number().int().min(1).max(8).default(2),
-  timeoutMs: z.number().int().min(60000).max(7200000).default(1800000),
-  ptyFallback: z.boolean().default(false),
+  /**
+   * Operator-owned Settings deployment default for Devin (decision 0049),
+   * bootstrapped to `glm-5.2`. Resolved at admission and captured with each
+   * admitted run; the AI never selects or overrides it.
+   */
+  devinModel: z.string().min(1).default("glm-5.2"),
 }).superRefine((val, ctx) => {
   if (new Set(val.backends).size !== val.backends.length) {
     ctx.addIssue({
@@ -49,6 +50,80 @@ export const McpConfigSchema = z.object({
 
 export type McpConfig = z.infer<typeof McpConfigSchema>;
 
+export const DevinConfigSchema = z.object({
+  /** Exact deployment-default Devin model id (explicit selection only). */
+  defaultModel: z.string().min(1),
+});
+
+export type DevinConfig = z.infer<typeof DevinConfigSchema>;
+
+export const SettingsConfigSchema = z
+  .object({
+    /** Master switch for the optional loopback Settings API. Disabled by default. */
+    enabled: z.boolean().default(false),
+    /**
+     * Deployment-owned stable loopback port (decision 0049). The listener
+     * always binds 127.0.0.1; this port is the stable Tailscale Serve target.
+     * Ephemeral port 0 is reserved for tests via `SettingsServerOptions.port`.
+     */
+    port: z.number().int().min(1).max(65535).default(3423),
+    /**
+     * Operator-managed private HTTPS URL (Tailscale Serve) that serves the
+     * loopback listener to Telegram. Required for the web_app launch entry;
+     * when absent the API still listens locally but Telegram has no entry.
+     */
+    publicUrl: z.string().optional(),
+    /**
+     * Allowed write origins for POST /api/settings. Defaults to the
+     * `publicUrl` origin when absent. Loopback and tests pass explicit values.
+     */
+    allowedOrigins: z.array(z.string()).optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.publicUrl !== undefined) {
+      try {
+        const parsed = new URL(val.publicUrl);
+        if (parsed.protocol !== "https:") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "settings.publicUrl must be an https URL",
+            path: ["publicUrl"],
+          });
+        }
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "settings.publicUrl must be a valid URL",
+          path: ["publicUrl"],
+        });
+      }
+    }
+    if (val.allowedOrigins !== undefined) {
+      for (const origin of val.allowedOrigins) {
+        try {
+          const parsed = new URL(origin);
+          if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "settings.allowedOrigins entries must be valid http(s) origins",
+              path: ["allowedOrigins"],
+            });
+            break;
+          }
+        } catch {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "settings.allowedOrigins entries must be valid URLs",
+            path: ["allowedOrigins"],
+          });
+          break;
+        }
+      }
+    }
+  });
+
+export type SettingsConfig = z.infer<typeof SettingsConfigSchema>;
+
 /**
  * Zod schema for the JSON5 config file (goblin.json5).
  * Values are resolved via resolveConfigValue() before validation.
@@ -76,6 +151,13 @@ export const ConfigFileSchema = z
     embeddings: EmbeddingsConfigSchema.optional(),
     externalAgents: ExternalAgentsConfigSchema.optional(),
     mcp: McpConfigSchema.optional(),
+    devin: DevinConfigSchema.optional(),
+    /**
+     * Optional loopback Settings Mini App API (decision 0049). Disabled by
+     * default; when enabled the deployment owns a stable loopback port and
+     * an operator-managed Tailscale Serve HTTPS URL. See SettingsConfigSchema.
+     */
+    settings: SettingsConfigSchema.optional(),
     /**
      * Legacy field removed by decision 0034. Retained as `z.unknown()` so an
      * existing key fails validation with actionable guidance via the

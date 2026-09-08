@@ -9,6 +9,7 @@ import {
   type DelegatedWorkInvocation,
   type DelegatedWorkKind,
   type DelegatedWorkRecord,
+  type ExternalAgentRecordState,
 } from "./store.ts";
 import {
   asConversationRuntimeId,
@@ -377,6 +378,25 @@ export class DelegatedWorkHost {
     return this.recordStore.createRecord(runId, kind, name, depth, ownership);
   }
 
+  /** External runs share the canonical store and lifecycle, with durable ownership only. */
+  createExternalRecord(
+    runId: string,
+    backend: ExternalAgentRecordState["backend"],
+    ownership: DurableDelegatedWorkOwnership,
+    launch?: Pick<ExternalAgentRecordState, "workingDirectory" | "permissionProfile" | "devinModel" | "task">,
+  ): { record: DelegatedWorkRecord; runDir: string } {
+    validateOwnership(ownership);
+    return this.recordStore.createRecord(
+      runId, "external-agent", null, 1, ownership, undefined,
+      { backend, providerSessionId: null, ...launch },
+    );
+  }
+
+  /** Called by the execution coordinator after ACP session creation, before prompting. */
+  captureExternalSession(runId: string, providerSessionId: string): DelegatedWorkRecord {
+    return this.recordStore.captureExternalSession(runId, providerSessionId);
+  }
+
   /**
    * Append a new attached invocation to an existing record.
    *
@@ -387,6 +407,24 @@ export class DelegatedWorkHost {
     runId: string,
     ownership: AttachedDelegatedWorkOwnership,
   ): { record: DelegatedWorkRecord; runDir: string } {
+    return this.recordStore.appendInvocation(runId, ownership);
+  }
+
+  /**
+   * Append a durable follow-up invocation to an external-agent record.
+   *
+   * The prior invocation stays terminally closed; provider context continues
+   * in the same run directory (decision 0044). Only durable ownership is
+   * accepted — the store schema rejects anything else on write.
+   */
+  appendExternalFollowup(
+    runId: string,
+    ownership: DurableDelegatedWorkOwnership,
+  ): { record: DelegatedWorkRecord; runDir: string } {
+    if (ownership.lifetime !== "durable") {
+      throw new Error("External-agent follow-up requires durable ownership");
+    }
+    validateOwnership(ownership);
     return this.recordStore.appendInvocation(runId, ownership);
   }
 
@@ -482,9 +520,9 @@ export class DelegatedWorkHost {
   }
 
   /**
-   * At startup, any attached invocation left non-terminal died with its
-   * Conversation runtime. Mark those invocations interrupted without claiming
-   * a successful outcome or delivery.
+   * At startup, every non-terminal invocation died with the process, including
+   * durable external runs. Retain provider identity but never resume a lost turn.
+   * Mark interrupted without claiming a successful outcome or delivery.
    */
   private reconcileStartup(): void {
     if (this.reconciled) return;

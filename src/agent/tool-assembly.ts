@@ -34,14 +34,10 @@ import type { ScheduleStore } from "../scheduler/store.ts";
 import { createScheduleTurnTool } from "../scheduler/tool.ts";
 import type { SubagentRunner, GenericSubagentInheritance } from "../subagents/mod.ts";
 import { createSpawnSubagentTool, createReviveSubagentTool } from "../subagents/tool.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
-import { createExternalAgentTool } from "../external-agents/tool.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import { createMcpTools } from "../mcp/mod.ts";
 import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
 import type { Surface } from "../surface.ts";
-import type { ExecutionEnvironment } from "../sessions/environment.ts";
-import { projectRootOf } from "../sessions/environment.ts";
 
 /** Inputs to {@link assembleSurfaceCustomTools}. */
 export interface SurfaceToolAssemblyInputs {
@@ -60,20 +56,17 @@ export interface SurfaceToolAssemblyInputs {
   readonly resolveTopicName: (chatId: number, topicId: number) => Promise<string | null>;
   /** Surface identity the scheduling tool binds against. */
   readonly surface: Surface;
-  /** Conversation id threaded into subagent/external-agent closures. */
+  /** Conversation id threaded into subagent closures. */
   readonly sessionId: string;
   /** Captured delegated-runtime authority for attached subagent runs. */
   readonly delegatedRuntimeContext: DelegatedRuntimeContext | null;
   /** Frozen generic-subagent inheritance (environment + resolved skills). */
   readonly genericSubagentInheritance: GenericSubagentInheritance | null;
-  /** Execution environment; its project root gates the external-agent tool. */
-  readonly executionEnvironment: ExecutionEnvironment;
 
   // Required-capability deps. Presence is checked against the manifest: an
   // advertised capability with a missing dep makes assembly throw.
   readonly scheduleStore: ScheduleStore | undefined;
   readonly subagentRunner: SubagentRunner | null;
-  readonly externalAgentRunner: ExternalAgentRunner | null;
   readonly mcpRunner: McpRunner | null;
 
   // Runner-owned hook closures.
@@ -81,7 +74,7 @@ export interface SurfaceToolAssemblyInputs {
   readonly guardTool: (tool: ToolDefinition) => ToolDefinition;
   /** Current-binding check bound into the scheduling tool. */
   readonly isCurrent: () => boolean;
-  /** Status-update forwarder bound into subagent/external-agent tools. */
+  /** Status-update forwarder bound into subagent tools. */
   readonly sendStatusUpdate: (text: string) => void;
   /** Re-asserts authority across the genuinely async MCP-readiness boundary. */
   readonly awaitCurrent: <T>(operation: () => Promise<T>) => Promise<T>;
@@ -169,32 +162,6 @@ export async function assembleSurfaceCustomTools(
     );
   }
 
-  // external-agent
-  if (has("external-agent")) {
-    if (inputs.externalAgentRunner === null) {
-      throw missingDep("external-agent", "externalAgentRunner");
-    }
-    const projectDir = projectRootOf(inputs.executionEnvironment);
-    if (projectDir === undefined) {
-      throw new Error(
-        "external-agent capability advertised but execution environment is not a project",
-      );
-    }
-    const backends = inputs.manifest.externalAgentBackends;
-    if (backends.length === 0) {
-      throw new Error("external-agent capability advertised but no backends are configured");
-    }
-    tools.push(
-      createExternalAgentTool({
-        runner: inputs.externalAgentRunner,
-        sessionId: inputs.sessionId,
-        projectDir,
-        enabledBackends: backends,
-        onStatusUpdate: (msg) => inputs.sendStatusUpdate(msg),
-      }),
-    );
-  }
-
   // mcp: the only genuinely async assembly step. Await gateway readiness and
   // re-assert authority across it before binding the tools.
   if (has("mcp")) {
@@ -241,7 +208,7 @@ export interface SurfaceToolAssemblyRuntimeInputs {
   readonly guardTool: (tool: ToolDefinition) => ToolDefinition;
   /** Current-binding check bound into the scheduling tool. */
   readonly isCurrent: () => boolean;
-  /** Status-update forwarder bound into subagent/external-agent tools. */
+  /** Status-update forwarder bound into subagent tools. */
   readonly sendStatusUpdate: (text: string) => void;
   /** Re-asserts authority across the genuinely async MCP-readiness boundary. */
   readonly awaitCurrent: <T>(operation: () => Promise<T>) => Promise<T>;
@@ -255,7 +222,6 @@ export interface SurfaceToolAssemblyRuntimeInputs {
 export interface CapabilityToolDeps {
   readonly scheduleStore?: ScheduleStore;
   readonly subagentRunner?: SubagentRunner;
-  readonly externalAgentRunner?: ExternalAgentRunner;
   readonly mcpRunner?: McpRunner;
 }
 
@@ -292,10 +258,8 @@ export class CapabilityManifestToolSource implements SurfaceCustomToolsSource {
       sessionId: this.plan.conversationId,
       delegatedRuntimeContext: inputs.delegatedRuntimeContext,
       genericSubagentInheritance: inputs.genericSubagentInheritance,
-      executionEnvironment: this.plan.executionEnvironment,
       scheduleStore: this.deps.scheduleStore,
       subagentRunner: this.deps.subagentRunner ?? null,
-      externalAgentRunner: this.deps.externalAgentRunner ?? null,
       mcpRunner: this.deps.mcpRunner ?? null,
       guardTool: inputs.guardTool,
       isCurrent: inputs.isCurrent,

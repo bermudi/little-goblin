@@ -470,7 +470,6 @@ const EXPECTED_DIRS = [
   "state/pi",
   "state/delegated-work/runs",
   "scratch",
-  "scratch/external-agents",
 ];
 
 describe("ensureGoblinHome", () => {

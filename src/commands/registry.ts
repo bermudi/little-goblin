@@ -45,10 +45,10 @@ import {
   parseSkillsCommand,
 } from "./skills.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
-import type { ExternalAgentRunner } from "../external-agents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import { parseMcpCommand, McpCommandSyntaxError } from "./mcp-cmd.ts";
 import { formatMcpSelection, setMcpServerEnabled } from "../mcp/selection-store.ts";
+import { buildSettingsEntryReply } from "../settings/telegram.ts";
 import {
   completed,
   runtimeAdmission,
@@ -90,12 +90,6 @@ export interface DispatchDeps {
   scheduleStore?: ScheduleStore;
   /** Runtime/delegated-work authority owner for command admissions. */
   dispatcher: TurnDispatcher;
-  /**
-   * External agent runner, used by `/cancel` to cascade-cancels external runs
-   * owned by the session. Optional for callers that test command handling in
-   * isolation.
-   */
-  externalAgentRunner?: ExternalAgentRunner;
   /**
    * MCP gateway runner, used by `/mcp` for live catalog inspection and
    * refresh. Optional; absent when MCP is unconfigured.
@@ -237,7 +231,6 @@ const cancelHandler: CommandHandler = async ({ deps, surface, conversation, exis
       deps.subagentRunner,
       DEFAULT_CASCADE_TIMEOUT_MS,
       conversation.id,
-      deps.externalAgentRunner,
     ).then((cascade) => {
       if (!authority.isCurrent()) return noopCommandCompletion();
       if (cancelledPending) cascade.attemptedMain = true;
@@ -775,6 +768,15 @@ const scheduleHandler: CommandHandler = async ({ deps, surface, rawText }) => {
   return replied(result.reply, [], result.tag);
 };
 
+const settingsHandler: CommandHandler = async ({ deps }) => {
+  // `/settings` is instant-timing and deployment-scoped: it advertises the
+  // Telegram Mini App entry for deployment-wide defaults (decision 0049).
+  // The web_app button itself is synced via `syncSettingsMenuButton` at
+  // startup; this text reply keeps the entry discoverable via /help and the
+  // command menu and never carries secrets.
+  return replied(buildSettingsEntryReply(deps.cfg).text, [], "info");
+};
+
 // ---------------------------------------------------------------------------
 // grammy handler factories
 // ---------------------------------------------------------------------------
@@ -939,6 +941,12 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
     timing: skillsTiming,
     mayRecoverWedgedRuntime: true,
     handler: skillsHandler,
+  },
+  {
+    name: "settings",
+    description: "open the deployment Settings Mini App (Devin default model)",
+    timing: "instant",
+    handler: settingsHandler,
   },
   {
     name: "ping",

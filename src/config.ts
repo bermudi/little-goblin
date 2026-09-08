@@ -2,14 +2,13 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import JSON5 from "json5";
-import { ConfigFileSchema, type EmbeddingsConfig, type ExternalAgentsConfig, type McpConfig } from "./schema.ts";
+import { ConfigFileSchema, type EmbeddingsConfig, type ExternalAgentsConfig, type McpConfig, type SettingsConfig } from "./schema.ts";
 import { resolveConfigValue } from "./resolve-value.ts";
 import { goblinConfigPath, sessionsDir, stateDir, scratchDir } from "./sessions/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
 import { goblinSkillsPath, personalEnvironmentSkillsPath, workspacePath } from "./workspace/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
 import { namedAgentsRoot } from "./subagents/paths.ts";
-import { externalAgentsRoot } from "./external-agents/paths.ts";
 import { delegatedWorkRunsRoot } from "./delegated-work/paths.ts";
 
 /** Resolve `$GOBLIN_HOME` from the environment with the shared default. */
@@ -54,6 +53,12 @@ export interface Config {
   mcp?: McpConfig;
   /** Memory embeddings endpoint configuration (overrides env fallbacks per key). */
   embeddings?: EmbeddingsConfig;
+  /**
+   * Optional loopback Settings Mini App API (decision 0049). Undefined or
+   * disabled means no listener and no Telegram entry; the deployment owns the
+   * stable port and public URL when enabled.
+   */
+  settings?: SettingsConfig;
 }
 
 /**
@@ -113,6 +118,7 @@ export function loadConfig(): Config {
     externalAgents: cfg.externalAgents,
     mcp: cfg.mcp,
     embeddings: cfg.embeddings,
+    settings: cfg.settings,
   });
 
   if (config.externalAgents) {
@@ -129,6 +135,13 @@ export function loadConfig(): Config {
 
   if (config.embeddings) {
     Object.freeze(config.embeddings);
+  }
+
+  if (config.settings) {
+    Object.freeze(config.settings);
+    if (config.settings.allowedOrigins) {
+      Object.freeze(config.settings.allowedOrigins);
+    }
   }
 
   return config;
@@ -186,7 +199,6 @@ export function requiredGoblinHomeDirectories(home: string): readonly GoblinHome
     { label: "state/pi", path: piAgentDir(home) },
     { label: "state/delegated-work/runs", path: delegatedWorkRunsRoot(home) },
     { label: "scratch", path: scratchDir(home) },
-    { label: "scratch/external-agents", path: externalAgentsRoot(home) },
   ];
 }
 

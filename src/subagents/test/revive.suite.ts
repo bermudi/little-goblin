@@ -75,6 +75,30 @@ describe("SubagentRunner.revive", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
+  it("rejects external records before Pi preparation or invocation append", async () => {
+    const id = "external-not-pi";
+    const records = runner.delegatedWorkHost;
+    records.createExternalRecord(id, "claude", {
+      lifetime: "durable",
+      ownerConversationId: "conversation-external",
+      runtimeId: asConversationRuntimeId("runtime-external"),
+      ownershipEpochId: "epoch-external",
+      originSurfaceId: DEFAULT_AUTHORITY.sourceSurfaceId,
+      executionEnvironment: EMPTY_GENERIC_SUBAGENT_INHERITANCE.executionEnvironment,
+    });
+    records.captureExternalSession(id, "provider-not-pi");
+    records.completeInvocation(id, 0, "external result");
+    // Even an incidental .jsonl in this shared run directory must not turn it into Pi history.
+    writeSessionFile(tmp, id, "2026-01-01T00-00-00_not-pi.jsonl");
+    const before = records.loadRecord(id);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(runner.revive(
+        DEFAULT_PARENT_CAPTURE, EMPTY_GENERIC_SUBAGENT_INHERITANCE, id, "continue",
+      )).rejects.toThrow("External-agent records cannot be revived as Pi subagents");
+    }
+    expect(records.loadRecord(id)).toEqual(before);
+  });
+
   async function spawnGeneric(): Promise<string> {
     const handle = await runner.spawn({ prompt: "first turn", authority: DEFAULT_AUTHORITY, inheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE });
     await flush();

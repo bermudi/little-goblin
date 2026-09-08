@@ -756,6 +756,11 @@ export class SubagentRunner {
       this.revivesInProgress.delete(id);
       throw new SubagentReviveRejectedError("Subagent not found");
     }
+    if (record.kind === "external-agent") {
+      this.revivesInProgress.delete(id);
+      log.warn("subagent revive rejected: external-agent record", { runId: id });
+      throw new SubagentReviveRejectedError("External-agent records cannot be revived as Pi subagents");
+    }
 
     const role: SubagentRole = record.kind === "generic-subagent" ? "generic" : "named";
     const displayName = record.name;

@@ -4,6 +4,9 @@ import { log, initLog, boundedError } from "./log.ts";
 import { MemoryEngine } from "./memory/mod.ts";
 import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
 import { syncTelegramMenu } from "./commands/registry.ts";
+import { startDeploymentSettingsServer } from "./settings/composition.ts";
+import { syncSettingsMenuButton } from "./settings/telegram.ts";
+import type { SettingsServerHandle } from "./settings/server.ts";
 import { SchedulerLoop, DEFAULT_TRANSCRIPT_SYNC_MAX_MS } from "./scheduler/loop.ts";
 import { runPreflight } from "./preflight.ts";
 import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
@@ -37,7 +40,6 @@ async function main(): Promise<void> {
     scheduleStore,
     dispatcher,
     pendingClaim,
-    externalAgentRunner,
   } = buildBot(cfg, { memoryEngine });
 
   // Decision-0036 startup re-arm: durable completions retained pending whose
@@ -50,7 +52,6 @@ async function main(): Promise<void> {
   });
 
   await memoryEngine.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS });
-  await externalAgentRunner?.init();
 
   // Scheduled turns resolve the current Conversation through the same
   // lifecycle authority as Telegram intake and serialize through the same
@@ -68,9 +69,29 @@ async function main(): Promise<void> {
   });
   scheduler.start();
 
-  // Graceful shutdown. The coordinator owns the phase list; index.ts's
-  // shutdown body is one call. grammy's start() resolves when stop() is
-  // called inside the coordinator's "stop-telegram-polling" phase.
+  // Optional loopback Settings Mini App API (decision 0049). Deployment owns
+  // the stable port and public URL in `goblin.json5` `settings`; this
+  // composition root owns the handle lifetime. Loopback only —
+  // operator-managed Tailscale Serve supplies private HTTPS and is never
+  // configured here. Null when disabled.
+  let settingsHandle: SettingsServerHandle | null = null;
+  try {
+    settingsHandle = startDeploymentSettingsServer(cfg);
+  } catch (err) {
+    log.error("settings server failed to start", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    process.exit(1);
+  }
+  if (settingsHandle) {
+    log.info("Settings Mini App API enabled", { url: settingsHandle.url });
+  }
+
+  // Graceful shutdown. The coordinator owns the Telegram phase list;
+  // index.ts additionally owns the Settings handle and closes it first so
+  // new Settings work is rejected before Telegram drains begin. grammy's
+  // start() resolves when stop() is called inside the coordinator's
+  // "stop-telegram-polling" phase.
   const coordinator = new ShutdownCoordinator({
     gate,
     stopTelegramPolling: () => bot.stop(),
@@ -78,7 +99,6 @@ async function main(): Promise<void> {
     drainRuntimeAdmission: () => gate.runtimeAdmission(),
     disposeRuntimes: () => runtimeHost.disposeAll(),
     drainScheduler: () => scheduler.stopAndDrain(),
-    disposeExternalAgents: async () => { await externalAgentRunner?.dispose(); },
     disposeSubagents: () => subagentRunner.dispose(),
     closeMemoryEngine: async () => { memoryEngine.close(); },
   });
@@ -86,8 +106,19 @@ async function main(): Promise<void> {
   const shutdown = (signal: string): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
+      let settingsCloseFailed = false;
+      if (settingsHandle) {
+        try {
+          await settingsHandle.close();
+        } catch (err) {
+          settingsCloseFailed = true;
+          log.error("settings server close failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
       const result = await coordinator.shutdown(signal);
-      if (!result.ok) {
+      if (settingsCloseFailed || !result.ok) {
         log.error("shutdown completed with cleanup failures", { count: result.failures });
         process.exit(1);
       }
@@ -118,7 +149,13 @@ async function main(): Promise<void> {
   // commands still dispatch via the message:text handler.
   await syncTelegramMenu(bot.api, log.warn);
 
-  // Long-polling. No webhook, no inbound ports.
+  // Explicit Telegram launch entry for Settings (decision 0049): chat menu
+  // button opening the Mini App web_app URL. Best-effort; /settings remains
+  // discoverable via the command menu when the button is unavailable.
+  await syncSettingsMenuButton(bot.api, cfg, log.warn);
+
+  // Long-polling. No webhook. The only listener is the optional loopback
+  // Settings API above; Tailscale Serve supplies private HTTPS.
   await bot.start({
     onStart: (me) => {
       log.info(`bot online as @${me.username} (id ${me.id})`);

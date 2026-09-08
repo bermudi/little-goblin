@@ -12,7 +12,6 @@ describe("ShutdownCoordinator", () => {
       "stop-telegram-polling",
       "drain-telegram-admission",
       "drain-scheduler",
-      "dispose-external-agents",
       "dispose-subagents",
       "close-memory-engine",
     ]);
@@ -54,7 +53,6 @@ describe("ShutdownCoordinator", () => {
         if (!admissionClosed) disposalAwaited = true;
       },
       drainScheduler: async () => { events.push("drain-scheduler"); },
-      disposeExternalAgents: async () => { events.push("dispose-external-agents"); },
       disposeSubagents: async () => { events.push("dispose-subagents"); },
       closeMemoryEngine: async () => { events.push("close-memory-engine"); },
     });
@@ -67,11 +65,9 @@ describe("ShutdownCoordinator", () => {
     const closeIdx = events.indexOf("admission-closed");
     const disposeIdx = events.indexOf("dispose-runtimes-started");
     expect(closeIdx).toBeLessThan(disposeIdx);
-    // Subsystem disposal order: external agents → subagents → memory.
-    const externalIdx = events.indexOf("dispose-external-agents");
+    // Subsystem disposal order: subagents → memory.
     const subagentIdx = events.indexOf("dispose-subagents");
     const memoryIdx = events.indexOf("close-memory-engine");
-    expect(externalIdx).toBeLessThan(subagentIdx);
     expect(subagentIdx).toBeLessThan(memoryIdx);
   });
 
@@ -88,7 +84,6 @@ describe("ShutdownCoordinator", () => {
       drainRuntimeAdmission: () => gate.runtimeAdmission(),
       disposeRuntimes: async () => {},
       drainScheduler: async () => {},
-      disposeExternalAgents: async () => {},
       disposeSubagents: async () => {},
       closeMemoryEngine: async () => {},
     });
@@ -112,7 +107,6 @@ describe("ShutdownCoordinator", () => {
       drainRuntimeAdmission: () => gate.runtimeAdmission(),
       disposeRuntimes: async () => { throw new Error("disposal failed"); },
       drainScheduler: async () => {},
-      disposeExternalAgents: async () => {},
       disposeSubagents: async () => {},
       closeMemoryEngine: async () => {},
     });
@@ -142,7 +136,6 @@ describe("ShutdownCoordinator", () => {
         throw new Error("disposal failed");
       },
       drainScheduler: async () => {},
-      disposeExternalAgents: async () => {},
       disposeSubagents: async () => {},
       closeMemoryEngine: async () => {},
     });
@@ -171,7 +164,6 @@ describe("ShutdownCoordinator", () => {
       },
       disposeRuntimes: async () => { events.push("dispose"); },
       drainScheduler: async () => {},
-      disposeExternalAgents: async () => {},
       disposeSubagents: async () => {},
       closeMemoryEngine: async () => {},
     });

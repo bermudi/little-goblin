@@ -9,12 +9,12 @@ Unshaped candidates, completed stabilization context, and open questions. This f
 
 ## Candidate to scout next
 
-Issue #59 (`litespec/telegram-settings`) is active: deployment-wide, non-secret
-settings inside a Telegram Mini App, starting with searchable Devin models.
-Issue #58 is paused, not complete, and is the one candidate to resume next.
-Its remaining ACP launch work is a prerequisite for #59's final launch
-integration; the catalog unit is independent. Do not build Mini App integration
-on the legacy external-agent runner.
+Issue #59 (`litespec/telegram-settings`) is the one active Litespec issue:
+deployment-wide, non-secret settings inside a Telegram Mini App, starting
+with searchable Devin models. Issue #58 (ACP external agents) is closed
+after PASS and merged into the #59 branch; no candidate next is named.
+#59's final launch integration rides the accepted ACP/delegated-run seams.
+Do not build Mini App integration on the legacy external-agent runner.
 
 ## Completed inward solidification
 

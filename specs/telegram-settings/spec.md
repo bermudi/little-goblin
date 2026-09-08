@@ -10,6 +10,9 @@ owns: telegram-deployment-settings
 Status: target contract, delivered through issue #59. This is not a claim that
 the Mini App is already available.
 
+Implemented so far: request-owned live Devin catalog discovery and validation.
+Persistence, API, page, and launch integration remain target requirements.
+
 ## Requirements
 
 ### Requirement: Deployment Settings Inside Telegram

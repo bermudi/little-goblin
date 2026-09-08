@@ -45,7 +45,7 @@ let counter = 0;
 function command(mode: string, payload = ""): readonly [string, ...string[]] {
   const input = join(root, `input-${counter++}.json`);
   writeFileSync(input, payload, { flag: "wx" });
-  return [process.execPath, fixture, mode, input];
+  return [process.execPath, "--no-env-file", fixture, mode, input];
 }
 
 beforeAll(() => {
@@ -134,14 +134,14 @@ describe("Live Devin catalog with bounded discovery", () => {
   it("timeout and cancellation terminate discovery children", async () => {
     const timed = command("wait");
     await expect(discover({ command: timed, timeoutMs: 500 })).rejects.toMatchObject({ reason: "timeout" });
-    expect(pidIsGone(`${timed[3]}.pid`)).toBe(true);
+    expect(pidIsGone(`${timed.at(-1)}.pid`)).toBe(true);
     const controller = new AbortController();
     const cancelled = command("wait");
     const pending = discover({ command: cancelled, signal: controller.signal }).then(() => null, (error: unknown) => error);
-    await waitForPid(`${cancelled[3]}.pid`);
+    await waitForPid(`${cancelled.at(-1)}.pid`);
     controller.abort();
     expect(await pending).toMatchObject({ reason: "cancelled" });
-    expect(pidIsGone(`${cancelled[3]}.pid`)).toBe(true);
+    expect(pidIsGone(`${cancelled.at(-1)}.pid`)).toBe(true);
     await expect(discover({ command: [join(root, "not-spawned")], signal: AbortSignal.abort() })).rejects.toMatchObject({ reason: "cancelled" });
   });
 
@@ -152,12 +152,12 @@ describe("Live Devin catalog with bounded discovery", () => {
       const controller = new AbortController();
       const waiting = command("wait");
       const pending = discover({ command: waiting, signal: controller.signal }).then(() => null, (error: unknown) => error);
-      await waitForPid(`${waiting[3]}.pid`);
+      await waitForPid(`${waiting.at(-1)}.pid`);
       const success = discover({ command: command("env", JSON.stringify({ families: [family] })) });
       controller.abort();
       expect(await pending).toMatchObject({ reason: "cancelled" });
       expect((await success).families).toHaveLength(1);
-      expect(pidIsGone(`${waiting[3]}.pid`)).toBe(true);
+      expect(pidIsGone(`${waiting.at(-1)}.pid`)).toBe(true);
     } finally {
       if (previous === undefined) delete process.env.GOBLIN_SETTINGS_TEST_SECRET;
       else process.env.GOBLIN_SETTINGS_TEST_SECRET = previous;

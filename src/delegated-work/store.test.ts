@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,6 +13,7 @@ import { log } from "../log.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
 import type { ConversationRuntimeId } from "./types.ts";
+import { DelegatedWorkHost } from "./host.ts";
 
 const baseTimestamp = "2024-01-01T00:00:00.000Z";
 
@@ -96,6 +97,140 @@ describe("DelegatedWorkRecordStore", () => {
 
     expect(existsSync(runDir)).toBe(true);
     expect(existsSync(delegatedWorkRecordPath(home, "run-1"))).toBe(true);
+  });
+
+  it("external-agent record validates with backend identity and durable capture set", () => {
+    const host = new DelegatedWorkHost(home);
+    for (const backend of ["claude", "devin"] as const) {
+      const capture = { ...ownership(`runtime-${backend}`), lifetime: "durable" as const };
+      const id = `external-${backend}`;
+      const { record, runDir } = host.createExternalRecord(id, backend, capture);
+      expect(runDir).toBe(join(home, "state", "delegated-work", "runs", id));
+      expect(record.kind).toBe("external-agent");
+      expect(record).toMatchObject({ external: { backend, providerSessionId: null } });
+      expect(record.invocations).toEqual([{
+        ...capture,
+        index: 0,
+        status: "running",
+        outcome: null,
+        deliveryState: "pending",
+        startedAt: record.createdAt,
+        completedAt: null,
+      }]);
+
+      const path = delegatedWorkRecordPath(home, id);
+      chmodSync(path, 0o600);
+      host.captureExternalSession(id, `provider-${backend}`);
+      const disk: unknown = JSON.parse(readFileSync(path, "utf-8"));
+      expect(parseDelegatedWorkRecord(disk, path, id)).toMatchObject({
+        external: { backend, providerSessionId: `provider-${backend}` },
+      });
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(new DelegatedWorkRecordStore(home).load(id)).toEqual(host.loadRecord(id));
+      expect(() => host.createExternalRecord(id, backend, capture)).toThrow(/already exists/);
+    }
+  });
+
+  it("rejects malformed external identity and attached external invocations before writing", () => {
+    const raw = {
+      ...makeRecord("external-invalid", [{ ...makeInvocation(0, "running"), lifetime: "durable" }]),
+      kind: "external-agent",
+      external: { backend: "claude", providerSessionId: null },
+    };
+    expect(parseDelegatedWorkRecord(raw, "external-test")).toBeDefined();
+    for (const external of [
+      undefined,
+      { backend: "codex", providerSessionId: null },
+      { backend: "devin", providerSessionId: "" },
+      { backend: "devin", providerSessionId: 42 },
+      { backend: "claude", providerSessionId: null, surprise: true },
+    ]) {
+      expect(() => parseDelegatedWorkRecord({ ...raw, external }, "external-test")).toThrow();
+    }
+    expect(() => parseDelegatedWorkRecord({
+      ...raw, invocations: [makeInvocation(0, "running")],
+    }, "external-test")).toThrow(/durable/);
+    expect(() => parseDelegatedWorkRecord({ ...raw, name: "researcher" }, "external-test"))
+      .toThrow(/name/);
+    expect(() => parseDelegatedWorkRecord({
+      ...raw, kind: "generic-subagent",
+    }, "external-test")).toThrow();
+    // The ordinary creation entry cannot manufacture a backend-less external record.
+    expect(() => store.createRecord(
+      "external-invalid", "external-agent", null, 1,
+      { ...ownership("runtime-external"), lifetime: "durable" },
+    )).toThrow();
+    expect(existsSync(store.runDir("external-invalid"))).toBe(false);
+  });
+
+  it("external session capture is write-once, fails loudly, and cannot mutate terminal context", () => {
+    const host = new DelegatedWorkHost(home);
+    host.createExternalRecord("external-capture", "claude", {
+      ...ownership("runtime-external"), lifetime: "durable",
+    });
+    expect(() => host.captureExternalSession("missing-external", "provider")).toThrow(/not found/);
+    expect(() => host.captureExternalSession("external-capture", "")).toThrow();
+    host.captureExternalSession("external-capture", "provider-first");
+    host.captureExternalSession("external-capture", "provider-first");
+    expect(() => host.captureExternalSession("external-capture", "provider-other")).toThrow(/already/);
+    host.completeInvocation("external-capture", 0, "done");
+    expect(() => host.captureExternalSession("external-capture", "provider-other")).toThrow();
+    expect(new DelegatedWorkHost(home).loadRecord("external-capture")).toMatchObject({
+      external: { backend: "claude", providerSessionId: "provider-first" },
+      invocations: [{ status: "completed", deliveryState: "pending" }],
+    });
+    host.createRecord("pi-capture", "generic-subagent", null, 1, ownership("runtime-pi"));
+    expect(() => host.captureExternalSession("pi-capture", "provider")).toThrow(/external/);
+
+    host.createExternalRecord("external-io", "devin", {
+      ...ownership("runtime-io"), lifetime: "durable",
+    });
+    const path = delegatedWorkRecordPath(home, "external-io");
+    rmSync(path);
+    mkdirSync(path);
+    expect(() => host.captureExternalSession("external-io", "provider")).toThrow();
+    expect(() => host.loadRecord("external-io")).toThrow();
+  });
+
+  it("external invocation killed by process death shows interrupted after restart", () => {
+    // The child persists non-terminal invocations and then dies without any teardown.
+    // No provider CLI, credentials, or live ACP connection is needed for this storage boundary.
+    const hostModule = new URL("./host.ts", import.meta.url).href;
+    const script = `
+      import { DelegatedWorkHost } from ${JSON.stringify(hostModule)};
+      const host = new DelegatedWorkHost(${JSON.stringify(home)});
+      for (const backend of ["claude", "devin"]) {
+        host.createExternalRecord("killed-" + backend, backend, ${JSON.stringify({
+          ...ownership("runtime-killed"), lifetime: "durable",
+        })});
+        host.captureExternalSession("killed-" + backend, "provider-" + backend);
+      }
+      process.kill(process.pid, "SIGKILL");
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], { env: {} });
+    expect(child.signalCode).toBe("SIGKILL");
+    for (const backend of ["claude", "devin"]) {
+      expect(store.load(`killed-${backend}`)?.invocations[0]?.status).toBe("running");
+    }
+    // Legacy data is neither inspected nor migrated, even when malformed.
+    const legacy = join(home, "scratch", "external-agents", "abandoned.json");
+    mkdirSync(join(legacy, ".."), { recursive: true });
+    writeFileSync(legacy, "not-json");
+    const restarted = new DelegatedWorkHost(home);
+    for (const backend of ["claude", "devin"]) {
+      const record = restarted.loadRecord(`killed-${backend}`);
+      expect(record).toMatchObject({
+        external: { backend, providerSessionId: `provider-${backend}` },
+        invocations: [{
+          status: "interrupted", deliveryState: "suppressed", outcome: null,
+        }],
+      });
+      expect(record?.invocations).toHaveLength(1);
+      expect(record?.invocations[0]?.completedAt).not.toBeNull();
+      expect(new DelegatedWorkHost(home).loadRecord(`killed-${backend}`)).toEqual(record);
+    }
+    expect(restarted.listRecordIds()).toEqual(["killed-claude", "killed-devin"]);
+    expect(readFileSync(legacy, "utf-8")).toBe("not-json");
   });
 
   it("rejects creating a record that already exists and preserves the original", () => {

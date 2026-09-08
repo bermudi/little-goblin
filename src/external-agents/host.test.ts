@@ -18,7 +18,7 @@ import {
   type SetSessionModeRequest,
 } from "@agentclientprotocol/sdk";
 import { AcpHostError, ExternalAgentHost, claudeBridgeEntryPath } from "./host.ts";
-import type { AcpHostEvent, PermissionProfile } from "./host.ts";
+import type { AcpAgentConnection, AcpHostEvent, PermissionProfile } from "./host.ts";
 import type { ProcessExit, ProcessHandle, ProcessHost, ProcessSpawnArgs } from "./types.ts";
 
 const CLAUDE_CAPABILITIES: AgentCapabilities = {
@@ -227,24 +227,21 @@ function claudeServerConfig(overrides: Partial<MockServerConfig> = {}): MockServ
 
 function hostServing(
   serverFactory: (args: ProcessSpawnArgs) => MockAcpServer,
-  hostOptions: { cancelGraceMs?: number } = {},
 ): { host: ExternalAgentHost; processHost: MockProcessHost } {
   const processHost = new MockProcessHost(serverFactory);
-  return { host: new ExternalAgentHost({ processHost, ...hostOptions }), processHost };
+  return { host: new ExternalAgentHost({ processHost }), processHost };
 }
 
 function claudeHost(
   serverOverrides: Partial<MockServerConfig> = {},
-  hostOptions: { cancelGraceMs?: number } = {},
 ): { host: ExternalAgentHost; processHost: MockProcessHost } {
-  return hostServing(() => new MockAcpServer(claudeServerConfig(serverOverrides)), hostOptions);
+  return hostServing(() => new MockAcpServer(claudeServerConfig(serverOverrides)));
 }
 
 function devinHost(
   serverOverrides: Partial<MockServerConfig> = {},
-  hostOptions: { cancelGraceMs?: number } = {},
 ): { host: ExternalAgentHost; processHost: MockProcessHost } {
-  return hostServing(() => new MockAcpServer(devinServerConfig(serverOverrides)), hostOptions);
+  return hostServing(() => new MockAcpServer(devinServerConfig(serverOverrides)));
 }
 
 function devinServerConfig(overrides: Partial<MockServerConfig> = {}): MockServerConfig {
@@ -258,7 +255,7 @@ function devinServerConfig(overrides: Partial<MockServerConfig> = {}): MockServe
 async function connectClaude(
   host: ExternalAgentHost,
   permissionProfile: PermissionProfile = "default",
-  overrides: { promptTimeoutMs?: number; signal?: AbortSignal } = {},
+  overrides: { signal?: AbortSignal } = {},
 ) {
   return host.connect({
     backend: "claude",
@@ -352,6 +349,7 @@ describe("ExternalAgentHost", () => {
       workingDirectory: CWD,
       permissionProfile: "default",
       env: ENV,
+      devinModel: "glm-5.2",
     });
     expect(requireSpawn(processHost, 1).args.command).toEqual(["devin", "--sandbox", "acp", "--model", "glm-5.2"]);
     await devinDefault.dispose();
@@ -361,7 +359,7 @@ describe("ExternalAgentHost", () => {
       workingDirectory: CWD,
       permissionProfile: "dangerous",
       env: ENV,
-      model: "glm-4.7",
+      devinModel: "glm-5.2",
     });
     expect(requireSpawn(processHost, 2).args.command).toEqual([
       "devin",
@@ -370,7 +368,7 @@ describe("ExternalAgentHost", () => {
       "--sandbox",
       "acp",
       "--model",
-      "glm-4.7",
+      "glm-5.2",
     ]);
     await devinDangerous.prompt("one prompt", () => {});
     expect(requireSpawn(processHost, 2).server.prompts).toEqual(["one prompt"]);
@@ -517,6 +515,88 @@ describe("ExternalAgentHost", () => {
     ]);
   });
 
+  it("defaults an omitted permission profile to the unattended dangerous profile", async () => {
+    const { host, processHost } = claudeHost({
+      promptBehaviors: [
+        async (ctx, server) => {
+          await requestPermission(ctx, "sess-claude-1", server, [
+            allow("allow-always", "allow_always"),
+            reject("reject-once", "reject_once"),
+          ]);
+          return { stopReason: "end_turn" };
+        },
+      ],
+    });
+
+    const connection = await host.connect({
+      backend: "claude",
+      workingDirectory: CWD,
+      env: ENV,
+    });
+    try {
+      await connection.prompt("go", () => {});
+    } finally {
+      await connection.dispose();
+    }
+
+    const server = requireSpawn(processHost).server;
+    expect(server.setModeRequests).toEqual([
+      { sessionId: "sess-claude-1", modeId: "bypassPermissions" },
+    ]);
+    expect(server.permissionOutcomes).toEqual([
+      JSON.stringify({ outcome: "selected", optionId: "allow-always" }),
+    ]);
+  });
+
+  it("defaults an omitted devin profile to dangerous launch flags", async () => {
+    const { host, processHost } = devinHost();
+
+    const devin = await host.connect({
+      backend: "devin",
+      workingDirectory: CWD,
+      env: ENV,
+      devinModel: "glm-5.2",
+    });
+    try {
+      await devin.prompt("devin turn", () => {});
+    } finally {
+      await devin.dispose();
+    }
+
+    expect(requireSpawn(processHost).args.command).toEqual([
+      "devin",
+      "--permission-mode",
+      "auto",
+      "--sandbox",
+      "acp",
+      "--model",
+      "glm-5.2",
+    ]);
+  });
+
+  it("refuses a devin launch without the resolved operator model instead of substituting", async () => {
+    const { host, processHost } = devinHost();
+
+    let error: unknown;
+    let leaked: AcpAgentConnection | undefined;
+    try {
+      leaked = await host.connect({
+        backend: "devin",
+        workingDirectory: CWD,
+        permissionProfile: "default",
+        env: ENV,
+      });
+    } catch (err) {
+      error = err;
+    } finally {
+      await leaked?.dispose();
+    }
+
+    expect(error).toBeInstanceOf(AcpHostError);
+    expect((error as AcpHostError).reason).toBe("invalid-input");
+    expect(processHost.spawns.length).toBe(0);
+  });
+
   it("fails honestly when the claude mode for the selected profile is not offered", async () => {
     const { host, processHost } = claudeHost({
       modes: {
@@ -548,6 +628,7 @@ describe("ExternalAgentHost", () => {
       workingDirectory: CWD,
       permissionProfile: "dangerous",
       env: ENV,
+      devinModel: "glm-5.2",
     });
     try {
       expect(processHost.spawns[0]?.args.command).toEqual([
@@ -598,28 +679,56 @@ describe("ExternalAgentHost", () => {
     }
   });
 
-  it("times out a stuck prompt: cancels, escalates to termination, and throws", async () => {
-    const { host, processHost } = claudeHost(
-      {
-        promptBehaviors: [
-          () => new Promise<PromptResponse>(() => {}),
-        ],
-      },
-      { cancelGraceMs: 25 },
-    );
+  it("keeps a productive prompt waiting: a slow turn completes with no cancellation", async () => {
+    const { host, processHost } = claudeHost({
+      promptBehaviors: [
+        async (ctx, _server) => {
+          await notifySessionUpdate(ctx, "sess-claude-1", {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "still working" },
+          });
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          return { stopReason: "end_turn" };
+        },
+      ],
+    });
 
-    const connection = await connectClaude(host, "default", { promptTimeoutMs: 60 });
-    let error: unknown;
+    const connection = await connectClaude(host, "default");
     try {
-      await connection.prompt("hang forever", () => {});
-    } catch (err) {
-      error = err;
+      const outcome = await connection.prompt("take your time", () => {});
+      expect(outcome.stopReason).toBe("end_turn");
+      expect(outcome.agentText).toBe("still working");
+    } finally {
+      await connection.dispose();
     }
 
-    expect(error).toBeInstanceOf(AcpHostError);
-    expect((error as AcpHostError).reason).toBe("timeout");
-    expect(processHost.spawns[0]?.server.cancelNotifications).toBeGreaterThanOrEqual(1);
-    expect(processHost.spawns[0]?.handle.killed).toBe(true);
+    expect(requireSpawn(processHost).server.cancelNotifications).toBe(0);
+  });
+
+  it("cancels explicitly on request: the backend is notified and its stop reason is surfaced", async () => {
+    const { host, processHost } = claudeHost({
+      promptBehaviors: [
+        async (_ctx, server) => {
+          for (let i = 0; i < 200 && server.cancelNotifications === 0; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+          return { stopReason: "cancelled" };
+        },
+      ],
+    });
+
+    const connection = await connectClaude(host, "default");
+    try {
+      const prompted = connection.prompt("cancel me", () => {});
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await connection.cancel();
+      const outcome = await prompted;
+      expect(outcome.stopReason).toBe("cancelled");
+    } finally {
+      await connection.dispose();
+    }
+
+    expect(requireSpawn(processHost).server.cancelNotifications).toBeGreaterThanOrEqual(1);
   });
 
   it("propagates process death during a prompt instead of hanging", async () => {

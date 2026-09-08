@@ -18,7 +18,8 @@ import {
   type SetSessionModeRequest,
 } from "@agentclientprotocol/sdk";
 import { AcpHostError, ExternalAgentHost, claudeBridgeEntryPath } from "./host.ts";
-import type { AcpHostEvent, PermissionProfile, ProcessExit, ProcessHandle, ProcessHost, ProcessSpawnArgs } from "./types.ts";
+import type { AcpHostEvent, PermissionProfile } from "./host.ts";
+import type { ProcessExit, ProcessHandle, ProcessHost, ProcessSpawnArgs } from "./types.ts";
 
 const CLAUDE_CAPABILITIES: AgentCapabilities = {
   loadSession: true,
@@ -178,7 +179,7 @@ class MockAcpServer {
 }
 
 class MockProcessHost implements ProcessHost {
-  readonly spawns: { args: ProcessSpawnArgs; server: MockAcpServer; handle: ProcessHandle }[] = [];
+  readonly spawns: { args: ProcessSpawnArgs; server: MockAcpServer; handle: FakeAcpHandle }[] = [];
 
   constructor(private readonly factory: (args: ProcessSpawnArgs) => MockAcpServer) {}
 
@@ -187,14 +188,29 @@ class MockProcessHost implements ProcessHost {
       throw new Error("Spawn aborted");
     }
     const server = this.factory(args);
-    this.spawns.push({ args, server, handle: server.handle });
+    const handle = server.handle;
+    this.spawns.push({ args, server, handle });
     if (args.signal) {
       args.signal.addEventListener("abort", () => {
-        void server.handle.kill().catch(() => {});
+        void handle.kill().catch(() => {});
       }, { once: true });
     }
-    return server.handle;
+    return handle;
   }
+}
+
+interface RecordedSpawn {
+  args: ProcessSpawnArgs;
+  server: MockAcpServer;
+  handle: FakeAcpHandle;
+}
+
+function requireSpawn(processHost: MockProcessHost, index = 0): RecordedSpawn {
+  const entry = processHost.spawns[index];
+  if (entry === undefined) {
+    throw new Error(`no spawn recorded at index ${index}`);
+  }
+  return entry;
 }
 
 const ENV = { PATH: "/usr/bin", HOME: "/home/operator" };
@@ -257,7 +273,7 @@ describe("ExternalAgentHost", () => {
   it("drives a prompt round trip and maps session updates and stop reasons to run events", async () => {
     const { host, processHost } = claudeHost({
       promptBehaviors: [
-        async (ctx, server) => {
+        async (ctx, _server) => {
           await notifySessionUpdate(ctx, "sess-claude-1", {
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: "Hello " },
@@ -284,6 +300,7 @@ describe("ExternalAgentHost", () => {
 
     const events: AcpHostEvent[] = [];
     const connection = await connectClaude(host);
+    const spawn = requireSpawn(processHost);
     try {
       const outcome = await connection.prompt("do a thing", (event) => events.push(event));
 
@@ -294,8 +311,6 @@ describe("ExternalAgentHost", () => {
       expect(events).toContainEqual({ type: "tool_status", toolCallId: "t1", title: "Read file" });
       expect(events).toContainEqual({ type: "tool_status", toolCallId: "t1", title: "Read file", status: "completed" });
 
-      const spawn = processHost.spawns[0];
-      expect(spawn).toBeDefined();
       expect(spawn.args.command[0]).toBe(process.execPath);
       expect(spawn.args.command[1]).toBe(claudeBridgeEntryPath());
       expect(spawn.args.cwd).toBe(CWD);
@@ -304,6 +319,9 @@ describe("ExternalAgentHost", () => {
       const server = spawn.server;
       expect(server.initializeRequests.length).toBe(1);
       const init = server.initializeRequests[0];
+      if (init === undefined) {
+        throw new Error("initialize was not recorded");
+      }
       expect(init.protocolVersion).toBe(PROTOCOL_VERSION);
       expect(init.clientInfo?.name).toBe("goblin");
       expect(server.newSessionRequests[0]?.cwd).toBe(CWD);
@@ -313,7 +331,7 @@ describe("ExternalAgentHost", () => {
     } finally {
       await connection.dispose();
     }
-    expect(processHost.spawns[0]?.handle.killed).toBe(true);
+    expect(spawn.handle.killed).toBe(true);
   });
 
   it("runs claude through the pinned bridge entrypoint and devin through the native server with the configured model", async () => {
@@ -326,7 +344,7 @@ describe("ExternalAgentHost", () => {
       permissionProfile: "default",
       env: ENV,
     });
-    expect(processHost.spawns[0]?.args.command).toEqual([process.execPath, claudeBridgeEntryPath()]);
+    expect(requireSpawn(processHost).args.command).toEqual([process.execPath, claudeBridgeEntryPath()]);
     await claude.dispose();
 
     const devinDefault = await host.connect({
@@ -335,7 +353,7 @@ describe("ExternalAgentHost", () => {
       permissionProfile: "default",
       env: ENV,
     });
-    expect(processHost.spawns[1]?.args.command).toEqual(["devin", "--sandbox", "acp", "--model", "glm-5.2"]);
+    expect(requireSpawn(processHost, 1).args.command).toEqual(["devin", "--sandbox", "acp", "--model", "glm-5.2"]);
     await devinDefault.dispose();
 
     const devinDangerous = await host.connect({
@@ -345,7 +363,7 @@ describe("ExternalAgentHost", () => {
       env: ENV,
       model: "glm-4.7",
     });
-    expect(processHost.spawns[2]?.args.command).toEqual([
+    expect(requireSpawn(processHost, 2).args.command).toEqual([
       "devin",
       "--permission-mode",
       "auto",
@@ -355,7 +373,7 @@ describe("ExternalAgentHost", () => {
       "glm-4.7",
     ]);
     await devinDangerous.prompt("one prompt", () => {});
-    expect(processHost.spawns[2]?.server.prompts).toEqual(["one prompt"]);
+    expect(requireSpawn(processHost, 2).server.prompts).toEqual(["one prompt"]);
     await devinDangerous.dispose();
   });
 
@@ -398,8 +416,7 @@ describe("ExternalAgentHost", () => {
       await connection.dispose();
     }
 
-    const server = processHost.spawns[0]?.server;
-    expect(server).toBeDefined();
+    const server = requireSpawn(processHost).server;
     // The SDK normalizes omitted capability keys into explicit negatives on
     // the wire; assert the semantics — nothing fs/terminal is advertised.
     const capabilities = server.initializeRequests[0]?.clientCapabilities;
@@ -434,7 +451,7 @@ describe("ExternalAgentHost", () => {
       await dangerous.dispose();
     }
 
-    const dangerousServer = processHost.spawns[0]?.server;
+    const dangerousServer = requireSpawn(processHost).server;
     expect(dangerousServer.setModeRequests).toEqual([
       { sessionId: "sess-claude-1", modeId: "bypassPermissions" },
     ]);
@@ -449,7 +466,7 @@ describe("ExternalAgentHost", () => {
       await acceptEdits.dispose();
     }
 
-    const acceptEditsServer = processHost.spawns[1]?.server;
+    const acceptEditsServer = requireSpawn(processHost, 1).server;
     expect(acceptEditsServer.setModeRequests).toEqual([
       { sessionId: "sess-claude-1", modeId: "acceptEdits" },
     ]);
@@ -554,8 +571,10 @@ describe("ExternalAgentHost", () => {
   it("surfaces an input_required stop and continues on the same connection", async () => {
     const { host } = claudeHost({
       promptBehaviors: [
-        () => ({ stopReason: "input_required" }),
-        async (ctx, server) => {
+        // Devin emits nonstandard stop reasons such as "input_required"; the
+        // host must surface them honestly as strings.
+        () => ({ stopReason: "input_required" }) as unknown as PromptResponse,
+        async (ctx, _server) => {
           await notifySessionUpdate(ctx, "sess-claude-1", {
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: "continued" },
@@ -612,8 +631,7 @@ describe("ExternalAgentHost", () => {
 
     const connection = await connectClaude(host);
     const promptPromise = connection.prompt("dies mid-turn", () => {});
-    const handle = processHost.spawns[0]?.handle;
-    expect(handle).toBeDefined();
+    const handle = requireSpawn(processHost).handle;
     await handle.kill();
 
     let error: unknown;

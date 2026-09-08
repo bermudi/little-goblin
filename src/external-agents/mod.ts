@@ -1,5 +1,5 @@
 export { ExternalAgentRunner } from "./runner.ts";
-export { createExternalAgentTool } from "./tool.ts";
+export { createDelegatedExternalAgentTool, createExternalAgentTool, type DelegatedExternalAgentToolOptions } from "./tool.ts";
 export { runExternalAgentsPreflight } from "./preflight.ts";
 export {
   AcpAgentConnection,

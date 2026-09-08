@@ -383,11 +383,12 @@ export class DelegatedWorkHost {
     runId: string,
     backend: ExternalAgentRecordState["backend"],
     ownership: DurableDelegatedWorkOwnership,
+    launch?: Pick<ExternalAgentRecordState, "workingDirectory" | "permissionProfile" | "devinModel" | "task">,
   ): { record: DelegatedWorkRecord; runDir: string } {
     validateOwnership(ownership);
     return this.recordStore.createRecord(
       runId, "external-agent", null, 1, ownership, undefined,
-      { backend, providerSessionId: null },
+      { backend, providerSessionId: null, ...launch },
     );
   }
 

@@ -181,7 +181,12 @@ async function handleDelegatedAction(
       }
       let devinModel: string | null = null;
       if (backend === "devin") {
-        const resolved = options.resolveDevinModel()?.trim();
+        let resolved: string | undefined;
+        try {
+          resolved = options.resolveDevinModel()?.trim();
+        } catch (err) {
+          return delegatedInvalid(errorString(err));
+        }
         if (resolved === undefined || resolved.length === 0) {
           return delegatedInvalid("devin launch requires the resolved operator-owned model; no substitute is launched");
         }

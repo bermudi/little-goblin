@@ -26,3 +26,7 @@ export {
   type PageModelFamily,
   type PageModelVariant,
 } from "./page.ts";
+export {
+  createDeploymentDevinModelResolver,
+  resolveDeploymentDevinModel,
+} from "./launch.ts";

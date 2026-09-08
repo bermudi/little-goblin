@@ -14,6 +14,7 @@ import {
   type InitializeResponse,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
+  type SessionModeState,
   type SessionUpdate,
 } from "@agentclientprotocol/sdk";
 import type { ProcessExit, ProcessHandle, ProcessHost } from "./types.ts";
@@ -158,6 +159,11 @@ export interface AcpConnectSpec {
   signal?: AbortSignal;
 }
 
+export interface AcpContinueSpec extends AcpConnectSpec {
+  /** Provider session identity persisted with the completed run's record. */
+  providerSessionId: string;
+}
+
 export type AcpHostEvent =
   | { type: "agent_message"; text: string }
   | { type: "tool_status"; toolCallId: string; title: string; kind?: string; status?: string }
@@ -229,19 +235,73 @@ export class ExternalAgentHost {
       throw new AcpHostError(`working directory must be absolute: ${spec.workingDirectory}`, "invalid-input");
     }
     const permissionProfile = spec.permissionProfile ?? "dangerous";
-    let command: string[];
-    if (spec.backend === "claude") {
-      command = [process.execPath, resolveClaudeBridge().entryPath];
-    } else {
-      if (spec.devinModel === undefined || spec.devinModel.length === 0) {
-        throw new AcpHostError(
-          "devin launch requires the resolved operator-owned model (decision 0049); no substitute is launched",
-          "invalid-input",
-        );
-      }
-      command = devinCommand(permissionProfile, spec.devinModel);
-    }
+    const command = backendCommand(spec, permissionProfile);
 
+    const { handle, connection, initializeResponse } = await this.launch(spec, permissionProfile, command);
+    try {
+      const session = await connection.agent.buildSession({
+        cwd: spec.workingDirectory,
+        mcpServers: [],
+      }).start();
+      await applyPermissionProfile(connection, spec.backend, permissionProfile, session.sessionId, session.modes);
+      return new AcpAgentConnection(spec, initializeResponse, handle, connection, session);
+    } catch (err) {
+      await teardownTransport(connection, handle);
+      throw err;
+    }
+  }
+
+  /**
+   * Reconnect a fresh server process to a completed run's persisted provider
+   * context: Claude through `session/resume`, Devin through `session/load`
+   * (decision 0044), each gated on the backend advertising that capability.
+   * The selected permission profile is explicitly re-applied on the continued
+   * connection, never inferred. A backend that does not advertise the needed
+   * continuation method is refused honestly before any session is attached.
+   */
+  async continueSession(spec: AcpContinueSpec): Promise<AcpAgentConnection> {
+    if (!isAbsolute(spec.workingDirectory)) {
+      throw new AcpHostError(`working directory must be absolute: ${spec.workingDirectory}`, "invalid-input");
+    }
+    if (spec.providerSessionId.length === 0) {
+      throw new AcpHostError("continuation requires a captured provider session identity", "invalid-input");
+    }
+    const permissionProfile = spec.permissionProfile ?? "dangerous";
+    const command = backendCommand(spec, permissionProfile);
+
+    const { handle, connection, initializeResponse } = await this.launch(spec, permissionProfile, command);
+    try {
+      gateContinuationCapability(spec.backend, initializeResponse.agentCapabilities);
+      const modes = spec.backend === "claude"
+        ? (await connection.agent.request(methods.agent.session.resume, {
+          sessionId: spec.providerSessionId,
+          cwd: spec.workingDirectory,
+          mcpServers: [],
+        })).modes
+        : (await connection.agent.request(methods.agent.session.load, {
+          sessionId: spec.providerSessionId,
+          cwd: spec.workingDirectory,
+          mcpServers: [],
+        })).modes;
+      const session = attachContinuationSession(connection, spec.providerSessionId, modes);
+      await applyPermissionProfile(connection, spec.backend, permissionProfile, spec.providerSessionId, modes ?? null);
+      return new AcpAgentConnection(spec, initializeResponse, handle, connection, session);
+    } catch (err) {
+      await teardownTransport(connection, handle);
+      throw err;
+    }
+  }
+
+  /**
+   * Spawn the backend server and initialize it ACP-style with no
+   * client-hosted capability. Session establishment stays with the caller so
+   * fresh and continued connections share one transport path.
+   */
+  private async launch(
+    spec: AcpConnectSpec,
+    permissionProfile: PermissionProfile,
+    command: string[],
+  ): Promise<{ handle: ProcessHandle; connection: ClientConnection; initializeResponse: InitializeResponse }> {
     const handle = await this.options.processHost.spawn({
       command,
       cwd: spec.workingDirectory,
@@ -257,20 +317,9 @@ export class ExternalAgentHost {
         clientCapabilities: {},
         clientInfo: goblinClientInfo(),
       })) as InitializeResponse;
-      const session = await connection.agent.buildSession({
-        cwd: spec.workingDirectory,
-        mcpServers: [],
-      }).start();
-      await applyPermissionProfile(connection, spec.backend, permissionProfile, session.sessionId, session.modes);
-      return new AcpAgentConnection(spec, initializeResponse, handle, connection, session);
+      return { handle, connection, initializeResponse };
     } catch (err) {
-      // Nothing may dangle after a failed connect.
-      try {
-        connection.close();
-      } catch {
-        // already closed — the kill below still runs
-      }
-      await handle.kill();
+      await teardownTransport(connection, handle);
       throw err;
     }
   }
@@ -423,6 +472,75 @@ export class AcpAgentConnection {
     }
     return new AcpHostError(`${context}: connection lost: ${errorString(error)}${stderrTail}`, "connection-lost");
   }
+}
+
+function backendCommand(spec: AcpConnectSpec, permissionProfile: PermissionProfile): string[] {
+  if (spec.backend === "claude") {
+    return [process.execPath, resolveClaudeBridge().entryPath];
+  }
+  if (spec.devinModel === undefined || spec.devinModel.length === 0) {
+    throw new AcpHostError(
+      "devin launch requires the resolved operator-owned model (decision 0049); no substitute is launched",
+      "invalid-input",
+    );
+  }
+  return devinCommand(permissionProfile, spec.devinModel);
+}
+
+/** Close the transport and terminate the server process. Nothing may dangle after a failed launch. */
+async function teardownTransport(connection: ClientConnection, handle: ProcessHandle): Promise<void> {
+  try {
+    connection.close();
+  } catch {
+    // already closed — the kill below still runs
+  }
+  await handle.kill();
+}
+
+/**
+ * Refuse continuation honestly when the backend does not advertise the
+ * capability its contract requires (decision 0044): Claude continues through
+ * `session/resume`, Devin through `session/load`.
+ */
+function gateContinuationCapability(
+  backend: QualifiedBackend,
+  capabilities: AgentCapabilities | undefined,
+): void {
+  const method = BACKEND_CONTRACTS[backend].continuationMethod;
+  if (method === "session/resume") {
+    if (capabilities?.sessionCapabilities?.resume == null) {
+      throw new AcpHostError(
+        `backend ${backend} does not advertise session/resume; continuation refused`,
+        "protocol",
+      );
+    }
+    return;
+  }
+  if (capabilities?.loadSession !== true) {
+    throw new AcpHostError(
+      `backend ${backend} does not advertise session/load; continuation refused`,
+      "protocol",
+    );
+  }
+}
+
+/**
+ * Attach update routing for a resumed or loaded provider session. The resume
+ * and load responses carry only mode state, so the persisted session identity
+ * supplies the routing key the transport delivers updates under.
+ */
+function attachContinuationSession(
+  connection: ClientConnection,
+  sessionId: string,
+  modes: SessionModeState | null | undefined,
+): ActiveSession {
+  const attachable = connection.agent as unknown as {
+    attachSession: (response: { sessionId: string; modes?: SessionModeState | null }) => ActiveSession;
+  };
+  if (typeof attachable.attachSession !== "function") {
+    throw new AcpHostError("ACP client cannot attach a continued session", "protocol");
+  }
+  return attachable.attachSession({ sessionId, modes: modes ?? null });
 }
 
 function devinCommand(profile: PermissionProfile, model: string): string[] {

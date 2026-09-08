@@ -410,6 +410,24 @@ export class DelegatedWorkHost {
     return this.recordStore.appendInvocation(runId, ownership);
   }
 
+  /**
+   * Append a durable follow-up invocation to an external-agent record.
+   *
+   * The prior invocation stays terminally closed; provider context continues
+   * in the same run directory (decision 0044). Only durable ownership is
+   * accepted — the store schema rejects anything else on write.
+   */
+  appendExternalFollowup(
+    runId: string,
+    ownership: DurableDelegatedWorkOwnership,
+  ): { record: DelegatedWorkRecord; runDir: string } {
+    if (ownership.lifetime !== "durable") {
+      throw new Error("External-agent follow-up requires durable ownership");
+    }
+    validateOwnership(ownership);
+    return this.recordStore.appendInvocation(runId, ownership);
+  }
+
   /** Return the run directory where the execution host keeps kind-specific state. */
   runDir(runId: string): string {
     return this.recordStore.runDir(runId);

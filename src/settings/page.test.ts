@@ -279,3 +279,211 @@ describe("Search and save inside Telegram", () => {
     }
   });
 });
+
+describe("Search and save inside Telegram production wiring", () => {
+  it("deployment owns a stable listener and URL configuration", async () => {
+    const schemaPath = "../schema.ts";
+    const loaded: unknown = await import(schemaPath);
+    const mod = loaded as Record<string, unknown>;
+    const SettingsConfigSchema = mod.SettingsConfigSchema as
+      | { parse: (value: unknown) => { enabled: boolean; port: number } }
+      | undefined;
+    expect(SettingsConfigSchema).toBeDefined();
+    const parsed = SettingsConfigSchema!.parse({});
+    expect(parsed.enabled).toBe(false);
+    expect(parsed.port).toBe(3423);
+    expect(parsed.port).not.toBe(0);
+    const fileMod = loaded as {
+      ConfigFileSchema?: { shape?: Record<string, unknown> };
+    };
+    expect(fileMod.ConfigFileSchema?.shape?.settings).toBeDefined();
+  });
+
+  it("settings server binds the configured stable loopback port", async () => {
+    const serverPath = "./server.ts";
+    const loaded: unknown = await import(serverPath);
+    const starter = (
+      loaded as {
+        startSettingsServer: (
+          options: ServerOptions & { port?: number },
+        ) => ServerHandle | Promise<ServerHandle>;
+      }
+    ).startSettingsServer;
+    expect(typeof starter).toBe("function");
+    const home = makeHome();
+    try {
+      const ephemeral = await starter({
+        goblinHome: home,
+        botToken: BOT_TOKEN,
+        allowedUserIds: [OPERATOR_ID],
+        allowedOrigins: [ORIGIN],
+        discover: async () => testCatalog(),
+      });
+      const freePort = Number(new URL(ephemeral.url).port);
+      expect(ephemeral.url).toContain("127.0.0.1");
+      await ephemeral.close();
+      const stable = await starter({
+        goblinHome: home,
+        botToken: BOT_TOKEN,
+        allowedUserIds: [OPERATOR_ID],
+        allowedOrigins: [ORIGIN],
+        port: freePort,
+        discover: async () => testCatalog(),
+      });
+      try {
+        expect(new URL(stable.url).hostname).toBe("127.0.0.1");
+        expect(Number(new URL(stable.url).port)).toBe(freePort);
+      } finally {
+        await stable.close();
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("telegram launch entry exposes a web_app URL without secrets", async () => {
+    const telegramPath = "./telegram.ts";
+    const loaded: unknown = await import(telegramPath);
+    const mod = loaded as {
+      buildSettingsEntryReply: (cfg: unknown) => {
+        text: string;
+        webAppUrl: string | null;
+        replyMarkup: {
+          inline_keyboard: { text: string; web_app?: { url: string } }[][];
+        } | null;
+      };
+      syncSettingsMenuButton: (
+        api: unknown,
+        cfg: unknown,
+        warn: (message: string, context?: Record<string, unknown>) => void,
+      ) => Promise<void>;
+    };
+    expect(typeof mod.buildSettingsEntryReply).toBe("function");
+    expect(typeof mod.syncSettingsMenuButton).toBe("function");
+    const enabledCfg = {
+      botToken: BOT_TOKEN,
+      allowedTgUserIds: new Set([OPERATOR_ID]),
+      goblinHome: "/tmp/goblin-settings-wiring",
+      modelName: "m",
+      logLevel: "info" as const,
+      toolVisibility: "standard" as const,
+      favorites: [],
+      voiceName: "v",
+      settings: {
+        enabled: true,
+        port: 3423,
+        publicUrl: "https://settings.example",
+        allowedOrigins: undefined,
+      },
+    };
+    const entry = mod.buildSettingsEntryReply(enabledCfg);
+    expect(entry.webAppUrl).toBe("https://settings.example/");
+    expect(entry.text).toContain("https://settings.example/");
+    expect(entry.text).not.toContain(BOT_TOKEN);
+    expect(JSON.stringify(entry.replyMarkup)).toContain("web_app");
+    expect(JSON.stringify(entry.replyMarkup)).toContain("https://settings.example/");
+    expect(JSON.stringify(entry.replyMarkup)).not.toContain(BOT_TOKEN);
+    const disabledCfg = {
+      ...enabledCfg,
+      settings: { enabled: false, port: 3423 },
+    };
+    const disabled = mod.buildSettingsEntryReply(disabledCfg);
+    expect(disabled.webAppUrl).toBeNull();
+    expect(disabled.replyMarkup).toBeNull();
+    expect(disabled.text).not.toContain(BOT_TOKEN);
+    const registryPath = "../commands/registry.ts";
+    const registryLoaded: unknown = await import(registryPath);
+    const registry = registryLoaded as {
+      COMMAND_REGISTRY: { name: string }[];
+      telegramBotCommands: () => { command: string }[];
+      helpReply: () => string;
+    };
+    expect(registry.COMMAND_REGISTRY.some((def) => def.name === "settings")).toBe(true);
+    expect(registry.telegramBotCommands().some((cmd) => cmd.command === "settings")).toBe(true);
+    expect(registry.helpReply()).toContain("/settings");
+    let menuPayload: unknown = null;
+    const api = {
+      setChatMenuButton: async (payload: unknown) => {
+        menuPayload = payload;
+      },
+    };
+    await mod.syncSettingsMenuButton(api, enabledCfg, () => {});
+    expect(JSON.stringify(menuPayload)).toContain("web_app");
+    expect(JSON.stringify(menuPayload)).toContain("https://settings.example/");
+    expect(JSON.stringify(menuPayload)).not.toContain(BOT_TOKEN);
+    let called = false;
+    await mod.syncSettingsMenuButton(
+      {
+        setChatMenuButton: async () => {
+          called = true;
+        },
+      },
+      disabledCfg,
+      () => {},
+    );
+    expect(called).toBe(false);
+  });
+
+  it("composition owns startup and shutdown wiring", async () => {
+    const compositionPath = "./composition.ts";
+    const loaded: unknown = await import(compositionPath);
+    const mod = loaded as {
+      SETTINGS_DEFAULT_PORT: unknown;
+      resolveDeploymentSettingsServerConfig: (cfg: unknown) => {
+        enabled: boolean;
+        port: number;
+        publicUrl: string | null;
+        allowedOrigins: readonly string[];
+      } | null;
+      settingsWebAppUrl: (cfg: unknown) => string | null;
+      startDeploymentSettingsServer: (cfg: unknown) => {
+        url: string;
+        close: () => Promise<void>;
+      } | null;
+    };
+    expect(mod.SETTINGS_DEFAULT_PORT).toBe(3423);
+    expect(typeof mod.resolveDeploymentSettingsServerConfig).toBe("function");
+    expect(typeof mod.settingsWebAppUrl).toBe("function");
+    expect(typeof mod.startDeploymentSettingsServer).toBe("function");
+    const disabledCfg = {
+      botToken: BOT_TOKEN,
+      allowedTgUserIds: new Set([OPERATOR_ID]),
+      goblinHome: "/tmp/goblin-settings-wiring",
+      modelName: "m",
+      logLevel: "info" as const,
+      toolVisibility: "standard" as const,
+      favorites: [],
+      voiceName: "v",
+      settings: { enabled: false, port: 3423 },
+    };
+    expect(mod.resolveDeploymentSettingsServerConfig(disabledCfg)).toBeNull();
+    expect(mod.settingsWebAppUrl(disabledCfg)).toBeNull();
+    expect(mod.startDeploymentSettingsServer(disabledCfg)).toBeNull();
+    const enabledCfg = {
+      botToken: BOT_TOKEN,
+      allowedTgUserIds: new Set([OPERATOR_ID]),
+      goblinHome: "/tmp/goblin-settings-wiring",
+      modelName: "m",
+      logLevel: "info" as const,
+      toolVisibility: "standard" as const,
+      favorites: [],
+      voiceName: "v",
+      settings: {
+        enabled: true,
+        port: 3423,
+        publicUrl: "https://settings.example",
+        allowedOrigins: undefined,
+      },
+    };
+    const resolved = mod.resolveDeploymentSettingsServerConfig(enabledCfg);
+    expect(resolved?.enabled).toBe(true);
+    expect(resolved?.port).toBe(3423);
+    expect(resolved?.publicUrl).toBe("https://settings.example/");
+    expect(resolved?.allowedOrigins).toEqual(["https://settings.example"]);
+    expect(mod.settingsWebAppUrl(enabledCfg)).toBe("https://settings.example/");
+    const indexText = readFileSync(join(import.meta.dir, "..", "index.ts"), "utf-8");
+    expect(indexText).toContain("startDeploymentSettingsServer");
+    expect(indexText).toContain("syncSettingsMenuButton");
+    expect(indexText).not.toContain("0.0.0.0");
+  });
+});

@@ -7,7 +7,6 @@ export {
   BACKEND_CONTRACTS,
   CLAUDE_ACP_BRIDGE_PACKAGE,
   CLAUDE_ACP_BRIDGE_PIN,
-  DEVIN_DEFAULT_MODEL,
   ExternalAgentHost,
   claudeBridgeEntryPath,
   resolveClaudeBridge,

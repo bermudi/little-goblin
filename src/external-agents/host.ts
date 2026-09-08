@@ -29,16 +29,19 @@ import { errorString } from "./util.ts";
  * and implements no such handlers; unimplemented client methods fail closed
  * through the transport's method-not-found error. The permission profile
  * selected for the run is applied explicitly on every new, resumed, or loaded
- * connection and never inferred from prior connection state (decision 0044).
+ * connection and never inferred from prior connection state; an omitted
+ * selection defaults to the unattended dangerous profile (decision 0044).
+ * Devin's `--model` is the operator-owned Settings deployment default resolved
+ * at admission (decision 0049) — the host never defaults or substitutes, and
+ * the AI never overrides it. Productive prompts carry no elapsed-time cutoff:
+ * a prompt ends by backend stop reason, explicit cancellation, abort, or
+ * transport loss; time bounds apply only to local shutdown escalation.
  */
 
 export const CLAUDE_ACP_BRIDGE_PACKAGE = "@agentclientprotocol/claude-agent-acp";
 
 /** Decision-qualified baseline. Requalification re-runs the compatibility tests. */
 export const CLAUDE_ACP_BRIDGE_PIN = "0.64.2";
-
-/** Decision-0044 deployment default for the native Devin ACP server. */
-export const DEVIN_DEFAULT_MODEL = "glm-5.2";
 
 export type QualifiedBackend = "claude" | "devin";
 
@@ -94,9 +97,6 @@ const DEVIN_PROFILE_FLAGS: Record<PermissionProfile, string | undefined> = {
   "dangerous": "auto",
 };
 
-const DEFAULT_PROMPT_TIMEOUT_MS = 600_000;
-const DEFAULT_CANCEL_GRACE_MS = 5_000;
-
 export interface ResolvedBridge {
   entryPath: string;
   packageJsonPath: string;
@@ -141,14 +141,20 @@ export interface AcpConnectSpec {
   backend: QualifiedBackend;
   /** Absolute model-selected working directory (decision 0041). */
   workingDirectory: string;
-  /** Explicit profile applied on this connection; never inherited. */
-  permissionProfile: PermissionProfile;
+  /**
+   * Explicit profile applied on this connection; never inherited. An omitted
+   * selection defaults to the unattended dangerous profile (decision 0044).
+   */
+  permissionProfile?: PermissionProfile;
   /** Allowlist child environment (decision 0041); the host adds nothing. */
   env: Record<string, string>;
-  /** Devin model override; defaults to DEVIN_DEFAULT_MODEL. */
-  model?: string;
-  /** Per-prompt inactivity bound before cancellation and escalation. */
-  promptTimeoutMs?: number;
+  /**
+   * Operator-owned Settings deployment default for Devin, resolved at
+   * admission (decision 0049). Required for devin launches: a missing or
+   * empty selection fails the launch without spawning and without a
+   * substitute, and the AI never overrides it.
+   */
+  devinModel?: string;
   signal?: AbortSignal;
 }
 
@@ -168,7 +174,6 @@ export type AcpHostErrorReason =
   | "invalid-input"
   | "spawn-failed"
   | "protocol"
-  | "timeout"
   | "aborted"
   | "process-exit"
   | "connection-lost"
@@ -186,8 +191,6 @@ export class AcpHostError extends Error {
 
 export interface ExternalAgentHostOptions {
   processHost: ProcessHost;
-  /** How long cancellation gets to produce a stop before termination escalates. */
-  cancelGraceMs?: number;
 }
 
 let goblinClientInfoCache: { name: string; version: string } | undefined;
@@ -217,15 +220,27 @@ export class ExternalAgentHost {
   /**
    * Spawn the backend server, initialize it ACP-style with no client-hosted
    * capability, open a session in the selected working directory, and apply
-   * the selected permission profile to this fresh connection.
+   * the selected permission profile to this fresh connection. An omitted
+   * profile defaults to dangerous; a devin launch without the resolved
+   * operator model is refused before spawning — no substitute is launched.
    */
   async connect(spec: AcpConnectSpec): Promise<AcpAgentConnection> {
     if (!isAbsolute(spec.workingDirectory)) {
       throw new AcpHostError(`working directory must be absolute: ${spec.workingDirectory}`, "invalid-input");
     }
-    const command = spec.backend === "claude"
-      ? [process.execPath, resolveClaudeBridge().entryPath]
-      : devinCommand(spec.permissionProfile, spec.model);
+    const permissionProfile = spec.permissionProfile ?? "dangerous";
+    let command: string[];
+    if (spec.backend === "claude") {
+      command = [process.execPath, resolveClaudeBridge().entryPath];
+    } else {
+      if (spec.devinModel === undefined || spec.devinModel.length === 0) {
+        throw new AcpHostError(
+          "devin launch requires the resolved operator-owned model (decision 0049); no substitute is launched",
+          "invalid-input",
+        );
+      }
+      command = devinCommand(permissionProfile, spec.devinModel);
+    }
 
     const handle = await this.options.processHost.spawn({
       command,
@@ -234,7 +249,7 @@ export class ExternalAgentHost {
       signal: spec.signal,
     });
 
-    const connection = openClientConnection(handle, spec.permissionProfile);
+    const connection = openClientConnection(handle, permissionProfile);
     try {
       const initializeResponse = (await connection.agent.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION,
@@ -246,15 +261,8 @@ export class ExternalAgentHost {
         cwd: spec.workingDirectory,
         mcpServers: [],
       }).start();
-      await applyPermissionProfile(connection, spec, session.sessionId, session.modes);
-      return new AcpAgentConnection(
-        spec,
-        initializeResponse,
-        handle,
-        connection,
-        session,
-        this.options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS,
-      );
+      await applyPermissionProfile(connection, spec.backend, permissionProfile, session.sessionId, session.modes);
+      return new AcpAgentConnection(spec, initializeResponse, handle, connection, session);
     } catch (err) {
       // Nothing may dangle after a failed connect.
       try {
@@ -280,7 +288,6 @@ export class AcpAgentConnection {
   private readonly handle: ProcessHandle;
   private readonly connection: ClientConnection;
   private readonly session: ActiveSession;
-  private readonly cancelGraceMs: number;
   private readonly abortListener: (() => void) | undefined;
 
   constructor(
@@ -289,14 +296,12 @@ export class AcpAgentConnection {
     handle: ProcessHandle,
     connection: ClientConnection,
     session: ActiveSession,
-    cancelGraceMs: number,
   ) {
     this.spec = spec;
     this.backend = spec.backend;
     this.handle = handle;
     this.connection = connection;
     this.session = session;
-    this.cancelGraceMs = cancelGraceMs;
     this.sessionId = session.sessionId;
     this.agentCapabilities = initializeResponse.agentCapabilities ?? {};
 
@@ -338,6 +343,24 @@ export class AcpAgentConnection {
   }
 
   /**
+   * Explicit operator/model cancellation (decision 0044): notify the backend
+   * that the turn should stop. The in-flight prompt resolves with whatever
+   * stop reason the backend reports; use dispose() for bounded local teardown.
+   * Productive prompts carry no elapsed-time cutoff — without an explicit
+   * cancel, abort, or transport loss the turn runs until the backend stops.
+   */
+  async cancel(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    try {
+      await this.connection.agent.notify(methods.agent.session.cancel, { sessionId: this.sessionId });
+    } catch {
+      // Best-effort: transport loss surfaces honestly through the prompt loop.
+    }
+  }
+
+  /**
    * Bounded local cleanup: graceful transport closure first, then process
    * termination via the process host's kill escalation. A local process exit
    * never by itself retires completed provider context (decision 0044).
@@ -367,60 +390,22 @@ export class AcpAgentConnection {
     response: { stopReason: string };
     agentText: string;
   }> {
+    // No elapsed-time cutoff (decision 0044): the turn runs until the backend
+    // reports a stop reason or the loop fails via abort, dispose, process
+    // exit, or transport loss.
     const agentChunks: string[] = [];
-    const loop = (async () => {
-      for (;;) {
-        const msg = await this.session.nextUpdate();
-        if (msg.kind === "stop") {
-          return msg.response;
-        }
-        mapUpdate(msg.update, emit, agentChunks);
+    for (;;) {
+      let message: Awaited<ReturnType<ActiveSession["nextUpdate"]>>;
+      try {
+        message = await this.session.nextUpdate();
+      } catch (error) {
+        throw this.classifyLoopError(error, `backend ${this.backend} ended the prompt turn with an error`);
       }
-    })();
-    const loopOutcome = loop.then(
-      (response) => ({ kind: "stopped" as const, response }),
-      (error) => ({ kind: "failed" as const, error }),
-    );
-
-    const timeoutMs = this.spec.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
-    const first = await Promise.race([loopOutcome, sleep(timeoutMs)]);
-
-    if (first === TIMEOUT) {
-      return this.handleTimeout(loopOutcome, timeoutMs);
-    }
-    if (first.kind === "stopped") {
-      return { response: first.response, agentText: agentChunks.join("") };
-    }
-    throw this.classifyLoopError(first.error, `backend ${this.backend} ended the prompt turn with an error`);
-  }
-
-  private async handleTimeout(
-    loopOutcome: Promise<{ kind: "stopped"; response: { stopReason: string } } | { kind: "failed"; error: unknown }>,
-    timeoutMs: number,
-  ): Promise<never> {
-    try {
-      await this.connection.agent.notify(methods.agent.session.cancel, { sessionId: this.sessionId });
-    } catch {
-      // Transport may already be failing; the grace path below handles it.
-    }
-    const second = await Promise.race([loopOutcome, sleep(this.cancelGraceMs)]);
-    if (second !== TIMEOUT) {
-      if (second.kind === "failed") {
-        await this.dispose();
-        throw new AcpHostError(
-          `prompt timed out after ${timeoutMs}ms and the connection was lost while cancelling: ${errorString(second.error)}`,
-          "timeout",
-        );
+      if (message.kind === "stop") {
+        return { response: message.response, agentText: agentChunks.join("") };
       }
-      // Backend acknowledged cancellation with a stop; the turn still timed out.
-      throw new AcpHostError(`prompt timed out after ${timeoutMs}ms (backend acknowledged cancellation)`, "timeout");
+      mapUpdate(message.update, emit, agentChunks);
     }
-    // The server ignored transport-level cancellation: escalate to termination.
-    await this.dispose();
-    throw new AcpHostError(
-      `prompt timed out after ${timeoutMs}ms and the backend ignored cancellation; process terminated`,
-      "timeout",
-    );
   }
 
   private classifyLoopError(error: unknown, context: string): AcpHostError {
@@ -440,7 +425,7 @@ export class AcpAgentConnection {
   }
 }
 
-function devinCommand(profile: PermissionProfile, model: string | undefined): string[] {
+function devinCommand(profile: PermissionProfile, model: string): string[] {
   const flag = DEVIN_PROFILE_FLAGS[profile];
   return [
     "devin",
@@ -448,7 +433,7 @@ function devinCommand(profile: PermissionProfile, model: string | undefined): st
     "--sandbox",
     "acp",
     "--model",
-    model ?? DEVIN_DEFAULT_MODEL,
+    model,
   ];
 }
 
@@ -470,18 +455,19 @@ function openClientConnection(handle: ProcessHandle, profile: PermissionProfile)
  */
 async function applyPermissionProfile(
   connection: ClientConnection,
-  spec: AcpConnectSpec,
+  backend: QualifiedBackend,
+  profile: PermissionProfile,
   sessionId: string,
   modes: { currentModeId: string; availableModes: Array<{ id: string }> } | null | undefined,
 ): Promise<void> {
-  const wanted = PROFILE_MODE_IDS[spec.backend][spec.permissionProfile];
+  const wanted = PROFILE_MODE_IDS[backend][profile];
   if (modes === undefined || modes === null) {
     return;
   }
   const offered = modes.availableModes.some((mode) => mode.id === wanted);
-  if (!offered && spec.backend === "claude") {
+  if (!offered && backend === "claude") {
     throw new AcpHostError(
-      `claude bridge does not offer permission mode "${wanted}" for profile "${spec.permissionProfile}"`,
+      `claude bridge does not offer permission mode "${wanted}" for profile "${profile}"`,
       "protocol",
     );
   }
@@ -570,12 +556,4 @@ function textFromContent(content: ContentBlock | undefined): string {
     return "";
   }
   return content.type === "text" ? content.text : "";
-}
-
-const TIMEOUT = "acp-host-timeout" as const;
-
-function sleep(ms: number): Promise<typeof TIMEOUT> {
-  return new Promise((resolve) => {
-    setTimeout(() => resolve(TIMEOUT), ms);
-  });
 }

@@ -534,6 +534,47 @@ describe("completed-context follow-up via resume or load", () => {
     expect(record?.invocations[1]?.deliveryState).toBe("suppressed");
   });
 
+  it("a completion persistence failure closes the follow-up as error instead of leaving it running", async () => {
+    const workHost = new DelegatedWorkHost(home);
+    const processHost = new MockContinuationProcessHost(
+      () =>
+        new MockContinuationServer({
+          agentCapabilities: CLAUDE_CAPS,
+          modes: CLAUDE_MODES,
+          promptBehaviors: [(ctx) => followupText(ctx, "follow-up done")],
+        }),
+    );
+    const agentHost = new ExternalAgentHost({ processHost });
+    completedRecord(workHost, "followup-complete-fail", "claude", "sess-claude-1", cwd);
+
+    const originalComplete = workHost.completeInvocation.bind(workHost);
+    workHost.completeInvocation = () => {
+      throw new Error("completion write failed");
+    };
+    let error: unknown;
+    try {
+      await continueExternalRun({
+        workHost,
+        agentHost,
+        runId: "followup-complete-fail",
+        prompt: "do more",
+        ownership: followupOwnership(),
+        env: ENV,
+      });
+    } catch (err) {
+      error = err;
+    } finally {
+      workHost.completeInvocation = originalComplete;
+    }
+    expect(error).toBeInstanceOf(Error);
+    const record = workHost.loadRecord("followup-complete-fail");
+    expect(record?.invocations).toHaveLength(2);
+    expect(record?.invocations[0]?.status).toBe("completed");
+    expect(record?.invocations[1]?.status).toBe("error");
+    expect(record?.invocations[1]?.deliveryState).toBe("suppressed");
+    expect(processHost.spawns[0]?.handle.killed).toBe(true);
+  });
+
   it("an input_required follow-up stays running on its live connection", async () => {
     const workHost = new DelegatedWorkHost(home);
     const processHost = new MockContinuationProcessHost(

@@ -126,6 +126,12 @@ export async function continueExternalRun(request: ContinueExternalRunRequest): 
   try {
     workHost.completeInvocation(runId, followupIndex, outcome.agentText);
   } catch (err) {
+    // Coordinator-owned failure: never leave a running record behind a dead turn.
+    try {
+      workHost.failInvocation(runId, followupIndex, errorString(err));
+    } catch {
+      // The record failure is already logged by the store; report the completion error.
+    }
     await connection.dispose().catch(() => {});
     throw err;
   }

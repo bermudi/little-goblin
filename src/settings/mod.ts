@@ -30,3 +30,15 @@ export {
   createDeploymentDevinModelResolver,
   resolveDeploymentDevinModel,
 } from "./launch.ts";
+export {
+  resolveDeploymentSettingsServerConfig,
+  settingsWebAppUrl,
+  startDeploymentSettingsServer,
+  SETTINGS_DEFAULT_PORT,
+  type DeploymentSettingsServerConfig,
+} from "./composition.ts";
+export {
+  buildSettingsEntryReply,
+  syncSettingsMenuButton,
+  type SettingsEntryReply,
+} from "./telegram.ts";

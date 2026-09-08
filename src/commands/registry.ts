@@ -48,6 +48,7 @@ import type { ScheduleStore } from "../scheduler/store.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import { parseMcpCommand, McpCommandSyntaxError } from "./mcp-cmd.ts";
 import { formatMcpSelection, setMcpServerEnabled } from "../mcp/selection-store.ts";
+import { buildSettingsEntryReply } from "../settings/telegram.ts";
 import {
   completed,
   runtimeAdmission,
@@ -767,6 +768,15 @@ const scheduleHandler: CommandHandler = async ({ deps, surface, rawText }) => {
   return replied(result.reply, [], result.tag);
 };
 
+const settingsHandler: CommandHandler = async ({ deps }) => {
+  // `/settings` is instant-timing and deployment-scoped: it advertises the
+  // Telegram Mini App entry for deployment-wide defaults (decision 0049).
+  // The web_app button itself is synced via `syncSettingsMenuButton` at
+  // startup; this text reply keeps the entry discoverable via /help and the
+  // command menu and never carries secrets.
+  return replied(buildSettingsEntryReply(deps.cfg).text, [], "info");
+};
+
 // ---------------------------------------------------------------------------
 // grammy handler factories
 // ---------------------------------------------------------------------------
@@ -931,6 +941,12 @@ export const COMMAND_REGISTRY: readonly CommandDef[] = [
     timing: skillsTiming,
     mayRecoverWedgedRuntime: true,
     handler: skillsHandler,
+  },
+  {
+    name: "settings",
+    description: "open the deployment Settings Mini App (Devin default model)",
+    timing: "instant",
+    handler: settingsHandler,
   },
   {
     name: "ping",

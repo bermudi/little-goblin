@@ -10,8 +10,10 @@
  * `store.ts`, coordinated through `goblin-config-file.ts`). No second durable
  * copy, no secret/config dump routes, no auth material in logs.
  * Persistence: `$GOBLIN_HOME/goblin.json5` through the Settings store only.
- * Network: binds 127.0.0.1 ephemeral; operator-managed Tailscale Serve
- * supplies private HTTPS. Tests use loopback only and perform no live
+ * Network: binds 127.0.0.1 only (never 0.0.0.0); ephemeral port 0 for tests,
+ * deployment-owned stable `settings.port` (default 3423) in production so
+ * operator-managed Tailscale Serve has a stable local target and supplies
+ * private HTTPS. Tests use loopback only and perform no live
  * network setup.
  */
 
@@ -31,6 +33,13 @@ export interface SettingsServerOptions {
   botToken: string;
   allowedUserIds: readonly number[];
   allowedOrigins: readonly string[];
+  /**
+   * Deployment-owned stable loopback port. Defaults to ephemeral 0 for tests;
+   * production passes the configured `settings.port` (default 3423) so
+   * operator-managed Tailscale Serve has a stable local target. The listener
+   * always binds 127.0.0.1 and never 0.0.0.0.
+   */
+  port?: number;
   maxBodyBytes?: number;
   requestTimeoutMs?: number;
   authMaxAgeSec?: number;
@@ -182,6 +191,7 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const authMaxAgeSec = options.authMaxAgeSec ?? DEFAULT_AUTH_MAX_AGE_SEC;
   const discover = options.discover ?? ((signal: AbortSignal) => discoverDevinCatalog({ signal }));
+  const port = options.port ?? 0;
 
   let closing = false;
   let closed = false;
@@ -194,7 +204,7 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
   };
 
   const server = Bun.serve({
-    port: 0,
+    port,
     hostname: "127.0.0.1",
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);

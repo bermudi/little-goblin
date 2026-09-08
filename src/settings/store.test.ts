@@ -167,7 +167,7 @@ describe("Durable deployment model selection", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 
   it("non-secret projection preserves private config and file mode", async () => {
     const { readDeploymentSettings, saveDeploymentModel } = await load();

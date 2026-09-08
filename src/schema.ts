@@ -49,6 +49,13 @@ export const McpConfigSchema = z.object({
 
 export type McpConfig = z.infer<typeof McpConfigSchema>;
 
+export const DevinConfigSchema = z.object({
+  /** Exact deployment-default Devin model id (explicit selection only). */
+  defaultModel: z.string().min(1),
+});
+
+export type DevinConfig = z.infer<typeof DevinConfigSchema>;
+
 /**
  * Zod schema for the JSON5 config file (goblin.json5).
  * Values are resolved via resolveConfigValue() before validation.
@@ -76,6 +83,7 @@ export const ConfigFileSchema = z
     embeddings: EmbeddingsConfigSchema.optional(),
     externalAgents: ExternalAgentsConfigSchema.optional(),
     mcp: McpConfigSchema.optional(),
+    devin: DevinConfigSchema.optional(),
     /**
      * Legacy field removed by decision 0034. Retained as `z.unknown()` so an
      * existing key fails validation with actionable guidance via the

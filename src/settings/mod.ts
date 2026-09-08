@@ -13,3 +13,8 @@ export {
   type DeploymentSettings,
   type SettingsStoreReason,
 } from "./store.ts";
+export {
+  startSettingsServer,
+  type SettingsServerHandle,
+  type SettingsServerOptions,
+} from "./server.ts";

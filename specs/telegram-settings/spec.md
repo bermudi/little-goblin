@@ -7,11 +7,11 @@ owns: telegram-deployment-settings
 
 ## Purpose
 
-Status: target contract, delivered through issue #59. This is not a claim that
-the Mini App is already available.
-
-Implemented so far: request-owned live Devin catalog discovery and validation.
-Persistence, API, page, and launch integration remain target requirements.
+Status: target contract. The first usable release (Devin model selection,
+catalog, persistence, API, page, launch integration) was delivered through
+issue #59. The full deployment-config surface — every whitelisted non-secret
+section, MCP through McpSelectionStore, and self-restart — is delivered
+through issue #60.
 
 ## Requirements
 
@@ -27,6 +27,13 @@ release.
 
 - WHEN the operator saves a Devin model
 - THEN the deployment default changes, without changing any chat's main model.
+
+#### Scenario: Every whitelisted section, no secrets
+
+- WHEN the operator opens Settings
+- THEN every whitelisted non-secret deployment section is editable, while
+  secret fields are surfaced only as presence and are never writable through
+  the Mini App.
 
 ### Requirement: Live Validated Model Catalog
 
@@ -62,6 +69,19 @@ non-secret projection. The UI SHALL identify when a saved setting takes effect.
 - WHEN an exact model is saved and Settings is reopened or Goblin restarted
 - THEN the committed model remains selected; failed saves never publish it.
 
+#### Scenario: Section-scoped writes stay valid
+
+- WHEN a section is saved through Settings
+- THEN only that section's whitelisted keys change, unrelated fields and file
+  permissions are preserved, the resulting file still parses as a valid
+  config, and a stale revision is rejected without partial state.
+
+#### Scenario: Secrets are not a settings surface
+
+- WHEN a read or write touches a secret field
+- THEN the read returns presence only and the write is rejected with an
+  actionable error before any filesystem effect.
+
 ### Requirement: Verified Operator Access
 
 WHEN the Mini App calls the Settings API, THE SYSTEM SHALL verify Telegram
@@ -75,6 +95,11 @@ Authentication material and full configuration SHALL never be returned or logged
 
 - WHEN identity is invalid, expired, or unauthorized
 - THEN the request fails without a subprocess or configuration mutation.
+
+#### Scenario: The operator cannot lock themselves out
+
+- WHEN an `allowedUsers` change would remove the requesting operator
+- THEN the change is rejected and nothing is written.
 
 ### Requirement: Operator Selection Controls New Runs
 
@@ -90,3 +115,19 @@ runner, Session, or scratch seams SHALL NOT be extended.
 - WHEN the default changes while a run is active
 - THEN the active run retains its model and the next admitted run captures the
   new selection without a Goblin restart.
+
+### Requirement: Operator Restart Without SSH
+
+WHEN the operator confirms a restart from Settings, THE SYSTEM SHALL verify
+operator identity, acknowledge before shutdown begins, stop accepting new
+requests, drain in-flight requests within a bounded deadline, and exit
+cleanly for the service manager to revive the process. A restart SHALL be
+refused while the on-disk config fails schema validation. Revival is the
+operator-deployed service manager's job (`Restart=on-success`), not the
+process's.
+
+#### Scenario: Bad config never boot-loops
+
+- WHEN a restart is requested but the on-disk config is invalid
+- THEN the restart is refused with an actionable error and the process keeps
+  serving.

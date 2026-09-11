@@ -18,11 +18,11 @@ export {
   SubagentRunner,
   SubagentCancellationRejectedError,
   SubagentReviveBusyError,
-  SubagentReviveRejectedError,
   RuntimeFenceError,
   type SubagentMemoryStoreFactory,
   type SubagentToolFactory,
 } from "./runner.ts";
+export { SubagentReviveRejectedError } from "./revive.ts";
 export {
   PiSubagentHost,
   SubagentExecutionStoppedError,

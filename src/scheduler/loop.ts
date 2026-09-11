@@ -6,9 +6,8 @@ import type { ConversationState } from "../sessions/mod.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 
 import type { MemoryEngine } from "../memory/engine.ts";
-import { DREAMING_CATEGORIES, type DreamingCategory } from "../memory/dreaming.ts";
-import type { Candidate, CandidateExtractor } from "../memory/dreaming.ts";
-import { appendQuarantine } from "../memory/quarantine.ts";
+import type { CandidateExtractor } from "../memory/dreaming.ts";
+import { parseDreamingResponse } from "./dreaming-parse.ts";
 import type { TranscriptLine } from "../sessions/transcript.ts";
 import type { ScheduledTurn } from "./types.ts";
 import type { ScheduleStore } from "./store.ts";
@@ -405,7 +404,7 @@ export class SchedulerLoop {
       const conversationId = ctx.sessionId;
       const prompt = this.buildDreamingPrompt(conversationId, lines);
       const raw = await this.runInternalTurnForDreaming(prompt);
-      return this.parseDreamingResponse(raw, conversationId, lines);
+      return parseDreamingResponse({ goblinHome: this.home, raw, conversationId, lines });
     };
   }
 
@@ -455,147 +454,6 @@ Return ONLY a JSON object in this exact format:
 Transcript excerpt for Conversation ${conversationId}:
 ${formatted}`;
   }
-
-  private parseDreamingResponse = (raw: string, conversationId: string, lines: TranscriptLine[]): Candidate[] => {
-    const cleaned = raw
-      .replace(/```(?:json)?\n([\s\S]*?)\n```/, "$1")
-      .replace(/^```(?:json)?\s*/, "")
-      .replace(/```\s*$/, "")
-      .trim();
-
-    const quarantineMalformed = (preview: string): void => {
-      appendQuarantine({
-        goblinHome: this.home,
-        sourceSession: conversationId,
-        targetScope: `transcript/${conversationId}`,
-        category: null,
-        reason: "malformed",
-        content: preview,
-        previewMaxLen: 200,
-      });
-    };
-
-    if (cleaned.length === 0) return [];
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch {
-      quarantineMalformed(cleaned);
-      return [];
-    }
-
-    if (typeof parsed !== "object" || parsed === null || !("candidates" in parsed)) {
-      quarantineMalformed(cleaned);
-      return [];
-    }
-    const candidates = (parsed as Record<string, unknown>).candidates;
-    if (!Array.isArray(candidates)) {
-      quarantineMalformed(cleaned);
-      return [];
-    }
-
-    const defaultStart = lines[0]?.index ?? 0;
-    const defaultEnd = lines[lines.length - 1]?.index ?? defaultStart;
-
-    function lineForIndex(index: number): TranscriptLine | undefined {
-      return lines.find((l) => l.index === index);
-    }
-
-    function roleForLine(line: TranscriptLine | undefined): Candidate["source"]["sourceRole"] {
-      switch (line?.role) {
-        case "user":
-          return "user";
-        case "assistant":
-          return "assistant";
-        case "toolResult":
-          return "tool";
-        default:
-          return "system";
-      }
-    }
-
-    const result: Candidate[] = [];
-    for (const item of candidates) {
-      if (typeof item !== "object" || item === null) {
-        quarantineMalformed(JSON.stringify(item));
-        continue;
-      }
-      const c = item as Record<string, unknown>;
-      const rawTarget = c.target;
-      // `target` is optional per spec — defaults to "memory" when absent.
-      // A present-but-invalid value is malformed and quarantined below.
-      const target: Candidate["target"] | undefined =
-        rawTarget === undefined
-          ? "memory"
-          : rawTarget === "user" || rawTarget === "memory" || rawTarget === "agent"
-            ? rawTarget
-            : undefined;
-      const rawCategory = typeof c.category === "string" ? c.category : undefined;
-      const category: DreamingCategory | undefined =
-        rawCategory !== undefined && (DREAMING_CATEGORIES as readonly string[]).includes(rawCategory)
-          ? (rawCategory as DreamingCategory)
-          : undefined;
-      const rawConfidence =
-        typeof c.confidence === "number"
-          ? c.confidence
-          : Number.parseFloat(String(c.confidence));
-      const confidence =
-        Number.isFinite(rawConfidence) && rawConfidence >= 0 && rawConfidence <= 1
-          ? rawConfidence
-          : undefined;
-      const textValue =
-        typeof c.text === "string" ? c.text.trim() : typeof c.summary === "string" ? c.summary.trim() : undefined;
-
-      const rawLineRange =
-        Array.isArray(c.lineRange) && c.lineRange.length === 2 ? c.lineRange : undefined;
-      const lineRange: [number, number] | undefined =
-        rawLineRange !== undefined &&
-        typeof rawLineRange[0] === "number" &&
-        Number.isFinite(rawLineRange[0]) &&
-        typeof rawLineRange[1] === "number" &&
-        Number.isFinite(rawLineRange[1]) &&
-        rawLineRange[0] <= rawLineRange[1]
-          ? [rawLineRange[0], rawLineRange[1]]
-          : undefined;
-
-      if (c.lineRange !== undefined && lineRange === undefined) {
-        quarantineMalformed(JSON.stringify(item));
-        continue;
-      }
-
-      if (
-        target === undefined ||
-        category === undefined ||
-        confidence === undefined ||
-        textValue === undefined ||
-        textValue.length === 0
-      ) {
-        quarantineMalformed(JSON.stringify(item));
-        continue;
-      }
-
-      const start = lineRange?.[0] ?? defaultStart;
-      const end = lineRange?.[1] ?? defaultEnd;
-      const startLine = lineForIndex(start);
-      const sourceRole = roleForLine(startLine);
-
-      result.push({
-        target,
-        category,
-        confidence,
-        text: textValue,
-        source: {
-          // Candidate is a memory-owned compatibility contract whose persisted
-          // field remains `sessionId`; the value is a Conversation ID.
-          sessionId: conversationId,
-          lineRange: [start, end],
-          sourceRole,
-        },
-      });
-    }
-    return result;
-  };
 
   private async runDreamingLightSleep(): Promise<void> {
     if (!this.memoryEngine) return;

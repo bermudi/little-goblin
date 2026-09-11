@@ -144,8 +144,8 @@ Historical unstarted plans live in `specs/parked/`; they are frozen references, 
   2. `tg/buffer.ts` — `MessageBuffer` god-class; the in-flight-promise serialization guard is duplicated ~5×; extract a response-update serializer and split status vs response concerns. Concurrency-sensitive.
   3. `subagents/runner.ts` — `revive()`/`spawn()` are ~300-line sequential methods with manual `revivesInProgress.delete` on every rejection path; guard-object plus validation-stage extraction. Concurrency-sensitive.
   4. `memory/store.ts` — `mutate()` conflates diff/match/budget/transaction/embed and mixes error styles (covers the two 08-01 `memory/store.ts` entries).
-  5. `scheduler/loop.ts` — `parseDreamingResponse` hand-rolled per-field validation (the 08-01 flatten entry); schema-validate and extract.
-  6. `external-agents/tool.ts` and `scheduler/tool.ts` — ~200-line action-switch/factory bodies; per-action handlers plus declarative validation.
+  5. ~~`scheduler/loop.ts` — `parseDreamingResponse`~~ — done: extracted to schema-validated `scheduler/dreaming-parse.ts` (issue #60).
+  6. ~~`external-agents/tool.ts`~~ — done: per-action handlers + single cleanup helper (issue #61). `scheduler/tool.ts` re-graded on deep read: already decomposed with extracted helpers — removed as a candidate, do not churn.
   - Wide-but-fine, no action unless a concrete problem appears: `orchestration/dispatcher.ts`, `doctor.ts`, `commands/registry.ts`, `settings/server.ts`. Recent kernel files (`runtime-machine.ts`, `conversation-lifecycle.ts`, `shutdown/*`) are dense by necessity — do not churn.
   - Suggested order: leaf-risk first (dreaming parser, tool handlers, memory mutate) to calibrate the pattern; the concurrency-sensitive trio last.
 

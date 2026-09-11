@@ -10,6 +10,7 @@ import { MetricsStore, type TelegramMetricsEvent } from "../metrics/mod.ts";
 import type { Surface } from "../surface.ts";
 import { chatActionDeliveryOpts, deliveryOpts } from "./delivery.ts";
 import { sendSystemReply, type ReplyOpts, stripRichMarkdown, isParseError, classifyTelegramError } from "./format.ts";
+import { ResponseLane } from "./response-lane.ts";
 
 /**
  * MessageBuffer turns AgentSession events (via TurnCallbacks) into Telegram
@@ -216,27 +217,27 @@ export class MessageBuffer implements TurnCallbacks {
   private topicNotFoundReported: boolean = false;
 
   /**
-   * Promise tracking an in-flight `sendRichMessage` (or `sendMessage` during a
+   * Lane tracking an in-flight `sendRichMessage` (or `sendMessage` during a
    * plain-text fallback) that is creating the response message. Any concurrent
    * flush whose throttle window opens before the send resolves would otherwise
    * see `responseMessageId === undefined` and call `sendRichMessage` a second
    * time — producing duplicate Telegram messages. Non-force flushes skip when
-   * this is set; force flushes await it.
+   * this is busy; force flushes await it.
    */
-  private creatingResponse: Promise<void> | null = null;
+  private creatingResponse = new ResponseLane();
 
   /**
-   * Promise tracking an in-flight status edit (send or edit). Concurrent
+   * Lane tracking an in-flight status edit (send or edit). Concurrent
    * status events (e.g. four sequential `onToolStart` in rapid succession)
-   * all see the in-flight promise and bail; the loop inside the in-flight
-   * promise re-renders `buildStatusLine()` after each round-trip and picks
+   * all see the busy lane and bail; the loop inside the in-flight
+   * work re-renders `buildStatusLine()` after each round-trip and picks
    * up whatever state mutated during the wait. This collapses N events
    * into ≤2 Telegram round-trips per turn.
    */
-  private editingStatus: Promise<void> | null = null;
+  private editingStatus = new ResponseLane();
 
   /**
-   * Promise tracking an in-flight `editMessageText` against the response
+   * Lane tracking an in-flight `editMessageText` against the response
    * message. Telegram does NOT guarantee ordering across concurrent edits
    * to the same message: a later-issued edit can land first and a stale
    * earlier edit overwrite it. Without serialization, the final text the
@@ -245,21 +246,21 @@ export class MessageBuffer implements TurnCallbacks {
    * later). The agent_end force flush therefore always lands LAST, with
    * the full accumulated text.
    */
-  private editingResponse: Promise<void> | null = null;
+  private editingResponse = new ResponseLane();
 
   /**
-   * Promise tracking the whole response flush. Serializing at this level keeps
+   * Lane tracking the whole response flush. Serializing at this level keeps
    * a concurrent force flush from observing a half-written state and duplicating
    * the response bubble.
    */
-  private flushingResponse: Promise<void> | null = null;
+  private flushingResponse = new ResponseLane();
 
   /**
-   * Promise tracking a segment seal (boundary flush + draft finalization + state
+   * Lane tracking a segment seal (boundary flush + draft finalization + state
    * reset). Other response flushes await this so a follow-up `onTextDelta` does
    * not update a draft that is about to be finalized.
    */
-  private sealingResponse: Promise<void> | null = null;
+  private sealingResponse = new ResponseLane();
 
   /**
    * True while `sealResponseSegment` is in the flush phase. Prevents the inner
@@ -538,10 +539,14 @@ export class MessageBuffer implements TurnCallbacks {
     await Promise.resolve();
     for (let i = 0; i < 20; i++) {
       const pending: Promise<unknown>[] = [];
-      if (this.sealingResponse !== null) pending.push(this.sealingResponse.catch(() => {}));
-      if (this.flushingResponse !== null) pending.push(this.flushingResponse.catch(() => {}));
-      if (this.creatingResponse !== null) pending.push(this.creatingResponse.catch(() => {}));
-      if (this.editingResponse !== null) pending.push(this.editingResponse.catch(() => {}));
+      const sealing = this.sealingResponse.current;
+      if (sealing !== null) pending.push(sealing.catch(() => {}));
+      const flushing = this.flushingResponse.current;
+      if (flushing !== null) pending.push(flushing.catch(() => {}));
+      const creating = this.creatingResponse.current;
+      if (creating !== null) pending.push(creating.catch(() => {}));
+      const editing = this.editingResponse.current;
+      if (editing !== null) pending.push(editing.catch(() => {}));
       if (pending.length === 0) break;
       await Promise.all(pending);
     }
@@ -696,7 +701,7 @@ export class MessageBuffer implements TurnCallbacks {
     sealedText: string,
     { finalizeDraft = true, clearState = true }: { finalizeDraft?: boolean; clearState?: boolean } = {},
   ): Promise<void> {
-    const prev = this.sealingResponse;
+    const prev = this.sealingResponse.current;
     const work = (async () => {
       await prev;
       if (sealedText.length === 0 && this.responseMessageId === undefined && this.responseDraftId === undefined) {
@@ -727,8 +732,7 @@ export class MessageBuffer implements TurnCallbacks {
         this.clearResponseState();
       }
     })();
-    this.sealingResponse = work;
-    await work;
+    await this.sealingResponse.track(work);
   }
 
   /** Best-effort `sendChatAction("typing")`; never throws out. */
@@ -834,7 +838,7 @@ export class MessageBuffer implements TurnCallbacks {
     // Coalesce concurrent flushes. If an edit is in flight, just bail —
     // the in-flight loop below re-renders `buildStatusLine()` after each
     // round-trip and picks up whatever state was mutated during the wait.
-    if (this.editingStatus) return;
+    if (this.editingStatus.isBusy()) return;
 
     this.lastEditTime = now;
 
@@ -876,14 +880,10 @@ export class MessageBuffer implements TurnCallbacks {
       }
     })();
 
-    this.editingStatus = inFlight;
-    inFlight.finally(() => {
-      if (this.editingStatus === inFlight) this.editingStatus = null;
-    });
     // Awaiting here makes `await buffer.flushStatus(...)` deterministic
     // for tests; in production the call site uses `void flushStatus(...)`
     // so this await never blocks event-handler return.
-    await inFlight;
+    await this.editingStatus.track(inFlight);
   }
 
   private async handleStatusError(err: unknown, op: "sendMessage" | "editMessageText"): Promise<void> {
@@ -907,38 +907,33 @@ export class MessageBuffer implements TurnCallbacks {
   async flushResponse(force: boolean = false, sealedText?: string): Promise<void> {
     // Await any segment seal that is finalizing. The inner flush of a seal runs
     // with `inSeal` true so it does not await itself.
-    if (this.sealingResponse && !this.inSeal) {
-      await this.sealingResponse;
+    if (!this.inSeal) {
+      const sealing = this.sealingResponse.wait();
+      if (sealing !== null) await sealing;
     }
 
     // Ensure the status message lands before creating the first response
     // message or streaming draft, so the status appears above the response
-    // in the chat. editingStatus is set synchronously by commitStatus/flushStatus
-    // and cleared when the status sendMessage resolves. Once the first response
-    // exists this is a no-op (editingStatus is null).
-    if (this.responseMessageId === undefined && this.responseDraftId === undefined && this.editingStatus) {
-      await this.editingStatus;
+    // in the chat. editingStatus becomes busy synchronously via
+    // commitStatus/flushStatus and clears when the status sendMessage
+    // resolves. Once the first response exists this is a no-op.
+    if (this.responseMessageId === undefined && this.responseDraftId === undefined) {
+      const statusEdit = this.editingStatus.wait();
+      if (statusEdit !== null) await statusEdit;
     }
 
     const textLen = (sealedText ?? this.accumulatedText).length;
-    if (this.flushingResponse) {
-      if (!force) {
-        log.debug("response: skip (flush in-flight)", { accLen: textLen });
-        return;
-      }
+    const entry = this.flushingResponse.enter(force);
+    if (entry === "skipped") {
+      log.debug("response: skip (flush in-flight)", { accLen: textLen });
+      return;
+    }
+    if (entry !== "proceed") {
       log.debug("response: await flush in-flight (force)", { accLen: textLen });
-      await this.flushingResponse;
+      await entry;
     }
 
-    const inFlight = this.flushResponseOnce(force, sealedText);
-    this.flushingResponse = inFlight;
-    try {
-      await inFlight;
-    } finally {
-      if (this.flushingResponse === inFlight) {
-        this.flushingResponse = null;
-      }
-    }
+    await this.flushingResponse.track(this.flushResponseOnce(force, sealedText));
   }
 
   private async flushResponseOnce(force: boolean = false, sealedText?: string): Promise<void> {
@@ -968,13 +963,16 @@ export class MessageBuffer implements TurnCallbacks {
     // edit/update, by which time the id is set). A force flush — used by
     // `onAgentEnd` to land the final state — must wait, otherwise it would see
     // an unset id and issue a duplicate create.
-    if (this.responseMessageId === undefined && this.responseDraftId === undefined && this.creatingResponse) {
-      if (!force) {
+    if (this.responseMessageId === undefined && this.responseDraftId === undefined) {
+      const createEntry = this.creatingResponse.enter(force);
+      if (createEntry === "skipped") {
         log.debug("response: skip (send in-flight)", { accLen: text.length });
         return;
       }
-      log.debug("response: await send in-flight (force)", { accLen: text.length });
-      await this.creatingResponse;
+      if (createEntry !== "proceed") {
+        log.debug("response: await send in-flight (force)", { accLen: text.length });
+        await createEntry;
+      }
     }
 
     // Serialize edits/draft updates. Telegram does not guarantee ordering for
@@ -983,13 +981,14 @@ export class MessageBuffer implements TurnCallbacks {
     // opened while another update is in flight just skips — the next window
     // will pick up the latest text. The force flush from onAgentEnd MUST wait,
     // so the final write contains the full text.
-    if (this.editingResponse) {
-      if (!force) {
-        log.debug("response: skip (edit in-flight)", { accLen: text.length });
-        return;
-      }
+    const editEntry = this.editingResponse.enter(force);
+    if (editEntry === "skipped") {
+      log.debug("response: skip (edit in-flight)", { accLen: text.length });
+      return;
+    }
+    if (editEntry !== "proceed") {
       log.debug("response: await edit in-flight (force)", { accLen: text.length });
-      await this.editingResponse;
+      await editEntry;
     }
 
     log.debug("response: flush", {
@@ -1061,12 +1060,7 @@ export class MessageBuffer implements TurnCallbacks {
             }
           }
         })();
-        this.editingResponse = inFlight;
-        try {
-          await inFlight;
-        } finally {
-          if (this.editingResponse === inFlight) this.editingResponse = null;
-        }
+        await this.editingResponse.track(inFlight);
       } else if (this.responseDraftId !== undefined) {
         // Active draft: update it with the latest text.
         const draftId = this.responseDraftId;
@@ -1084,12 +1078,7 @@ export class MessageBuffer implements TurnCallbacks {
             await this.handleResponseError(err, op, text);
           }
         })();
-        this.editingResponse = inFlight;
-        try {
-          await inFlight;
-        } finally {
-          if (this.editingResponse === inFlight) this.editingResponse = null;
-        }
+        await this.editingResponse.track(inFlight);
       } else if (this.useDrafts) {
         // No existing response: start a new streaming draft.
         const draftId = this.nextDraftId++;
@@ -1108,12 +1097,7 @@ export class MessageBuffer implements TurnCallbacks {
             await this.handleResponseError(err, op, text);
           }
         })();
-        this.creatingResponse = inFlight;
-        try {
-          await inFlight;
-        } finally {
-          if (this.creatingResponse === inFlight) this.creatingResponse = null;
-        }
+        await this.creatingResponse.track(inFlight);
       } else {
         // No existing response and drafts disabled: create a persistent message.
         const initialContent = this.responsePayload(text);
@@ -1137,12 +1121,7 @@ export class MessageBuffer implements TurnCallbacks {
             await this.handleResponseError(err, initialOp, text);
           }
         })();
-        this.creatingResponse = inFlight;
-        try {
-          await inFlight;
-        } finally {
-          if (this.creatingResponse === inFlight) this.creatingResponse = null;
-        }
+        await this.creatingResponse.track(inFlight);
       }
     } catch (err) {
       await this.handleResponseError(err);

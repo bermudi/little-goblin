@@ -31,6 +31,21 @@ describe("ResponseLane", () => {
     expect(await lane.enter(true)).toBe("proceed");
   });
 
+  it("decides proceed/skipped synchronously so the lane is claimed without a yield", () => {
+    const lane = new ResponseLane();
+    // Idle: synchronous "proceed" — not a promise, no microtask yield.
+    expect(lane.enter(false)).toBe("proceed");
+    expect(lane.enter(true)).toBe("proceed");
+    expect(lane.wait()).toBeNull();
+    const d = deferred();
+    void lane.track(d.promise);
+    // Busy: synchronous "skipped" — a caller in the same synchronous run
+    // already observes the claim.
+    expect(lane.enter(false)).toBe("skipped");
+    expect(lane.wait()).toBe(d.promise);
+    d.resolve();
+  });
+
   it("reports skipped to a non-force caller while a write is in flight", async () => {
     const lane = new ResponseLane();
     const d = deferred();
@@ -48,7 +63,7 @@ describe("ResponseLane", () => {
     const d = deferred();
     const tracked = lane.track(d.promise);
     let entered = false;
-    const entry = lane.enter(true).then((e) => {
+    const entry = Promise.resolve(lane.enter(true)).then((e) => {
       entered = true;
       return e;
     });
@@ -67,7 +82,7 @@ describe("ResponseLane", () => {
     const d = deferred();
     const tracked = lane.track(d.promise);
     let waited = false;
-    const w = lane.wait().then(() => {
+    const w = Promise.resolve(lane.wait()).then(() => {
       waited = true;
     });
     await tick();
@@ -104,9 +119,8 @@ describe("ResponseLane", () => {
     const lane = new ResponseLane();
     const d = deferred();
     const tracked = lane.track(d.promise);
-    const assertion = expect(tracked).rejects.toThrow("boom");
     d.reject(new Error("boom"));
-    await assertion;
+    await expect(tracked).rejects.toThrow("boom");
     expect(lane.isBusy()).toBe(false);
     expect(lane.current).toBeNull();
   });

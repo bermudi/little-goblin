@@ -7,6 +7,7 @@ import { MemoryDatabase } from "./db.ts";
 import { EmbeddingProvider } from "./embeddings.ts";
 import { MemoryBudget, MemoryOverflowError } from "./budget.ts";
 import { deriveConceptTags } from "./concept-vocabulary.ts";
+import { planMutation } from "./mutate-plan.ts";
 import { memoryDbPath, memoryDir } from "./paths.ts";
 import { scopeTag, toMemoryScopePair, type MemoryScope } from "./scope.ts";
 import { parseSurfaceId, type SurfaceId } from "../surface.ts";
@@ -995,36 +996,7 @@ export class MemoryStore {
 
     const trimmed = next.body.replace(/\n*$/, "");
     const newTexts = trimmed.length === 0 ? [] : trimmed.split(DELIMITER);
-    const newTextLengthSum = newTexts.reduce((sum, text) => sum + text.length, 0);
-    const oldTextLengthSum = oldRows.reduce((sum, row) => sum + row.text.length, 0);
-    const netDelta = newTextLengthSum - oldTextLengthSum;
-
-    // Map new texts to existing rows when the text is identical. Unmatched old
-    // rows are deleted; new/changed rows are inserted. This preserves origin,
-    // recall_count, promoted_at, and embeddings for entries that survive.
-    const oldByText = new Map<string, EntryRow[]>();
-    for (const row of oldRows) {
-      const list = oldByText.get(row.text) ?? [];
-      list.push(row);
-      oldByText.set(row.text, list);
-    }
-
-    const matchedOldIds = new Set<string>();
-    const toKeep: { row: EntryRow; index: number }[] = [];
-    const toInsert: { text: string; index: number }[] = [];
-
-    for (const [i, text] of newTexts.entries()) {
-      const candidates = oldByText.get(text);
-      if (candidates && candidates.length > 0) {
-        const reused = candidates.shift()!;
-        matchedOldIds.add(reused.id);
-        toKeep.push({ row: reused, index: i });
-      } else {
-        toInsert.push({ text, index: i });
-      }
-    }
-
-    const toDelete = oldRows.filter((r) => !matchedOldIds.has(r.id));
+    const plan = planMutation(oldRows, newTexts);
     const now = Date.now();
     const baseTime = now;
 
@@ -1040,24 +1012,24 @@ export class MemoryStore {
       // and counting them as freed would double-count the room they create.
       const currentChars = this.budget.currentChars(this.db);
       const idsToPreserve = [
-        ...toKeep.map(({ row }) => row.id),
-        ...toDelete.map((row) => row.id),
+        ...plan.toKeep.map(({ row }) => row.id),
+        ...plan.toDelete.map((row) => row.id),
       ];
-      this.budget.enforce(this.db, currentChars + netDelta, idsToPreserve);
+      this.budget.enforce(this.db, currentChars + plan.netDelta, idsToPreserve);
 
-      for (const row of toDelete) {
+      for (const row of plan.toDelete) {
         this.deleteRow(row.id);
       }
 
       // Recompute display_order for surviving rows so rewrite/replace can
       // reorder entries without corrupting created_at timestamps.
-      for (const { row, index } of toKeep) {
+      for (const { row, index } of plan.toKeep) {
         this.db.database
           .query("UPDATE memory_entries SET display_order = $display_order WHERE id = $id")
           .run({ $id: row.id, $display_order: baseTime + index });
       }
 
-      for (const { text, index } of toInsert) {
+      for (const { text, index } of plan.toInsert) {
         const createdAt = baseTime + index;
         const updatedAt = now;
         const id = this.addEntryInTransaction({

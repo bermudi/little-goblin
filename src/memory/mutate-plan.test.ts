@@ -46,7 +46,7 @@ describe("planMutation", () => {
     // The planner returns the original row objects; created_at cannot be
     // rewritten by the position update that consumes this plan.
     for (const { row: kept } of plan.toKeep) {
-      expect(kept.createdAt).toBe(before.get(kept.id));
+      expect(kept.createdAt).toBe(before.get(kept.id)!);
     }
     expect(plan.netDelta).toBe(0);
   });

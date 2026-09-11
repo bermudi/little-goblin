@@ -7,10 +7,22 @@ export {
   type DevinModelVariant,
 } from "./devin-catalog.ts";
 export {
+  readDeploymentConfig,
   readDeploymentSettings,
+  saveConfigSection,
   saveDeploymentModel,
   SettingsStoreError,
+  type ConfigSectionName,
+  type ConfigSectionSaveOptions,
+  type ConfigSectionSaveResult,
+  type DeploymentConfig,
+  type DeploymentSecretsProjection,
   type DeploymentSettings,
+  type EmbeddingsConfigProjection,
+  type ExternalAgentsConfigProjection,
+  type GeneralConfigProjection,
+  type SecretPresence,
+  type SettingsConfigProjection,
   type SettingsStoreReason,
 } from "./store.ts";
 export {

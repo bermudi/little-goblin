@@ -18,14 +18,12 @@
  * Historical design: `specs/changes/archive/2026-04-26-subagent-runtime/`.
  */
 
-import { statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config.ts";
 import { boundedError, log } from "../log.ts";
 import {
   DelegatedWorkHost,
   type DurableCompletionWake,
-  type AttachedDelegatedWorkOwnership,
   type AttachedWorkAdapter,
   type DelegatedRuntimeContext,
   type DelegatedWorkKind,
@@ -48,8 +46,7 @@ import {
   type SubagentInvocation,
   type SubagentPreparation,
 } from "./host.ts";
-import { environmentCwd, environmentsEqual, personalEnvironment } from "../sessions/environment.ts";
-import { topicScopeDir } from "../memory/paths.ts";
+import { environmentsEqual, personalEnvironment } from "../sessions/environment.ts";
 import {
   type ExecutionDeps,
   markErrored,
@@ -57,10 +54,10 @@ import {
   runInstance,
   teardownInstance,
 } from "./execution.ts";
-import { findSessionFile } from "./meta.ts";
-import { loadNamedAgent, NamedAgentNotFoundError } from "./named-agents.ts";
+import { loadNamedAgent } from "./named-agents.ts";
 import { VALID_NAME_RE } from "./validation.ts";
 import { namedAgentDir } from "./paths.ts";
+import { admitRevival, genericExecutionCwd } from "./revive.ts";
 import {
   MAX_SUBAGENT_DEPTH,
   type GenericSubagentInheritance,
@@ -148,14 +145,6 @@ export type SubagentMemoryStoreFactory = (
   embeddingProvider?: EmbeddingProvider,
 ) => MemoryStore;
 
-/** Expected user-facing refusal to start a revived invocation. */
-export class SubagentReviveRejectedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SubagentReviveRejectedError";
-  }
-}
-
 /** Expected delegated-work refusal before a cancellation has been claimed. */
 export class SubagentCancellationRejectedError extends Error {
   constructor(message: string) {
@@ -183,16 +172,6 @@ export class RuntimeFenceError extends Error {
     this.name = "RuntimeFenceError";
     this.subagentId = subagentId;
   }
-}
-
-function genericExecutionCwd(
-  inheritance: GenericSubagentInheritance | null,
-  home: string,
-): string {
-  if (inheritance === null) {
-    throw new Error("generic subagent requires inherited execution authority");
-  }
-  return environmentCwd(inheritance.executionEnvironment, home);
 }
 
 function sameDelegatedRuntimeContext(
@@ -276,6 +255,20 @@ interface CancellationClaim {
   start: (() => void) | null;
 }
 
+/**
+ * Scoped hold on the `revivesInProgress` latch for one subagent id.
+ *
+ * `release()` frees the latch on a failure path (idempotent — the `finally`
+ * in `revive` runs it unconditionally). `transfer()` hands the latch to the
+ * revived run's result promise so it stays held until the run settles —
+ * the success-path "revival in flight or revived run still executing"
+ * lifetime — and returns the derived promise `revive` returns to its caller.
+ */
+interface ReviveLatch {
+  release(): void;
+  transfer<T>(promise: Promise<T>): Promise<T>;
+}
+
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -332,30 +325,6 @@ async function collectSettlement(
     // A stopped execution is the expected consequence of cancellation. Any
     // other rejection is coordinator cleanup that the caller must see.
     if (!(error instanceof SubagentExecutionStoppedError)) failures.push(error);
-  }
-}
-
-function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
-  return err instanceof Error && "code" in err;
-}
-
-function assertTopicDirectory(home: string, id: string, chatId: number, topicId: number): void {
-  const path = topicScopeDir(home, chatId, topicId);
-  let stats: ReturnType<typeof statSync>;
-  try {
-    stats = statSync(path);
-  } catch (err) {
-    if (isNodeErrnoException(err) && err.code === "ENOENT") {
-      throw new SubagentReviveRejectedError(
-        `Subagent '${id}' topic scope (${chatId}/${topicId}) no longer exists; cannot revive`,
-      );
-    }
-    throw err;
-  }
-  if (!stats.isDirectory()) {
-    throw new SubagentReviveRejectedError(
-      `Subagent '${id}' topic scope (${chatId}/${topicId}) is not a directory; cannot revive`,
-    );
   }
 }
 
@@ -715,6 +684,166 @@ export class SubagentRunner {
       throw new Error("SubagentRunner is disposed");
     }
 
+    const latch = this.acquireReviveLatch(id);
+    try {
+      // Admission stage: validate the captured authority, record, delegated
+      // context, topic scope, and named-agent definition, returning the plan
+      // the rest of revive consumes. Every rejection releases the latch via
+      // the finally below.
+      const plan = admitRevival({
+        goblinHome: this.cfg.goblinHome,
+        delegatedWorkHost: this.delegatedWorkHost,
+        parentCapture,
+        inheritance,
+        id,
+        delegatedContext,
+      });
+
+      const delegatedRegistration = this.delegatedWorkHost.reserveAttached(id, plan.delegatedOwnership);
+
+      // Append the revival invocation to the record before any Pi lease runs.
+      let revivedRecord: DelegatedWorkRecord;
+      try {
+        ({ record: revivedRecord } = this.delegatedWorkHost.appendAttachedRevival(id, plan.delegatedOwnership));
+      } catch (err) {
+        delegatedRegistration.release();
+        throw err;
+      }
+
+      let preparedExecution: SubagentExecution;
+      try {
+        preparedExecution = this.getHost().prepare(
+          preparationFor(
+            plan.cwd,
+            plan.history,
+            plan.role,
+            plan.definition,
+            plan.inheritance,
+          ),
+        );
+      } catch (err) {
+        this.abandonInvocation(id, revivedRecord.invocations.length - 1);
+        delegatedRegistration.release();
+        throw err;
+      }
+
+      // Install both public and internal settlement before attachment can race
+      // cancellation or startup.
+      const result = deferred<string>();
+      const settlement = deferred<void>();
+
+      const instance: SubagentInstance = {
+        id,
+        name: plan.displayName,
+        role: plan.role,
+        status: "running",
+        authority: plan.authority,
+        caller: plan.caller,
+        depth: plan.record.depth,
+        spawnedAt: plan.record.createdAt,
+        spawnedBy: null,
+        dir: plan.runDir,
+        invocationIndex: revivedRecord.invocations.length - 1,
+        history: plan.history,
+        initialPrompt: prompt,
+        onStatusUpdate: prefixStatusCallback(plan.displayName ?? id.slice(0, 8), onStatusUpdate),
+        // Store raw callback for nested spawning (prevents prefix stacking)
+        rawStatusCallback: onStatusUpdate,
+        definition: plan.definition,
+        inheritance: plan.inheritance,
+        execution: preparedExecution,
+        delegatedOwnership: plan.delegatedOwnership,
+        delegatedRegistration,
+        runtimeFenced: false,
+        deliveryState: "pending",
+        completionClaimed: false,
+        settlement: settlement.promise,
+        resolveSettlement: () => settlement.resolve(undefined),
+        rejectSettlement: settlement.reject,
+        stopPromise: null,
+        cancellationPromise: null,
+        settlementStarted: false,
+        result: result.promise,
+        resolveResult: result.resolve,
+        rejectResult: result.reject,
+      };
+      this.activeSubagents.set(id, instance);
+      try {
+        delegatedRegistration.attach(this.attachedAdapterFor(instance));
+      } catch (err) {
+        this.activeSubagents.delete(id);
+        delegatedRegistration.release();
+        const stopFailures: unknown[] = [];
+        await this.stopAndCollect(instance, stopFailures);
+        this.abandonInvocation(id, instance.invocationIndex);
+        const failure = combineFailures([err, ...stopFailures], "Subagent delegated registration failed") ?? err;
+        result.reject(failure);
+        settlement.reject(failure);
+        throw failure;
+      }
+      if (onAttached) {
+        try {
+          await onAttached();
+        } catch (err) {
+          this.activeSubagents.delete(id);
+          const stopFailures: unknown[] = [];
+          await this.stopAndCollect(instance, stopFailures);
+          const stopFailure = stopFailures[0];
+          const failure = combineFailures(
+            [err, stopFailure].filter((value) => value !== undefined),
+            "Subagent revive cleanup failed",
+          ) ?? err;
+          result.reject(failure);
+          settlement.reject(failure);
+          instance.deliveryState = "suppressed";
+          teardownInstance(instance);
+          this.abandonInvocation(id, instance.invocationIndex);
+          throw failure;
+        }
+      }
+
+      // Cancellation can run while an asynchronous attachment callback yields.
+      // It owns the terminal state, so do not resurrect this instance on disk or
+      // launch a fresh execution after it has been cancelled.
+      if (instance.status !== "running") {
+        let stopFailure: unknown;
+        if (instance.stopPromise !== null) {
+          try {
+            await instance.stopPromise;
+          } catch (error) {
+            stopFailure = error;
+          }
+        }
+        if (stopFailure === undefined) settlement.resolve(undefined);
+        else settlement.reject(stopFailure);
+        const completed = latch.transfer(result.promise);
+        completed.catch(() => {});
+        return completed;
+      }
+
+      log.debug("subagent revived", { id, role: plan.role, name: plan.displayName });
+
+      // Kick off execution — same pipeline as spawn().
+      this.startInstance(instance);
+      // Resolve the revive only after its bookkeeping (revivesInProgress) is
+      // cleared, so a subsequent revive() of the same id observes a clean
+      // slate. (The await in callers thus sees the guard already removed.)
+      const completed = latch.transfer(result.promise);
+      completed.catch(() => {});
+      return completed;
+    } finally {
+      // No-op once the latch has been transferred to the run's result promise.
+      latch.release();
+    }
+  }
+
+  /**
+   * Latch one subagent id against concurrent or already-running revival.
+   * The returned guard releases the latch on failure paths (the caller's
+   * `finally` runs `release()` unconditionally) and transfers it to the
+   * revived run's result promise on success.
+   */
+  private acquireReviveLatch(id: string): ReviveLatch {
     // Guard against concurrent revive() of the same subagent ID.
     if (this.revivesInProgress.has(id)) {
       throw new SubagentReviveBusyError(id, "Subagent revive already in progress");
@@ -727,286 +856,22 @@ export class SubagentRunner {
     }
 
     this.revivesInProgress.add(id);
-
-    if (
-      parentCapture.kind !== "surface" ||
-      parentCapture.authority.kind !== "surface" ||
-      typeof parentCapture.authority.sourceSurfaceId !== "string"
-    ) {
-      this.revivesInProgress.delete(id);
-      const err = new Error(
-        `Revival requires a Surface-backed parent memory context, got ${parentCapture.kind ?? typeof parentCapture}`,
-      );
-      log.warn("subagent revive rejected: invalid parent authority", boundedError(err));
-      throw err;
-    }
-
-    // Load the host-owned record. Legacy two-tree lookups are no longer
-    // performed at runtime; offline migration moved them into the new store.
-    let record: DelegatedWorkRecord | null;
-    try {
-      record = this.delegatedWorkHost.loadRecord(id);
-    } catch (err) {
-      // A malformed record must not leave the revive guard latched; the same id
-      // has to be revivable again once the record is repaired.
-      this.revivesInProgress.delete(id);
-      throw err;
-    }
-    if (record === null) {
-      this.revivesInProgress.delete(id);
-      throw new SubagentReviveRejectedError("Subagent not found");
-    }
-    if (record.kind === "external-agent") {
-      this.revivesInProgress.delete(id);
-      log.warn("subagent revive rejected: external-agent record", { runId: id });
-      throw new SubagentReviveRejectedError("External-agent records cannot be revived as Pi subagents");
-    }
-
-    const role: SubagentRole = record.kind === "generic-subagent" ? "generic" : "named";
-    const displayName = record.name;
-
-    // A generic revival without the reviving runtime's environment/manifest
-    // authority would either run under the wrong CWD or re-run discovery.
-    // Both violate decision 0034 and the execution-environment contract.
-    if (role === "generic" && inheritance === null) {
-      this.revivesInProgress.delete(id);
-      throw new Error(
-        `Generic subagent '${id}' revival requires the reviving runtime's resolved skill manifest and execution environment`,
-      );
-    }
-
-    const runDir = this.delegatedWorkHost.runDir(id);
-
-    // Find the persisted session file inside the subagent's run directory.
-    const sessionFile = findSessionFile(runDir);
-    if (sessionFile === null) {
-      this.revivesInProgress.delete(id);
-      throw new SubagentReviveRejectedError("Subagent not found");
-    }
-
-    // Revival is a new invocation: it inherits the reviving parent runtime's
-    // captured Surface authority.
-    const authority = parentCapture.authority;
-    const caller: SurfaceMemoryCaller =
-      role === "named" && displayName !== null
-        ? { kind: "named-subagent", name: displayName }
-        : { kind: "anonymous-subagent" };
-
-    // Production callers always provide a delegated runtime context. Tests and
-    // legacy callers that omit it are bridged to an attached ownership derived
-    // from the captured authority.
-    let effectiveContext: DelegatedRuntimeContext;
-    if (delegatedContext !== undefined) {
-      effectiveContext = delegatedContext;
-    } else {
-      effectiveContext = {
-        ownerConversationId: authority.sourceSurfaceId,
-        runtimeId: DelegatedWorkHost.newRuntimeId(),
-        originSurfaceId: authority.sourceSurfaceId,
-        executionEnvironment: role === "generic" && inheritance !== null
-          ? inheritance.executionEnvironment
-          : personalEnvironment(),
-      };
-    }
-    const delegatedOwnership: AttachedDelegatedWorkOwnership = {
-      ...effectiveContext,
-      lifetime: "attached",
-      ownershipEpochId: randomUUID(),
+    let held = true;
+    return {
+      release: () => {
+        if (!held) return;
+        held = false;
+        this.revivesInProgress.delete(id);
+      },
+      transfer: <T>(promise: Promise<T>): Promise<T> => {
+        // The latch is now owned by the result promise's settlement, not by
+        // the failure-path release.
+        held = false;
+        return promise.finally(() => {
+          this.revivesInProgress.delete(id);
+        });
+      },
     };
-
-    if (delegatedOwnership.originSurfaceId !== authority.sourceSurfaceId) {
-      this.revivesInProgress.delete(id);
-      throw new Error("delegated revival Surface does not match captured memory authority");
-    }
-    if (role === "generic" && inheritance !== null && !environmentsEqual(
-      inheritance.executionEnvironment,
-      delegatedOwnership.executionEnvironment,
-    )) {
-      this.revivesInProgress.delete(id);
-      throw new Error("generic delegated revival environment differs from inherited authority");
-    }
-
-    // Validate that the topic directory exists if the subagent has a topic scope.
-    // This catches archived topics and rejects regular files masquerading as
-    // scope containers. Only ENOENT is treated as absence; other stat errors
-    // remain diagnostic and propagate to the caller.
-    if (authority.activeScope.topicScope !== "general") {
-      const chatId = authority.activeScope.chatId;
-      const topicId = authority.activeScope.topicScope.topicId;
-      try {
-        assertTopicDirectory(this.cfg.goblinHome, id, chatId, topicId);
-      } catch (err) {
-        this.revivesInProgress.delete(id);
-        throw err;
-      }
-    }
-
-    // Determine cwd from the new invocation's authority, just as spawn() does.
-    const cwd =
-      role === "named" && displayName !== null
-        ? namedAgentDir(this.cfg.goblinHome, displayName)
-        : genericExecutionCwd(inheritance, this.cfg.goblinHome);
-
-    // Preserve the exact lexical history target. The Pi host opens exactly this
-    // file and does not rediscover a latest history.
-    const history = { kind: "open" as const, sessionDir: runDir, sessionFile };
-
-    // Rebuild the named-agent definition if the subagent is named.
-    let definition: NamedAgentDefinition | null = null;
-    if (role === "named" && displayName !== null) {
-      try {
-        definition = loadNamedAgent(this.cfg.goblinHome, displayName);
-      } catch (err) {
-        this.revivesInProgress.delete(id);
-        if (err instanceof NamedAgentNotFoundError) {
-          throw new SubagentReviveRejectedError(
-            `Named agent '${displayName}' definition missing; cannot revive`,
-          );
-        }
-        throw err;
-      }
-    }
-
-    const delegatedRegistration = this.delegatedWorkHost.reserveAttached(id, delegatedOwnership);
-
-    // Append the revival invocation to the record before any Pi lease runs.
-    let revivedRecord: DelegatedWorkRecord;
-    try {
-      ({ record: revivedRecord } = this.delegatedWorkHost.appendAttachedRevival(id, delegatedOwnership));
-    } catch (err) {
-      delegatedRegistration.release();
-      this.revivesInProgress.delete(id);
-      throw err;
-    }
-
-    let preparedExecution: SubagentExecution;
-    try {
-      preparedExecution = this.getHost().prepare(
-        preparationFor(
-          cwd,
-          history,
-          role,
-          definition,
-          role === "generic" ? inheritance : null,
-        ),
-      );
-    } catch (err) {
-      this.abandonInvocation(id, revivedRecord.invocations.length - 1);
-      delegatedRegistration.release();
-      this.revivesInProgress.delete(id);
-      throw err;
-    }
-
-    // Install both public and internal settlement before attachment can race
-    // cancellation or startup.
-    const result = deferred<string>();
-    const settlement = deferred<void>();
-
-    const instance: SubagentInstance = {
-      id,
-      name: displayName,
-      role,
-      status: "running",
-      authority,
-      caller,
-      depth: record.depth,
-      spawnedAt: record.createdAt,
-      spawnedBy: null,
-      dir: runDir,
-      invocationIndex: revivedRecord.invocations.length - 1,
-      history,
-      initialPrompt: prompt,
-      onStatusUpdate: prefixStatusCallback(displayName ?? id.slice(0, 8), onStatusUpdate),
-      // Store raw callback for nested spawning (prevents prefix stacking)
-      rawStatusCallback: onStatusUpdate,
-      definition,
-      inheritance: role === "generic" ? inheritance : null,
-      execution: preparedExecution,
-      delegatedOwnership,
-      delegatedRegistration,
-      runtimeFenced: false,
-      deliveryState: "pending",
-      completionClaimed: false,
-      settlement: settlement.promise,
-      resolveSettlement: () => settlement.resolve(undefined),
-      rejectSettlement: settlement.reject,
-      stopPromise: null,
-      cancellationPromise: null,
-      settlementStarted: false,
-      result: result.promise,
-      resolveResult: result.resolve,
-      rejectResult: result.reject,
-    };
-    this.activeSubagents.set(id, instance);
-    try {
-      delegatedRegistration.attach(this.attachedAdapterFor(instance));
-    } catch (err) {
-      this.activeSubagents.delete(id);
-      delegatedRegistration.release();
-      const stopFailures: unknown[] = [];
-      await this.stopAndCollect(instance, stopFailures);
-      this.abandonInvocation(id, instance.invocationIndex);
-      const failure = combineFailures([err, ...stopFailures], "Subagent delegated registration failed") ?? err;
-      result.reject(failure);
-      settlement.reject(failure);
-      this.revivesInProgress.delete(id);
-      throw failure;
-    }
-    if (onAttached) {
-      try {
-        await onAttached();
-      } catch (err) {
-        this.activeSubagents.delete(id);
-        this.revivesInProgress.delete(id);
-        const stopFailures: unknown[] = [];
-        await this.stopAndCollect(instance, stopFailures);
-        const stopFailure = stopFailures[0];
-        const failure = combineFailures(
-          [err, stopFailure].filter((value) => value !== undefined),
-          "Subagent revive cleanup failed",
-        ) ?? err;
-        result.reject(failure);
-        settlement.reject(failure);
-        instance.deliveryState = "suppressed";
-        teardownInstance(instance);
-        this.abandonInvocation(id, instance.invocationIndex);
-        throw failure;
-      }
-    }
-
-    // Cancellation can run while an asynchronous attachment callback yields.
-    // It owns the terminal state, so do not resurrect this instance on disk or
-    // launch a fresh execution after it has been cancelled.
-    if (instance.status !== "running") {
-      let stopFailure: unknown;
-      if (instance.stopPromise !== null) {
-        try {
-          await instance.stopPromise;
-        } catch (error) {
-          stopFailure = error;
-        }
-      }
-      if (stopFailure === undefined) settlement.resolve(undefined);
-      else settlement.reject(stopFailure);
-      const completed = result.promise.finally(() => {
-        this.revivesInProgress.delete(id);
-      });
-      completed.catch(() => {});
-      return completed;
-    }
-
-    log.debug("subagent revived", { id, role, name: displayName });
-
-    // Kick off execution — same pipeline as spawn().
-    this.startInstance(instance);
-    // Resolve the revive only after its bookkeeping (revivesInProgress) is
-    // cleared, so a subsequent revive() of the same id observes a clean
-    // slate. (The await in callers thus sees the guard already removed.)
-    const completed = result.promise.finally(() => {
-      this.revivesInProgress.delete(id);
-    });
-    completed.catch(() => {});
-    return completed;
   }
 
   /**

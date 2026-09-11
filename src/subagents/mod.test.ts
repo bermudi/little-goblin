@@ -7,6 +7,7 @@ await import("./test/host.suite.ts");
 await import("./test/fake-lifecycle.suite.ts");
 await import("./test/spawn.suite.ts");
 await import("./test/revive.suite.ts");
+await import("./test/revive-admission.suite.ts");
 await import("./test/lifecycle.suite.ts");
 await import("./test/guards.suite.ts");
 await import("./test/tools.suite.ts");

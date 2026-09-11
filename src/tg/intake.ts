@@ -1,10 +1,8 @@
-import { randomUUID } from "node:crypto";
 import type { Bot } from "grammy";
 import type { InlineQueryResult } from "@grammyjs/types";
-import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Config } from "../config.ts";
-import { boundedError, log } from "../log.ts";
-import { AgentRunner, appendAssistantTranscriptEntry, ModelNotCapableError } from "../agent/mod.ts";
+import { log } from "../log.ts";
+import { AgentRunner } from "../agent/mod.ts";
 import { resolveModel, type ResolvedModel } from "../agent/models.ts";
 import { handleCommand, type DispatchDeps } from "../commands/dispatch.ts";
 import { parseCommand } from "../commands/parse.ts";
@@ -18,8 +16,6 @@ import { interruptAndCascade } from "../interrupt.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { type ConversationState } from "../sessions/mod.ts";
 import { surfaceId, type Surface, type GuestSurface } from "../surface.ts";
-import type { ExecutionEnvironment } from "../sessions/environment.ts";
-import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from "./attachments.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import type { McpRunner } from "../mcp/mod.ts";
 import type { PendingCompletionClaim } from "../delegated-work/mod.ts";
@@ -38,14 +34,8 @@ function commandReplyOpts(result: CommandCompletionResult): { reply_markup?: unk
     ? { reply_markup: result.replyMarkup }
     : {};
 }
-import type {
-  ConversationCreationLease,
-  ConversationLifecycle,
-} from "../orchestration/conversation-lifecycle.ts";
-import type { WorkAuthority } from "../orchestration/conversation-runtime-host.ts";
+import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 
-import { transcribeWithGroq } from "../asr/mod.ts";
-import { GuestReplySink } from "./guest-sink.ts";
 import { type ReplyOpts, sendSystemReply } from "./format.ts";
 import type { ScheduleStore } from "../scheduler/store.ts";
 import {
@@ -54,6 +44,24 @@ import {
   type AdmissionResult,
   type RuntimeAdmissionResult,
 } from "../shutdown/mod.ts";
+import {
+  attemptCreationAdmission,
+  mapAdmissionCompletion,
+  withRejectedCreationRelease,
+} from "./intake-admission.ts";
+import { createAudioHandler } from "./intake-audio.ts";
+import { createDocumentHandler } from "./intake-document.ts";
+import { createGuestMessageHandler } from "./intake-guest.ts";
+import { createPhotoHandler } from "./intake-photo.ts";
+import { createTopicDescriptionHandler } from "./intake-topic-description.ts";
+import { createVoiceHandler } from "./intake-voice.ts";
+import {
+  claimPendingCompletions,
+  recordAssistantReply,
+  runnerWedged,
+  WEDGED_RUNNER_REPLY,
+  type IntakeDeps,
+} from "./intake-turn.ts";
 
 export type { PromptContent };
 
@@ -120,203 +128,6 @@ export interface TelegramIntakeOptions {
   pendingClaim: PendingCompletionClaim;
 }
 
-type ActiveTurn = {
-  surface: Surface;
-  session: ConversationState;
-  environment: ExecutionEnvironment;
-  schedule: (
-    run: (runner: AgentRunner, authority: WorkAuthority) => Promise<void>,
-    failureLog: string,
-    opts?: { replyModelNotCapable?: boolean },
-  ) => Promise<AdmissionResult<void>>;
-};
-
-const MAX_FILE_BYTES = 20 * 1024 * 1024;
-
-/**
- * Chain a continuation after a runtime admission's completion while
- * preserving the structural decision kind. The structural decision
- * (handoff/busy/fenced/rejected) is already authoritative at the
- * admission call; the continuation runs in the completion so the
- * runtime-admission drain releases immediately and shutdown disposal
- * can cancel a stalled runner creation rather than deadlocking on the
- * admission drain (decision 0046).
- *
- * A rejected admission is terminal: the continuation is not invoked and
- * no follow-on side effects are started from it. The mapped completion
- * settles without consuming the rejected value.
- */
-function mapAdmissionCompletion<T>(
-  admission: RuntimeAdmissionResult<T>,
-  continuation: (value: T) => Promise<void>,
-): RuntimeAdmissionResult<void> {
-  if (admission.kind === "rejected") {
-    // Preserve the rejection as a terminal failure: the continuation is not
-    // invoked and the mapped completion rejects so the caller can suppress
-    // success delivery. The original completion is observed to avoid
-    // unhandled rejections.
-    void admission.completion.then(() => undefined, () => undefined);
-    return runtimeAdmission.rejected(Promise.reject(new Error("command side-effect rejected after handoff")));
-  }
-  const completion = admission.completion.then(continuation);
-  switch (admission.kind) {
-    case "handoff": return runtimeAdmission.handoff(completion);
-    case "busy": return runtimeAdmission.busy(completion);
-    case "fenced": return runtimeAdmission.fenced(completion);
-  }
-}
-
-/** Release one lifecycle-issued rejected creation lease with caller context. */
-async function releaseRejectedCreation(
-  lifecycle: ConversationLifecycle,
-  lease: ConversationCreationLease,
-  context: string,
-): Promise<void> {
-  let applied: boolean;
-  try {
-    applied = await lifecycle.releaseCreation(lease);
-  } catch (cause) {
-    throw new Error(`failed to release rejected creation lease after ${context}`, { cause });
-  }
-  if (!applied) {
-    throw new Error(
-      `creation lease release/rollback was not applied after ${context}; lease was already settled or no safe final rollback mutation applied`,
-    );
-  }
-}
-
-/**
- * Preserve an authoritative structural rejection while attaching creation
- * lease release (and any final authorized rollback) to its completion.
- */
-function withRejectedCreationRelease<T>(
-  admission: AdmissionResult<T>,
-  lease: ConversationCreationLease | null,
-  lifecycle: ConversationLifecycle,
-  source: string,
-): AdmissionResult<T> {
-  if (lease === null) return admission;
-
-  const context = `${source} admission (${admission.kind}) for Surface ${lease.surfaceId} and Conversation ${lease.conversationId}`;
-  const release = releaseRejectedCreation(lifecycle, lease, context);
-  const completion = release.then(
-    () => admission.completion,
-    async (releaseError: unknown) => {
-      try {
-        await admission.completion;
-      } catch (completionError) {
-        throw new AggregateError(
-          [releaseError, completionError],
-          `Conversation creation release and ${source} admission completion both failed`,
-        );
-      }
-      throw releaseError;
-    },
-  );
-  return { kind: admission.kind, completion };
-}
-
-/**
- * Synchronous dispatcher throws happen before a structural decision. Release
- * the observer lease first, then rethrow the admission error; if release or
- * final rollback also fails, preserve both causes in admission-first order.
- */
-async function attemptCreationAdmission<T>(
-  admit: () => T,
-  lease: ConversationCreationLease | null,
-  lifecycle: ConversationLifecycle,
-  source: string,
-): Promise<T> {
-  try {
-    return admit();
-  } catch (admissionError) {
-    if (lease === null) throw admissionError;
-    const context = `${source} admission throw for Surface ${lease.surfaceId} and Conversation ${lease.conversationId}`;
-    try {
-      await releaseRejectedCreation(lifecycle, lease, context);
-    } catch (releaseError) {
-      throw new AggregateError(
-        [admissionError, releaseError],
-        `Conversation admission and creation release both failed for ${source}`,
-      );
-    }
-    throw admissionError;
-  }
-}
-
-export async function downloadFileBytes(
-  api: Bot["api"],
-  fileId: string,
-  botToken: string,
-): Promise<Uint8Array | null> {
-  try {
-    const file = await api.getFile(fileId);
-    if (!file.file_path) return null;
-
-    const encodedPath = file.file_path
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/");
-
-    const resp = await fetch(
-      `https://api.telegram.org/file/bot${botToken}/${encodedPath}`,
-      { signal: AbortSignal.timeout(30_000) },
-    );
-
-    if (!resp.ok) {
-      log.warn("failed to download file: bad status", { fileId, status: resp.status });
-      return null;
-    }
-
-    const contentLength = resp.headers.get("content-length");
-    if (contentLength !== null) {
-      const bytes = Number(contentLength);
-      if (!Number.isFinite(bytes) || bytes > MAX_FILE_BYTES) {
-        log.warn("file too large", { fileId, contentLength: bytes, maxBytes: MAX_FILE_BYTES });
-        return null;
-      }
-    }
-
-    const raw = new Uint8Array(await resp.arrayBuffer());
-    if (raw.byteLength > MAX_FILE_BYTES) {
-      log.warn("file too large (post-download)", { fileId, byteLength: raw.byteLength, maxBytes: MAX_FILE_BYTES });
-      return null;
-    }
-    return raw;
-  } catch (err) {
-    log.warn("failed to download file", { fileId, code: (err as { code?: string }).code });
-    return null;
-  }
-}
-
-async function downloadFile(
-  api: Bot["api"],
-  fileId: string,
-  botToken: string,
-  mimeType = "image/jpeg",
-): Promise<{ data: string; mimeType: string } | null> {
-  const raw = await downloadFileBytes(api, fileId, botToken);
-  if (!raw) return null;
-
-  const CHUNK = 48 * 1024;
-  let data = "";
-  for (let i = 0; i < raw.length; i += CHUNK) {
-    const slice = raw.subarray(i, i + CHUNK);
-    data += btoa(String.fromCharCode(...slice));
-  }
-  return { data, mimeType };
-}
-
-async function downloadPhoto(
-  api: Bot["api"],
-  fileIds: string[],
-  botToken: string,
-): Promise<{ data: string; mimeType: string } | null> {
-  if (fileIds.length === 0) return null;
-  const largest = fileIds[fileIds.length - 1]!;
-  return downloadFile(api, largest, botToken);
-}
-
 export function replyNoActiveSession(
   message: TelegramIntakeMessage,
   surface: Surface,
@@ -343,68 +154,7 @@ export function replyNoActiveSession(
 export function createTelegramIntake(options: TelegramIntakeOptions) {
   const { cfg, bot, subagentRunner, memoryStore, dispatcher, lifecycle, pendingClaim } = options;
 
-  /**
-   * Claim retained durable completions on an authorized ordinary interaction.
-   * Fire-and-forget with observed failures: the claim must never block or
-   * fail the user's own turn; a failed claim stays pending for the next one.
-   */
-  function claimPendingCompletions(surface: Surface): void {
-    void pendingClaim.claimForInteraction(surface).catch((err: unknown) => {
-      log.error("pending completion claim failed", {
-        surfaceId: surfaceId(surface),
-        ...boundedError(err),
-      });
-    });
-  }
-
-  /**
-   * Claim retained durable completions on an authorized guest summon from
-   * this guest Surface. Same fire-and-forget failure posture.
-   */
-  function claimPendingGuestCompletions(surface: GuestSurface): void {
-    void pendingClaim.claimForGuestSummon(surface).catch((err: unknown) => {
-      log.error("pending guest summon claim failed", {
-        surfaceId: surfaceId(surface),
-        ...boundedError(err),
-      });
-    });
-  }
-
-  function recordAssistantReply(
-    sessionId: string,
-    surface: Surface,
-    runner: AgentRunner | null | undefined,
-    text: string,
-  ): void {
-    const ctx = runner && runner.memoryContext.kind === "surface"
-      ? { kind: "surface" as const, sourceSurfaceId: runner.memoryContext.authority.sourceSurfaceId }
-      : undefined;
-    if (!ctx) {
-      log.warn("no-transcript-writer-context", {
-        sessionId,
-        surfaceId: surfaceId(surface),
-        surfaceKind: surface.kind,
-        runnerPresent: !!runner,
-        runnerKind: runner?.memoryContext.kind ?? null,
-      });
-      return;
-    }
-    appendAssistantTranscriptEntry(sessionId, cfg.goblinHome, text, ctx);
-  }
-
-  const WEDGED_RUNNER_REPLY =
-    "The current turn is still running after a failed cancel. It recovers automatically once it finishes; use /new or /archive to recover now.";
-
-  /**
-   * A wedge only blocks intake while the runtime is observably busy. If
-   * the abort timed out but the backend has since settled, the wedge is
-   * a stale false positive — clear it and treat the runner as healthy,
-   * so the surface recovers on the next message instead of staying
-   * locked until /new or /archive.
-   */
-  function runnerWedged(runner: AgentRunner): boolean {
-    return runner.isAbortTimedOut && !runner.tryClearAbortTimeout();
-  }
+  const deps: IntakeDeps = { cfg, dispatcher, lifecycle, pendingClaim, memoryStore };
 
   function tryResolveModel(cfg: Config, modelName: string): ResolvedModel | undefined {
     try {
@@ -551,7 +301,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         const replyText = `/${command} failed after the turn: ${msg}`;
         await sendSystemReply(message, replyText, "error").catch(() => {});
         const currentRunner = dispatcher.getRunner(session.id);
-        recordAssistantReply(session.id, surface, currentRunner, replyText);
+        recordAssistantReply(cfg, session.id, surface, currentRunner, replyText);
       },
       resolveCompleted,
     );
@@ -596,84 +346,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     return runtimeAdmission.handoff(completion);
   }
 
-  async function resolveActiveTurn(
-    message: TelegramIntakeMessage,
-    kind: string,
-  ): Promise<ActiveTurn | null> {
-    const surface = message.surface;
-    if (!surface) {
-      log.debug(`dropping ${kind}: no surface`);
-      return null;
-    }
-
-    // Photos, documents, voice, and audio are ordinary authorized content:
-    // lazily create a conversation on the surface, just like text. Lifecycle
-    // supplies the only lease capable of participating in creation settlement.
-    const resolution = await lifecycle.resolveOrStart(surface);
-    const conversation = resolution.conversation;
-    const creationLease = resolution.creationLease;
-    const session = conversation;
-    claimPendingCompletions(surface);
-
-    return {
-      surface,
-      session,
-      environment: conversation.executionEnvironment,
-      schedule: async (run, failureLog, opts) => {
-        let admittedRunner: AgentRunner | undefined;
-        const execute = async (runner: AgentRunner, authority: WorkAuthority): Promise<void> => {
-          admittedRunner = runner;
-          if (runnerWedged(runner)) {
-            if (!authority.isCurrent()) return;
-            await sendSystemReply(message, WEDGED_RUNNER_REPLY, "error");
-            return;
-          }
-          await run(runner, authority);
-        };
-        const onError = async (err: unknown): Promise<void> => {
-          if (opts?.replyModelNotCapable && err instanceof ModelNotCapableError) {
-            await sendSystemReply(message, err.message, "error");
-            if (admittedRunner !== undefined) {
-              recordAssistantReply(session.id, surface, admittedRunner, err.message);
-            }
-            return;
-          }
-          const msg = err instanceof Error ? err.message : String(err);
-          log.error(failureLog, { error: msg, sessionId: session.id });
-        };
-
-        // A wedged runner is an adapter-local completion: no runtime work
-        // is attempted. Check synchronously via the registered runner to
-        // avoid awaiting runner acquisition.
-        const existingRunner = dispatcher.getRunner(session.id);
-        if (existingRunner !== null && runnerWedged(existingRunner)) {
-          if (creationLease !== null) lifecycle.sealCreation(creationLease);
-          return completed(sendSystemReply(message, WEDGED_RUNNER_REPLY, "error"));
-        }
-        // admitPromptTurn enqueues the work synchronously and acquires
-        // the runner inside the queued work when no runner is registered
-        // yet, so a stalled creation is cancelled by shutdown disposal
-        // rather than deadlocking the runtime-admission drain.
-        const admission = await attemptCreationAdmission(
-          () => dispatcher.admitPromptTurn(
-            session,
-            surface,
-            execute,
-            onError,
-          ),
-          creationLease,
-          lifecycle,
-          kind,
-        );
-        if (admission.kind !== "rejected") {
-          if (creationLease !== null) lifecycle.sealCreation(creationLease);
-          return admission;
-        }
-        return withRejectedCreationRelease(admission, creationLease, lifecycle, kind);
-      },
-    };
-  }
-
   const dispatchDeps: DispatchDeps = {
     lifecycle,
     subagentRunner,
@@ -684,11 +356,6 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     dispatcher,
     mcpRunner: options.mcpRunner,
   };
-
-  async function runPrompt(message: TelegramIntakeMessage, surface: Surface, runner: AgentRunner, session: ConversationState, content: PromptContent): Promise<void> {
-    const buffer = dispatcher.createMessageBuffer(surface, session);
-    await runner.prompt(message.prepare(content), buffer);
-  }
 
   async function handleText(
     message: TelegramIntakeMessage,
@@ -775,7 +442,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
             const writer = getSideEffectWriter(result.sideEffects) ??
               (session ? { conversation: session, runner: existingRunner } : null);
             if (writer?.runner) {
-              recordAssistantReply(writer.conversation.id, surface, writer.runner, replyText);
+              recordAssistantReply(cfg, writer.conversation.id, surface, writer.runner, replyText);
             }
             throw err;
           },
@@ -888,7 +555,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
                 log.error("command admission failed", { error: String(err), command, sessionId: session?.id });
                 const replyText = "Something went wrong. Please try again.";
                 await sendSystemReply(message, replyText, "error");
-                if (session) recordAssistantReply(session.id, surface, existingRunner, replyText);
+                if (session) recordAssistantReply(cfg, session.id, surface, existingRunner, replyText);
                 throw err;
               },
             );
@@ -907,7 +574,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
               log.error("command admission failed", { error: String(err), command, sessionId: session?.id });
               const replyText = "Something went wrong. Please try again.";
               await sendSystemReply(message, replyText, "error");
-              if (session) recordAssistantReply(session.id, surface, existingRunner, replyText);
+              if (session) recordAssistantReply(cfg, session.id, surface, existingRunner, replyText);
               throw err;
             },
           );
@@ -926,7 +593,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
         log.error("command dispatch failed", { error: String(err), command, sessionId: session?.id });
         const replyText = "Something went wrong. Please try again.";
         const delivery = sendSystemReply(message, replyText, "error").then(() => {
-          if (session) recordAssistantReply(session.id, surface, existingRunner, replyText);
+          if (session) recordAssistantReply(cfg, session.id, surface, existingRunner, replyText);
         });
         return completed(delivery);
       }
@@ -936,7 +603,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     const conversation = resolution.conversation;
     const creationLease = resolution.creationLease;
     const session = conversation;
-    claimPendingCompletions(surface);
+    claimPendingCompletions(pendingClaim, surface);
     if (!rawText) {
       if (creationLease !== null) lifecycle.sealCreation(creationLease);
       return completed(undefined);
@@ -990,416 +657,15 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
     return withRejectedCreationRelease(admission, creationLease, lifecycle, "text");
   }
 
-  async function handlePhoto(
-    message: TelegramIntakeMessage,
-    api: Bot["api"],
-    fileIds: string[],
-    caption?: string,
-  ): Promise<AdmissionResult<void>> {
-    const turn = await resolveActiveTurn(message, "photo");
-    if (!turn) return completed(undefined);
-
-    return turn.schedule(
-      async (runner, authority) => {
-        const photo = await downloadPhoto(api, fileIds, cfg.botToken);
-        if (!authority.isCurrent()) return;
-        if (!photo) {
-          const replyText = "Sorry, I couldn't download that image.";
-          await sendSystemReply(message, replyText, "error");
-          recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-          return;
-        }
-
-        const content: (TextContent | ImageContent)[] = [];
-        if (caption) {
-          content.push({ type: "text", text: caption });
-        }
-        content.push({ type: "image", data: photo.data, mimeType: photo.mimeType });
-
-        if (!authority.isCurrent()) return;
-        await runPrompt(message, turn.surface, runner, turn.session, content);
-      },
-      "runner photo prompt failed",
-      { replyModelNotCapable: true },
-    );
-  }
-
-  async function handleDocument(
-    message: TelegramIntakeMessage,
-    api: Bot["api"],
-    doc: TelegramDocumentInput,
-  ): Promise<AdmissionResult<void>> {
-    const turn = await resolveActiveTurn(message, "document");
-    if (!turn) return completed(undefined);
-
-    return turn.schedule(
-      async (runner, authority) => {
-        const raw = await downloadFileBytes(api, doc.fileId, cfg.botToken);
-        if (!authority.isCurrent()) return;
-        if (!raw) {
-          const replyText = "Sorry, I couldn't download that file.";
-          await sendSystemReply(message, replyText, "error");
-          recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-          return;
-        }
-
-        const desiredName = doc.fileName || "attachment";
-        let saved: SavedAttachment;
-        try {
-          if (!authority.isCurrent()) return;
-          saved = saveAttachment(turn.environment, cfg.goblinHome, desiredName, raw);
-        } catch (err) {
-          if (err instanceof UnsafeAttachmentNameError) {
-            const replyText = "Rejected: unsafe filename.";
-            if (authority.isCurrent()) {
-              await sendSystemReply(message, replyText, "warn");
-              recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-            }
-            return;
-          }
-          log.error("failed to save document attachment", {
-            error: err instanceof Error ? err.message : String(err),
-            fileName: desiredName,
-            sessionId: turn.session.id,
-          });
-          if (authority.isCurrent()) {
-            const replyText = `Failed to save ${desiredName}.`;
-            await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-          }
-          return;
-        }
-
-        if (!authority.isCurrent()) return;
-        await sendSystemReply(message, `Saved ${saved.relativePath}.`, "ok");
-
-        const escapedPath = saved.relativePath.replace(/`/g, "'");
-        const promptText = doc.caption
-          ? `${doc.caption}\n\n[File \`${escapedPath}\` saved.]`
-          : `User uploaded \`${escapedPath}\`.`;
-
-        if (!authority.isCurrent()) return;
-        await runPrompt(message, turn.surface, runner, turn.session, promptText);
-      },
-      "runner document prompt failed",
-    );
-  }
-
-  async function handleVoice(
-    message: TelegramIntakeMessage,
-    api: Bot["api"],
-    voice: TelegramVoiceInput,
-  ): Promise<AdmissionResult<void>> {
-    const turn = await resolveActiveTurn(message, "voice");
-    if (!turn) return completed(undefined);
-
-    return turn.schedule(
-      async (runner, authority) => {
-        // Groq ASR setup gate: missing key fails at use time with a clear
-        // message rather than at startup. Checked inside the scheduled task so
-        // the reply respects the stale-runner guard and stays non-blocking.
-        if (!cfg.groqApiKey) {
-          if (!authority.isCurrent()) return;
-          const replyText = "Groq ASR is not configured. Add a Groq API key to transcribe voice messages.";
-          await sendSystemReply(message, replyText, "warn");
-          recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-          return;
-        }
-
-        // One download serves both ASR and optional project-file saving, so a
-        // failure here short-circuits before either side effect.
-        const raw = await downloadFileBytes(api, voice.fileId, cfg.botToken);
-        if (!authority.isCurrent()) return;
-        if (!raw) {
-          if (authority.isCurrent()) {
-            const replyText = "Sorry, I couldn't download that voice message.";
-            await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-          }
-          return;
-        }
-
-        // Telegram voice messages are OGG Opus; default to audio/ogg when the
-        // field is absent rather than rejecting the message.
-        const mimeType = voice.mimeType ?? "audio/ogg";
-        const asrResult = await transcribeWithGroq({
-          audioBytes: raw,
-          mimeType,
-          model: cfg.asrModel ?? "whisper-large-v3-turbo",
-          apiKey: cfg.groqApiKey,
-        });
-        if (!authority.isCurrent()) return;
-
-        if (!asrResult.ok) {
-          // Transport/API failure only; the sanitized error carries no secrets.
-          log.warn("voice transcription failed", { error: asrResult.error, sessionId: turn.session.id });
-          if (authority.isCurrent()) {
-            const replyText = "Sorry, I couldn't transcribe that voice message.";
-            await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-          }
-          return;
-        }
-
-        // Intake owns the semantic empty-text check: a successful HTTP response
-        // with no speech is not an ASR failure.
-        if (asrResult.text.length === 0) {
-          if (authority.isCurrent()) {
-            const replyText = "No speech was detected in that voice message.";
-            await sendSystemReply(message, replyText, "info");
-            recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-          }
-          return;
-        }
-
-        // Transcription succeeded with text. Save the original voice file and
-        // append a saved-file note alongside the transcript.
-        const ext = mimeType === "audio/ogg" ? "oga" : "bin";
-        const desiredName = `voice-${Date.now()}.${ext}`;
-
-        let saved: SavedAttachment;
-        try {
-          if (!authority.isCurrent()) return;
-          saved = saveAttachment(turn.environment, cfg.goblinHome, desiredName, raw);
-        } catch (err) {
-          log.error("failed to save voice attachment", {
-            error: err instanceof Error ? err.message : String(err),
-            fileName: desiredName,
-            sessionId: turn.session.id,
-          });
-          if (authority.isCurrent()) {
-            const replyText = `Failed to save ${desiredName}.`;
-            await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-          }
-          return;
-        }
-
-        if (!authority.isCurrent()) return;
-        await sendSystemReply(message, `Saved ${saved.relativePath}.`, "ok");
-
-        const escapedPath = saved.relativePath.replace(/`/g, "'");
-        const promptText = `[Voice message transcript]\n${asrResult.text}\n\n[Voice file \`${escapedPath}\` saved.]`;
-
-        if (!authority.isCurrent()) return;
-        await runPrompt(message, turn.surface, runner, turn.session, promptText);
-      },
-      "runner voice prompt failed",
-    );
-  }
-
-  async function handleAudio(
-    message: TelegramIntakeMessage,
-    api: Bot["api"],
-    audio: TelegramAudioInput,
-  ): Promise<AdmissionResult<void>> {
-    const turn = await resolveActiveTurn(message, "audio");
-    if (!turn) return completed(undefined);
-
-    return turn.schedule(
-      async (runner, authority) => {
-        const raw = await downloadFileBytes(api, audio.fileId, cfg.botToken);
-        if (!authority.isCurrent()) return;
-        if (!raw) {
-          const replyText = "Sorry, I couldn't download that audio file.";
-          await sendSystemReply(message, replyText, "error");
-          recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-          return;
-        }
-
-        let desiredName = audio.fileName?.trim();
-        if (!desiredName) {
-          const title = [audio.performer, audio.title].filter(Boolean).join(" - ");
-          desiredName = title ? `${title}.mp3` : `audio-${Date.now()}.mp3`;
-        }
-
-        let saved: SavedAttachment;
-        try {
-          if (!authority.isCurrent()) return;
-          saved = saveAttachment(turn.environment, cfg.goblinHome, desiredName, raw);
-        } catch (err) {
-          if (err instanceof UnsafeAttachmentNameError) {
-            const replyText = "Rejected: unsafe filename.";
-            if (authority.isCurrent()) {
-              await sendSystemReply(message, replyText, "warn");
-              recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-            }
-            return;
-          }
-          log.error("failed to save audio attachment", {
-            error: err instanceof Error ? err.message : String(err),
-            fileName: desiredName,
-            sessionId: turn.session.id,
-          });
-          if (authority.isCurrent()) {
-            const replyText = `Failed to save ${desiredName}.`;
-            await sendSystemReply(message, replyText, "error");
-            recordAssistantReply(turn.session.id, turn.surface, runner, replyText);
-          }
-          return;
-        }
-
-        if (!authority.isCurrent()) return;
-        await sendSystemReply(message, `Saved ${saved.relativePath}.`, "ok");
-
-        const escapedPath = saved.relativePath.replace(/`/g, "'");
-        const promptText = audio.caption
-          ? `${audio.caption}\n\n[Audio file \`${escapedPath}\` saved.]`
-          : `User uploaded audio \`${escapedPath}\`.`;
-
-        if (!authority.isCurrent()) return;
-        await runPrompt(message, turn.surface, runner, turn.session, promptText);
-      },
-      "runner audio prompt failed",
-    );
-  }
-
-  async function handleTopicDescription(
-    chatId: number | undefined,
-    topicId: number | undefined,
-    name: string | undefined,
-  ): Promise<AdmissionResult<void>> {
-    if (chatId === undefined || topicId === undefined || name === undefined) {
-      return completed(undefined);
-    }
-    try {
-      await memoryStore.setDescription(
-        { topic: { chatId, topicId } },
-        name,
-      );
-    } catch (err) {
-      log.warn("failed to set topic description", {
-        chatId,
-        topicId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-    return completed(undefined);
-  }
-
-  /**
-   * Resolve guest Surface binding and hand one immediate/no-wait turn to the
-   * runtime kernel. Telegram retains only the opaque one-shot reply mapping;
-   * runner occupancy, authority, prompting, and settlement stay behind the
-   * dispatcher/machine boundary.
-   */
-  async function handleGuestMessage(
-    message: GuestMessage,
-    text: string,
-  ): Promise<AdmissionResult<void>> {
-    const surface = message.surface;
-    let replyAttempted = false;
-    const replyOnce = async (result: InlineQueryResult, failureLog: string): Promise<void> => {
-      if (replyAttempted) return;
-      replyAttempted = true;
-      try {
-        await message.replyVia(result);
-      } catch (error) {
-        log.warn(failureLog, { error: String(error), surfaceId: surfaceId(surface) });
-      }
-    };
-
-    let conversation: ConversationState;
-    let creationLease: ConversationCreationLease | null;
-    try {
-      const resolution = await lifecycle.resolveOrStart(surface);
-      conversation = resolution.conversation;
-      creationLease = resolution.creationLease;
-    } catch (error) {
-      log.error("guest resolve failed", { error: String(error), surfaceId: surfaceId(surface) });
-      return completed(replyOnce(errorArticle(), "guest error reply failed"));
-    }
-
-    // The guest query itself is the authorized summon: retained completions
-    // for this exact guest Surface claim alongside the summoned turn.
-    claimPendingGuestCompletions(surface);
-
-    const sink = new GuestReplySink();
-    const admission = await attemptCreationAdmission(
-      () => dispatcher.admitImmediateTurn(
-        conversation,
-        surface,
-        text,
-        sink,
-        {
-          success: () => replyOnce(article(sink.text || "(no response)"), "guest reply failed"),
-          failure: async (error) => {
-            log.warn("guest turn failed", {
-              error: error instanceof Error ? error.message : String(error),
-              surfaceId: surfaceId(surface),
-              sessionId: conversation.id,
-            });
-            await replyOnce(errorArticle(), "guest error reply failed");
-          },
-        },
-      ),
-      creationLease,
-      lifecycle,
-      "guest",
-    );
-
-    let rejectedAdmission: RuntimeAdmissionResult<void>;
-    switch (admission.kind) {
-      case "accepted": {
-        if (creationLease !== null) lifecycle.sealCreation(creationLease);
-        const completion = admission.settlement.then(async (settlement) => {
-          if (settlement.kind === "failed") {
-            log.error("accepted guest runtime work failed", {
-              error: settlement.error instanceof Error
-                ? settlement.error.message
-                : String(settlement.error),
-              surfaceId: surfaceId(surface),
-              sessionId: conversation.id,
-            });
-          }
-          if (settlement.delivery !== undefined) await settlement.delivery;
-        });
-        return runtimeAdmission.handoff(completion);
-      }
-      case "busy":
-        log.debug("guest summon dropped: runtime busy", {
-          surfaceId: surfaceId(surface),
-          sessionId: conversation.id,
-        });
-        rejectedAdmission = runtimeAdmission.busy(replyOnce(busyArticle(), "guest busy reply failed"));
-        break;
-      case "closed":
-        rejectedAdmission = runtimeAdmission.rejected(undefined);
-        break;
-      case "fenced":
-        rejectedAdmission = runtimeAdmission.fenced(undefined);
-        break;
-    }
-    return withRejectedCreationRelease(rejectedAdmission, creationLease, lifecycle, "guest");
-  }
-
   return {
     handleText,
-    handlePhoto,
-    handleDocument,
-    handleVoice,
-    handleAudio,
-    handleTopicDescription,
-    handleGuestMessage,
+    handlePhoto: createPhotoHandler(deps),
+    handleDocument: createDocumentHandler(deps),
+    handleVoice: createVoiceHandler(deps),
+    handleAudio: createAudioHandler(deps),
+    handleTopicDescription: createTopicDescriptionHandler(deps),
+    handleGuestMessage: createGuestMessageHandler(deps),
     dispatcher,
     lifecycle,
   };
-}
-
-/** Build a single-shot `InlineQueryResultArticle` carrying plain text. */
-function article(messageText: string): InlineQueryResult {
-  return {
-    type: "article",
-    id: randomUUID(),
-    title: "Goblin",
-    input_message_content: { message_text: messageText },
-  };
-}
-
-function busyArticle(): InlineQueryResult {
-  return article("⏳ I'm already thinking about something — try again in a moment.");
-}
-
-function errorArticle(): InlineQueryResult {
-  return article("⚠️ Something went wrong.");
 }

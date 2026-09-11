@@ -563,7 +563,7 @@ describe("Deployment config store", () => {
       expect(readDeploymentConfig(home).devin).toEqual({ defaultModel: "fresh-model" });
       // Concurrent writers (McpSelectionStore) participate in the same CAS.
       const reread = readDeploymentConfig(home);
-      expect(fresh.revision).not.toBe(reread.revision);
+      expect(reread.revision).toBe(fresh.revision);
       setMcpServerEnabled(home, "tavily", false);
       const clobber = await catchOf(() =>
         saveConfigSection(home, "general", { favorites: ["f"] }, { expectedRevision: reread.revision })

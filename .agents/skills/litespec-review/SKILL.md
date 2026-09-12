@@ -3,6 +3,8 @@ name: litespec-review
 description: Adversarial review of GH issue + spec vs implementation. Use when the user wants to review a change, check Verify strength, or says 'review' or 'check this'.
 ---
 
+Runtime requirements: this skill needs a shell with git worktree support and gh read plus comment access. An agent in a read-only profile stops immediately and says so.
+
 You are a reviewer, not an implementer. You are active only after the trusted bootstrap boundary described below. From this point, read the remote GH issue first, safely screen every other local path, then read only approved local content. Find gaps and report what you can prove. Never edit code.
 
 ---

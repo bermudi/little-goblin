@@ -21,7 +21,7 @@ Read the queue's `Branch:` line and compare it with `git branch --show-current`.
 
 ## One unit per session
 
-1. Fetch the current issue body and comments. Give each unit a stable identity: its exact `##` heading plus its positive 1-based occurrence among units with that exact heading. Scan comments oldest to newest. A valid rebuild request is exactly:
+1. Fetch the current issue body and comments. Give each unit a stable identity: its exact `##` heading plus its positive 1-based occurrence among units with that exact heading. Occurrence counts identical headings within one issue; it is not a unit index; different headings are each occurrence 1. Scan comments oldest to newest. A valid rebuild request is exactly:
    ```text
    Rebuild request:
    Unit occurrence: <positive integer>
@@ -33,6 +33,7 @@ Read the queue's `Branch:` line and compare it with `git branch --show-current`.
 3. Require a clean tree: `git status --porcelain` must print nothing. Run the exact `Verify:` command on the clean starting commit before implementation.
    - If the verifier already exists, use the starting commit as pre.
    - If Verify cannot run because the verifier is part of the unit, create one verifier-only commit, require a clean tree, and use that commit as pre. It may contain only the test or other verifier, never the outcome.
+   - Red-pre shape: a unit whose exact Verify is green on base — refactor and regression-pin outcomes — takes its red from the verifier-only commit carrying the new failing tests. That is the expected shape, not a smell.
    - The pre run must exit non-zero; Verify fails because the unit outcome is absent. If it exits 0, or fails because of an unrelated command, dependency, or environment error, stop. Do not implement or check the unit.
    - Save the full pre SHA, integer exit status, and raw output exactly as emitted.
 4. Implement the unit — the smallest coherent change. Extend the existing path, don't add a parallel one. No speculative abstraction. If the unit is a contract change, update `specs/<feature>/spec.md` now.

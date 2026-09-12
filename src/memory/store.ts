@@ -15,6 +15,7 @@ import {
   factEffectPayloadHash,
   findNearDuplicateWithEmbeddings,
   isProceduralNoise,
+  parseMemoryEffectOutcome,
   resolveFactEffectScope,
   textNearDuplicate,
   type DuplicateMatch,
@@ -152,6 +153,15 @@ function validateFactEffect(effect: MemoryFactEffect): void {
 function isPrimaryKeyConflict(err: unknown): boolean {
   return err instanceof Error && (err as { code?: string }).code === "SQLITE_CONSTRAINT_PRIMARYKEY";
 }
+
+/** One strictly validated canonical effect receipt. */
+export interface EffectReceiptRecord {
+  readonly effectKey: string;
+  readonly payloadHash: string;
+  readonly outcome: MemoryEffectOutcome;
+}
+
+const RECEIPT_PAYLOAD_HASH_RE = /^[0-9a-f]{64}$/;
 
 
 export interface MemoryEntryInput {
@@ -1240,13 +1250,39 @@ export class MemoryStore {
       )
       .get({ $effect_key: effectKey });
     if (row === null) return null;
-    let outcome: MemoryEffectOutcome;
-    try {
-      outcome = JSON.parse(row.outcome) as MemoryEffectOutcome;
-    } catch {
-      throw new Error(`corrupt memory effect receipt for ${effectKey}: outcome is not valid JSON`);
+    const receipt = this.parseEffectReceipt(effectKey, row.payload_hash, row.outcome);
+    return { payloadHash: receipt.payloadHash, outcome: receipt.outcome };
+  }
+
+  /**
+   * Read every canonical effect receipt, strictly validated. The outcome must
+   * parse AND match the canonical outcome shape, and the payload identity must
+   * be a sha-256 digest: admission and replay must never build on a receipt
+   * they cannot interpret (issue #67, admission gate C3 — fail closed with the
+   * offending effect key).
+   */
+  readEffectReceipts(): EffectReceiptRecord[] {
+    const rows = this.db.database
+      .query<{ effect_key: string; payload_hash: string; outcome: string }, []>(
+        "SELECT effect_key, payload_hash, outcome FROM memory_effect_receipts ORDER BY effect_key",
+      )
+      .all();
+    return rows.map((row) => this.parseEffectReceipt(row.effect_key, row.payload_hash, row.outcome));
+  }
+
+  private parseEffectReceipt(
+    effectKey: string,
+    payloadHash: string,
+    rawOutcome: string,
+  ): EffectReceiptRecord {
+    if (!RECEIPT_PAYLOAD_HASH_RE.test(payloadHash)) {
+      throw new Error(`corrupt memory effect receipt for ${effectKey}: payload hash is not a sha-256 digest`);
     }
-    return { payloadHash: row.payload_hash, outcome };
+    return {
+      effectKey,
+      payloadHash,
+      outcome: parseMemoryEffectOutcome(effectKey, rawOutcome),
+    };
   }
 
   /** Insert one effect receipt. Caller owns the surrounding transaction. */

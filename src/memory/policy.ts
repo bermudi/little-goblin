@@ -13,6 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { parseSurfaceId } from "../surface.ts";
 import { activeMemoryScopeFor, resolveActiveScope, type MemoryScope } from "./scope.ts";
 import { stripEntryMetadata } from "./entry.ts";
@@ -201,6 +202,50 @@ export type MemoryEffectOutcome =
   | { readonly kind: "added"; readonly entryId: string }
   | { readonly kind: "updated"; readonly entryId: string; readonly preservedExisting: boolean }
   | { readonly kind: "rejected"; readonly reason: MemoryEffectRejectionReason; readonly message: string };
+
+const memoryEffectOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("added"), entryId: z.string().min(1) }).strict(),
+  z.object({
+    kind: z.literal("updated"),
+    entryId: z.string().min(1),
+    preservedExisting: z.boolean(),
+  }).strict(),
+  z.object({
+    kind: z.literal("rejected"),
+    reason: z.enum([
+      "no_agent_authority",
+      "procedural_noise",
+      "unsafe",
+      "low_confidence",
+      "budget_exhausted",
+    ]),
+    message: z.string().min(1),
+  }).strict(),
+]);
+
+/**
+ * Strictly parse one persisted receipt outcome. A receipt is canonical
+ * authority for its effect: anything that does not match the outcome shape is
+ * corruption, not a replayable outcome, and fails closed with the effect key
+ * (issue #67, admission gate C3).
+ */
+export function parseMemoryEffectOutcome(effectKey: string, raw: string): MemoryEffectOutcome {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`corrupt memory effect receipt for ${effectKey}: outcome is not valid JSON`);
+  }
+  const outcome = memoryEffectOutcomeSchema.safeParse(parsed);
+  if (!outcome.success) {
+    const detail = outcome.error.issues
+      .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "outcome"}: ${issue.message}`)
+      .join("; ")
+      .slice(0, 300);
+    throw new Error(`corrupt memory effect receipt for ${effectKey}: outcome shape is invalid (${detail})`);
+  }
+  return outcome.data;
+}
 
 /**
  * Resolve the curated scope a fact effect writes to, or null when the target

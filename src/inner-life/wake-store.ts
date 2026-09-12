@@ -21,7 +21,8 @@
  * filesystem error propagate with bounded, wake-identity-bearing diagnostics.
  */
 
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { atomicWrite } from "../fs.ts";
@@ -549,6 +550,35 @@ export class WakeStore {
     }
     const reflectionResult = await runReflection(durable);
     return { record: durable, coalesced: false, reflectionRan: true, reflectionResult };
+  }
+
+  /**
+   * List every persisted wake id in deterministic (sorted) order. Absence of
+   * the wakes directory — a deployment with no wakes yet — is expected and
+   * returns an empty list. A `.json` entry whose name is not a canonical wake
+   * id fails closed: reconciliation must never silently skip a record it
+   * cannot name.
+   */
+  listWakeIds(): string[] {
+    let names: string[];
+    try {
+      names = readdirSync(wakesDir(this.home));
+    } catch (err) {
+      if (errnoCode(err) === "ENOENT") return [];
+      log.error("wake directory listing failed", { ...boundedError(err) });
+      throw err;
+    }
+    const ids: string[] = [];
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      const id = name.slice(0, -".json".length);
+      if (!SAFE_WAKE_ID_RE.test(id)) {
+        const path = join(wakesDir(this.home), name);
+        throw recordError(id, path, "wake record file name is not a canonical wake id");
+      }
+      ids.push(id);
+    }
+    return ids.sort();
   }
 
   /**

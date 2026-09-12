@@ -662,21 +662,21 @@ describe("private reflection recovery", () => {
     });
     await host.reconcile();
 
-    const wakeId = onlyWakeId(dir);
     const observedStates: WakeState[] = [];
     const observedAttempts: number[] = [];
     for (let pass = 0; pass < 4; pass++) {
       const outcome = await host.processWindow(reservationInput());
       expect(outcome.blocked).toBe(true);
-      const record = wakeStore.read(wakeId);
+      const record = new WakeStore(dir).read(outcome.record.wakeId);
       observedStates.push(record!.state);
       observedAttempts.push(record!.attempts);
     }
+    const wakeId = onlyWakeId(dir);
     // Three passes consume the three persisted attempts; the fourth finds the
     // batch explicitly failed and makes no further attempt.
     expect(observedStates).toEqual(["reflecting", "reflecting", "failed", "failed"]);
     expect(observedAttempts).toEqual([1, 2, 3, 3]);
-    const failed = wakeStore.read(wakeId);
+    const failed = new WakeStore(dir).read(wakeId);
     expect(failed?.failure?.reason).toContain("config-unavailable");
     expect(effectReceipts(store)).toHaveLength(0);
     expect(readCursor(dir)).toBeNull();
@@ -1075,7 +1075,8 @@ describe("private reflection recovery", () => {
     const mixedHealthy = makeHost(mixedDir, { model: workingModel(), writes: mixedWrites });
     await mixedHealthy.host.reconcile();
     await mixedHealthy.wakeStore.reserve(reservationInput());
-    mixedHealthy.wakeStore.applyTransition(onlyWakeId(mixedDir), { kind: "begin-attempt" });
+    const healthyWakeId = onlyWakeId(mixedDir);
+    mixedHealthy.wakeStore.applyTransition(healthyWakeId, { kind: "begin-attempt" });
     mixedHealthy.store.close();
     writeFileSync(
       join(wakesDir(mixedDir), "wake_ffffffffffffffff.json"),
@@ -1093,7 +1094,7 @@ describe("private reflection recovery", () => {
     expect(mixedError).toBeInstanceOf(WakeRecordError);
     expect((mixedError as Error).message).toContain("wake_ffffffffffffffff");
     expect(mixedModel.calls).toBe(0);
-    const untouched = new WakeStore(mixedDir).read(onlyWakeId(mixedDir));
+    const untouched = new WakeStore(mixedDir).read(healthyWakeId);
     expect(untouched?.state).toBe("reflecting");
     expect(untouched?.attempts).toBe(1);
     expect(readCursor(mixedDir)).toBeNull();

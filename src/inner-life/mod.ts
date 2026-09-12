@@ -6,6 +6,20 @@ export {
   wakesDir,
 } from "./paths.ts";
 export {
+  AdmissionClosedError,
+  PRIVATE_FACTS_CONFIDENCE,
+  ReconciliationError,
+  ReflectionHost,
+} from "./recovery.ts";
+export type {
+  ReconciliationMemoryStore,
+  ReflectionCursorState,
+  ReflectionCursorStore,
+  ReconciliationReport,
+  WakeReconciliationOutcome,
+  WindowOutcome,
+} from "./recovery.ts";
+export {
   MAX_REFLECTION_OUTPUT_BYTES,
   MAX_REFLECTION_REJECTION_CHARS,
   PRIVATE_REFLECTION_SYSTEM_PROMPT,

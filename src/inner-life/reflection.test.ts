@@ -10,6 +10,7 @@ import {
   ReflectionError,
   redactSecrets,
   type ReflectionModelInvoker,
+  type ReflectionOutcome,
   type ReflectionModelRequest,
   type ReflectionRequest,
 } from "./reflection.ts";
@@ -249,7 +250,9 @@ describe("reflection", () => {
     expect(outcome.rejections[0]!.reason).toContain("user");
     expect(outcome.rejections[1]!.reason).toContain("user");
     expect(outcome.rejections[2]!.reason).toContain("outside the captured input");
-    expect(outcome.rejections[3]!.reason).toContain("effect kind");
+    expect(outcome.rejections[3]!.reason).toContain("not a supported fact proposal");
+    expect(outcome.rejections[3]!.reason).toContain("kind");
+    expect(outcome.rejections[4]!.reason).toContain("not a supported fact proposal");
     expect(outcome.rejections[4]!.reason).toContain("target");
     for (const rejection of outcome.rejections) {
       expect(rejection.reason.length).toBeLessThanOrEqual(MAX_REFLECTION_REJECTION_CHARS);
@@ -259,7 +262,7 @@ describe("reflection", () => {
   it("strict-envelope-item-count-and-text-bounds", async () => {
     const longLine = "long line ".repeat(270); // 2970 chars
     const lines = [line(0, "user", longLine)];
-    const reflect = (output: string): Promise<unknown> =>
+    const reflect = (output: string): Promise<ReflectionOutcome> =>
       engineWith(output).reflect(reflectionRequest({ lines }));
 
     // More than 32 items fails the whole envelope, not individual items.
@@ -287,47 +290,37 @@ describe("reflection", () => {
 
     // Exactly 32 valid items are all accepted.
     const exact = Array.from({ length: MAX_FACT_PROPOSALS }, () => fact("memory", 0, "long line"));
-    const exactOutcome = (await reflect(envelope(exact))) as { proposals: unknown[]; rejections: unknown[] };
+    const exactOutcome = await reflect(envelope(exact));
     expect(exactOutcome.proposals.length).toBe(MAX_FACT_PROPOSALS);
     expect(exactOutcome.rejections.length).toBe(0);
 
     // Unknown per-item fields reject the item and retain valid siblings.
     const withUnknown = [{ ...fact("memory", 0, "long line"), confidence: 0.9 }, fact("memory", 0, "long line")];
-    const unknownOutcome = (await reflect(envelope(withUnknown))) as {
-      proposals: Array<{ lineIndex: number }>;
-      rejections: Array<{ itemIndex: number }>;
-    };
+    const unknownOutcome = await reflect(envelope(withUnknown));
     expect(unknownOutcome.proposals.length).toBe(1);
     expect(unknownOutcome.rejections.length).toBe(1);
     expect(unknownOutcome.rejections[0]!.itemIndex).toBe(0);
 
-    // Empty item text rejects the item.
-    const emptyText = (await reflect(envelope([fact("memory", 0, "")]))) as {
-      proposals: unknown[];
-      rejections: unknown[];
-    };
+    // Text bounds against a dedicated capturable line: empty text and
+    // excerpts above 2000 characters reject the item…
+    const xReflect = (output: string): Promise<ReflectionOutcome> =>
+      engineWith(output).reflect(reflectionRequest({ lines: [line(0, "user", "x".repeat(2500))] }));
+    const emptyText = await xReflect(envelope([fact("memory", 0, "")]));
     expect(emptyText.proposals.length).toBe(0);
     expect(emptyText.rejections.length).toBe(1);
 
-    // Excerpts above 2000 characters reject the item…
-    const tooLong = (await reflect(
-      envelope([fact("memory", 0, "x".repeat(MAX_FACT_TEXT_CHARS + 1))]),
-    )) as { proposals: unknown[]; rejections: unknown[] };
+    const tooLong = await xReflect(envelope([fact("memory", 0, "x".repeat(MAX_FACT_TEXT_CHARS + 1))]));
     expect(tooLong.proposals.length).toBe(0);
     expect(tooLong.rejections.length).toBe(1);
+    expect(tooLong.rejections[0]!.reason).toContain("not a supported fact proposal");
 
     // …while exactly-2000-character contiguous excerpts are accepted.
-    const exactLength = (await reflect(
-      envelope([fact("memory", 0, "x".repeat(MAX_FACT_TEXT_CHARS))]),
-    )) as { proposals: Array<{ text: string }>; rejections: unknown[] };
+    const exactLength = await xReflect(envelope([fact("memory", 0, "x".repeat(MAX_FACT_TEXT_CHARS))]));
     expect(exactLength.proposals.length).toBe(1);
     expect(exactLength.proposals[0]!.text.length).toBe(MAX_FACT_TEXT_CHARS);
 
     // The empty result is a supported outcome.
-    const empty = (await engineWith(envelope([])).reflect(reflectionRequest({ lines: [line(0)] }))) as {
-      proposals: unknown[];
-      rejections: unknown[];
-    };
+    const empty = await engineWith(envelope([])).reflect(reflectionRequest({ lines: [line(0)] }));
     expect(empty.proposals).toEqual([]);
     expect(empty.rejections).toEqual([]);
   });
@@ -364,7 +357,7 @@ describe("reflection", () => {
     {
       const base = envelope([fact("memory", 0, "I live in Madrid")]);
       const padded = base + " ".repeat(MAX_REFLECTION_OUTPUT_BYTES - Buffer.byteLength(base, "utf-8"));
-      const outcome = (await engineWith(padded).reflect(reflectionRequest())) as { proposals: unknown[] };
+      const outcome = await engineWith(padded).reflect(reflectionRequest());
       expect(outcome.proposals.length).toBe(1);
     }
 
@@ -395,7 +388,7 @@ describe("reflection", () => {
       // The engine stays usable after disposal: fresh invocation, no leaked
       // deadline, buffers, or cancellation state.
       respond = () => envelope([fact("memory", 0, "I live in Madrid")]);
-      const again = (await engine.reflect(reflectionRequest())) as { proposals: unknown[] };
+      const again = await engine.reflect(reflectionRequest());
       expect(again.proposals.length).toBe(1);
     }
   });

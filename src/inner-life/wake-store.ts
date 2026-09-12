@@ -85,9 +85,16 @@ const surfaceIdSchema = z.string().min(1).refine((value) => {
   }
 }, "must be a canonical SurfaceId");
 
+// Persisted timestamps are pinned to the canonical `new Date().toISOString()`
+// shape every in-repo producer emits. The regex alone would accept shape-valid
+// nonsense (month 13, hour 25), so `Date.parse` stays as the semantic check —
+// but never again as the only one: it tolerates locale-dependent formats like
+// "March 5, 2026" that are not ISO timestamps at all.
+const ISO_UTC_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
 const timestampSchema = z.string().refine(
-  (value) => !Number.isNaN(Date.parse(value)),
-  "must be a valid ISO timestamp",
+  (value) => ISO_UTC_TIMESTAMP_RE.test(value) && !Number.isNaN(Date.parse(value)),
+  "must be a canonical ISO-8601 UTC timestamp (YYYY-MM-DDTHH:mm:ss.sssZ)",
 );
 
 const wakeInputLineSchema = z.object({

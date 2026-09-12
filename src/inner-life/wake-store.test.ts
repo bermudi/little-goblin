@@ -324,6 +324,23 @@ describe("wake store", () => {
     writeInvalid((r) => {
       r.state = "completed"; // failure evidence no longer matches state
     });
+    // Timestamps must be canonical ISO-8601 UTC, not merely Date.parse-able.
+    writeInvalid((r) => {
+      r.createdAt = "March 5, 2026";
+    });
+    writeInvalid((r) => {
+      (r as { input: { lines: Array<{ ts: string }> } }).input.lines[0]!.ts = "5/3/2026";
+    });
+    writeInvalid((r) => {
+      (r as { input: { lines: Array<{ ts: string }> } }).input.lines[0]!.ts = "2026-03-05 10:00:00";
+    });
+    // Correct ISO shape but impossible fields: semantic validity is checked too.
+    writeInvalid((r) => {
+      r.createdAt = "2026-13-45T99:99:99.999Z";
+    });
+    // Positive control: the canonical producer shape itself remains valid.
+    writeFileSync(wakeRecordPath(home, failed.wakeId), JSON.stringify(valid, null, 2));
+    expect(store.read(failed.wakeId)).not.toBeNull();
   });
 
   it("missing-corrupt-unknown-version-and-eacces-differ", async () => {

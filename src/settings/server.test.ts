@@ -294,11 +294,13 @@ describe("Operator-authenticated Settings API", () => {
       const staleBody = (await stale.json()) as { error: string };
       expect(staleBody.error).toBe("conflict");
 
-      // Only whitelisted sections are accepted; unknown sections → 404.
+      // The mcp section is owned by McpSelectionStore (decision 0042): it is
+      // a known section whose patches go through the store, so an empty mcp
+      // patch is rejected as invalid-patch; truly unknown sections → 404.
       const mcp = await putSection(handle, auth, "mcp", { patch: {} });
-      expect(mcp.status).toBe(404);
+      expect(mcp.status).toBe(400);
       const mcpBody = (await mcp.json()) as { error: string };
-      expect(mcpBody.error).toBe("unknown-section");
+      expect(mcpBody.error).toBe("invalid-patch");
       const unknownSection = await putSection(handle, auth, "unknown-thing", { patch: {} });
       expect(unknownSection.status).toBe(404);
 

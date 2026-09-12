@@ -7,7 +7,9 @@
  * Authority: Telegram initData signature via `botToken` plus `allowedUserIds`
  * for identity, `allowedOrigins` for writes; durable state via the sole
  * Settings store (`readDeploymentConfig` / `saveConfigSection` in `store.ts`,
- * coordinated through `goblin-config-file.ts`). Responses carry `revision`
+ * coordinated through `goblin-config-file.ts`), with the `mcp` section routed
+ * exclusively through McpSelectionStore's mutations (decision 0042: the
+ * Settings path never writes `mcp` keys directly). Responses carry `revision`
  * plus a startup-captured `bootRevision` (pending-restart derivation), and an
  * `allowedUsers` patch that would remove the verified requesting operator is
  * rejected before any write (self-lockout guard). No second durable copy, no
@@ -23,6 +25,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { discoverDevinCatalog, type DevinModelCatalog } from "./devin-catalog.ts";
 import { renderSettingsPage } from "./page.ts";
+import { McpSelectionStoreError, setMcpLimits, setMcpServerEnabled } from "../mcp/selection-store.ts";
 import {
   readDeploymentConfig,
   saveConfigSection,
@@ -196,6 +199,10 @@ const STORE_ERROR_RESPONSES: Record<SettingsStoreReason, { status: number; code:
 };
 
 function toSafeStoreResponse(error: unknown): { status: number; code: string; message?: string } {
+  if (error instanceof McpSelectionStoreError) {
+    // Invalid on-disk mcp section or out-of-range limits: actionable 400.
+    return { status: 400, code: "invalid-config", message: error.message };
+  }
   if (error instanceof SettingsStoreError) {
     return { ...STORE_ERROR_RESPONSES[error.reason], message: error.message };
   }
@@ -218,6 +225,68 @@ function patchRemovesOperator(section: string, patch: Record<string, unknown>, o
   if (section !== "general") return false;
   const allowedUsers = patch.allowedUsers;
   return Array.isArray(allowedUsers) && !allowedUsers.includes(operatorId);
+}
+
+type McpPatchMutation =
+  | { kind: "toggle"; server: string; enabled: boolean }
+  | { kind: "limits"; limits: { defaultTimeoutMs?: number; maxResultChars?: number } };
+
+/**
+ * Validate an mcp section patch. Decision 0042 routes every mcp mutation
+ * through McpSelectionStore, so patch shape is owned here: either one
+ * allow/deny toggle (`server` + `enabled`) or a limits edit
+ * (`defaultTimeoutMs` / `maxResultChars`). Mixing the two is rejected — each
+ * MCP write is one atomic revision-CAS mutation through the store, never a
+ * partial multi-write. Value ranges are the store's job (schema authority).
+ * Returns a mutation, or an actionable `{error, message}` response payload.
+ */
+function parseMcpPatch(patch: Record<string, unknown>): McpPatchMutation | { error: string; message: string } {
+  const allowed = ["server", "enabled", "defaultTimeoutMs", "maxResultChars"];
+  for (const key of Object.keys(patch)) {
+    if (!allowed.includes(key)) {
+      return {
+        error: "unknown-field",
+        message: `Unknown field "${key}" for section "mcp"; mcp patches accept one toggle (server + enabled) or limits (defaultTimeoutMs, maxResultChars).`,
+      };
+    }
+  }
+  const hasToggle = patch.server !== undefined || patch.enabled !== undefined;
+  const hasLimits = patch.defaultTimeoutMs !== undefined || patch.maxResultChars !== undefined;
+  if (hasToggle && hasLimits) {
+    return {
+      error: "invalid-patch",
+      message:
+        'A "mcp" patch accepts either one server toggle (server + enabled) or a limits edit (defaultTimeoutMs/maxResultChars), not both; send them as separate writes so each is one atomic revision-CAS mutation.',
+    };
+  }
+  if (hasToggle) {
+    const server = patch.server;
+    const enabled = patch.enabled;
+    if (typeof server !== "string" || server.length === 0 || server.trim() !== server) {
+      return { error: "invalid-patch", message: '"mcp" toggle patch field "server" must be a non-empty, unpadded server name.' };
+    }
+    if (typeof enabled !== "boolean") {
+      return { error: "invalid-patch", message: '"mcp" toggle patch field "enabled" must be a boolean.' };
+    }
+    return { kind: "toggle", server, enabled };
+  }
+  if (hasLimits) {
+    const limits: { defaultTimeoutMs?: number; maxResultChars?: number } = {};
+    for (const key of ["defaultTimeoutMs", "maxResultChars"] as const) {
+      const value = patch[key];
+      if (value === undefined) continue;
+      if (typeof value !== "number" || !Number.isInteger(value)) {
+        return { error: "invalid-patch", message: `"mcp" limits patch field "${key}" must be an integer.` };
+      }
+      limits[key] = value;
+    }
+    return { kind: "limits", limits };
+  }
+  return {
+    error: "invalid-patch",
+    message:
+      '"mcp" patch is empty; it must contain one server toggle (server + enabled) or a limits edit (defaultTimeoutMs/maxResultChars).',
+  };
 }
 
 /** Start the optional loopback Settings API. Call `close()` to reject new work and settle accepted requests. */
@@ -337,6 +406,27 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
                 "operator-lockout",
                 "This change would remove the requesting operator from allowedUsers and lock them out of Settings; the new allowedUsers list must include the verified operator.",
               );
+            }
+            if (section === "mcp") {
+              // Decision 0042: McpSelectionStore is the sole writer of the
+              // mcp section. The route validates patch shape, then the
+              // mutation (toggle or limits) goes through the store with the
+              // same revision CAS as every other section — never a direct
+              // write to goblin.json5's mcp keys from this path.
+              const mutation = parseMcpPatch(fields);
+              if ("error" in mutation) {
+                return fail(route, 400, mutation.error, mutation.message);
+              }
+              try {
+                const result =
+                  mutation.kind === "toggle"
+                    ? setMcpServerEnabled(options.goblinHome, mutation.server, mutation.enabled, { expectedRevision })
+                    : setMcpLimits(options.goblinHome, mutation.limits, { expectedRevision });
+                return jsonResponse(200, { revision: result.revision });
+              } catch (error: unknown) {
+                const mapped = toSafeStoreResponse(error);
+                return fail(route, mapped.status, mapped.code, mapped.message);
+              }
             }
             try {
               // The store owns the section whitelist, secret-field rejection,

@@ -13,7 +13,9 @@
  * write; only the target section's whitelisted keys are mutated, and the
  * merged file must still validate against `ConfigFileSchema` before commit
  * (a change that would not boot is never written). The `mcp` section is
- * never written here — McpSelectionStore owns it (decision 0042).
+ * never written here — McpSelectionStore owns it (decision 0042); it is
+ * surfaced in the read projection only, sourced through that store's
+ * `projectMcpSelection`.
  * `externalAgents.devinModel` is never surfaced or written;
  * `devin.defaultModel` is the only Devin model knob (decision 0049).
  * Persistence: `$GOBLIN_HOME/goblin.json5`.
@@ -25,6 +27,7 @@
 
 import JSON5 from "json5";
 import type { ZodError } from "zod";
+import { projectMcpSelection, type McpSelectionProjection } from "../mcp/selection-store.ts";
 import { readGoblinConfigText, revisionForConfigText, updateGoblinConfig } from "../goblin-config-file.ts";
 import { ConfigFileSchema, ExternalAgentsConfigSchema, SettingsConfigSchema } from "../schema.ts";
 import type { DevinModelCatalog } from "./devin-catalog.ts";
@@ -86,6 +89,8 @@ export interface DeploymentConfig {
   "external-agents": ExternalAgentsConfigProjection;
   devin: DevinConfigProjection;
   settings: SettingsConfigProjection;
+  /** Read-only projection of the mcp section; writes live in McpSelectionStore (decision 0042). */
+  mcp: McpSelectionProjection;
   secrets: DeploymentSecretsProjection;
   /** Content revision for stale-write detection; changes on any file edit. */
   revision: string;
@@ -228,6 +233,7 @@ export function readDeploymentConfig(goblinHome: string): DeploymentConfig {
       publicUrl: settings.publicUrl,
       allowedOrigins: settings.allowedOrigins ?? [],
     },
+    mcp: projectMcpSelection(data.mcp),
     secrets: {
       botToken: { present: true },
       openrouterApiKey: { present: data.openrouterApiKey !== undefined },

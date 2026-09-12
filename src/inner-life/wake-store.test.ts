@@ -328,6 +328,7 @@ describe("wake store", () => {
     const outcome = await store.reserve(reservation());
     const id = outcome.record.wakeId;
     const path = wakeRecordPath(home, id);
+    const original = readFileSync(path, "utf-8");
 
     // Absence alone is expected: null, not an error.
     expect(store.read("wake_" + "0".repeat(16))).toBeNull();
@@ -357,8 +358,7 @@ describe("wake store", () => {
 
     // Unknown versions propagate as validation failures, distinct from
     // absence and from infrastructure errors.
-    const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    rmSync(path);
+    const raw = JSON.parse(original) as Record<string, unknown>;
     const future = { ...raw, version: 2 };
     writeFileSync(path, JSON.stringify(future, null, 2));
     try {
@@ -371,6 +371,8 @@ describe("wake store", () => {
 
     // Non-ENOENT filesystem failures (EACCES) propagate as themselves — not
     // null, and not dressed up as a validation error.
+    const valid = JSON.parse(original) as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify(valid, null, 2));
     chmodSync(path, 0o000);
     try {
       try {
